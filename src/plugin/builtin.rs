@@ -129,7 +129,11 @@ impl Plugin for SineOscillator {
 }
 
 /// Load a built-in plugin by source string (e.g. `"builtin:sine"`).
-pub fn load(source: &str, sample_rate: f32, _max_block_size: usize) -> anyhow::Result<Box<dyn Plugin>> {
+pub fn load(
+    source: &str,
+    sample_rate: f32,
+    _max_block_size: usize,
+) -> anyhow::Result<Box<dyn Plugin>> {
     let name = source.strip_prefix("builtin:").unwrap_or(source);
     match name {
         "sine" => Ok(Box::new(SineOscillator::new(sample_rate))),

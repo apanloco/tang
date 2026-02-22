@@ -1,6 +1,7 @@
 use crate::plugin::builtin;
-use crate::plugin::lv2;
 use crate::plugin::clap;
+#[cfg(feature = "lv2")]
+use crate::plugin::lv2;
 
 pub fn midi() -> anyhow::Result<()> {
     println!("=== MIDI Input Devices ===");
@@ -22,9 +23,7 @@ pub fn audio() -> anyhow::Result<()> {
 
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
-    let default_name = host
-        .default_output_device()
-        .and_then(|d| d.name().ok());
+    let default_name = host.default_output_device().and_then(|d| d.name().ok());
     let devices: Vec<_> = host
         .devices()?
         .filter_map(|device| {
@@ -114,7 +113,11 @@ pub fn builtins() -> anyhow::Result<()> {
         println!("  (none)");
     }
     for p in &plugins {
-        let kind = if p.is_instrument { "instrument" } else { "effect" };
+        let kind = if p.is_instrument {
+            "instrument"
+        } else {
+            "effect"
+        };
         println!("  [{kind}] {}", p.name);
         println!("          ID:      {}", p.id);
         println!("          Params:  {}", p.param_count);
@@ -124,20 +127,33 @@ pub fn builtins() -> anyhow::Result<()> {
 }
 
 pub fn plugins() -> anyhow::Result<()> {
-    println!("=== LV2 Plugins ===");
-    let plugins = lv2::enumerate_plugins();
-    if plugins.is_empty() {
-        println!("  (none found)");
+    #[cfg(feature = "lv2")]
+    {
+        println!("=== LV2 Plugins ===");
+        let plugins = lv2::enumerate_plugins();
+        if plugins.is_empty() {
+            println!("  (none found)");
+        }
+        for p in &plugins {
+            let kind = if p.is_instrument {
+                "instrument"
+            } else {
+                "effect"
+            };
+            println!("  [{kind}] {}", p.name);
+            println!("          URI:     {}", p.id);
+            println!("          Path:    {}", p.path);
+            println!("          Params:  {}", p.param_count);
+            println!("          Presets: {}", p.preset_count);
+        }
+        println!();
     }
-    for p in &plugins {
-        let kind = if p.is_instrument { "instrument" } else { "effect" };
-        println!("  [{kind}] {}", p.name);
-        println!("          URI:     {}", p.id);
-        println!("          Path:    {}", p.path);
-        println!("          Params:  {}", p.param_count);
-        println!("          Presets: {}", p.preset_count);
+    #[cfg(not(feature = "lv2"))]
+    {
+        println!("=== LV2 Plugins ===");
+        println!("  (LV2 support not enabled)");
+        println!();
     }
-    println!();
 
     println!("=== CLAP Plugins ===");
     let claps = clap::enumerate_plugins();
@@ -145,7 +161,11 @@ pub fn plugins() -> anyhow::Result<()> {
         println!("  (none found)");
     }
     for p in &claps {
-        let kind = if p.is_instrument { "instrument" } else { "effect" };
+        let kind = if p.is_instrument {
+            "instrument"
+        } else {
+            "effect"
+        };
         println!("  [{kind}] {}", p.name);
         println!("          ID:      {}", p.id);
         println!("          Path:    {}", p.path);

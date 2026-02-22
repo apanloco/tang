@@ -51,7 +51,10 @@ pub fn resolve_plugin_path(plugin_source: &str, session_dir: &Path) -> String {
         return plugin_source.to_string();
     }
     // Relative paths are resolved against the session file's directory
-    session_dir.join(plugin_source).to_string_lossy().to_string()
+    session_dir
+        .join(plugin_source)
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Apply a preset to a loaded plugin (no parameter overrides).

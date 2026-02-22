@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Describe { plugin: source }) => {
             env_logger::init();
-            let p = plugin::load(&source, 48000.0, 512, None)?;
+            let p = plugin::load(&source, 48000.0, 512, &plugin::Runtime::default())?;
             println!("{}", p.name());
             println!(
                 "  Type:          {}",
@@ -124,12 +124,13 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     // Load session config
     let config = session::load(source)?;
 
-    let session_dir = Path::new(source)
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let session_dir = Path::new(source).parent().unwrap_or_else(|| Path::new("."));
 
     // Create shared LV2 world (scans system plugins once, reused for all LV2 loads)
-    let lv2_rt = plugin::lv2::Lv2Runtime::new(max_block_size);
+    #[cfg(feature = "lv2")]
+    let runtime = plugin::Runtime::with_lv2(max_block_size);
+    #[cfg(not(feature = "lv2"))]
+    let runtime = plugin::Runtime::default();
 
     // Create channels
     let (midi_tx, midi_rx) = crossbeam_channel::bounded::<audio::MidiEvent>(1024);
@@ -155,9 +156,8 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     )?;
 
     // Load instrument on main thread, apply preset, then send to audio thread
-    let instrument_source =
-        session::resolve_plugin_path(&config.instrument.plugin, session_dir);
-    let mut instrument = plugin::load(&instrument_source, sample_rate, max_block_size, Some(&lv2_rt))?;
+    let instrument_source = session::resolve_plugin_path(&config.instrument.plugin, session_dir);
+    let mut instrument = plugin::load(&instrument_source, sample_rate, max_block_size, &runtime)?;
     log::info!("Loaded instrument: {}", instrument.name());
 
     if let Some(ref preset_name) = config.instrument.preset {
@@ -202,9 +202,8 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
 
     // Load each effect on main thread, apply preset, send InsertEffect + SetParameter commands
     for (i, effect_config) in config.effects.iter().enumerate() {
-        let effect_source =
-            session::resolve_plugin_path(&effect_config.plugin, session_dir);
-        let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, Some(&lv2_rt))?;
+        let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
+        let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, &runtime)?;
         log::info!("Loaded effect {}: {}", i, effect.name());
 
         if let Some(ref preset_name) = effect_config.preset {
@@ -265,7 +264,9 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
         )?;
         log::info!("Kitty keyboard protocol enabled (press/release detection active)");
     } else {
-        log::warn!("Terminal does not support Kitty keyboard protocol — virtual piano disabled (hardware MIDI still works)");
+        log::warn!(
+            "Terminal does not support Kitty keyboard protocol — virtual piano disabled (hardware MIDI still works)"
+        );
     }
 
     // Create virtual piano
@@ -278,22 +279,19 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     loop {
         // Poll crossterm events with 10ms timeout
         if event::poll(Duration::from_millis(10))? {
-            match event::read()? {
-                Event::Key(key_event) => {
-                    // Ctrl+C or Ctrl+Q → quit
-                    if key_event
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL)
-                    {
-                        match key_event.code {
-                            KeyCode::Char('c') | KeyCode::Char('q') => break,
-                            _ => {}
-                        }
+            if let Event::Key(key_event) = event::read()? {
+                // Ctrl+C or Ctrl+Q → quit
+                if key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                {
+                    match key_event.code {
+                        KeyCode::Char('c') | KeyCode::Char('q') => break,
+                        _ => {}
                     }
-                    // Pass to virtual piano
-                    virt_piano.handle_key_event(key_event);
                 }
-                _ => {}
+                // Pass to virtual piano
+                virt_piano.handle_key_event(key_event);
             }
         }
 

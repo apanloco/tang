@@ -2,6 +2,7 @@ pub mod autodetect;
 pub mod builtin;
 pub mod chain;
 pub mod clap;
+#[cfg(feature = "lv2")]
 pub mod lv2;
 
 #[derive(Clone)]
@@ -56,8 +57,24 @@ pub struct PluginInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginType {
+    #[cfg(feature = "lv2")]
     Lv2,
     Clap,
+}
+
+#[derive(Default)]
+pub struct Runtime {
+    #[cfg(feature = "lv2")]
+    pub lv2: Option<lv2::Lv2Runtime>,
+}
+
+impl Runtime {
+    #[cfg(feature = "lv2")]
+    pub fn with_lv2(max_block_size: usize) -> Self {
+        Self {
+            lv2: Some(lv2::Lv2Runtime::new(max_block_size)),
+        }
+    }
 }
 
 /// Load a plugin from the given source, returning a boxed Plugin trait object.
@@ -65,7 +82,7 @@ pub fn load(
     source: &str,
     sample_rate: f32,
     max_block_size: usize,
-    lv2_runtime: Option<&lv2::Lv2Runtime>,
+    _runtime: &Runtime,
 ) -> anyhow::Result<Box<dyn Plugin>> {
     if source.starts_with("builtin:") {
         return builtin::load(source, sample_rate, max_block_size);
@@ -73,7 +90,13 @@ pub fn load(
 
     let (plugin_type, resolved) = autodetect::resolve(source)?;
     match plugin_type {
-        PluginType::Lv2 => lv2::load(&resolved, sample_rate, max_block_size, lv2_runtime),
+        #[cfg(feature = "lv2")]
+        PluginType::Lv2 => lv2::load(
+            &resolved,
+            sample_rate,
+            max_block_size,
+            _runtime.lv2.as_ref(),
+        ),
         PluginType::Clap => clap::load(&resolved, sample_rate, max_block_size),
     }
 }

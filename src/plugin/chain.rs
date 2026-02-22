@@ -54,14 +54,9 @@ pub enum ChainCommand {
         mix: f64,
     },
     #[allow(dead_code)]
-    RemoveEffect {
-        index: usize,
-    },
+    RemoveEffect { index: usize },
     #[allow(dead_code)]
-    ReorderEffect {
-        from: usize,
-        to: usize,
-    },
+    ReorderEffect { from: usize, to: usize },
     /// Set a parameter on a plugin. slot 0 = instrument, 1..N = effects.
     SetParameter {
         slot: usize,
@@ -70,10 +65,7 @@ pub enum ChainCommand {
     },
     /// Set the host-side dry/wet mix on an effect. slot 1..N = effects.
     #[expect(dead_code)]
-    SetMix {
-        slot: usize,
-        value: f32,
-    },
+    SetMix { slot: usize, value: f32 },
 }
 
 /// A plugin chain: one instrument followed by zero or more effects in series.
@@ -124,7 +116,10 @@ impl PluginChain {
     pub fn drain_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
             match cmd {
-                ChainCommand::SwapInstrument { instrument: new_inst, inst_buf } => {
+                ChainCommand::SwapInstrument {
+                    instrument: new_inst,
+                    inst_buf,
+                } => {
                     self.inst_buf = inst_buf;
 
                     if let Some(old) = self.instrument.replace(new_inst) {
@@ -269,8 +264,7 @@ impl PluginChain {
                     let dry = 1.0 - mix;
                     for ch in 0..self.num_channels {
                         for i in 0..frames {
-                            self.buf_b[ch][i] =
-                                self.buf_a[ch][i] * dry + self.buf_b[ch][i] * mix;
+                            self.buf_b[ch][i] = self.buf_a[ch][i] * dry + self.buf_b[ch][i] * mix;
                         }
                     }
                 }
@@ -287,8 +281,7 @@ impl PluginChain {
                     let dry = 1.0 - mix;
                     for ch in 0..self.num_channels {
                         for i in 0..frames {
-                            self.buf_a[ch][i] =
-                                self.buf_b[ch][i] * dry + self.buf_a[ch][i] * mix;
+                            self.buf_a[ch][i] = self.buf_b[ch][i] * dry + self.buf_a[ch][i] * mix;
                         }
                     }
                 }
@@ -318,13 +311,21 @@ mod tests {
 
     macro_rules! mock_plugin_boilerplate {
         () => {
-            fn sample_rate(&self) -> f32 { 48000.0 }
-            fn parameters(&self) -> Vec<ParameterInfo> { Vec::new() }
-            fn get_parameter(&mut self, _: u32) -> Option<f32> { None }
+            fn sample_rate(&self) -> f32 {
+                48000.0
+            }
+            fn parameters(&self) -> Vec<ParameterInfo> {
+                Vec::new()
+            }
+            fn get_parameter(&mut self, _: u32) -> Option<f32> {
+                None
+            }
             fn set_parameter(&mut self, i: u32, _: f32) -> anyhow::Result<()> {
                 anyhow::bail!("no parameter {i}")
             }
-            fn presets(&self) -> Vec<Preset> { Vec::new() }
+            fn presets(&self) -> Vec<Preset> {
+                Vec::new()
+            }
             fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
                 anyhow::bail!("no preset {id}")
             }
@@ -340,18 +341,34 @@ mod tests {
 
     impl ConstInstrument {
         fn new(value: f32) -> Box<dyn Plugin> {
-            Box::new(Self { value, num_outputs: 2, has_note: false })
+            Box::new(Self {
+                value,
+                num_outputs: 2,
+                has_note: false,
+            })
         }
         fn with_outputs(value: f32, num_outputs: usize) -> Box<dyn Plugin> {
-            Box::new(Self { value, num_outputs, has_note: false })
+            Box::new(Self {
+                value,
+                num_outputs,
+                has_note: false,
+            })
         }
     }
 
     impl Plugin for ConstInstrument {
-        fn name(&self) -> &str { "ConstInstrument" }
-        fn is_instrument(&self) -> bool { true }
-        fn audio_output_count(&self) -> usize { self.num_outputs }
-        fn audio_input_count(&self) -> usize { 0 }
+        fn name(&self) -> &str {
+            "ConstInstrument"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn audio_output_count(&self) -> usize {
+            self.num_outputs
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
 
         fn process(
             &mut self,
@@ -380,10 +397,18 @@ mod tests {
     struct PassthroughEffect;
 
     impl Plugin for PassthroughEffect {
-        fn name(&self) -> &str { "Passthrough" }
-        fn is_instrument(&self) -> bool { false }
-        fn audio_output_count(&self) -> usize { 2 }
-        fn audio_input_count(&self) -> usize { 2 }
+        fn name(&self) -> &str {
+            "Passthrough"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
 
         fn process(
             &mut self,
@@ -404,10 +429,18 @@ mod tests {
     struct ScaleEffect(f32);
 
     impl Plugin for ScaleEffect {
-        fn name(&self) -> &str { "Scale" }
-        fn is_instrument(&self) -> bool { false }
-        fn audio_output_count(&self) -> usize { 2 }
-        fn audio_input_count(&self) -> usize { 2 }
+        fn name(&self) -> &str {
+            "Scale"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
 
         fn process(
             &mut self,
@@ -430,10 +463,18 @@ mod tests {
     struct OffsetEffect(f32);
 
     impl Plugin for OffsetEffect {
-        fn name(&self) -> &str { "Offset" }
-        fn is_instrument(&self) -> bool { false }
-        fn audio_output_count(&self) -> usize { 2 }
-        fn audio_input_count(&self) -> usize { 2 }
+        fn name(&self) -> &str {
+            "Offset"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
 
         fn process(
             &mut self,
@@ -454,14 +495,20 @@ mod tests {
 
     // -- helpers --
 
-    fn make_chain(num_channels: usize) -> (
+    fn make_chain(
+        num_channels: usize,
+    ) -> (
         PluginChain,
         crossbeam_channel::Sender<ChainCommand>,
         crossbeam_channel::Receiver<Box<dyn Plugin>>,
     ) {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
-        (PluginChain::new(num_channels, cmd_rx, return_tx), cmd_tx, return_rx)
+        (
+            PluginChain::new(num_channels, cmd_rx, return_tx),
+            cmd_tx,
+            return_rx,
+        )
     }
 
     fn make_output() -> Vec<Vec<f32>> {
@@ -478,7 +525,12 @@ mod tests {
 
     fn swap_instrument(cmd_tx: &crossbeam_channel::Sender<ChainCommand>, inst: Box<dyn Plugin>) {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
-        cmd_tx.send(ChainCommand::SwapInstrument { instrument: inst, inst_buf }).unwrap();
+        cmd_tx
+            .send(ChainCommand::SwapInstrument {
+                instrument: inst,
+                inst_buf,
+            })
+            .unwrap();
     }
 
     fn insert_effect(
@@ -487,7 +539,9 @@ mod tests {
         effect: Box<dyn Plugin>,
         mix: f64,
     ) {
-        cmd_tx.send(ChainCommand::InsertEffect { index, effect, mix }).unwrap();
+        cmd_tx
+            .send(ChainCommand::InsertEffect { index, effect, mix })
+            .unwrap();
     }
 
     // -- tests --
@@ -639,7 +693,9 @@ mod tests {
         assert!(out[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));
 
         // Remove the effect — should go back to direct instrument output
-        cmd_tx.send(ChainCommand::RemoveEffect { index: 0 }).unwrap();
+        cmd_tx
+            .send(ChainCommand::RemoveEffect { index: 0 })
+            .unwrap();
 
         let mut out = make_output();
         chain.process(&[note_on(60)], &mut out).unwrap();
@@ -660,7 +716,9 @@ mod tests {
 
         // Move Scale from index 0 to index 1 → [Offset(0.5), Scale(2.0)]
         // (1.0 + 0.5) * 2.0 = 3.0
-        cmd_tx.send(ChainCommand::ReorderEffect { from: 0, to: 1 }).unwrap();
+        cmd_tx
+            .send(ChainCommand::ReorderEffect { from: 0, to: 1 })
+            .unwrap();
 
         let mut out = make_output();
         chain.process(&[note_on(60)], &mut out).unwrap();
@@ -673,10 +731,18 @@ mod tests {
         struct MonoEffect;
 
         impl Plugin for MonoEffect {
-            fn name(&self) -> &str { "MonoEffect" }
-            fn is_instrument(&self) -> bool { false }
-            fn audio_output_count(&self) -> usize { 1 }
-            fn audio_input_count(&self) -> usize { 1 }
+            fn name(&self) -> &str {
+                "MonoEffect"
+            }
+            fn is_instrument(&self) -> bool {
+                false
+            }
+            fn audio_output_count(&self) -> usize {
+                1
+            }
+            fn audio_input_count(&self) -> usize {
+                1
+            }
 
             fn process(
                 &mut self,

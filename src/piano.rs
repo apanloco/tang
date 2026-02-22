@@ -134,8 +134,7 @@ impl VirtualPiano {
             _ => return None,
         };
 
-        let midi_note =
-            (self.base_octave as i16 + octave_offset) * 12 + semitone_offset as i16;
+        let midi_note = (self.base_octave as i16 + octave_offset) * 12 + semitone_offset as i16;
 
         if (0..=127).contains(&midi_note) {
             Some(midi_note as u8)

@@ -10,9 +10,8 @@ use clack_extensions::params::{
 };
 use clack_extensions::preset_discovery::HostPresetLoadImpl;
 use clack_extensions::preset_discovery::prelude::{
-    Flags, FileType, HostPresetLoad, IndexerImpl, Location, LocationInfo,
-    MetadataReceiverImpl, PluginPresetLoad, PresetDiscoveryFactory, Provider, Soundpack, Timestamp,
-    UniversalPluginId,
+    FileType, Flags, HostPresetLoad, IndexerImpl, Location, LocationInfo, MetadataReceiverImpl,
+    PluginPresetLoad, PresetDiscoveryFactory, Provider, Soundpack, Timestamp, UniversalPluginId,
 };
 use clack_host::events::event_types::ParamValueEvent;
 use clack_host::prelude::*;
@@ -78,9 +77,7 @@ impl HostPresetLoadImpl for TangHostMainThread {
         os_error: i32,
         message: Option<&CStr>,
     ) {
-        log::warn!(
-            "CLAP preset load error: os_error={os_error}, message={message:?}"
-        );
+        log::warn!("CLAP preset load error: os_error={os_error}, message={message:?}");
     }
     fn loaded(&mut self, _location: Location, _load_key: Option<&CStr>) {
         log::info!("CLAP preset loaded successfully");
@@ -403,8 +400,8 @@ fn scan_bundle(path: &Path) -> Option<Vec<PluginInfo>> {
     let bundle = unsafe { PluginBundle::load(path) }.ok()?;
     let factory = bundle.get_plugin_factory()?;
 
-    let host_info = HostInfo::new("tang", "akerud", "https://github.com/akerud/tang", "0.1.0")
-        .ok()?;
+    let host_info =
+        HostInfo::new("tang", "akerud", "https://github.com/akerud/tang", "0.1.0").ok()?;
 
     let mut found = Vec::new();
     for descriptor in factory.plugin_descriptors() {
@@ -575,8 +572,7 @@ pub fn load(
         discover_presets(&bundle, &host_info).into_iter().unzip();
 
     // Query preset load extension
-    let preset_load_ext: Option<PluginPresetLoad> =
-        instance.plugin_shared_handle().get_extension();
+    let preset_load_ext: Option<PluginPresetLoad> = instance.plugin_shared_handle().get_extension();
 
     log::info!(
         "Loaded CLAP plugin: {name} (instrument={is_instrument}, output_channels={audio_out_channel_count}, params={}, presets={})",
@@ -747,21 +743,17 @@ impl Plugin for ClapPlugin {
         // Push pending parameter changes into the event buffer
         self.event_buffer.clear();
         for (param_id, value) in self.pending_param_changes.drain(..) {
-            let event = ParamValueEvent::new(0, param_id, Pckn::match_all(), value, Cookie::empty());
+            let event =
+                ParamValueEvent::new(0, param_id, Pckn::match_all(), value, Cookie::empty());
             self.event_buffer.push(&event);
         }
 
         // Convert MIDI events to clack MidiEvent and push to event buffer
         for (timestamp, bytes) in midi_events {
-            let midi = clack_host::events::event_types::MidiEvent::new(
-                *timestamp as u32,
-                0,
-                *bytes,
-            );
+            let midi =
+                clack_host::events::event_types::MidiEvent::new(*timestamp as u32, 0, *bytes);
             self.event_buffer.push(&midi);
-            log::debug!(
-                "CLAP: pushed MIDI event t={timestamp} data={bytes:02x?}",
-            );
+            log::debug!("CLAP: pushed MIDI event t={timestamp} data={bytes:02x?}",);
         }
 
         // Resize per-channel output buffers
@@ -784,7 +776,8 @@ impl Plugin for ClapPlugin {
             let (port_slices, rest) = remainder.split_at_mut(ch_count as usize);
             remainder = rest;
             // Take ownership of the &mut [f32] references out of the slice
-            let channel_slices: Vec<&mut [f32]> = port_slices.iter_mut().map(|s| &mut **s).collect();
+            let channel_slices: Vec<&mut [f32]> =
+                port_slices.iter_mut().map(|s| &mut **s).collect();
             port_buffers.push(AudioPortBuffer {
                 latency: 0,
                 channels: AudioPortBufferType::f32_output_only(channel_slices),

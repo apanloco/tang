@@ -3,8 +3,12 @@ name = "tang"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["lv2"]
+lv2 = ["dep:livi"]
+
 [dependencies]
-livi = "0.7"
+livi = { version = "0.7", optional = true }
 cpal = "0.15"
 midir = "0.10"
 crossbeam-channel = "0.5"

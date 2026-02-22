@@ -251,10 +251,15 @@ How Tang handles common plugin I/O mismatches:
 
 ## Platform
 
-Cross-platform: Linux, macOS, Windows. All core crates (cpal, midir, livi, crossterm) support all three.
+Cross-platform: Linux, macOS, Windows.
 
-TODO: Windows support is untested. The clack crates support Windows but Tang has not been
-built or tested there yet.
+LV2 support is behind the `lv2` Cargo feature (enabled by default). The LV2
+dependency chain (livi → lilv → lilv-sys) requires system C libraries that are
+only readily available on Linux. macOS and Windows builds use
+`cargo build --no-default-features` for CLAP-only mode.
+
+CI runs clippy + tests on all three platforms (Linux with LV2, macOS/Windows
+without).
 
 ## Future ideas
 

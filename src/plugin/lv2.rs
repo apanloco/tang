@@ -286,18 +286,15 @@ impl Plugin for Lv2Plugin {
     ) -> anyhow::Result<()> {
         self.event_buf.clear();
         for (timestamp, bytes) in midi_events {
-            match self.event_buf.push_midi_event::<3>(
-                *timestamp as i64,
-                self.midi_urid,
-                bytes,
-            ) {
+            match self
+                .event_buf
+                .push_midi_event::<3>(*timestamp as i64, self.midi_urid, bytes)
+            {
                 Ok(()) => log::debug!(
                     "LV2: pushed MIDI event t={timestamp} len={} data={bytes:02x?}",
                     bytes.len()
                 ),
-                Err(e) => log::debug!(
-                    "LV2: failed to push MIDI event: {e:?} data={bytes:02x?}"
-                ),
+                Err(e) => log::debug!("LV2: failed to push MIDI event: {e:?} data={bytes:02x?}"),
             }
         }
 
@@ -364,8 +361,7 @@ impl Plugin for Lv2Plugin {
     }
 
     fn get_parameter(&mut self, index: u32) -> Option<f32> {
-        self.instance
-            .control_input(livi::PortIndex(index as usize))
+        self.instance.control_input(livi::PortIndex(index as usize))
     }
 
     fn set_parameter(&mut self, index: u32, value: f32) -> anyhow::Result<()> {
