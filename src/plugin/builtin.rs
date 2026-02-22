@@ -60,16 +60,12 @@ impl Plugin for SineOscillator {
             }
         }
 
-        // Sort events by sample offset for correct per-sample processing
-        let mut events: Vec<&(u64, [u8; 3])> = midi_events.iter().collect();
-        events.sort_by_key(|(offset, _)| *offset);
-
         let mut event_idx = 0;
 
         for frame in 0..block_size {
             // Process MIDI events at this frame
-            while event_idx < events.len() && events[event_idx].0 as usize <= frame {
-                let [status, note, velocity] = events[event_idx].1;
+            while event_idx < midi_events.len() && midi_events[event_idx].0 as usize <= frame {
+                let [status, note, velocity] = midi_events[event_idx].1;
                 let msg_type = status & 0xF0;
                 match msg_type {
                     0x90 if velocity > 0 => {
