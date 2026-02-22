@@ -33,7 +33,7 @@ pub fn audio() -> anyhow::Result<()> {
         })
         .collect();
 
-    drop(stderr_guard);
+    let _ = stderr_guard;
 
     println!("=== Audio Output Devices ===");
     if devices.is_empty() {

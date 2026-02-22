@@ -249,6 +249,12 @@ How Tang handles common plugin I/O mismatches:
   channel count. The instrument may have more outputs (they get truncated), but
   effects cannot exceed the instrument's count.
 
+## TUI framework
+
+The TUI is built on ratatui 0.30 with the crossterm backend. We target the
+latest ratatui release and adopt new APIs as they become available. When
+upgrading ratatui, update this version note.
+
 ## Platform
 
 Cross-platform: Linux, macOS, Windows.

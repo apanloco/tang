@@ -75,7 +75,9 @@ impl MidiManager {
                     if !bytes.is_empty() && bytes.len() <= 3 {
                         let mut buf = [0u8; 3];
                         buf[..bytes.len()].copy_from_slice(bytes);
-                        let _ = sender.send((0, buf));
+                        if sender.try_send((0, buf)).is_err() {
+                            log::warn!("MIDI channel full — dropping event from {log_name}");
+                        }
                     }
                 },
                 (),
