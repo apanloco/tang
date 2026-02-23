@@ -97,39 +97,38 @@ fn vst3_search_paths() -> Vec<PathBuf> {
 
 /// Resolve a .vst3 bundle to its platform-specific shared library path.
 fn bundle_binary_path(bundle: &Path) -> PathBuf {
+    let stem = bundle
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
     #[cfg(target_os = "linux")]
     {
-        let stem = bundle
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "aarch64-linux",
+            _ => "x86_64-linux",
+        };
         bundle
             .join("Contents")
-            .join("x86_64-linux")
+            .join(arch)
             .join(format!("{stem}.so"))
     }
 
     #[cfg(target_os = "macos")]
     {
-        let stem = bundle
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
         bundle.join("Contents").join("MacOS").join(stem)
     }
 
     #[cfg(target_os = "windows")]
     {
-        let stem = bundle
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "aarch64-win",
+            _ => "x86_64-win",
+        };
         bundle
             .join("Contents")
-            .join("x86_64-win")
+            .join(arch)
             .join(format!("{stem}.vst3"))
     }
 }
