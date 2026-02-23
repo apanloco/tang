@@ -69,7 +69,13 @@ impl MidiManager {
                         _ => "Other  ",
                     };
                     let ch = status & 0x0F;
-                    log::info!("MIDI in  [{log_name}] {kind} ch={ch} data={bytes:02x?}");
+                    let note_info = match status & 0xF0 {
+                        0x90 | 0x80 if bytes.len() >= 2 => {
+                            format!(" {}", crate::note_name(bytes[1]))
+                        }
+                        _ => String::new(),
+                    };
+                    log::info!("MIDI in  [{log_name}] {kind} ch={ch}{note_info} data={bytes:02x?}");
                     // Timestamp 0 = place at start of next buffer
                     // Copy into fixed [u8; 3] — skip messages longer than 3 bytes (e.g. SysEx)
                     if !bytes.is_empty() && bytes.len() <= 3 {

@@ -1,11 +1,169 @@
+use std::collections::HashMap;
 use std::mem::MaybeUninit;
 
 use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
+use crate::session::{self, RemapTarget};
 
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
+
+/// Pre-computed remap entry for a single note.
+#[derive(Debug, Clone)]
+struct RemapEntry {
+    target_note: u8,
+    channel: u8,
+    pitch_bend_lsb: u8,
+    pitch_bend_msb: u8,
+}
+
+/// Remaps specific MIDI notes to different notes on separate channels with pitch bend.
+///
+/// Normal notes pass through on channel 1 (status nibble 0x00).
+/// Remapped notes are rewritten to a target note on channels 2-16, with a pitch bend
+/// message inserted before each note-on to shift the pitch to the correct frequency.
+#[derive(Debug, Clone)]
+pub struct NoteRemapper {
+    table: HashMap<u8, RemapEntry>,
+}
+
+impl NoteRemapper {
+    /// Build a remapper from the session config.
+    ///
+    /// Groups entries by detune value and assigns MIDI channels 1-15 (status nibble 0x01-0x0F,
+    /// i.e. MIDI channels 2-16). Returns an error if detune exceeds pitch_bend_range or if
+    /// there are more than 15 distinct detune values.
+    pub fn from_config(
+        remap: &HashMap<String, RemapTarget>,
+        pitch_bend_range: f64,
+    ) -> anyhow::Result<Self> {
+        if remap.is_empty() {
+            return Ok(NoteRemapper {
+                table: HashMap::new(),
+            });
+        }
+
+        // Group by detune value to assign channels. Use ordered floats as keys.
+        // We use a Vec to maintain insertion order and dedup by approximate equality.
+        let mut detune_channels: Vec<(f64, u8)> = Vec::new();
+
+        let mut table = HashMap::new();
+
+        // First pass: collect all distinct detune values
+        for target in remap.values() {
+            if target.detune.abs() > pitch_bend_range {
+                anyhow::bail!(
+                    "detune {:.1} exceeds pitch_bend_range ±{:.1}",
+                    target.detune,
+                    pitch_bend_range
+                );
+            }
+            let existing = detune_channels
+                .iter()
+                .find(|(d, _)| (*d - target.detune).abs() < 1e-9);
+            if existing.is_none() {
+                if detune_channels.len() >= 15 {
+                    anyhow::bail!(
+                        "too many distinct detune values (max 15, MIDI channels 2-16)"
+                    );
+                }
+                // Channel status nibble: 0x01 for ch2, 0x02 for ch3, etc.
+                let ch = detune_channels.len() as u8 + 1;
+                detune_channels.push((target.detune, ch));
+            }
+        }
+
+        // Second pass: build the lookup table
+        for (source_name, target) in remap {
+            let source_note = session::parse_note_name(source_name)?;
+            let target_note = session::parse_note_name(&target.note)?;
+
+            let &(_, channel) = detune_channels
+                .iter()
+                .find(|(d, _)| (*d - target.detune).abs() < 1e-9)
+                .unwrap();
+
+            // Pre-compute pitch bend: center is 8192, range maps to ±pitch_bend_range semitones
+            let bend_value =
+                (8192.0 + (target.detune / pitch_bend_range) * 8191.0).round() as i32;
+            let bend_clamped = bend_value.clamp(0, 16383) as u16;
+            let lsb = (bend_clamped & 0x7F) as u8;
+            let msb = ((bend_clamped >> 7) & 0x7F) as u8;
+
+            table.insert(
+                source_note,
+                RemapEntry {
+                    target_note,
+                    channel,
+                    pitch_bend_lsb: lsb,
+                    pitch_bend_msb: msb,
+                },
+            );
+        }
+
+        Ok(NoteRemapper { table })
+    }
+
+    /// Remap MIDI events, writing results into the provided buffer.
+    /// For remapped note-on events, a pitch bend message is inserted before the note-on.
+    /// For remapped note-off events, the note and channel are rewritten.
+    /// All other events pass through unchanged.
+    pub fn remap_events(
+        &self,
+        input: &[(u64, [u8; 3])],
+        output: &mut Vec<(u64, [u8; 3])>,
+    ) {
+        output.clear();
+        for &(frame, bytes) in input {
+            let status_type = bytes[0] & 0xF0;
+            let note = bytes[1];
+
+            match status_type {
+                0x90 if bytes[2] > 0 => {
+                    // Note-on
+                    if let Some(entry) = self.table.get(&note) {
+                        log::info!(
+                            "Remap: NoteOn {} → {} ch={} bend=({},{})",
+                            note, entry.target_note, entry.channel + 1,
+                            entry.pitch_bend_lsb, entry.pitch_bend_msb,
+                        );
+                        // Rewritten note-on on remapped channel
+                        output.push((
+                            frame,
+                            [0x90 | entry.channel, entry.target_note, bytes[2]],
+                        ));
+                        // Pitch bend after note-on
+                        output.push((
+                            frame,
+                            [0xE0 | entry.channel, entry.pitch_bend_lsb, entry.pitch_bend_msb],
+                        ));
+                    } else {
+                        output.push((frame, bytes));
+                    }
+                }
+                0x80 | 0x90 => {
+                    // Note-off (0x80 or 0x90 with velocity 0)
+                    if let Some(entry) = self.table.get(&note) {
+                        log::info!(
+                            "Remap: NoteOff {} → {} ch={}",
+                            note, entry.target_note, entry.channel + 1,
+                        );
+                        output.push((
+                            frame,
+                            [(status_type) | entry.channel, entry.target_note, bytes[2]],
+                        ));
+                    } else {
+                        output.push((frame, bytes));
+                    }
+                }
+                _ => {
+                    output.push((frame, bytes));
+                }
+            }
+        }
+    }
+}
 
 /// Build `&mut [&mut [f32]]` on the stack from `&mut [Vec<f32>]`.
 ///
@@ -47,6 +205,8 @@ pub enum ChainCommand {
         instrument: Box<dyn Plugin>,
         /// Pre-allocated inst_buf (built on main thread to avoid audio-thread allocation).
         inst_buf: Vec<Vec<f32>>,
+        /// Optional note remapper for pitch-bend-based note substitution.
+        remapper: Option<NoteRemapper>,
     },
     InsertEffect {
         index: usize,
@@ -83,6 +243,8 @@ pub struct PluginChain {
     num_channels: usize,
     command_rx: Receiver<ChainCommand>,
     return_tx: Sender<Box<dyn Plugin>>,
+    note_remapper: Option<NoteRemapper>,
+    remapped_events: Vec<(u64, [u8; 3])>,
 }
 
 impl PluginChain {
@@ -105,6 +267,8 @@ impl PluginChain {
             num_channels,
             command_rx,
             return_tx,
+            note_remapper: None,
+            remapped_events: Vec::with_capacity(128),
         }
     }
 
@@ -119,8 +283,10 @@ impl PluginChain {
                 ChainCommand::SwapInstrument {
                     instrument: new_inst,
                     inst_buf,
+                    remapper,
                 } => {
                     self.inst_buf = inst_buf;
+                    self.note_remapper = remapper;
 
                     if let Some(old) = self.instrument.replace(new_inst) {
                         let _ = self.return_tx.try_send(old);
@@ -192,6 +358,14 @@ impl PluginChain {
     ) -> anyhow::Result<()> {
         self.drain_commands();
 
+        // Apply note remapping if configured
+        let effective_events: &[(u64, [u8; 3])] = if let Some(ref remapper) = self.note_remapper {
+            remapper.remap_events(midi_events, &mut self.remapped_events);
+            &self.remapped_events
+        } else {
+            midi_events
+        };
+
         let instrument = match self.instrument.as_mut() {
             Some(inst) => inst,
             None => {
@@ -210,7 +384,7 @@ impl PluginChain {
             // Fast path: instrument output fits in audio_out, no effects
             let mut storage = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
             let out_refs = mut_slices(audio_out, &mut storage);
-            return instrument.process(midi_events, &[], out_refs);
+            return instrument.process(effective_events, &[], out_refs);
         }
 
         // Resize inst_buf (may have more channels than the chain for multi-output instruments)
@@ -223,7 +397,7 @@ impl PluginChain {
         {
             let mut storage = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
             let refs = mut_slices(&mut self.inst_buf, &mut storage);
-            instrument.process(midi_events, &[], refs)?;
+            instrument.process(effective_events, &[], refs)?;
         }
 
         if self.effects.is_empty() {
@@ -529,6 +703,7 @@ mod tests {
             .send(ChainCommand::SwapInstrument {
                 instrument: inst,
                 inst_buf,
+                remapper: None,
             })
             .unwrap();
     }
@@ -773,5 +948,194 @@ mod tests {
         let returned = return_rx.try_recv();
         assert!(returned.is_ok());
         assert_eq!(returned.unwrap().name(), "MonoEffect");
+    }
+
+    // -- NoteRemapper tests --
+
+    fn make_remap(
+        entries: &[(&str, &str, f64)],
+    ) -> HashMap<String, crate::session::RemapTarget> {
+        entries
+            .iter()
+            .map(|(src, dst, detune)| {
+                (
+                    src.to_string(),
+                    crate::session::RemapTarget {
+                        note: dst.to_string(),
+                        detune: *detune,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn remapper_from_config_valid() {
+        let remap = make_remap(&[("G#4", "G4", 1.0), ("C#2", "D2", -0.5)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        // G#4 = 68, C#2 = 37 — both should be in the table
+        assert!(remapper.table.contains_key(&68));
+        assert!(remapper.table.contains_key(&37));
+    }
+
+    #[test]
+    fn remapper_remap_note_on() {
+        // Remap G#4 (68) → G4 (67) with +1 semitone detune
+        let remap = make_remap(&[("G#4", "G4", 1.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+
+        let input = vec![(0u64, [0x90u8, 68, 100])]; // note-on G#4
+        let mut output = Vec::new();
+        remapper.remap_events(&input, &mut output);
+
+        // Should produce: remapped note-on + pitch bend
+        assert_eq!(output.len(), 2);
+        // First event: note-on for G4 (67) on channel 2
+        assert_eq!(output[0].1[0], 0x91); // note-on ch2
+        assert_eq!(output[0].1[1], 67); // G4
+        assert_eq!(output[0].1[2], 100); // velocity preserved
+        // Second event: pitch bend on channel 2 (status 0xE1)
+        assert_eq!(output[1].1[0] & 0xF0, 0xE0);
+        assert_eq!(output[1].1[0] & 0x0F, 1); // channel 2 = nibble 0x01
+    }
+
+    #[test]
+    fn remapper_remap_note_off() {
+        let remap = make_remap(&[("G#4", "G4", 1.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+
+        let input = vec![(0u64, [0x80u8, 68, 0])]; // note-off G#4
+        let mut output = Vec::new();
+        remapper.remap_events(&input, &mut output);
+
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].1[0], 0x81); // note-off ch2
+        assert_eq!(output[0].1[1], 67); // G4
+    }
+
+    #[test]
+    fn remapper_passthrough_non_remapped() {
+        let remap = make_remap(&[("G#4", "G4", 1.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+
+        // C4 (60) is NOT remapped — should pass through unchanged
+        let input = vec![(0u64, [0x90u8, 60, 100])];
+        let mut output = Vec::new();
+        remapper.remap_events(&input, &mut output);
+
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].1, [0x90, 60, 100]);
+    }
+
+    #[test]
+    fn remapper_passthrough_non_note_events() {
+        let remap = make_remap(&[("G#4", "G4", 1.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+
+        // CC message — should pass through unchanged
+        let input = vec![(0u64, [0xB0u8, 64, 127])];
+        let mut output = Vec::new();
+        remapper.remap_events(&input, &mut output);
+
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].1, [0xB0, 64, 127]);
+    }
+
+    #[test]
+    fn remapper_pitch_bend_bytes_center() {
+        // Detune 0.0 → pitch bend = 8192 (center)
+        let remap = make_remap(&[("C4", "C4", 0.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        let entry = &remapper.table[&60];
+        // 8192 = 0b10_0000_0000000 → LSB = 0, MSB = 64
+        assert_eq!(entry.pitch_bend_lsb, 0);
+        assert_eq!(entry.pitch_bend_msb, 64);
+    }
+
+    #[test]
+    fn remapper_pitch_bend_bytes_max() {
+        // Detune +2.0 with range 2.0 → pitch bend = 8192 + 8191 = 16383
+        let remap = make_remap(&[("C4", "C4", 2.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        let entry = &remapper.table[&60];
+        // 16383 = 0x3FFF → LSB = 127, MSB = 127
+        assert_eq!(entry.pitch_bend_lsb, 127);
+        assert_eq!(entry.pitch_bend_msb, 127);
+    }
+
+    #[test]
+    fn remapper_pitch_bend_bytes_min() {
+        // Detune -2.0 with range 2.0 → pitch bend = 8192 - 8191 = 1
+        let remap = make_remap(&[("C4", "C4", -2.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        let entry = &remapper.table[&60];
+        // 1 = 0b00_0000_0000001 → LSB = 1, MSB = 0
+        assert_eq!(entry.pitch_bend_lsb, 1);
+        assert_eq!(entry.pitch_bend_msb, 0);
+    }
+
+    #[test]
+    fn remapper_shared_detune_shares_channel() {
+        // Two notes with the same detune should share a MIDI channel
+        let remap = make_remap(&[("C4", "B3", 1.0), ("D4", "C#4", 1.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        assert_eq!(remapper.table[&60].channel, remapper.table[&62].channel);
+    }
+
+    #[test]
+    fn remapper_different_detune_different_channels() {
+        let remap = make_remap(&[("C4", "B3", 1.0), ("D4", "C#4", -0.5)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        assert_ne!(remapper.table[&60].channel, remapper.table[&62].channel);
+    }
+
+    #[test]
+    fn remapper_error_detune_exceeds_range() {
+        let remap = make_remap(&[("C4", "B3", 3.0)]);
+        let result = NoteRemapper::from_config(&remap, 2.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn remapper_error_too_many_detune_values() {
+        // 16 distinct detune values should fail (max 15)
+        let notes = [
+            "C2", "C#2", "D2", "D#2", "E2", "F2", "F#2", "G2", "G#2", "A2", "A#2", "B2", "C3",
+            "C#3", "D3", "D#3",
+        ];
+        let entries: Vec<(&str, &str, f64)> = notes
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| (n, n, (i as f64 + 1.0) * 0.1))
+            .collect();
+        let remap = make_remap(&entries);
+        let result = NoteRemapper::from_config(&remap, 10.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too many"));
+    }
+
+    #[test]
+    fn remapper_integration_with_chain() {
+        // Integration test: remap G#4→G4 with pitch bend, verify instrument sees remapped events
+        let remap = make_remap(&[("G#4", "G4", 1.0)]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+
+        let (mut chain, cmd_tx, _) = make_chain(2);
+        let inst = ConstInstrument::new(0.75);
+        let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx
+            .send(ChainCommand::SwapInstrument {
+                instrument: inst,
+                inst_buf,
+                remapper: Some(remapper),
+            })
+            .unwrap();
+
+        let mut out = make_output();
+        // Send note-on for G#4 (68) — should be remapped to G4 (67) on ch2
+        // ConstInstrument responds to any note-on, so we just verify it produces output
+        chain.process(&[note_on(68)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 0.75));
     }
 }

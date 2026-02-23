@@ -5,6 +5,12 @@ use serde::Deserialize;
 
 use crate::plugin::Plugin;
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct RemapTarget {
+    pub note: String,
+    pub detune: f64,
+}
+
 #[derive(Deserialize)]
 pub struct SessionConfig {
     pub instrument: PluginConfig,
@@ -16,8 +22,16 @@ pub struct SessionConfig {
 pub struct PluginConfig {
     pub plugin: String,
     pub preset: Option<String>,
+    #[serde(default = "default_pitch_bend_range")]
+    pub pitch_bend_range: f64,
+    #[serde(default)]
+    pub remap: HashMap<String, RemapTarget>,
     #[serde(default)]
     pub params: HashMap<String, f64>,
+}
+
+fn default_pitch_bend_range() -> f64 {
+    2.0
 }
 
 #[derive(Deserialize)]
@@ -55,6 +69,45 @@ pub fn resolve_plugin_path(plugin_source: &str, session_dir: &Path) -> String {
         .join(plugin_source)
         .to_string_lossy()
         .to_string()
+}
+
+/// Parse a note name like "C4", "G#3", "Bb5" into a MIDI note number.
+/// C4 = 60, A0 = 21. Formula: (octave + 1) * 12 + semitone.
+pub fn parse_note_name(name: &str) -> anyhow::Result<u8> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() {
+        anyhow::bail!("empty note name");
+    }
+
+    let letter = bytes[0].to_ascii_uppercase();
+    let semitone_base = match letter {
+        b'C' => 0,
+        b'D' => 2,
+        b'E' => 4,
+        b'F' => 5,
+        b'G' => 7,
+        b'A' => 9,
+        b'B' => 11,
+        _ => anyhow::bail!("invalid note letter '{}'", bytes[0] as char),
+    };
+
+    let (accidental, rest) = if bytes.len() > 1 && bytes[1] == b'#' {
+        (1i8, &name[2..])
+    } else if bytes.len() > 1 && bytes[1] == b'b' {
+        (-1i8, &name[2..])
+    } else {
+        (0i8, &name[1..])
+    };
+
+    let octave: i8 = rest
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid octave in note name '{name}'"))?;
+
+    let note = (octave as i16 + 1) * 12 + semitone_base as i16 + accidental as i16;
+    if !(0..=127).contains(&note) {
+        anyhow::bail!("note '{name}' is out of MIDI range (0-127)");
+    }
+    Ok(note as u8)
 }
 
 /// Apply a preset to a loaded plugin (no parameter overrides).

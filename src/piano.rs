@@ -145,10 +145,5 @@ impl VirtualPiano {
 }
 
 fn note_name(note: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let octave = (note / 12) as i8 - 1;
-    let name = NAMES[(note % 12) as usize];
-    format!("{name}{octave}")
+    crate::note_name(note)
 }

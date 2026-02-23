@@ -24,7 +24,7 @@ TODO: TUI not yet implemented.
 
 ## Flags
 
-These flags apply to the `play` subcommand:
+These flags apply to both the TUI and the `play` subcommand:
 
 | Flag | Default | Effect |
 |------|---------|--------|
@@ -34,8 +34,9 @@ These flags apply to the `play` subcommand:
 | `--sample-rate <hz>` | 48000 | Sample rate |
 
 The `play` subcommand takes the session path as a required positional argument.
-The TUI (when implemented) will use `~/.config/tang/default.toml` as the default
-session, creating an empty one if it does not exist.
+The TUI uses `~/.config/tang/default.toml` as the default session. If the file
+does not exist, Tang creates it with `builtin:sine` as the instrument and no
+effects.
 
 ## Subcommands
 
@@ -48,6 +49,7 @@ one of `plugins`, `builtins`, `midi`, or `audio`.
 No editing, no TUI.
 Keyboard acts as a virtual piano (Amiga tracker layout).
 Logs MIDI events and audio info to the screen.
+TODO: Remove once the TUI is functional.
 
 ## Session config
 
@@ -67,6 +69,7 @@ Example session config:
 [instrument]
 plugin = "lv2:http://tytel.org/helm"
 preset = "COA Crispy Pad Organ"
+volume = 0.8
 
 [instrument.params]
 "reverb_on" = 1.0
@@ -93,10 +96,55 @@ Each plugin slot has:
 - `preset` — preset name to load (optional)
 - `params` — parameter overrides applied after preset (optional)
 
+The instrument additionally has:
+- `volume` — host-side output gain, applied before effects (default: 1.0, uncapped)
+
 Effects additionally have:
 - `mix` — host-side dry/wet blend, 0.0=dry 1.0=wet (default: 1.0)
 
 Load order per plugin: load → preset → params.
+
+## Note remapping
+
+Some instrument plugins have bad samples on certain notes. Note remapping lets
+you substitute a specific key with a nearby note on a separate MIDI channel,
+using pitch bend to shift it to the correct pitch.
+
+### Config syntax
+
+```toml
+[instrument]
+plugin = "lv2:http://tytel.org/helm"
+pitch_bend_range = 2  # optional, default ±2 semitones
+
+[instrument.remap]
+"G#4" = { note = "G4", detune = 1.0 }
+"C#2" = { note = "D2", detune = -0.5 }
+```
+
+- `pitch_bend_range` — the plugin's pitch bend range in semitones (default: 2.0).
+  Must match the plugin's own pitch bend range setting.
+- `[instrument.remap]` — a table of note substitutions. Keys are source note
+  names (`[A-G][#b]?[0-9]`, C4 = middle C = MIDI 60). Each value has:
+  - `note` — the target note name the plugin will actually play
+  - `detune` — pitch bend offset in semitones (e.g. 1.0 = one semitone up)
+
+### How it works
+
+- Normal (non-remapped) notes play on MIDI channel 1 as usual.
+- Each unique detune value is assigned its own MIDI channel (2–16). Notes that
+  share the same detune value share a channel.
+- When a remapped note-on is received, Tang sends the rewritten note-on followed
+  by a pitch bend message on that channel (bend after note-on — some plugins
+  only apply pitch bend to already-sounding notes).
+- Most plugins respond to all MIDI channels by default (omni mode), so no
+  plugin-side configuration is needed beyond setting the pitch bend range.
+
+### Limits
+
+- Maximum 15 distinct detune values (MIDI channels 2–16).
+- Detune must not exceed `pitch_bend_range` (error at load time).
+- Sustain pedal (CC64) only affects channel 1 (non-remapped notes).
 
 ## TUI
 
@@ -104,16 +152,21 @@ TODO: The TUI is not yet implemented. The design below is planned.
 
 The interface is tab-based.
 The status bar at the top shows all tabs with the active one highlighted.
+A clip indicator (`CLIP` in red) appears on the right side of the status bar
+when any audio sample exceeds 1.0. It holds for ~2 seconds after the last
+clipped sample, then disappears. Detection is via an `AtomicBool` set by the
+audio thread and read by the render loop.
 
 ### Tabs
 
 | # | Tab | Description |
 |---|-----|-------------|
 | 1 | Session | Instrument and effects chain editor with parameter control |
-| 2 | Piano | Built-in virtual piano using computer keyboard |
+| 2 | Piano | Virtual piano using computer keyboard |
 | 3 | Oscilloscope | Real-time waveform of audio output |
-| 4 | Debug Log | Scrolling log of MIDI events, audio info, plugin messages |
-| 5 | Help | Keybindings and usage reference |
+| 4 | Help | Keybindings and usage reference (static, scrollable) |
+
+TODO: Oscilloscope tab is a placeholder — not implemented yet.
 
 ### Global keybindings
 
@@ -121,7 +174,7 @@ These work from any tab (except where noted for the Piano tab):
 
 | Key | Action |
 |-----|--------|
-| `1` `2` `3` `4` `5` | Switch to tab by number |
+| `1` `2` `3` `4` | Switch to tab by number |
 | `?` | Jump to Help tab |
 | `Tab` | Next tab |
 | `Shift+Tab` | Previous tab |
@@ -138,33 +191,120 @@ The focused pane is visually distinct so it's always clear which pane is active.
 `Enter` moves focus to the parameter pane, `Esc` moves it back to the chain.
 `Up`/`Down` navigate within whichever pane has focus.
 
+#### Chain (left pane)
+
+Each plugin is rendered as a card. The vertical order follows the signal chain
+(instrument at top, effects below). Each card shows:
+
+- Type prefix and name: `♪ Helm` (instrument) or `fx ACE Reverb` (effect)
+- Format tag: `[LV2]` or `[CLAP]`
+- Preset name below the plugin name (dimmed, if loaded)
+- Instrument: volume bar with value
+- Effects: mix bar with value
+
+The selected card is highlighted. Unselected cards are dimmed.
+
+#### Parameters (right pane)
+
+Shows all parameters for the selected plugin as horizontal bars:
+
+```
+  cutoff          ▓▓▓▓▓▓▓▓░░░░ 0.75
+  resonance       ▓▓▓░░░░░░░░░ 0.25
+▸ attack          ▓░░░░░░░░░░░ 0.05
+  decay           ▓▓▓▓░░░░░░░░ 0.30
+```
+
+The selected parameter is marked with `▸`. The bar shows the parameter's
+position within its min–max range. The numeric value is shown on the right.
+
 | Key | Action |
 |-----|--------|
 | `Down` | Move selection down in focused pane |
 | `Up` | Move selection up in focused pane |
 | `Shift+Down` | Move selected effect down (reorder, focus follows) |
 | `Shift+Up` | Move selected effect up (reorder, focus follows) |
-| `a` | Add plugin (opens selector popup) |
-| `d` | Delete selected plugin |
+| `i` | Replace instrument (opens instrument selector popup) |
+| `a` | Add effect (opens effect selector popup) |
+| `d` | Delete selected plugin (no confirmation) |
+| `p` | Browse presets for selected plugin (opens preset selector popup) |
 | `Enter` | Focus parameter list for selected plugin |
 | `Esc` | Back to chain focus |
 | `Left` / `Right` | Decrease / increase selected parameter |
+| `Shift+Left` / `Shift+Right` | Fine decrease / increase selected parameter |
+| `Ctrl+Left` / `Ctrl+Right` | Coarse decrease / increase selected parameter |
+| `e` | Edit parameter value (opens value entry popup) |
 | `Ctrl+S` | Save session |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves to same directory as current session) |
 
-### Debug Log tab keybindings
+### Plugin selector popup
 
-| Key | Action |
-|-----|--------|
-| `Up` / `Down` | Scroll through log |
-| `End` | Jump to bottom (resume auto-scroll) |
+Opened by `i` (instruments only) or `a` (effects only). Same layout for both,
+filtered by plugin type.
 
-### Piano tab keybindings
+- **Top**: text input for filtering (matches against any column: name, type, etc.)
+- **Below**: table with columns — Name, Format (LV2/CLAP), Params, Presets
+- `Up` / `Down` — navigate rows
+- `Enter` — select plugin and close popup
+- `Escape` — cancel and close popup
+- Typing updates the filter immediately
+
+### Preset selector popup
+
+Opened by `p` on the Session tab.
+
+- **Top**: text input for filtering by name
+- **Below**: single-column list of preset names
+- `Up` / `Down` — navigate rows
+- `Enter` — load preset and close popup
+- `Escape` — cancel and close popup
+
+### Value entry popup
+
+Opened by `e` on a selected parameter.
+
+- Shows parameter name, current value, and valid range
+- Text input for entering a numeric value
+- `Enter` — accept value and close popup
+- `Escape` — cancel and close popup
+
+### Piano tab
+
+Captures keyboard for note input. Shows current octave and active notes.
 
 | Key | Action |
 |-----|--------|
 | `[` | Octave down |
 | `]` | Octave up |
+
+### Help tab
+
+Static text showing all keybindings and usage reference. Scrollable with
+`Up`/`Down`.
+
+### Dirty indicator
+
+When the session has unsaved changes (parameter tweaks, plugin adds/removes,
+preset loads, effect reordering), the Session tab label shows an asterisk:
+`Session *`. The asterisk clears on save.
+
+### Session state
+
+The main thread maintains an in-memory session model that tracks all user
+changes: plugin selections, preset names, parameter values, mix values, volume,
+and effect order. This model is the source of truth for `Ctrl+S` serialization.
+Every user action (preset load, parameter tweak, plugin add/remove, reorder)
+updates both the session model (for saving) and sends a command to the audio
+thread (for playback). The dirty indicator is driven by this model.
+
+Loading a preset clears all parameter overrides for that slot. The preset
+sets every parameter to its own values, so previous overrides are discarded.
+Any parameter tweaks made after the preset load are recorded as new overrides.
+
+### Logging
+
+All logging goes to stderr via `RawModeLogger`, same as in `play` mode. Use
+`tang 2> debug.log` to capture logs to a file. No in-app log viewer.
 
 ## Virtual piano
 
@@ -189,13 +329,14 @@ Notes sound on key press and stop on key release.
 
 ```
 MIDI sources (hardware keyboards + virtual piano)
-  → 1 Instrument
-  → N Effects (in series)
-  → Audio output
+  → 1 Instrument → volume gain
+  → N Effects (in series, each with dry/wet mix)
+  → Audio output → clip detection
 ```
 
 Maximum one instrument. Zero or more effects, processed in order. Effects can be
-reordered in the Session tab.
+reordered in the Session tab. Instrument volume is applied after the instrument's
+output and before the first effect.
 
 ## Architecture
 

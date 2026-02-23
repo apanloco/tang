@@ -15,6 +15,16 @@ use std::time::{Duration, Instant, SystemTime};
 
 use clap::Parser;
 use cli::{Cli, Command, EnumerateTarget, PlayArgs};
+
+/// Convert a MIDI note number to a human-readable name (e.g. 60 → "C4").
+pub fn note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = (note / 12) as i8 - 1;
+    let name = NAMES[(note % 12) as usize];
+    format!("{name}{octave}")
+}
 use crossterm::event::{
     self, Event, KeyCode, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -164,6 +174,22 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
         session::apply_preset(&mut instrument, preset_name);
     }
 
+    // Build note remapper if remap entries are configured
+    let remapper = if config.instrument.remap.is_empty() {
+        None
+    } else {
+        let r = plugin::chain::NoteRemapper::from_config(
+            &config.instrument.remap,
+            config.instrument.pitch_bend_range,
+        )?;
+        log::info!(
+            "Note remapper: {} entries, pitch_bend_range=±{}",
+            config.instrument.remap.len(),
+            config.instrument.pitch_bend_range,
+        );
+        Some(r)
+    };
+
     // Query parameter info for name→index mapping before sending to audio thread
     let inst_params = instrument.parameters();
     let inst_buf = (0..instrument.audio_output_count())
@@ -173,6 +199,7 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
         .send(plugin::chain::ChainCommand::SwapInstrument {
             instrument,
             inst_buf,
+            remapper,
         })
         .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
