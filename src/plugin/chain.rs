@@ -64,9 +64,7 @@ impl NoteRemapper {
                 .find(|(d, _)| (*d - target.detune).abs() < 1e-9);
             if existing.is_none() {
                 if detune_channels.len() >= 15 {
-                    anyhow::bail!(
-                        "too many distinct detune values (max 15, MIDI channels 2-16)"
-                    );
+                    anyhow::bail!("too many distinct detune values (max 15, MIDI channels 2-16)");
                 }
                 // Channel status nibble: 0x01 for ch2, 0x02 for ch3, etc.
                 let ch = detune_channels.len() as u8 + 1;
@@ -85,8 +83,7 @@ impl NoteRemapper {
                 .unwrap();
 
             // Pre-compute pitch bend: center is 8192, range maps to ±pitch_bend_range semitones
-            let bend_value =
-                (8192.0 + (target.detune / pitch_bend_range) * 8191.0).round() as i32;
+            let bend_value = (8192.0 + (target.detune / pitch_bend_range) * 8191.0).round() as i32;
             let bend_clamped = bend_value.clamp(0, 16383) as u16;
             let lsb = (bend_clamped & 0x7F) as u8;
             let msb = ((bend_clamped >> 7) & 0x7F) as u8;
@@ -109,11 +106,7 @@ impl NoteRemapper {
     /// For remapped note-on events, a pitch bend message is inserted before the note-on.
     /// For remapped note-off events, the note and channel are rewritten.
     /// All other events pass through unchanged.
-    pub fn remap_events(
-        &self,
-        input: &[(u64, [u8; 3])],
-        output: &mut Vec<(u64, [u8; 3])>,
-    ) {
+    pub fn remap_events(&self, input: &[(u64, [u8; 3])], output: &mut Vec<(u64, [u8; 3])>) {
         output.clear();
         for &(frame, bytes) in input {
             let status_type = bytes[0] & 0xF0;
@@ -125,18 +118,22 @@ impl NoteRemapper {
                     if let Some(entry) = self.table.get(&note) {
                         log::info!(
                             "Remap: NoteOn {} → {} ch={} bend=({},{})",
-                            note, entry.target_note, entry.channel + 1,
-                            entry.pitch_bend_lsb, entry.pitch_bend_msb,
+                            note,
+                            entry.target_note,
+                            entry.channel + 1,
+                            entry.pitch_bend_lsb,
+                            entry.pitch_bend_msb,
                         );
                         // Rewritten note-on on remapped channel
-                        output.push((
-                            frame,
-                            [0x90 | entry.channel, entry.target_note, bytes[2]],
-                        ));
+                        output.push((frame, [0x90 | entry.channel, entry.target_note, bytes[2]]));
                         // Pitch bend after note-on
                         output.push((
                             frame,
-                            [0xE0 | entry.channel, entry.pitch_bend_lsb, entry.pitch_bend_msb],
+                            [
+                                0xE0 | entry.channel,
+                                entry.pitch_bend_lsb,
+                                entry.pitch_bend_msb,
+                            ],
                         ));
                     } else {
                         output.push((frame, bytes));
@@ -147,7 +144,9 @@ impl NoteRemapper {
                     if let Some(entry) = self.table.get(&note) {
                         log::info!(
                             "Remap: NoteOff {} → {} ch={}",
-                            note, entry.target_note, entry.channel + 1,
+                            note,
+                            entry.target_note,
+                            entry.channel + 1,
                         );
                         output.push((
                             frame,
@@ -952,9 +951,7 @@ mod tests {
 
     // -- NoteRemapper tests --
 
-    fn make_remap(
-        entries: &[(&str, &str, f64)],
-    ) -> HashMap<String, crate::session::RemapTarget> {
+    fn make_remap(entries: &[(&str, &str, f64)]) -> HashMap<String, crate::session::RemapTarget> {
         entries
             .iter()
             .map(|(src, dst, detune)| {
