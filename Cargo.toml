@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["lv2"]
+default = ["lv2", "vst3"]
 lv2 = ["dep:livi"]
+vst3 = ["dep:vst3", "dep:libloading"]
 
 [dependencies]
 livi = { version = "0.7", optional = true }
@@ -23,6 +24,8 @@ serde = { version = "1", features = ["derive"] }
 clack-host = { git = "https://github.com/prokopyl/clack" }
 clack-finder = { git = "https://github.com/prokopyl/clack" }
 clack-extensions = { git = "https://github.com/prokopyl/clack", features = ["clack-host", "audio-ports", "note-ports", "params", "preset-discovery", "state"] }
+vst3 = { version = "0.3", optional = true }
+libloading = { version = "0.8", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

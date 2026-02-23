@@ -2,6 +2,8 @@ use crate::plugin::builtin;
 use crate::plugin::clap;
 #[cfg(feature = "lv2")]
 use crate::plugin::lv2;
+#[cfg(feature = "vst3")]
+use crate::plugin::vst3;
 
 pub fn midi() -> anyhow::Result<()> {
     println!("=== MIDI Input Devices ===");
@@ -172,5 +174,33 @@ pub fn plugins() -> anyhow::Result<()> {
         println!("          Params:  {}", p.param_count);
         println!("          Presets: {}", p.preset_count);
     }
+    println!();
+
+    #[cfg(feature = "vst3")]
+    {
+        println!("=== VST3 Plugins ===");
+        let vst3s = vst3::enumerate_plugins();
+        if vst3s.is_empty() {
+            println!("  (none found)");
+        }
+        for p in &vst3s {
+            let kind = if p.is_instrument {
+                "instrument"
+            } else {
+                "effect"
+            };
+            println!("  [{kind}] {}", p.name);
+            println!("          ID:      {}", p.id);
+            println!("          Path:    {}", p.path);
+            println!("          Params:  {}", p.param_count);
+            println!("          Presets: {}", p.preset_count);
+        }
+    }
+    #[cfg(not(feature = "vst3"))]
+    {
+        println!("=== VST3 Plugins ===");
+        println!("  (VST3 support not enabled)");
+    }
+
     Ok(())
 }

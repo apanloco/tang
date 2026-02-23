@@ -3,7 +3,7 @@
 This is Tang, a terminal-based audio plugin host.
 
 - Terminal user interface (TUI)
-- Supports LV2 and CLAP plugins
+- Supports LV2, CLAP, and VST3 plugins
 - Supports MIDI keyboard
 - Includes a Virtual Piano (tracker-style)
 
@@ -13,7 +13,7 @@ This is Tang, a terminal-based audio plugin host.
 tang                             # launch TUI with default session
 tang session.toml                # launch TUI with specified session
 tang play session.toml           # play session with virtual piano (no TUI)
-tang enumerate plugins           # list installed LV2 and CLAP plugins
+tang enumerate plugins           # list installed LV2, CLAP, and VST3 plugins
 tang enumerate builtins          # list built-in plugins
 tang enumerate midi              # list available MIDI input devices
 tang enumerate audio             # list available audio output devices
@@ -59,8 +59,10 @@ TODO: Session saving not yet implemented.
 A plugin can be specified using:
 - `./path/to/Plugin.lv2`: LV2 bundle by path
 - `./path/to/Plugin.clap`: CLAP bundle by path
+- `./path/to/Plugin.vst3`: VST3 bundle by path
 - `lv2:<uri>`: LV2 lookup by URI (lv2: prefix OPTIONAL)
 - `clap:<id>`: CLAP lookup by plugin ID (clap: prefix OPTIONAL)
+- `vst3:<name>`: VST3 lookup by name (case-insensitive)
 - `builtin:<name>`: built-in plugin (e.g. `builtin:sine`)
 
 Example session config:
@@ -197,7 +199,7 @@ Each plugin is rendered as a card. The vertical order follows the signal chain
 (instrument at top, effects below). Each card shows:
 
 - Type prefix and name: `♪ Helm` (instrument) or `fx ACE Reverb` (effect)
-- Format tag: `[LV2]` or `[CLAP]`
+- Format tag: `[LV2]`, `[CLAP]`, or `[VST3]`
 - Preset name below the plugin name (dimmed, if loaded)
 - Instrument: volume bar with value
 - Effects: mix bar with value
@@ -243,7 +245,7 @@ Opened by `i` (instruments only) or `a` (effects only). Same layout for both,
 filtered by plugin type.
 
 - **Top**: text input for filtering (matches against any column: name, type, etc.)
-- **Below**: table with columns — Name, Format (LV2/CLAP), Params, Presets
+- **Below**: table with columns — Name, Format (LV2/CLAP/VST3), Params, Presets
 - `Up` / `Down` — navigate rows
 - `Enter` — select plugin and close popup
 - `Escape` — cancel and close popup
@@ -365,10 +367,11 @@ MIDI devices are hot-pluggable — main thread polls for new devices every ~1s.
 
 ## Plugin compatibility
 
-Plugin loading is behind a trait. Both formats supported:
+Plugin loading is behind a trait. Three formats supported:
 
 - **LV2** — via livi.
 - **CLAP** — via clack-host.
+- **VST3** — via vst3-rs (coupler-rs/vst3-rs) with libloading.
 
 ## Plugin I/O handling
 
@@ -405,8 +408,11 @@ dependency chain (livi → lilv → lilv-sys) requires system C libraries that a
 only readily available on Linux. macOS and Windows builds use
 `cargo build --no-default-features` for CLAP-only mode.
 
-CI runs clippy + tests on all three platforms (Linux with LV2, macOS/Windows
-without).
+VST3 support is behind the `vst3` Cargo feature (enabled by default). It uses
+pre-generated bindings (no build-time SDK dependency) and works on all platforms.
+
+CI runs clippy + tests on all three platforms (Linux with LV2+VST3,
+macOS/Windows with VST3 only).
 
 ## Future ideas
 

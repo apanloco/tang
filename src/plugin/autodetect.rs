@@ -1,48 +1,50 @@
 use super::PluginType;
 
-#[cfg(feature = "lv2")]
-fn lv2_resolve(source: String) -> anyhow::Result<(PluginType, String)> {
-    Ok((PluginType::Lv2, source))
-}
-
-#[cfg(not(feature = "lv2"))]
-fn lv2_resolve(_source: String) -> anyhow::Result<(PluginType, String)> {
-    anyhow::bail!("LV2 support is not enabled (compile with --features lv2)")
-}
-
-/// Resolve a plugin source string into a plugin type and normalized source.
+/// Resolve a plugin source string into a (plugin type, normalized source).
 ///
 /// Supported formats:
 ///   - `lv2:<URI>`              — explicit LV2 URI
 ///   - `clap:<ID>`              — explicit CLAP ID
-///   - `path/to/foo.lv2`       — LV2 bundle path
-///   - `path/to/foo.clap`      — CLAP bundle path
+///   - `vst3:<name>`            — explicit VST3 name
+///   - `/path/to/foo.lv2`      — LV2 bundle path
+///   - `/path/to/foo.clap`     — CLAP bundle path
+///   - `/path/to/Foo.vst3`     — VST3 bundle path
 ///   - `http://…` / `urn:…`    — auto-detected as LV2 URI
 ///   - `com.vendor.plugin`     — auto-detected as CLAP reverse-domain ID
 pub fn resolve(source: &str) -> anyhow::Result<(PluginType, String)> {
-    // Explicit prefixes
+    // --- Explicit prefixes ---
+
     if source.starts_with("lv2:") {
-        return lv2_resolve(source.to_string());
+        return lv2(source.to_string());
     }
     if source.starts_with("clap:") {
         return Ok((PluginType::Clap, source.to_string()));
     }
+    if source.starts_with("vst3:") {
+        return vst3(source.to_string());
+    }
 
-    // File path extensions
+    // --- File path extensions ---
+
     if source.ends_with(".lv2") || source.ends_with(".lv2/") {
-        return lv2_resolve(source.to_string());
+        return lv2(source.to_string());
     }
     if source.ends_with(".clap") || source.ends_with(".clap/") {
         return Ok((PluginType::Clap, source.to_string()));
     }
-
-    // Auto-detect LV2 URI
-    if source.starts_with("http://") || source.starts_with("https://") || source.starts_with("urn:")
-    {
-        return lv2_resolve(format!("lv2:{source}"));
+    if source.ends_with(".vst3") || source.ends_with(".vst3/") {
+        return vst3(source.to_string());
     }
 
-    // Auto-detect CLAP reverse-domain ID (contains dots, no path separators)
+    // --- Auto-detection ---
+
+    // URIs → LV2
+    if source.starts_with("http://") || source.starts_with("https://") || source.starts_with("urn:")
+    {
+        return lv2(format!("lv2:{source}"));
+    }
+
+    // Reverse-domain ID (dots, no slashes) → CLAP
     if source.contains('.') && !source.contains('/') {
         return Ok((PluginType::Clap, format!("clap:{source}")));
     }
@@ -54,15 +56,42 @@ pub fn resolve(source: &str) -> anyhow::Result<(PluginType, String)> {
            com.vendor.plugin      (CLAP ID)\n  \
            lv2:<URI>              (explicit LV2)\n  \
            clap:<ID>              (explicit CLAP)\n  \
+           vst3:<name>            (explicit VST3)\n  \
            /path/to/plugin.lv2\n  \
-           /path/to/plugin.clap\n\
+           /path/to/plugin.clap\n  \
+           /path/to/Plugin.vst3\n\
          Run `tang enumerate plugins` to list available plugins."
     )
+}
+
+// Feature-gated constructors. When a format is compiled out, the function
+// still exists but returns a clear error instead of a missing-variant panic.
+
+#[cfg(feature = "lv2")]
+fn lv2(source: String) -> anyhow::Result<(PluginType, String)> {
+    Ok((PluginType::Lv2, source))
+}
+
+#[cfg(not(feature = "lv2"))]
+fn lv2(_source: String) -> anyhow::Result<(PluginType, String)> {
+    anyhow::bail!("LV2 support is not enabled (compile with --features lv2)")
+}
+
+#[cfg(feature = "vst3")]
+fn vst3(source: String) -> anyhow::Result<(PluginType, String)> {
+    Ok((PluginType::Vst3, source))
+}
+
+#[cfg(not(feature = "vst3"))]
+fn vst3(_source: String) -> anyhow::Result<(PluginType, String)> {
+    anyhow::bail!("VST3 support is not enabled (compile with --features vst3)")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Explicit prefixes ---
 
     #[cfg(feature = "lv2")]
     #[test]
@@ -78,6 +107,16 @@ mod tests {
         assert_eq!(ty, PluginType::Clap);
         assert_eq!(src, "clap:com.u-he.diva");
     }
+
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn explicit_vst3_prefix() {
+        let (ty, src) = resolve("vst3:Pianoteq 9").unwrap();
+        assert_eq!(ty, PluginType::Vst3);
+        assert_eq!(src, "vst3:Pianoteq 9");
+    }
+
+    // --- File path extensions ---
 
     #[cfg(feature = "lv2")]
     #[test]
@@ -101,6 +140,24 @@ mod tests {
         assert_eq!(ty, PluginType::Clap);
         assert_eq!(src, "/usr/lib/clap/diva.clap");
     }
+
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn vst3_bundle_path() {
+        let (ty, src) = resolve("/usr/lib/vst3/Pianoteq 9.vst3").unwrap();
+        assert_eq!(ty, PluginType::Vst3);
+        assert_eq!(src, "/usr/lib/vst3/Pianoteq 9.vst3");
+    }
+
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn vst3_bundle_path_trailing_slash() {
+        let (ty, src) = resolve("/usr/lib/vst3/Pianoteq 9.vst3/").unwrap();
+        assert_eq!(ty, PluginType::Vst3);
+        assert_eq!(src, "/usr/lib/vst3/Pianoteq 9.vst3/");
+    }
+
+    // --- Auto-detection ---
 
     #[cfg(feature = "lv2")]
     #[test]
@@ -140,6 +197,8 @@ mod tests {
         assert_eq!(src, "clap:org.surge-synth-team.surge-xt");
     }
 
+    // --- Error cases ---
+
     #[test]
     fn unknown_format() {
         assert!(resolve("something-without-dots").is_err());
@@ -151,6 +210,16 @@ mod tests {
         let err = resolve("lv2:http://tytel.org/helm").unwrap_err();
         assert!(
             err.to_string().contains("LV2 support is not enabled"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(not(feature = "vst3"))]
+    #[test]
+    fn vst3_disabled_error() {
+        let err = resolve("vst3:Pianoteq 9").unwrap_err();
+        assert!(
+            err.to_string().contains("VST3 support is not enabled"),
             "unexpected error: {err}"
         );
     }

@@ -4,6 +4,8 @@ pub mod chain;
 pub mod clap;
 #[cfg(feature = "lv2")]
 pub mod lv2;
+#[cfg(feature = "vst3")]
+pub mod vst3;
 
 #[derive(Clone)]
 pub struct ParameterInfo {
@@ -60,6 +62,8 @@ pub enum PluginType {
     #[cfg(feature = "lv2")]
     Lv2,
     Clap,
+    #[cfg(feature = "vst3")]
+    Vst3,
 }
 
 #[derive(Default)]
@@ -98,5 +102,7 @@ pub fn load(
             _runtime.lv2.as_ref(),
         ),
         PluginType::Clap => clap::load(&resolved, sample_rate, max_block_size),
+        #[cfg(feature = "vst3")]
+        PluginType::Vst3 => vst3::load(&resolved, sample_rate, max_block_size),
     }
 }
