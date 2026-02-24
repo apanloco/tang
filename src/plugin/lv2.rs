@@ -38,6 +38,8 @@ pub struct Lv2Plugin {
     audio_out_count: usize,
     atom_seq_in_count: usize,
     instance: livi::Instance,
+    /// Keep the World alive so the Instance's LV2 cleanup can access plugin data on drop.
+    _world: Arc<livi::World>,
     midi_urid: u32,
     event_buf: livi::event::LV2AtomSequence,
     atom_seq_outputs: Vec<livi::event::LV2AtomSequence>,
@@ -213,6 +215,7 @@ pub fn load(
         audio_out_count,
         atom_seq_in_count,
         instance,
+        _world: world,
         midi_urid,
         event_buf,
         atom_seq_outputs,
