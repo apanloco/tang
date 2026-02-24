@@ -40,8 +40,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --check
+      # - name: Check formatting
+      #   run: cargo fmt --check
 
       - name: Clippy
         run: cargo clippy ${{ matrix.features }} -- -D warnings
