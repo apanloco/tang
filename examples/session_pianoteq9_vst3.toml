@@ -1,7 +1,6 @@
 [instrument]
-plugin = "/home/da/Downloads/Pianoteq 9/x86-64bit/Pianoteq 9.vst3"
+plugin = "vst3:Pianoteq 9"
 
-# F#2, G#2, A#2, C#6, D#6, F#6, G#6, A#6. 
 [instrument.remap]
 "F#2" = { note = "F2", detune = 1.0 }
 "G#2" = { note = "G2", detune = 1.0 }
@@ -11,14 +10,6 @@ plugin = "/home/da/Downloads/Pianoteq 9/x86-64bit/Pianoteq 9.vst3"
 "F#6" = { note = "F6", detune = 1.0 }
 "G#6" = { note = "G6", detune = 1.0 }
 "A#6" = { note = "A6", detune = 1.0 }
-
-[[effect]]
-plugin = "/usr/lib/vst3/DragonflyHallReverb.vst3"
-mix = 1.0
-
-[[effect]]
-plugin = "/usr/lib/clap/DragonflyHallReverb.clap"
-mix = 1.0
 
 [[effect]]
 plugin = "lv2:http://calf.sourceforge.net/plugins/Reverb"

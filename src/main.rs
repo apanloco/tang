@@ -304,8 +304,10 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     let mut last_poll = Instant::now();
 
     loop {
-        // Poll crossterm events with 10ms timeout
-        if event::poll(Duration::from_millis(10))? {
+        // Poll crossterm events. The timeout only affects how often we run
+        // housekeeping (return-channel drain, MIDI device poll) — key events
+        // wake poll() immediately regardless of the timeout value.
+        if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key_event) = event::read()? {
                 // Ctrl+C or Ctrl+Q → quit
                 if key_event

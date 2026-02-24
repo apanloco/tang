@@ -1,12 +1,10 @@
 [instrument]
-plugin = "https://www.modartt.com/lv2/Pianoteq9"
-pitch_bend_range = 2
+plugin = "lv2:https://www.modartt.com/lv2/Pianoteq9"
 
 [instrument.params]
 "reverb_on" = 1.0
 "reverb_dry_wet" = 0.3
 
-# F#2, G#2, A#2, C#6, D#6, F#6, G#6, A#6. 
 [instrument.remap]
 "F#2" = { note = "F2", detune = 1.0 }
 "G#2" = { note = "G2", detune = 1.0 }
@@ -25,10 +23,3 @@ mix = 0.5
 [effect.params]
 "Wet Amount" = 0.4
 
-[[effect]]
-plugin = "lv2:urn:ardour:a-comp#stereo"
-preset = "VocalLeveller"
-mix = 1.0
-
-[effect.params]
-"Makeup" = 6.0
