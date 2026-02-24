@@ -3,7 +3,9 @@ use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
 
 use vst3::Steinberg::Vst::BusDirections_::{kInput, kOutput};
-use vst3::Steinberg::Vst::Event_::EventTypes_::{kNoteOffEvent, kNoteOnEvent};
+use vst3::Steinberg::Vst::Event_::EventTypes_::{
+    kLegacyMIDICCOutEvent, kNoteOffEvent, kNoteOnEvent,
+};
 use vst3::Steinberg::Vst::MediaTypes_::{kAudio, kEvent};
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::kIsProgramChange;
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_::kPlaying;
@@ -18,8 +20,10 @@ use vst3::Steinberg::Vst::{
     IEditControllerTrait as _, IEventList, IEventListTrait, IHostApplication,
     IHostApplicationTrait, IMidiMapping, IMidiMappingTrait as _, IParamValueQueue,
     IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait, IUnitInfo,
-    IUnitInfoTrait as _, NoteOffEvent, NoteOnEvent, ParameterInfo as Vst3ParameterInfo,
-    ProcessContext, ProcessData, ProcessSetup, ProgramListInfo, String128,
+    IUnitInfoTrait as _, LegacyMIDICCOutEvent, NoteOffEvent,
+    NoteOnEvent,
+    ParameterInfo as Vst3ParameterInfo, ProcessContext, ProcessData, ProcessSetup,
+    ProgramListInfo, String128,
 };
 use vst3::Steinberg::{
     self, FUnknown, IPluginBaseTrait as _, IPluginFactory, IPluginFactory2,
@@ -500,6 +504,10 @@ pub struct Vst3Plugin {
     event_list: ComWrapper<TangEventList>,
     // MIDI CC → parameter mapping (index = CC number, 128 = pitch bend)
     cc_param_map: Vec<Option<u32>>,
+    // Note expression: noteId counter and channel→noteId tracking for pitch bend→tuning
+    next_note_id: i32,
+    // Active notes per channel: channel (0-15) → Vec of (pitch, noteId)
+    channel_notes: Vec<Vec<(i16, i32)>>,
     // Connection points (for disconnect on Drop)
     comp_connection: Option<ComPtr<IConnectionPoint>>,
     ctrl_connection: Option<ComPtr<IConnectionPoint>>,
@@ -544,7 +552,13 @@ impl Drop for Vst3Plugin {
 // MIDI → VST3 event conversion
 // ---------------------------------------------------------------------------
 
-fn make_note_on(channel: i16, pitch: i16, velocity: f32, sample_offset: i32) -> Event {
+fn make_note_on(
+    channel: i16,
+    pitch: i16,
+    velocity: f32,
+    sample_offset: i32,
+    note_id: i32,
+) -> Event {
     Event {
         busIndex: 0,
         sampleOffset: sample_offset,
@@ -558,13 +572,19 @@ fn make_note_on(channel: i16, pitch: i16, velocity: f32, sample_offset: i32) -> 
                 tuning: 0.0,
                 velocity,
                 length: 0,
-                noteId: -1,
+                noteId: note_id,
             },
         },
     }
 }
 
-fn make_note_off(channel: i16, pitch: i16, velocity: f32, sample_offset: i32) -> Event {
+fn make_note_off(
+    channel: i16,
+    pitch: i16,
+    velocity: f32,
+    sample_offset: i32,
+    note_id: i32,
+) -> Event {
     Event {
         busIndex: 0,
         sampleOffset: sample_offset,
@@ -576,8 +596,26 @@ fn make_note_off(channel: i16, pitch: i16, velocity: f32, sample_offset: i32) ->
                 channel,
                 pitch,
                 velocity,
-                noteId: -1,
+                noteId: note_id,
                 tuning: 0.0,
+            },
+        },
+    }
+}
+
+fn make_legacy_pitch_bend(channel: i8, lsb: i8, msb: i8, sample_offset: i32) -> Event {
+    Event {
+        busIndex: 0,
+        sampleOffset: sample_offset,
+        ppqPosition: 0.0,
+        flags: 0,
+        r#type: kLegacyMIDICCOutEvent as u16,
+        __field0: Event__type0 {
+            midiCCOut: LegacyMIDICCOutEvent {
+                controlNumber: 129, // kPitchBend
+                channel,
+                value: lsb,
+                value2: msb,
             },
         },
     }
@@ -646,49 +684,62 @@ impl Plugin for Vst3Plugin {
         for &(timestamp, bytes) in midi_events {
             let status = bytes[0] & 0xF0;
             let channel = (bytes[0] & 0x0F) as i16;
+            let pitch = bytes[1] as i16;
             let sample_offset = timestamp as i32;
 
             match status {
                 0x90 if bytes[2] > 0 => {
                     let velocity = bytes[2] as f32 / 127.0;
+                    let note_id = self.next_note_id;
+                    self.next_note_id = self.next_note_id.wrapping_add(1);
+                    self.channel_notes[channel as usize].push((pitch, note_id));
                     events.push(make_note_on(
                         channel,
-                        bytes[1] as i16,
+                        pitch,
                         velocity,
                         sample_offset,
+                        note_id,
                     ));
                     log::debug!(
-                        "VST3: note on ch={channel} pitch={} vel={}",
-                        bytes[1],
-                        bytes[2]
+                        "VST3: note on ch={channel} pitch={pitch} vel={} id={note_id}",
+                        bytes[2],
                     );
                 }
                 0x80 | 0x90 => {
                     let velocity = bytes[2] as f32 / 127.0;
+                    // Find and remove the noteId for this channel+pitch
+                    let note_id = self.channel_notes[channel as usize]
+                        .iter()
+                        .rposition(|(p, _)| *p == pitch)
+                        .map(|idx| self.channel_notes[channel as usize].remove(idx).1)
+                        .unwrap_or(-1);
                     events.push(make_note_off(
                         channel,
-                        bytes[1] as i16,
+                        pitch,
                         velocity,
                         sample_offset,
+                        note_id,
                     ));
                     log::debug!(
-                        "VST3: note off ch={channel} pitch={} vel={}",
-                        bytes[1],
-                        bytes[2]
+                        "VST3: note off ch={channel} pitch={pitch} vel={} id={note_id}",
+                        bytes[2],
                     );
                 }
                 0xE0 => {
-                    // Pitch bend → parameter change via MIDI mapping
-                    if let Some(param_id) = self.cc_param_map.get(128).copied().flatten() {
-                        let bend = ((bytes[2] as u16) << 7 | bytes[1] as u16) as f64 / 16383.0;
-                        if queue_idx < MAX_PARAM_QUEUES {
-                            unsafe {
-                                *self.param_changes.queues[queue_idx].param_id.get() = param_id;
-                                *self.param_changes.queues[queue_idx].value.get() = bend;
-                            }
-                            queue_idx += 1;
-                        }
-                    }
+                    // Per-channel pitch bend via LegacyMIDICCOutEvent.
+                    // This preserves the MIDI channel, which the note remapper
+                    // uses (channels 2-16) for per-note detune.
+                    events.push(make_legacy_pitch_bend(
+                        channel as i8,
+                        bytes[1] as i8,
+                        bytes[2] as i8,
+                        sample_offset,
+                    ));
+                    log::debug!(
+                        "VST3: pitch bend ch={channel} lsb={} msb={}",
+                        bytes[1],
+                        bytes[2],
+                    );
                 }
                 0xB0 => {
                     // CC → parameter change via MIDI mapping
@@ -1213,6 +1264,8 @@ pub fn load(
         output_param_changes,
         event_list,
         cc_param_map,
+        next_note_id: 0,
+        channel_notes: vec![Vec::new(); 16],
         comp_connection,
         ctrl_connection,
     }))
