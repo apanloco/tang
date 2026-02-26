@@ -96,6 +96,8 @@ fn vst3_search_paths() -> Vec<PathBuf> {
         paths.push(PathBuf::from(r"C:\Program Files\Common Files\VST3"));
     }
 
+    paths.extend(crate::config::extra_vst3_paths().iter().cloned());
+
     paths
 }
 
@@ -1066,32 +1068,38 @@ pub fn load(
     };
 
     // Set bus arrangements
-    if audio_in_bus_count > 0 {
+    let arr_result = if audio_in_bus_count > 0 {
         unsafe {
-            processor.setBusArrangements(&mut input_arr, 1, &mut output_arr, 1);
+            processor.setBusArrangements(&mut input_arr, 1, &mut output_arr, 1)
         }
     } else {
         unsafe {
-            processor.setBusArrangements(std::ptr::null_mut(), 0, &mut output_arr, 1);
+            processor.setBusArrangements(std::ptr::null_mut(), 0, &mut output_arr, 1)
         }
+    };
+    if arr_result != kResultOk {
+        log::warn!("VST3 setBusArrangements returned {arr_result}");
     }
 
     // Activate buses
     if audio_out_bus_count > 0 {
-        unsafe {
-            component.activateBus(kAudio as i32, kOutput as i32, 0, 1);
+        let r = unsafe { component.activateBus(kAudio as i32, kOutput as i32, 0, 1) };
+        if r != kResultOk {
+            log::warn!("VST3 activateBus(audio out) returned {r}");
         }
     }
     if audio_in_bus_count > 0 {
-        unsafe {
-            component.activateBus(kAudio as i32, kInput as i32, 0, 1);
+        let r = unsafe { component.activateBus(kAudio as i32, kInput as i32, 0, 1) };
+        if r != kResultOk {
+            log::warn!("VST3 activateBus(audio in) returned {r}");
         }
     }
     // Activate event input bus (for MIDI)
     let event_in_bus_count = unsafe { component.getBusCount(kEvent as i32, kInput as i32) };
     if event_in_bus_count > 0 {
-        unsafe {
-            component.activateBus(kEvent as i32, kInput as i32, 0, 1);
+        let r = unsafe { component.activateBus(kEvent as i32, kInput as i32, 0, 1) };
+        if r != kResultOk {
+            log::warn!("VST3 activateBus(event in) returned {r}");
         }
     }
 
@@ -1424,7 +1432,7 @@ fn scan_bundle_for_enum(bundle_path: &Path) -> Option<Vec<PluginInfo>> {
 
         found.push(PluginInfo {
             name: name.clone(),
-            id: name,
+            id: format!("vst3:{name}"),
             is_instrument,
             param_count,
             preset_count,

@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::Receiver;
 
-use crate::plugin::chain::PluginChain;
+use crate::plugin::chain::AudioGraph;
 
 /// A MIDI event: (frame_offset, raw_bytes).
 /// Standard MIDI messages are 1–3 bytes; we use a fixed array to avoid heap allocation.
@@ -26,7 +26,7 @@ impl AudioEngine {
     }
 
     pub fn start(
-        mut chain: PluginChain,
+        mut graph: AudioGraph,
         midi_rx: Receiver<MidiEvent>,
         device_name: Option<&str>,
         sample_rate: u32,
@@ -46,7 +46,7 @@ impl AudioEngine {
         let dev_name = device.name().unwrap_or_else(|_| "Unknown".into());
         log::info!("Using audio device: {dev_name}");
 
-        let num_channels = chain.num_channels();
+        let num_channels = graph.num_channels();
 
         let config = cpal::StreamConfig {
             channels: num_channels as u16,
@@ -102,8 +102,8 @@ impl AudioEngine {
                     buf.fill(0.0);
                 }
 
-                if let Err(e) = chain.process(&midi_events, &mut channel_bufs) {
-                    log::error!("Plugin chain process error: {e}");
+                if let Err(e) = graph.process(&midi_events, &mut channel_bufs) {
+                    log::error!("Audio graph process error: {e}");
                     data.fill(0.0);
                     return;
                 }

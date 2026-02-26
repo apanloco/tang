@@ -329,7 +329,6 @@ fn discover_presets(bundle: &PluginBundle, host_info: &HostInfo) -> Vec<(Preset,
 pub struct ClapPlugin {
     name: String,
     is_instrument: bool,
-    #[expect(dead_code)]
     sample_rate: f32,
     #[expect(dead_code)]
     audio_in_channel_count: usize,
@@ -390,7 +389,44 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
         }
     }
 
+    for bundle_path in extra_clap_bundles() {
+        match scan_bundle(&bundle_path) {
+            Some(found) => plugins.extend(found),
+            None => {
+                log::warn!("Failed to scan CLAP bundle: {}", bundle_path.display());
+            }
+        }
+    }
+
     plugins
+}
+
+/// Resolve extra CLAP paths from config. Paths pointing to `.clap` files are
+/// returned directly (bypassing ClapFinder, which rejects flat files on macOS).
+/// Paths pointing to directories are scanned via ClapFinder.
+fn extra_clap_bundles() -> Vec<std::path::PathBuf> {
+    let extra = crate::config::extra_clap_paths();
+    if extra.is_empty() {
+        return Vec::new();
+    }
+
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    for p in extra {
+        if p.is_file() {
+            files.push(p.clone());
+        } else if p.is_dir() {
+            dirs.push(p.clone());
+        }
+    }
+
+    if !dirs.is_empty() {
+        for bundle_path in clack_finder::ClapFinder::new(dirs.into_iter()) {
+            files.push(bundle_path);
+        }
+    }
+
+    files
 }
 
 fn scan_bundle(path: &Path) -> Option<Vec<PluginInfo>> {
@@ -641,8 +677,12 @@ fn find_plugin(source: &str) -> anyhow::Result<(PluginBundle, String, String, bo
 
     // Try stripping "clap:" prefix for ID-based lookup
     if let Some(plugin_id) = source.strip_prefix("clap:") {
-        // Search installed bundles for this ID
-        for bundle_path in clack_finder::ClapFinder::from_standard_paths() {
+        // Search installed bundles for this ID (standard paths + extra paths)
+        let all_paths = clack_finder::ClapFinder::from_standard_paths()
+            .into_iter()
+            .chain(extra_clap_bundles());
+
+        for bundle_path in all_paths {
             let bundle = match unsafe { PluginBundle::load(&bundle_path) } {
                 Ok(b) => b,
                 Err(_) => continue,

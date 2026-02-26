@@ -1,0 +1,7 @@
+[[keyboard]]
+name = "Keyboard 1"
+
+[[keyboard.split]]
+
+[keyboard.split.instrument]
+plugin = "builtin:sine"

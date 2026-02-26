@@ -38,8 +38,8 @@ pub enum EnumerateTarget {
 
 #[derive(clap::Args)]
 pub struct PlayArgs {
-    /// Path to session file (.toml)
-    pub session: String,
+    /// Path to session file (.toml). If omitted, creates a new session.
+    pub session: Option<String>,
 
     /// Audio output device name (default: system default)
     #[arg(long)]
@@ -56,4 +56,8 @@ pub struct PlayArgs {
     /// Sample rate in Hz
     #[arg(long, default_value = "48000")]
     pub sample_rate: u32,
+
+    /// Show the TUI instead of plain play mode
+    #[arg(long)]
+    pub view: bool,
 }

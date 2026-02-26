@@ -51,6 +51,27 @@ Keyboard acts as a virtual piano (Amiga tracker layout).
 Logs MIDI events and audio info to the screen.
 TODO: Remove once the TUI is functional.
 
+## Config file
+
+**Path:** `~/.config/tang/config.toml`
+
+Optional application-level config. Currently supports custom plugin search paths.
+Missing file or missing keys = no extra paths.
+
+```toml
+[plugin_paths]
+clap = ["/home/user/my-plugins/clap"]
+vst3 = ["/home/user/my-plugins/vst3", "/mnt/external/vst3"]
+lv2 = ["/home/user/my-plugins/lv2"]
+```
+
+All fields optional (default: empty). Extra paths are appended after platform
+defaults. Loaded once at startup via a `OnceLock<Config>` global in `src/config.rs`.
+
+For LV2, extra paths are injected into the `LV2_PATH` environment variable before
+`livi::World::new()` is called. For CLAP and VST3, the respective plugin modules
+read the extra paths directly.
+
 ## Session config
 
 Sessions are TOML files. The TUI (when implemented) will use `~/.config/tang/default.toml` by default.
@@ -65,7 +86,58 @@ A plugin can be specified using:
 - `vst3:<name>`: VST3 lookup by name (case-insensitive)
 - `builtin:<name>`: built-in plugin (e.g. `builtin:sine`)
 
-Example session config:
+### Keyboard/split format
+
+Sessions are organized into keyboards and splits. Each keyboard represents a
+MIDI input context. Each split within a keyboard maps a key range to an
+instrument with its own effect chain.
+
+```toml
+[[keyboard]]
+name = "Main"
+
+[[keyboard.split]]
+range = "C0-B3"
+
+[keyboard.split.instrument]
+plugin = "lv2:http://tytel.org/helm"
+preset = "Pad"
+volume = 0.8
+
+[keyboard.split.instrument.params]
+"reverb_on" = 1.0
+
+[[keyboard.split.effect]]
+plugin = "./reverb.lv2"
+mix = 0.5
+
+[[keyboard.split]]
+range = "C4-C8"
+
+[keyboard.split.instrument]
+plugin = "builtin:sine"
+```
+
+Simple case (one keyboard, one full-range split, no effects):
+```toml
+[[keyboard]]
+[[keyboard.split]]
+[keyboard.split.instrument]
+plugin = "builtin:sine"
+```
+
+- `[[keyboard]]` — one or more keyboards
+  - `name` — display name (optional, defaults to "Keyboard N")
+  - `[[keyboard.split]]` — one or more splits per keyboard
+    - `range` — note range like `"C0-B3"` (optional, omit for full range)
+    - `[keyboard.split.instrument]` — the instrument for this split (required)
+    - `[[keyboard.split.effect]]` — zero or more effects in series
+    - `[[keyboard.split.modulator]]` — zero or more modulators (LFO or ADSR envelope)
+
+### Legacy format
+
+The legacy format (`[instrument]` + `[[effect]]`) is auto-detected and wrapped
+into a single keyboard with one full-range split:
 
 ```toml
 [instrument]
@@ -83,15 +155,9 @@ mix = 0.5
 
 [effect.params]
 "Decay time" = 2.5
-
-[[effect]]
-plugin = "./delay.clap"
-mix = 1.0
-
-[effect.params]
-"time" = 0.25
-"feedback" = 0.4
 ```
+
+### Plugin slot fields
 
 Each plugin slot has:
 - `plugin` — plugin path or URI (required)
@@ -105,6 +171,128 @@ Effects additionally have:
 - `mix` — host-side dry/wet blend, 0.0=dry 1.0=wet (default: 1.0)
 
 Load order per plugin: load → preset → params.
+
+### Modulator fields
+
+Modulators are block-rate sources that modulate plugin parameters or sibling
+modulator parameters within the same split. Two types are supported:
+
+**LFO modulator** (default):
+
+```toml
+[[keyboard.split.instrument.modulator]]
+type = "lfo"            # optional, "lfo" is the default
+waveform = "sine"       # sine, triangle, saw, square (default: sine)
+rate = 0.5              # Hz (default: 1.0)
+
+[[keyboard.split.instrument.modulator.target]]
+param = "cutoff"        # parameter name
+depth = 0.5             # fraction of param range, 0.0–1.0 (default: 0.5)
+```
+
+**ADSR envelope modulator** (triggered by note-on/off):
+
+```toml
+[[keyboard.split.instrument.modulator]]
+type = "envelope"
+attack = 0.01           # seconds (default: 0.01)
+decay = 0.3             # seconds (default: 0.3)
+sustain = 0.7           # level 0.0–1.0 (default: 0.7)
+release = 0.5           # seconds (default: 0.5)
+
+[[keyboard.split.instrument.modulator.target]]
+param = "cutoff"
+depth = 0.5
+```
+
+Each modulator applies `base_value + depth * output * range` to its targets
+once per audio buffer. LFO output is bipolar (-1..1), envelope output is
+unipolar (0..1). The base value tracks the user's set value automatically.
+
+Envelope behavior: note-on retriggers from Attack phase. Release begins when
+all held notes are released. Linear ramps for A/D/R phases.
+
+**Cross-modulation** — a modulator can target sibling modulators' parameters
+instead of (or in addition to) plugin parameters:
+
+```toml
+# Target a sibling modulator's LFO rate:
+[[keyboard.split.instrument.modulator.target]]
+mod_rate = 0            # index of sibling modulator
+depth = 0.3
+
+# Target a sibling modulator's envelope parameters:
+[[keyboard.split.instrument.modulator.target]]
+mod_attack = 1          # index of sibling modulator
+depth = 0.5
+
+# Target a sibling modulator's target depth:
+[[keyboard.split.instrument.modulator.target]]
+mod_depth = [0, 0]      # [mod_index, target_index]
+depth = 0.2
+```
+
+Cross-mod target fields (`mod_rate`, `mod_depth`, `mod_attack`, `mod_decay`,
+`mod_sustain`, `mod_release`) are mutually exclusive with `param`. Self-
+modulation (targeting own index) is prevented.
+
+### MIDI routing
+
+- Note-on/note-off: filtered by split's key range (inclusive)
+- CC, pitch bend, channel pressure: duplicated to all splits within the keyboard
+- Split with no range: receives all notes (full range)
+- Overlapping ranges: notes go to all matching splits
+
+### Pattern recorder/player
+
+Each split can have a recorded MIDI pattern. Recording captures note events for
+a fixed number of beats at the current BPM. Playback transposes the pattern to
+match any held key and loops while the key is held.
+
+**Session config:**
+
+```toml
+[[keyboard.split]]
+[keyboard.split.instrument]
+plugin = "lv2:http://tytel.org/helm"
+
+[keyboard.split.pattern]
+bpm = 120.0
+length_beats = 4.0
+base_note = "C4"
+enabled = true
+
+[[keyboard.split.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+
+[[keyboard.split.pattern.events]]
+frame = 24000
+status = "off"
+note = "C4"
+velocity = 0
+```
+
+- `bpm` — tempo used for pattern timing (default: 120)
+- `length_beats` — pattern length in beats (default: 4 = 1 bar in 4/4)
+- `base_note` — reference note for transposition (set to first recorded note)
+- `events` — recorded MIDI events with `frame` (sample offset), `status`
+  ("on"/"off"), `note` (e.g. "C4"), and `velocity`
+- `enabled` — whether pattern playback is active
+
+**Behavior:**
+- Press `r` on the Session tab to start recording. Play notes on the virtual
+  piano or MIDI keyboard. Recording auto-stops after `length_beats` at current
+  BPM.
+- Hold any key to play back the pattern transposed (relative to `base_note`).
+  The pattern loops while the key is held and stops on release.
+- Press `r` again to overwrite with a new recording.
+- Press `Ctrl+R` to clear the pattern.
+- Press `b` to set the global BPM.
+- BPM is displayed in the status bar. Pattern indicators show in the chain tree:
+  `▶` = pattern exists, `⏺` = recording.
 
 ## Note remapping
 
@@ -154,6 +342,7 @@ TODO: The TUI is not yet implemented. The design below is planned.
 
 The interface is tab-based.
 The status bar at the top shows all tabs with the active one highlighted.
+The global BPM is displayed on the right side of the status bar (e.g. `120 BPM`).
 A clip indicator (`CLIP` in red) appears on the right side of the status bar
 when any audio sample exceeds 1.0. It holds for ~2 seconds after the last
 clipped sample, then disappears. Detection is via an `AtomicBool` set by the
@@ -195,16 +384,26 @@ The focused pane is visually distinct so it's always clear which pane is active.
 
 #### Chain (left pane)
 
-Each plugin is rendered as a card. The vertical order follows the signal chain
-(instrument at top, effects below). Each card shows:
+The chain is rendered as a tree. Keyboards are top-level nodes, splits are
+children with their instruments, and effects are nested under each split.
 
-- Type prefix and name: `♪ Helm` (instrument) or `fx ACE Reverb` (effect)
-- Format tag: `[LV2]`, `[CLAP]`, or `[VST3]`
-- Preset name below the plugin name (dimmed, if loaded)
-- Instrument: volume bar with value
-- Effects: mix bar with value
+```
+⌨ Keyboard 1
+├─ ♪ Helm [LV2]            C0-B3
+│  ├─ fx Reverb [LV2]
+│  ├─ fx Compressor [LV2]
+│  └─ ~ LFO 0.5Hz sine → cutoff (50%), resonance (25%)
+└─ ♪ Sine [Built-in]       C4-C8
+⌨ Keyboard 2
+└─ ♪ Lead Synth [CLAP]
+   └─ fx Delay [CLAP]
+```
 
-The selected card is highlighted. Unselected cards are dimmed.
+Navigation is a single cursor through the flattened tree. Keyboard rows show
+no parameters. Actions (`i`/`a`/`d`/`m`) operate on the split containing the
+selected node. Modulators appear in magenta after effects.
+
+The selected entry is highlighted. Unselected entries are dimmed.
 
 #### Parameters (right pane)
 
@@ -228,14 +427,19 @@ position within its min–max range. The numeric value is shown on the right.
 | `Shift+Up` | Move selected effect up (reorder, focus follows) |
 | `i` | Replace instrument (opens instrument selector popup) |
 | `a` | Add effect (opens effect selector popup) |
-| `d` | Delete selected plugin (no confirmation) |
+| `m` | Add modulator to current split |
+| `d` | Delete selected plugin/modulator (no confirmation) |
 | `p` | Browse presets for selected plugin (opens preset selector popup) |
+| `t` | Add modulation target (when modulator selected, opens target selector) |
 | `Enter` | Focus parameter list for selected plugin |
 | `Esc` | Back to chain focus |
 | `Left` / `Right` | Decrease / increase selected parameter |
 | `Shift+Left` / `Shift+Right` | Fine decrease / increase selected parameter |
 | `Ctrl+Left` / `Ctrl+Right` | Coarse decrease / increase selected parameter |
 | `e` | Edit parameter value (opens value entry popup) |
+| `r` | Record/stop pattern for current split |
+| `Ctrl+R` | Clear pattern for current split |
+| `b` | Set global BPM (opens value entry popup) |
 | `Ctrl+S` | Save session |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves to same directory as current session) |
 
@@ -331,14 +535,21 @@ Notes sound on key press and stop on key release.
 
 ```
 MIDI sources (hardware keyboards + virtual piano)
-  → 1 Instrument → volume gain
-  → N Effects (in series, each with dry/wet mix)
+  → For each keyboard:
+      → For each split (filtered by note range):
+          → Modulators apply (set_parameter on targets)
+          → Instrument → volume gain → N Effects (in series, each with dry/wet mix)
+  → Sum all splits
   → Audio output → clip detection
 ```
 
-Maximum one instrument. Zero or more effects, processed in order. Effects can be
-reordered in the Session tab. Instrument volume is applied after the instrument's
-output and before the first effect.
+Each keyboard contains one or more splits. Each split has its own instrument
+and effect chain. MIDI note events are filtered by split range; CC/pitch bend
+messages are duplicated to all splits. All split outputs are summed together.
+
+Effects can be reordered within a split in the Session tab. Instrument volume
+is applied after the instrument's output and before the first effect in that
+split.
 
 ## Architecture
 
