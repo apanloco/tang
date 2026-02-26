@@ -31,7 +31,6 @@ struct Lv2PresetData {
 pub struct Lv2Plugin {
     name: String,
     is_instrument: bool,
-    #[expect(dead_code)]
     sample_rate: f32,
     #[expect(dead_code)]
     audio_in_count: usize,

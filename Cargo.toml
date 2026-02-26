@@ -1,3 +1,6 @@
+[workspace]
+members = ["view"]
+
 [package]
 name = "tang"
 version = "0.1.0"
@@ -9,6 +12,7 @@ lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
 
 [dependencies]
+view = { path = "view" }
 livi = { version = "0.7", optional = true }
 cpal = "0.15"
 midir = "0.10"
@@ -29,3 +33,9 @@ libloading = { version = "0.8", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[patch.crates-io]
+lv2-sys = { path = "lv2-sys-patch" }

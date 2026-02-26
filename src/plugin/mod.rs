@@ -26,10 +26,9 @@ pub struct Preset {
 pub trait Plugin: Send {
     fn name(&self) -> &str;
     fn is_instrument(&self) -> bool;
-    #[expect(dead_code)]
     fn sample_rate(&self) -> f32;
     fn audio_output_count(&self) -> usize;
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     fn audio_input_count(&self) -> usize;
     fn process(
         &mut self,

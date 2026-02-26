@@ -1,0 +1,24 @@
+# Example: Two keyboard splits — bass on the left hand, lead on the right.
+
+[[keyboard]]
+name = "Main"
+
+[[keyboard.split]]
+range = "C0-B3"
+
+[keyboard.split.instrument]
+plugin = "builtin:sine"
+
+[keyboard.split.instrument.params]
+"Attack" = 0.01
+"Release" = 0.3
+
+[[keyboard.split]]
+range = "C4-C8"
+
+[keyboard.split.instrument]
+plugin = "builtin:sine"
+
+[keyboard.split.instrument.params]
+"Attack" = 0.05
+"Release" = 0.8

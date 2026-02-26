@@ -1,0 +1,31 @@
+[instrument]
+#plugin = "/Users/dac/tang/tang/OctaSine v0.9.clap"
+plugin = "/Library/Audio/Plug-Ins/VST3/Pianoteq 9.vst3"
+#plugin = "/Users/dac/src/rustsynth/target/release/test_synth.clap"
+#
+#OctaSine v0.9.clap
+#plugin = "lv2:http://tytel.org/helm"
+#preset = "COA Crispy Pad Organ"
+
+#[instrument.params]
+#"Release" = 0.50
+#"Attack" = 0.05
+#"Waveform" = 0ls
+#"reverb_on" = 1.0
+#"reverb_dry_wet" = 0.3
+
+#[[effect]]
+#plugin = "lv2:http://calf.sourceforge.net/plugins/Reverb"
+#preset = "Large Empty Hall"
+#mix = 0.5
+
+#[effect.params]
+#"Wet Amount" = 0.4
+
+#[[effect]]
+#plugin = "lv2:urn:ardour:a-comp#stereo"
+#preset = "VocalLeveller"
+#mix = 1.0
+
+#[effect.params]
+#"Makeup" = 6.0
