@@ -430,19 +430,6 @@ impl Modulator {
         }
     }
 
-    /// Apply the last computed output to plugin parameter targets only.
-    /// Cross-mod targets are handled separately via `apply_cross_mod`.
-    fn apply_to_plugin(&self, plugin: &mut dyn Plugin) {
-        for target in &self.targets {
-            if let ModTargetKind::PluginParam { param_index } = target.kind {
-                let range = target.param_max - target.param_min;
-                let offset = self.last_output * target.depth * range;
-                let modulated = (target.base_value + offset).clamp(target.param_min, target.param_max);
-                let _ = plugin.set_parameter(param_index, modulated);
-            }
-        }
-    }
-
 }
 
 /// Apply cross-modulator targets within a modulator list.
@@ -524,6 +511,37 @@ enum CrossModField {
     Sustain,
     Release,
     Depth(usize),
+}
+
+/// Apply all modulators to a plugin, summing contributions when multiple
+/// modulators target the same parameter. Each parameter gets:
+///   base_value + sum(depth_i * output_i * range)
+/// This prevents the last-modulator-wins overwrite bug.
+fn apply_modulators_to_plugin(modulators: &[Modulator], plugin: &mut dyn Plugin) {
+    // Collect (param_index, base_value, min, max, total_offset).
+    // We use a small vec since most plugins have few modulated params.
+    let mut accum: Vec<(u32, f32, f32, f32, f32)> = Vec::new();
+
+    for m in modulators {
+        for target in &m.targets {
+            if let ModTargetKind::PluginParam { param_index } = target.kind {
+                let range = target.param_max - target.param_min;
+                let offset = m.last_output * target.depth * range;
+                if let Some(entry) = accum.iter_mut().find(|e| e.0 == param_index) {
+                    // Accumulate offset; base_value/min/max are the same for all
+                    // targets with the same param_index.
+                    entry.4 += offset;
+                } else {
+                    accum.push((param_index, target.base_value, target.param_min, target.param_max, offset));
+                }
+            }
+        }
+    }
+
+    for (param_index, base_value, min, max, total_offset) in accum {
+        let modulated = (base_value + total_offset).clamp(min, max);
+        let _ = plugin.set_parameter(param_index, modulated);
+    }
 }
 
 /// After removing a modulator at `removed_index`, clean up cross-mod targets
@@ -1471,10 +1489,8 @@ impl SplitLane {
                 }
                 // Pass 2: cross-mod.
                 apply_cross_mod(&mut self.inst_modulators);
-                // Pass 3: apply plugin-param targets.
-                for m in &self.inst_modulators {
-                    m.apply_to_plugin(inst.as_mut());
-                }
+                // Pass 3: apply plugin-param targets (summing all modulators).
+                apply_modulators_to_plugin(&self.inst_modulators, inst.as_mut());
             }
             // Effect modulators.
             for (fx, mods) in self.effects.iter_mut().zip(self.effect_modulators.iter_mut()) {
@@ -1482,9 +1498,7 @@ impl SplitLane {
                     m.tick(buffer_size, effective_events);
                 }
                 apply_cross_mod(mods);
-                for m in mods.iter() {
-                    m.apply_to_plugin(fx.as_mut());
-                }
+                apply_modulators_to_plugin(mods, fx.as_mut());
             }
         }
 
