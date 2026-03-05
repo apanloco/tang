@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Play { session: play_session }) => {
-            run_session(play_session.or(session), audio_device, midi_device, buffer_size, sample_rate, false)
+            run_session(play_session, audio_device, midi_device, buffer_size, sample_rate, false)
         }
     }
 }
