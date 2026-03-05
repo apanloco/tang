@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
 use clap::Parser;
-use cli::{Cli, Command, EnumerateTarget, PlayArgs};
+use cli::{Cli, Command, EnumerateTarget};
 
 /// Convert a MIDI note number to a human-readable name (e.g. 60 → "C4").
 pub fn note_name(note: u8) -> String {
@@ -68,11 +68,17 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    match cli.command {
-        None => {
-            let session = cli.session;
-            todo!("TUI not yet implemented (session: {session:?})");
-        }
+    let Cli {
+        session,
+        audio_device,
+        midi_device,
+        buffer_size,
+        sample_rate,
+        command,
+    } = cli;
+
+    match command {
+        None => run_session(session, audio_device, midi_device, buffer_size, sample_rate, true),
         Some(Command::Enumerate(target)) => {
             env_logger::init();
             match target {
@@ -114,7 +120,9 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Command::Play(args)) => play(args),
+        Some(Command::Play { session: play_session }) => {
+            run_session(play_session.or(session), audio_device, midi_device, buffer_size, sample_rate, false)
+        }
     }
 }
 
@@ -381,7 +389,14 @@ fn load_modulators(
     Ok(loaded)
 }
 
-fn play(args: PlayArgs) -> anyhow::Result<()> {
+fn run_session(
+    session: Option<String>,
+    audio_device: Option<String>,
+    midi_device: Option<String>,
+    buffer_size: u32,
+    sample_rate: u32,
+    use_tui: bool,
+) -> anyhow::Result<()> {
     // Set up raw mode logger early so plugin loading messages are visible
     log::set_logger(&RAW_MODE_LOGGER).ok();
     log::set_max_level(
@@ -391,11 +406,11 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
             .unwrap_or(log::LevelFilter::Info),
     );
 
-    let sample_rate = args.sample_rate as f32;
-    let max_block_size = args.buffer_size as usize;
+    let sample_rate_f = sample_rate as f32;
+    let max_block_size = buffer_size as usize;
 
     // Load or create session config.
-    let (config, source) = match args.session {
+    let (config, source) = match session {
         Some(s) => {
             let config = session::load(&s)?;
             (config, s)
@@ -428,7 +443,7 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     graph.set_pattern_tx(pattern_tx.clone());
 
     // Start MIDI input
-    let mut midi_mgr = midi::MidiManager::new(midi_tx.clone(), args.midi_device.clone());
+    let mut midi_mgr = midi::MidiManager::new(midi_tx.clone(), midi_device);
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
@@ -436,9 +451,9 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     let engine = audio::AudioEngine::start(
         graph,
         midi_rx,
-        args.audio_device.as_deref(),
-        args.sample_rate,
-        args.buffer_size,
+        audio_device.as_deref(),
+        sample_rate,
+        buffer_size,
     )?;
 
     // Build TUI metadata while loading plugins into the graph.
@@ -465,7 +480,7 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
                 let instrument_source =
                     session::resolve_plugin_path(&inst_config.plugin, session_dir);
                 let mut instrument =
-                    plugin::load(&instrument_source, sample_rate, max_block_size, &runtime)?;
+                    plugin::load(&instrument_source, sample_rate_f, max_block_size, &runtime)?;
                 log::info!(
                     "Loaded instrument for kb={} split={}: {}",
                     kb_idx,
@@ -577,7 +592,7 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
                 let effect_source =
                     session::resolve_plugin_path(&effect_config.plugin, session_dir);
                 let mut effect =
-                    plugin::load(&effect_source, sample_rate, max_block_size, &runtime)?;
+                    plugin::load(&effect_source, sample_rate_f, max_block_size, &runtime)?;
                 log::info!(
                     "Loaded effect for kb={} split={} fx={}: {}",
                     kb_idx,
@@ -666,7 +681,7 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
                     }
                 }).collect();
                 let beats_per_sec = p.bpm / 60.0;
-                let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
+                let length_samples = (p.length_beats / beats_per_sec * sample_rate_f) as u64;
                 let pattern = crate::plugin::chain::Pattern {
                     events: pattern_events,
                     length_samples,
@@ -726,9 +741,9 @@ fn play(args: PlayArgs) -> anyhow::Result<()> {
     }
 
     // --- Branch: TUI view vs plain play mode ---
-    if args.view {
+    if use_tui {
         let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(loaded_keyboards, cmd_tx, midi_tx, runtime, sample_rate, max_block_size, session_path, pattern_rx)?;
+        tui::run(loaded_keyboards, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx)?;
     } else {
         // --- Plain play mode (original) ---
 

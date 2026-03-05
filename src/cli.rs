@@ -3,42 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "tang", about = "Minimal CLI LV2/CLAP instrument host")]
 pub struct Cli {
-    /// Optional session file (launches TUI)
-    pub session: Option<String>,
-
-    #[command(subcommand)]
-    pub command: Option<Command>,
-}
-
-#[derive(Subcommand)]
-pub enum Command {
-    /// List available MIDI inputs, audio outputs, and plugins
-    #[command(subcommand)]
-    Enumerate(EnumerateTarget),
-    /// Describe a plugin (parameters, presets, I/O)
-    Describe {
-        /// Plugin source (lv2:<URI>, clap:<ID>, or path)
-        plugin: String,
-    },
-    /// Load a session and play via MIDI input with virtual piano
-    Play(PlayArgs),
-}
-
-#[derive(Subcommand)]
-pub enum EnumerateTarget {
-    /// List available MIDI input devices
-    Midi,
-    /// List available audio output devices
-    Audio,
-    /// List available LV2 and CLAP plugins
-    Plugins,
-    /// List built-in plugins
-    Builtins,
-}
-
-#[derive(clap::Args)]
-pub struct PlayArgs {
-    /// Path to session file (.toml). If omitted, creates a new session.
+    /// Session file path (.toml). Defaults to a new session.
     pub session: Option<String>,
 
     /// Audio output device name (default: system default)
@@ -57,7 +22,35 @@ pub struct PlayArgs {
     #[arg(long, default_value = "48000")]
     pub sample_rate: u32,
 
-    /// Show the TUI instead of plain play mode
-    #[arg(long)]
-    pub view: bool,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// List available MIDI inputs, audio outputs, and plugins
+    #[command(subcommand)]
+    Enumerate(EnumerateTarget),
+    /// Describe a plugin (parameters, presets, I/O)
+    Describe {
+        /// Plugin source (lv2:<URI>, clap:<ID>, or path)
+        plugin: String,
+    },
+    /// Load a session and play via MIDI input with virtual piano (no TUI)
+    Play {
+        /// Path to session file (.toml). If omitted, creates a new session.
+        session: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EnumerateTarget {
+    /// List available MIDI input devices
+    Midi,
+    /// List available audio output devices
+    Audio,
+    /// List available LV2 and CLAP plugins
+    Plugins,
+    /// List built-in plugins
+    Builtins,
 }
