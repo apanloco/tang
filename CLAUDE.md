@@ -555,11 +555,12 @@ split.
 
 N+2 threads, no async:
 
-- **Audio thread** (cpal) — processes the plugin chain, fills output buffers. The plugin
-  chain is owned (moved into) the audio callback closure — no mutex needed. A plugin swap
-  mechanism exists via bounded crossbeam channels (send new plugin in, receive old plugin
-  back for main-thread drop). Used by the `play` subcommand to load the session's plugins
-  into the audio thread.
+- **Audio thread** (cpal, JACK or ALSA on Linux) — processes the plugin chain, fills
+  output buffers. Promoted to SCHED_FIFO real-time scheduling on first callback. The
+  plugin chain is owned (moved into) the audio callback closure — no mutex needed. A
+  plugin swap mechanism exists via bounded crossbeam channels (send new plugin in,
+  receive old plugin back for main-thread drop). Used by the `play` subcommand to load
+  the session's plugins into the audio thread.
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
 - **Main thread** — runs the crossterm event loop, handles keyboard input. The virtual
   piano lives here and pushes into the same MIDI channel as hardware devices.
@@ -575,6 +576,34 @@ TODO: ratatui TUI event loop on the main thread.
 TODO: Mirror audio output into a lock-free ring buffer for the oscilloscope display.
 
 MIDI devices are hot-pluggable — main thread polls for new devices every ~1s.
+
+## Audio host selection
+
+Tang uses cpal for audio output. The host backend is selected at startup with
+automatic fallback:
+
+| Platform | Preferred | Fallback | Notes |
+|----------|-----------|----------|-------|
+| Linux | JACK (via PipeWire) | ALSA | JACK avoids PipeWire's ALSA compatibility layer, which can destabilize the global audio quantum at small buffer sizes |
+| macOS | CoreAudio | — | Native, no fallback needed |
+| Windows | WASAPI | — | Native, no fallback needed |
+
+On Linux, the JACK host is only used if it can find an output device. This
+requires PipeWire's JACK bridge — either via `pw-jack tang` or by installing
+the system-wide `ld.so.conf` redirect:
+
+```bash
+sudo cp /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf /etc/ld.so.conf.d/
+sudo ldconfig
+```
+
+Without this, Tang falls back to ALSA transparently.
+
+On Linux, the audio callback thread is promoted to `SCHED_FIFO` real-time
+scheduling (priority 50) on its first invocation. This requires the user to
+have `rtprio` privileges (typically via the `audio` group). Fails silently
+if privileges are missing. macOS and Windows handle real-time audio thread
+scheduling natively.
 
 ## Plugin compatibility
 

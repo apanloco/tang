@@ -7,6 +7,97 @@ use crate::plugin::chain::AudioGraph;
 /// Standard MIDI messages are 1–3 bytes; we use a fixed array to avoid heap allocation.
 pub type MidiEvent = (u64, [u8; 3]);
 
+/// Select the best audio host for the current platform.
+/// On Linux, prefer JACK (PipeWire exposes a JACK interface) to avoid the
+/// ALSA compatibility layer which can destabilize PipeWire's global quantum.
+#[cfg(target_os = "linux")]
+fn select_audio_host(buffer_size: u32, sample_rate: u32) -> cpal::Host {
+    let available = cpal::available_hosts();
+    if available.contains(&cpal::HostId::Jack) {
+        // Set PIPEWIRE_QUANTUM before connecting so PipeWire allocates the
+        // requested buffer size for this JACK client.
+        let quantum = format!("{buffer_size}/{sample_rate}");
+        // SAFETY: called once at startup before other threads read env vars.
+        unsafe { std::env::set_var("PIPEWIRE_QUANTUM", &quantum) };
+        log::info!("Set PIPEWIRE_QUANTUM={quantum}");
+
+        match cpal::host_from_id(cpal::HostId::Jack) {
+            Ok(h) => {
+                // Verify JACK can actually find an output device before committing.
+                // Without PipeWire's JACK bridge (pw-jack or ld.so.conf), the host
+                // object is created but cannot connect to any server.
+                if h.default_output_device().is_some() {
+                    log::info!("Using JACK audio host (PipeWire)");
+                    return h;
+                }
+                log::warn!("JACK host has no output devices, falling back to ALSA");
+            }
+            Err(_) => {
+                log::warn!("JACK host unavailable, falling back to ALSA");
+            }
+        }
+        // SAFETY: same single-threaded startup context.
+        unsafe { std::env::remove_var("PIPEWIRE_QUANTUM") };
+    }
+    log::info!("Using default audio host (ALSA)");
+    cpal::default_host()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn select_audio_host(_buffer_size: u32, _sample_rate: u32) -> cpal::Host {
+    log::info!("Using default audio host");
+    cpal::default_host()
+}
+
+/// Attempt to promote the current thread to SCHED_FIFO real-time scheduling.
+/// Called once from the audio callback thread on its first invocation.
+/// Fails silently (with a log warning) if the process lacks `rtprio` privileges.
+#[cfg(target_os = "linux")]
+fn promote_to_realtime() {
+    unsafe {
+        // Check if the thread already has RT scheduling (e.g. PipeWire's JACK
+        // backend promotes callback threads via rtkit).
+        let mut current_param: libc::sched_param = std::mem::zeroed();
+        let mut policy: i32 = 0;
+        if libc::pthread_getschedparam(libc::pthread_self(), &mut policy, &mut current_param) == 0 {
+            // Mask off flag bits — PipeWire may set extra bits on the policy value.
+            let base_policy = policy & 0xF;
+            if base_policy == libc::SCHED_FIFO || base_policy == libc::SCHED_RR {
+                log::info!(
+                    "Audio thread already has RT scheduling (policy={}, priority={})",
+                    if base_policy == libc::SCHED_FIFO { "FIFO" } else { "RR" },
+                    current_param.sched_priority
+                );
+                return;
+            }
+        }
+
+        let param = libc::sched_param { sched_priority: 50 };
+        let ret = libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param);
+        if ret == 0 {
+            log::info!("Audio thread promoted to SCHED_FIFO priority 50");
+        } else {
+            log::warn!(
+                "Could not set real-time scheduling (err {ret}). \
+                 For RT audio, add your user to the 'audio' group \
+                 and ensure rtprio is set in /etc/security/limits.d/"
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn promote_to_realtime() {
+    // macOS cpal (CoreAudio) already runs the audio callback on a real-time thread.
+    log::info!("macOS: CoreAudio handles real-time scheduling");
+}
+
+#[cfg(target_os = "windows")]
+fn promote_to_realtime() {
+    // Windows cpal (WASAPI) already uses MMCSS for real-time audio.
+    log::info!("Windows: WASAPI handles real-time scheduling");
+}
+
 pub struct AudioEngine {
     stream: cpal::Stream,
 }
@@ -41,7 +132,7 @@ impl AudioEngine {
         sample_rate: u32,
         buffer_size: u32,
     ) -> anyhow::Result<Self> {
-        let host = cpal::default_host();
+        let host = select_audio_host(buffer_size, sample_rate);
 
         let device = if let Some(name) = device_name {
             host.output_devices()?
@@ -86,7 +177,8 @@ impl AudioEngine {
 
                 // Log first callback to confirm audio is running
                 if cb_num == 0 {
-                    log::info!("Audio callback running (first call, buffer={})", data.len());
+                    log::info!("Audio callback running (first call, {} frames)", data.len() / num_channels);
+                    promote_to_realtime();
                 }
 
                 // Drain all pending MIDI events (reuse pre-allocated vec)
@@ -131,7 +223,12 @@ impl AudioEngine {
                 }
             },
             move |err| {
-                log::error!("Audio stream error: {err}");
+                let msg = err.to_string();
+                if msg.contains("buffer size changed") {
+                    log::info!("Audio: {msg}");
+                } else {
+                    log::error!("Audio stream error: {msg}");
+                }
             },
             None,
         )?;

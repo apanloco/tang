@@ -1,6 +1,10 @@
 [instrument]
 plugin = "vst3:Pianoteq 9"
 
+[instrument.params]
+"Soft Pedal" = 0.5
+"Sustain Pedal" = 0.50
+
 [instrument.remap]
 "F#2" = { note = "F2", detune = 1.0 }
 "G#2" = { note = "G2", detune = 1.0 }
