@@ -15,7 +15,7 @@ pub struct Cli {
     pub midi_device: Option<String>,
 
     /// Audio buffer size in frames
-    #[arg(long, default_value = "512")]
+    #[arg(long, default_value = "256")]
     pub buffer_size: u32,
 
     /// Sample rate in Hz

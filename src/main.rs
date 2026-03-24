@@ -447,8 +447,8 @@ fn run_session(
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
-    // Start audio engine (silent — no instruments yet)
-    let engine = audio::AudioEngine::start(
+    // Build audio engine (not playing yet — will start after initial commands are queued)
+    let engine = audio::AudioEngine::build(
         graph,
         midi_rx,
         audio_device.as_deref(),
@@ -739,6 +739,9 @@ fn run_session(
             splits: loaded_splits,
         });
     }
+
+    // All initial commands queued — now start the audio stream
+    engine.play()?;
 
     // --- Branch: TUI view vs plain play mode ---
     if use_tui {

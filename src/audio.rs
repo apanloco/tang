@@ -25,7 +25,16 @@ impl AudioEngine {
         log::info!("Audio stream stopped");
     }
 
-    pub fn start(
+    /// Start playing the audio stream. Call after initial commands are queued.
+    pub fn play(&self) -> anyhow::Result<()> {
+        self.stream.play()?;
+        log::info!("Audio stream started");
+        Ok(())
+    }
+
+    /// Build the audio engine but don't start playing yet.
+    /// Call `play()` after queuing initial graph commands.
+    pub fn build(
         mut graph: AudioGraph,
         midi_rx: Receiver<MidiEvent>,
         device_name: Option<&str>,
@@ -126,9 +135,6 @@ impl AudioEngine {
             },
             None,
         )?;
-
-        stream.play()?;
-        log::info!("Audio stream started");
 
         Ok(AudioEngine { stream })
     }
