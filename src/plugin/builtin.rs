@@ -90,8 +90,10 @@ impl Plugin for SineOscillator {
                 }
             }
 
-            // Clamp to avoid blowup with many voices
-            sample = sample.clamp(-1.0, 1.0);
+            // Scale by number of voices to keep output in [-1, 1]
+            if !self.voices.is_empty() {
+                sample /= self.voices.len() as f32;
+            }
 
             // Mono signal to both channels
             audio_out[0][frame] = sample;
