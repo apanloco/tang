@@ -79,20 +79,19 @@ impl Plugin for SineOscillator {
                 event_idx += 1;
             }
 
-            // Render all active voices
+            // Render all active voices with fixed per-voice gain.
+            // Using a fixed gain avoids amplitude discontinuities when
+            // voices are added/removed (dividing by voice count causes
+            // existing voices to suddenly change volume).
+            const VOICE_GAIN: f32 = 0.25;
             let mut sample = 0.0_f32;
             for (&note, phase) in self.voices.iter_mut() {
                 let freq = Self::note_to_freq(note);
-                sample += (2.0 * PI * *phase).sin();
+                sample += (2.0 * PI * *phase).sin() * VOICE_GAIN;
                 *phase += freq / self.sample_rate;
                 if *phase >= 1.0 {
                     *phase -= 1.0;
                 }
-            }
-
-            // Scale by number of voices to keep output in [-1, 1]
-            if !self.voices.is_empty() {
-                sample /= self.voices.len() as f32;
             }
 
             // Mono signal to both channels

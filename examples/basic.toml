@@ -1,0 +1,4 @@
+[[keyboard]]
+[[keyboard.split]]
+[keyboard.split.instrument]
+plugin = "builtin:sine"
