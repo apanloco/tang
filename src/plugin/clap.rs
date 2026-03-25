@@ -330,10 +330,8 @@ pub struct ClapPlugin {
     name: String,
     is_instrument: bool,
     sample_rate: f32,
-    #[expect(dead_code)]
     audio_in_channel_count: usize,
     audio_out_channel_count: usize,
-    #[expect(dead_code)] // used in get_parameter
     params_ext: Option<PluginParams>,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<ClapId>,

@@ -32,7 +32,6 @@ pub struct Lv2Plugin {
     name: String,
     is_instrument: bool,
     sample_rate: f32,
-    #[expect(dead_code)]
     audio_in_count: usize,
     audio_out_count: usize,
     atom_seq_in_count: usize,

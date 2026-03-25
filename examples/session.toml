@@ -1,7 +1,2 @@
-[[keyboard]]
-name = "Keyboard 1"
-
-[[keyboard.split]]
-
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "builtin:sine"

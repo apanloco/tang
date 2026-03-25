@@ -86,58 +86,49 @@ A plugin can be specified using:
 - `vst3:<name>`: VST3 lookup by name (case-insensitive)
 - `builtin:<name>`: built-in plugin (e.g. `builtin:sine`)
 
-### Keyboard/split format
+### Instrument format
 
-Sessions are organized into keyboards and splits. Each keyboard represents a
-MIDI input context. Each split within a keyboard maps a key range to an
-instrument with its own effect chain.
+Sessions are a flat list of instruments. Each instrument has a plugin, an
+optional key range, and its own effect chain.
 
 ```toml
-[[keyboard]]
-name = "Main"
-
-[[keyboard.split]]
-range = "C0-B3"
-
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "lv2:http://tytel.org/helm"
+range = "C0-B3"
 preset = "Pad"
 volume = 0.8
 
-[keyboard.split.instrument.params]
+[instrument.params]
 "reverb_on" = 1.0
 
-[[keyboard.split.effect]]
+[[instrument.effect]]
 plugin = "./reverb.lv2"
 mix = 0.5
 
-[[keyboard.split]]
+[[instrument]]
+plugin = "builtin:sine"
 range = "C4-C8"
-
-[keyboard.split.instrument]
-plugin = "builtin:sine"
 ```
 
-Simple case (one keyboard, one full-range split, no effects):
+Simple case (one instrument, full range, no effects):
 ```toml
-[[keyboard]]
-[[keyboard.split]]
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "builtin:sine"
 ```
 
-- `[[keyboard]]` — one or more keyboards
-  - `name` — display name (optional, defaults to "Keyboard N")
-  - `[[keyboard.split]]` — one or more splits per keyboard
-    - `range` — note range like `"C0-B3"` (optional, omit for full range)
-    - `[keyboard.split.instrument]` — the instrument for this split (required)
-    - `[[keyboard.split.effect]]` — zero or more effects in series
-    - `[[keyboard.split.modulator]]` — zero or more modulators (LFO or ADSR envelope)
+- `[[instrument]]` — one or more instruments
+  - `plugin` — plugin path or URI (required)
+  - `range` — note range like `"C0-B3"` (optional, omit for full range)
+  - `preset` — preset name to load (optional)
+  - `volume` — host-side output gain, applied before effects (default: 1.0, uncapped)
+  - `params` — parameter overrides applied after preset (optional)
+  - `[[instrument.effect]]` — zero or more effects in series
+  - `[[instrument.modulator]]` — zero or more modulators (LFO or ADSR envelope)
 
 ### Legacy format
 
 The legacy format (`[instrument]` + `[[effect]]`) is auto-detected and wrapped
-into a single keyboard with one full-range split:
+into a single instrument with full range:
 
 ```toml
 [instrument]
@@ -175,17 +166,17 @@ Load order per plugin: load → preset → params.
 ### Modulator fields
 
 Modulators are block-rate sources that modulate plugin parameters or sibling
-modulator parameters within the same split. Two types are supported:
+modulator parameters within the same instrument. Two types are supported:
 
 **LFO modulator** (default):
 
 ```toml
-[[keyboard.split.instrument.modulator]]
+[[instrument.modulator]]
 type = "lfo"            # optional, "lfo" is the default
 waveform = "sine"       # sine, triangle, saw, square (default: sine)
 rate = 0.5              # Hz (default: 1.0)
 
-[[keyboard.split.instrument.modulator.target]]
+[[instrument.modulator.target]]
 param = "cutoff"        # parameter name
 depth = 0.5             # fraction of param range, 0.0–1.0 (default: 0.5)
 ```
@@ -193,14 +184,14 @@ depth = 0.5             # fraction of param range, 0.0–1.0 (default: 0.5)
 **ADSR envelope modulator** (triggered by note-on/off):
 
 ```toml
-[[keyboard.split.instrument.modulator]]
+[[instrument.modulator]]
 type = "envelope"
 attack = 0.01           # seconds (default: 0.01)
 decay = 0.3             # seconds (default: 0.3)
 sustain = 0.7           # level 0.0–1.0 (default: 0.7)
 release = 0.5           # seconds (default: 0.5)
 
-[[keyboard.split.instrument.modulator.target]]
+[[instrument.modulator.target]]
 param = "cutoff"
 depth = 0.5
 ```
@@ -217,17 +208,17 @@ instead of (or in addition to) plugin parameters:
 
 ```toml
 # Target a sibling modulator's LFO rate:
-[[keyboard.split.instrument.modulator.target]]
+[[instrument.modulator.target]]
 mod_rate = 0            # index of sibling modulator
 depth = 0.3
 
 # Target a sibling modulator's envelope parameters:
-[[keyboard.split.instrument.modulator.target]]
+[[instrument.modulator.target]]
 mod_attack = 1          # index of sibling modulator
 depth = 0.5
 
 # Target a sibling modulator's target depth:
-[[keyboard.split.instrument.modulator.target]]
+[[instrument.modulator.target]]
 mod_depth = [0, 0]      # [mod_index, target_index]
 depth = 0.2
 ```
@@ -238,37 +229,36 @@ modulation (targeting own index) is prevented.
 
 ### MIDI routing
 
-- Note-on/note-off: filtered by split's key range (inclusive)
-- CC, pitch bend, channel pressure: duplicated to all splits within the keyboard
-- Split with no range: receives all notes (full range)
-- Overlapping ranges: notes go to all matching splits
+- Note-on/note-off: filtered by instrument's key range (inclusive)
+- CC, pitch bend, channel pressure: duplicated to all instruments
+- Instrument with no range: receives all notes (full range)
+- Overlapping ranges: notes go to all matching instruments
 
 ### Pattern recorder/player
 
-Each split can have a recorded MIDI pattern. Recording captures note events for
-a fixed number of beats at the current BPM. Playback transposes the pattern to
-match any held key and loops while the key is held.
+Each instrument can have a recorded MIDI pattern. Recording captures note events
+for a fixed number of beats at the current BPM. Playback transposes the pattern
+to match any held key and loops while the key is held.
 
 **Session config:**
 
 ```toml
-[[keyboard.split]]
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "lv2:http://tytel.org/helm"
 
-[keyboard.split.pattern]
+[instrument.pattern]
 bpm = 120.0
 length_beats = 4.0
 base_note = "C4"
 enabled = true
 
-[[keyboard.split.pattern.events]]
+[[instrument.pattern.events]]
 frame = 0
 status = "on"
 note = "C4"
 velocity = 100
 
-[[keyboard.split.pattern.events]]
+[[instrument.pattern.events]]
 frame = 24000
 status = "off"
 note = "C4"
@@ -303,7 +293,7 @@ using pitch bend to shift it to the correct pitch.
 ### Config syntax
 
 ```toml
-[instrument]
+[[instrument]]
 plugin = "lv2:http://tytel.org/helm"
 pitch_bend_range = 2  # optional, default ±2 semitones
 
@@ -384,24 +374,21 @@ The focused pane is visually distinct so it's always clear which pane is active.
 
 #### Chain (left pane)
 
-The chain is rendered as a tree. Keyboards are top-level nodes, splits are
-children with their instruments, and effects are nested under each split.
+The chain is rendered as a tree. Instruments are top-level nodes, with effects
+and modulators nested under each instrument.
 
 ```
-⌨ Keyboard 1
-├─ ♪ Helm [LV2]            C0-B3
-│  ├─ fx Reverb [LV2]
-│  ├─ fx Compressor [LV2]
-│  └─ ~ LFO 0.5Hz sine → cutoff (50%), resonance (25%)
-└─ ♪ Sine [Built-in]       C4-C8
-⌨ Keyboard 2
-└─ ♪ Lead Synth [CLAP]
-   └─ fx Delay [CLAP]
+♪ Helm [LV2]            C0-B3
+├─ fx Reverb [LV2]
+├─ fx Compressor [LV2]
+└─ ~ LFO 0.5Hz sine → cutoff (50%), resonance (25%)
+♪ Sine [Built-in]       C4-C8
+└─ fx Delay [CLAP]
 ```
 
-Navigation is a single cursor through the flattened tree. Keyboard rows show
-no parameters. Actions (`i`/`a`/`d`/`m`) operate on the split containing the
-selected node. Modulators appear in magenta after effects.
+Navigation is a single cursor through the flattened tree. Actions (`i`/`a`/`d`/`m`)
+operate on the instrument containing the selected node. Modulators appear in
+magenta after effects.
 
 The selected entry is highlighted. Unselected entries are dimmed.
 
@@ -427,8 +414,8 @@ position within its min–max range. The numeric value is shown on the right.
 | `Shift+Up` | Move selected effect up (reorder, focus follows) |
 | `i` | Replace instrument (opens instrument selector popup) |
 | `a` | Add effect (opens effect selector popup) |
-| `m` | Add modulator to current split |
-| `d` | Delete selected plugin/modulator (no confirmation) |
+| `m` | Add modulator to current instrument |
+| `d` | Delete selected instrument/effect/modulator (no confirmation) |
 | `p` | Browse presets for selected plugin (opens preset selector popup) |
 | `t` | Add modulation target (when modulator selected, opens target selector) |
 | `Enter` | Focus parameter list for selected plugin |
@@ -437,8 +424,8 @@ position within its min–max range. The numeric value is shown on the right.
 | `Shift+Left` / `Shift+Right` | Fine decrease / increase selected parameter |
 | `Ctrl+Left` / `Ctrl+Right` | Coarse decrease / increase selected parameter |
 | `e` | Edit parameter value (opens value entry popup) |
-| `r` | Record/stop pattern for current split |
-| `Ctrl+R` | Clear pattern for current split |
+| `r` | Record/stop pattern for current instrument |
+| `Ctrl+R` | Clear pattern for current instrument |
 | `b` | Set global BPM (opens value entry popup) |
 | `Ctrl+S` | Save session |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves to same directory as current session) |
@@ -535,32 +522,32 @@ Notes sound on key press and stop on key release.
 
 ```
 MIDI sources (hardware keyboards + virtual piano)
-  → For each keyboard:
-      → For each split (filtered by note range):
-          → Modulators apply (set_parameter on targets)
-          → Instrument → volume gain → N Effects (in series, each with dry/wet mix)
-  → Sum all splits
+  → For each instrument (filtered by note range):
+      → Modulators apply (set_parameter on targets)
+      → Instrument → volume gain → N Effects (in series, each with dry/wet mix)
+  → Sum all instrument outputs
   → Audio output → clip detection
 ```
 
-Each keyboard contains one or more splits. Each split has its own instrument
-and effect chain. MIDI note events are filtered by split range; CC/pitch bend
-messages are duplicated to all splits. All split outputs are summed together.
+Each instrument has its own effect chain. MIDI note events are filtered by the
+instrument's key range; CC/pitch bend messages are duplicated to all instruments.
+All instrument outputs are summed together.
 
-Effects can be reordered within a split in the Session tab. Instrument volume
-is applied after the instrument's output and before the first effect in that
-split.
+Effects can be reordered within an instrument in the Session tab. Instrument
+volume is applied after the instrument's output and before the first effect in
+that instrument's chain.
 
 ## Architecture
 
 N+2 threads, no async:
 
-- **Audio thread** (cpal, JACK or ALSA on Linux) — processes the plugin chain, fills
-  output buffers. Promoted to SCHED_FIFO real-time scheduling on first callback. The
-  plugin chain is owned (moved into) the audio callback closure — no mutex needed. A
-  plugin swap mechanism exists via bounded crossbeam channels (send new plugin in,
-  receive old plugin back for main-thread drop). Used by the `play` subcommand to load
-  the session's plugins into the audio thread.
+- **Audio thread** (cpal, JACK or ALSA on Linux) — processes the instrument
+  chains, fills output buffers. Promoted to SCHED_FIFO real-time scheduling on
+  first callback. The instrument list is owned (moved into) the audio callback
+  closure — no mutex needed. A plugin swap mechanism exists via bounded crossbeam
+  channels (send new plugin in, receive old plugin back for main-thread drop).
+  Used by the `play` subcommand to load the session's plugins into the audio
+  thread.
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
 - **Main thread** — runs the crossterm event loop, handles keyboard input. The virtual
   piano lives here and pushes into the same MIDI channel as hardware devices.

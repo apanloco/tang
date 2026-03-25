@@ -1,4 +1,4 @@
-[instrument]
+[[instrument]]
 plugin = "vst3:Pianoteq 9"
 
 [instrument.params]
@@ -15,10 +15,10 @@ plugin = "vst3:Pianoteq 9"
 "G#6" = { note = "G6", detune = 1.0 }
 "A#6" = { note = "A6", detune = 1.0 }
 
-[[effect]]
+[[instrument.effect]]
 plugin = "lv2:http://calf.sourceforge.net/plugins/Reverb"
 preset = "Large Empty Hall"
 mix = 0.5
 
-[effect.params]
+[instrument.effect.params]
 "Wet Amount" = 0.4
