@@ -41,5 +41,9 @@ cpal = { version = "0.15", features = ["jack"] }
 [dev-dependencies]
 tempfile = "3"
 
+# lv2-sys upstream (RustAudio/rust-lv2) doesn't compile on macOS — its
+# unsupported.rs hits a compile_error! instead of using the Linux bindings.
+# PR #117 fixes this with a one-line cfg_attr. Until upstream merges it,
+# we pin to akx's fork (1 commit ahead of upstream develop, 0 behind).
 [patch.crates-io]
-lv2-sys = { path = "lv2-sys-patch" }
+lv2-sys = { git = "https://github.com/akx/rust-lv2", rev = "5e3f2c25c89ba73ccc5e557e5fde047101897cdf" }

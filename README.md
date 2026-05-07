@@ -14,6 +14,16 @@ Tang turns your terminal into an instrument. Load your favorite audio plugins, p
 - Per-instrument effect chains, modulation, and pattern loops
 - Cross-platform: Linux, macOS, Windows
 
+## Plugin support
+
+| Format | Linux | macOS | Windows |
+|--------|:-----:|:-----:|:-------:|
+| LV2    | ✅    | ✅    | —       |
+| CLAP   | ✅    | ✅    | ✅      |
+| VST3   | ✅    | ✅    | ✅      |
+
+CLAP and VST3 work everywhere. LV2 needs the `lilv` system library: `apt install liblilv-dev` on Linux, `brew install lilv` on macOS. Not supported on Windows.
+
 ## Quickstart
 
 ```sh

@@ -624,15 +624,27 @@ upgrading ratatui, update this version note.
 Cross-platform: Linux, macOS, Windows.
 
 LV2 support is behind the `lv2` Cargo feature (enabled by default). The LV2
-dependency chain (livi → lilv → lilv-sys) requires system C libraries that are
-only readily available on Linux. macOS and Windows builds use
-`cargo build --no-default-features` for CLAP-only mode.
+dependency chain (livi → lilv → lilv-sys) requires the `lilv` system C
+library:
+
+- **Linux**: `apt install liblilv-dev` (or distro equivalent)
+- **macOS**: `brew install lilv`
+- **Windows**: not supported
+
+The upstream `lv2-sys` crate (RustAudio/rust-lv2) doesn't compile on macOS
+because its `unsupported.rs` is a `compile_error!`. PR #117 fixes this with
+a one-line `cfg_attr` aliasing macOS to the Linux bindings. Until that PR
+merges, `Cargo.toml` patches `lv2-sys` to akx's fork (1 commit ahead, 0
+behind upstream develop). Drop the `[patch.crates-io]` entry once #117 lands.
 
 VST3 support is behind the `vst3` Cargo feature (enabled by default). It uses
 pre-generated bindings (no build-time SDK dependency) and works on all platforms.
 
-CI runs clippy + tests on all three platforms (Linux with LV2+VST3,
-macOS/Windows with VST3 only).
+CI runs clippy + tests on all three platforms:
+
+- **Linux** — full default features (LV2 + VST3 + CLAP), `apt install liblilv-dev libasound2-dev libjack-dev`
+- **macOS** — full default features (LV2 + VST3 + CLAP), `brew install lilv`
+- **Windows** — `--no-default-features --features vst3` (CLAP is not feature-gated, so it's always built; LV2 is unsupported)
 
 ## Future ideas
 

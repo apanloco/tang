@@ -18,21 +18,28 @@ jobs:
           - os: ubuntu-latest
             features: ""
             apt: "liblilv-dev libasound2-dev libjack-dev"
+            brew: ""
           - os: macos-latest
-            features: "--no-default-features"
+            features: ""
             apt: ""
+            brew: "lilv"
           - os: windows-latest
-            features: "--no-default-features"
+            features: "--no-default-features --features vst3"
             apt: ""
+            brew: ""
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install system dependencies
+      - name: Install apt packages
         if: matrix.apt != ''
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Install brew packages
+        if: matrix.brew != ''
+        run: brew install ${{ matrix.brew }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:

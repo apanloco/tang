@@ -1236,6 +1236,7 @@ dependencies = [
 [[package]]
 name = "lv2-sys"
 version = "2.0.0"
+source = "git+https://github.com/akx/rust-lv2?rev=5e3f2c25c89ba73ccc5e557e5fde047101897cdf#5e3f2c25c89ba73ccc5e557e5fde047101897cdf"
 
 [[package]]
 name = "lv2_raw"
