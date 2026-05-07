@@ -1,3 +1,9 @@
+// vst3-rs binding constants (kRealtime, kSample32, kAudio, kInput, kOutput,
+// kPlaying, kTempoValid) are typed as `u32` on Linux/macOS but `i32` on
+// Windows. We cast `as i32` to satisfy Linux/macOS; on Windows those casts
+// are no-ops and clippy::unnecessary_cast fires.
+#![cfg_attr(target_os = "windows", allow(clippy::unnecessary_cast))]
+
 use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
@@ -894,7 +900,7 @@ impl Plugin for Vst3Plugin {
         let event_list_ptr = self.event_list.as_com_ref::<IEventList>().unwrap().as_ptr();
 
         let mut context: ProcessContext = unsafe { std::mem::zeroed() };
-        context.state = kPlaying | kTempoValid;
+        context.state = (kPlaying | kTempoValid) as _;
         context.sampleRate = self.sample_rate as f64;
         context.tempo = 120.0;
 
