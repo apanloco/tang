@@ -20,8 +20,6 @@ tang enumerate audio             # list available audio output devices
 tang describe <plugin>           # show plugin details
 ```
 
-TODO: TUI not yet implemented.
-
 ## Flags
 
 These flags apply to both the TUI and the `play` subcommand:
@@ -46,10 +44,9 @@ one of `plugins`, `builtins`, `midi`, or `audio`.
 **describe** `<plugin>` — prints plugin info (type, parameters, presets) and exits.
 
 **play** `<session.toml>` — loads a session and plays it in the terminal.
-No editing, no TUI.
-Keyboard acts as a virtual piano (Amiga tracker layout).
+No editing, no TUI. Accepts input from any connected MIDI device, and the
+computer keyboard doubles as a virtual piano (Amiga tracker layout).
 Logs MIDI events and audio info to the screen.
-TODO: Remove once the TUI is functional.
 
 ## Config file
 
@@ -74,9 +71,8 @@ read the extra paths directly.
 
 ## Session config
 
-Sessions are TOML files. The TUI (when implemented) will use `~/.config/tang/default.toml` by default.
+Sessions are TOML files. The TUI uses `~/.config/tang/default.toml` by default.
 Sessions are saved explicitly only (no auto-save on parameter change).
-TODO: Session saving not yet implemented.
 A plugin can be specified using:
 - `./path/to/Plugin.lv2`: LV2 bundle by path
 - `./path/to/Plugin.clap`: CLAP bundle by path
@@ -305,15 +301,14 @@ pitch_bend_range = 2  # optional, default ±2 semitones
 
 ## TUI
 
-TODO: The TUI is not yet implemented. The design below is planned.
-
 The interface is tab-based.
 The status bar at the top shows all tabs with the active one highlighted.
 The global BPM is displayed on the right side of the status bar (e.g. `120 BPM`).
-A clip indicator (`CLIP` in red) appears on the right side of the status bar
-when any audio sample exceeds 1.0. It holds for ~2 seconds after the last
-clipped sample, then disappears. Detection is via an `AtomicBool` set by the
-audio thread and read by the render loop.
+
+TODO: A clip indicator (`CLIP` in red) on the right side of the status bar
+when any audio sample exceeds 1.0, holding for ~2 seconds after the last
+clipped sample. Detection via an `AtomicBool` set by the audio thread and
+read by the render loop. Not yet wired up.
 
 ### Tabs
 
@@ -324,7 +319,9 @@ audio thread and read by the render loop.
 | 3 | Oscilloscope | Real-time waveform of audio output |
 | 4 | Help | Keybindings and usage reference (static, scrollable) |
 
-TODO: Oscilloscope tab is a placeholder — not implemented yet.
+TODO: Piano and Oscilloscope tabs are placeholders — only Session and Help
+are functional today. The Piano tab will host the virtual piano UI; the
+Oscilloscope tab will draw the live waveform.
 
 ### Global keybindings
 
@@ -333,11 +330,12 @@ These work from any tab (except where noted for the Piano tab):
 | Key | Action |
 |-----|--------|
 | `1` `2` `3` `4` | Switch to tab by number |
-| `?` | Jump to Help tab |
 | `Tab` | Next tab |
 | `Shift+Tab` | Previous tab |
 | `Ctrl+Q` | Quit |
 | `Ctrl+C` | Quit |
+
+TODO: `?` shortcut to jump to the Help tab.
 
 On the Piano tab, alphanumeric keys are captured for note input. Tab switching
 uses `Tab`/`Shift+Tab` only.
@@ -385,27 +383,35 @@ position within its min–max range. The numeric value is shown on the right.
 
 | Key | Action |
 |-----|--------|
-| `Down` | Move selection down in focused pane |
-| `Up` | Move selection up in focused pane |
-| `Shift+Down` | Move selected effect down (reorder, focus follows) |
-| `Shift+Up` | Move selected effect up (reorder, focus follows) |
+| `Down` / `Up` | Move selection in focused pane |
+| `PageDown` / `PageUp` | Jump selection by a page |
+| `Shift+Down` / `Shift+Up` | Move selected effect down/up (reorder, focus follows) |
 | `i` | Replace instrument (opens instrument selector popup) |
 | `a` | Add effect (opens effect selector popup) |
 | `m` | Add modulator to current instrument |
-| `d` | Delete selected instrument/effect/modulator (no confirmation) |
-| `p` | Browse presets for selected plugin (opens preset selector popup) |
+| `d` | Delete selected instrument/effect/modulator/pattern (no confirmation) |
 | `t` | Add modulation target (when modulator selected, opens target selector) |
-| `Enter` | Focus parameter list for selected plugin |
-| `Esc` | Back to chain focus |
+| `Enter` | Focus parameter list / open value editor on selected parameter |
+| `Esc` | Back to chain focus / close popup |
 | `Left` / `Right` | Decrease / increase selected parameter |
 | `Shift+Left` / `Shift+Right` | Fine decrease / increase selected parameter |
 | `Ctrl+Left` / `Ctrl+Right` | Coarse decrease / increase selected parameter |
-| `e` | Edit parameter value (opens value entry popup) |
+| `/` | Filter parameter list by name |
 | `r` | Record/stop pattern for current instrument |
-| `Ctrl+R` | Clear pattern for current instrument |
 | `b` | Set global BPM (opens value entry popup) |
 | `Ctrl+S` | Save session |
-| `Ctrl+Shift+S` | Save session as (prompts for filename, saves to same directory as current session) |
+
+Mouse: click to select, drag a parameter bar to set its value, drag the
+parameter scrollbar to scroll. Mouse wheel scrolls the parameter list and the
+Help tab.
+
+TODO: `p` to browse presets for the selected plugin (preset selector popup).
+TODO: `e` shortcut to open the value entry popup directly (currently use
+`Enter` from chain focus or land on a param and press `Enter`).
+TODO: `Ctrl+R` shortcut to clear a pattern (currently select the pattern
+node and press `d`).
+TODO: `Ctrl+Shift+S` save-as (prompts for filename, saves to same directory
+as current session).
 
 ### Plugin selector popup
 
@@ -421,6 +427,8 @@ filtered by plugin type.
 
 ### Preset selector popup
 
+TODO: Not yet implemented. Planned design:
+
 Opened by `p` on the Session tab.
 
 - **Top**: text input for filtering by name
@@ -431,16 +439,26 @@ Opened by `p` on the Session tab.
 
 ### Value entry popup
 
-Opened by `e` on a selected parameter.
+Opened by `Enter` on a selected parameter (and also used for `b` BPM entry).
 
 - Shows parameter name, current value, and valid range
 - Text input for entering a numeric value
 - `Enter` — accept value and close popup
 - `Escape` — cancel and close popup
 
+### Modulation target selector popup
+
+Opened by `t` when a modulator is selected. Lists candidate targets for the
+modulator (plugin parameters and sibling modulator parameters).
+
+- `Up` / `Down` — navigate rows
+- `Enter` — bind target and close popup
+- `Escape` — cancel and close popup
+
 ### Piano tab
 
-Captures keyboard for note input. Shows current octave and active notes.
+TODO: Currently a placeholder. Planned: captures keyboard for note input,
+shows current octave and active notes.
 
 | Key | Action |
 |-----|--------|
@@ -534,8 +552,6 @@ MIDI-to-audio communication via bounded MPSC channel (crossbeam-channel, capacit
 Audio thread logging uses `log::debug!()` for per-event messages (filtered out at default
 Info level) and `log::info!()` only once on first callback. No real-time safety issue at
 default log levels.
-
-TODO: ratatui TUI event loop on the main thread.
 
 TODO: Mirror audio output into a lock-free ring buffer for the oscilloscope display.
 
