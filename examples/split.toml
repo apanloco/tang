@@ -1,0 +1,29 @@
+# Example: Two instruments — sine bass on the left hand, triangle lead on the right.
+# Each lane has an LFO driving `detune` for vibrato (slight/slow on bass,
+# deeper/faster on lead).
+
+[[instrument]]
+plugin = "builtin:sine"
+range = "C0-B3"
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 4.0
+
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.04
+
+[[instrument]]
+plugin = "builtin:square"
+range = "C4-C8"
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 7.0
+
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.15

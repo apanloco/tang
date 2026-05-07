@@ -3,30 +3,75 @@ use std::f32::consts::PI;
 
 use super::{ParameterInfo, Plugin, PluginInfo, Preset};
 
-/// A simple polyphonic sine oscillator, useful for testing audio/MIDI without
-/// external plugins.
-pub struct SineOscillator {
-    sample_rate: f32,
-    /// Active voices: MIDI note number → phase accumulator (0.0..1.0)
-    voices: HashMap<u8, f32>,
+#[derive(Copy, Clone)]
+enum Waveform {
+    Sine,
+    Triangle,
+    Square,
 }
 
-impl SineOscillator {
-    fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            voices: HashMap::new(),
+impl Waveform {
+    fn name(self) -> &'static str {
+        match self {
+            Waveform::Sine => "Sine Oscillator",
+            Waveform::Triangle => "Triangle Oscillator",
+            Waveform::Square => "Square Oscillator",
         }
     }
 
-    fn note_to_freq(note: u8) -> f32 {
-        440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
+    fn id(self) -> &'static str {
+        match self {
+            Waveform::Sine => "builtin:sine",
+            Waveform::Triangle => "builtin:triangle",
+            Waveform::Square => "builtin:square",
+        }
+    }
+
+    /// Render one sample for a phase in [0.0, 1.0).
+    fn sample(self, phase: f32) -> f32 {
+        match self {
+            Waveform::Sine => (2.0 * PI * phase).sin(),
+            // Triangle in [-1, 1]: rises 0→1 over [0, 0.25), falls 1→-1 over
+            // [0.25, 0.75), rises -1→0 over [0.75, 1.0).
+            Waveform::Triangle => 4.0 * (phase - (phase + 0.5).floor()).abs() - 1.0,
+            // Naïve square (no anti-aliasing): +1 for first half, -1 for second.
+            Waveform::Square => if phase < 0.5 { 1.0 } else { -1.0 },
+        }
     }
 }
 
-impl Plugin for SineOscillator {
+/// A simple polyphonic oscillator, useful for testing audio/MIDI without
+/// external plugins.
+pub struct Oscillator {
+    sample_rate: f32,
+    /// Active voices: MIDI note number → phase accumulator (0.0..1.0)
+    voices: HashMap<u8, f32>,
+    /// Detune in semitones, applied to all voices. Modulator-friendly.
+    detune: f32,
+    waveform: Waveform,
+}
+
+const DETUNE_MIN: f32 = -2.0;
+const DETUNE_MAX: f32 = 2.0;
+
+impl Oscillator {
+    fn new(sample_rate: f32, waveform: Waveform) -> Self {
+        Self {
+            sample_rate,
+            voices: HashMap::new(),
+            detune: 0.0,
+            waveform,
+        }
+    }
+
+    fn note_to_freq(note: u8, detune_semitones: f32) -> f32 {
+        440.0 * 2.0_f32.powf((note as f32 - 69.0 + detune_semitones) / 12.0)
+    }
+}
+
+impl Plugin for Oscillator {
     fn name(&self) -> &str {
-        "Sine Oscillator"
+        self.waveform.name()
     }
 
     fn is_instrument(&self) -> bool {
@@ -86,8 +131,8 @@ impl Plugin for SineOscillator {
             const VOICE_GAIN: f32 = 0.25;
             let mut sample = 0.0_f32;
             for (&note, phase) in self.voices.iter_mut() {
-                let freq = Self::note_to_freq(note);
-                sample += (2.0 * PI * *phase).sin() * VOICE_GAIN;
+                let freq = Self::note_to_freq(note, self.detune);
+                sample += self.waveform.sample(*phase) * VOICE_GAIN;
                 *phase += freq / self.sample_rate;
                 if *phase >= 1.0 {
                     *phase -= 1.0;
@@ -105,15 +150,30 @@ impl Plugin for SineOscillator {
     }
 
     fn parameters(&self) -> Vec<ParameterInfo> {
-        Vec::new()
+        vec![ParameterInfo {
+            index: 0,
+            name: "detune".into(),
+            min: DETUNE_MIN,
+            max: DETUNE_MAX,
+            default: 0.0,
+        }]
     }
 
-    fn get_parameter(&mut self, _index: u32) -> Option<f32> {
-        None
+    fn get_parameter(&mut self, index: u32) -> Option<f32> {
+        match index {
+            0 => Some(self.detune),
+            _ => None,
+        }
     }
 
-    fn set_parameter(&mut self, index: u32, _value: f32) -> anyhow::Result<()> {
-        anyhow::bail!("no parameter with index {index}")
+    fn set_parameter(&mut self, index: u32, value: f32) -> anyhow::Result<()> {
+        match index {
+            0 => {
+                self.detune = value.clamp(DETUNE_MIN, DETUNE_MAX);
+                Ok(())
+            }
+            _ => anyhow::bail!("no parameter with index {index}"),
+        }
     }
 
     fn presets(&self) -> Vec<Preset> {
@@ -133,10 +193,12 @@ pub fn load(
 ) -> anyhow::Result<Box<dyn Plugin>> {
     let name = source.strip_prefix("builtin:").unwrap_or(source);
     match name {
-        "sine" => Ok(Box::new(SineOscillator::new(sample_rate))),
+        "sine" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Sine))),
+        "triangle" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Triangle))),
+        "square" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Square))),
         _ => anyhow::bail!(
             "Unknown built-in plugin: {name:?}\n\
-             Available built-ins: sine\n\
+             Available built-ins: sine, triangle, square\n\
              Usage: builtin:sine"
         ),
     }
@@ -144,12 +206,16 @@ pub fn load(
 
 /// Return enumeration info for all built-in plugins.
 pub fn enumerate_plugins() -> Vec<PluginInfo> {
-    vec![PluginInfo {
-        name: "Sine Oscillator".into(),
-        id: "builtin:sine".into(),
-        is_instrument: true,
-        param_count: 0,
-        preset_count: 0,
-        path: "(built-in)".into(),
-    }]
+    [Waveform::Sine, Waveform::Triangle, Waveform::Square]
+        .iter()
+        .map(|w| PluginInfo {
+            name: w.name().into(),
+            id: w.id().into(),
+            is_instrument: true,
+            param_count: 1,
+            preset_count: 0,
+            path: "(built-in)".into(),
+            scan_ms: 0,
+        })
+        .collect()
 }

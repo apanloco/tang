@@ -61,15 +61,10 @@ struct ParamSlot {
 }
 
 // ---------------------------------------------------------------------------
-// Keyboard/Split tree model
+// Instrument tree model
 // ---------------------------------------------------------------------------
 
-struct KeyboardNode {
-    name: String,
-    splits: Vec<SplitNode>,
-}
-
-/// Main-thread mirror of pattern state for a split.
+/// Main-thread mirror of pattern state for an instrument.
 struct PatternState {
     bpm: f32,
     length_beats: f32,
@@ -80,12 +75,15 @@ struct PatternState {
     recording: bool,
 }
 
-struct SplitNode {
+struct InstrumentNode {
     range: Option<(u8, u8)>,
     transpose: i8,
     instrument: Option<PluginSlot>,
     effects: Vec<PluginSlot>,
     pattern: Option<PatternState>,
+    /// Carried through from session config; not editable in the TUI.
+    pitch_bend_range: f64,
+    remap: std::collections::HashMap<String, crate::session::RemapTarget>,
 }
 
 enum ModSourceSlot {
@@ -116,42 +114,35 @@ struct ModTargetSlot {
     param_max: f32,
 }
 
-/// Addresses a specific node in the keyboard tree.
+/// Addresses a specific node in the instrument tree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TreeAddress {
-    Keyboard(usize),
-    Split { kb: usize, split: usize },
-    Instrument { kb: usize, split: usize },
-    Effect { kb: usize, split: usize, index: usize },
-    /// The pattern node for a split.
-    Pattern { kb: usize, split: usize },
+    Instrument(usize),
+    Effect { inst: usize, index: usize },
+    Pattern(usize),
     /// A modulator attached to a plugin.
     /// parent_slot: 0 = instrument, 1..N = effects.
     /// index: index within that plugin's modulator list.
-    Modulator { kb: usize, split: usize, parent_slot: usize, index: usize },
+    Modulator { inst: usize, parent_slot: usize, index: usize },
 }
 
 impl TreeAddress {
-    /// Get the (kb, split) indices for this address, if it's a split or plugin node.
-    fn kb_split(&self) -> Option<(usize, usize)> {
+    /// Get the instrument index for this address.
+    fn inst(&self) -> Option<usize> {
         match *self {
-            TreeAddress::Keyboard(_) => None,
-            TreeAddress::Split { kb, split } => Some((kb, split)),
-            TreeAddress::Instrument { kb, split } => Some((kb, split)),
-            TreeAddress::Effect { kb, split, .. } => Some((kb, split)),
-            TreeAddress::Pattern { kb, split } => Some((kb, split)),
-            TreeAddress::Modulator { kb, split, .. } => Some((kb, split)),
+            TreeAddress::Instrument(inst) => Some(inst),
+            TreeAddress::Effect { inst, .. } => Some(inst),
+            TreeAddress::Pattern(inst) => Some(inst),
+            TreeAddress::Modulator { inst, .. } => Some(inst),
         }
     }
 
     /// Get the audio thread slot index (0 = instrument, 1..N = effects).
     fn slot(&self) -> usize {
         match *self {
-            TreeAddress::Keyboard(_) => 0,
-            TreeAddress::Split { .. } => 0,
-            TreeAddress::Instrument { .. } => 0,
+            TreeAddress::Instrument(_) => 0,
             TreeAddress::Effect { index, .. } => index + 1,
-            TreeAddress::Pattern { .. } => 0,
+            TreeAddress::Pattern(_) => 0,
             TreeAddress::Modulator { parent_slot, .. } => parent_slot,
         }
     }
@@ -173,15 +164,8 @@ struct TreeEntry {
 /// Build the action bar items for the current tree selection.
 fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> {
     match addr {
-        Some(TreeAddress::Keyboard(_)) => vec![
-            ("a", "add split"),
-        ],
-        Some(TreeAddress::Split { .. }) => vec![
-            ("a", "add instrument"),
-            ("r", "record"),
-            ("d", "delete"),
-        ],
-        Some(TreeAddress::Instrument { .. }) => vec![
+        Some(TreeAddress::Instrument(_)) => vec![
+            ("i", "instrument"),
             ("a", "add effect"),
             ("m", "modulate"),
             ("d", "delete"),
@@ -193,7 +177,7 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
             ("d", "delete"),
             ("p", "presets"),
         ],
-        Some(TreeAddress::Pattern { .. }) => vec![
+        Some(TreeAddress::Pattern(_)) => vec![
             ("r", "record"),
             ("d", "clear"),
         ],
@@ -241,15 +225,13 @@ struct TargetSelectorState {
     filter: FilterListState,
     items: Vec<FilterListItem>,
     entries: Vec<TargetEntry>,
-    kb: usize,
-    split: usize,
+    inst: usize,
     parent_slot: usize,
     mod_index: usize,
 }
 
 struct RangeEditState {
     input: TextInputState,
-    kb: usize,
 }
 
 #[derive(Default, Clone)]
@@ -267,7 +249,7 @@ struct Areas {
 
 struct State {
     active_tab: usize,
-    keyboards: Vec<KeyboardNode>,
+    instruments: Vec<InstrumentNode>,
     tree_entries: Vec<TreeEntry>,
     chain_state: ListState,
     param_state: ListState,
@@ -305,7 +287,7 @@ struct State {
 
 impl State {
     fn rebuild_tree(&mut self) {
-        self.tree_entries = build_tree_entries(&self.keyboards);
+        self.tree_entries = build_tree_entries(&self.instruments);
         self.chain_state.set_len(self.tree_entries.len());
         self.sync_param_state();
     }
@@ -319,21 +301,20 @@ impl State {
         if sel < self.tree_entries.len() {
             let addr = &self.tree_entries[sel].address;
             let param_len = match *addr {
-                TreeAddress::Pattern { kb, split } => {
-                    self.keyboards.get(kb)
-                        .and_then(|k| k.splits.get(split))
-                        .and_then(|s| s.pattern.as_ref())
+                TreeAddress::Pattern(inst) => {
+                    self.instruments.get(inst)
+                        .and_then(|n| n.pattern.as_ref())
                         .map_or(0, |p| {
                             let mut n = 3; // Length + Enabled + Loop
                             if !p.events.is_empty() { n += 1; } // Notes info
                             n
                         })
                 }
-                TreeAddress::Modulator { kb, split, parent_slot, index } => {
+                TreeAddress::Modulator { inst, parent_slot, index } => {
                     let plugin = if parent_slot == 0 {
-                        self.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|s| s.instrument.as_ref())
+                        self.instruments.get(inst).and_then(|n| n.instrument.as_ref())
                     } else {
-                        self.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|s| s.effects.get(parent_slot - 1))
+                        self.instruments.get(inst).and_then(|n| n.effects.get(parent_slot - 1))
                     };
                     plugin.and_then(|p| p.modulators.get(index))
                         .map_or(0, |m| {
@@ -345,7 +326,6 @@ impl State {
                             fixed + 1 + m.targets.len()
                         })
                 }
-                TreeAddress::Split { .. } => 1, // Transpose
                 _ => self.plugin_at(addr).map_or(0, |p| p.params.len()),
             };
             self.param_state.set_len(param_len);
@@ -360,7 +340,7 @@ impl State {
         let is_plugin = sel < self.tree_entries.len()
             && matches!(
                 self.tree_entries[sel].address,
-                TreeAddress::Instrument { .. } | TreeAddress::Effect { .. }
+                TreeAddress::Instrument(_) | TreeAddress::Effect { .. }
             );
         if !is_plugin {
             self.param_filtered.clear();
@@ -397,7 +377,7 @@ impl State {
         }
         let is_plugin = matches!(
             self.tree_entries[sel].address,
-            TreeAddress::Instrument { .. } | TreeAddress::Effect { .. }
+            TreeAddress::Instrument(_) | TreeAddress::Effect { .. }
         );
         if is_plugin && !self.param_filtered.is_empty() {
             self.param_filtered.get(self.param_state.selected).copied()
@@ -415,11 +395,11 @@ impl State {
         }
         let addr = self.tree_entries[sel].address;
         match addr {
-            TreeAddress::Modulator { kb, split, parent_slot, index } => {
+            TreeAddress::Modulator { inst, parent_slot, index } => {
                 let plugin = if parent_slot == 0 {
-                    self.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|s| s.instrument.as_ref())
+                    self.instruments.get(inst).and_then(|n| n.instrument.as_ref())
                 } else {
-                    self.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|s| s.effects.get(parent_slot - 1))
+                    self.instruments.get(inst).and_then(|n| n.effects.get(parent_slot - 1))
                 };
                 let m = plugin?.modulators.get(index)?;
                 let pa = self.param_state.selected;
@@ -459,11 +439,11 @@ impl State {
         }
         let addr = self.tree_entries[sel].address;
         match addr {
-            TreeAddress::Modulator { kb, split, parent_slot, index } => {
+            TreeAddress::Modulator { inst, parent_slot, index } => {
                 let plugin = if parent_slot == 0 {
-                    self.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|s| s.instrument.as_ref())
+                    self.instruments.get(inst).and_then(|n| n.instrument.as_ref())
                 } else {
-                    self.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|s| s.effects.get(parent_slot - 1))
+                    self.instruments.get(inst).and_then(|n| n.effects.get(parent_slot - 1))
                 };
                 let Some(m) = plugin.and_then(|p| p.modulators.get(index)) else { return false };
                 let pa = self.param_state.selected;
@@ -487,12 +467,12 @@ impl State {
     /// Get a reference to the PluginSlot at the given tree address.
     fn plugin_at(&self, addr: &TreeAddress) -> Option<&PluginSlot> {
         match *addr {
-            TreeAddress::Keyboard(_) | TreeAddress::Split { .. } | TreeAddress::Pattern { .. } | TreeAddress::Modulator { .. } => None,
-            TreeAddress::Instrument { kb, split } => {
-                self.keyboards.get(kb)?.splits.get(split)?.instrument.as_ref()
+            TreeAddress::Pattern(_) | TreeAddress::Modulator { .. } => None,
+            TreeAddress::Instrument(inst) => {
+                self.instruments.get(inst)?.instrument.as_ref()
             }
-            TreeAddress::Effect { kb, split, index } => {
-                self.keyboards.get(kb)?.splits.get(split)?.effects.get(index)
+            TreeAddress::Effect { inst, index } => {
+                self.instruments.get(inst)?.effects.get(index)
             }
         }
     }
@@ -500,12 +480,12 @@ impl State {
     /// Get a mutable reference to the PluginSlot at the given tree address.
     fn plugin_at_mut(&mut self, addr: &TreeAddress) -> Option<&mut PluginSlot> {
         match *addr {
-            TreeAddress::Keyboard(_) | TreeAddress::Split { .. } | TreeAddress::Pattern { .. } | TreeAddress::Modulator { .. } => None,
-            TreeAddress::Instrument { kb, split } => {
-                self.keyboards.get_mut(kb)?.splits.get_mut(split)?.instrument.as_mut()
+            TreeAddress::Pattern(_) | TreeAddress::Modulator { .. } => None,
+            TreeAddress::Instrument(inst) => {
+                self.instruments.get_mut(inst)?.instrument.as_mut()
             }
-            TreeAddress::Effect { kb, split, index } => {
-                self.keyboards.get_mut(kb)?.splits.get_mut(split)?.effects.get_mut(index)
+            TreeAddress::Effect { inst, index } => {
+                self.instruments.get_mut(inst)?.effects.get_mut(index)
             }
         }
     }
@@ -562,12 +542,12 @@ impl State {
         };
         let entry = &self.catalog[chosen];
 
-        // Determine which keyboard/split to operate on from current selection.
-        let (kb, split) = self.selected_kb_split().unwrap_or((0, 0));
+        // Determine which instrument to operate on from current selection.
+        let inst = self.selected_inst().unwrap_or(0);
 
         // Load the real plugin.
         let source = &entry.id;
-        log::info!("Loading plugin '{}' (id={}) into kb={} split={}", entry.name, source, kb, split);
+        log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
         let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
             Ok(p) => p,
             Err(e) => {
@@ -606,27 +586,25 @@ impl State {
                     .map(|_| Vec::new())
                     .collect();
                 let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
-                    kb,
-                    split,
+                    inst,
                     instrument: loaded,
                     inst_buf,
                     remapper: None,
                 });
-                if let Some(sp) = self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-                    sp.instrument = Some(slot);
+                if let Some(inst_node) = self.instruments.get_mut(inst) {
+                    inst_node.instrument = Some(slot);
                 }
             }
             SelectorMode::Effect => {
-                if let Some(sp) = self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-                    let insert_at = sp.effects.len();
+                if let Some(inst_node) = self.instruments.get_mut(inst) {
+                    let insert_at = inst_node.effects.len();
                     let _ = self.cmd_tx.send(GraphCommand::InsertEffect {
-                        kb,
-                        split,
+                        inst,
                         index: insert_at,
                         effect: loaded,
                         mix: 1.0,
                     });
-                    sp.effects.push(slot);
+                    inst_node.effects.push(slot);
                 }
             }
         }
@@ -635,37 +613,22 @@ impl State {
         self.rebuild_tree();
     }
 
-    /// Get the (kb, split) for the currently selected tree entry.
-    fn selected_kb_split(&self) -> Option<(usize, usize)> {
-        let addr = self.selected_address()?;
-        match *addr {
-            TreeAddress::Keyboard(kb) => {
-                // Select the first split of this keyboard, if any.
-                if self.keyboards.get(kb).is_some_and(|k| !k.splits.is_empty()) {
-                    Some((kb, 0))
-                } else {
-                    None
-                }
-            }
-            TreeAddress::Split { kb, split }
-            | TreeAddress::Instrument { kb, split }
-            | TreeAddress::Effect { kb, split, .. }
-            | TreeAddress::Pattern { kb, split }
-            | TreeAddress::Modulator { kb, split, .. } => Some((kb, split)),
-        }
+    /// Get the instrument index for the currently selected tree entry.
+    fn selected_inst(&self) -> Option<usize> {
+        self.selected_address()?.inst()
     }
 
-    fn open_target_selector(&mut self, kb: usize, split: usize, parent_slot: usize, mod_index: usize) {
-        let sp = match self.keyboards.get(kb).and_then(|k| k.splits.get(split)) {
-            Some(sp) => sp,
+    fn open_target_selector(&mut self, inst: usize, parent_slot: usize, mod_index: usize) {
+        let inst_node = match self.instruments.get(inst) {
+            Some(n) => n,
             None => return,
         };
 
         // Get the parent plugin's params.
         let plugin = if parent_slot == 0 {
-            sp.instrument.as_ref()
+            inst_node.instrument.as_ref()
         } else {
-            sp.effects.get(parent_slot - 1)
+            inst_node.effects.get(parent_slot - 1)
         };
         let plugin = match plugin {
             Some(p) => p,
@@ -751,8 +714,7 @@ impl State {
             filter,
             items,
             entries,
-            kb,
-            split,
+            inst,
             parent_slot,
             mod_index,
         });
@@ -777,21 +739,18 @@ impl State {
             param_max: entry.param_max,
         };
         let _ = self.cmd_tx.send(GraphCommand::AddModTarget {
-            kb: ts.kb,
-            split: ts.split,
+            inst: ts.inst,
             parent_slot: ts.parent_slot,
             mod_index: ts.mod_index,
             target,
         });
 
         let plugin = if ts.parent_slot == 0 {
-            self.keyboards.get_mut(ts.kb)
-                .and_then(|k| k.splits.get_mut(ts.split))
-                .and_then(|s| s.instrument.as_mut())
+            self.instruments.get_mut(ts.inst)
+                .and_then(|n| n.instrument.as_mut())
         } else {
-            self.keyboards.get_mut(ts.kb)
-                .and_then(|k| k.splits.get_mut(ts.split))
-                .and_then(|s| s.effects.get_mut(ts.parent_slot - 1))
+            self.instruments.get_mut(ts.inst)
+                .and_then(|n| n.effects.get_mut(ts.parent_slot - 1))
         };
         if let Some(m) = plugin
             .and_then(|p| p.modulators.get_mut(ts.mod_index))
@@ -814,28 +773,22 @@ impl State {
             return;
         }
         let addr = self.tree_entries[sel].address;
-        let (kb, split) = match addr.kb_split() {
-            Some(ks) => ks,
+        let inst = match addr.inst() {
+            Some(i) => i,
             None => return,
         };
 
-        // Handle split params (transpose).
-        if let TreeAddress::Split { .. } = addr {
-            self.adjust_split_param(kb, split, delta);
-            return;
-        }
-
         // Handle pattern params separately.
-        if let TreeAddress::Pattern { .. } = addr {
+        if let TreeAddress::Pattern(_) = addr {
             let pa = self.param_state.selected;
-            self.adjust_pattern_param(kb, split, pa, delta);
+            self.adjust_pattern_param(inst, pa, delta);
             return;
         }
 
         // Handle modulator params separately.
         if let TreeAddress::Modulator { parent_slot, index, .. } = addr {
             let pa = self.param_state.selected;
-            self.adjust_modulator_param(kb, split, parent_slot, index, pa, delta);
+            self.adjust_modulator_param(inst, parent_slot, index, pa, delta);
             return;
         }
 
@@ -849,8 +802,7 @@ impl State {
             let new_value = param.value;
             let idx = param.index;
             let _ = self.cmd_tx.send(GraphCommand::SetParameter {
-                kb,
-                split,
+                inst,
                 slot,
                 param_index: idx,
                 value: new_value,
@@ -859,32 +811,9 @@ impl State {
         }
     }
 
-    fn adjust_split_param(&mut self, kb: usize, split: usize, delta: f32) {
-        let sp = match self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-            Some(s) => s,
-            None => return,
-        };
-        // Ctrl modifier gives large delta (range*0.10 ≈ 9.6) → octave jump (±12).
-        // Normal/Shift gives smaller delta → single semitone (±1).
-        let step: i16 = if delta.abs() >= 5.0 {
-            if delta > 0.0 { 12 } else { -12 }
-        } else if delta > 0.0 {
-            1
-        } else {
-            -1
-        };
-        sp.transpose = (sp.transpose as i16 + step).clamp(-48, 48) as i8;
-        let _ = self.cmd_tx.send(GraphCommand::SetTranspose {
-            kb, split, semitones: sp.transpose,
-        });
-        self.dirty = true;
-        self.rebuild_tree();
-    }
-
-    fn adjust_pattern_param(&mut self, kb: usize, split: usize, pa: usize, delta: f32) {
-        let pat = match self.keyboards.get_mut(kb)
-            .and_then(|k| k.splits.get_mut(split))
-            .and_then(|s| s.pattern.as_mut())
+    fn adjust_pattern_param(&mut self, inst: usize, pa: usize, delta: f32) {
+        let pat = match self.instruments.get_mut(inst)
+            .and_then(|n| n.pattern.as_mut())
         {
             Some(p) => p,
             None => return,
@@ -894,7 +823,7 @@ impl State {
                 // Length (beats)
                 pat.length_beats = (pat.length_beats + delta).clamp(1.0, 32.0);
                 let _ = self.cmd_tx.send(GraphCommand::SetPatternLength {
-                    kb, split, beats: pat.length_beats,
+                    inst, beats: pat.length_beats,
                 });
                 self.dirty = true;
                 self.rebuild_tree();
@@ -903,7 +832,7 @@ impl State {
                 // Enabled (enum toggle)
                 pat.enabled = !pat.enabled;
                 let _ = self.cmd_tx.send(GraphCommand::SetPatternEnabled {
-                    kb, split, enabled: pat.enabled,
+                    inst, enabled: pat.enabled,
                 });
                 self.dirty = true;
                 self.rebuild_tree();
@@ -912,7 +841,7 @@ impl State {
                 // Loop (enum toggle)
                 pat.looping = !pat.looping;
                 let _ = self.cmd_tx.send(GraphCommand::SetPatternLooping {
-                    kb, split, looping: pat.looping,
+                    inst, looping: pat.looping,
                 });
                 self.dirty = true;
             }
@@ -920,11 +849,11 @@ impl State {
         }
     }
 
-    fn adjust_modulator_param(&mut self, kb: usize, split: usize, parent_slot: usize, mod_index: usize, pa: usize, delta: f32) {
+    fn adjust_modulator_param(&mut self, inst: usize, parent_slot: usize, mod_index: usize, pa: usize, delta: f32) {
         let plugin = if parent_slot == 0 {
-            self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|s| s.instrument.as_mut())
+            self.instruments.get_mut(inst).and_then(|n| n.instrument.as_mut())
         } else {
-            self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|s| s.effects.get_mut(parent_slot - 1))
+            self.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(parent_slot - 1))
         };
         let m = match plugin.and_then(|p| p.modulators.get_mut(mod_index)) {
             Some(m) => m,
@@ -944,7 +873,7 @@ impl State {
             let graph_source = mod_source_slot_to_graph(&new_source);
             m.source = new_source;
             let _ = self.cmd_tx.send(GraphCommand::SetModulatorSource {
-                kb, split, parent_slot, mod_index,
+                inst, parent_slot, mod_index,
                 source: graph_source,
             });
             self.param_state.selected = 0;
@@ -956,7 +885,7 @@ impl State {
                         // Waveform (enum).
                         *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
                         let _ = self.cmd_tx.send(GraphCommand::SetModulatorWaveform {
-                            kb, split, parent_slot, mod_index,
+                            inst, parent_slot, mod_index,
                             waveform: *waveform,
                         });
                         self.rebuild_tree();
@@ -964,7 +893,7 @@ impl State {
                         // Rate.
                         *rate = (*rate + delta).clamp(0.01, 50.0);
                         let _ = self.cmd_tx.send(GraphCommand::SetModulatorRate {
-                            kb, split, parent_slot, mod_index,
+                            inst, parent_slot, mod_index,
                             rate: *rate,
                         });
                         self.rebuild_tree();
@@ -973,7 +902,7 @@ impl State {
                     } else if let Some(t) = m.targets.get_mut(pa - 4) {
                         t.depth = (t.depth + delta).clamp(0.0, 1.0);
                         let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                            kb, split, parent_slot, mod_index,
+                            inst, parent_slot, mod_index,
                             target_index: pa - 4,
                             depth: t.depth,
                         });
@@ -1001,7 +930,7 @@ impl State {
                             if let Some(t) = m.targets.get_mut(target_idx) {
                                 t.depth = (t.depth + delta).clamp(0.0, 1.0);
                                 let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                    kb, split, parent_slot, mod_index,
+                                    inst, parent_slot, mod_index,
                                     target_index: target_idx,
                                     depth: t.depth,
                                 });
@@ -1010,7 +939,7 @@ impl State {
                     }
                     if (1..=4).contains(&pa) {
                         let _ = self.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
-                            kb, split, parent_slot, mod_index,
+                            inst, parent_slot, mod_index,
                             attack: *attack, decay: *decay, sustain: *sustain, release: *release,
                         });
                     }
@@ -1026,38 +955,23 @@ impl State {
             return;
         }
         let addr = self.tree_entries[sel].address;
-        let (kb, split) = match addr.kb_split() {
-            Some(ks) => ks,
+        let inst = match addr.inst() {
+            Some(i) => i,
             None => return,
         };
 
-        // Handle split params (transpose).
-        if let TreeAddress::Split { .. } = addr {
-            let clamped = (value as i8).clamp(-48, 48);
-            if let Some(sp) = self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-                sp.transpose = clamped;
-                let _ = self.cmd_tx.send(GraphCommand::SetTranspose {
-                    kb, split, semitones: clamped,
-                });
-                self.dirty = true;
-                self.rebuild_tree();
-            }
-            return;
-        }
-
         // Handle pattern params.
-        if let TreeAddress::Pattern { .. } = addr {
+        if let TreeAddress::Pattern(_) = addr {
             let pa = self.param_state.selected;
             if pa == 0 {
                 // Length (beats) — set directly.
                 let clamped = value.clamp(1.0, 32.0);
-                if let Some(pat) = self.keyboards.get_mut(kb)
-                    .and_then(|k| k.splits.get_mut(split))
-                    .and_then(|s| s.pattern.as_mut())
+                if let Some(pat) = self.instruments.get_mut(inst)
+                    .and_then(|n| n.pattern.as_mut())
                 {
                     pat.length_beats = clamped;
                     let _ = self.cmd_tx.send(GraphCommand::SetPatternLength {
-                        kb, split, beats: clamped,
+                        inst, beats: clamped,
                     });
                     self.dirty = true;
                     self.rebuild_tree();
@@ -1069,7 +983,7 @@ impl State {
         // Handle modulator params.
         if let TreeAddress::Modulator { parent_slot, index, .. } = addr {
             let pa = self.param_state.selected;
-            self.set_modulator_param_value(kb, split, parent_slot, index, pa, value);
+            self.set_modulator_param_value(inst, parent_slot, index, pa, value);
             return;
         }
 
@@ -1083,8 +997,7 @@ impl State {
             let new_value = param.value;
             let idx = param.index;
             let _ = self.cmd_tx.send(GraphCommand::SetParameter {
-                kb,
-                split,
+                inst,
                 slot,
                 param_index: idx,
                 value: new_value,
@@ -1093,11 +1006,11 @@ impl State {
         }
     }
 
-    fn set_modulator_param_value(&mut self, kb: usize, split: usize, parent_slot: usize, mod_index: usize, pa: usize, value: f32) {
+    fn set_modulator_param_value(&mut self, inst: usize, parent_slot: usize, mod_index: usize, pa: usize, value: f32) {
         let plugin = if parent_slot == 0 {
-            self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|s| s.instrument.as_mut())
+            self.instruments.get_mut(inst).and_then(|n| n.instrument.as_mut())
         } else {
-            self.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|s| s.effects.get_mut(parent_slot - 1))
+            self.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(parent_slot - 1))
         };
         let m = match plugin.and_then(|p| p.modulators.get_mut(mod_index)) {
             Some(m) => m,
@@ -1115,7 +1028,7 @@ impl State {
                 } else if pa == 2 {
                     *rate = value.clamp(0.01, 50.0);
                     let _ = self.cmd_tx.send(GraphCommand::SetModulatorRate {
-                        kb, split, parent_slot, mod_index, rate: *rate,
+                        inst, parent_slot, mod_index, rate: *rate,
                     });
                     self.rebuild_tree();
                 } else if pa == 3 {
@@ -1124,7 +1037,7 @@ impl State {
                 } else if let Some(t) = m.targets.get_mut(pa - 4) {
                     t.depth = value.clamp(0.0, 1.0);
                     let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                        kb, split, parent_slot, mod_index,
+                        inst, parent_slot, mod_index,
                         target_index: pa - 4,
                         depth: t.depth,
                     });
@@ -1142,7 +1055,7 @@ impl State {
                         if let Some(t) = m.targets.get_mut(target_idx) {
                             t.depth = value.clamp(0.0, 1.0);
                             let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                kb, split, parent_slot, mod_index,
+                                inst, parent_slot, mod_index,
                                 target_index: target_idx,
                                 depth: t.depth,
                             });
@@ -1152,7 +1065,7 @@ impl State {
                     }
                 }
                 let _ = self.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
-                    kb, split, parent_slot, mod_index,
+                    inst, parent_slot, mod_index,
                     attack: *attack, decay: *decay, sustain: *sustain, release: *release,
                 });
             }
@@ -1213,59 +1126,54 @@ impl State {
                 })
                 .collect()
         };
-        let save_keyboards: Vec<crate::session::SaveKeyboard> = self
-            .keyboards
+        let save_instruments: Vec<crate::session::SaveInstrumentSlot> = self
+            .instruments
             .iter()
-            .map(|kb| crate::session::SaveKeyboard {
-                name: kb.name.clone(),
-                splits: kb
-                    .splits
-                    .iter()
-                    .map(|sp| crate::session::SaveSplit {
-                        range: sp.range,
-                        transpose: sp.transpose,
-                        instrument: sp.instrument.as_ref().map(|inst| {
-                            crate::session::SaveInstrument {
-                                plugin: inst.id.clone(),
-                                volume: 1.0, // TODO: track volume in PluginSlot
-                                params: inst
-                                    .params
-                                    .iter()
-                                    .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
-                                    .map(|p| (p.name.clone(), p.value))
-                                    .collect(),
-                                modulators: mods_to_save(&inst.modulators),
-                            }
-                        }),
-                        effects: sp
-                            .effects
+            .map(|sp| crate::session::SaveInstrumentSlot {
+                range: sp.range,
+                transpose: sp.transpose,
+                instrument: sp.instrument.as_ref().map(|inst| {
+                    crate::session::SaveInstrument {
+                        plugin: inst.id.clone(),
+                        volume: 1.0, // TODO: track volume in PluginSlot
+                        params: inst
+                            .params
                             .iter()
-                            .map(|fx| crate::session::SaveEffect {
-                                plugin: fx.id.clone(),
-                                mix: 1.0, // TODO: track mix in PluginSlot
-                                params: fx
-                                    .params
-                                    .iter()
-                                    .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
-                                    .map(|p| (p.name.clone(), p.value))
-                                    .collect(),
-                                modulators: mods_to_save(&fx.modulators),
-                            })
+                            .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
+                            .map(|p| (p.name.clone(), p.value))
                             .collect(),
-                        pattern: sp.pattern.as_ref().map(|p| crate::session::SavePattern {
-                            bpm: p.bpm,
-                            length_beats: p.length_beats,
-                            looping: p.looping,
-                            base_note: p.base_note,
-                            events: p.events.clone(),
-                            enabled: p.enabled,
-                        }),
+                        modulators: mods_to_save(&inst.modulators),
+                        pitch_bend_range: sp.pitch_bend_range,
+                        remap: sp.remap.clone(),
+                    }
+                }),
+                effects: sp
+                    .effects
+                    .iter()
+                    .map(|fx| crate::session::SaveEffect {
+                        plugin: fx.id.clone(),
+                        mix: 1.0, // TODO: track mix in PluginSlot
+                        params: fx
+                            .params
+                            .iter()
+                            .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
+                            .map(|p| (p.name.clone(), p.value))
+                            .collect(),
+                        modulators: mods_to_save(&fx.modulators),
                     })
                     .collect(),
+                pattern: sp.pattern.as_ref().map(|p| crate::session::SavePattern {
+                    bpm: p.bpm,
+                    length_beats: p.length_beats,
+                    looping: p.looping,
+                    base_note: p.base_note,
+                    events: p.events.clone(),
+                    enabled: p.enabled,
+                }),
             })
             .collect();
 
-        match crate::session::save(&path, &save_keyboards) {
+        match crate::session::save(&path, &save_instruments) {
             Ok(()) => {
                 self.dirty = false;
                 log::info!("Session saved to {}", path.display());
@@ -1281,18 +1189,16 @@ impl State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Information about a loaded keyboard for the TUI.
-pub struct LoadedKeyboard {
-    pub name: String,
-    pub splits: Vec<LoadedSplit>,
-}
-
-pub struct LoadedSplit {
+/// Information about a loaded instrument slot for the TUI.
+pub struct LoadedInstrument {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
     pub instrument: Option<LoadedPlugin>,
     pub effects: Vec<LoadedPlugin>,
     pub pattern: Option<LoadedPattern>,
+    /// Carried through from session config; not editable in the TUI.
+    pub pitch_bend_range: f64,
+    pub remap: std::collections::HashMap<String, crate::session::RemapTarget>,
 }
 
 /// Pattern data loaded from session config, passed to the TUI.
@@ -1343,7 +1249,7 @@ pub struct LoadedPlugin {
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    loaded_keyboards: Vec<LoadedKeyboard>,
+    loaded_instruments: Vec<LoadedInstrument>,
     cmd_tx: Sender<GraphCommand>,
     midi_tx: Sender<audio::MidiEvent>,
     runtime: plugin::Runtime,
@@ -1355,104 +1261,83 @@ pub fn run(
     // Build catalog from enumerate.
     let catalog = build_catalog();
 
-    // Convert loaded keyboards into KeyboardNodes.
-    let keyboards: Vec<KeyboardNode> = loaded_keyboards
+    // Convert loaded instruments into flat InstrumentNode list.
+    let instruments: Vec<InstrumentNode> = loaded_instruments
         .into_iter()
-        .map(|lk| {
-            let splits = lk.splits.into_iter().map(|ls| {
-                let instrument = ls.instrument.map(to_plugin_slot);
-                let effects = ls.effects.into_iter().map(to_plugin_slot).collect();
-                let pattern = ls.pattern.map(|p| PatternState {
-                    bpm: p.bpm,
-                    length_beats: p.length_beats,
-                    looping: p.looping,
-                    base_note: p.base_note,
-                    events: p.events,
-                    enabled: p.enabled,
-                    recording: false,
-                });
-                SplitNode {
-                    range: ls.range,
-                    transpose: ls.transpose,
-                    instrument,
-                    effects,
-                    pattern,
-                }
-            }).collect();
-            KeyboardNode {
-                name: lk.name,
-                splits,
+        .map(|li| {
+            let instrument = li.instrument.map(to_plugin_slot);
+            let effects = li.effects.into_iter().map(to_plugin_slot).collect();
+            let pattern = li.pattern.map(|p| PatternState {
+                bpm: p.bpm,
+                length_beats: p.length_beats,
+                looping: p.looping,
+                base_note: p.base_note,
+                events: p.events,
+                enabled: p.enabled,
+                recording: false,
+            });
+            InstrumentNode {
+                range: li.range,
+                transpose: li.transpose,
+                instrument,
+                effects,
+                pattern,
+                pitch_bend_range: li.pitch_bend_range,
+                remap: li.remap,
             }
         })
         .collect();
 
-    let tree_entries = build_tree_entries(&keyboards);
-    let param_len = if let Some(first) = tree_entries.first() {
-        match first.address {
-            TreeAddress::Keyboard(kb) => {
-                keyboards.get(kb)
-                    .and_then(|k| k.splits.first())
-                    .and_then(|s| s.instrument.as_ref())
-                    .map_or(0, |p| p.params.len())
-            }
-            _ => 0,
-        }
-    } else {
-        0
-    };
+    let tree_entries = build_tree_entries(&instruments);
+    let param_len = instruments.first()
+        .and_then(|n| n.instrument.as_ref())
+        .map_or(0, |p| p.params.len());
 
     let help_lines = build_help_lines();
 
     // Determine initial BPM from loaded patterns (if any).
-    let initial_bpm = keyboards.iter()
-        .flat_map(|kb| &kb.splits)
-        .filter_map(|sp| sp.pattern.as_ref())
+    let initial_bpm = instruments.iter()
+        .filter_map(|n| n.pattern.as_ref())
         .map(|p| p.bpm)
         .next()
         .unwrap_or(120.0);
 
-    // Send transpose and pattern data to audio graph for loaded splits.
-    for (kb_idx, kb) in keyboards.iter().enumerate() {
-        for (sp_idx, sp) in kb.splits.iter().enumerate() {
-            if sp.transpose != 0 {
-                let _ = cmd_tx.send(GraphCommand::SetTranspose {
-                    kb: kb_idx,
-                    split: sp_idx,
-                    semitones: sp.transpose,
-                });
-            }
-            if let Some(ref p) = sp.pattern {
-                let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
-                    crate::plugin::chain::PatternEvent {
-                        frame,
-                        status,
-                        note,
-                        velocity: vel,
-                    }
-                }).collect();
-                let beats_per_sec = p.bpm / 60.0;
-                let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
-                let _ = cmd_tx.send(GraphCommand::SetPattern {
-                    kb: kb_idx,
-                    split: sp_idx,
-                    pattern: crate::plugin::chain::Pattern {
-                        events: pattern_events,
-                        length_samples,
-                    },
-                    base_note: p.base_note,
-                });
-                let _ = cmd_tx.send(GraphCommand::SetPatternEnabled {
-                    kb: kb_idx,
-                    split: sp_idx,
-                    enabled: p.enabled,
-                });
-                if !p.looping {
-                    let _ = cmd_tx.send(GraphCommand::SetPatternLooping {
-                        kb: kb_idx,
-                        split: sp_idx,
-                        looping: false,
-                    });
+    // Send transpose and pattern data to audio graph for loaded instruments.
+    for (inst_idx, inst_node) in instruments.iter().enumerate() {
+        if inst_node.transpose != 0 {
+            let _ = cmd_tx.send(GraphCommand::SetTranspose {
+                inst: inst_idx,
+                semitones: inst_node.transpose,
+            });
+        }
+        if let Some(ref p) = inst_node.pattern {
+            let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
+                crate::plugin::chain::PatternEvent {
+                    frame,
+                    status,
+                    note,
+                    velocity: vel,
                 }
+            }).collect();
+            let beats_per_sec = p.bpm / 60.0;
+            let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
+            let _ = cmd_tx.send(GraphCommand::SetPattern {
+                inst: inst_idx,
+                pattern: crate::plugin::chain::Pattern {
+                    events: pattern_events,
+                    length_samples,
+                },
+                base_note: p.base_note,
+            });
+            let _ = cmd_tx.send(GraphCommand::SetPatternEnabled {
+                inst: inst_idx,
+                enabled: p.enabled,
+            });
+            if !p.looping {
+                let _ = cmd_tx.send(GraphCommand::SetPatternLooping {
+                    inst: inst_idx,
+                    looping: false,
+                });
             }
         }
     }
@@ -1462,7 +1347,7 @@ pub fn run(
         chain_state: ListState::new(tree_entries.len()),
         param_state: ListState::new(param_len),
         tree_entries,
-        keyboards,
+        instruments,
         focus_params: false,
         help_lines,
         help_offset: 0,
@@ -1527,8 +1412,8 @@ fn event_loop(
     loop {
         // Drain pattern recording completion notifications.
         while let Ok(notif) = s.pattern_rx.try_recv() {
-            if let Some(sp) = s.keyboards.get_mut(notif.kb).and_then(|k| k.splits.get_mut(notif.split)) {
-                sp.pattern = Some(PatternState {
+            if let Some(inst_node) = s.instruments.get_mut(notif.inst) {
+                inst_node.pattern = Some(PatternState {
                     bpm: s.global_bpm,
                     length_beats: notif.length_beats,
                     looping: notif.looping,
@@ -1677,7 +1562,6 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Esc => s.range_edit = None,
         KeyCode::Enter => {
             let input = re.input.value.trim().to_string();
-            let kb = re.kb;
             let range = if input.is_empty() {
                 None
             } else {
@@ -1686,13 +1570,15 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
                     Err(_) => return, // keep popup open on parse error
                 }
             };
-            let _ = s.cmd_tx.send(GraphCommand::AddSplit { kb, range });
-            s.keyboards[kb].splits.push(SplitNode {
+            let _ = s.cmd_tx.send(GraphCommand::AddInstrument { range });
+            s.instruments.push(InstrumentNode {
                 range,
                 transpose: 0,
                 instrument: None,
                 effects: vec![],
                 pattern: None,
+                pitch_bend_range: 2.0,
+                remap: Default::default(),
             });
             s.dirty = true;
             s.rebuild_tree();
@@ -1719,11 +1605,9 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
                 s.global_bpm = bpm;
                 let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
                 // Update all pattern states
-                for kb in &mut s.keyboards {
-                    for sp in &mut kb.splits {
-                        if let Some(ref mut p) = sp.pattern {
-                            p.bpm = bpm;
-                        }
+                for inst_node in &mut s.instruments {
+                    if let Some(ref mut p) = inst_node.pattern {
+                        p.bpm = bpm;
                     }
                 }
             }
@@ -1793,23 +1677,21 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Tab => s.active_tab = (s.active_tab + 1) % TAB_NAMES.len(),
         KeyCode::BackTab => s.active_tab = (s.active_tab + TAB_NAMES.len() - 1) % TAB_NAMES.len(),
 
+        // 'i' — replace instrument on the selected instrument slot.
+        KeyCode::Char('i') if s.active_tab == 0 && !s.focus_params => {
+            if let Some(TreeAddress::Instrument(_)) = s.selected_address().copied() {
+                s.open_selector(SelectorMode::Instrument);
+            }
+        }
+
         // Session: contextual add (chain focus only).
-        // Keyboard → add split, Split → add instrument, Instrument/Effect → add effect.
+        // Instrument/Effect → add effect.
         KeyCode::Char('a') if s.active_tab == 0 && !s.focus_params => {
             match s.selected_address().copied() {
-                Some(TreeAddress::Keyboard(kb)) => {
-                    s.range_edit = Some(RangeEditState {
-                        input: TextInputState::new(""),
-                        kb,
-                    });
-                }
-                Some(TreeAddress::Split { .. }) => {
-                    s.open_selector(SelectorMode::Instrument);
-                }
-                Some(TreeAddress::Instrument { .. } | TreeAddress::Effect { .. }) => {
+                Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. }) => {
                     s.open_selector(SelectorMode::Effect);
                 }
-                Some(TreeAddress::Pattern { .. }) => {}
+                Some(TreeAddress::Pattern(_)) => {}
                 Some(TreeAddress::Modulator { .. }) => {}
                 None => {}
             }
@@ -1819,21 +1701,20 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('m') if s.active_tab == 0 && !s.focus_params => {
             if let Some(addr) = s.selected_address().copied() {
                 let parent_slot = match addr {
-                    TreeAddress::Instrument { .. } => Some(0usize),
+                    TreeAddress::Instrument(_) => Some(0usize),
                     TreeAddress::Effect { index, .. } => Some(index + 1),
                     _ => None,
                 };
-                if let (Some(parent_slot), Some((kb, split))) = (parent_slot, addr.kb_split()) {
+                if let (Some(parent_slot), Some(inst)) = (parent_slot, addr.inst()) {
                     let plugin = if parent_slot == 0 {
-                        s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|sp| sp.instrument.as_mut())
+                        s.instruments.get_mut(inst).and_then(|n| n.instrument.as_mut())
                     } else {
-                        s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|sp| sp.effects.get_mut(parent_slot - 1))
+                        s.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(parent_slot - 1))
                     };
                     if let Some(plugin) = plugin {
                         let mod_index = plugin.modulators.len();
                         let _ = s.cmd_tx.send(GraphCommand::InsertModulator {
-                            kb,
-                            split,
+                            inst,
                             parent_slot,
                             index: mod_index,
                             source: crate::plugin::chain::ModSource::Lfo {
@@ -1858,51 +1739,52 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 't' — add modulation target (when modulator selected).
         KeyCode::Char('t') if s.active_tab == 0 && !s.focus_params => {
-            if let Some(TreeAddress::Modulator { kb, split, parent_slot, index }) = s.selected_address().copied() {
-                s.open_target_selector(kb, split, parent_slot, index);
+            if let Some(TreeAddress::Modulator { inst, parent_slot, index }) = s.selected_address().copied() {
+                s.open_target_selector(inst, parent_slot, index);
             }
         }
 
-        // 'r' — toggle pattern recording (on Pattern or Split node).
+        // 'r' — toggle pattern recording (on Pattern or Instrument node).
         KeyCode::Char('r') if s.active_tab == 0 && !s.focus_params => {
             let target = match s.selected_address().copied() {
-                Some(TreeAddress::Pattern { kb, split }) => Some((kb, split)),
-                Some(TreeAddress::Split { kb, split }) => Some((kb, split)),
+                Some(TreeAddress::Pattern(inst)) => Some(inst),
+                Some(TreeAddress::Instrument(inst)) => Some(inst),
                 _ => None,
             };
-            if let Some((kb, split)) = target {
-                let sp = &mut s.keyboards[kb].splits[split];
-                let currently_recording = sp.pattern.as_ref().is_some_and(|p| p.recording);
-                if currently_recording {
-                    // Stop recording
-                    let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { kb, split, recording: false });
-                    if let Some(ref mut p) = sp.pattern {
-                        p.recording = false;
-                    }
-                } else {
-                    // Start recording: create pattern state if needed
-                    if sp.pattern.is_none() {
-                        sp.pattern = Some(PatternState {
-                            bpm: s.global_bpm,
-                            length_beats: 4.0,
-                            looping: true,
-                            base_note: None,
-                            events: vec![],
-                            enabled: false,
-                            recording: false,
+            if let Some(inst) = target {
+                if let Some(inst_node) = s.instruments.get_mut(inst) {
+                    let currently_recording = inst_node.pattern.as_ref().is_some_and(|p| p.recording);
+                    if currently_recording {
+                        // Stop recording
+                        let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: false });
+                        if let Some(ref mut p) = inst_node.pattern {
+                            p.recording = false;
+                        }
+                    } else {
+                        // Start recording: create pattern state if needed
+                        if inst_node.pattern.is_none() {
+                            inst_node.pattern = Some(PatternState {
+                                bpm: s.global_bpm,
+                                length_beats: 4.0,
+                                looping: true,
+                                base_note: None,
+                                events: vec![],
+                                enabled: false,
+                                recording: false,
+                            });
+                        }
+                        // Send BPM and length first
+                        let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.global_bpm });
+                        let _ = s.cmd_tx.send(GraphCommand::SetPatternLength {
+                            inst,
+                            beats: inst_node.pattern.as_ref().unwrap().length_beats,
                         });
+                        let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: true });
+                        inst_node.pattern.as_mut().unwrap().recording = true;
                     }
-                    // Send BPM and length first
-                    let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.global_bpm });
-                    let _ = s.cmd_tx.send(GraphCommand::SetPatternLength {
-                        kb, split,
-                        beats: sp.pattern.as_ref().unwrap().length_beats,
-                    });
-                    let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { kb, split, recording: true });
-                    sp.pattern.as_mut().unwrap().recording = true;
+                    s.dirty = true;
+                    s.rebuild_tree();
                 }
-                s.dirty = true;
-                s.rebuild_tree();
             }
         }
 
@@ -1921,49 +1803,45 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 let addr = s.tree_entries[sel].address;
                 match addr {
-                    TreeAddress::Effect { kb, split, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveEffect { kb, split, index });
-                        if let Some(sp) = s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-                            if index < sp.effects.len() {
-                                sp.effects.remove(index);
+                    TreeAddress::Effect { inst, index } => {
+                        let _ = s.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
+                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                            if index < inst_node.effects.len() {
+                                inst_node.effects.remove(index);
                             }
                         }
                         s.dirty = true;
                         s.rebuild_tree();
                     }
-                    TreeAddress::Instrument { kb, split } => {
-                        if let Some(k) = s.keyboards.get_mut(kb) {
-                            if k.splits[split].instrument.is_some() {
-                                let _ = s.cmd_tx.send(GraphCommand::RemoveInstrument { kb, split });
-                                k.splits[split].instrument = None;
+                    TreeAddress::Instrument(inst) => {
+                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                            if inst_node.instrument.is_some() {
+                                let _ = s.cmd_tx.send(GraphCommand::ClearInstrument { inst });
+                                inst_node.instrument = None;
+                                s.dirty = true;
+                                s.rebuild_tree();
+                            } else if s.instruments.len() > 1 {
+                                let _ = s.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
+                                s.instruments.remove(inst);
                                 s.dirty = true;
                                 s.rebuild_tree();
                             }
                         }
                     }
-                    TreeAddress::Split { kb, split } => {
-                        // Remove the entire split (but keep at least one per keyboard).
-                        if let Some(k) = s.keyboards.get_mut(kb) {
-                            if k.splits.len() > 1 {
-                                let _ = s.cmd_tx.send(GraphCommand::RemoveSplit { kb, split });
-                                k.splits.remove(split);
-                                s.dirty = true;
-                                s.rebuild_tree();
-                            }
+                    TreeAddress::Pattern(inst) => {
+                        let _ = s.cmd_tx.send(GraphCommand::ClearPattern { inst });
+                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                            inst_node.pattern = None;
                         }
-                    }
-                    TreeAddress::Pattern { kb, split } => {
-                        let _ = s.cmd_tx.send(GraphCommand::ClearPattern { kb, split });
-                        s.keyboards[kb].splits[split].pattern = None;
                         s.dirty = true;
                         s.rebuild_tree();
                     }
-                    TreeAddress::Modulator { kb, split, parent_slot, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveModulator { kb, split, parent_slot, index });
+                    TreeAddress::Modulator { inst, parent_slot, index } => {
+                        let _ = s.cmd_tx.send(GraphCommand::RemoveModulator { inst, parent_slot, index });
                         let plugin = if parent_slot == 0 {
-                            s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|sp| sp.instrument.as_mut())
+                            s.instruments.get_mut(inst).and_then(|n| n.instrument.as_mut())
                         } else {
-                            s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)).and_then(|sp| sp.effects.get_mut(parent_slot - 1))
+                            s.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(parent_slot - 1))
                         };
                         if let Some(p) = plugin {
                             if index < p.modulators.len() {
@@ -1975,7 +1853,6 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.dirty = true;
                         s.rebuild_tree();
                     }
-                    TreeAddress::Keyboard(_) => {}
                 }
             }
         }
@@ -1988,15 +1865,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 if sel < s.tree_entries.len() {
                     let addr = s.tree_entries[sel].address;
                     match addr {
-                        TreeAddress::Modulator { kb, split, parent_slot, index } => {
+                        TreeAddress::Modulator { inst, parent_slot, index } => {
                             // pa 0 = Type (enum, skip). pa 1+ depends on source type.
                             if pa == 0 {
                                 // Type is an enum — no edit popup, use Left/Right.
                             } else {
                                 let plugin = if parent_slot == 0 {
-                                    s.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|sp| sp.instrument.as_ref())
+                                    s.instruments.get(inst).and_then(|n| n.instrument.as_ref())
                                 } else {
-                                    s.keyboards.get(kb).and_then(|k| k.splits.get(split)).and_then(|sp| sp.effects.get(parent_slot - 1))
+                                    s.instruments.get(inst).and_then(|n| n.effects.get(parent_slot - 1))
                                 };
                                 if let Some(m) = plugin.and_then(|p| p.modulators.get(index)) {
                                     match &m.source {
@@ -2045,10 +1922,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                                 }
                             }
                         }
-                        TreeAddress::Pattern { kb, split } => {
-                            let pat = s.keyboards.get(kb)
-                                .and_then(|k| k.splits.get(split))
-                                .and_then(|sp| sp.pattern.as_ref());
+                        TreeAddress::Pattern(inst) => {
+                            let pat = s.instruments.get(inst)
+                                .and_then(|n| n.pattern.as_ref());
                             if let Some(p) = pat {
                                 match pa {
                                     0 => {
@@ -2079,13 +1955,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                     }
                 }
             } else {
-                // Only enter param focus if selection is a plugin or modulator (not keyboard header)
                 let sel = s.chain_state.selected;
                 if sel < s.tree_entries.len() {
-                    match s.tree_entries[sel].address {
-                        TreeAddress::Keyboard(_) => {}
-                        _ => s.focus_params = true,
-                    }
+                    s.focus_params = true;
                 }
             }
         }
@@ -2110,7 +1982,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 let is_plugin = matches!(
                     s.tree_entries[sel].address,
-                    TreeAddress::Instrument { .. } | TreeAddress::Effect { .. }
+                    TreeAddress::Instrument(_) | TreeAddress::Effect { .. }
                 );
                 if is_plugin {
                     s.param_filtering = true;
@@ -2128,7 +2000,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             s.adjust_param(step);
         }
 
-        // Reorder effects / move instruments between splits.
+        // Reorder effects / reorder instruments.
         KeyCode::Up
             if s.active_tab == 0
                 && !s.focus_params
@@ -2137,66 +2009,49 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
-                    TreeAddress::Effect { kb, split, index } => {
-                        if index > 0 {
-                            let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
-                                kb,
-                                split,
-                                from: index,
-                                to: index - 1,
-                            });
-                            if let Some(sp) = s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-                                if index < sp.effects.len() {
-                                    sp.effects.swap(index, index - 1);
-                                }
-                            }
-                            s.dirty = true;
-                            s.rebuild_tree();
-                            if s.chain_state.selected > 0 {
-                                s.chain_state.selected -= 1;
-                            }
-                        }
-                    }
-                    TreeAddress::Instrument { kb, split } if split > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
-                            kb,
-                            split_a: split,
-                            split_b: split - 1,
+                    TreeAddress::Effect { inst, index } if index > 0 => {
+                        let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
+                            inst,
+                            from: index,
+                            to: index - 1,
                         });
-                        if let Some(k) = s.keyboards.get_mut(kb) {
-                            if split < k.splits.len() {
-                                let a_inst = k.splits[split].instrument.take();
-                                let b_inst = k.splits[split - 1].instrument.take();
-                                k.splits[split].instrument = b_inst;
-                                k.splits[split - 1].instrument = a_inst;
+                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                            if index < inst_node.effects.len() {
+                                inst_node.effects.swap(index, index - 1);
                             }
                         }
                         s.dirty = true;
                         s.rebuild_tree();
-                        // Move cursor to follow the instrument to its new split.
-                        let new_addr = TreeAddress::Instrument { kb, split: split - 1 };
+                        if s.chain_state.selected > 0 {
+                            s.chain_state.selected -= 1;
+                        }
+                    }
+                    TreeAddress::Instrument(inst) if inst > 0 => {
+                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
+                            inst_a: inst,
+                            inst_b: inst - 1,
+                        });
+                        s.instruments.swap(inst, inst - 1);
+                        s.dirty = true;
+                        s.rebuild_tree();
+                        let new_addr = TreeAddress::Instrument(inst - 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
                             s.chain_state.selected = pos;
                         }
                         s.sync_param_state();
                     }
-                    TreeAddress::Pattern { kb, split } if split > 0 => {
+                    TreeAddress::Pattern(inst) if inst > 0 => {
                         let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
-                            kb,
-                            split_a: split,
-                            split_b: split - 1,
+                            inst_a: inst,
+                            inst_b: inst - 1,
                         });
-                        if let Some(k) = s.keyboards.get_mut(kb) {
-                            if split < k.splits.len() {
-                                let a_pat = k.splits[split].pattern.take();
-                                let b_pat = k.splits[split - 1].pattern.take();
-                                k.splits[split].pattern = b_pat;
-                                k.splits[split - 1].pattern = a_pat;
-                            }
-                        }
+                        let a_pat = s.instruments[inst].pattern.take();
+                        let b_pat = s.instruments[inst - 1].pattern.take();
+                        s.instruments[inst].pattern = b_pat;
+                        s.instruments[inst - 1].pattern = a_pat;
                         s.dirty = true;
                         s.rebuild_tree();
-                        let new_addr = TreeAddress::Pattern { kb, split: split - 1 };
+                        let new_addr = TreeAddress::Pattern(inst - 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
                             s.chain_state.selected = pos;
                         }
@@ -2214,70 +2069,53 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
-                    TreeAddress::Effect { kb, split, index } => {
-                        let effect_count = s.keyboards.get(kb)
-                            .and_then(|k| k.splits.get(split))
-                            .map_or(0, |sp| sp.effects.len());
+                    TreeAddress::Effect { inst, index } => {
+                        let effect_count = s.instruments.get(inst)
+                            .map_or(0, |n| n.effects.len());
                         if index + 1 < effect_count {
                             let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
-                                kb,
-                                split,
+                                inst,
                                 from: index,
                                 to: index + 1,
                             });
-                            if let Some(sp) = s.keyboards.get_mut(kb).and_then(|k| k.splits.get_mut(split)) {
-                                sp.effects.swap(index, index + 1);
+                            if let Some(inst_node) = s.instruments.get_mut(inst) {
+                                inst_node.effects.swap(index, index + 1);
                             }
                             s.dirty = true;
                             s.rebuild_tree();
                             s.chain_state.selected += 1;
                         }
                     }
-                    TreeAddress::Instrument { kb, split } => {
-                        let split_count = s.keyboards.get(kb).map_or(0, |k| k.splits.len());
-                        if split + 1 < split_count {
-                            let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
-                                kb,
-                                split_a: split,
-                                split_b: split + 1,
-                            });
-                            if let Some(k) = s.keyboards.get_mut(kb) {
-                                let a_inst = k.splits[split].instrument.take();
-                                let b_inst = k.splits[split + 1].instrument.take();
-                                k.splits[split].instrument = b_inst;
-                                k.splits[split + 1].instrument = a_inst;
-                            }
-                            s.dirty = true;
-                            s.rebuild_tree();
-                            let new_addr = TreeAddress::Instrument { kb, split: split + 1 };
-                            if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
-                                s.chain_state.selected = pos;
-                            }
-                            s.sync_param_state();
+                    TreeAddress::Instrument(inst) if inst + 1 < s.instruments.len() => {
+                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
+                            inst_a: inst,
+                            inst_b: inst + 1,
+                        });
+                        s.instruments.swap(inst, inst + 1);
+                        s.dirty = true;
+                        s.rebuild_tree();
+                        let new_addr = TreeAddress::Instrument(inst + 1);
+                        if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
+                            s.chain_state.selected = pos;
                         }
+                        s.sync_param_state();
                     }
-                    TreeAddress::Pattern { kb, split } => {
-                        let split_count = s.keyboards.get(kb).map_or(0, |k| k.splits.len());
-                        if split + 1 < split_count {
-                            let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
-                                kb,
-                                split_a: split,
-                                split_b: split + 1,
-                            });
-                            if let Some(k) = s.keyboards.get_mut(kb) {
-                                let a_pat = k.splits[split].pattern.take();
-                                let b_pat = k.splits[split + 1].pattern.take();
-                                k.splits[split].pattern = b_pat;
-                                k.splits[split + 1].pattern = a_pat;
-                            }
-                            s.dirty = true;
-                            s.rebuild_tree();
-                            let new_addr = TreeAddress::Pattern { kb, split: split + 1 };
-                            if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
-                                s.chain_state.selected = pos;
-                            }
-                            s.sync_param_state();
+                    TreeAddress::Pattern(inst) if inst + 1 < s.instruments.len() => {
+                        let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
+                            inst_a: inst,
+                            inst_b: inst + 1,
+                        });
+                        let a_pat = s.instruments[inst].pattern.take();
+                        let b_pat = s.instruments[inst + 1].pattern.take();
+                        s.instruments[inst].pattern = b_pat;
+                        s.instruments[inst + 1].pattern = a_pat;
+                        s.dirty = true;
+                        s.rebuild_tree();
+                        let new_addr = TreeAddress::Pattern(inst + 1);
+                        if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
+                            s.chain_state.selected = pos;
                         }
+                        s.sync_param_state();
                     }
                     _ => {}
                 }
@@ -2497,7 +2335,7 @@ fn render(
                     content_area,
                     &s.tree_entries,
                     &s.chain_state,
-                    &s.keyboards,
+                    &s.instruments,
                     &s.param_state,
                     s.focus_params,
                     &s.param_filter_input,
@@ -2552,7 +2390,7 @@ fn render_session(
     area: Rect,
     tree_entries: &[TreeEntry],
     chain_state: &ListState,
-    keyboards: &[KeyboardNode],
+    instruments: &[InstrumentNode],
     param_state: &ListState,
     focus_params: bool,
     param_filter_input: &TextInputState,
@@ -2595,18 +2433,13 @@ fn render_session(
     let (plugin_name, plugin_params) = if selected < tree_entries.len() {
         let addr = &tree_entries[selected].address;
         match addr {
-            TreeAddress::Keyboard(kb) => {
-                let name = keyboards.get(*kb).map_or("Keyboard", |k| &k.name);
-                (name.to_string(), &[] as &[ParamSlot])
-            }
-            TreeAddress::Modulator { kb, split, parent_slot, index } => {
-                let m = keyboards.get(*kb)
-                    .and_then(|k| k.splits.get(*split))
-                    .and_then(|s| {
+            TreeAddress::Modulator { inst, parent_slot, index } => {
+                let m = instruments.get(*inst)
+                    .and_then(|n| {
                         if *parent_slot == 0 {
-                            s.instrument.as_ref()
+                            n.instrument.as_ref()
                         } else {
-                            s.effects.get(parent_slot - 1)
+                            n.effects.get(parent_slot - 1)
                         }
                     })
                     .and_then(|p| p.modulators.get(*index));
@@ -2730,10 +2563,9 @@ fn render_session(
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
                 }
             }
-            TreeAddress::Pattern { kb, split } => {
-                let pat = keyboards.get(*kb)
-                    .and_then(|k| k.splits.get(*split))
-                    .and_then(|s| s.pattern.as_ref());
+            TreeAddress::Pattern(inst) => {
+                let pat = instruments.get(*inst)
+                    .and_then(|n| n.pattern.as_ref());
                 match pat {
                     Some(p) => {
                         mod_params.push(ParamSlot {
@@ -2780,36 +2612,16 @@ fn render_session(
                     None => ("Pattern".to_string(), &[] as &[ParamSlot]),
                 }
             }
-            TreeAddress::Split { kb, split } => {
-                let sp = keyboards.get(*kb).and_then(|k| k.splits.get(*split));
-                let transpose = sp.map_or(0, |s| s.transpose);
-                let name = match sp.and_then(|s| s.range) {
-                    Some(r) => format_range(r),
-                    None => "Full range".into(),
-                };
-                mod_params.push(ParamSlot {
-                    name: "Transpose".to_string(),
-                    index: 0,
-                    min: -48.0,
-                    max: 48.0,
-                    default: 0.0,
-                    value: transpose as f32,
-                    kind: ParamKind::Float,
-                });
-                (name, mod_params.as_slice())
-            }
             _ => {
                 // Find the PluginSlot for this address.
                 let slot = match addr {
-                    TreeAddress::Instrument { kb, split } => {
-                        keyboards.get(*kb)
-                            .and_then(|k| k.splits.get(*split))
-                            .and_then(|s| s.instrument.as_ref())
+                    TreeAddress::Instrument(inst) => {
+                        instruments.get(*inst)
+                            .and_then(|n| n.instrument.as_ref())
                     }
-                    TreeAddress::Effect { kb, split, index } => {
-                        keyboards.get(*kb)
-                            .and_then(|k| k.splits.get(*split))
-                            .and_then(|s| s.effects.get(*index))
+                    TreeAddress::Effect { inst, index } => {
+                        instruments.get(*inst)
+                            .and_then(|n| n.effects.get(*index))
                     }
                     _ => None,
                 };
@@ -2839,7 +2651,7 @@ fn render_session(
     let is_plugin_node = selected < tree_entries.len()
         && matches!(
             tree_entries[selected].address,
-            TreeAddress::Instrument { .. } | TreeAddress::Effect { .. }
+            TreeAddress::Instrument(_) | TreeAddress::Effect { .. }
         );
     let show_filter = is_plugin_node
         && (param_filtering || !param_filter_input.value.is_empty());
@@ -3259,7 +3071,7 @@ fn format_range(range: (u8, u8)) -> String {
     format!("{}-{}", crate::note_name(range.0), crate::note_name(range.1))
 }
 
-fn build_tree_entries(keyboards: &[KeyboardNode]) -> Vec<TreeEntry> {
+fn build_tree_entries(instruments: &[InstrumentNode]) -> Vec<TreeEntry> {
     let mut entries = Vec::new();
 
     // Helper: build modulator labels for a plugin's modulators.
@@ -3267,8 +3079,7 @@ fn build_tree_entries(keyboards: &[KeyboardNode]) -> Vec<TreeEntry> {
         entries: &mut Vec<TreeEntry>,
         modulators: &[ModulatorSlot],
         parent_slot: usize,
-        kb_idx: usize,
-        sp_idx: usize,
+        inst_idx: usize,
         parent_cont: &str,
         is_last_parent: bool,
     ) {
@@ -3285,104 +3096,77 @@ fn build_tree_entries(keyboards: &[KeyboardNode]) -> Vec<TreeEntry> {
             };
             entries.push(TreeEntry {
                 label: format!("{cont}{branch} ~ {source_label}"),
-                address: TreeAddress::Modulator { kb: kb_idx, split: sp_idx, parent_slot, index: mod_idx },
+                address: TreeAddress::Modulator { inst: inst_idx, parent_slot, index: mod_idx },
                 color: Color::Magenta,
                 indent: 3,
             });
         }
     }
 
-    for (kb_idx, kb) in keyboards.iter().enumerate() {
-        // Keyboard header
+    for (inst_idx, inst) in instruments.iter().enumerate() {
+        // Instrument row (shows plugin name + range)
+        let plugin_label = inst.instrument.as_ref()
+            .map(|p| format!("\u{266a} {}  [{}]", p.name, p.format))
+            .unwrap_or_else(|| "\u{266a} (empty)".to_string());
+        let range_label = inst.range
+            .map(|r| format!("  {}", format_range(r)))
+            .unwrap_or_default();
+        let transpose_label = if inst.transpose != 0 {
+            let sign = if inst.transpose > 0 { "+" } else { "" };
+            format!("  {sign}{}", inst.transpose)
+        } else {
+            String::new()
+        };
         entries.push(TreeEntry {
-            label: format!("⌨ {}", kb.name),
-            address: TreeAddress::Keyboard(kb_idx),
-            color: Color::Cyan,
+            label: format!("{plugin_label}{range_label}{transpose_label}"),
+            address: TreeAddress::Instrument(inst_idx),
+            color: Color::Green,
             indent: 0,
         });
 
-        for (sp_idx, sp) in kb.splits.iter().enumerate() {
-            let is_last_split = sp_idx == kb.splits.len() - 1;
-            let split_branch = if is_last_split { "╰" } else { "├" };
-            let split_cont = if is_last_split { "  " } else { "│ " };
+        // Count children (pattern + effects, not modulators).
+        let has_pattern = inst.pattern.as_ref().is_some_and(|p| p.recording || !p.events.is_empty());
+        let child_count = if has_pattern { 1 } else { 0 } + inst.effects.len();
+        // Instrument modulators (show under the instrument row)
+        if let Some(ref plugin) = inst.instrument {
+            push_modulators(&mut entries, &plugin.modulators, 0, inst_idx, "", child_count == 0);
+        }
+        let mut child_idx = 0;
 
-            // Split node
-            let split_label = match sp.range {
-                Some(r) => format_range(r),
-                None => "Full range".into(),
-            };
-            let transpose_label = if sp.transpose != 0 {
-                let sign = if sp.transpose > 0 { "+" } else { "" };
-                format!("  {sign}{}", sp.transpose)
-            } else {
-                String::new()
-            };
+        // Pattern node (only when recording or has data)
+        if let Some(pat) = &inst.pattern {
+            if pat.recording || !pat.events.is_empty() {
+                let is_last_child = child_idx == child_count - 1;
+                let child_branch = if is_last_child { "╰" } else { "├" };
+                let (icon, color, detail) = if pat.recording {
+                    ("\u{23fa}", Color::Red, "recording...".to_string())
+                } else {
+                    let n = pat.events.iter().filter(|e| e.1 == 0x90).count();
+                    ("\u{25b6}", Color::Blue, format!("{:.0} beats, {n} notes", pat.length_beats))
+                };
+                entries.push(TreeEntry {
+                    label: format!("{child_branch} {icon} Pattern  {detail}"),
+                    address: TreeAddress::Pattern(inst_idx),
+                    color,
+                    indent: 1,
+                });
+                child_idx += 1;
+            }
+        }
+
+        // Effects
+        for (fx_idx, fx) in inst.effects.iter().enumerate() {
+            let is_last_child = child_idx == child_count - 1;
+            let child_branch = if is_last_child { "╰" } else { "├" };
             entries.push(TreeEntry {
-                label: format!("{split_branch} {split_label}{transpose_label}"),
-                address: TreeAddress::Split { kb: kb_idx, split: sp_idx },
-                color: Color::White,
+                label: format!("{child_branch} fx {}  [{}]", fx.name, fx.format),
+                address: TreeAddress::Effect { inst: inst_idx, index: fx_idx },
+                color: Color::Yellow,
                 indent: 1,
             });
-
-            // Count top-level children (pattern + instrument + effects, not modulators).
-            let has_pattern = sp.pattern.as_ref().is_some_and(|p| p.recording || !p.events.is_empty());
-            let has_inst = sp.instrument.is_some();
-            let child_count = if has_pattern { 1 } else { 0 }
-                + if has_inst { 1 } else { 0 }
-                + sp.effects.len();
-            let mut child_idx = 0;
-
-            // Pattern node (only when recording or has data)
-            if let Some(pat) = &sp.pattern {
-                if pat.recording || !pat.events.is_empty() {
-                    let is_last_child = child_idx == child_count - 1;
-                    let child_branch = if is_last_child { "╰" } else { "├" };
-                    let (icon, color, detail) = if pat.recording {
-                        ("\u{23fa}", Color::Red, "recording...".to_string())
-                    } else {
-                        let n = pat.events.iter().filter(|e| e.1 == 0x90).count();
-                        ("\u{25b6}", Color::Blue, format!("{:.0} beats, {n} notes", pat.length_beats))
-                    };
-                    entries.push(TreeEntry {
-                        label: format!("{split_cont}{child_branch} {icon} Pattern  {detail}"),
-                        address: TreeAddress::Pattern { kb: kb_idx, split: sp_idx },
-                        color,
-                        indent: 2,
-                    });
-                    child_idx += 1;
-                }
-            }
-
-            // Instrument (only show if present)
-            if let Some(inst) = &sp.instrument {
-                let is_last_child = child_idx == child_count - 1;
-                let child_branch = if is_last_child { "╰" } else { "├" };
-                let inst_label = format!("{split_cont}{child_branch} \u{266a} {}  [{}]", inst.name, inst.format);
-                entries.push(TreeEntry {
-                    label: inst_label,
-                    address: TreeAddress::Instrument { kb: kb_idx, split: sp_idx },
-                    color: Color::Green,
-                    indent: 2,
-                });
-                // Instrument modulators (sub-nodes)
-                push_modulators(&mut entries, &inst.modulators, 0, kb_idx, sp_idx, split_cont, is_last_child);
-                child_idx += 1;
-            }
-
-            // Effects
-            for (fx_idx, fx) in sp.effects.iter().enumerate() {
-                let is_last_child = child_idx == child_count - 1;
-                let child_branch = if is_last_child { "╰" } else { "├" };
-                entries.push(TreeEntry {
-                    label: format!("{split_cont}{child_branch} fx {}  [{}]", fx.name, fx.format),
-                    address: TreeAddress::Effect { kb: kb_idx, split: sp_idx, index: fx_idx },
-                    color: Color::Yellow,
-                    indent: 2,
-                });
-                // Effect modulators (sub-nodes)
-                push_modulators(&mut entries, &fx.modulators, fx_idx + 1, kb_idx, sp_idx, split_cont, is_last_child);
-                child_idx += 1;
-            }
+            // Effect modulators (sub-nodes)
+            push_modulators(&mut entries, &fx.modulators, fx_idx + 1, inst_idx, "", is_last_child);
+            child_idx += 1;
         }
     }
 
@@ -3449,7 +3233,7 @@ fn build_catalog() -> Vec<PluginInfo> {
     #[cfg(feature = "vst3")]
     catalog.extend(plugin::vst3::enumerate_plugins());
 
-    catalog.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    catalog.sort_by_key(|a| a.name.to_lowercase());
     catalog
 }
 
@@ -3475,7 +3259,6 @@ fn build_help_lines() -> Vec<String> {
         "  r          Record/stop pattern".into(),
         "  Ctrl+R     Clear pattern".into(),
         "  b          Set BPM".into(),
-        "  s          Add split to keyboard".into(),
         "".into(),
         "Modulator (chain focus):".into(),
         "  t          Add modulation target".into(),

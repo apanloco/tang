@@ -330,10 +330,8 @@ pub struct ClapPlugin {
     name: String,
     is_instrument: bool,
     sample_rate: f32,
-    #[expect(dead_code)]
     audio_in_channel_count: usize,
     audio_out_channel_count: usize,
-    #[expect(dead_code)] // used in get_parameter
     params_ext: Option<PluginParams>,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<ClapId>,
@@ -380,18 +378,23 @@ impl Drop for ClapPlugin {
 pub fn enumerate_plugins() -> Vec<PluginInfo> {
     let mut plugins = Vec::new();
 
-    for bundle_path in clack_finder::ClapFinder::from_standard_paths() {
-        match scan_bundle(&bundle_path) {
-            Some(found) => plugins.extend(found),
-            None => {
-                log::warn!("Failed to scan CLAP bundle: {}", bundle_path.display());
-            }
-        }
-    }
+    let bundle_paths: Vec<_> = clack_finder::ClapFinder::from_standard_paths()
+        .into_iter()
+        .chain(extra_clap_bundles())
+        .collect();
 
-    for bundle_path in extra_clap_bundles() {
+    for bundle_path in bundle_paths {
+        let start = std::time::Instant::now();
         match scan_bundle(&bundle_path) {
-            Some(found) => plugins.extend(found),
+            Some(found) => {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                let n = found.len().max(1) as u64;
+                let per_plugin = elapsed_ms / n;
+                for mut p in found {
+                    p.scan_ms = per_plugin;
+                    plugins.push(p);
+                }
+            }
             None => {
                 log::warn!("Failed to scan CLAP bundle: {}", bundle_path.display());
             }
@@ -421,7 +424,7 @@ fn extra_clap_bundles() -> Vec<std::path::PathBuf> {
     }
 
     if !dirs.is_empty() {
-        for bundle_path in clack_finder::ClapFinder::new(dirs.into_iter()) {
+        for bundle_path in clack_finder::ClapFinder::new(dirs) {
             files.push(bundle_path);
         }
     }
@@ -474,6 +477,7 @@ fn scan_bundle(path: &Path) -> Option<Vec<PluginInfo>> {
             param_count,
             preset_count,
             path: path.to_string_lossy().to_string(),
+            scan_ms: 0,
         });
     }
 

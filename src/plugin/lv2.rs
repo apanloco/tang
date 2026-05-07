@@ -32,7 +32,6 @@ pub struct Lv2Plugin {
     name: String,
     is_instrument: bool,
     sample_rate: f32,
-    #[expect(dead_code)]
     audio_in_count: usize,
     audio_out_count: usize,
     atom_seq_in_count: usize,
@@ -234,6 +233,7 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
     world
         .iter_plugins()
         .map(|p| {
+            let start = std::time::Instant::now();
             let preset_count = p
                 .raw()
                 .related(Some(&preset_class))
@@ -254,6 +254,7 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
                 param_count: p.ports_with_type(livi::PortType::ControlInput).count(),
                 preset_count,
                 path,
+                scan_ms: start.elapsed().as_millis() as u64,
             }
         })
         .collect()

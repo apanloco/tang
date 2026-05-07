@@ -1,4 +1,2 @@
-[[keyboard]]
-[[keyboard.split]]
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "builtin:sine"

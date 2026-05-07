@@ -17,7 +17,7 @@ jobs:
         include:
           - os: ubuntu-latest
             features: ""
-            apt: "liblilv-dev libasound2-dev"
+            apt: "liblilv-dev libasound2-dev libjack-dev"
           - os: macos-latest
             features: "--no-default-features"
             apt: ""
@@ -28,7 +28,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         if: matrix.apt != ''

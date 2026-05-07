@@ -1,31 +1,27 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::plugin::Plugin;
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RemapTarget {
     pub note: String,
     pub detune: f64,
 }
 
 // ---------------------------------------------------------------------------
-// New keyboard/split config
+// Instrument-centric config
 // ---------------------------------------------------------------------------
 
-/// Top-level session config: one or more keyboards, each with splits.
+/// Top-level session config: a flat list of instruments.
 pub struct SessionConfig {
-    pub keyboards: Vec<KeyboardConfig>,
+    pub instruments: Vec<InstrumentSlotConfig>,
 }
 
-pub struct KeyboardConfig {
-    pub name: Option<String>,
-    pub splits: Vec<SplitConfig>,
-}
-
-pub struct SplitConfig {
+/// One instrument slot: an optional plugin with range, effects, and pattern.
+pub struct InstrumentSlotConfig {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
     pub instrument: Option<PluginConfig>,
@@ -33,7 +29,7 @@ pub struct SplitConfig {
     pub pattern: Option<PatternConfig>,
 }
 
-/// Parsed pattern config for a split.
+/// Parsed pattern config for an instrument slot.
 pub struct PatternConfig {
     pub bpm: f32,
     pub length_beats: f32,
@@ -134,28 +130,38 @@ fn default_mix() -> f64 {
 // TOML deserialization helpers (intermediate structs)
 // ---------------------------------------------------------------------------
 
-/// New format: [[keyboard]] with nested [[keyboard.split]]
+/// New flat format: [[instrument]] at top level.
+/// Instrument plugin fields are directly on the [[instrument]] table.
 #[derive(Deserialize)]
-struct NewSessionRaw {
-    #[serde(default, rename = "keyboard")]
-    keyboards: Vec<KeyboardRaw>,
+struct SessionRaw {
+    #[serde(default, rename = "instrument")]
+    instruments: Vec<InstrumentSlotRaw>,
 }
 
 #[derive(Deserialize)]
-struct KeyboardRaw {
-    name: Option<String>,
-    #[serde(default, rename = "split")]
-    splits: Vec<SplitRaw>,
-}
-
-#[derive(Deserialize)]
-struct SplitRaw {
+struct InstrumentSlotRaw {
+    // Instrument plugin fields (flat on the table).
+    plugin: Option<String>,
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(default = "default_volume")]
+    volume: f64,
+    #[serde(default = "default_pitch_bend_range")]
+    pitch_bend_range: f64,
+    #[serde(default)]
+    remap: HashMap<String, RemapTarget>,
+    #[serde(default)]
+    params: HashMap<String, f64>,
+    #[serde(default, rename = "modulator")]
+    modulators: Vec<ModulatorConfig>,
+    // Slot-level fields.
+    #[serde(default)]
     range: Option<String>,
     #[serde(default)]
     transpose: i8,
-    instrument: Option<PluginConfig>,
     #[serde(default, rename = "effect")]
     effects: Vec<EffectConfig>,
+    #[serde(default)]
     pattern: Option<PatternRaw>,
 }
 
@@ -226,61 +232,35 @@ fn default_release() -> f64 {
     0.5
 }
 
-/// Legacy format: [instrument] + [[effect]]
-#[derive(Deserialize)]
-struct LegacySessionRaw {
-    instrument: PluginConfig,
-    #[serde(default, rename = "effect")]
-    effects: Vec<EffectConfig>,
-}
-
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
 
 pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
     let content = std::fs::read_to_string(path)?;
-
-    // Try new format first (has [[keyboard]])
-    if let Ok(raw) = toml::from_str::<NewSessionRaw>(&content) {
-        if !raw.keyboards.is_empty() {
-            let mut keyboards = Vec::new();
-            for kb in raw.keyboards {
-                let mut splits = Vec::new();
-                for sp in kb.splits {
-                    let range = sp.range.as_deref().map(parse_range).transpose()?;
-                    let pattern = sp.pattern.map(parse_pattern_raw).transpose()?;
-                    splits.push(SplitConfig {
-                        range,
-                        transpose: sp.transpose,
-                        instrument: sp.instrument,
-                        effects: sp.effects,
-                        pattern,
-                    });
-                }
-                keyboards.push(KeyboardConfig {
-                    name: kb.name,
-                    splits,
-                });
-            }
-            return Ok(SessionConfig { keyboards });
-        }
+    let raw: SessionRaw = toml::from_str(&content)?;
+    let mut instruments = Vec::new();
+    for slot in raw.instruments {
+        let range = slot.range.as_deref().map(parse_range).transpose()?;
+        let pattern = slot.pattern.map(parse_pattern_raw).transpose()?;
+        let instrument = slot.plugin.map(|plugin| PluginConfig {
+            plugin,
+            preset: slot.preset,
+            volume: slot.volume,
+            pitch_bend_range: slot.pitch_bend_range,
+            remap: slot.remap,
+            params: slot.params,
+            modulators: slot.modulators,
+        });
+        instruments.push(InstrumentSlotConfig {
+            range,
+            transpose: slot.transpose,
+            instrument,
+            effects: slot.effects,
+            pattern,
+        });
     }
-
-    // Fall back to legacy format ([instrument] + [[effect]])
-    let legacy: LegacySessionRaw = toml::from_str(&content)?;
-    Ok(SessionConfig {
-        keyboards: vec![KeyboardConfig {
-            name: None,
-            splits: vec![SplitConfig {
-                range: None,
-                transpose: 0,
-                instrument: Some(legacy.instrument),
-                effects: legacy.effects,
-                pattern: None,
-            }],
-        }],
-    })
+    Ok(SessionConfig { instruments })
 }
 
 /// Parse a note range string like "C0-B3" into (low, high) MIDI note numbers (inclusive).
@@ -416,14 +396,8 @@ pub fn apply_preset(plugin: &mut Box<dyn Plugin>, preset_name: &str) {
 // Saving
 // ---------------------------------------------------------------------------
 
-/// Data needed to serialize one keyboard for saving.
-pub struct SaveKeyboard {
-    pub name: String,
-    pub splits: Vec<SaveSplit>,
-}
-
-/// Data needed to serialize one split for saving.
-pub struct SaveSplit {
+/// Data needed to serialize one instrument slot for saving.
+pub struct SaveInstrumentSlot {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
     pub instrument: Option<SaveInstrument>,
@@ -459,12 +433,14 @@ pub struct SaveModTarget {
     pub depth: f32,
 }
 
-/// Data needed to serialize an instrument slot for saving.
+/// Data needed to serialize an instrument plugin for saving.
 pub struct SaveInstrument {
     pub plugin: String,
     pub volume: f32,
     pub params: Vec<(String, f32)>,
     pub modulators: Vec<SaveModulator>,
+    pub pitch_bend_range: f64,
+    pub remap: HashMap<String, RemapTarget>,
 }
 
 /// Data needed to serialize an effect slot for saving.
@@ -475,28 +451,36 @@ pub struct SaveEffect {
     pub modulators: Vec<SaveModulator>,
 }
 
+/// Serialization output: flat [[instrument]] format.
 #[derive(Serialize)]
 struct SessionOut {
-    #[serde(rename = "keyboard")]
-    keyboards: Vec<KeyboardOut>,
+    #[serde(rename = "instrument")]
+    instruments: Vec<InstrumentSlotOut>,
 }
 
+/// One [[instrument]] table in the output. Plugin fields are at the top level.
 #[derive(Serialize)]
-struct KeyboardOut {
+struct InstrumentSlotOut {
+    // Instrument plugin fields (top-level).
     #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(rename = "split")]
-    splits: Vec<SplitOut>,
-}
-
-#[derive(Serialize)]
-struct SplitOut {
+    plugin: Option<String>,
+    #[serde(skip_serializing_if = "is_default_volume_f32_opt")]
+    volume: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preset: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    params: BTreeMap<String, f64>,
+    #[serde(skip_serializing_if = "is_default_pitch_bend_range_opt")]
+    pitch_bend_range: Option<f64>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    remap: BTreeMap<String, RemapTarget>,
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
+    modulators: Vec<ModulatorOut>,
+    // Slot-level fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     range: Option<String>,
     #[serde(skip_serializing_if = "is_zero_i8")]
     transpose: i8,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instrument: Option<InstrumentOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -571,23 +555,12 @@ struct ModTargetOut {
 }
 
 #[derive(Serialize)]
-struct InstrumentOut {
-    plugin: String,
-    #[serde(skip_serializing_if = "is_default_volume_f32")]
-    volume: f32,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    params: HashMap<String, f64>,
-    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
-    modulators: Vec<ModulatorOut>,
-}
-
-#[derive(Serialize)]
 struct EffectOut {
     plugin: String,
     #[serde(skip_serializing_if = "is_default_mix_f32")]
     mix: f32,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    params: HashMap<String, f64>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    params: BTreeMap<String, f64>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
     modulators: Vec<ModulatorOut>,
 }
@@ -630,8 +603,24 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     out
 }
 
-fn is_default_volume_f32(v: &f32) -> bool {
-    (*v - 1.0).abs() < f32::EPSILON
+fn is_default_volume_f32_opt(v: &Option<f32>) -> bool {
+    match v {
+        Some(v) => (*v - 1.0).abs() < f32::EPSILON,
+        None => true,
+    }
+}
+
+fn is_default_pitch_bend_range_opt(v: &Option<f64>) -> bool {
+    match v {
+        Some(v) => (*v - default_pitch_bend_range()).abs() < f64::EPSILON,
+        None => true,
+    }
+}
+
+/// Widen f32 to f64 without exposing the f32 binary mantissa as decimal noise.
+/// e.g. 0.55_f32 → 0.55_f64 (not 0.550000011920929).
+fn clean_f64(v: f32) -> f64 {
+    v.to_string().parse::<f64>().unwrap_or(v as f64)
 }
 
 fn is_default_mix_f32(v: &f32) -> bool {
@@ -643,112 +632,167 @@ fn note_name(note: u8) -> String {
     crate::note_name(note)
 }
 
+fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
+    mods.iter()
+        .map(|m| {
+            let targets: Vec<ModTargetOut> = m
+                .targets
+                .iter()
+                .map(save_mod_target_to_out)
+                .collect();
+            match &m.source {
+                SaveModSource::Lfo { waveform, rate } => ModulatorOut {
+                    mod_type: "lfo".into(),
+                    waveform: Some(waveform.clone()),
+                    rate: Some(*rate as f64),
+                    attack: None,
+                    decay: None,
+                    sustain: None,
+                    release: None,
+                    targets,
+                },
+                SaveModSource::Envelope { attack, decay, sustain, release } => ModulatorOut {
+                    mod_type: "envelope".into(),
+                    waveform: None,
+                    rate: None,
+                    attack: Some(*attack as f64),
+                    decay: Some(*decay as f64),
+                    sustain: Some(*sustain as f64),
+                    release: Some(*release as f64),
+                    targets,
+                },
+            }
+        })
+        .collect()
+}
+
 /// Save the current session state to a TOML file.
-pub fn save(path: &Path, keyboards: &[SaveKeyboard]) -> anyhow::Result<()> {
+pub fn save(path: &Path, instruments: &[SaveInstrumentSlot]) -> anyhow::Result<()> {
     let session = SessionOut {
-        keyboards: keyboards
+        instruments: instruments
             .iter()
-            .map(|kb| KeyboardOut {
-                name: Some(kb.name.clone()),
-                splits: kb
-                    .splits
-                    .iter()
-                    .map(|sp| {
-                        let mods_to_out = |mods: &[SaveModulator]| -> Vec<ModulatorOut> {
-                            mods.iter()
-                                .map(|m| {
-                                    let targets: Vec<ModTargetOut> = m
-                                        .targets
-                                        .iter()
-                                        .map(save_mod_target_to_out)
-                                        .collect();
-                                    match &m.source {
-                                        SaveModSource::Lfo { waveform, rate } => ModulatorOut {
-                                            mod_type: "lfo".into(),
-                                            waveform: Some(waveform.clone()),
-                                            rate: Some(*rate as f64),
-                                            attack: None,
-                                            decay: None,
-                                            sustain: None,
-                                            release: None,
-                                            targets,
-                                        },
-                                        SaveModSource::Envelope { attack, decay, sustain, release } => ModulatorOut {
-                                            mod_type: "envelope".into(),
-                                            waveform: None,
-                                            rate: None,
-                                            attack: Some(*attack as f64),
-                                            decay: Some(*decay as f64),
-                                            sustain: Some(*sustain as f64),
-                                            release: Some(*release as f64),
-                                            targets,
-                                        },
-                                    }
-                                })
-                                .collect()
-                        };
-                        SplitOut {
-                            range: sp
-                                .range
-                                .map(|(lo, hi)| format!("{}-{}", note_name(lo), note_name(hi))),
-                            transpose: sp.transpose,
-                            instrument: sp.instrument.as_ref().map(|inst| {
-                                let params: HashMap<String, f64> = inst
-                                    .params
-                                    .iter()
-                                    .map(|(k, v)| (k.clone(), *v as f64))
-                                    .collect();
-                                InstrumentOut {
-                                    plugin: inst.plugin.clone(),
-                                    volume: inst.volume,
-                                    params,
-                                    modulators: mods_to_out(&inst.modulators),
-                                }
-                            }),
-                            effects: sp
-                                .effects
+            .map(|slot| {
+                let (plugin, volume, params, modulators, pitch_bend_range, remap) = match &slot.instrument {
+                    Some(inst) => {
+                        let params: BTreeMap<String, f64> = inst
+                            .params
+                            .iter()
+                            .map(|(k, v)| (k.clone(), clean_f64(*v)))
+                            .collect();
+                        let remap: BTreeMap<String, RemapTarget> = inst
+                            .remap
+                            .iter()
+                            .map(|(k, v)| {
+                                (
+                                    k.clone(),
+                                    RemapTarget {
+                                        note: v.note.clone(),
+                                        detune: clean_f64(v.detune as f32),
+                                    },
+                                )
+                            })
+                            .collect();
+                        (
+                            Some(inst.plugin.clone()),
+                            Some(inst.volume),
+                            params,
+                            mods_to_out(&inst.modulators),
+                            Some(inst.pitch_bend_range),
+                            remap,
+                        )
+                    }
+                    None => (None, None, BTreeMap::new(), vec![], None, BTreeMap::new()),
+                };
+                InstrumentSlotOut {
+                    plugin,
+                    volume,
+                    preset: None,
+                    params,
+                    pitch_bend_range,
+                    remap,
+                    modulators,
+                    range: slot
+                        .range
+                        .map(|(lo, hi)| format!("{}-{}", note_name(lo), note_name(hi))),
+                    transpose: slot.transpose,
+                    effects: slot
+                        .effects
+                        .iter()
+                        .map(|fx| {
+                            let params: BTreeMap<String, f64> = fx
+                                .params
                                 .iter()
-                                .map(|fx| {
-                                    let params: HashMap<String, f64> = fx
-                                        .params
-                                        .iter()
-                                        .map(|(k, v)| (k.clone(), *v as f64))
-                                        .collect();
-                                    EffectOut {
-                                        plugin: fx.plugin.clone(),
-                                        mix: fx.mix,
-                                        params,
-                                        modulators: mods_to_out(&fx.modulators),
-                                    }
-                                })
-                                .collect(),
-                            pattern: sp.pattern.as_ref().map(|p| {
-                                PatternOut {
-                                    bpm: p.bpm as f64,
-                                    length_beats: p.length_beats as f64,
-                                    looping: p.looping,
-                                    base_note: p.base_note.map(note_name),
-                                    events: p.events.iter().map(|&(frame, status, note, vel)| {
-                                        PatternEventOut {
-                                            frame,
-                                            status: if status == 0x90 { "on".into() } else { "off".into() },
-                                            note: note_name(note),
-                                            velocity: vel,
-                                        }
-                                    }).collect(),
-                                    enabled: p.enabled,
+                                .map(|(k, v)| (k.clone(), clean_f64(*v)))
+                                .collect();
+                            EffectOut {
+                                plugin: fx.plugin.clone(),
+                                mix: fx.mix,
+                                params,
+                                modulators: mods_to_out(&fx.modulators),
+                            }
+                        })
+                        .collect(),
+                    pattern: slot.pattern.as_ref().map(|p| {
+                        PatternOut {
+                            bpm: p.bpm as f64,
+                            length_beats: p.length_beats as f64,
+                            looping: p.looping,
+                            base_note: p.base_note.map(note_name),
+                            events: p.events.iter().map(|&(frame, status, note, vel)| {
+                                PatternEventOut {
+                                    frame,
+                                    status: if status == 0x90 { "on".into() } else { "off".into() },
+                                    note: note_name(note),
+                                    velocity: vel,
                                 }
-                            }),
+                            }).collect(),
+                            enabled: p.enabled,
                         }
-                    })
-                    .collect(),
+                    }),
+                }
             })
             .collect(),
     };
 
     let content = toml::to_string_pretty(&session)?;
+    let content = inline_remap_entries(&content)?;
     std::fs::write(path, content)?;
     Ok(())
+}
+
+/// Walk every `[[instrument]]` and rewrite each `remap` child so its entries
+/// are inline tables — `"F#2" = { note = "F2", detune = 1.0 }` rather than the
+/// default toml-rs block-table form. Non-instrument tables are untouched.
+fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
+    use toml_edit::{DocumentMut, InlineTable, Item, Value};
+
+    let mut doc: DocumentMut = input.parse()?;
+    if let Some(Item::ArrayOfTables(arr)) = doc.get_mut("instrument") {
+        for inst in arr.iter_mut() {
+            if let Some(Item::Table(remap)) = inst.get_mut("remap") {
+                // Drain block-table entries into inline tables paired with their MIDI pitch.
+                let keys: Vec<String> = remap.iter().map(|(k, _)| k.to_string()).collect();
+                let mut entries: Vec<(u8, String, InlineTable)> = Vec::new();
+                for key in keys {
+                    let Some(Item::Table(entry)) = remap.remove(&key) else { continue };
+                    let mut inline = InlineTable::new();
+                    for (k, v) in entry.iter() {
+                        if let Some(val) = v.as_value() {
+                            inline.insert(k, val.clone());
+                        }
+                    }
+                    let pitch = parse_note_name(&key).unwrap_or(0);
+                    entries.push((pitch, key, inline));
+                }
+                // Re-insert in pitch order so the file reads musically.
+                entries.sort_by_key(|(pitch, _, _)| *pitch);
+                for (_, key, inline) in entries {
+                    remap.insert(&key, Item::Value(Value::InlineTable(inline)));
+                }
+            }
+        }
+    }
+    Ok(doc.to_string())
 }
 
 #[cfg(test)]
@@ -787,55 +831,24 @@ mod tests {
     }
 
     #[test]
-    fn load_legacy_format() {
-        let toml = r#"
-[instrument]
-plugin = "builtin:sine"
-
-[[effect]]
-plugin = "builtin:sine"
-mix = 0.5
-"#;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.toml");
-        std::fs::write(&path, toml).unwrap();
-
-        let config = load(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.keyboards.len(), 1);
-        assert_eq!(config.keyboards[0].splits.len(), 1);
-        assert!(config.keyboards[0].splits[0].range.is_none());
-        assert_eq!(config.keyboards[0].splits[0].instrument.as_ref().unwrap().plugin, "builtin:sine");
-        assert_eq!(config.keyboards[0].splits[0].effects.len(), 1);
-    }
-
-    #[test]
     fn load_new_format() {
         let toml = r#"
-[[keyboard]]
-name = "Main"
-
-[[keyboard.split]]
+[[instrument]]
+plugin = "builtin:sine"
 range = "C0-B3"
 
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "builtin:sine"
-
-[[keyboard.split]]
 range = "C4-C8"
-
-[keyboard.split.instrument]
-plugin = "builtin:sine"
 "#;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.toml");
         std::fs::write(&path, toml).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.keyboards.len(), 1);
-        assert_eq!(config.keyboards[0].name, Some("Main".to_string()));
-        assert_eq!(config.keyboards[0].splits.len(), 2);
-        assert_eq!(config.keyboards[0].splits[0].range, Some((12, 59)));
-        assert_eq!(config.keyboards[0].splits[1].range, Some((60, 108)));
+        assert_eq!(config.instruments.len(), 2);
+        assert_eq!(config.instruments[0].range, Some((12, 59)));
+        assert_eq!(config.instruments[1].range, Some((60, 108)));
     }
 
     #[test]
@@ -843,55 +856,54 @@ plugin = "builtin:sine"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("saved.toml");
 
-        let keyboards = vec![SaveKeyboard {
-            name: "Main".into(),
-            splits: vec![
-                SaveSplit {
-                    range: Some((12, 59)), // C0-B3
-                    transpose: 0,
-                    instrument: Some(SaveInstrument {
-                        plugin: "builtin:sine".into(),
-                        volume: 0.8,
-                        params: vec![("cutoff".into(), 0.75)],
-                        modulators: vec![],
-                    }),
-                    effects: vec![SaveEffect {
-                        plugin: "builtin:sine".into(),
-                        mix: 0.5,
-                        params: vec![],
-                        modulators: vec![],
-                    }],
-                    pattern: None,
-                },
-                SaveSplit {
-                    range: None,
-                    transpose: 0,
-                    instrument: Some(SaveInstrument {
-                        plugin: "builtin:sine".into(),
-                        volume: 1.0,
-                        params: vec![],
-                        modulators: vec![],
-                    }),
-                    effects: vec![],
-                    pattern: None,
-                },
-            ],
-        }];
+        let instruments = vec![
+            SaveInstrumentSlot {
+                range: Some((12, 59)), // C0-B3
+                transpose: 0,
+                instrument: Some(SaveInstrument {
+                    plugin: "builtin:sine".into(),
+                    volume: 0.8,
+                    params: vec![("cutoff".into(), 0.75)],
+                    modulators: vec![],
+                    pitch_bend_range: 2.0,
+                    remap: HashMap::new(),
+                }),
+                effects: vec![SaveEffect {
+                    plugin: "builtin:sine".into(),
+                    mix: 0.5,
+                    params: vec![],
+                    modulators: vec![],
+                }],
+                pattern: None,
+            },
+            SaveInstrumentSlot {
+                range: None,
+                transpose: 0,
+                instrument: Some(SaveInstrument {
+                    plugin: "builtin:sine".into(),
+                    volume: 1.0,
+                    params: vec![],
+                    modulators: vec![],
+                    pitch_bend_range: 2.0,
+                    remap: HashMap::new(),
+                }),
+                effects: vec![],
+                pattern: None,
+            },
+        ];
 
-        save(&path, &keyboards).unwrap();
+        save(&path, &instruments).unwrap();
 
         // Reload and verify
         let config = load(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.keyboards.len(), 1);
-        assert_eq!(config.keyboards[0].name, Some("Main".to_string()));
-        assert_eq!(config.keyboards[0].splits.len(), 2);
-        assert_eq!(config.keyboards[0].splits[0].range, Some((12, 59)));
-        let inst = config.keyboards[0].splits[0].instrument.as_ref().unwrap();
+        assert_eq!(config.instruments.len(), 2);
+        assert_eq!(config.instruments[0].range, Some((12, 59)));
+        let inst = config.instruments[0].instrument.as_ref().unwrap();
         assert_eq!(inst.plugin, "builtin:sine");
         assert!((inst.volume - 0.8).abs() < 0.01);
-        assert_eq!(config.keyboards[0].splits[0].effects.len(), 1);
-        assert!((config.keyboards[0].splits[0].effects[0].mix - 0.5).abs() < 0.01);
-        assert!(config.keyboards[0].splits[1].range.is_none());
+        assert_eq!(config.instruments[0].effects.len(), 1);
+        assert!((config.instruments[0].effects[0].mix - 0.5).abs() < 0.01);
+        assert!(config.instruments[1].range.is_none());
     }
 
     #[test]
@@ -899,37 +911,36 @@ plugin = "builtin:sine"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mod_test.toml");
 
-        let keyboards = vec![SaveKeyboard {
-            name: "Main".into(),
-            splits: vec![SaveSplit {
-                range: None,
-                transpose: 0,
-                instrument: Some(SaveInstrument {
-                    plugin: "builtin:sine".into(),
-                    volume: 1.0,
-                    params: vec![],
-                    modulators: vec![SaveModulator {
-                        source: SaveModSource::Lfo {
-                            waveform: "sine".into(),
-                            rate: 2.5,
-                        },
-                        targets: vec![SaveModTarget {
-                            kind: crate::plugin::chain::ModTargetKind::PluginParam { param_index: 0 },
-                            label: "cutoff".into(),
-                            depth: 0.75,
-                        }],
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:sine".into(),
+                volume: 1.0,
+                params: vec![],
+                modulators: vec![SaveModulator {
+                    source: SaveModSource::Lfo {
+                        waveform: "sine".into(),
+                        rate: 2.5,
+                    },
+                    targets: vec![SaveModTarget {
+                        kind: crate::plugin::chain::ModTargetKind::PluginParam { param_index: 0 },
+                        label: "cutoff".into(),
+                        depth: 0.75,
                     }],
-                }),
-                effects: vec![],
-                pattern: None,
-            }],
+                }],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: None,
         }];
 
-        save(&path, &keyboards).unwrap();
+        save(&path, &instruments).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.keyboards.len(), 1);
-        let inst = config.keyboards[0].splits[0].instrument.as_ref().unwrap();
+        assert_eq!(config.instruments.len(), 1);
+        let inst = config.instruments[0].instrument.as_ref().unwrap();
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.waveform, "sine");
@@ -940,21 +951,77 @@ plugin = "builtin:sine"
     }
 
     #[test]
+    fn save_and_reload_with_remap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remap_test.toml");
+
+        let mut remap = HashMap::new();
+        // Insert out of pitch order on purpose; saved file should still be in pitch order.
+        remap.insert(
+            "G#6".into(),
+            RemapTarget { note: "G6".into(), detune: 1.0 },
+        );
+        remap.insert(
+            "F#2".into(),
+            RemapTarget { note: "F2".into(), detune: 1.0 },
+        );
+        remap.insert(
+            "C#6".into(),
+            RemapTarget { note: "C6".into(), detune: 1.0 },
+        );
+
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:sine".into(),
+                volume: 1.0,
+                params: vec![],
+                modulators: vec![],
+                pitch_bend_range: 2.0,
+                remap,
+            }),
+            effects: vec![],
+            pattern: None,
+        }];
+
+        save(&path, &instruments).unwrap();
+
+        // Output should use inline tables and stable alphabetical ordering.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains(r#""F#2" = { note = "F2", detune = 1.0}"#)
+                && !raw.contains(r#"[instrument.remap."F#2"]"#),
+            "expected inline table for F#2, got:\n{raw}"
+        );
+        // Saved file should be ordered by MIDI pitch: F#2 < C#6 < G#6.
+        let f_pos = raw.find("F#2").unwrap();
+        let c_pos = raw.find("C#6").unwrap();
+        let g_pos = raw.find("G#6").unwrap();
+        assert!(
+            f_pos < c_pos && c_pos < g_pos,
+            "remap entries not in pitch order:\n{raw}"
+        );
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        assert_eq!(inst.remap.len(), 3);
+        assert_eq!(inst.remap["F#2"].note, "F2");
+        assert!((inst.remap["F#2"].detune - 1.0).abs() < f64::EPSILON);
+        assert_eq!(inst.remap["G#6"].note, "G6");
+    }
+
+    #[test]
     fn load_session_with_modulators() {
         let toml = r#"
-[[keyboard]]
-name = "Test"
-
-[[keyboard.split]]
-
-[keyboard.split.instrument]
+[[instrument]]
 plugin = "builtin:sine"
 
-[[keyboard.split.instrument.modulator]]
+[[instrument.modulator]]
 waveform = "triangle"
 rate = 0.5
 
-[[keyboard.split.instrument.modulator.target]]
+[[instrument.modulator.target]]
 param = "frequency"
 depth = 0.3
 "#;
@@ -963,7 +1030,7 @@ depth = 0.3
         std::fs::write(&path, toml).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
-        let inst = config.keyboards[0].splits[0].instrument.as_ref().unwrap();
+        let inst = config.instruments[0].instrument.as_ref().unwrap();
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.waveform, "triangle");

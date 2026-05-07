@@ -167,6 +167,82 @@ fn find_vst3_bundles(dir: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// macOS CoreFoundation helpers for VST3 bundle loading
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+mod cf {
+    use std::ffi::{c_void, CString};
+    use std::path::Path;
+
+    // Opaque CoreFoundation types
+    pub type CFBundleRef = *mut c_void;
+    type CFURLRef = *mut c_void;
+    type CFAllocatorRef = *mut c_void;
+    type CFStringRef = *mut c_void;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFAllocatorDefault: CFAllocatorRef;
+        fn CFStringCreateWithCString(
+            alloc: CFAllocatorRef,
+            c_str: *const i8,
+            encoding: u32,
+        ) -> CFStringRef;
+        fn CFURLCreateWithFileSystemPath(
+            allocator: CFAllocatorRef,
+            file_path: CFStringRef,
+            path_style: i32,
+            is_directory: bool,
+        ) -> CFURLRef;
+        fn CFBundleCreate(allocator: CFAllocatorRef, bundle_url: CFURLRef) -> CFBundleRef;
+        fn CFRelease(cf: *mut c_void);
+    }
+
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x08000100;
+    const K_CF_URL_POSIX_PATH_STYLE: i32 = 0;
+
+    /// Create a `CFBundleRef` for the given path. Returns null on failure.
+    /// The caller must release it with `release_bundle` when done.
+    pub fn create_bundle_ref(path: &Path) -> CFBundleRef {
+        let c_path = match CString::new(path.to_str().unwrap_or("")) {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        unsafe {
+            let cf_str = CFStringCreateWithCString(
+                kCFAllocatorDefault,
+                c_path.as_ptr(),
+                K_CF_STRING_ENCODING_UTF8,
+            );
+            if cf_str.is_null() {
+                return std::ptr::null_mut();
+            }
+            let cf_url = CFURLCreateWithFileSystemPath(
+                kCFAllocatorDefault,
+                cf_str,
+                K_CF_URL_POSIX_PATH_STYLE,
+                true,
+            );
+            CFRelease(cf_str);
+            if cf_url.is_null() {
+                return std::ptr::null_mut();
+            }
+            let bundle = CFBundleCreate(kCFAllocatorDefault, cf_url);
+            CFRelease(cf_url);
+            bundle
+        }
+    }
+
+    /// Release a `CFBundleRef` obtained from `create_bundle_ref`.
+    pub fn release_bundle(bundle: CFBundleRef) {
+        if !bundle.is_null() {
+            unsafe { CFRelease(bundle) };
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module loading
 // ---------------------------------------------------------------------------
 
@@ -178,6 +254,8 @@ struct Vst3Module {
     exit_fn: Option<libloading::Symbol<'static, unsafe extern "C" fn() -> bool>>,
     #[cfg(target_os = "windows")]
     exit_fn: Option<libloading::Symbol<'static, unsafe extern "C" fn() -> bool>>,
+    #[cfg(target_os = "macos")]
+    _bundle_ref: cf::CFBundleRef,
     // SAFETY: Library must be dropped after factory and exit_fn.
     // Rust drops fields in declaration order, so this is correct.
     _library: libloading::Library,
@@ -207,15 +285,24 @@ impl Vst3Module {
             }
         }
         #[cfg(target_os = "macos")]
-        {
+        let bundle_ref = {
+            let bundle_ref = cf::create_bundle_ref(bundle_path);
+            if bundle_ref.is_null() {
+                anyhow::bail!(
+                    "Failed to create CFBundleRef for {}",
+                    bundle_path.display()
+                );
+            }
             let entry: libloading::Symbol<unsafe extern "C" fn(*mut c_void) -> bool> =
                 unsafe { library.get(b"bundleEntry") }
                     .map_err(|e| anyhow::anyhow!("bundleEntry not found: {e}"))?;
-            let ok = unsafe { entry(std::ptr::null_mut()) };
+            let ok = unsafe { entry(bundle_ref) };
             if !ok {
+                cf::release_bundle(bundle_ref);
                 anyhow::bail!("bundleEntry returned false");
             }
-        }
+            bundle_ref
+        };
         #[cfg(target_os = "windows")]
         {
             if let Ok(entry) = unsafe { library.get::<unsafe extern "C" fn() -> bool>(b"InitDll") }
@@ -263,6 +350,8 @@ impl Vst3Module {
         Ok(Vst3Module {
             factory: Some(factory),
             exit_fn,
+            #[cfg(target_os = "macos")]
+            _bundle_ref: bundle_ref,
             _library: library,
         })
     }
@@ -282,6 +371,9 @@ impl Drop for Vst3Module {
                 exit();
             }
         }
+        // Release the CFBundleRef on macOS
+        #[cfg(target_os = "macos")]
+        cf::release_bundle(self._bundle_ref);
         // _library drops last (unloads the .so/.dylib/.dll)
     }
 }
@@ -490,6 +582,8 @@ pub struct Vst3Plugin {
     sample_rate: f32,
     audio_in_channel_count: usize,
     audio_out_channel_count: usize,
+    audio_in_bus_count: usize,
+    audio_out_bus_count: usize,
     separate_controller: bool,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<u32>,
@@ -500,6 +594,14 @@ pub struct Vst3Plugin {
     // Pre-allocated audio buffers
     output_bufs: Vec<Vec<f32>>,
     input_bufs: Vec<Vec<f32>>,
+    // Pre-allocated per-callback scratch arrays (sized at load time).
+    // Held to keep the channelBuffers32 raw pointers in output_buses/input_buses valid.
+    #[expect(dead_code, reason = "backing storage for raw pointers in output_buses/input_buses")]
+    output_ptrs: Vec<*mut f32>,
+    #[expect(dead_code, reason = "backing storage for raw pointers in output_buses/input_buses")]
+    input_ptrs: Vec<*mut f32>,
+    output_buses: Vec<AudioBusBuffers>,
+    input_buses: Vec<AudioBusBuffers>,
     // Process-time COM objects (pre-allocated, reused each process() call)
     param_changes: ComWrapper<TangParameterChanges>,
     output_param_changes: ComWrapper<TangParameterChanges>,
@@ -658,6 +760,10 @@ impl Plugin for Vst3Plugin {
         if frames == 0 {
             return Ok(());
         }
+        // Clamp to our pre-allocated capacity. Should never trigger in practice
+        // since we allocate with 2x headroom, but better silent truncation than
+        // a panic on the audio thread.
+        let frames = frames.min(self.output_bufs.first().map(|b| b.len()).unwrap_or(frames));
 
         // Populate event list with MIDI note events
         let events = unsafe { &mut *self.event_list.events.get() };
@@ -763,45 +869,22 @@ impl Plugin for Vst3Plugin {
 
         *param_changes_count = queue_idx as i32;
 
-        // Prepare audio buffers
+        // Zero output buffers; copy input audio into preallocated input buffers.
+        // Buffers are sized to max_block_size at load time so resize never grows.
         for buf in &mut self.output_bufs {
-            buf.resize(frames, 0.0);
-            buf.fill(0.0);
+            buf[..frames].fill(0.0);
         }
         for (ch, buf) in self.input_bufs.iter_mut().enumerate() {
-            buf.resize(frames, 0.0);
             if ch < audio_in.len() {
-                let copy_len = buf.len().min(audio_in[ch].len());
+                let copy_len = frames.min(audio_in[ch].len());
                 buf[..copy_len].copy_from_slice(&audio_in[ch][..copy_len]);
+                if copy_len < frames {
+                    buf[copy_len..frames].fill(0.0);
+                }
             } else {
-                buf.fill(0.0);
+                buf[..frames].fill(0.0);
             }
         }
-
-        // Build channel pointer arrays
-        let mut output_ptrs: Vec<*mut f32> = self
-            .output_bufs
-            .iter_mut()
-            .map(|b| b.as_mut_ptr())
-            .collect();
-        let mut input_ptrs: Vec<*mut f32> =
-            self.input_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
-
-        let mut output_bus = AudioBusBuffers {
-            numChannels: self.audio_out_channel_count as i32,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 {
-                channelBuffers32: output_ptrs.as_mut_ptr(),
-            },
-        };
-
-        let mut input_bus = AudioBusBuffers {
-            numChannels: self.audio_in_channel_count as i32,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 {
-                channelBuffers32: input_ptrs.as_mut_ptr(),
-            },
-        };
 
         let param_changes_ptr = self
             .param_changes
@@ -809,8 +892,6 @@ impl Plugin for Vst3Plugin {
             .unwrap()
             .as_ptr();
         let event_list_ptr = self.event_list.as_com_ref::<IEventList>().unwrap().as_ptr();
-
-        let has_audio_input = self.audio_in_channel_count > 0;
 
         let mut context: ProcessContext = unsafe { std::mem::zeroed() };
         context.state = kPlaying | kTempoValid;
@@ -821,14 +902,18 @@ impl Plugin for Vst3Plugin {
             processMode: kRealtime as i32,
             symbolicSampleSize: kSample32 as i32,
             numSamples: frames as i32,
-            numInputs: if has_audio_input { 1 } else { 0 },
-            numOutputs: 1,
-            inputs: if has_audio_input {
-                &mut input_bus
+            numInputs: self.audio_in_bus_count as i32,
+            numOutputs: self.audio_out_bus_count as i32,
+            inputs: if self.audio_in_bus_count > 0 {
+                self.input_buses.as_mut_ptr()
             } else {
                 std::ptr::null_mut()
             },
-            outputs: &mut output_bus,
+            outputs: if self.audio_out_bus_count > 0 {
+                self.output_buses.as_mut_ptr()
+            } else {
+                std::ptr::null_mut()
+            },
             inputParameterChanges: param_changes_ptr,
             outputParameterChanges: self
                 .output_param_changes
@@ -845,12 +930,11 @@ impl Plugin for Vst3Plugin {
             log::warn!("VST3 process returned {result}");
         }
 
-        // Copy output to caller's buffers
+        // Copy output to caller's buffers (only the frames we processed)
         for (ch, out_slice) in audio_out.iter_mut().enumerate() {
             if ch < self.output_bufs.len() {
-                let src = &self.output_bufs[ch];
-                let copy_len = out_slice.len().min(src.len());
-                out_slice[..copy_len].copy_from_slice(&src[..copy_len]);
+                let copy_len = out_slice.len().min(frames);
+                out_slice[..copy_len].copy_from_slice(&self.output_bufs[ch][..copy_len]);
             }
         }
 
@@ -1194,11 +1278,16 @@ pub fn load(
         preset_count,
     );
 
+    // Allocate with 2x headroom to absorb jitter from audio backends that
+    // don't honor the requested block size strictly (e.g. CoreAudio sometimes
+    // delivers slightly more frames than `BufferSize::Fixed` requested).
+    let buffer_capacity = max_block_size * 2;
+
     // Setup processing
     let mut setup = ProcessSetup {
         processMode: kRealtime as i32,
         symbolicSampleSize: kSample32 as i32,
-        maxSamplesPerBlock: max_block_size as i32,
+        maxSamplesPerBlock: buffer_capacity as i32,
         sampleRate: sample_rate as f64,
     };
     let result = unsafe { processor.setupProcessing(&mut setup) };
@@ -1216,9 +1305,49 @@ pub fn load(
         log::warn!("VST3 setProcessing returned {result}");
     }
 
-    // Pre-allocate buffers
-    let output_bufs: Vec<Vec<f32>> = (0..audio_out_channel_count).map(|_| Vec::new()).collect();
-    let input_bufs: Vec<Vec<f32>> = (0..audio_in_channel_count).map(|_| Vec::new()).collect();
+    // Pre-allocate buffers sized to capacity — never grow on audio thread.
+    let mut output_bufs: Vec<Vec<f32>> = (0..audio_out_channel_count)
+        .map(|_| vec![0.0f32; buffer_capacity])
+        .collect();
+    let mut input_bufs: Vec<Vec<f32>> = (0..audio_in_channel_count)
+        .map(|_| vec![0.0f32; buffer_capacity])
+        .collect();
+
+    // Pre-build channel pointer arrays. These point into output_bufs/input_bufs
+    // which are stable since they live in the heap-allocated Vst3Plugin (Box).
+    let output_ptrs: Vec<*mut f32> = output_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+    let input_ptrs: Vec<*mut f32> = input_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+
+    // Pre-build AudioBusBuffers arrays sized to the plugin's full bus count.
+    // Bus 0 wired to our channel pointers; remaining buses are placeholders.
+    let bus_count_out = audio_out_bus_count.max(0) as usize;
+    let bus_count_in = audio_in_bus_count.max(0) as usize;
+    let output_buses: Vec<AudioBusBuffers> = (0..bus_count_out)
+        .map(|i| AudioBusBuffers {
+            numChannels: if i == 0 { audio_out_channel_count as i32 } else { 0 },
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: if i == 0 && !output_ptrs.is_empty() {
+                    output_ptrs.as_ptr() as *mut *mut f32
+                } else {
+                    std::ptr::null_mut()
+                },
+            },
+        })
+        .collect();
+    let input_buses: Vec<AudioBusBuffers> = (0..bus_count_in)
+        .map(|i| AudioBusBuffers {
+            numChannels: if i == 0 { audio_in_channel_count as i32 } else { 0 },
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: if i == 0 && !input_ptrs.is_empty() {
+                    input_ptrs.as_ptr() as *mut *mut f32
+                } else {
+                    std::ptr::null_mut()
+                },
+            },
+        })
+        .collect();
 
     // Pre-allocate process-time COM objects
     let param_changes = ComWrapper::new(TangParameterChanges {
@@ -1253,6 +1382,8 @@ pub fn load(
         sample_rate,
         audio_in_channel_count,
         audio_out_channel_count,
+        audio_in_bus_count: audio_in_bus_count.max(0) as usize,
+        audio_out_bus_count: audio_out_bus_count.max(0) as usize,
         _module: module,
         component,
         processor,
@@ -1268,6 +1399,10 @@ pub fn load(
         preset_count,
         output_bufs,
         input_bufs,
+        output_ptrs,
+        input_ptrs,
+        output_buses,
+        input_buses,
         param_changes,
         output_param_changes,
         event_list,
@@ -1285,16 +1420,36 @@ fn find_plugin(source: &str) -> anyhow::Result<(Vst3Module, Steinberg::TUID, Str
     // Try stripping "vst3:" prefix for name-based lookup
     if let Some(plugin_name) = source.strip_prefix("vst3:") {
         let search_name = plugin_name.to_lowercase();
+
+        // Collect all bundles, then split into (likely matches by filename stem)
+        // and the rest. dlopening a VST3 bundle can be expensive (Pianoteq pulls
+        // in Qt + Komplete Kontrol; iLok plugins talk to license daemons), so we
+        // try filename matches first and only fall back to the full scan if none
+        // of those bundles export a matching class name.
+        let mut likely: Vec<PathBuf> = Vec::new();
+        let mut rest: Vec<PathBuf> = Vec::new();
         for search_dir in vst3_search_paths() {
             if !search_dir.exists() {
                 continue;
             }
             for bundle_path in find_vst3_bundles(&search_dir) {
-                if let Ok((module, cid, name, is_instrument)) =
-                    scan_bundle_for_name(&bundle_path, &search_name)
-                {
-                    return Ok((module, cid, name, is_instrument));
+                let stem = bundle_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase());
+                if stem.is_some_and(|s| s.contains(&search_name)) {
+                    likely.push(bundle_path);
+                } else {
+                    rest.push(bundle_path);
                 }
+            }
+        }
+
+        for bundle_path in likely.into_iter().chain(rest) {
+            if let Ok((module, cid, name, is_instrument)) =
+                scan_bundle_for_name(&bundle_path, &search_name)
+            {
+                return Ok((module, cid, name, is_instrument));
             }
         }
         anyhow::bail!(
@@ -1393,8 +1548,19 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
             continue;
         }
         for bundle_path in find_vst3_bundles(&search_dir) {
+            let start = std::time::Instant::now();
             match scan_bundle_for_enum(&bundle_path) {
-                Some(found) => plugins.extend(found),
+                Some(found) => {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    // Distribute total scan time evenly across classes in this bundle.
+                    // Most bundles have a single class, so this is usually exact.
+                    let n = found.len().max(1) as u64;
+                    let per_class = elapsed_ms / n;
+                    for mut p in found {
+                        p.scan_ms = per_class;
+                        plugins.push(p);
+                    }
+                }
                 None => {
                     log::warn!("Failed to scan VST3 bundle: {}", bundle_path.display());
                 }
@@ -1437,6 +1603,7 @@ fn scan_bundle_for_enum(bundle_path: &Path) -> Option<Vec<PluginInfo>> {
             param_count,
             preset_count,
             path: bundle_path.to_string_lossy().to_string(),
+            scan_ms: 0,
         });
     }
 

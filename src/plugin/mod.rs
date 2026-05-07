@@ -54,6 +54,7 @@ pub struct PluginInfo {
     pub param_count: usize,
     pub preset_count: usize,
     pub path: String,
+    pub scan_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

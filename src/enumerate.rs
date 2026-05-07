@@ -71,7 +71,7 @@ fn format_sample_fmt(fmt: cpal::SampleFormat) -> &'static str {
     }
 }
 
-/// Temporarily redirect stderr to /dev/null to suppress ALSA/JACK library spam.
+/// Temporarily redirect stderr to /dev/null to suppress native library spam.
 /// Returns a guard that restores stderr on drop. No-op on non-Unix platforms.
 #[cfg(unix)]
 fn suppress_stderr() -> Option<StderrGuard> {
@@ -120,7 +120,7 @@ pub fn builtins() -> anyhow::Result<()> {
         } else {
             "effect"
         };
-        println!("  [{kind}] {}", p.name);
+        println!("  [{kind}] {} ({} ms)", p.name, p.scan_ms);
         println!("          ID:      {}", p.id);
         println!("          Params:  {}", p.param_count);
         println!("          Presets: {}", p.preset_count);
@@ -142,7 +142,7 @@ pub fn plugins() -> anyhow::Result<()> {
             } else {
                 "effect"
             };
-            println!("  [{kind}] {}", p.name);
+            println!("  [{kind}] {} ({} ms)", p.name, p.scan_ms);
             println!("          URI:     {}", p.id);
             println!("          Path:    {}", p.path);
             println!("          Params:  {}", p.param_count);
@@ -168,7 +168,7 @@ pub fn plugins() -> anyhow::Result<()> {
         } else {
             "effect"
         };
-        println!("  [{kind}] {}", p.name);
+        println!("  [{kind}] {} ({} ms)", p.name, p.scan_ms);
         println!("          ID:      {}", p.id);
         println!("          Path:    {}", p.path);
         println!("          Params:  {}", p.param_count);
@@ -178,8 +178,8 @@ pub fn plugins() -> anyhow::Result<()> {
 
     #[cfg(feature = "vst3")]
     {
-        println!("=== VST3 Plugins ===");
         let vst3s = vst3::enumerate_plugins();
+        println!("=== VST3 Plugins ===");
         if vst3s.is_empty() {
             println!("  (none found)");
         }
@@ -189,7 +189,7 @@ pub fn plugins() -> anyhow::Result<()> {
             } else {
                 "effect"
             };
-            println!("  [{kind}] {}", p.name);
+            println!("  [{kind}] {} ({} ms)", p.name, p.scan_ms);
             println!("          ID:      {}", p.id);
             println!("          Path:    {}", p.path);
             println!("          Params:  {}", p.param_count);

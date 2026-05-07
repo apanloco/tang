@@ -617,39 +617,34 @@ fn update_cross_mod_base(modulators: &mut [Modulator], target_mod_index: usize, 
 
 /// Commands sent from the main thread to mutate the audio graph on the audio thread.
 pub enum GraphCommand {
-    /// Swap the instrument in a specific split.
+    /// Swap the instrument plugin in a specific instrument lane.
     SwapInstrument {
-        kb: usize,
-        split: usize,
+        inst: usize,
         instrument: Box<dyn Plugin>,
         inst_buf: Vec<Vec<f32>>,
         remapper: Option<NoteRemapper>,
     },
-    /// Insert an effect into a specific split's chain.
+    /// Insert an effect into a specific instrument lane's chain.
     InsertEffect {
-        kb: usize,
-        split: usize,
+        inst: usize,
         index: usize,
         effect: Box<dyn Plugin>,
         mix: f64,
     },
-    /// Remove an effect from a specific split's chain.
+    /// Remove an effect from a specific instrument lane's chain.
     RemoveEffect {
-        kb: usize,
-        split: usize,
+        inst: usize,
         index: usize,
     },
-    /// Reorder an effect within a specific split's chain.
+    /// Reorder an effect within a specific instrument lane's chain.
     ReorderEffect {
-        kb: usize,
-        split: usize,
+        inst: usize,
         from: usize,
         to: usize,
     },
     /// Set a parameter on a plugin. slot 0 = instrument, 1..N = effects.
     SetParameter {
-        kb: usize,
-        split: usize,
+        inst: usize,
         slot: usize,
         param_index: u32,
         value: f32,
@@ -657,96 +652,76 @@ pub enum GraphCommand {
     /// Set the host-side dry/wet mix on an effect. slot 1..N = effects.
     #[expect(dead_code)]
     SetMix {
-        kb: usize,
-        split: usize,
+        inst: usize,
         slot: usize,
         value: f32,
     },
-    /// Set the host-side volume on a split's instrument.
+    /// Set the host-side volume on an instrument lane.
     SetVolume {
-        kb: usize,
-        split: usize,
+        inst: usize,
         value: f32,
     },
-    /// Set the note range for a split. None = full range.
+    /// Set the note range for an instrument lane. None = full range.
     #[expect(dead_code)]
-    SetSplitRange {
-        kb: usize,
-        split: usize,
+    SetInstrumentRange {
+        inst: usize,
         range: Option<(u8, u8)>,
     },
-    /// Add a new keyboard lane (with no splits initially).
-    AddKeyboard,
-    /// Remove a keyboard lane and all its splits.
-    #[expect(dead_code)]
-    RemoveKeyboard {
-        kb: usize,
+    /// Clear the instrument plugin from a lane (leaving it empty).
+    ClearInstrument {
+        inst: usize,
     },
-    /// Remove the instrument from a split (leaving it empty).
-    RemoveInstrument {
-        kb: usize,
-        split: usize,
-    },
-    /// Swap instruments (with their buffers and remappers) between two splits.
+    /// Swap instruments (with their buffers and remappers) between two lanes.
     SwapInstruments {
-        kb: usize,
-        split_a: usize,
-        split_b: usize,
+        inst_a: usize,
+        inst_b: usize,
     },
-    /// Add a new empty split to a keyboard.
-    AddSplit {
-        kb: usize,
+    /// Add a new empty instrument lane.
+    AddInstrument {
         range: Option<(u8, u8)>,
     },
-    /// Remove a split from a keyboard.
-    RemoveSplit {
-        kb: usize,
-        split: usize,
+    /// Remove an instrument lane entirely.
+    RemoveInstrument {
+        inst: usize,
     },
     /// Insert a new modulator into a plugin slot.
     /// parent_slot: 0 = instrument, 1..N = effects.
     InsertModulator {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         index: usize,
         source: ModSource,
     },
     /// Remove a modulator from a plugin slot.
     RemoveModulator {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         index: usize,
     },
     /// Set the rate of an LFO modulator.
     SetModulatorRate {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         rate: f32,
     },
     /// Set the waveform of an LFO modulator.
     SetModulatorWaveform {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         waveform: LfoWaveform,
     },
     /// Replace a modulator's source (for type switching between LFO/Envelope).
     SetModulatorSource {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         source: ModSource,
     },
     /// Set envelope parameters on an Envelope modulator.
     SetModulatorEnvelopeParam {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         attack: f32,
@@ -756,8 +731,7 @@ pub enum GraphCommand {
     },
     /// Add a modulation target to a modulator.
     AddModTarget {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         target: ModTarget,
@@ -765,50 +739,43 @@ pub enum GraphCommand {
     /// Remove a modulation target from a modulator.
     #[expect(dead_code)]
     RemoveModTarget {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         target_index: usize,
     },
     /// Set the depth of a modulation target.
     SetModTargetDepth {
-        kb: usize,
-        split: usize,
+        inst: usize,
         parent_slot: usize,
         mod_index: usize,
         target_index: usize,
         depth: f32,
     },
-    /// Enable/disable pattern playback for a split.
+    /// Enable/disable pattern playback for an instrument lane.
     SetPatternEnabled {
-        kb: usize,
-        split: usize,
+        inst: usize,
         enabled: bool,
     },
-    /// Start/stop pattern recording for a split.
+    /// Start/stop pattern recording for an instrument lane.
     SetPatternRecording {
-        kb: usize,
-        split: usize,
+        inst: usize,
         recording: bool,
     },
     /// Set the pattern data (e.g. after loading from session).
     SetPattern {
-        kb: usize,
-        split: usize,
+        inst: usize,
         pattern: Pattern,
         base_note: Option<u8>,
     },
-    /// Clear the pattern for a split.
+    /// Clear the pattern for an instrument lane.
     ClearPattern {
-        kb: usize,
-        split: usize,
+        inst: usize,
     },
-    /// Swap patterns between two splits in the same keyboard.
+    /// Swap patterns between two instrument lanes.
     SwapPatterns {
-        kb: usize,
-        split_a: usize,
-        split_b: usize,
+        inst_a: usize,
+        inst_b: usize,
     },
     /// Set the global BPM (applied to all pattern players).
     SetGlobalBpm {
@@ -816,20 +783,17 @@ pub enum GraphCommand {
     },
     /// Set pattern length in beats.
     SetPatternLength {
-        kb: usize,
-        split: usize,
+        inst: usize,
         beats: f32,
     },
     /// Set whether the pattern loops or plays once.
     SetPatternLooping {
-        kb: usize,
-        split: usize,
+        inst: usize,
         looping: bool,
     },
-    /// Set the transpose (in semitones) for a split.
+    /// Set the transpose (in semitones) for an instrument lane.
     SetTranspose {
-        kb: usize,
-        split: usize,
+        inst: usize,
         semitones: i8,
     },
 }
@@ -861,8 +825,7 @@ pub struct Pattern {
 
 /// Notification sent from audio thread to TUI when recording completes.
 pub struct PatternNotification {
-    pub kb: usize,
-    pub split: usize,
+    pub inst: usize,
     pub base_note: Option<u8>,
     pub length_beats: f32,
     pub looping: bool,
@@ -881,7 +844,7 @@ struct PatternVoice {
     channel: u8,
 }
 
-/// Per-split pattern recorder and player.
+/// Per-instrument pattern recorder and player.
 struct PatternPlayer {
     pattern: Pattern,
     enabled: bool,
@@ -914,9 +877,8 @@ struct PatternPlayer {
     bpm: f32,
     /// Notification sender for when recording completes automatically.
     pattern_tx: Option<Sender<PatternNotification>>,
-    /// This player's keyboard and split index (for notifications).
-    kb_index: usize,
-    split_index: usize,
+    /// This player's instrument index (for notifications).
+    inst_index: usize,
     // --- Metronome state ---
     /// Number of count-in beats before recording starts.
     count_in_beats: f32,
@@ -961,8 +923,7 @@ impl PatternPlayer {
             looping: true,
             bpm: 120.0,
             pattern_tx: None,
-            kb_index: 0,
-            split_index: 0,
+            inst_index: 0,
             count_in_beats: 4.0,
             metronome_pos: 0,
             beat_length_samples: 0,
@@ -1173,8 +1134,7 @@ impl PatternPlayer {
                 (e.frame, e.status, e.note, e.velocity)
             }).collect();
             let _ = tx.try_send(PatternNotification {
-                kb: self.kb_index,
-                split: self.split_index,
+                inst: self.inst_index,
                 base_note: self.base_note,
                 length_beats: self.length_beats,
                 looping: self.looping,
@@ -1337,10 +1297,10 @@ impl PatternPlayer {
 }
 
 // ---------------------------------------------------------------------------
-// SplitLane — one instrument + effect chain within a keyboard
+// InstrumentLane — one instrument + effect chain
 // ---------------------------------------------------------------------------
 
-struct SplitLane {
+struct InstrumentLane {
     range: Option<(u8, u8)>,
     instrument: Option<Box<dyn Plugin>>,
     volume: f32,
@@ -1357,15 +1317,15 @@ struct SplitLane {
     inst_modulators: Vec<Modulator>,
     /// Modulators attached to each effect. Index i corresponds to effects[i].
     effect_modulators: Vec<Vec<Modulator>>,
-    /// Pattern recorder/player for this split.
+    /// Pattern recorder/player for this instrument.
     pattern: PatternPlayer,
     /// Transpose in semitones applied to note events.
     transpose: i8,
 }
 
-impl SplitLane {
+impl InstrumentLane {
     fn new(num_channels: usize) -> Self {
-        SplitLane {
+        InstrumentLane {
             range: None,
             instrument: None,
             volume: 1.0,
@@ -1402,7 +1362,7 @@ impl SplitLane {
             .unwrap_or(48000.0)
     }
 
-    /// Filter MIDI events by this split's key range.
+    /// Filter MIDI events by this instrument's key range.
     /// Note-on/note-off: only pass if note is within range (inclusive).
     /// CC, pitch bend, channel pressure, etc.: always pass through.
     fn filter_midi(&mut self, midi_events: &[(u64, [u8; 3])]) {
@@ -1427,19 +1387,19 @@ impl SplitLane {
                     }
                 }
                 _ => {
-                    // CC, pitch bend, channel pressure, etc. — duplicate to all splits
+                    // CC, pitch bend, channel pressure, etc. — duplicate to all instruments
                     self.filtered_midi.push((frame, bytes));
                 }
             }
         }
     }
 
-    /// Process this split's instrument + effect chain, writing output to `split_out`.
-    /// `split_out` must have `num_channels` vecs, each with `frames` length.
+    /// Process this instrument + effect chain, writing output to `inst_out`.
+    /// `inst_out` must have `num_channels` vecs, each with `frames` length.
     fn process(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
-        split_out: &mut [Vec<f32>],
+        inst_out: &mut [Vec<f32>],
         num_channels: usize,
     ) -> anyhow::Result<()> {
         // Filter MIDI by range
@@ -1454,7 +1414,7 @@ impl SplitLane {
         };
 
         // Pattern recorder/player — process after remapping, before modulators.
-        let frames = split_out.first().map(|b| b.len()).unwrap_or(0);
+        let frames = inst_out.first().map(|b| b.len()).unwrap_or(0);
         let effective_events = self.pattern.process(effective_events, frames);
 
         // Apply transpose to note events.
@@ -1479,7 +1439,7 @@ impl SplitLane {
 
         // Apply modulators (block-rate: once per buffer, before instrument processing).
         // Three-pass: tick all → apply cross-mod → apply plugin targets.
-        let buffer_size = split_out.first().map(|b| b.len()).unwrap_or(0);
+        let buffer_size = inst_out.first().map(|b| b.len()).unwrap_or(0);
         if buffer_size > 0 {
             // Instrument modulators.
             if let Some(inst) = &mut self.instrument {
@@ -1505,25 +1465,25 @@ impl SplitLane {
         let instrument = match self.instrument.as_mut() {
             Some(inst) => inst,
             None => {
-                for ch in split_out.iter_mut() {
+                for ch in inst_out.iter_mut() {
                     ch.fill(0.0);
                 }
                 // Render metronome even without an instrument (count-in)
-                let frames = split_out.first().map(|b| b.len()).unwrap_or(0);
-                self.pattern.render_metronome(split_out, frames);
+                let frames = inst_out.first().map(|b| b.len()).unwrap_or(0);
+                self.pattern.render_metronome(inst_out, frames);
                 return Ok(());
             }
         };
 
-        let frames = split_out.first().map(|b| b.len()).unwrap_or(0);
+        let frames = inst_out.first().map(|b| b.len()).unwrap_or(0);
         let inst_outputs = self.inst_buf.len();
 
         if inst_outputs <= num_channels && self.effects.is_empty() && (self.volume - 1.0).abs() < f32::EPSILON {
             // Fast path: instrument output fits, no effects, no volume scaling
             let mut storage = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
-            let out_refs = mut_slices(split_out, &mut storage);
+            let out_refs = mut_slices(inst_out, &mut storage);
             instrument.process(effective_events, &[], out_refs)?;
-            self.pattern.render_metronome(split_out, frames);
+            self.pattern.render_metronome(inst_out, frames);
             return Ok(());
         }
 
@@ -1551,14 +1511,14 @@ impl SplitLane {
 
         if self.effects.is_empty() {
             // No effects — copy first num_channels from inst_buf to output
-            for (ch, out) in split_out.iter_mut().enumerate() {
+            for (ch, out) in inst_out.iter_mut().enumerate() {
                 if ch < self.inst_buf.len() {
                     out.copy_from_slice(&self.inst_buf[ch]);
                 } else {
                     out.fill(0.0);
                 }
             }
-            self.pattern.render_metronome(split_out, frames);
+            self.pattern.render_metronome(inst_out, frames);
             return Ok(());
         }
 
@@ -1621,9 +1581,9 @@ impl SplitLane {
             src_is_a = !src_is_a;
         }
 
-        // Copy final result to split_out
+        // Copy final result to inst_out
         let final_buf = if src_is_a { &self.buf_a } else { &self.buf_b };
-        for (ch, out) in split_out.iter_mut().enumerate() {
+        for (ch, out) in inst_out.iter_mut().enumerate() {
             if ch < final_buf.len() {
                 let copy_len = out.len().min(final_buf[ch].len());
                 out[..copy_len].copy_from_slice(&final_buf[ch][..copy_len]);
@@ -1631,34 +1591,26 @@ impl SplitLane {
         }
 
         // Metronome click (additive, on top of instrument+effects)
-        self.pattern.render_metronome(split_out, frames);
+        self.pattern.render_metronome(inst_out, frames);
 
         Ok(())
     }
 }
 
 // ---------------------------------------------------------------------------
-// KeyboardLane
+// AudioGraph — multi-instrument audio processor
 // ---------------------------------------------------------------------------
 
-struct KeyboardLane {
-    splits: Vec<SplitLane>,
-}
-
-// ---------------------------------------------------------------------------
-// AudioGraph — multi-keyboard, multi-split audio processor
-// ---------------------------------------------------------------------------
-
-/// An audio graph with multiple keyboards, each containing splits with instrument + effects.
-/// All splits are summed together into the final output.
+/// An audio graph with multiple instruments, each with its own effect chain.
+/// All instruments are summed together into the final output.
 ///
 /// Commands are drained at the top of every audio callback via try_recv loop.
 pub struct AudioGraph {
-    keyboards: Vec<KeyboardLane>,
-    /// Accumulation buffer for summing all splits
+    instruments: Vec<InstrumentLane>,
+    /// Accumulation buffer for summing all instruments
     mix_buf: Vec<Vec<f32>>,
-    /// Per-split scratch buffer (reused across splits)
-    split_buf: Vec<Vec<f32>>,
+    /// Per-instrument scratch buffer (reused across instruments)
+    lane_buf: Vec<Vec<f32>>,
     num_channels: usize,
     command_rx: Receiver<GraphCommand>,
     return_tx: Sender<Box<dyn Plugin>>,
@@ -1674,9 +1626,9 @@ impl AudioGraph {
         return_tx: Sender<Box<dyn Plugin>>,
     ) -> Self {
         AudioGraph {
-            keyboards: Vec::new(),
+            instruments: Vec::new(),
             mix_buf: (0..num_channels).map(|_| Vec::new()).collect(),
-            split_buf: (0..num_channels).map(|_| Vec::new()).collect(),
+            lane_buf: (0..num_channels).map(|_| Vec::new()).collect(),
             num_channels,
             command_rx,
             return_tx,
@@ -1687,13 +1639,10 @@ impl AudioGraph {
     /// Set the notification channel for pattern recording completion.
     pub fn set_pattern_tx(&mut self, tx: Sender<PatternNotification>) {
         self.pattern_tx = Some(tx.clone());
-        // Propagate to existing splits.
-        for (kb_idx, kb) in self.keyboards.iter_mut().enumerate() {
-            for (sp_idx, sp) in kb.splits.iter_mut().enumerate() {
-                sp.pattern.pattern_tx = Some(tx.clone());
-                sp.pattern.kb_index = kb_idx;
-                sp.pattern.split_index = sp_idx;
-            }
+        // Propagate to existing instruments.
+        for (inst_idx, inst) in self.instruments.iter_mut().enumerate() {
+            inst.pattern.pattern_tx = Some(tx.clone());
+            inst.pattern.inst_index = inst_idx;
         }
     }
 
@@ -1706,13 +1655,12 @@ impl AudioGraph {
         while let Ok(cmd) = self.command_rx.try_recv() {
             match cmd {
                 GraphCommand::SwapInstrument {
-                    kb,
-                    split,
+                    inst,
                     instrument: new_inst,
                     inst_buf,
                     remapper,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.inst_buf = inst_buf;
                         lane.remapper = remapper;
                         if let Some(old) = lane.instrument.replace(new_inst) {
@@ -1721,14 +1669,13 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::InsertEffect {
-                    kb,
-                    split,
+                    inst,
                     index,
                     effect,
                     mix,
                 } => {
                     let num_channels = self.num_channels;
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if effect.audio_output_count() != num_channels {
                             log::warn!(
                                 "Rejecting effect '{}': output channels {} != chain channels {}",
@@ -1745,8 +1692,8 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::RemoveEffect { kb, split, index } => {
-                    let old = self.get_split_mut(kb, split).and_then(|lane| {
+                GraphCommand::RemoveEffect { inst, index } => {
+                    let old = self.get_instrument_mut(inst).and_then(|lane| {
                         if index < lane.effects.len() {
                             let old = lane.effects.remove(index);
                             lane.mix_values.remove(index);
@@ -1764,12 +1711,11 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::ReorderEffect {
-                    kb,
-                    split,
+                    inst,
                     from,
                     to,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if from < lane.effects.len() && to < lane.effects.len() && from != to {
                             let effect = lane.effects.remove(from);
                             let mix = lane.mix_values.remove(from);
@@ -1782,13 +1728,12 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetParameter {
-                    kb,
-                    split,
+                    inst,
                     slot,
                     param_index,
                     value,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         let plugin: Option<&mut Box<dyn Plugin>> = if slot == 0 {
                             lane.instrument.as_mut()
                         } else {
@@ -1796,7 +1741,7 @@ impl AudioGraph {
                         };
                         if let Some(p) = plugin {
                             if let Err(e) = p.set_parameter(param_index, value) {
-                                log::warn!("SetParameter kb={kb} split={split} slot={slot} index={param_index}: {e}");
+                                log::warn!("SetParameter inst={inst} slot={slot} index={param_index}: {e}");
                             }
                         }
                         // Update modulator base values for matching plugin-param targets.
@@ -1819,12 +1764,11 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetMix {
-                    kb,
-                    split,
+                    inst,
                     slot,
                     value,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if slot > 0 {
                             if let Some(mix) = lane.mix_values.get_mut(slot - 1) {
                                 *mix = value as f64;
@@ -1832,38 +1776,19 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::SetVolume { kb, split, value } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetVolume { inst, value } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.volume = value;
                     }
                 }
-                GraphCommand::SetSplitRange { kb, split, range } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetInstrumentRange { inst, range } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.range = range;
                     }
                 }
-                GraphCommand::AddKeyboard => {
-                    self.keyboards.push(KeyboardLane {
-                        splits: Vec::new(),
-                    });
-                }
-                GraphCommand::RemoveKeyboard { kb } => {
-                    if kb < self.keyboards.len() {
-                        let removed = self.keyboards.remove(kb);
-                        // Return all plugins from removed keyboard
-                        for mut split in removed.splits {
-                            if let Some(inst) = split.instrument.take() {
-                                let _ = self.return_tx.try_send(inst);
-                            }
-                            for effect in split.effects.drain(..) {
-                                let _ = self.return_tx.try_send(effect);
-                            }
-                        }
-                    }
-                }
-                GraphCommand::RemoveInstrument { kb, split } => {
+                GraphCommand::ClearInstrument { inst } => {
                     let old = self
-                        .get_split_mut(kb, split)
+                        .get_instrument_mut(inst)
                         .and_then(|lane| {
                             lane.inst_buf.clear();
                             lane.remapper = None;
@@ -1875,61 +1800,52 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SwapInstruments {
-                    kb,
-                    split_a,
-                    split_b,
+                    inst_a,
+                    inst_b,
                 } => {
-                    if let Some(keyboard) = self.keyboards.get_mut(kb) {
-                        if split_a < keyboard.splits.len() && split_b < keyboard.splits.len() && split_a != split_b {
-                            // Swap instrument, inst_buf, and remapper between the two splits.
-                            let (a, b) = if split_a < split_b {
-                                let (left, right) = keyboard.splits.split_at_mut(split_b);
-                                (&mut left[split_a], &mut right[0])
-                            } else {
-                                let (left, right) = keyboard.splits.split_at_mut(split_a);
-                                (&mut right[0], &mut left[split_b])
-                            };
-                            std::mem::swap(&mut a.instrument, &mut b.instrument);
-                            std::mem::swap(&mut a.inst_buf, &mut b.inst_buf);
-                            std::mem::swap(&mut a.remapper, &mut b.remapper);
+                    if inst_a < self.instruments.len() && inst_b < self.instruments.len() && inst_a != inst_b {
+                        // Swap instrument, inst_buf, and remapper between the two lanes.
+                        let (a, b) = if inst_a < inst_b {
+                            let (left, right) = self.instruments.split_at_mut(inst_b);
+                            (&mut left[inst_a], &mut right[0])
+                        } else {
+                            let (left, right) = self.instruments.split_at_mut(inst_a);
+                            (&mut right[0], &mut left[inst_b])
+                        };
+                        std::mem::swap(&mut a.instrument, &mut b.instrument);
+                        std::mem::swap(&mut a.inst_buf, &mut b.inst_buf);
+                        std::mem::swap(&mut a.remapper, &mut b.remapper);
+                    }
+                }
+                GraphCommand::AddInstrument { range } => {
+                    let mut lane = InstrumentLane::new(self.num_channels);
+                    lane.range = range;
+                    lane.pattern.inst_index = self.instruments.len();
+                    lane.pattern.pattern_tx = self.pattern_tx.clone();
+                    self.instruments.push(lane);
+                }
+                GraphCommand::RemoveInstrument { inst } => {
+                    if inst < self.instruments.len() {
+                        let mut removed = self.instruments.remove(inst);
+                        if let Some(old_inst) = removed.instrument.take() {
+                            let _ = self.return_tx.try_send(old_inst);
                         }
-                    }
-                }
-                GraphCommand::AddSplit { kb, range } => {
-                    if let Some(keyboard) = self.keyboards.get_mut(kb) {
-                        let mut lane = SplitLane::new(self.num_channels);
-                        lane.range = range;
-                        lane.pattern.kb_index = kb;
-                        lane.pattern.split_index = keyboard.splits.len();
-                        lane.pattern.pattern_tx = self.pattern_tx.clone();
-                        keyboard.splits.push(lane);
-                    }
-                }
-                GraphCommand::RemoveSplit { kb, split } => {
-                    if let Some(keyboard) = self.keyboards.get_mut(kb) {
-                        if split < keyboard.splits.len() {
-                            let mut removed = keyboard.splits.remove(split);
-                            if let Some(inst) = removed.instrument.take() {
-                                let _ = self.return_tx.try_send(inst);
-                            }
-                            for effect in removed.effects.drain(..) {
-                                let _ = self.return_tx.try_send(effect);
-                            }
-                            // Re-index remaining splits so pattern notifications route correctly.
-                            for (i, sp) in keyboard.splits.iter_mut().enumerate() {
-                                sp.pattern.split_index = i;
-                            }
+                        for effect in removed.effects.drain(..) {
+                            let _ = self.return_tx.try_send(effect);
+                        }
+                        // Re-index remaining instruments so pattern notifications route correctly.
+                        for (i, lane) in self.instruments.iter_mut().enumerate() {
+                            lane.pattern.inst_index = i;
                         }
                     }
                 }
                 GraphCommand::InsertModulator {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     index,
                     source,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         let m = Modulator::new(source, lane.sample_rate());
                         if let Some(mods) = lane.modulators_for(parent_slot) {
                             let idx = index.min(mods.len());
@@ -1937,8 +1853,8 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::RemoveModulator { kb, split, parent_slot, index } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::RemoveModulator { inst, parent_slot, index } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(mods) = lane.modulators_for(parent_slot) {
                             if index < mods.len() {
                                 mods.remove(index);
@@ -1949,13 +1865,12 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetModulatorRate {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     rate,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(mods) = lane.modulators_for(parent_slot) {
                             if let Some(m) = mods.get_mut(mod_index) {
                                 if let ModSource::Lfo { rate: ref mut r, .. } = m.source {
@@ -1968,13 +1883,12 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetModulatorWaveform {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     waveform,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
                             if let ModSource::Lfo { waveform: ref mut w, .. } = m.source {
                                 *w = waveform;
@@ -1983,13 +1897,12 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetModulatorSource {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     source,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
                             m.source = source;
                             m.last_output = 0.0;
@@ -1997,8 +1910,7 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetModulatorEnvelopeParam {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     attack,
@@ -2006,7 +1918,7 @@ impl AudioGraph {
                     sustain,
                     release,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(mods) = lane.modulators_for(parent_slot) {
                             if let Some(m) = mods.get_mut(mod_index) {
                                 if let ModSource::Envelope {
@@ -2032,26 +1944,24 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::AddModTarget {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     target,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
                             m.targets.push(target);
                         }
                     }
                 }
                 GraphCommand::RemoveModTarget {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     target_index,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
                             if target_index < m.targets.len() {
                                 m.targets.remove(target_index);
@@ -2060,14 +1970,13 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetModTargetDepth {
-                    kb,
-                    split,
+                    inst,
                     parent_slot,
                     mod_index,
                     target_index,
                     depth,
                 } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
                             if let Some(t) = m.targets.get_mut(target_index) {
                                 t.depth = depth;
@@ -2075,17 +1984,16 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::SetPatternEnabled { kb, split, enabled } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetPatternEnabled { inst, enabled } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.enabled = enabled;
                     }
                 }
-                GraphCommand::SetPatternRecording { kb, split, recording } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetPatternRecording { inst, recording } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         if recording {
-                            // Ensure notification routes back to the correct split.
-                            lane.pattern.kb_index = kb;
-                            lane.pattern.split_index = split;
+                            // Ensure notification routes back to the correct instrument.
+                            lane.pattern.inst_index = inst;
                             lane.pattern.recording_events.clear();
                             lane.pattern.base_note = None;
                             lane.pattern.record_pos = 0;
@@ -2111,46 +2019,44 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::SetPattern { kb, split, pattern, base_note } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetPattern { inst, pattern, base_note } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.pattern = pattern;
                         lane.pattern.base_note = base_note;
                         lane.pattern.enabled = !lane.pattern.pattern.events.is_empty();
                     }
                 }
-                GraphCommand::SwapPatterns { kb, split_a, split_b } => {
-                    if let Some(kb_node) = self.keyboards.get_mut(kb) {
-                        if split_a < kb_node.splits.len() && split_b < kb_node.splits.len() {
-                            // Swap pattern data, base_note, enabled, length_beats between the two splits.
-                            let (a_pattern, a_base, a_enabled, a_beats) = {
-                                let p = &kb_node.splits[split_a].pattern;
-                                (p.pattern.clone(), p.base_note, p.enabled, p.length_beats)
-                            };
-                            let (b_pattern, b_base, b_enabled, b_beats) = {
-                                let p = &kb_node.splits[split_b].pattern;
-                                (p.pattern.clone(), p.base_note, p.enabled, p.length_beats)
-                            };
-                            let pa = &mut kb_node.splits[split_a].pattern;
-                            pa.pattern = b_pattern;
-                            pa.base_note = b_base;
-                            pa.enabled = b_enabled;
-                            pa.length_beats = b_beats;
-                            pa.trigger_note = None;
-                            pa.held_notes.clear();
-                            pa.active_voices.clear();
-                            let pb = &mut kb_node.splits[split_b].pattern;
-                            pb.pattern = a_pattern;
-                            pb.base_note = a_base;
-                            pb.enabled = a_enabled;
-                            pb.length_beats = a_beats;
-                            pb.trigger_note = None;
-                            pb.held_notes.clear();
-                            pb.active_voices.clear();
-                        }
+                GraphCommand::SwapPatterns { inst_a, inst_b } => {
+                    if inst_a < self.instruments.len() && inst_b < self.instruments.len() {
+                        // Swap pattern data, base_note, enabled, length_beats between the two lanes.
+                        let (a_pattern, a_base, a_enabled, a_beats) = {
+                            let p = &self.instruments[inst_a].pattern;
+                            (p.pattern.clone(), p.base_note, p.enabled, p.length_beats)
+                        };
+                        let (b_pattern, b_base, b_enabled, b_beats) = {
+                            let p = &self.instruments[inst_b].pattern;
+                            (p.pattern.clone(), p.base_note, p.enabled, p.length_beats)
+                        };
+                        let pa = &mut self.instruments[inst_a].pattern;
+                        pa.pattern = b_pattern;
+                        pa.base_note = b_base;
+                        pa.enabled = b_enabled;
+                        pa.length_beats = b_beats;
+                        pa.trigger_note = None;
+                        pa.held_notes.clear();
+                        pa.active_voices.clear();
+                        let pb = &mut self.instruments[inst_b].pattern;
+                        pb.pattern = a_pattern;
+                        pb.base_note = a_base;
+                        pb.enabled = a_enabled;
+                        pb.length_beats = a_beats;
+                        pb.trigger_note = None;
+                        pb.held_notes.clear();
+                        pb.active_voices.clear();
                     }
                 }
-                GraphCommand::ClearPattern { kb, split } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::ClearPattern { inst } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.pattern = Pattern::default();
                         lane.pattern.base_note = None;
                         lane.pattern.enabled = false;
@@ -2163,24 +2069,22 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetGlobalBpm { bpm } => {
-                    for kb in &mut self.keyboards {
-                        for sp in &mut kb.splits {
-                            sp.pattern.bpm = bpm;
-                        }
+                    for inst in &mut self.instruments {
+                        inst.pattern.bpm = bpm;
                     }
                 }
-                GraphCommand::SetPatternLength { kb, split, beats } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetPatternLength { inst, beats } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.length_beats = beats;
                     }
                 }
-                GraphCommand::SetPatternLooping { kb, split, looping } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetPatternLooping { inst, looping } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.looping = looping;
                     }
                 }
-                GraphCommand::SetTranspose { kb, split, semitones } => {
-                    if let Some(lane) = self.get_split_mut(kb, split) {
+                GraphCommand::SetTranspose { inst, semitones } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.transpose = semitones;
                     }
                 }
@@ -2188,13 +2092,11 @@ impl AudioGraph {
         }
     }
 
-    fn get_split_mut(&mut self, kb: usize, split: usize) -> Option<&mut SplitLane> {
-        self.keyboards
-            .get_mut(kb)
-            .and_then(|k| k.splits.get_mut(split))
+    fn get_instrument_mut(&mut self, inst: usize) -> Option<&mut InstrumentLane> {
+        self.instruments.get_mut(inst)
     }
 
-    /// Process audio: drain commands, run all keyboards/splits, sum to output.
+    /// Process audio: drain commands, run all instruments, sum to output.
     /// Outputs silence if no instruments are loaded.
     pub fn process(
         &mut self,
@@ -2211,26 +2113,24 @@ impl AudioGraph {
             buf.fill(0.0);
         }
 
-        // Resize split_buf
-        for buf in self.split_buf.iter_mut() {
+        // Resize lane_buf
+        for buf in self.lane_buf.iter_mut() {
             buf.resize(frames, 0.0);
         }
 
-        // Process each keyboard → each split, accumulate into mix_buf
-        for keyboard in self.keyboards.iter_mut() {
-            for split in keyboard.splits.iter_mut() {
-                // Zero split_buf
-                for buf in self.split_buf.iter_mut() {
-                    buf.fill(0.0);
-                }
+        // Process each instrument, accumulate into mix_buf
+        for inst in self.instruments.iter_mut() {
+            // Zero lane_buf
+            for buf in self.lane_buf.iter_mut() {
+                buf.fill(0.0);
+            }
 
-                split.process(midi_events, &mut self.split_buf, self.num_channels)?;
+            inst.process(midi_events, &mut self.lane_buf, self.num_channels)?;
 
-                // Accumulate split output into mix_buf
-                for ch in 0..self.num_channels {
-                    for i in 0..frames {
-                        self.mix_buf[ch][i] += self.split_buf[ch][i];
-                    }
+            // Accumulate instrument output into mix_buf
+            for ch in 0..self.num_channels {
+                for i in 0..frames {
+                    self.mix_buf[ch][i] += self.lane_buf[ch][i];
                 }
             }
         }
@@ -2285,6 +2185,7 @@ mod tests {
     }
 
     impl ConstInstrument {
+        #[expect(clippy::new_ret_no_self, reason = "test helper returns trait object")]
         fn new(value: f32) -> Box<dyn Plugin> {
             Box::new(Self {
                 value,
@@ -2450,10 +2351,8 @@ mod tests {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(num_channels, cmd_rx, return_tx);
-        // Create one keyboard with one full-range split (mimics old PluginChain behavior)
-        graph.keyboards.push(KeyboardLane {
-            splits: vec![SplitLane::new(num_channels)],
-        });
+        // Create one instrument lane (mimics old PluginChain behavior)
+        graph.instruments.push(InstrumentLane::new(num_channels));
         (graph, cmd_tx, return_rx)
     }
 
@@ -2473,8 +2372,7 @@ mod tests {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 instrument: inst,
                 inst_buf,
                 remapper: None,
@@ -2490,8 +2388,7 @@ mod tests {
     ) {
         cmd_tx
             .send(GraphCommand::InsertEffect {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 index,
                 effect,
                 mix,
@@ -2650,8 +2547,7 @@ mod tests {
         // Remove the effect — should go back to direct instrument output
         cmd_tx
             .send(GraphCommand::RemoveEffect {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 index: 0,
             })
             .unwrap();
@@ -2677,8 +2573,7 @@ mod tests {
         // (1.0 + 0.5) * 2.0 = 3.0
         cmd_tx
             .send(GraphCommand::ReorderEffect {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 from: 0,
                 to: 1,
             })
@@ -2913,8 +2808,7 @@ mod tests {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 instrument: inst,
                 inst_buf,
                 remapper: Some(remapper),
@@ -2931,23 +2825,21 @@ mod tests {
     // -- New AudioGraph-specific tests --
 
     #[test]
-    fn two_splits_sum_output() {
+    fn two_instruments_sum_output() {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        // One keyboard with two splits: both full range
-        graph.keyboards.push(KeyboardLane {
-            splits: vec![SplitLane::new(2), SplitLane::new(2)],
-        });
+        // Two instrument lanes: both full range
+        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2));
 
-        // Swap instruments into both splits
+        // Swap instruments into both lanes
         let inst_a = ConstInstrument::new(0.3);
         let inst_buf_a = (0..inst_a.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 instrument: inst_a,
                 inst_buf: inst_buf_a,
                 remapper: None,
@@ -2958,8 +2850,7 @@ mod tests {
         let inst_buf_b = (0..inst_b.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 1,
+                inst: 1,
                 instrument: inst_b,
                 inst_buf: inst_buf_b,
                 remapper: None,
@@ -2982,52 +2873,49 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        // One keyboard with two splits: C0-B3 and C4-C8
-        let mut split_low = SplitLane::new(2);
-        split_low.range = Some((12, 59)); // C0-B3
-        let mut split_high = SplitLane::new(2);
-        split_high.range = Some((60, 96)); // C4-C8
+        // Two instrument lanes with ranges: C0-B3 and C4-C8
+        let mut lane_low = InstrumentLane::new(2);
+        lane_low.range = Some((12, 59)); // C0-B3
+        let mut lane_high = InstrumentLane::new(2);
+        lane_high.range = Some((60, 96)); // C4-C8
 
-        graph.keyboards.push(KeyboardLane {
-            splits: vec![split_low, split_high],
-        });
+        graph.instruments.push(lane_low);
+        graph.instruments.push(lane_high);
 
-        // Low split: value 0.3
+        // Low lane: value 0.3
         let inst_low = ConstInstrument::new(0.3);
         let inst_buf_low = (0..inst_low.audio_output_count())
             .map(|_| Vec::new())
             .collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 instrument: inst_low,
                 inst_buf: inst_buf_low,
                 remapper: None,
             })
             .unwrap();
 
-        // High split: value 0.7
+        // High lane: value 0.7
         let inst_high = ConstInstrument::new(0.7);
         let inst_buf_high = (0..inst_high.audio_output_count())
             .map(|_| Vec::new())
             .collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 1,
+                inst: 1,
                 instrument: inst_high,
                 inst_buf: inst_buf_high,
                 remapper: None,
             })
             .unwrap();
 
-        // Play note in low range (C2 = 36): only low split should respond
+        // Play note in low range (C2 = 36): only low instrument should respond
         let mut out = make_output();
         graph.process(&[note_on(36)], &mut out).unwrap();
         assert!(out[0].iter().all(|&s| (s - 0.3).abs() < 1e-6));
 
-        // Now note-off and play note in high range (C5 = 72): only high split should respond
+        // Now note-off and play note in high range (C5 = 72): only high instrument should respond
         let mut out = make_output();
         graph.process(&[note_off(36), note_on(72)], &mut out).unwrap();
         assert!(out[0].iter().all(|&s| (s - 0.7).abs() < 1e-6));
@@ -3036,29 +2924,27 @@ mod tests {
     }
 
     #[test]
-    fn cc_passthrough_to_all_splits() {
-        // CC events (e.g. sustain pedal) should reach all splits regardless of range
+    fn cc_passthrough_to_all_instruments() {
+        // CC events (e.g. sustain pedal) should reach all instruments regardless of range
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        let mut split_low = SplitLane::new(2);
-        split_low.range = Some((0, 59));
-        let mut split_high = SplitLane::new(2);
-        split_high.range = Some((60, 127));
+        let mut lane_low = InstrumentLane::new(2);
+        lane_low.range = Some((0, 59));
+        let mut lane_high = InstrumentLane::new(2);
+        lane_high.range = Some((60, 127));
 
-        graph.keyboards.push(KeyboardLane {
-            splits: vec![split_low, split_high],
-        });
+        graph.instruments.push(lane_low);
+        graph.instruments.push(lane_high);
 
-        // Install instruments in both splits
+        // Install instruments in both lanes
         for s in 0..2 {
             let inst = ConstInstrument::new(0.5);
             let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
             cmd_tx
                 .send(GraphCommand::SwapInstrument {
-                    kb: 0,
-                    split: s,
+                    inst: s,
                     instrument: inst,
                     inst_buf,
                     remapper: None,
@@ -3066,13 +2952,13 @@ mod tests {
                 .unwrap();
         }
 
-        // Send a CC event (sustain pedal) — should be filtered to both splits
+        // Send a CC event (sustain pedal) — should be filtered to both lanes
         let cc_event: (u64, [u8; 3]) = (0, [0xB0, 64, 127]);
         let mut out = make_output();
         graph.process(&[cc_event], &mut out).unwrap();
 
         // No note-on, so output is silence, but the point is it didn't crash
-        // and the CC was delivered to both splits (verified by filter_midi logic)
+        // and the CC was delivered to both instruments (verified by filter_midi logic)
         assert!(out[0].iter().all(|&s| s == 0.0));
 
         drop(return_rx);
@@ -3086,8 +2972,7 @@ mod tests {
         // Set volume to 0.5
         cmd_tx
             .send(GraphCommand::SetVolume {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 value: 0.5,
             })
             .unwrap();
@@ -3103,7 +2988,7 @@ mod tests {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (return_tx, _return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
-        // No keyboards at all
+        // No instruments at all
 
         let mut out = make_output();
         out[0].fill(999.0);
@@ -3257,8 +3142,7 @@ mod tests {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 instrument: inst,
                 inst_buf,
                 remapper: None,
@@ -3268,8 +3152,7 @@ mod tests {
         // Add a modulator targeting param 0 (cutoff) on the instrument (parent_slot=0).
         cmd_tx
             .send(GraphCommand::InsertModulator {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 parent_slot: 0,
                 index: 0,
                 source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
@@ -3277,8 +3160,7 @@ mod tests {
             .unwrap();
         cmd_tx
             .send(GraphCommand::AddModTarget {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 parent_slot: 0,
                 mod_index: 0,
                 target: ModTarget {
@@ -3307,7 +3189,7 @@ mod tests {
         // The phase advance is 64/48000 ≈ 0.00133, sin(2π * 0.00133) ≈ 0.00837
         // modulated = 0.5 + 0.5 * 0.00837 * 1.0 ≈ 0.504
         assert!(
-            first_sample >= 0.0 && first_sample <= 1.0,
+            (0.0..=1.0).contains(&first_sample),
             "modulated value out of range: {first_sample}"
         );
 
@@ -3319,7 +3201,7 @@ mod tests {
         // still be within the valid range [0.0, 1.0].
         let sample = out[0][0];
         assert!(
-            sample >= 0.0 && sample <= 1.0,
+            (0.0..=1.0).contains(&sample),
             "modulated value out of range after many buffers: {sample}"
         );
     }
@@ -3332,8 +3214,7 @@ mod tests {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 instrument: inst,
                 inst_buf,
                 remapper: None,
@@ -3342,8 +3223,7 @@ mod tests {
 
         cmd_tx
             .send(GraphCommand::InsertModulator {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 parent_slot: 0,
                 index: 0,
                 source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
@@ -3351,8 +3231,7 @@ mod tests {
             .unwrap();
         cmd_tx
             .send(GraphCommand::AddModTarget {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 parent_slot: 0,
                 mod_index: 0,
                 target: ModTarget {
@@ -3372,8 +3251,7 @@ mod tests {
         // Now send SetParameter to change the base value.
         cmd_tx
             .send(GraphCommand::SetParameter {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 slot: 0,
                 param_index: 0,
                 value: 0.8,
@@ -3403,8 +3281,7 @@ mod tests {
         // Add modulator on effect 1 (parent_slot=2).
         cmd_tx
             .send(GraphCommand::InsertModulator {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 parent_slot: 2,
                 index: 0,
                 source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
@@ -3418,8 +3295,7 @@ mod tests {
         // should still be there.
         cmd_tx
             .send(GraphCommand::RemoveEffect {
-                kb: 0,
-                split: 0,
+                inst: 0,
                 index: 0,
             })
             .unwrap();

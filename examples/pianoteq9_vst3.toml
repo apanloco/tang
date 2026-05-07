@@ -1,0 +1,22 @@
+[[instrument]]
+plugin = "vst3:Pianoteq 9"
+
+[instrument.params]
+"Reverb Duration" = 1.0
+"Reverb Early Reflections" = 0.6000001
+"Reverb Highpass Cutoff" = 1.0
+"Reverb Mix" = 0.74999994
+"Reverb Tone" = 0.6500001
+"Room Dimensions" = 1.0
+"Soft Pedal" = 0.55
+"Sustain Pedal" = 0.55
+
+[instrument.remap]
+"F#2" = { note = "F2", detune = 1.0}
+"G#2" = { note = "G2", detune = 1.0}
+"A#2" = { note = "A2", detune = 1.0}
+"C#6" = { note = "C6", detune = 1.0}
+"D#6" = { note = "D6", detune = 1.0}
+"F#6" = { note = "F6", detune = 1.0}
+"G#6" = { note = "G6", detune = 1.0}
+"A#6" = { note = "A6", detune = 1.0}

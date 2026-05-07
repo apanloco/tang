@@ -173,23 +173,20 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
     let path = dir.join(format!("session-{id}.toml"));
 
     let config = session::SessionConfig {
-        keyboards: vec![session::KeyboardConfig {
-            name: None,
-            splits: vec![session::SplitConfig {
-                range: None,
-                transpose: 0,
-                instrument: Some(session::PluginConfig {
-                    plugin: "builtin:sine".into(),
-                    preset: None,
-                    volume: 1.0,
-                    pitch_bend_range: 2.0,
-                    remap: Default::default(),
-                    params: Default::default(),
-                    modulators: vec![],
-                }),
-                effects: vec![],
-                pattern: None,
-            }],
+        instruments: vec![session::InstrumentSlotConfig {
+            range: None,
+            transpose: 0,
+            instrument: Some(session::PluginConfig {
+                plugin: "builtin:sine".into(),
+                preset: None,
+                volume: 1.0,
+                pitch_bend_range: 2.0,
+                remap: Default::default(),
+                params: Default::default(),
+                modulators: vec![],
+            }),
+            effects: vec![],
+            pattern: None,
         }],
     };
 
@@ -227,8 +224,7 @@ fn load_modulators(
     mod_configs: &[session::ModulatorConfig],
     parent_slot: usize,
     parent_params: &[plugin::ParameterInfo],
-    kb_idx: usize,
-    sp_idx: usize,
+    inst_idx: usize,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
 ) -> anyhow::Result<Vec<tui::LoadedModulator>> {
     let mut loaded = Vec::new();
@@ -278,8 +274,7 @@ fn load_modulators(
 
         cmd_tx
             .send(plugin::chain::GraphCommand::InsertModulator {
-                kb: kb_idx,
-                split: sp_idx,
+                inst: inst_idx,
                 parent_slot,
                 index: mod_idx,
                 source,
@@ -345,8 +340,7 @@ fn load_modulators(
 
             cmd_tx
                 .send(plugin::chain::GraphCommand::AddModTarget {
-                    kb: kb_idx,
-                    split: sp_idx,
+                    inst: inst_idx,
                     parent_slot,
                     mod_index: mod_idx,
                     target,
@@ -378,10 +372,9 @@ fn load_modulators(
         });
 
         log::info!(
-            "Loaded modulator {} for kb={} split={} slot={}: {}",
+            "Loaded modulator {} for inst={} slot={}: {}",
             mod_idx,
-            kb_idx,
-            sp_idx,
+            inst_idx,
             parent_slot,
             desc,
         );
@@ -457,286 +450,263 @@ fn run_session(
     )?;
 
     // Build TUI metadata while loading plugins into the graph.
-    let mut loaded_keyboards: Vec<tui::LoadedKeyboard> = Vec::new();
+    let mut loaded_instruments: Vec<tui::LoadedInstrument> = Vec::new();
 
-    // Set up the graph structure first: add keyboards and splits
-    for (kb_idx, kb_config) in config.keyboards.iter().enumerate() {
+    // Set up the graph structure: add instrument lanes.
+    for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
         cmd_tx
-            .send(plugin::chain::GraphCommand::AddKeyboard)
+            .send(plugin::chain::GraphCommand::AddInstrument {
+                range: inst_config.range,
+            })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-        let mut loaded_splits: Vec<tui::LoadedSplit> = Vec::new();
+        // Load instrument (if present)
+        let loaded_instrument = if let Some(plug_config) = &inst_config.instrument {
+            let instrument_source =
+                session::resolve_plugin_path(&plug_config.plugin, session_dir);
+            let mut instrument =
+                plugin::load(&instrument_source, sample_rate_f, max_block_size, &runtime)?;
+            log::info!(
+                "Loaded instrument for inst={}: {}",
+                inst_idx,
+                instrument.name()
+            );
 
-        for (sp_idx, sp_config) in kb_config.splits.iter().enumerate() {
+            if let Some(ref preset_name) = plug_config.preset {
+                session::apply_preset(&mut instrument, preset_name);
+            }
+
+            // Build note remapper if configured
+            let remapper = if plug_config.remap.is_empty() {
+                None
+            } else {
+                let r = plugin::chain::NoteRemapper::from_config(
+                    &plug_config.remap,
+                    plug_config.pitch_bend_range,
+                )?;
+                log::info!(
+                    "Note remapper: {} entries, pitch_bend_range=±{}",
+                    plug_config.remap.len(),
+                    plug_config.pitch_bend_range,
+                );
+                Some(r)
+            };
+
+            let inst_params = instrument.parameters();
+            let inst_name = instrument.name().to_string();
+            let inst_buf = (0..instrument.audio_output_count())
+                .map(|_| Vec::new())
+                .collect();
             cmd_tx
-                .send(plugin::chain::GraphCommand::AddSplit {
-                    kb: kb_idx,
-                    range: sp_config.range,
+                .send(plugin::chain::GraphCommand::SwapInstrument {
+                    inst: inst_idx,
+                    instrument,
+                    inst_buf,
+                    remapper,
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-            // Load instrument (if present)
-            let loaded_instrument = if let Some(inst_config) = &sp_config.instrument {
-                let instrument_source =
-                    session::resolve_plugin_path(&inst_config.plugin, session_dir);
-                let mut instrument =
-                    plugin::load(&instrument_source, sample_rate_f, max_block_size, &runtime)?;
-                log::info!(
-                    "Loaded instrument for kb={} split={}: {}",
-                    kb_idx,
-                    sp_idx,
-                    instrument.name()
-                );
-
-                if let Some(ref preset_name) = inst_config.preset {
-                    session::apply_preset(&mut instrument, preset_name);
-                }
-
-                // Build note remapper if configured
-                let remapper = if inst_config.remap.is_empty() {
-                    None
-                } else {
-                    let r = plugin::chain::NoteRemapper::from_config(
-                        &inst_config.remap,
-                        inst_config.pitch_bend_range,
-                    )?;
-                    log::info!(
-                        "Note remapper: {} entries, pitch_bend_range=±{}",
-                        inst_config.remap.len(),
-                        inst_config.pitch_bend_range,
-                    );
-                    Some(r)
-                };
-
-                let inst_params = instrument.parameters();
-                let inst_name = instrument.name().to_string();
-                let inst_buf = (0..instrument.audio_output_count())
-                    .map(|_| Vec::new())
-                    .collect();
+            // Set volume if not default
+            if (plug_config.volume - 1.0).abs() > f64::EPSILON {
                 cmd_tx
-                    .send(plugin::chain::GraphCommand::SwapInstrument {
-                        kb: kb_idx,
-                        split: sp_idx,
-                        instrument,
-                        inst_buf,
-                        remapper,
+                    .send(plugin::chain::GraphCommand::SetVolume {
+                        inst: inst_idx,
+                        value: plug_config.volume as f32,
                     })
                     .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-
-                // Set volume if not default
-                if (inst_config.volume - 1.0).abs() > f64::EPSILON {
-                    cmd_tx
-                        .send(plugin::chain::GraphCommand::SetVolume {
-                            kb: kb_idx,
-                            split: sp_idx,
-                            value: inst_config.volume as f32,
-                        })
-                        .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-                }
-
-                // Send instrument parameter overrides
-                let mut inst_values: Vec<f32> = inst_params.iter().map(|p| p.default).collect();
-                for (name, &value) in &inst_config.params {
-                    if let Some(info) = inst_params.iter().find(|p| p.name == *name) {
-                        cmd_tx
-                            .send(plugin::chain::GraphCommand::SetParameter {
-                                kb: kb_idx,
-                                split: sp_idx,
-                                slot: 0,
-                                param_index: info.index,
-                                value: value as f32,
-                            })
-                            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-                        if let Some(v) = inst_values.get_mut(info.index as usize) {
-                            *v = value as f32;
-                        }
-                        log::info!("Set instrument '{}' = {}", name, value);
-                    } else {
-                        log::warn!(
-                            "Unknown instrument parameter '{}' (available: {})",
-                            name,
-                            inst_params
-                                .iter()
-                                .map(|p| p.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                    }
-                }
-
-                // Load instrument modulators
-                let inst_mods = load_modulators(
-                    &inst_config.modulators,
-                    0, // parent_slot = instrument
-                    &inst_params,
-                    kb_idx,
-                    sp_idx,
-                    &cmd_tx,
-                )?;
-
-                Some(tui::LoadedPlugin {
-                    name: inst_name,
-                    id: instrument_source,
-                    is_instrument: true,
-                    params: inst_params,
-                    param_values: inst_values,
-                    modulators: inst_mods,
-                })
-            } else {
-                None
-            };
-
-            // Load effects
-            let mut loaded_effects: Vec<tui::LoadedPlugin> = Vec::new();
-            for (fx_idx, effect_config) in sp_config.effects.iter().enumerate() {
-                let effect_source =
-                    session::resolve_plugin_path(&effect_config.plugin, session_dir);
-                let mut effect =
-                    plugin::load(&effect_source, sample_rate_f, max_block_size, &runtime)?;
-                log::info!(
-                    "Loaded effect for kb={} split={} fx={}: {}",
-                    kb_idx,
-                    sp_idx,
-                    fx_idx,
-                    effect.name()
-                );
-
-                if let Some(ref preset_name) = effect_config.preset {
-                    session::apply_preset(&mut effect, preset_name);
-                }
-
-                let effect_params = effect.parameters();
-                let effect_name = effect.name().to_string();
-
-                cmd_tx
-                    .send(plugin::chain::GraphCommand::InsertEffect {
-                        kb: kb_idx,
-                        split: sp_idx,
-                        index: fx_idx,
-                        effect,
-                        mix: effect_config.mix,
-                    })
-                    .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-
-                // Send parameter overrides for this effect (slot = fx_idx + 1)
-                let mut fx_values: Vec<f32> = effect_params.iter().map(|p| p.default).collect();
-                for (name, &value) in &effect_config.params {
-                    if let Some(info) = effect_params.iter().find(|p| p.name == *name) {
-                        cmd_tx
-                            .send(plugin::chain::GraphCommand::SetParameter {
-                                kb: kb_idx,
-                                split: sp_idx,
-                                slot: fx_idx + 1,
-                                param_index: info.index,
-                                value: value as f32,
-                            })
-                            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-                        if let Some(v) = fx_values.get_mut(info.index as usize) {
-                            *v = value as f32;
-                        }
-                        log::info!("Set effect {} '{}' = {}", fx_idx, name, value);
-                    } else {
-                        log::warn!(
-                            "Unknown parameter '{}' for effect {} (available: {})",
-                            name,
-                            fx_idx,
-                            effect_params
-                                .iter()
-                                .map(|p| p.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                    }
-                }
-
-                // Load effect modulators
-                let fx_mods = load_modulators(
-                    &effect_config.modulators,
-                    fx_idx + 1, // parent_slot for effects
-                    &effect_params,
-                    kb_idx,
-                    sp_idx,
-                    &cmd_tx,
-                )?;
-
-                loaded_effects.push(tui::LoadedPlugin {
-                    name: effect_name,
-                    id: effect_source,
-                    is_instrument: false,
-                    params: effect_params,
-                    param_values: fx_values,
-                    modulators: fx_mods,
-                });
             }
 
-            // Load pattern if configured.
-            let loaded_pattern = sp_config.pattern.as_ref().map(|p| {
-                // Build Pattern and send to audio graph.
-                let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
-                    crate::plugin::chain::PatternEvent {
-                        frame,
-                        status,
-                        note,
-                        velocity: vel,
+            // Send instrument parameter overrides
+            let mut inst_values: Vec<f32> = inst_params.iter().map(|p| p.default).collect();
+            for (name, &value) in &plug_config.params {
+                if let Some(info) = inst_params.iter().find(|p| p.name == *name) {
+                    cmd_tx
+                        .send(plugin::chain::GraphCommand::SetParameter {
+                            inst: inst_idx,
+                            slot: 0,
+                            param_index: info.index,
+                            value: value as f32,
+                        })
+                        .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+                    if let Some(v) = inst_values.get_mut(info.index as usize) {
+                        *v = value as f32;
                     }
-                }).collect();
-                let beats_per_sec = p.bpm / 60.0;
-                let length_samples = (p.length_beats / beats_per_sec * sample_rate_f) as u64;
-                let pattern = crate::plugin::chain::Pattern {
-                    events: pattern_events,
-                    length_samples,
-                };
-                let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPattern {
-                    kb: kb_idx,
-                    split: sp_idx,
-                    pattern,
-                    base_note: p.base_note,
-                });
-                let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm: p.bpm });
-                let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLength {
-                    kb: kb_idx,
-                    split: sp_idx,
-                    beats: p.length_beats,
-                });
-                if p.enabled {
-                    let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternEnabled {
-                        kb: kb_idx,
-                        split: sp_idx,
-                        enabled: true,
-                    });
+                    log::info!("Set instrument '{}' = {}", name, value);
+                } else {
+                    log::warn!(
+                        "Unknown instrument parameter '{}' (available: {})",
+                        name,
+                        inst_params
+                            .iter()
+                            .map(|p| p.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                 }
-                if !p.looping {
-                    let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLooping {
-                        kb: kb_idx,
-                        split: sp_idx,
-                        looping: false,
-                    });
-                }
-                tui::LoadedPattern {
-                    bpm: p.bpm,
-                    length_beats: p.length_beats,
-                    looping: p.looping,
-                    base_note: p.base_note,
-                    events: p.events.clone(),
-                    enabled: p.enabled,
-                }
-            });
+            }
 
-            loaded_splits.push(tui::LoadedSplit {
-                range: sp_config.range,
-                transpose: sp_config.transpose,
-                instrument: loaded_instrument,
-                effects: loaded_effects,
-                pattern: loaded_pattern,
+            // Load instrument modulators
+            let inst_mods = load_modulators(
+                &plug_config.modulators,
+                0, // parent_slot = instrument
+                &inst_params,
+                inst_idx,
+                &cmd_tx,
+            )?;
+
+            Some(tui::LoadedPlugin {
+                name: inst_name,
+                id: instrument_source,
+                is_instrument: true,
+                params: inst_params,
+                param_values: inst_values,
+                modulators: inst_mods,
+            })
+        } else {
+            None
+        };
+
+        // Load effects
+        let mut loaded_effects: Vec<tui::LoadedPlugin> = Vec::new();
+        for (fx_idx, effect_config) in inst_config.effects.iter().enumerate() {
+            let effect_source =
+                session::resolve_plugin_path(&effect_config.plugin, session_dir);
+            let mut effect =
+                plugin::load(&effect_source, sample_rate_f, max_block_size, &runtime)?;
+            log::info!(
+                "Loaded effect for inst={} fx={}: {}",
+                inst_idx,
+                fx_idx,
+                effect.name()
+            );
+
+            if let Some(ref preset_name) = effect_config.preset {
+                session::apply_preset(&mut effect, preset_name);
+            }
+
+            let effect_params = effect.parameters();
+            let effect_name = effect.name().to_string();
+
+            cmd_tx
+                .send(plugin::chain::GraphCommand::InsertEffect {
+                    inst: inst_idx,
+                    index: fx_idx,
+                    effect,
+                    mix: effect_config.mix,
+                })
+                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+
+            // Send parameter overrides for this effect (slot = fx_idx + 1)
+            let mut fx_values: Vec<f32> = effect_params.iter().map(|p| p.default).collect();
+            for (name, &value) in &effect_config.params {
+                if let Some(info) = effect_params.iter().find(|p| p.name == *name) {
+                    cmd_tx
+                        .send(plugin::chain::GraphCommand::SetParameter {
+                            inst: inst_idx,
+                            slot: fx_idx + 1,
+                            param_index: info.index,
+                            value: value as f32,
+                        })
+                        .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+                    if let Some(v) = fx_values.get_mut(info.index as usize) {
+                        *v = value as f32;
+                    }
+                    log::info!("Set effect {} '{}' = {}", fx_idx, name, value);
+                } else {
+                    log::warn!(
+                        "Unknown parameter '{}' for effect {} (available: {})",
+                        name,
+                        fx_idx,
+                        effect_params
+                            .iter()
+                            .map(|p| p.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
+
+            // Load effect modulators
+            let fx_mods = load_modulators(
+                &effect_config.modulators,
+                fx_idx + 1, // parent_slot for effects
+                &effect_params,
+                inst_idx,
+                &cmd_tx,
+            )?;
+
+            loaded_effects.push(tui::LoadedPlugin {
+                name: effect_name,
+                id: effect_source,
+                is_instrument: false,
+                params: effect_params,
+                param_values: fx_values,
+                modulators: fx_mods,
             });
         }
 
-        loaded_keyboards.push(tui::LoadedKeyboard {
-            name: kb_config
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("Keyboard {}", kb_idx + 1)),
-            splits: loaded_splits,
+        // Load pattern if configured.
+        let loaded_pattern = inst_config.pattern.as_ref().map(|p| {
+            // Build Pattern and send to audio graph.
+            let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
+                crate::plugin::chain::PatternEvent {
+                    frame,
+                    status,
+                    note,
+                    velocity: vel,
+                }
+            }).collect();
+            let beats_per_sec = p.bpm / 60.0;
+            let length_samples = (p.length_beats / beats_per_sec * sample_rate_f) as u64;
+            let pattern = crate::plugin::chain::Pattern {
+                events: pattern_events,
+                length_samples,
+            };
+            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPattern {
+                inst: inst_idx,
+                pattern,
+                base_note: p.base_note,
+            });
+            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm: p.bpm });
+            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLength {
+                inst: inst_idx,
+                beats: p.length_beats,
+            });
+            if p.enabled {
+                let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternEnabled {
+                    inst: inst_idx,
+                    enabled: true,
+                });
+            }
+            if !p.looping {
+                let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLooping {
+                    inst: inst_idx,
+                    looping: false,
+                });
+            }
+            tui::LoadedPattern {
+                bpm: p.bpm,
+                length_beats: p.length_beats,
+                looping: p.looping,
+                base_note: p.base_note,
+                events: p.events.clone(),
+                enabled: p.enabled,
+            }
+        });
+
+        let (pitch_bend_range, remap) = inst_config
+            .instrument
+            .as_ref()
+            .map(|p| (p.pitch_bend_range, p.remap.clone()))
+            .unwrap_or((2.0, Default::default()));
+        loaded_instruments.push(tui::LoadedInstrument {
+            range: inst_config.range,
+            transpose: inst_config.transpose,
+            instrument: loaded_instrument,
+            effects: loaded_effects,
+            pattern: loaded_pattern,
+            pitch_bend_range,
+            remap,
         });
     }
 
@@ -746,13 +716,24 @@ fn run_session(
     // --- Branch: TUI view vs plain play mode ---
     if use_tui {
         let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(loaded_keyboards, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx)?;
+        tui::run(loaded_instruments, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx)?;
     } else {
         // --- Plain play mode (original) ---
 
         // Probe keyboard enhancement support (must be done before entering raw mode)
         let kitty_supported =
             crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+
+        // Install a panic hook that restores terminal state before the panic
+        // message prints, so the user's terminal isn't left in raw mode.
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if kitty_supported {
+                let _ = crossterm::execute!(std::io::stderr(), PopKeyboardEnhancementFlags);
+            }
+            let _ = crossterm::terminal::disable_raw_mode();
+            original_hook(info);
+        }));
 
         // Enter raw mode
         crossterm::terminal::enable_raw_mode()?;
@@ -831,3 +812,4 @@ fn run_session(
 
     Ok(())
 }
+

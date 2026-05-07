@@ -301,11 +301,9 @@ impl Widget for List<'_> {
             let total = self.items.len();
             let thumb_size = ((visible * visible) / total).max(1);
             let max_offset = total - visible;
-            let thumb_start = if max_offset > 0 {
-                (self.offset * (visible - thumb_size)) / max_offset
-            } else {
-                0
-            };
+            let thumb_start = (self.offset * (visible - thumb_size))
+                .checked_div(max_offset)
+                .unwrap_or(0);
 
             for row in 0..visible {
                 let y = area.y + row as u16;
