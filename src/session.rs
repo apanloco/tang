@@ -362,16 +362,21 @@ pub fn parse_note_name(name: &str) -> anyhow::Result<u8> {
 }
 
 /// Apply a preset to a loaded plugin (no parameter overrides).
-pub fn apply_preset(plugin: &mut Box<dyn Plugin>, preset_name: &str) {
+/// Accepts either the preset's display `name` or its `id`.
+pub fn apply_preset(plugin: &mut Box<dyn Plugin>, preset_ref: &str) {
     let presets = plugin.presets();
-    match presets.iter().find(|p| p.name == *preset_name) {
+    let found = presets
+        .iter()
+        .find(|p| p.name == *preset_ref)
+        .or_else(|| presets.iter().find(|p| p.id == *preset_ref));
+    match found {
         Some(preset_info) => {
             let id = preset_info.id.clone();
             match plugin.load_preset(&id) {
-                Ok(()) => log::info!("Loaded preset '{}' on {}", preset_name, plugin.name()),
+                Ok(()) => log::info!("Loaded preset '{}' on {}", preset_info.name, plugin.name()),
                 Err(e) => log::warn!(
                     "Failed to load preset '{}' on {}: {}",
-                    preset_name,
+                    preset_info.name,
                     plugin.name(),
                     e
                 ),
@@ -380,7 +385,7 @@ pub fn apply_preset(plugin: &mut Box<dyn Plugin>, preset_name: &str) {
         None => {
             log::warn!(
                 "Preset '{}' not found for {} (available: {})",
-                preset_name,
+                preset_ref,
                 plugin.name(),
                 presets
                     .iter()
@@ -437,6 +442,7 @@ pub struct SaveModTarget {
 pub struct SaveInstrument {
     pub plugin: String,
     pub volume: f32,
+    pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
     pub modulators: Vec<SaveModulator>,
     pub pitch_bend_range: f64,
@@ -447,6 +453,7 @@ pub struct SaveInstrument {
 pub struct SaveEffect {
     pub plugin: String,
     pub mix: f32,
+    pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
     pub modulators: Vec<SaveModulator>,
 }
@@ -559,6 +566,8 @@ struct EffectOut {
     plugin: String,
     #[serde(skip_serializing_if = "is_default_mix_f32")]
     mix: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preset: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     params: BTreeMap<String, f64>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
@@ -672,7 +681,7 @@ pub fn save(path: &Path, instruments: &[SaveInstrumentSlot]) -> anyhow::Result<(
         instruments: instruments
             .iter()
             .map(|slot| {
-                let (plugin, volume, params, modulators, pitch_bend_range, remap) = match &slot.instrument {
+                let (plugin, volume, preset, params, modulators, pitch_bend_range, remap) = match &slot.instrument {
                     Some(inst) => {
                         let params: BTreeMap<String, f64> = inst
                             .params
@@ -695,18 +704,19 @@ pub fn save(path: &Path, instruments: &[SaveInstrumentSlot]) -> anyhow::Result<(
                         (
                             Some(inst.plugin.clone()),
                             Some(inst.volume),
+                            inst.preset.clone(),
                             params,
                             mods_to_out(&inst.modulators),
                             Some(inst.pitch_bend_range),
                             remap,
                         )
                     }
-                    None => (None, None, BTreeMap::new(), vec![], None, BTreeMap::new()),
+                    None => (None, None, None, BTreeMap::new(), vec![], None, BTreeMap::new()),
                 };
                 InstrumentSlotOut {
                     plugin,
                     volume,
-                    preset: None,
+                    preset,
                     params,
                     pitch_bend_range,
                     remap,
@@ -727,6 +737,7 @@ pub fn save(path: &Path, instruments: &[SaveInstrumentSlot]) -> anyhow::Result<(
                             EffectOut {
                                 plugin: fx.plugin.clone(),
                                 mix: fx.mix,
+                                preset: fx.preset.clone(),
                                 params,
                                 modulators: mods_to_out(&fx.modulators),
                             }
@@ -863,6 +874,7 @@ range = "C4-C8"
                 instrument: Some(SaveInstrument {
                     plugin: "builtin:sine".into(),
                     volume: 0.8,
+                    preset: None,
                     params: vec![("cutoff".into(), 0.75)],
                     modulators: vec![],
                     pitch_bend_range: 2.0,
@@ -871,6 +883,7 @@ range = "C4-C8"
                 effects: vec![SaveEffect {
                     plugin: "builtin:sine".into(),
                     mix: 0.5,
+                    preset: None,
                     params: vec![],
                     modulators: vec![],
                 }],
@@ -882,6 +895,7 @@ range = "C4-C8"
                 instrument: Some(SaveInstrument {
                     plugin: "builtin:sine".into(),
                     volume: 1.0,
+                    preset: None,
                     params: vec![],
                     modulators: vec![],
                     pitch_bend_range: 2.0,
@@ -907,6 +921,46 @@ range = "C4-C8"
     }
 
     #[test]
+    fn save_and_reload_with_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preset_test.toml");
+
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:sine".into(),
+                volume: 1.0,
+                preset: Some("Lead".into()),
+                params: vec![],
+                modulators: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![SaveEffect {
+                plugin: "builtin:reverb".into(),
+                mix: 0.4,
+                preset: Some("Arcadia Dream Hall".into()),
+                params: vec![],
+                modulators: vec![],
+            }],
+            pattern: None,
+        }];
+
+        save(&path, &instruments).unwrap();
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        assert_eq!(config.instruments.len(), 1);
+        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        assert_eq!(inst.preset.as_deref(), Some("Lead"));
+        assert_eq!(config.instruments[0].effects.len(), 1);
+        assert_eq!(
+            config.instruments[0].effects[0].preset.as_deref(),
+            Some("Arcadia Dream Hall")
+        );
+    }
+
+    #[test]
     fn save_and_reload_with_modulators() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mod_test.toml");
@@ -917,6 +971,7 @@ range = "C4-C8"
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
+                preset: None,
                 params: vec![],
                 modulators: vec![SaveModulator {
                     source: SaveModSource::Lfo {
@@ -976,6 +1031,7 @@ range = "C4-C8"
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
+                preset: None,
                 params: vec![],
                 modulators: vec![],
                 pitch_bend_range: 2.0,

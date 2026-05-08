@@ -656,6 +656,12 @@ pub enum GraphCommand {
         slot: usize,
         value: f32,
     },
+    /// Load a preset on a plugin. slot 0 = instrument, 1..N = effects.
+    LoadPreset {
+        inst: usize,
+        slot: usize,
+        preset_id: String,
+    },
     /// Set the host-side volume on an instrument lane.
     SetVolume {
         inst: usize,
@@ -1759,6 +1765,26 @@ impl AudioGraph {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+                GraphCommand::LoadPreset {
+                    inst,
+                    slot,
+                    preset_id,
+                } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
+                        let plugin: Option<&mut Box<dyn Plugin>> = if slot == 0 {
+                            lane.instrument.as_mut()
+                        } else {
+                            lane.effects.get_mut(slot - 1)
+                        };
+                        if let Some(p) = plugin {
+                            if let Err(e) = p.load_preset(&preset_id) {
+                                log::warn!(
+                                    "LoadPreset inst={inst} slot={slot} id={preset_id:?}: {e}"
+                                );
                             }
                         }
                     }
