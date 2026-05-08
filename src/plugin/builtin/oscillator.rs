@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
-use super::{ParameterInfo, Plugin, PluginInfo, Preset};
+use crate::plugin::{ParameterInfo, Plugin, Preset};
 
 #[derive(Copy, Clone)]
-enum Waveform {
+pub enum Waveform {
     Sine,
     Triangle,
     Square,
 }
 
 impl Waveform {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Waveform::Sine => "Sine Oscillator",
             Waveform::Triangle => "Triangle Oscillator",
@@ -19,7 +19,7 @@ impl Waveform {
         }
     }
 
-    fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Waveform::Sine => "builtin:sine",
             Waveform::Triangle => "builtin:triangle",
@@ -44,18 +44,35 @@ impl Waveform {
 /// external plugins.
 pub struct Oscillator {
     sample_rate: f32,
-    /// Active voices: MIDI note number → phase accumulator (0.0..1.0)
-    voices: HashMap<u8, f32>,
+    voices: HashMap<u8, Voice>,
     /// Detune in semitones, applied to all voices. Modulator-friendly.
     detune: f32,
     waveform: Waveform,
 }
 
+#[derive(Copy, Clone)]
+enum VoiceState {
+    Attack,
+    Sustain,
+    Release,
+}
+
+struct Voice {
+    phase: f32,
+    amp: f32,
+    state: VoiceState,
+}
+
 const DETUNE_MIN: f32 = -2.0;
 const DETUNE_MAX: f32 = 2.0;
 
+// Short attack/release ramps to avoid clicks on note start/stop. Tight enough
+// to feel instantaneous; long enough to smooth the discontinuity.
+const ATTACK_SEC: f32 = 0.004;
+const RELEASE_SEC: f32 = 0.012;
+
 impl Oscillator {
-    fn new(sample_rate: f32, waveform: Waveform) -> Self {
+    pub fn new(sample_rate: f32, waveform: Waveform) -> Self {
         Self {
             sample_rate,
             voices: HashMap::new(),
@@ -106,6 +123,8 @@ impl Plugin for Oscillator {
         }
 
         let mut event_idx = 0;
+        let attack_inc = 1.0 / (ATTACK_SEC * self.sample_rate);
+        let release_inc = 1.0 / (RELEASE_SEC * self.sample_rate);
 
         for frame in 0..block_size {
             // Process MIDI events at this frame
@@ -114,10 +133,22 @@ impl Plugin for Oscillator {
                 let msg_type = status & 0xF0;
                 match msg_type {
                     0x90 if velocity > 0 => {
-                        self.voices.insert(note, 0.0);
+                        // Note-on: attack from current amp (0 if new voice, or
+                        // the partially-released level on retrigger — avoids a
+                        // click when re-hitting a still-decaying note).
+                        self.voices
+                            .entry(note)
+                            .and_modify(|v| v.state = VoiceState::Attack)
+                            .or_insert(Voice {
+                                phase: 0.0,
+                                amp: 0.0,
+                                state: VoiceState::Attack,
+                            });
                     }
                     0x80 | 0x90 => {
-                        self.voices.remove(&note);
+                        if let Some(v) = self.voices.get_mut(&note) {
+                            v.state = VoiceState::Release;
+                        }
                     }
                     _ => {}
                 }
@@ -130,14 +161,35 @@ impl Plugin for Oscillator {
             // existing voices to suddenly change volume).
             const VOICE_GAIN: f32 = 0.25;
             let mut sample = 0.0_f32;
-            for (&note, phase) in self.voices.iter_mut() {
+            for (&note, voice) in self.voices.iter_mut() {
+                match voice.state {
+                    VoiceState::Attack => {
+                        voice.amp += attack_inc;
+                        if voice.amp >= 1.0 {
+                            voice.amp = 1.0;
+                            voice.state = VoiceState::Sustain;
+                        }
+                    }
+                    VoiceState::Sustain => {}
+                    VoiceState::Release => {
+                        voice.amp -= release_inc;
+                        if voice.amp < 0.0 {
+                            voice.amp = 0.0;
+                        }
+                    }
+                }
+
                 let freq = Self::note_to_freq(note, self.detune);
-                sample += self.waveform.sample(*phase) * VOICE_GAIN;
-                *phase += freq / self.sample_rate;
-                if *phase >= 1.0 {
-                    *phase -= 1.0;
+                sample += self.waveform.sample(voice.phase) * voice.amp * VOICE_GAIN;
+                voice.phase += freq / self.sample_rate;
+                if voice.phase >= 1.0 {
+                    voice.phase -= 1.0;
                 }
             }
+
+            // Drop fully-released voices.
+            self.voices
+                .retain(|_, v| !(matches!(v.state, VoiceState::Release) && v.amp <= 0.0));
 
             // Mono signal to both channels
             audio_out[0][frame] = sample;
@@ -183,39 +235,4 @@ impl Plugin for Oscillator {
     fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
         anyhow::bail!("no preset with id {id:?}")
     }
-}
-
-/// Load a built-in plugin by source string (e.g. `"builtin:sine"`).
-pub fn load(
-    source: &str,
-    sample_rate: f32,
-    _max_block_size: usize,
-) -> anyhow::Result<Box<dyn Plugin>> {
-    let name = source.strip_prefix("builtin:").unwrap_or(source);
-    match name {
-        "sine" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Sine))),
-        "triangle" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Triangle))),
-        "square" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Square))),
-        _ => anyhow::bail!(
-            "Unknown built-in plugin: {name:?}\n\
-             Available built-ins: sine, triangle, square\n\
-             Usage: builtin:sine"
-        ),
-    }
-}
-
-/// Return enumeration info for all built-in plugins.
-pub fn enumerate_plugins() -> Vec<PluginInfo> {
-    [Waveform::Sine, Waveform::Triangle, Waveform::Square]
-        .iter()
-        .map(|w| PluginInfo {
-            name: w.name().into(),
-            id: w.id().into(),
-            is_instrument: true,
-            param_count: 1,
-            preset_count: 0,
-            path: "(built-in)".into(),
-            scan_ms: 0,
-        })
-        .collect()
 }

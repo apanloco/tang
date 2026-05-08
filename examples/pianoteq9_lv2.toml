@@ -1,10 +1,6 @@
 [[instrument]]
 plugin = "lv2:https://www.modartt.com/lv2/Pianoteq9"
 
-[instrument.params]
-"reverb_on" = 1.0
-"reverb_dry_wet" = 0.3
-
 [instrument.remap]
 "F#2" = { note = "F2", detune = 1.0}
 "G#2" = { note = "G2", detune = 1.0}
@@ -16,9 +12,6 @@ plugin = "lv2:https://www.modartt.com/lv2/Pianoteq9"
 "A#6" = { note = "A6", detune = 1.0}
 
 [[instrument.effect]]
-plugin = "lv2:http://calf.sourceforge.net/plugins/Reverb"
-preset = "Large Empty Hall"
-mix = 0.5
-
-[instrument.effect.params]
-"Wet Amount" = 0.4
+plugin = "builtin:reverb"
+preset = "Arcadia Dream Hall"
+mix = 0.25

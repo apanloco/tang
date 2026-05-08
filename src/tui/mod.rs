@@ -42,6 +42,12 @@ struct PluginSlot {
     is_instrument: bool,
     params: Vec<ParamSlot>,
     modulators: Vec<ModulatorSlot>,
+    /// All presets the plugin reports, cached at load time. Used by the
+    /// preset selector popup.
+    presets: Vec<plugin::Preset>,
+    /// Name of the currently-loaded preset (if any). Tracked for save
+    /// round-trip and display.
+    current_preset: Option<String>,
 }
 
 enum ParamKind {
@@ -230,6 +236,16 @@ struct TargetSelectorState {
     mod_index: usize,
 }
 
+struct PresetSelectorState {
+    filter: FilterListState,
+    items: Vec<FilterListItem>,
+    /// Parallel to `items`: the (name, id) pair for each row before filtering.
+    presets: Vec<plugin::Preset>,
+    inst: usize,
+    /// 0 = instrument, 1..N = effects.
+    slot: usize,
+}
+
 struct RangeEditState {
     input: TextInputState,
 }
@@ -263,6 +279,7 @@ struct State {
     range_edit: Option<RangeEditState>,
     selector: Option<SelectorState>,
     target_selector: Option<TargetSelectorState>,
+    preset_selector: Option<PresetSelectorState>,
     catalog: Vec<PluginInfo>,
     areas: Areas,
     quit: bool,
@@ -570,6 +587,7 @@ impl State {
                 kind: ParamKind::Float,
             })
             .collect();
+        let presets = loaded.presets();
 
         let slot = PluginSlot {
             name: loaded.name().to_string(),
@@ -578,6 +596,8 @@ impl State {
             is_instrument: loaded.is_instrument(),
             params,
             modulators: vec![],
+            presets,
+            current_preset: None,
         };
 
         match sel.mode {
@@ -763,6 +783,130 @@ impl State {
                 param_max: entry.param_max,
             });
         }
+        self.dirty = true;
+        self.rebuild_tree();
+    }
+
+    /// Open the preset selector for the selected plugin slot. inst+slot
+    /// matches the addressing used by GraphCommand: slot=0 = instrument,
+    /// slot=1..N = effects.
+    fn open_preset_selector(&mut self, inst: usize, slot: usize) {
+        let plugin = if slot == 0 {
+            self.instruments.get(inst).and_then(|n| n.instrument.as_ref())
+        } else {
+            self.instruments.get(inst).and_then(|n| n.effects.get(slot - 1))
+        };
+        let plugin = match plugin {
+            Some(p) => p,
+            None => return,
+        };
+        if plugin.presets.is_empty() {
+            log::info!("Plugin '{}' has no presets", plugin.name);
+            return;
+        }
+
+        let presets = plugin.presets.clone();
+        let items: Vec<FilterListItem> = presets
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| FilterListItem {
+                cells: vec![p.name.clone()],
+                index: idx,
+            })
+            .collect();
+        let mut filter = FilterListState::new();
+        filter.apply_filter(&items);
+        // Pre-select the current preset if any.
+        if let Some(ref current) = plugin.current_preset {
+            if let Some(i) = presets.iter().position(|p| p.name == *current) {
+                filter.list.selected = i;
+            }
+        }
+        self.preset_selector = Some(PresetSelectorState {
+            filter,
+            items,
+            presets,
+            inst,
+            slot,
+        });
+    }
+
+    fn confirm_preset_selector(&mut self) {
+        let ps = match self.preset_selector.take() {
+            Some(s) => s,
+            None => return,
+        };
+        let chosen_idx = match ps.filter.selected_item(&ps.items) {
+            Some(item) => item.index,
+            None => return,
+        };
+        let chosen = &ps.presets[chosen_idx];
+        let preset_name = chosen.name.clone();
+        let preset_id = chosen.id.clone();
+
+        // Look up the slot's plugin source id so we can build a temporary
+        // plugin to query post-preset parameter values for the UI mirror.
+        let source = {
+            let plugin = if ps.slot == 0 {
+                self.instruments.get(ps.inst).and_then(|n| n.instrument.as_ref())
+            } else {
+                self.instruments.get(ps.inst).and_then(|n| n.effects.get(ps.slot - 1))
+            };
+            match plugin {
+                Some(p) => p.id.clone(),
+                None => return,
+            }
+        };
+
+        // Drive the audio thread first — that's what actually changes the sound.
+        let _ = self.cmd_tx.send(GraphCommand::LoadPreset {
+            inst: ps.inst,
+            slot: ps.slot,
+            preset_id: preset_id.clone(),
+        });
+
+        // Mirror the preset's parameter values into the TUI slot. We do this
+        // via a throwaway plugin instance because the live plugin is owned by
+        // the audio thread; loading twice is acceptable at preset-switch time.
+        let mut new_values: Option<Vec<f32>> = None;
+        match plugin::load(&source, self.sample_rate, self.max_block_size, &self.runtime) {
+            Ok(mut temp) => {
+                crate::session::apply_preset(&mut temp, &preset_name);
+                let params = temp.parameters();
+                let mut values = Vec::with_capacity(params.len());
+                for p in &params {
+                    values.push(temp.get_parameter(p.index).unwrap_or(p.default));
+                }
+                new_values = Some(values);
+            }
+            Err(e) => {
+                log::warn!("Failed to mirror preset values for {source}: {e}");
+            }
+        }
+
+        // Update mirror. Set both `value` and `default` (the save-filter
+        // baseline) so the new preset's parameters aren't written as overrides.
+        let plugin_mut = if ps.slot == 0 {
+            self.instruments.get_mut(ps.inst).and_then(|n| n.instrument.as_mut())
+        } else {
+            self.instruments.get_mut(ps.inst).and_then(|n| n.effects.get_mut(ps.slot - 1))
+        };
+        if let Some(p) = plugin_mut {
+            p.current_preset = Some(preset_name);
+            if let Some(values) = new_values {
+                for (i, slot) in p.params.iter_mut().enumerate() {
+                    let v = values
+                        .get(slot.index as usize)
+                        .copied()
+                        .or_else(|| values.get(i).copied());
+                    if let Some(v) = v {
+                        slot.value = v;
+                        slot.default = v;
+                    }
+                }
+            }
+        }
+
         self.dirty = true;
         self.rebuild_tree();
     }
@@ -1136,6 +1280,7 @@ impl State {
                     crate::session::SaveInstrument {
                         plugin: inst.id.clone(),
                         volume: 1.0, // TODO: track volume in PluginSlot
+                        preset: inst.current_preset.clone(),
                         params: inst
                             .params
                             .iter()
@@ -1153,6 +1298,7 @@ impl State {
                     .map(|fx| crate::session::SaveEffect {
                         plugin: fx.id.clone(),
                         mix: 1.0, // TODO: track mix in PluginSlot
+                        preset: fx.current_preset.clone(),
                         params: fx
                             .params
                             .iter()
@@ -1243,8 +1389,15 @@ pub struct LoadedPlugin {
     pub id: String,
     pub is_instrument: bool,
     pub params: Vec<plugin::ParameterInfo>,
+    /// Post-preset baseline value per parameter, before any session-file
+    /// overrides are applied. The TUI uses this as `ParamSlot.default` so
+    /// the save filter only writes parameters the user has actually changed
+    /// relative to the active preset.
+    pub param_defaults: Vec<f32>,
     pub param_values: Vec<f32>,
     pub modulators: Vec<LoadedModulator>,
+    pub presets: Vec<plugin::Preset>,
+    pub current_preset: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1358,6 +1511,7 @@ pub fn run(
         range_edit: None,
         selector: None,
         target_selector: None,
+        preset_selector: None,
         catalog,
         areas: Areas::default(),
         quit: false,
@@ -1456,6 +1610,8 @@ fn process_event(s: &mut State, ev: Event) {
                 handle_selector_key(s, key.code);
             } else if s.target_selector.is_some() {
                 handle_target_selector_key(s, key.code);
+            } else if s.preset_selector.is_some() {
+                handle_preset_selector_key(s, key.code);
             } else if s.bpm_editing.is_some() {
                 handle_bpm_edit_key(s, key.code);
             } else if s.editing.is_some() {
@@ -1469,10 +1625,17 @@ fn process_event(s: &mut State, ev: Event) {
             }
         }
         Event::Mouse(mouse) => {
-            if s.selector.is_some() || s.target_selector.is_some() || s.editing.is_some() || s.range_edit.is_some() || s.bpm_editing.is_some() {
+            if s.selector.is_some()
+                || s.target_selector.is_some()
+                || s.preset_selector.is_some()
+                || s.editing.is_some()
+                || s.range_edit.is_some()
+                || s.bpm_editing.is_some()
+            {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                     s.selector = None;
                     s.target_selector = None;
+                    s.preset_selector = None;
                     s.editing = None;
                     s.range_edit = None;
                     s.bpm_editing = None;
@@ -1530,6 +1693,31 @@ fn handle_target_selector_key(s: &mut State, code: KeyCode) {
         KeyCode::Char(ch) => {
             ts.filter.input.insert(ch);
             ts.filter.apply_filter(&ts.items);
+        }
+        _ => {}
+    }
+}
+
+fn handle_preset_selector_key(s: &mut State, code: KeyCode) {
+    let ps = s.preset_selector.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.preset_selector = None,
+        KeyCode::Enter => s.confirm_preset_selector(),
+        KeyCode::Up => {
+            ps.filter.list.up();
+            ps.filter.list.ensure_visible(20);
+        }
+        KeyCode::Down => {
+            ps.filter.list.down();
+            ps.filter.list.ensure_visible(20);
+        }
+        KeyCode::Backspace => {
+            ps.filter.input.backspace();
+            ps.filter.apply_filter(&ps.items);
+        }
+        KeyCode::Char(ch) => {
+            ps.filter.input.insert(ch);
+            ps.filter.apply_filter(&ps.items);
         }
         _ => {}
     }
@@ -1733,6 +1921,20 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.dirty = true;
                         s.rebuild_tree();
                     }
+                }
+            }
+        }
+
+        // 'p' — open preset selector for the selected plugin slot.
+        KeyCode::Char('p') if s.active_tab == 0 && !s.focus_params => {
+            if let Some(addr) = s.selected_address().copied() {
+                let target = match addr {
+                    TreeAddress::Instrument(inst) => Some((inst, 0)),
+                    TreeAddress::Effect { inst, index } => Some((inst, index + 1)),
+                    _ => None,
+                };
+                if let Some((inst, slot)) = target {
+                    s.open_preset_selector(inst, slot);
                 }
             }
         }
@@ -2359,6 +2561,9 @@ fn render(
                 if let Some(ts) = &s.target_selector {
                     render_target_selector_popup(frame, area, ts);
                 }
+                if let Some(ps) = &s.preset_selector {
+                    render_preset_selector_popup(frame, area, ps);
+                }
                 if let Some(edit) = &s.bpm_editing {
                     render_edit_popup(frame, area, edit);
                 }
@@ -2909,6 +3114,27 @@ fn render_target_selector_popup(frame: &mut ratatui::Frame, area: Rect, ts: &Tar
     frame.render_widget(FilterList::new(&ts.filter, &ts.items, columns), inner);
 }
 
+fn render_preset_selector_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    ps: &PresetSelectorState,
+) {
+    let w = (area.width * 50 / 100).max(32).min(area.width);
+    let h = (area.height * 50 / 100).max(10).min(area.height);
+    let popup = centered_rect(w, h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Select Preset ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let columns: &[(&str, u16)] = &[("Name", inner.width)];
+    frame.render_widget(FilterList::new(&ps.filter, &ps.items, columns), inner);
+}
+
 fn render_help(frame: &mut ratatui::Frame, area: Rect, lines: &[String], offset: usize) {
     let scroll_lines: Vec<ScrollLine> = lines
         .iter()
@@ -2992,14 +3218,15 @@ fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
     let params = lp
         .params
         .into_iter()
+        .zip(lp.param_defaults)
         .zip(lp.param_values)
-        .filter(|(p, _)| !p.name.starts_with("(locked)"))
-        .map(|(p, v)| ParamSlot {
+        .filter(|((p, _), _)| !p.name.starts_with("(locked)"))
+        .map(|((p, baseline), v)| ParamSlot {
             name: p.name,
             index: p.index,
             min: p.min,
             max: p.max,
-            default: p.default,
+            default: baseline,
             value: v,
             kind: ParamKind::Float,
         })
@@ -3031,6 +3258,8 @@ fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
         is_instrument: lp.is_instrument,
         params,
         modulators,
+        presets: lp.presets,
+        current_preset: lp.current_preset,
     }
 }
 

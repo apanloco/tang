@@ -475,6 +475,17 @@ fn run_session(
             if let Some(ref preset_name) = plug_config.preset {
                 session::apply_preset(&mut instrument, preset_name);
             }
+            let inst_presets = instrument.presets();
+            let inst_current_preset = plug_config.preset.clone();
+
+            // Snapshot post-preset parameter values; these become the baseline
+            // the TUI compares against to decide which params are user-edited
+            // and need to be saved.
+            let inst_params = instrument.parameters();
+            let inst_baselines: Vec<f32> = inst_params
+                .iter()
+                .map(|p| instrument.get_parameter(p.index).unwrap_or(p.default))
+                .collect();
 
             // Build note remapper if configured
             let remapper = if plug_config.remap.is_empty() {
@@ -492,7 +503,6 @@ fn run_session(
                 Some(r)
             };
 
-            let inst_params = instrument.parameters();
             let inst_name = instrument.name().to_string();
             let inst_buf = (0..instrument.audio_output_count())
                 .map(|_| Vec::new())
@@ -516,8 +526,9 @@ fn run_session(
                     .map_err(|_| anyhow::anyhow!("command channel closed"))?;
             }
 
-            // Send instrument parameter overrides
-            let mut inst_values: Vec<f32> = inst_params.iter().map(|p| p.default).collect();
+            // Send instrument parameter overrides. Start from the post-preset
+            // baseline so values reflect the active preset's actual settings.
+            let mut inst_values: Vec<f32> = inst_baselines.clone();
             for (name, &value) in &plug_config.params {
                 if let Some(info) = inst_params.iter().find(|p| p.name == *name) {
                     cmd_tx
@@ -559,8 +570,11 @@ fn run_session(
                 id: instrument_source,
                 is_instrument: true,
                 params: inst_params,
+                param_defaults: inst_baselines,
                 param_values: inst_values,
                 modulators: inst_mods,
+                presets: inst_presets,
+                current_preset: inst_current_preset,
             })
         } else {
             None
@@ -583,8 +597,15 @@ fn run_session(
             if let Some(ref preset_name) = effect_config.preset {
                 session::apply_preset(&mut effect, preset_name);
             }
+            let effect_presets = effect.presets();
+            let effect_current_preset = effect_config.preset.clone();
 
+            // Snapshot post-preset values as the save-filter baseline.
             let effect_params = effect.parameters();
+            let effect_baselines: Vec<f32> = effect_params
+                .iter()
+                .map(|p| effect.get_parameter(p.index).unwrap_or(p.default))
+                .collect();
             let effect_name = effect.name().to_string();
 
             cmd_tx
@@ -596,8 +617,9 @@ fn run_session(
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-            // Send parameter overrides for this effect (slot = fx_idx + 1)
-            let mut fx_values: Vec<f32> = effect_params.iter().map(|p| p.default).collect();
+            // Send parameter overrides for this effect (slot = fx_idx + 1).
+            // Start from the post-preset baseline.
+            let mut fx_values: Vec<f32> = effect_baselines.clone();
             for (name, &value) in &effect_config.params {
                 if let Some(info) = effect_params.iter().find(|p| p.name == *name) {
                     cmd_tx
@@ -640,8 +662,11 @@ fn run_session(
                 id: effect_source,
                 is_instrument: false,
                 params: effect_params,
+                param_defaults: effect_baselines,
                 param_values: fx_values,
                 modulators: fx_mods,
+                presets: effect_presets,
+                current_preset: effect_current_preset,
             });
         }
 

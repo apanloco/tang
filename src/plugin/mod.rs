@@ -38,7 +38,7 @@ pub trait Plugin: Send {
     ) -> anyhow::Result<()>;
 
     fn parameters(&self) -> Vec<ParameterInfo>;
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     fn get_parameter(&mut self, index: u32) -> Option<f32>;
     fn set_parameter(&mut self, index: u32, value: f32) -> anyhow::Result<()>;
 
