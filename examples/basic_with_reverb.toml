@@ -1,7 +1,0 @@
-[[instrument]]
-plugin = "builtin:sine"
-
-[[instrument.effect]]
-plugin = "builtin:reverb"
-preset = "arcadia"
-mix = 0.4

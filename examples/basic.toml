@@ -1,2 +1,7 @@
 [[instrument]]
 plugin = "builtin:sine"
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+preset = "Arcadia Dream Hall"
+mix = 0.25
