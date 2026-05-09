@@ -14,12 +14,15 @@ pub type MidiEvent = (u64, [u8; 3]);
 fn select_audio_host(buffer_size: u32, sample_rate: u32) -> cpal::Host {
     let available = cpal::available_hosts();
     if available.contains(&cpal::HostId::Jack) {
-        // Set PIPEWIRE_QUANTUM before connecting so PipeWire allocates the
-        // requested buffer size for this JACK client.
-        let quantum = format!("{buffer_size}/{sample_rate}");
+        // Request our latency from PipeWire as a cooperative hint. PIPEWIRE_LATENCY
+        // is per-client: PipeWire negotiates the global quantum as the min across
+        // active clients, and other apps recover when ours is paused or xruns.
+        // PIPEWIRE_QUANTUM, by contrast, would force the global quantum and make
+        // tang's xruns crackle YouTube and every other PipeWire client.
+        let latency = format!("{buffer_size}/{sample_rate}");
         // SAFETY: called once at startup before other threads read env vars.
-        unsafe { std::env::set_var("PIPEWIRE_QUANTUM", &quantum) };
-        log::info!("Set PIPEWIRE_QUANTUM={quantum}");
+        unsafe { std::env::set_var("PIPEWIRE_LATENCY", &latency) };
+        log::info!("Set PIPEWIRE_LATENCY={latency}");
 
         match cpal::host_from_id(cpal::HostId::Jack) {
             Ok(h) => {
@@ -37,7 +40,7 @@ fn select_audio_host(buffer_size: u32, sample_rate: u32) -> cpal::Host {
             }
         }
         // SAFETY: same single-threaded startup context.
-        unsafe { std::env::remove_var("PIPEWIRE_QUANTUM") };
+        unsafe { std::env::remove_var("PIPEWIRE_LATENCY") };
     }
     log::info!("Using default audio host (ALSA)");
     cpal::default_host()
