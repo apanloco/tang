@@ -1,9 +1,12 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::audio::MidiEvent;
+use crate::held_notes::HeldNotes;
+use crate::piano_filter::PianoFilter;
 
 /// Virtual piano using Amiga tracker keyboard layout.
 ///
@@ -14,19 +17,29 @@ pub struct VirtualPiano {
     held_keys: HashSet<KeyCode>,
     midi_tx: Sender<MidiEvent>,
     enabled: bool,
+    held: Arc<HeldNotes>,
+    piano_filter: Arc<PianoFilter>,
 }
 
 const VELOCITY: u8 = 100;
 
 impl VirtualPiano {
-    pub fn new(midi_tx: Sender<MidiEvent>, enabled: bool) -> Self {
+    pub fn new(
+        midi_tx: Sender<MidiEvent>,
+        enabled: bool,
+        held: Arc<HeldNotes>,
+        piano_filter: Arc<PianoFilter>,
+    ) -> Self {
         VirtualPiano {
             base_octave: 4,
             held_keys: HashSet::new(),
             midi_tx,
             enabled,
+            held,
+            piano_filter,
         }
     }
+
 
     pub fn handle_key_event(&mut self, event: KeyEvent) {
         if !self.enabled {
@@ -60,7 +73,13 @@ impl VirtualPiano {
                 }
 
                 if let Some(note) = self.key_to_note(event.code) {
+                    // Locked mode: drop off-scale note-ons (silent — no
+                    // sound, no held visualization).
+                    if self.piano_filter.block_note_on(note) {
+                        return;
+                    }
                     self.held_keys.insert(event.code);
+                    self.held.note_on(note);
                     // NoteOn: 0x90, note, velocity
                     let _ = self.midi_tx.send((0, [0x90, note, VELOCITY]));
                     log::info!("Piano: NoteOn note={note} ({})", note_name(note));
@@ -69,6 +88,7 @@ impl VirtualPiano {
             KeyEventKind::Release => {
                 if let Some(note) = self.key_to_note(event.code) {
                     self.held_keys.remove(&event.code);
+                    self.held.note_off(note);
                     // NoteOff: 0x80, note, 0
                     let _ = self.midi_tx.send((0, [0x80, note, 0]));
                     log::info!("Piano: NoteOff note={note} ({})", note_name(note));
@@ -85,6 +105,7 @@ impl VirtualPiano {
         let keys: Vec<KeyCode> = self.held_keys.drain().collect();
         for code in keys {
             if let Some(note) = self.key_to_note(code) {
+                self.held.note_off(note);
                 let _ = self.midi_tx.send((0, [0x80, note, 0]));
             }
         }

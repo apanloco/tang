@@ -15,9 +15,22 @@ pub struct RemapTarget {
 // Instrument-centric config
 // ---------------------------------------------------------------------------
 
-/// Top-level session config: a flat list of instruments.
+/// Top-level session config: a flat list of instruments plus an optional
+/// Piano-tab tonality (root + scale).
 pub struct SessionConfig {
     pub instruments: Vec<InstrumentSlotConfig>,
+    pub piano: Option<PianoConfig>,
+}
+
+/// Optional `[piano]` section of the session TOML.
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct PianoConfig {
+    /// Scale spec like "C major" or "F# dorian".
+    #[serde(default)]
+    pub scale: Option<String>,
+    /// If true, off-scale notes are dropped at the sender (Locked mode).
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// One instrument slot: an optional plugin with range, effects, and pattern.
@@ -136,6 +149,8 @@ fn default_mix() -> f64 {
 struct SessionRaw {
     #[serde(default, rename = "instrument")]
     instruments: Vec<InstrumentSlotRaw>,
+    #[serde(default)]
+    piano: Option<PianoConfig>,
 }
 
 #[derive(Deserialize)]
@@ -260,7 +275,7 @@ pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
             pattern,
         });
     }
-    Ok(SessionConfig { instruments })
+    Ok(SessionConfig { instruments, piano: raw.piano })
 }
 
 /// Parse a note range string like "C0-B3" into (low, high) MIDI note numbers (inclusive).
@@ -463,6 +478,14 @@ pub struct SaveEffect {
 struct SessionOut {
     #[serde(rename = "instrument")]
     instruments: Vec<InstrumentSlotOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    piano: Option<PianoOut>,
+}
+
+#[derive(Serialize)]
+struct PianoOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scale: Option<String>,
 }
 
 /// One [[instrument]] table in the output. Plugin fields are at the top level.
@@ -676,8 +699,13 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
 }
 
 /// Save the current session state to a TOML file.
-pub fn save(path: &Path, instruments: &[SaveInstrumentSlot]) -> anyhow::Result<()> {
+pub fn save(
+    path: &Path,
+    instruments: &[SaveInstrumentSlot],
+    piano: Option<&PianoConfig>,
+) -> anyhow::Result<()> {
     let session = SessionOut {
+        piano: piano.map(|p| PianoOut { scale: p.scale.clone() }),
         instruments: instruments
             .iter()
             .map(|slot| {
@@ -906,7 +934,7 @@ range = "C4-C8"
             },
         ];
 
-        save(&path, &instruments).unwrap();
+        save(&path, &instruments, None).unwrap();
 
         // Reload and verify
         let config = load(path.to_str().unwrap()).unwrap();
@@ -947,7 +975,7 @@ range = "C4-C8"
             pattern: None,
         }];
 
-        save(&path, &instruments).unwrap();
+        save(&path, &instruments, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -991,7 +1019,7 @@ range = "C4-C8"
             pattern: None,
         }];
 
-        save(&path, &instruments).unwrap();
+        save(&path, &instruments, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1041,7 +1069,7 @@ range = "C4-C8"
             pattern: None,
         }];
 
-        save(&path, &instruments).unwrap();
+        save(&path, &instruments, None).unwrap();
 
         // Output should use inline tables and stable alphabetical ordering.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -1065,6 +1093,38 @@ range = "C4-C8"
         assert_eq!(inst.remap["F#2"].note, "F2");
         assert!((inst.remap["F#2"].detune - 1.0).abs() < f64::EPSILON);
         assert_eq!(inst.remap["G#6"].note, "G6");
+    }
+
+    #[test]
+    fn save_and_reload_with_piano_scale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("piano.toml");
+
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:sine".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                modulators: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: None,
+        }];
+        let piano = PianoConfig { scale: Some("F# dorian".into()), locked: false };
+        save(&path, &instruments, Some(&piano)).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("[piano]"));
+        assert!(raw.contains("scale = \"F# dorian\""));
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        let piano_cfg = config.piano.expect("piano section");
+        assert_eq!(piano_cfg.scale.as_deref(), Some("F# dorian"));
     }
 
     #[test]

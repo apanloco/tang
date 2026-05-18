@@ -1,24 +1,36 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 use midir::{MidiInput, MidiInputConnection};
 
 use crate::audio::MidiEvent;
+use crate::held_notes::HeldNotes;
+use crate::piano_filter::PianoFilter;
 
 pub struct MidiManager {
     sender: Sender<MidiEvent>,
     device_filter: Option<String>,
     connections: Vec<MidiInputConnection<()>>,
     connected_names: HashSet<String>,
+    held: Arc<HeldNotes>,
+    piano_filter: Arc<PianoFilter>,
 }
 
 impl MidiManager {
-    pub fn new(sender: Sender<MidiEvent>, device_filter: Option<String>) -> Self {
+    pub fn new(
+        sender: Sender<MidiEvent>,
+        device_filter: Option<String>,
+        held: Arc<HeldNotes>,
+        piano_filter: Arc<PianoFilter>,
+    ) -> Self {
         MidiManager {
             sender,
             device_filter,
             connections: Vec::new(),
             connected_names: HashSet::new(),
+            held,
+            piano_filter,
         }
     }
 
@@ -48,6 +60,8 @@ impl MidiManager {
             }
 
             let sender = self.sender.clone();
+            let held = self.held.clone();
+            let piano_filter = self.piano_filter.clone();
             let log_name = name.clone();
             let conn_name = name.clone();
 
@@ -76,6 +90,23 @@ impl MidiManager {
                         _ => String::new(),
                     };
                     log::info!("MIDI in  [{log_name}] {kind} ch={ch}{note_info} data={bytes:02x?}");
+                    // Locked mode: drop note-ons for off-scale notes so they
+                    // never reach the audio thread or the held bitset. Note-offs
+                    // always pass through (clean up any sounding note).
+                    let is_note_on = (status & 0xF0) == 0x90 && bytes.len() >= 3 && bytes[2] > 0;
+                    if is_note_on && piano_filter.block_note_on(bytes[1]) {
+                        return;
+                    }
+
+                    // Tap into the stream to track currently-held notes for the
+                    // Piano tab. A NoteOn with velocity 0 means NoteOff.
+                    if bytes.len() >= 3 {
+                        match status & 0xF0 {
+                            0x90 if bytes[2] > 0 => held.note_on(bytes[1]),
+                            0x90 | 0x80 => held.note_off(bytes[1]),
+                            _ => {}
+                        }
+                    }
                     // Timestamp 0 = place at start of next buffer
                     // Copy into fixed [u8; 3] — skip messages longer than 3 bytes (e.g. SysEx)
                     if !bytes.is_empty() && bytes.len() <= 3 {

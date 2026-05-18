@@ -1,5 +1,8 @@
+mod piano_view;
+
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
@@ -22,9 +25,12 @@ use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
 use crate::audio;
+use crate::held_notes::HeldNotes;
+use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin;
 use crate::plugin::chain::GraphCommand;
 use crate::plugin::PluginInfo;
+use crate::scale::{ScaleSetting, NOTE_NAMES};
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
 const TAB_SEP: &str = " │ ";
@@ -48,6 +54,9 @@ struct PluginSlot {
     /// Name of the currently-loaded preset (if any). Tracked for save
     /// round-trip and display.
     current_preset: Option<String>,
+    /// Effect dry/wet mix (1.0 = full wet). Only meaningful for effect slots;
+    /// instrument slots leave this at 1.0 and don't read it.
+    mix: f32,
 }
 
 enum ParamKind {
@@ -250,6 +259,14 @@ struct RangeEditState {
     input: TextInputState,
 }
 
+/// State for the scale picker popup (Piano tab).
+struct ScaleSelectorState {
+    filter: FilterListState,
+    items: Vec<FilterListItem>,
+    /// Parallel to items: the (root, scale_idx) pair for each row before filtering.
+    entries: Vec<(u8, usize)>,
+}
+
 #[derive(Default, Clone)]
 struct Areas {
     tab: Rect,
@@ -300,6 +317,12 @@ struct State {
     global_bpm: f32,
     bpm_editing: Option<EditState>,
     pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
+    // Piano tab state.
+    held: Arc<HeldNotes>,
+    piano_filter: Arc<PianoFilter>,
+    /// Center MIDI octave for the piano view (0..=8). Default 4.
+    piano_view_octave: i8,
+    scale_selector: Option<ScaleSelectorState>,
 }
 
 impl State {
@@ -598,6 +621,7 @@ impl State {
             modulators: vec![],
             presets,
             current_preset: None,
+            mix: 1.0,
         };
 
         match sel.mode {
@@ -788,6 +812,52 @@ impl State {
     }
 
     /// Open the preset selector for the selected plugin slot. inst+slot
+    fn open_scale_selector(&mut self) {
+        let entries = piano_view::scale_picker_entries();
+        let items: Vec<FilterListItem> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _root, _idx))| FilterListItem {
+                cells: vec![name.clone()],
+                index: i,
+            })
+            .collect();
+        let mut filter = FilterListState::new();
+        filter.apply_filter(&items);
+        // Pre-select the current scale if it's in the list.
+        let current = self.piano_filter.scale();
+        if let Some(i) = entries
+            .iter()
+            .position(|(_, r, s)| *r == current.root && *s == current.scale_idx)
+        {
+            filter.list.selected = i;
+        }
+        self.scale_selector = Some(ScaleSelectorState {
+            filter,
+            items,
+            entries: entries.into_iter().map(|(_, r, s)| (r, s)).collect(),
+        });
+    }
+
+    fn confirm_scale_selector(&mut self) {
+        let ss = match self.scale_selector.take() {
+            Some(s) => s,
+            None => return,
+        };
+        let item = match ss.filter.selected_item(&ss.items) {
+            Some(it) => it,
+            None => return,
+        };
+        let (root, scale_idx) = ss.entries[item.index];
+        let current = self.piano_filter.scale();
+        if current.root != root || current.scale_idx != scale_idx {
+            let new_scale = ScaleSetting { root, scale_idx };
+            self.piano_filter.set_scale(new_scale);
+            self.dirty = true;
+            log::info!("Scale set to {}", new_scale.display());
+        }
+    }
+
     /// matches the addressing used by GraphCommand: slot=0 = instrument,
     /// slot=1..N = effects.
     fn open_preset_selector(&mut self, inst: usize, slot: usize) {
@@ -1297,7 +1367,7 @@ impl State {
                     .iter()
                     .map(|fx| crate::session::SaveEffect {
                         plugin: fx.id.clone(),
-                        mix: 1.0, // TODO: track mix in PluginSlot
+                        mix: fx.mix,
                         preset: fx.current_preset.clone(),
                         params: fx
                             .params
@@ -1319,7 +1389,11 @@ impl State {
             })
             .collect();
 
-        match crate::session::save(&path, &save_instruments) {
+        let piano_config = crate::session::PianoConfig {
+            scale: Some(self.piano_filter.scale().short()),
+            locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
+        };
+        match crate::session::save(&path, &save_instruments, Some(&piano_config)) {
             Ok(()) => {
                 self.dirty = false;
                 log::info!("Session saved to {}", path.display());
@@ -1398,6 +1472,9 @@ pub struct LoadedPlugin {
     pub modulators: Vec<LoadedModulator>,
     pub presets: Vec<plugin::Preset>,
     pub current_preset: Option<String>,
+    /// Effect dry/wet mix. 1.0 = full wet. Carried through from session
+    /// config so it round-trips on save. Ignored for instrument slots.
+    pub mix: f32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1410,6 +1487,8 @@ pub fn run(
     max_block_size: usize,
     session_path: Option<PathBuf>,
     pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
+    held: Arc<HeldNotes>,
+    piano_filter: Arc<PianoFilter>,
 ) -> anyhow::Result<()> {
     // Build catalog from enumerate.
     let catalog = build_catalog();
@@ -1528,6 +1607,10 @@ pub fn run(
         global_bpm: initial_bpm,
         bpm_editing: None,
         pattern_rx,
+        held,
+        piano_filter,
+        piano_view_octave: 4,
+        scale_selector: None,
     };
 
     // Set up terminal.
@@ -1612,6 +1695,8 @@ fn process_event(s: &mut State, ev: Event) {
                 handle_target_selector_key(s, key.code);
             } else if s.preset_selector.is_some() {
                 handle_preset_selector_key(s, key.code);
+            } else if s.scale_selector.is_some() {
+                handle_scale_selector_key(s, key.code);
             } else if s.bpm_editing.is_some() {
                 handle_bpm_edit_key(s, key.code);
             } else if s.editing.is_some() {
@@ -1628,6 +1713,7 @@ fn process_event(s: &mut State, ev: Event) {
             if s.selector.is_some()
                 || s.target_selector.is_some()
                 || s.preset_selector.is_some()
+                || s.scale_selector.is_some()
                 || s.editing.is_some()
                 || s.range_edit.is_some()
                 || s.bpm_editing.is_some()
@@ -1636,6 +1722,7 @@ fn process_event(s: &mut State, ev: Event) {
                     s.selector = None;
                     s.target_selector = None;
                     s.preset_selector = None;
+                    s.scale_selector = None;
                     s.editing = None;
                     s.range_edit = None;
                     s.bpm_editing = None;
@@ -1693,6 +1780,31 @@ fn handle_target_selector_key(s: &mut State, code: KeyCode) {
         KeyCode::Char(ch) => {
             ts.filter.input.insert(ch);
             ts.filter.apply_filter(&ts.items);
+        }
+        _ => {}
+    }
+}
+
+fn handle_scale_selector_key(s: &mut State, code: KeyCode) {
+    let ss = s.scale_selector.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.scale_selector = None,
+        KeyCode::Enter => s.confirm_scale_selector(),
+        KeyCode::Up => {
+            ss.filter.list.up();
+            ss.filter.list.ensure_visible(20);
+        }
+        KeyCode::Down => {
+            ss.filter.list.down();
+            ss.filter.list.ensure_visible(20);
+        }
+        KeyCode::Backspace => {
+            ss.filter.input.backspace();
+            ss.filter.apply_filter(&ss.items);
+        }
+        KeyCode::Char(ch) => {
+            ss.filter.input.insert(ch);
+            ss.filter.apply_filter(&ss.items);
         }
         _ => {}
     }
@@ -1864,6 +1976,26 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('4') => s.active_tab = 3,
         KeyCode::Tab => s.active_tab = (s.active_tab + 1) % TAB_NAMES.len(),
         KeyCode::BackTab => s.active_tab = (s.active_tab + TAB_NAMES.len() - 1) % TAB_NAMES.len(),
+
+        // ---- Piano tab ----
+        KeyCode::Char('k') if s.active_tab == 1 => {
+            s.open_scale_selector();
+        }
+        KeyCode::Char('l') if s.active_tab == 1 => {
+            let new_mode = match s.piano_filter.mode() {
+                PianoMode::Highlight => PianoMode::Locked,
+                PianoMode::Locked => PianoMode::Highlight,
+            };
+            s.piano_filter.set_mode(new_mode);
+            s.dirty = true;
+            log::info!("Piano mode → {}", new_mode.label());
+        }
+        KeyCode::Char('[') if s.active_tab == 1 && s.piano_view_octave > 0 => {
+            s.piano_view_octave -= 1;
+        }
+        KeyCode::Char(']') if s.active_tab == 1 && s.piano_view_octave < 8 => {
+            s.piano_view_octave += 1;
+        }
 
         // 'i' — replace instrument on the selected instrument slot.
         KeyCode::Char('i') if s.active_tab == 0 && !s.focus_params => {
@@ -2569,11 +2701,10 @@ fn render(
                 }
             }
             1 => {
-                frame.render_widget(
-                    Paragraph::new("Piano tab — keyboard input goes here")
-                        .style(Style::default().fg(Color::DarkGray)),
-                    content_area,
-                );
+                render_piano_tab(frame, content_area, s);
+                if let Some(ss) = &s.scale_selector {
+                    render_scale_selector_popup(frame, area, ss);
+                }
             }
             2 => {
                 frame.render_widget(
@@ -3135,6 +3266,171 @@ fn render_preset_selector_popup(
     frame.render_widget(FilterList::new(&ps.filter, &ps.items, columns), inner);
 }
 
+fn render_scale_selector_popup(frame: &mut ratatui::Frame, area: Rect, ss: &ScaleSelectorState) {
+    let w = (area.width * 50 / 100).max(36).min(area.width);
+    let h = (area.height * 60 / 100).max(12).min(area.height);
+    let popup = centered_rect(w, h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Select Scale ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let columns: &[(&str, u16)] = &[("Scale", inner.width)];
+    frame.render_widget(FilterList::new(&ss.filter, &ss.items, columns), inner);
+}
+
+fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
+    // Vertical split:
+    //  - 2 row status (scale+mode on top, held notes + chord on second)
+    //  - main keyboard area
+    //  - 1 row "scale strip" listing the scale's notes
+    //  - 1 row hint line at bottom
+    let [status_area, kb_area, strip_area, hint_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let [config_row, live_row] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(status_area);
+
+    // ---- Row 1: scale + mode ----
+    let scale = s.piano_filter.scale();
+    let mode = s.piano_filter.mode();
+    let config_text = format!(
+        " Scale: {}   Mode: {}   Octave view: C{}",
+        scale.display(),
+        mode.label(),
+        s.piano_view_octave,
+    );
+    frame.render_widget(
+        Paragraph::new(config_text).style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        config_row,
+    );
+
+    // ---- Row 2: held notes + chord detection ----
+    let held_notes = s.held.held();
+    let held_names: Vec<String> = held_notes
+        .iter()
+        .map(|&n| {
+            let nm = crate::note_name(n);
+            match scale.degree(n) {
+                Some(d) => format!("{nm}({d})"),
+                None => nm,
+            }
+        })
+        .collect();
+    let held_str = if held_names.is_empty() {
+        String::from("—")
+    } else {
+        held_names.join(" ")
+    };
+
+    // Chord: top match if 3+ notes, interval if exactly 2, blank for 0–1.
+    let chord_text = if held_notes.len() >= 2 {
+        let matches = crate::chord::detect(&held_notes, &scale);
+        if matches.is_empty() {
+            if let Some(iv) = crate::chord::two_note_interval(&held_notes) {
+                iv
+            } else {
+                String::from("—")
+            }
+        } else {
+            let mut parts: Vec<String> = Vec::new();
+            for (i, m) in matches.iter().take(2).enumerate() {
+                let label = match &m.roman {
+                    Some(r) if i == 0 => format!("{} ({})", m.display(), r),
+                    _ => m.display(),
+                };
+                parts.push(label);
+            }
+            parts.join("  ·  ")
+        }
+    } else {
+        String::from("—")
+    };
+
+    let live_line = ratatui::text::Line::from(vec![
+        ratatui::text::Span::styled(
+            " Held: ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        ratatui::text::Span::styled(
+            held_str,
+            Style::default().fg(Color::White),
+        ),
+        ratatui::text::Span::styled(
+            "   Chord: ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        ratatui::text::Span::styled(
+            chord_text,
+            Style::default()
+                .fg(Color::Rgb(240, 185, 70))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(live_line), live_row);
+
+    // ---- Keyboard ----
+    frame.render_widget(Clear, kb_area);
+    let buf = frame.buffer_mut();
+    piano_view::render_keyboard(kb_area, buf, &s.held, &scale, s.piano_view_octave);
+
+    // ---- Scale strip: degree → note pairs ----
+    use crate::scale::{SCALES, SCALE_DEGREES};
+    let scale_intervals = SCALES[scale.scale_idx].intervals;
+    let mut strip_parts: Vec<(String, Style)> = Vec::new();
+    for (i, &iv) in scale_intervals.iter().enumerate() {
+        let pc = (scale.root as u16 + iv as u16) % 12;
+        let name = NOTE_NAMES[pc as usize];
+        let degree = SCALE_DEGREES[iv as usize];
+        let is_root = iv == 0;
+        let key_style = if is_root {
+            Style::default()
+                .fg(Color::Rgb(240, 185, 70))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(120, 200, 215))
+        };
+        let degree_style = Style::default().fg(Color::Rgb(120, 120, 120));
+        if i > 0 {
+            strip_parts.push(("   ".into(), Style::default()));
+        }
+        strip_parts.push((format!("{degree}:"), degree_style));
+        strip_parts.push((name.to_string(), key_style));
+    }
+    let line: ratatui::text::Line = ratatui::text::Line::from(
+        strip_parts
+            .into_iter()
+            .map(|(t, st)| ratatui::text::Span::styled(t, st))
+            .collect::<Vec<_>>(),
+    );
+    frame.render_widget(
+        Paragraph::new(line).alignment(ratatui::layout::Alignment::Center),
+        strip_area,
+    );
+
+    // ---- Hint line ----
+    let hint = " [k] scale  [l] mode  [[/]] octave  [Esc] back ";
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+        hint_area,
+    );
+}
+
 fn render_help(frame: &mut ratatui::Frame, area: Rect, lines: &[String], offset: usize) {
     let scroll_lines: Vec<ScrollLine> = lines
         .iter()
@@ -3260,6 +3556,7 @@ fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
         modulators,
         presets: lp.presets,
         current_preset: lp.current_preset,
+        mix: lp.mix,
     }
 }
 
@@ -3492,6 +3789,11 @@ fn build_help_lines() -> Vec<String> {
         "Modulator (chain focus):".into(),
         "  t          Add modulation target".into(),
         "  d          Delete modulator".into(),
+        "".into(),
+        "Piano tab:".into(),
+        "  k          Open scale picker (root + scale)".into(),
+        "  [          Shift view octave down".into(),
+        "  ]          Shift view octave up".into(),
         "".into(),
         "Session tab (param focus):".into(),
         "  Up/Down    Navigate parameters".into(),

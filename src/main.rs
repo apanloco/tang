@@ -1,12 +1,16 @@
 #![allow(clippy::collapsible_if)]
 
 mod audio;
+mod chord;
 mod cli;
 mod config;
 mod enumerate;
+mod held_notes;
 mod midi;
 mod piano;
+mod piano_filter;
 mod plugin;
+mod scale;
 mod session;
 mod tui;
 
@@ -188,6 +192,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
             effects: vec![],
             pattern: None,
         }],
+        piano: None,
     };
 
     log::info!("New session (will save to {} on Ctrl+S)", path.display());
@@ -427,6 +432,27 @@ fn run_session(
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<plugin::chain::GraphCommand>(64);
     let (return_tx, return_rx) = crossbeam_channel::bounded::<Box<dyn plugin::Plugin>>(16);
 
+    // Shared "currently held notes" state — populated by both the hardware MIDI
+    // thread and the virtual piano, read by the TUI Piano tab.
+    let held = std::sync::Arc::new(held_notes::HeldNotes::new());
+
+    // Shared piano-tab filter: current scale + Highlight/Locked mode. Read by
+    // both senders to drop off-scale notes when locked; written by the TUI.
+    let piano_initial_scale = config
+        .piano
+        .as_ref()
+        .and_then(|p| p.scale.as_deref().and_then(scale::ScaleSetting::parse))
+        .unwrap_or_default();
+    let piano_initial_mode = if config.piano.as_ref().is_some_and(|p| p.locked) {
+        piano_filter::PianoMode::Locked
+    } else {
+        piano_filter::PianoMode::Highlight
+    };
+    let piano_filter = std::sync::Arc::new(piano_filter::PianoFilter::new(
+        piano_initial_scale,
+        piano_initial_mode,
+    ));
+
     // Create empty audio graph (outputs silence until instruments are added)
     let num_channels = 2; // stereo — see CLAUDE.md design decision
     let mut graph = plugin::chain::AudioGraph::new(num_channels, cmd_rx, return_tx);
@@ -436,7 +462,7 @@ fn run_session(
     graph.set_pattern_tx(pattern_tx.clone());
 
     // Start MIDI input
-    let mut midi_mgr = midi::MidiManager::new(midi_tx.clone(), midi_device);
+    let mut midi_mgr = midi::MidiManager::new(midi_tx.clone(), midi_device, held.clone(), piano_filter.clone());
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
@@ -575,6 +601,7 @@ fn run_session(
                 modulators: inst_mods,
                 presets: inst_presets,
                 current_preset: inst_current_preset,
+                mix: 1.0,
             })
         } else {
             None
@@ -667,6 +694,7 @@ fn run_session(
                 modulators: fx_mods,
                 presets: effect_presets,
                 current_preset: effect_current_preset,
+                mix: effect_config.mix as f32,
             });
         }
 
@@ -741,7 +769,7 @@ fn run_session(
     // --- Branch: TUI view vs plain play mode ---
     if use_tui {
         let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(loaded_instruments, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx)?;
+        tui::run(loaded_instruments, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, held.clone(), piano_filter.clone())?;
     } else {
         // --- Plain play mode (original) ---
 
@@ -781,7 +809,7 @@ fn run_session(
         }
 
         // Create virtual piano
-        let mut virt_piano = piano::VirtualPiano::new(midi_tx, kitty_supported);
+        let mut virt_piano = piano::VirtualPiano::new(midi_tx, kitty_supported, held.clone(), piano_filter.clone());
 
         log::info!("Playing. Ctrl+Q or Ctrl+C to quit.");
 

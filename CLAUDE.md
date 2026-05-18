@@ -457,13 +457,50 @@ modulator (plugin parameters and sibling modulator parameters).
 
 ### Piano tab
 
-TODO: Currently a placeholder. Planned: captures keyboard for note input,
-shows current octave and active notes.
+Visual piano keyboard for learning scales and seeing what's playing in
+real time.
+
+Layout: status line on top (scale + view octave + currently-held notes
+with degree labels), the keyboard itself in the middle, a "scale strip"
+underneath showing the notes of the scale, and a hint line at the bottom.
+
+The keyboard auto-sizes to the terminal width — it tries 4 octaves and
+the widest white-key width that fits, falling back to narrower or fewer
+octaves as needed. The view is centered on `piano_view_octave`.
+
+Key colors (in order of priority):
+- **Held** → bright red (magenta if also root)
+- **Root** of current scale → amber/gold
+- **Scale tone** (non-root) → teal
+- **Off-scale** → plain white/black
 
 | Key | Action |
 |-----|--------|
-| `[` | Octave down |
-| `]` | Octave up |
+| `k` | Open scale picker (root + scale type, filterable) |
+| `[` | Shift view octave down |
+| `]` | Shift view octave up |
+
+The scale persists in the session file under a top-level `[piano]`
+section:
+
+```toml
+[piano]
+scale = "C major"
+```
+
+Accepted forms include sharps (`C#`), flats (`Bb`), short names
+(`major`, `minor`, `dorian`, `maj pent`, `min pent`, `blues`,
+`chromatic`, `whole tone`, `diminished`), and long names
+(`Natural Minor`, `Harmonic Minor`, `Melodic Minor`, etc.).
+
+Currently-held notes are tracked in a lock-free `Arc<HeldNotes>` (a
+128-bit atomic bitset). Both the hardware MIDI thread and the virtual
+piano set/clear bits on NoteOn/NoteOff; the TUI reads them every render
+frame (~10 fps).
+
+TODO: Capture letter keys on the Piano tab for note input via the
+virtual piano (currently the Piano tab is read-only — notes still play
+from the global virtual piano which is only wired up in `play` mode).
 
 ### Help tab
 
