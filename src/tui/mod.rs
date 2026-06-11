@@ -1,4 +1,5 @@
 mod piano_view;
+pub mod splash;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -335,6 +336,10 @@ struct State {
     target_selector: Option<TargetSelectorState>,
     preset_selector: Option<PresetSelectorState>,
     catalog: Vec<PluginInfo>,
+    /// Receives per-format catalog batches from the background scan thread.
+    catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>,
+    /// True until the background catalog scan finishes (channel disconnects).
+    catalog_scanning: bool,
     areas: Areas,
     quit: bool,
     session_path: Option<PathBuf>,
@@ -573,10 +578,8 @@ impl State {
         self.tree_entries.get(self.chain_state.selected).map(|e| &e.address)
     }
 
-    fn open_selector(&mut self, mode: SelectorMode) {
-        log::info!("open_selector: mode={:?}", mode);
-        let items: Vec<FilterListItem> = self
-            .catalog
+    fn selector_items(&self, mode: SelectorMode) -> Vec<FilterListItem> {
+        self.catalog
             .iter()
             .enumerate()
             .filter(|(_, e)| match mode {
@@ -595,7 +598,12 @@ impl State {
                     index: i,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    fn open_selector(&mut self, mode: SelectorMode) {
+        log::info!("open_selector: mode={:?}", mode);
+        let items = self.selector_items(mode);
 
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
@@ -605,6 +613,24 @@ impl State {
             filter,
             items,
         });
+    }
+
+    /// Fold newly scanned plugins into the catalog and refresh an open
+    /// selector popup (keeping its filter text) so rows appear as the
+    /// background scan progresses.
+    fn extend_catalog(&mut self, batch: Vec<PluginInfo>) {
+        if batch.is_empty() {
+            return;
+        }
+        self.catalog.extend(batch);
+        self.catalog.sort_by_key(|a| a.name.to_lowercase());
+        if let Some(mode) = self.selector.as_ref().map(|sel| sel.mode) {
+            let items = self.selector_items(mode);
+            if let Some(sel) = self.selector.as_mut() {
+                sel.items = items;
+                sel.filter.apply_filter(&sel.items);
+            }
+        }
     }
 
     /// Load `source` and build its session-model `PluginSlot`. Returns the
@@ -1547,8 +1573,11 @@ pub fn run(
     held: Arc<HeldNotes>,
     piano_filter: Arc<PianoFilter>,
 ) -> anyhow::Result<()> {
-    // Build catalog from enumerate.
-    let catalog = build_catalog();
+    // Scan the plugin catalog on a background thread so the TUI can draw
+    // immediately — a full scan instantiates every installed plugin and can
+    // take seconds. Results arrive per-format on `catalog_rx` and are drained
+    // in the event loop. The catalog is only needed by the selector popup.
+    let catalog_rx = spawn_catalog_scan();
 
     // Convert loaded instruments into flat InstrumentNode list.
     let instruments: Vec<InstrumentNode> = loaded_instruments
@@ -1649,7 +1678,9 @@ pub fn run(
         selector: None,
         target_selector: None,
         preset_selector: None,
-        catalog,
+        catalog: Vec::new(),
+        catalog_rx,
+        catalog_scanning: true,
         areas: Areas::default(),
         quit: false,
         session_path,
@@ -1722,6 +1753,17 @@ fn event_loop(
     s: &mut State,
 ) -> io::Result<()> {
     loop {
+        // Drain plugin catalog batches from the background scan thread.
+        while s.catalog_scanning {
+            match s.catalog_rx.try_recv() {
+                Ok(batch) => s.extend_catalog(batch),
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    s.catalog_scanning = false;
+                }
+            }
+        }
+
         // Drain pattern recording completion notifications.
         while let Ok(notif) = s.pattern_rx.try_recv() {
             if let Some(inst_node) = s.instruments.get_mut(notif.inst) {
@@ -2969,7 +3011,7 @@ fn render(
                     render_range_edit_popup(frame, area, re);
                 }
                 if let Some(sel) = &s.selector {
-                    render_selector_popup(frame, area, sel);
+                    render_selector_popup(frame, area, sel, s.catalog_scanning);
                 }
                 if let Some(ts) = &s.target_selector {
                     render_target_selector_popup(frame, area, ts);
@@ -3511,10 +3553,17 @@ fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState
     }
 }
 
-fn render_selector_popup(frame: &mut ratatui::Frame, area: Rect, sel: &SelectorState) {
-    let title = match sel.mode {
-        SelectorMode::Instrument => " Select Instrument ",
-        SelectorMode::Effect => " Select Effect ",
+fn render_selector_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    sel: &SelectorState,
+    scanning: bool,
+) {
+    let title = match (sel.mode, scanning) {
+        (SelectorMode::Instrument, false) => " Select Instrument ",
+        (SelectorMode::Instrument, true) => " Select Instrument (scanning…) ",
+        (SelectorMode::Effect, false) => " Select Effect ",
+        (SelectorMode::Effect, true) => " Select Effect (scanning…) ",
     };
     let w = (area.width * 70 / 100).max(40).min(area.width);
     let h = (area.height * 60 / 100).max(10).min(area.height);
@@ -4058,21 +4107,24 @@ fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Optio
     None
 }
 
-fn build_catalog() -> Vec<PluginInfo> {
-    let mut catalog = Vec::new();
+/// Enumerate all plugin formats on a background thread, sending each format's
+/// results as a separate batch so the selector fills in progressively (built-ins
+/// arrive instantly, VST3 — which instantiates every plugin — arrives last).
+/// The channel disconnecting signals that the scan is complete.
+fn spawn_catalog_scan() -> crossbeam_channel::Receiver<Vec<PluginInfo>> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::spawn(move || {
+        let _ = tx.send(plugin::builtin::enumerate_plugins());
 
-    catalog.extend(plugin::builtin::enumerate_plugins());
+        #[cfg(feature = "lv2")]
+        let _ = tx.send(plugin::lv2::enumerate_plugins());
 
-    #[cfg(feature = "lv2")]
-    catalog.extend(plugin::lv2::enumerate_plugins());
+        let _ = tx.send(plugin::clap::enumerate_plugins());
 
-    catalog.extend(plugin::clap::enumerate_plugins());
-
-    #[cfg(feature = "vst3")]
-    catalog.extend(plugin::vst3::enumerate_plugins());
-
-    catalog.sort_by_key(|a| a.name.to_lowercase());
-    catalog
+        #[cfg(feature = "vst3")]
+        let _ = tx.send(plugin::vst3::enumerate_plugins());
+    });
+    rx
 }
 
 fn build_help_lines() -> Vec<String> {

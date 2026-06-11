@@ -68,16 +68,28 @@ pub enum PluginType {
 
 #[derive(Default)]
 pub struct Runtime {
+    /// Lazily created on the first LV2 load — building the world scans every
+    /// installed LV2 bundle (~hundreds of ms), which sessions without LV2
+    /// plugins shouldn't pay at startup.
     #[cfg(feature = "lv2")]
-    pub lv2: Option<lv2::Lv2Runtime>,
+    lv2: Option<(std::sync::OnceLock<lv2::Lv2Runtime>, usize)>,
 }
 
 impl Runtime {
     #[cfg(feature = "lv2")]
     pub fn with_lv2(max_block_size: usize) -> Self {
         Self {
-            lv2: Some(lv2::Lv2Runtime::new(max_block_size)),
+            lv2: Some((std::sync::OnceLock::new(), max_block_size)),
         }
+    }
+
+    #[cfg(feature = "lv2")]
+    fn lv2(&self) -> Option<&lv2::Lv2Runtime> {
+        self.lv2
+            .as_ref()
+            .map(|(cell, max_block_size)| {
+                cell.get_or_init(|| lv2::Lv2Runtime::new(*max_block_size))
+            })
     }
 }
 
@@ -99,7 +111,7 @@ pub fn load(
             &resolved,
             sample_rate,
             max_block_size,
-            _runtime.lv2.as_ref(),
+            _runtime.lv2(),
         ),
         PluginType::Clap => clap::load(&resolved, sample_rate, max_block_size),
         #[cfg(feature = "vst3")]

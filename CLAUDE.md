@@ -307,6 +307,19 @@ pitch_bend_range = 2  # optional, default ±2 semitones
 
 ## TUI
 
+### Splash screen
+
+While session plugins load (which can take seconds for heavyweight
+instruments like Pianoteq), the TUI shows a splash screen: TANG logo,
+animated spinner, the name of the plugin currently loading, and a progress
+bar over plugin slots (instruments + effects). Implemented in
+`src/tui/splash.rs` — a transient render thread owns the terminal and
+animates at ~12 fps while the main thread loads plugins and reports progress
+over a channel. Dropping the `Splash` handle restores the terminal, so load
+errors clean up automatically before the error prints. TUI mode only; `play`
+mode keeps plain log output. While the splash is up, logging to a terminal
+stderr is suppressed (redirected stderr still gets logs).
+
 The interface is tab-based.
 The status bar at the top shows all tabs with the active one highlighted.
 The global BPM is displayed on the right side of the status bar (e.g. `120 BPM`).
@@ -433,6 +446,12 @@ filtered by plugin type.
 - `Enter` — select plugin and close popup
 - `Escape` — cancel and close popup
 - Typing updates the filter immediately
+
+The plugin catalog is scanned on a background thread started when the TUI
+launches (a full scan instantiates every installed plugin and can take
+seconds, so it must not block the first frame). Results arrive per format
+(built-ins, LV2, CLAP, VST3) and the popup fills in progressively; while the
+scan is still running the popup title shows "(scanning…)".
 
 ### Preset selector popup
 
@@ -625,6 +644,16 @@ N+2 threads, no async:
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
 - **Main thread** — runs the crossterm event loop, handles keyboard input. The virtual
   piano lives here and pushes into the same MIDI channel as hardware devices.
+- **Catalog scan thread** (TUI only, transient) — enumerates installed plugins
+  for the selector popup at TUI startup and exits when done. Sends per-format
+  batches over an unbounded channel drained by the TUI event loop.
+- **Splash render thread** (TUI only, transient) — owns the terminal during
+  session plugin loading, animating the startup splash while the main thread
+  loads plugins. Exits before `tui::run` takes over the terminal.
+
+The shared LV2 world (`plugin::Runtime`) is created lazily on the first LV2
+plugin load, not at startup — building the world scans every installed LV2
+bundle, which sessions without LV2 plugins shouldn't pay for.
 
 MIDI-to-audio communication via bounded MPSC channel (crossbeam-channel, capacity 1024).
 

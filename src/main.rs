@@ -421,6 +421,35 @@ fn run_session(
 
     let session_dir = Path::new(&source).parent().unwrap_or_else(|| Path::new("."));
 
+    // Splash screen while plugins load (TUI mode only). Plugin loads can take
+    // seconds for heavyweight instruments; the splash thread owns the terminal
+    // and animates while this thread loads. Dropped (= terminal restored)
+    // before tui::run sets up its own terminal — also on the error path.
+    let total_slots: usize = config
+        .instruments
+        .iter()
+        .map(|i| i.instrument.is_some() as usize + i.effects.len())
+        .sum();
+    let splash = if use_tui {
+        match tui::splash::Splash::start(total_slots) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                log::warn!("Splash screen unavailable: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // While the splash owns the screen, suppress logging if stderr is the
+    // terminal (it would corrupt the alternate screen). Logging to a
+    // redirected stderr (`tang 2> debug.log`) is unaffected.
+    let prev_log_level = log::max_level();
+    if splash.is_some() && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        log::set_max_level(log::LevelFilter::Off);
+    }
+    let mut loaded_slots = 0usize;
+
     // Create shared LV2 world (scans system plugins once, reused for all LV2 loads)
     #[cfg(feature = "lv2")]
     let runtime = plugin::Runtime::with_lv2(max_block_size);
@@ -462,11 +491,17 @@ fn run_session(
     graph.set_pattern_tx(pattern_tx.clone());
 
     // Start MIDI input
+    if let Some(sp) = &splash {
+        sp.status("Opening MIDI inputs…");
+    }
     let mut midi_mgr = midi::MidiManager::new(midi_tx.clone(), midi_device, held.clone(), piano_filter.clone());
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
     // Build audio engine (not playing yet — will start after initial commands are queued)
+    if let Some(sp) = &splash {
+        sp.status("Starting audio engine…");
+    }
     let engine = audio::AudioEngine::build(
         graph,
         midi_rx,
@@ -490,8 +525,18 @@ fn run_session(
         let loaded_instrument = if let Some(plug_config) = &inst_config.instrument {
             let instrument_source =
                 session::resolve_plugin_path(&plug_config.plugin, session_dir);
+            if let Some(sp) = &splash {
+                sp.status(format!(
+                    "Loading {}…",
+                    tui::splash::display_name(&plug_config.plugin)
+                ));
+            }
             let mut instrument =
                 plugin::load(&instrument_source, sample_rate_f, max_block_size, &runtime)?;
+            loaded_slots += 1;
+            if let Some(sp) = &splash {
+                sp.progress(loaded_slots);
+            }
             log::info!(
                 "Loaded instrument for inst={}: {}",
                 inst_idx,
@@ -612,8 +657,18 @@ fn run_session(
         for (fx_idx, effect_config) in inst_config.effects.iter().enumerate() {
             let effect_source =
                 session::resolve_plugin_path(&effect_config.plugin, session_dir);
+            if let Some(sp) = &splash {
+                sp.status(format!(
+                    "Loading {}…",
+                    tui::splash::display_name(&effect_config.plugin)
+                ));
+            }
             let mut effect =
                 plugin::load(&effect_source, sample_rate_f, max_block_size, &runtime)?;
+            loaded_slots += 1;
+            if let Some(sp) = &splash {
+                sp.progress(loaded_slots);
+            }
             log::info!(
                 "Loaded effect for inst={} fx={}: {}",
                 inst_idx,
@@ -770,6 +825,11 @@ fn run_session(
 
     // All initial commands queued — now start the audio stream
     engine.play()?;
+
+    // Loading done: stop the splash (restores the terminal) and re-enable
+    // logging before the TUI applies its own suppression logic.
+    drop(splash);
+    log::set_max_level(prev_log_level);
 
     // --- Branch: TUI view vs plain play mode ---
     if use_tui {
