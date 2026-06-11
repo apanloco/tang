@@ -32,9 +32,10 @@ These flags apply to both the TUI and the `play` subcommand:
 | `--sample-rate <hz>` | 48000 | Sample rate |
 
 The `play` subcommand takes the session path as a required positional argument.
-The TUI uses `~/.config/tang/default.toml` as the default session. If the file
-does not exist, Tang creates it with `builtin:sine` as the instrument and no
-effects.
+When launched without a session path, the TUI starts an in-memory default
+session (`builtin:sine` as the instrument, no effects) targeting a fresh
+timestamped file `~/.config/tang/sessions/session-<id>.toml`. Nothing is
+written to disk until the first `Ctrl+S`.
 
 ## Subcommands
 
@@ -71,8 +72,10 @@ read the extra paths directly.
 
 ## Session config
 
-Sessions are TOML files. The TUI uses `~/.config/tang/default.toml` by default.
-Sessions are saved explicitly only (no auto-save on parameter change).
+Sessions are TOML files. Without a session argument the TUI creates a new
+in-memory session saved to `~/.config/tang/sessions/session-<id>.toml` on
+first save. Sessions are saved explicitly only (no auto-save on parameter
+change).
 A plugin can be specified using:
 - `./path/to/Plugin.lv2`: LV2 bundle by path
 - `./path/to/Plugin.clap`: CLAP bundle by path
@@ -476,8 +479,14 @@ session's filename.
 - Text input for a filename. `.toml` is appended if missing. The file is saved
   in the current session's directory (cwd if there is no current session).
 - `Enter` — save and close; `session_path` is updated so subsequent `Ctrl+S`
-  targets the new file (kept open if the field is empty)
+  targets the new file. On failure (or an empty field) the popup stays open —
+  the error is shown in the popup and `session_path` keeps its old value.
 - `Escape` — cancel and close popup
+
+Distinguishing `Ctrl+Shift+S` from `Ctrl+S` requires the kitty keyboard
+protocol (the TUI pushes `DISAMBIGUATE_ESCAPE_CODES` when the terminal
+supports it). On terminals without it, the SHIFT modifier is not reported
+for Ctrl+letter chords and `Ctrl+Shift+S` performs a plain save instead.
 
 ### Modulation target selector popup
 

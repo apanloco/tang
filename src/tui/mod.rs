@@ -1,14 +1,15 @@
 mod piano_view;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEventKind,
+    KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
@@ -291,6 +292,8 @@ struct RangeEditState {
 /// State for the "save as" filename popup.
 struct SaveAsState {
     input: TextInputState,
+    /// Error from the last failed save attempt, shown in the popup.
+    error: Option<String>,
 }
 
 /// State for the scale picker popup (Piano tab).
@@ -1346,14 +1349,20 @@ impl State {
                 return;
             }
         };
+        if let Err(e) = self.save_session_to(&path) {
+            log::error!("Failed to save session: {e}");
+        }
+    }
 
+    /// Save the session to `path`. Does not touch `session_path` — callers
+    /// decide what a failed save means for the current path.
+    fn save_session_to(&mut self, path: &Path) -> anyhow::Result<()> {
         // Ensure parent directory exists (e.g. ~/.config/tang/sessions/).
         if let Some(parent) = path.parent() {
             if !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    log::error!("Failed to create directory {}: {e}", parent.display());
-                    return;
-                }
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    anyhow::anyhow!("failed to create directory {}: {e}", parent.display())
+                })?;
             }
         }
 
@@ -1444,15 +1453,10 @@ impl State {
             scale: Some(self.piano_filter.scale().short()),
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
-        match crate::session::save(&path, &save_instruments, Some(&piano_config)) {
-            Ok(()) => {
-                self.dirty = false;
-                log::info!("Session saved to {}", path.display());
-            }
-            Err(e) => {
-                log::error!("Failed to save session: {e}");
-            }
-        }
+        crate::session::save(path, &save_instruments, Some(&piano_config))?;
+        self.dirty = false;
+        log::info!("Session saved to {}", path.display());
+        Ok(())
     }
 }
 
@@ -1669,10 +1673,22 @@ pub fn run(
         scale_selector: None,
     };
 
+    // Probe keyboard enhancement support (must be done before entering raw mode).
+    let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+
     // Set up terminal.
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Disambiguate modifier combos where supported, so Ctrl+Shift+S (save as)
+    // is distinguishable from Ctrl+S. Pushed after EnterAlternateScreen —
+    // kitty keeps separate flag stacks for the main and alternate screens.
+    if kitty_supported {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -1688,6 +1704,9 @@ pub fn run(
 
     log::set_max_level(prev_log_level);
 
+    if kitty_supported {
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
     execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
@@ -2048,18 +2067,36 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
-            s.session_path = Some(dir.join(name));
-            s.save_as = None;
-            // Subsequent Ctrl+S now targets the new file.
-            s.save_session();
+            let path = dir.join(name);
+            match s.save_session_to(&path) {
+                Ok(()) => {
+                    // Subsequent Ctrl+S now targets the new file.
+                    s.session_path = Some(path);
+                    s.save_as = None;
+                }
+                Err(e) => {
+                    // Keep the popup (and the original session_path) and show
+                    // the error so the user can fix the name or cancel.
+                    s.save_as.as_mut().unwrap().error = Some(e.to_string());
+                }
+            }
         }
-        KeyCode::Backspace => sa.input.backspace(),
-        KeyCode::Delete => sa.input.delete(),
+        KeyCode::Backspace => {
+            sa.error = None;
+            sa.input.backspace();
+        }
+        KeyCode::Delete => {
+            sa.error = None;
+            sa.input.delete();
+        }
         KeyCode::Left => sa.input.move_left(),
         KeyCode::Right => sa.input.move_right(),
         KeyCode::Home => sa.input.home(),
         KeyCode::End => sa.input.end(),
-        KeyCode::Char(ch) => sa.input.insert(ch),
+        KeyCode::Char(ch) => {
+            sa.error = None;
+            sa.input.insert(ch);
+        }
         _ => {}
     }
 }
@@ -2120,6 +2157,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 .unwrap_or_default();
             s.save_as = Some(SaveAsState {
                 input: TextInputState::new(&current),
+                error: None,
             });
         }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3459,11 +3497,13 @@ fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState
     frame.render_widget(block, popup);
 
     if inner.height >= 2 {
-        frame.render_widget(
-            Paragraph::new("Filename (saved in session dir; .toml added)")
+        // The hint line doubles as the error line after a failed save.
+        let hint = match &sa.error {
+            Some(e) => Paragraph::new(e.as_str()).style(Style::default().fg(Color::Red)),
+            None => Paragraph::new("Filename (saved in session dir; .toml added)")
                 .style(Style::default().fg(Color::DarkGray)),
-            Rect::new(inner.x, inner.y, inner.width, 1),
-        );
+        };
+        frame.render_widget(hint, Rect::new(inner.x, inner.y, inner.width, 1));
         frame.render_widget(
             TextInput::new(&sa.input),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
