@@ -3864,9 +3864,9 @@ fn bar_value_at(x: u16, param_inner: Rect) -> Option<f32> {
     Some(((x - bar_start) as f32 / (bar_width - 1).max(1) as f32).clamp(0.0, 1.0))
 }
 
-/// Format a note range as "C4-B5" style string.
+/// Format a note range as "C4-B5" style string (open-ended: "-B3", "C4-").
 fn format_range(range: (u8, u8)) -> String {
-    format!("{}-{}", crate::note_name(range.0), crate::note_name(range.1))
+    crate::session::format_range(range)
 }
 
 fn build_tree_entries(instruments: &[InstrumentNode]) -> Vec<TreeEntry> {

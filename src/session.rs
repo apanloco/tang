@@ -278,21 +278,20 @@ pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
     Ok(SessionConfig { instruments, piano: raw.piano })
 }
 
-/// Parse a note range string like "C0-B3" into (low, high) MIDI note numbers (inclusive).
-/// Parse a note range like "C0-B3". Either bound may be omitted for an
-/// open-ended range: "C4-" means C4 and up (to MIDI 127), "-C4" means up to and
-/// including C4 (from MIDI 0).
+/// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
+/// (inclusive). Either bound may be omitted for an open-ended range: "C4-"
+/// means C4 and up (to MIDI 127), "-C4" means up to and including C4 (from
+/// MIDI 0). Octave -1 note names are accepted (e.g. "C-1-B3").
 pub fn parse_range(s: &str) -> anyhow::Result<(u8, u8)> {
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 2 {
-        anyhow::bail!(
+    let (low_str, high_str) = split_range_bounds(s.trim()).ok_or_else(|| {
+        anyhow::anyhow!(
             "invalid range format '{}', expected 'NOTE-NOTE' (e.g. 'C0-B3'); \
              open-ended 'C4-' or '-C4' are also allowed",
             s
-        );
-    }
-    let low_str = parts[0].trim();
-    let high_str = parts[1].trim();
+        )
+    })?;
+    let low_str = low_str.trim();
+    let high_str = high_str.trim();
     if low_str.is_empty() && high_str.is_empty() {
         anyhow::bail!("invalid range '{}': at least one bound is required", s);
     }
@@ -302,6 +301,47 @@ pub fn parse_range(s: &str) -> anyhow::Result<(u8, u8)> {
         anyhow::bail!("range '{}' has low ({}) > high ({})", s, low, high);
     }
     Ok((low, high))
+}
+
+/// Split a range string at its bounds separator '-'. A '-' right after the
+/// low bound's note letter (or accidental) that is followed by a digit is the
+/// negative-octave sign, not the separator (e.g. "C-1-B3" → ("C-1", "B3")).
+fn split_range_bounds(s: &str) -> Option<(&str, &str)> {
+    let b = s.as_bytes();
+    if b.is_empty() {
+        return None;
+    }
+    if b[0] == b'-' {
+        return Some(("", &s[1..]));
+    }
+    let mut i = 1; // note letter
+    if matches!(b.get(i), Some(b'#' | b'b')) {
+        i += 1; // accidental
+    }
+    if b.get(i) == Some(&b'-') && b.get(i + 1).is_some_and(u8::is_ascii_digit) {
+        i += 1; // negative-octave sign
+    }
+    while b.get(i).is_some_and(u8::is_ascii_digit) {
+        i += 1; // octave digits
+    }
+    while b.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1; // whitespace before separator
+    }
+    if b.get(i) == Some(&b'-') {
+        Some((&s[..i], &s[i + 1..]))
+    } else {
+        None
+    }
+}
+
+/// Format a note range as a string `parse_range` accepts, preserving
+/// open-ended forms: (0, hi) → "-B3", (lo, 127) → "C4-", else "C0-B3".
+pub fn format_range((low, high): (u8, u8)) -> String {
+    match (low, high) {
+        (0, hi) => format!("-{}", note_name(hi)),
+        (lo, 127) => format!("{}-", note_name(lo)),
+        (lo, hi) => format!("{}-{}", note_name(lo), note_name(hi)),
+    }
 }
 
 /// Parse a raw pattern from TOML into a PatternConfig.
@@ -761,9 +801,7 @@ pub fn save(
                     pitch_bend_range,
                     remap,
                     modulators,
-                    range: slot
-                        .range
-                        .map(|(lo, hi)| format!("{}-{}", note_name(lo), note_name(hi))),
+                    range: slot.range.map(format_range),
                     transpose: slot.transpose,
                     effects: slot
                         .effects
@@ -893,6 +931,27 @@ mod tests {
         assert!(parse_range("C4-B3-C5").is_err());
         // Both bounds omitted is not a range.
         assert!(parse_range("-").is_err());
+    }
+
+    #[test]
+    fn parse_range_negative_octave() {
+        // A '-' that is part of an octave -1 note name is not the separator.
+        assert_eq!(parse_range("C-1-B3").unwrap(), (0, 59));
+        assert_eq!(parse_range("D-1-B-1").unwrap(), (2, 11));
+        assert_eq!(parse_range("B-1-").unwrap(), (11, 127));
+        assert_eq!(parse_range("-C-1").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn format_range_round_trips() {
+        // Open-ended forms are preserved on save.
+        assert_eq!(format_range((0, 59)), "-B3");
+        assert_eq!(format_range((60, 127)), "C4-");
+        assert_eq!(format_range((12, 59)), "C0-B3");
+        // Bounds in octave -1 survive a save/load cycle.
+        for range in [(0, 59), (2, 11), (60, 127), (0, 127), (12, 59)] {
+            assert_eq!(parse_range(&format_range(range)).unwrap(), range);
+        }
     }
 
     #[test]
