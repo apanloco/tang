@@ -114,9 +114,12 @@ plugin = "builtin:sine"
 
 - `[[instrument]]` — one or more instruments
   - `plugin` — plugin path or URI (required)
-  - `range` — note range like `"C0-B3"` (optional, omit for full range)
+  - `range` — note range like `"C0-B3"` (optional, omit for full range).
+    Either bound may be omitted for an open-ended range: `"C4-"` means C4 and
+    up, `"-B3"` means everything up to and including B3.
   - `preset` — preset name to load (optional)
-  - `volume` — host-side output gain, applied before effects (default: 1.0, uncapped)
+  - `volume` — host-side output gain, applied before effects (default: 1.0,
+    uncapped in the TOML; the in-TUI editor (`v`) caps at 4.0)
   - `params` — parameter overrides applied after preset (optional)
   - `[[instrument.effect]]` — zero or more effects in series
   - `[[instrument.modulator]]` — zero or more modulators (LFO or ADSR envelope)
@@ -386,9 +389,13 @@ position within its min–max range. The numeric value is shown on the right.
 | `Down` / `Up` | Move selection in focused pane |
 | `PageDown` / `PageUp` | Jump selection by a page |
 | `Shift+Down` / `Shift+Up` | Move selected effect down/up (reorder, focus follows) |
+| `n` | Add a new instrument (defaults to `builtin:sine`, opens the plugin selector to replace it; full range until set with `R`) |
 | `i` | Replace instrument (opens instrument selector popup) |
-| `a` | Add effect (opens effect selector popup) |
+| `R` | Set the selected instrument's key range (opens range popup, prefilled) |
+| `v` | Set the selected instrument's output volume (host-side gain, opens value popup) |
+| `a` | Add effect (opens effect selector popup). New effects default to 0.5 mix (half-wet) |
 | `m` | Add modulator to current instrument |
+| `x` | Set the selected effect's dry/wet mix (host-side blend, opens value popup) |
 | `d` | Delete selected instrument/effect/modulator/pattern (no confirmation) |
 | `t` | Add modulation target (when modulator selected, opens target selector) |
 | `Enter` | Focus parameter list / open value editor on selected parameter |
@@ -399,7 +406,8 @@ position within its min–max range. The numeric value is shown on the right.
 | `/` | Filter parameter list by name |
 | `r` | Record/stop pattern for current instrument |
 | `b` | Set global BPM (opens value entry popup) |
-| `Ctrl+S` | Save session |
+| `Ctrl+S` | Save session (to the file it was loaded from) |
+| `Ctrl+Shift+S` | Save session as (prompts for filename, saves in the current session's directory) |
 
 Mouse: click to select, drag a parameter bar to set its value, drag the
 parameter scrollbar to scroll. Mouse wheel scrolls the parameter list and the
@@ -410,8 +418,6 @@ TODO: `e` shortcut to open the value entry popup directly (currently use
 `Enter` from chain focus or land on a param and press `Enter`).
 TODO: `Ctrl+R` shortcut to clear a pattern (currently select the pattern
 node and press `d`).
-TODO: `Ctrl+Shift+S` save-as (prompts for filename, saves to same directory
-as current session).
 
 ### Plugin selector popup
 
@@ -439,11 +445,38 @@ Opened by `p` on the Session tab.
 
 ### Value entry popup
 
-Opened by `Enter` on a selected parameter (and also used for `b` BPM entry).
+Opened by `Enter` on a selected parameter (and also used for `b` BPM entry,
+`x` effect mix entry, and `v` instrument volume entry).
 
 - Shows parameter name, current value, and valid range
 - Text input for entering a numeric value
 - `Enter` — accept value and close popup
+- `Escape` — cancel and close popup
+
+### Range entry popup
+
+Opened by `R` to set the selected instrument's key range. Titled "Set Range"
+and prefilled with the current range.
+
+- Text input for a note range like `C0-B3`. Either bound may be omitted:
+  `C4-` (C4 and up), `-B3` (up to B3), or empty (full range)
+- `Enter` — accept and close popup (kept open on parse error)
+- `Escape` — cancel and close popup
+
+To build a split: press `n` to add a new instrument (this adds a full-range
+lane defaulting to `builtin:sine` and opens the plugin selector to replace it —
+cancelling the selector leaves the sine in place), then press `R` to set that
+lane's key range. Repeat for each split zone.
+
+### Save As popup
+
+Opened by `Ctrl+Shift+S`. Titled "Save As" and prefilled with the current
+session's filename.
+
+- Text input for a filename. `.toml` is appended if missing. The file is saved
+  in the current session's directory (cwd if there is no current session).
+- `Enter` — save and close; `session_path` is updated so subsequent `Ctrl+S`
+  targets the new file (kept open if the field is empty)
 - `Escape` — cancel and close popup
 
 ### Modulation target selector popup

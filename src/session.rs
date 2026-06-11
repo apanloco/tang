@@ -279,13 +279,25 @@ pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
 }
 
 /// Parse a note range string like "C0-B3" into (low, high) MIDI note numbers (inclusive).
+/// Parse a note range like "C0-B3". Either bound may be omitted for an
+/// open-ended range: "C4-" means C4 and up (to MIDI 127), "-C4" means up to and
+/// including C4 (from MIDI 0).
 pub fn parse_range(s: &str) -> anyhow::Result<(u8, u8)> {
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 2 {
-        anyhow::bail!("invalid range format '{}', expected 'NOTE-NOTE' (e.g. 'C0-B3')", s);
+        anyhow::bail!(
+            "invalid range format '{}', expected 'NOTE-NOTE' (e.g. 'C0-B3'); \
+             open-ended 'C4-' or '-C4' are also allowed",
+            s
+        );
     }
-    let low = parse_note_name(parts[0])?;
-    let high = parse_note_name(parts[1])?;
+    let low_str = parts[0].trim();
+    let high_str = parts[1].trim();
+    if low_str.is_empty() && high_str.is_empty() {
+        anyhow::bail!("invalid range '{}': at least one bound is required", s);
+    }
+    let low = if low_str.is_empty() { 0 } else { parse_note_name(low_str)? };
+    let high = if high_str.is_empty() { 127 } else { parse_note_name(high_str)? };
     if low > high {
         anyhow::bail!("range '{}' has low ({}) > high ({})", s, low, high);
     }
@@ -864,9 +876,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_range_open_high() {
+        // "C4-" means C4 and up, to the top of the MIDI range.
+        assert_eq!(parse_range("C4-").unwrap(), (60, 127));
+    }
+
+    #[test]
+    fn parse_range_open_low() {
+        // "-B3" means everything up to and including B3.
+        assert_eq!(parse_range("-B3").unwrap(), (0, 59));
+    }
+
+    #[test]
     fn parse_range_invalid_format() {
         assert!(parse_range("C4").is_err());
         assert!(parse_range("C4-B3-C5").is_err());
+        // Both bounds omitted is not a range.
+        assert!(parse_range("-").is_err());
     }
 
     #[test]

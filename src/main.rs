@@ -752,9 +752,14 @@ fn run_session(
             .as_ref()
             .map(|p| (p.pitch_bend_range, p.remap.clone()))
             .unwrap_or((2.0, Default::default()));
+        let volume = inst_config
+            .instrument
+            .as_ref()
+            .map_or(1.0, |p| p.volume as f32);
         loaded_instruments.push(tui::LoadedInstrument {
             range: inst_config.range,
             transpose: inst_config.transpose,
+            volume,
             instrument: loaded_instrument,
             effects: loaded_effects,
             pattern: loaded_pattern,

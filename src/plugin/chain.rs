@@ -650,7 +650,6 @@ pub enum GraphCommand {
         value: f32,
     },
     /// Set the host-side dry/wet mix on an effect. slot 1..N = effects.
-    #[expect(dead_code)]
     SetMix {
         inst: usize,
         slot: usize,
@@ -668,7 +667,6 @@ pub enum GraphCommand {
         value: f32,
     },
     /// Set the note range for an instrument lane. None = full range.
-    #[expect(dead_code)]
     SetInstrumentRange {
         inst: usize,
         range: Option<(u8, u8)>,

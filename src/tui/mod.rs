@@ -35,6 +35,10 @@ use crate::scale::{ScaleSetting, NOTE_NAMES};
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
 const TAB_SEP: &str = " │ ";
 
+/// Default dry/wet mix for a newly added effect. Half-wet matches the common
+/// DAW default for inserted effects.
+const DEFAULT_EFFECT_MIX: f32 = 0.5;
+
 // ---------------------------------------------------------------------------
 // Plugin slot — main-thread mirror of what the audio thread has
 // ---------------------------------------------------------------------------
@@ -93,6 +97,8 @@ struct PatternState {
 struct InstrumentNode {
     range: Option<(u8, u8)>,
     transpose: i8,
+    /// Host-side output gain, applied before effects (1.0 = unity).
+    volume: f32,
     instrument: Option<PluginSlot>,
     effects: Vec<PluginSlot>,
     pattern: Option<PatternState>,
@@ -180,15 +186,20 @@ struct TreeEntry {
 fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> {
     match addr {
         Some(TreeAddress::Instrument(_)) => vec![
+            ("n", "new instr"),
             ("i", "instrument"),
+            ("R", "range"),
+            ("v", "volume"),
             ("a", "add effect"),
             ("m", "modulate"),
             ("d", "delete"),
             ("p", "presets"),
         ],
         Some(TreeAddress::Effect { .. }) => vec![
+            ("n", "new instr"),
             ("a", "add effect"),
             ("m", "modulate"),
+            ("x", "mix"),
             ("d", "delete"),
             ("p", "presets"),
         ],
@@ -200,7 +211,7 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
             ("t", "add target"),
             ("d", "delete"),
         ],
-        None => vec![],
+        None => vec![("n", "new instr")],
     }
 }
 
@@ -225,6 +236,22 @@ struct EditState {
     param_name: String,
     param_min: f32,
     param_max: f32,
+}
+
+/// Which host-side gain a `GainEditState` is editing.
+enum GainTarget {
+    /// Dry/wet mix of the effect at `effects[index]`.
+    Mix { index: usize },
+    /// Instrument output volume (applied before effects).
+    Volume,
+}
+
+/// Editing a host-side gain (effect mix or instrument volume) via the value
+/// popup. These live outside the plugin parameter list.
+struct GainEditState {
+    inst: usize,
+    target: GainTarget,
+    edit: EditState,
 }
 
 /// One entry in the target selector popup.
@@ -256,6 +283,13 @@ struct PresetSelectorState {
 }
 
 struct RangeEditState {
+    /// The instrument whose key range is being edited.
+    inst: usize,
+    input: TextInputState,
+}
+
+/// State for the "save as" filename popup.
+struct SaveAsState {
     input: TextInputState,
 }
 
@@ -316,6 +350,8 @@ struct State {
     // Pattern state.
     global_bpm: f32,
     bpm_editing: Option<EditState>,
+    gain_editing: Option<GainEditState>,
+    save_as: Option<SaveAsState>,
     pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
     // Piano tab state.
     held: Arc<HeldNotes>,
@@ -568,6 +604,61 @@ impl State {
         });
     }
 
+    /// Load `source` and build its session-model `PluginSlot`. Returns the
+    /// live plugin (to hand to the audio thread) alongside the slot, or None
+    /// on load failure.
+    fn load_plugin_slot(&self, source: &str) -> Option<(Box<dyn plugin::Plugin>, PluginSlot)> {
+        let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to load plugin '{source}': {e}");
+                return None;
+            }
+        };
+        let params: Vec<ParamSlot> = loaded
+            .parameters()
+            .into_iter()
+            .filter(|p| !p.name.starts_with("(locked)"))
+            .map(|p| ParamSlot {
+                name: p.name,
+                index: p.index,
+                min: p.min,
+                max: p.max,
+                default: p.default,
+                value: p.default,
+                kind: ParamKind::Float,
+            })
+            .collect();
+        let presets = loaded.presets();
+        let slot = PluginSlot {
+            name: loaded.name().to_string(),
+            format: format_from_id(source),
+            id: source.to_string(),
+            is_instrument: loaded.is_instrument(),
+            params,
+            modulators: vec![],
+            presets,
+            current_preset: None,
+            mix: 1.0,
+        };
+        Some((loaded, slot))
+    }
+
+    /// Install `loaded`/`slot` as the instrument plugin for lane `inst`, on
+    /// both the audio thread and the session model.
+    fn set_instrument(&mut self, inst: usize, loaded: Box<dyn plugin::Plugin>, slot: PluginSlot) {
+        let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
+        let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
+            inst,
+            instrument: loaded,
+            inst_buf,
+            remapper: None,
+        });
+        if let Some(inst_node) = self.instruments.get_mut(inst) {
+            inst_node.instrument = Some(slot);
+        }
+    }
+
     fn confirm_selector(&mut self) {
         let sel = match self.selector.take() {
             Some(s) => s,
@@ -586,67 +677,27 @@ impl State {
         let inst = self.selected_inst().unwrap_or(0);
 
         // Load the real plugin.
-        let source = &entry.id;
+        let source = entry.id.clone();
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
-        let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to load plugin '{}': {e}", entry.name);
-                return;
-            }
-        };
-
-        let params: Vec<ParamSlot> = loaded
-            .parameters()
-            .into_iter()
-            .filter(|p| !p.name.starts_with("(locked)"))
-            .map(|p| ParamSlot {
-                name: p.name,
-                index: p.index,
-                min: p.min,
-                max: p.max,
-                default: p.default,
-                value: p.default,
-                kind: ParamKind::Float,
-            })
-            .collect();
-        let presets = loaded.presets();
-
-        let slot = PluginSlot {
-            name: loaded.name().to_string(),
-            format: format_from_id(source),
-            id: source.to_string(),
-            is_instrument: loaded.is_instrument(),
-            params,
-            modulators: vec![],
-            presets,
-            current_preset: None,
-            mix: 1.0,
+        let (loaded, slot) = match self.load_plugin_slot(&source) {
+            Some(x) => x,
+            None => return,
         };
 
         match sel.mode {
             SelectorMode::Instrument => {
-                let inst_buf = (0..loaded.audio_output_count())
-                    .map(|_| Vec::new())
-                    .collect();
-                let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
-                    inst,
-                    instrument: loaded,
-                    inst_buf,
-                    remapper: None,
-                });
-                if let Some(inst_node) = self.instruments.get_mut(inst) {
-                    inst_node.instrument = Some(slot);
-                }
+                self.set_instrument(inst, loaded, slot);
             }
             SelectorMode::Effect => {
+                let mut slot = slot;
+                slot.mix = DEFAULT_EFFECT_MIX;
                 if let Some(inst_node) = self.instruments.get_mut(inst) {
                     let insert_at = inst_node.effects.len();
                     let _ = self.cmd_tx.send(GraphCommand::InsertEffect {
                         inst,
                         index: insert_at,
                         effect: loaded,
-                        mix: 1.0,
+                        mix: DEFAULT_EFFECT_MIX as f64,
                     });
                     inst_node.effects.push(slot);
                 }
@@ -1349,7 +1400,7 @@ impl State {
                 instrument: sp.instrument.as_ref().map(|inst| {
                     crate::session::SaveInstrument {
                         plugin: inst.id.clone(),
-                        volume: 1.0, // TODO: track volume in PluginSlot
+                        volume: sp.volume,
                         preset: inst.current_preset.clone(),
                         params: inst
                             .params
@@ -1413,6 +1464,8 @@ impl State {
 pub struct LoadedInstrument {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
+    /// Host-side output gain from the session (1.0 = unity).
+    pub volume: f32,
     pub instrument: Option<LoadedPlugin>,
     pub effects: Vec<LoadedPlugin>,
     pub pattern: Option<LoadedPattern>,
@@ -1511,6 +1564,7 @@ pub fn run(
             InstrumentNode {
                 range: li.range,
                 transpose: li.transpose,
+                volume: li.volume,
                 instrument,
                 effects,
                 pattern,
@@ -1606,6 +1660,8 @@ pub fn run(
         max_block_size,
         global_bpm: initial_bpm,
         bpm_editing: None,
+        gain_editing: None,
+        save_as: None,
         pattern_rx,
         held,
         piano_filter,
@@ -1699,6 +1755,10 @@ fn process_event(s: &mut State, ev: Event) {
                 handle_scale_selector_key(s, key.code);
             } else if s.bpm_editing.is_some() {
                 handle_bpm_edit_key(s, key.code);
+            } else if s.gain_editing.is_some() {
+                handle_gain_edit_key(s, key.code);
+            } else if s.save_as.is_some() {
+                handle_save_as_key(s, key.code);
             } else if s.editing.is_some() {
                 handle_edit_key(s, key.code);
             } else if s.range_edit.is_some() {
@@ -1717,6 +1777,8 @@ fn process_event(s: &mut State, ev: Event) {
                 || s.editing.is_some()
                 || s.range_edit.is_some()
                 || s.bpm_editing.is_some()
+                || s.gain_editing.is_some()
+                || s.save_as.is_some()
             {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                     s.selector = None;
@@ -1726,6 +1788,8 @@ fn process_event(s: &mut State, ev: Event) {
                     s.editing = None;
                     s.range_edit = None;
                     s.bpm_editing = None;
+                    s.gain_editing = None;
+                    s.save_as = None;
                 }
                 return;
             }
@@ -1862,6 +1926,7 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Esc => s.range_edit = None,
         KeyCode::Enter => {
             let input = re.input.value.trim().to_string();
+            let inst = re.inst;
             let range = if input.is_empty() {
                 None
             } else {
@@ -1870,16 +1935,12 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
                     Err(_) => return, // keep popup open on parse error
                 }
             };
-            let _ = s.cmd_tx.send(GraphCommand::AddInstrument { range });
-            s.instruments.push(InstrumentNode {
-                range,
-                transpose: 0,
-                instrument: None,
-                effects: vec![],
-                pattern: None,
-                pitch_bend_range: 2.0,
-                remap: Default::default(),
-            });
+            let _ = s
+                .cmd_tx
+                .send(GraphCommand::SetInstrumentRange { inst, range });
+            if let Some(node) = s.instruments.get_mut(inst) {
+                node.range = range;
+            }
             s.dirty = true;
             s.rebuild_tree();
             s.range_edit = None;
@@ -1920,6 +1981,85 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Home => edit.input.home(),
         KeyCode::End => edit.input.end(),
         KeyCode::Char(ch) => edit.input.insert(ch),
+        _ => {}
+    }
+}
+
+fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
+    let ge = s.gain_editing.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.gain_editing = None,
+        KeyCode::Enter => {
+            if let Ok(val) = ge.edit.input.value.trim().parse::<f32>() {
+                let value = val.clamp(ge.edit.param_min, ge.edit.param_max);
+                let inst = ge.inst;
+                match ge.target {
+                    GainTarget::Mix { index } => {
+                        // Audio slot: 0 = instrument, 1..N = effects.
+                        let _ = s.cmd_tx.send(GraphCommand::SetMix {
+                            inst,
+                            slot: index + 1,
+                            value,
+                        });
+                        if let Some(fx) =
+                            s.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(index))
+                        {
+                            fx.mix = value;
+                        }
+                    }
+                    GainTarget::Volume => {
+                        let _ = s.cmd_tx.send(GraphCommand::SetVolume { inst, value });
+                        if let Some(node) = s.instruments.get_mut(inst) {
+                            node.volume = value;
+                        }
+                    }
+                }
+                s.dirty = true;
+            }
+            s.gain_editing = None;
+        }
+        KeyCode::Backspace => ge.edit.input.backspace(),
+        KeyCode::Delete => ge.edit.input.delete(),
+        KeyCode::Left => ge.edit.input.move_left(),
+        KeyCode::Right => ge.edit.input.move_right(),
+        KeyCode::Home => ge.edit.input.home(),
+        KeyCode::End => ge.edit.input.end(),
+        KeyCode::Char(ch) => ge.edit.input.insert(ch),
+        _ => {}
+    }
+}
+
+fn handle_save_as_key(s: &mut State, code: KeyCode) {
+    let sa = s.save_as.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.save_as = None,
+        KeyCode::Enter => {
+            let mut name = sa.input.value.trim().to_string();
+            if name.is_empty() {
+                return; // keep popup open until a name is given
+            }
+            if !name.ends_with(".toml") {
+                name.push_str(".toml");
+            }
+            // Save into the current session's directory (fallback: cwd).
+            let dir = s
+                .session_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            s.session_path = Some(dir.join(name));
+            s.save_as = None;
+            // Subsequent Ctrl+S now targets the new file.
+            s.save_session();
+        }
+        KeyCode::Backspace => sa.input.backspace(),
+        KeyCode::Delete => sa.input.delete(),
+        KeyCode::Left => sa.input.move_left(),
+        KeyCode::Right => sa.input.move_right(),
+        KeyCode::Home => sa.input.home(),
+        KeyCode::End => sa.input.end(),
+        KeyCode::Char(ch) => sa.input.insert(ch),
         _ => {}
     }
 }
@@ -1967,6 +2107,21 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         {
             s.quit = true;
         }
+        // Ctrl+Shift+S — save as (filename popup). Checked before plain Ctrl+S.
+        KeyCode::Char('s' | 'S')
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            let current = s
+                .session_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            s.save_as = Some(SaveAsState {
+                input: TextInputState::new(&current),
+            });
+        }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
             s.save_session();
         }
@@ -2001,6 +2156,55 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('i') if s.active_tab == 0 && !s.focus_params => {
             if let Some(TreeAddress::Instrument(_)) = s.selected_address().copied() {
                 s.open_selector(SelectorMode::Instrument);
+            }
+        }
+
+        // 'n' — add a new instrument lane (full range) and immediately open the
+        // plugin selector to fill it. The lane defaults to builtin:sine, so it
+        // makes sound even if the selector is dismissed without a pick. Set its
+        // key range afterwards with 'R'. This is how you build a keyboard split.
+        KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
+            let new_idx = s.instruments.len();
+            let _ = s.cmd_tx.send(GraphCommand::AddInstrument { range: None });
+            s.instruments.push(InstrumentNode {
+                range: None,
+                transpose: 0,
+                volume: 1.0,
+                instrument: None,
+                effects: vec![],
+                pattern: None,
+                pitch_bend_range: 2.0,
+                remap: Default::default(),
+            });
+            // Default the new lane to builtin:sine so it isn't silent if the
+            // selector is cancelled.
+            if let Some((loaded, slot)) = s.load_plugin_slot("builtin:sine") {
+                s.set_instrument(new_idx, loaded, slot);
+            }
+            s.dirty = true;
+            s.rebuild_tree();
+            // Move the cursor onto the new lane so the selector fills it.
+            if let Some(pos) = s.tree_entries.iter().position(
+                |e| matches!(e.address, TreeAddress::Instrument(i) if i == new_idx),
+            ) {
+                s.chain_state.selected = pos;
+                s.sync_param_state();
+            }
+            s.open_selector(SelectorMode::Instrument);
+        }
+
+        // 'R' — set the key range of the selected instrument.
+        KeyCode::Char('R') if s.active_tab == 0 && !s.focus_params => {
+            if let Some(inst) = s.selected_inst() {
+                let initial = s
+                    .instruments
+                    .get(inst)
+                    .and_then(|n| n.range)
+                    .map(format_range)
+                    .unwrap_or_default();
+                let mut input = TextInputState::new(&initial);
+                input.end();
+                s.range_edit = Some(RangeEditState { inst, input });
             }
         }
 
@@ -2130,6 +2334,45 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 param_min: 20.0,
                 param_max: 300.0,
             });
+        }
+
+        // 'x' — edit the dry/wet mix of the selected effect (host-side blend).
+        KeyCode::Char('x') if s.active_tab == 0 && !s.focus_params => {
+            if let Some(TreeAddress::Effect { inst, index }) = s.selected_address().copied() {
+                let mix = s
+                    .instruments
+                    .get(inst)
+                    .and_then(|n| n.effects.get(index))
+                    .map_or(1.0, |fx| fx.mix);
+                s.gain_editing = Some(GainEditState {
+                    inst,
+                    target: GainTarget::Mix { index },
+                    edit: EditState {
+                        input: TextInputState::new(&format!("{mix:.2}")),
+                        param_name: "mix (0=dry, 1=wet)".to_string(),
+                        param_min: 0.0,
+                        param_max: 1.0,
+                    },
+                });
+            }
+        }
+
+        // 'v' — edit the output volume of the selected instrument (host-side
+        // gain, applied before effects). UI range 0–4; TOML is uncapped.
+        KeyCode::Char('v') if s.active_tab == 0 && !s.focus_params => {
+            if let Some(inst) = s.selected_inst() {
+                let volume = s.instruments.get(inst).map_or(1.0, |n| n.volume);
+                s.gain_editing = Some(GainEditState {
+                    inst,
+                    target: GainTarget::Volume,
+                    edit: EditState {
+                        input: TextInputState::new(&format!("{volume:.2}")),
+                        param_name: "volume (1.0 = unity)".to_string(),
+                        param_min: 0.0,
+                        param_max: 4.0,
+                    },
+                });
+            }
         }
 
         KeyCode::Char('d') if s.active_tab == 0 && !s.focus_params => {
@@ -2699,6 +2942,12 @@ fn render(
                 if let Some(edit) = &s.bpm_editing {
                     render_edit_popup(frame, area, edit);
                 }
+                if let Some(ge) = &s.gain_editing {
+                    render_edit_popup(frame, area, &ge.edit);
+                }
+                if let Some(sa) = &s.save_as {
+                    render_save_as_popup(frame, area, sa);
+                }
             }
             1 => {
                 render_piano_tab(frame, content_area, s);
@@ -3182,18 +3431,41 @@ fn render_range_edit_popup(frame: &mut ratatui::Frame, area: Rect, re: &RangeEdi
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
-        .title(" Add Split ");
+        .title(" Set Range ");
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     if inner.height >= 2 {
         frame.render_widget(
-            Paragraph::new("Range (e.g. C0-B3), empty=all")
+            Paragraph::new("C0-B3 / C4- / -B3 / empty=all")
                 .style(Style::default().fg(Color::DarkGray)),
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
         frame.render_widget(
             TextInput::new(&re.input),
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        );
+    }
+}
+
+fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState) {
+    let popup = centered_rect(44, 5, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Save As ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height >= 2 {
+        frame.render_widget(
+            Paragraph::new("Filename (saved in session dir; .toml added)")
+                .style(Style::default().fg(Color::DarkGray)),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        frame.render_widget(
+            TextInput::new(&sa.input),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
     }
@@ -3772,16 +4044,21 @@ fn build_help_lines() -> Vec<String> {
         "  Tab        Next tab".into(),
         "  Shift+Tab  Previous tab".into(),
         "  Ctrl+S     Save session".into(),
+        "  Ctrl+Shift+S  Save session as (new filename)".into(),
         "  Ctrl+Q     Quit".into(),
         "".into(),
         "Session tab (chain focus):".into(),
         "  Up/Down    Navigate chain".into(),
         "  Shift+↑/↓  Move effect up/down".into(),
         "  Enter      Focus parameter list".into(),
+        "  n          Add instrument (split); defaults to sine".into(),
         "  i          Replace instrument".into(),
+        "  R          Set instrument key range".into(),
+        "  v          Set instrument volume".into(),
         "  a          Add effect after selected".into(),
         "  d          Delete selected".into(),
         "  m          Add modulator".into(),
+        "  x          Set effect dry/wet mix".into(),
         "  r          Record/stop pattern".into(),
         "  Ctrl+R     Clear pattern".into(),
         "  b          Set BPM".into(),
