@@ -1,5 +1,19 @@
 use clap::{Parser, Subcommand};
 
+/// Default audio buffer size in frames.
+///
+/// On Linux, audio goes through PipeWire's JACK bridge, which runs every client
+/// on one driver graph at a single global quantum equal to the *smallest* latency
+/// any active client requests. A small buffer here would drag the whole system's
+/// quantum down and make other apps (YouTube, etc.) chop. 1024 matches PipeWire's
+/// typical default global quantum, so Tang doesn't disturb anything else; pass
+/// `--buffer-size` to opt into lower latency. macOS (CoreAudio) and Windows
+/// (WASAPI) don't share a global quantum, so they keep a low-latency default.
+#[cfg(target_os = "linux")]
+pub const DEFAULT_BUFFER_SIZE: &str = "1024";
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_BUFFER_SIZE: &str = "256";
+
 #[derive(Parser)]
 #[command(name = "tang", about = "Minimal CLI LV2/CLAP instrument host")]
 pub struct Cli {
@@ -15,7 +29,7 @@ pub struct Cli {
     pub midi_device: Option<String>,
 
     /// Audio buffer size in frames
-    #[arg(long, default_value = "256")]
+    #[arg(long, default_value = DEFAULT_BUFFER_SIZE)]
     pub buffer_size: u32,
 
     /// Sample rate in Hz

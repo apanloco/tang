@@ -28,7 +28,7 @@ These flags apply to both the TUI and the `play` subcommand:
 |------|---------|--------|
 | `--midi-device <name>` | all inputs | Open only the named MIDI input |
 | `--audio-device <name>` | system default | Use the named audio output |
-| `--buffer-size <frames>` | 256 | Audio buffer size in frames |
+| `--buffer-size <frames>` | 1024 (Linux), 256 (macOS/Windows) | Audio buffer size in frames |
 | `--sample-rate <hz>` | 48000 | Sample rate |
 
 The `play` subcommand takes the session path as a required positional argument.
