@@ -33,7 +33,7 @@ These flags apply to both the TUI and the `play` subcommand:
 
 The `play` subcommand takes the session path as a required positional argument.
 When launched without a session path, the TUI starts an in-memory default
-session (`builtin:sine` as the instrument, no effects) targeting a fresh
+session (`builtin:osc` as the instrument, no effects) targeting a fresh
 timestamped file `~/.config/tang/sessions/session-<id>.toml`. Nothing is
 written to disk until the first `Ctrl+S`.
 
@@ -83,7 +83,7 @@ A plugin can be specified using:
 - `lv2:<uri>`: LV2 lookup by URI (lv2: prefix OPTIONAL)
 - `clap:<id>`: CLAP lookup by plugin ID (clap: prefix OPTIONAL)
 - `vst3:<name>`: VST3 lookup by name (case-insensitive)
-- `builtin:<name>`: built-in plugin (e.g. `builtin:sine`)
+- `builtin:<name>`: built-in plugin (e.g. `builtin:osc`)
 
 ### Instrument format
 
@@ -105,14 +105,14 @@ plugin = "./reverb.lv2"
 mix = 0.5
 
 [[instrument]]
-plugin = "builtin:sine"
+plugin = "builtin:osc"
 range = "C4-C8"
 ```
 
 Simple case (one instrument, full range, no effects):
 ```toml
 [[instrument]]
-plugin = "builtin:sine"
+plugin = "builtin:osc"
 ```
 
 - `[[instrument]]` — one or more instruments
@@ -123,9 +123,95 @@ plugin = "builtin:sine"
   - `preset` — preset name to load (optional)
   - `volume` — host-side output gain, applied before effects (default: 1.0,
     uncapped in the TOML; the in-TUI editor (`v`) caps at 4.0)
+  - `transpose` — shift incoming notes by this many semitones (default: 0,
+    config-file only — shown in the chain tree but not editable in the TUI)
   - `params` — parameter overrides applied after preset (optional)
+  - `group` — submix group membership: index into the top-level `[[group]]`
+    list (optional, omit for ungrouped)
   - `[[instrument.effect]]` — zero or more effects in series
   - `[[instrument.modulator]]` — zero or more modulators (LFO or ADSR envelope)
+
+### Group format
+
+Optional submix groups. A group sums its member instruments (those whose
+`group` index points at it), runs its own end-of-chain effect chain and output
+volume on that sum, then adds the result to the master mix.
+
+```toml
+[[group]]
+name = "Pad"            # optional display name (default: "Group N")
+volume = 0.8            # group bus output gain (default: 1.0)
+
+[[group.effect]]        # zero or more bus effects, in series
+plugin = "builtin:reverb"
+mix = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0               # this instrument feeds group 0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0               # ...and so does this one
+```
+
+- `name` — display name (optional)
+- `volume` — group bus output gain, applied to the member sum before the group
+  effects (default: 1.0)
+- `[[group.effect]]` — zero or more bus effects in series (each with `mix`)
+- `[[group.modulator]]` — zero or more group-scoped modulators (see below)
+- Membership is set on the instruments via their `group` index, not listed on
+  the group. Groups are one level deep (no nested groups).
+
+#### Group modulators
+
+A group can own modulators that drive parameters anywhere in the group's
+world: any **member instrument's** chain, the group's own **bus effects**, or
+**sibling group modulators**. They are the group-scoped analogue of the
+lane-scoped instrument modulators (same LFO/envelope sources and cross-mod;
+see "Modulator fields" below) — they just address a wider target set.
+
+```toml
+[[group.modulator]]
+type = "lfo"            # or "envelope" — same fields as instrument modulators
+rate = 0.5
+
+# Target a member instrument's parameter. `member` is the member's ordinal
+# within the group (0 = the first member in instrument-list order); `slot` is
+# 0 = that instrument (default), 1..N = its effects.
+[[group.modulator.target]]
+member = 0
+slot = 0
+param = "cutoff"
+depth = 0.5
+
+# Target one of the group's own bus effects (`bus` = bus-effect index).
+[[group.modulator.target]]
+bus = 0
+param = "mix"
+depth = 0.25
+
+# Cross-mod a sibling group modulator (mod_rate / mod_depth / mod_attack /
+# mod_decay / mod_sustain / mod_release — same as lane cross-mod).
+[[group.modulator.target]]
+mod_rate = 1
+depth = 0.3
+```
+
+- `member` + `param` (+ optional `slot`) → a member instrument's parameter.
+- `bus` + `param` → a group bus-effect parameter.
+- `mod_*` → a sibling group modulator (mutually exclusive with `member`/`bus`).
+- Member ordinals are maintained as membership changes: a member leaving the
+  group drops targets that pointed at it (higher ordinals shift down); a
+  member joining bumps ordinals at/after its slot. The file stores ordinals,
+  not global lane indices, so it stays readable.
+- **Envelope trigger:** a group envelope modulator is triggered by the union
+  of its members' note ranges — it opens whenever any member would sound a
+  note.
+- **Application order:** group modulators are applied *before* the member
+  lanes render (so members read the modulated values) and before the bus
+  effects run. If a member's own lane modulator targets the same parameter, the
+  lane modulator is applied later (inside the lane) and therefore wins.
 
 ### Plugin slot fields
 
@@ -136,6 +222,7 @@ Each plugin slot has:
 
 The instrument additionally has:
 - `volume` — host-side output gain, applied before effects (default: 1.0, uncapped)
+- `transpose` — note shift in semitones (default: 0)
 
 Effects additionally have:
 - `mix` — host-side dry/wet blend, 0.0=dry 1.0=wet (default: 1.0)
@@ -144,8 +231,17 @@ Load order per plugin: load → preset → params.
 
 ### Modulator fields
 
-Modulators are block-rate sources that modulate plugin parameters or sibling
-modulator parameters within the same instrument. Two types are supported:
+Modulators are **lane-scoped** block-rate sources: one modulator belongs to an
+instrument and can drive parameters anywhere in that instrument's chain — the
+instrument itself or any of its effects — plus sibling modulators. Each target
+names the chain `slot` it lands on: `0` (default) = the instrument, `1..N` =
+the effects in order. In the TUI, modulators appear as the instrument's "mod
+rack" (magenta), and the target selector lists every parameter in the chain
+labelled by plugin (e.g. `Filter: cutoff`). Two source types are supported:
+
+(Groups can also own modulators — same source types and cross-mod, but their
+targets span the whole group: any member instrument, the group's bus effects,
+or sibling group modulators. See "Group modulators" above.)
 
 **LFO modulator** (default):
 
@@ -156,9 +252,15 @@ waveform = "sine"       # sine, triangle, saw, square (default: sine)
 rate = 0.5              # Hz (default: 1.0)
 
 [[instrument.modulator.target]]
-param = "cutoff"        # parameter name
+param = "cutoff"        # parameter name (resolved within `slot`'s plugin)
+slot = 1               # chain slot: 0 = instrument (default), 1..N = effect
 depth = 0.5             # fraction of param range, 0.0–1.0 (default: 0.5)
 ```
+
+Modulators always serialize under `[[instrument.modulator]]` (the instrument
+level), never under an effect. Older sessions that nested `[[...effect.
+modulator]]` still load: those modulators migrate into the lane with their
+targets pinned to that effect's slot.
 
 **ADSR envelope modulator** (triggered by note-on/off):
 
@@ -175,12 +277,30 @@ param = "cutoff"
 depth = 0.5
 ```
 
-Each modulator applies `base_value + depth * output * range` to its targets
-once per audio buffer. LFO output is bipolar (-1..1), envelope output is
-unipolar (0..1). The base value tracks the user's set value automatically.
+Modulators are applied once per audio buffer; the base value tracks the
+user's set value automatically. The two source types apply differently:
 
-Envelope behavior: note-on retriggers from Attack phase. Release begins when
-all held notes are released. Linear ramps for A/D/R phases.
+- **LFO** (bipolar output -1..1): `base + output * depth * range` — wobbles
+  ±depth around the user's value.
+- **Envelope** (unipolar output 0..1): `base - depth * (1 - output) *
+  (base - min)` — the user's value is the envelope's **peak**. The parameter
+  rises from below up to the base as the envelope opens; with depth 1.0 it
+  spans the full min→base distance. This is what makes an amp envelope work:
+  volume at 1.0 with an envelope at depth 1.0 gives silence→full→sustain→
+  silence. (A purely additive envelope could only push values *above* the
+  base, which on an already-maxed parameter clamps to no effect at all.)
+
+Envelope behavior: note-on retriggers from Attack phase (continuing from the
+current level — a quick retrigger does not restart from silence). Release
+begins when all held notes are released. Linear ramps for A/D/R phases.
+
+**Limitation:** a modulator envelope shapes *parameters*, not voices — it
+cannot make a note ring past the instrument's own release. Once the plugin
+stops its voice (the built-in oscillators hold notes ~12 ms past note-off by
+default), modulating a volume parameter has nothing left to attenuate. For
+amplitude envelopes on the built-in synths use their native
+`attack`/`decay`/`sustain`/`release` parameters; envelope modulators are for
+sweeping parameters (cutoff etc.) while notes are sounding.
 
 **Cross-modulation** — a modulator can target sibling modulators' parameters
 instead of (or in addition to) plugin parameters:
@@ -230,6 +350,7 @@ bpm = 120.0
 length_beats = 4.0
 base_note = "C4"
 enabled = true
+transpose = "in_key"
 
 [[instrument.pattern.events]]
 frame = 0
@@ -246,22 +367,40 @@ velocity = 0
 
 - `bpm` — tempo used for pattern timing (default: 120)
 - `length_beats` — pattern length in beats (default: 4 = 1 bar in 4/4)
-- `base_note` — reference note for transposition (set to first recorded note)
+- `base_note` — reference note for transposition (set to the lowest recorded
+  note)
 - `events` — recorded MIDI events with `frame` (sample offset), `status`
   ("on"/"off"), `note` (e.g. "C4"), and `velocity`
 - `enabled` — whether pattern playback is active
+- `looping` — whether playback loops while the key is held or plays once
+  (default: true)
+- `transpose` — `"chromatic"` (default) or `"in_key"`. Chromatic shifts every
+  note by the semitone distance from `base_note` to the trigger key,
+  preserving exact intervals. In-key shifts by **scale degrees** of the piano
+  scale (`[piano] scale`, live-updated from the scale picker), so a C-E-G
+  pattern triggered on D in C major plays D-F-A (the diatonic D minor triad)
+  instead of D-F#-A. Off-scale recorded notes keep their chromatic offset from
+  the scale tone below (passing tones survive); off-scale trigger keys snap to
+  the scale tone below. With the Chromatic scale selected, in-key degenerates
+  to plain semitone shifting.
 
 **Behavior:**
-- Press `r` on the Session tab to start recording. Play notes on the virtual
-  piano or MIDI keyboard. Recording auto-stops after `length_beats` at current
-  BPM.
+- Press `r` on the Session tab to start recording. A 4-beat metronome count-in
+  ticks first (notes played during count-in snap to frame 0), then recording
+  begins. Play notes on the virtual piano or MIDI keyboard. Recording
+  auto-stops after `length_beats` at current BPM.
 - Hold any key to play back the pattern transposed (relative to `base_note`).
   The pattern loops while the key is held and stops on release.
-- Press `r` again to overwrite with a new recording.
+- Press `r` again to overwrite with a new recording. Re-recording keeps the
+  pattern's transpose mode.
 - Press `Ctrl+R` to clear the pattern.
 - Press `b` to set the global BPM.
 - BPM is displayed in the status bar. Pattern indicators show in the chain tree:
-  `▶` = pattern exists, `⏺` = recording.
+  `▶` = pattern exists, `⏺` = recording. In-key patterns show `in-key` in the
+  tree label.
+- Selecting the pattern node shows its settings in the parameter pane:
+  Length (beats), Enabled, Loop, and Transpose (Chromatic/In Key), toggled
+  with `Left`/`Right`.
 
 ## Note remapping
 
@@ -372,17 +511,28 @@ The chain is rendered as a tree. Instruments are top-level nodes, with effects
 and modulators nested under each instrument.
 
 ```
-♪ Helm [LV2]            C0-B3
-├─ fx Reverb [LV2]
-├─ fx Compressor [LV2]
-└─ ~ LFO 0.5Hz sine → cutoff (50%), resonance (25%)
-♪ Sine [Built-in]       C4-C8
+▦ Pad  vol 0.80
+  ♪ Helm [LV2]            C0-B3
+  ├─ fx Reverb [LV2]
+  └─ ~ LFO 0.5Hz sine → Helm: cutoff (50%)
+  ♪ Oscillator [Built-in]  C4-C8
+  fx Compressor [LV2]  (bus)
+  ~ LFO 0.2Hz sine → M0 Helm: cutoff (40%), Bus: Compressor: threshold (25%)  (bus)
+♪ Bass [Built-in]
 └─ fx Delay [CLAP]
 ```
 
 Navigation is a single cursor through the flattened tree. Actions (`i`/`a`/`d`/`m`)
-operate on the instrument containing the selected node. Modulators appear in
-magenta after effects.
+operate on the instrument containing the selected node. Modulators are the
+instrument's lane "mod rack" — they appear in magenta after the effects, and a
+single modulator's targets can span the whole chain (note the example LFO
+driving the Helm instrument's cutoff), each labelled by the plugin it lands on.
+
+Groups render as a Cyan header (`▦ name  vol`) with their member instruments
+nested under them, then the group's bus effects (`(bus)`) and finally the
+group's own modulators (magenta, also tagged `(bus)`). A group modulator's
+target labels show `M<n> <plugin>: <param>` for a member instrument and
+`Bus <effect>: <param>` for a bus effect.
 
 The selected entry is highlighted. Unselected entries are dimmed.
 
@@ -400,20 +550,28 @@ Shows all parameters for the selected plugin as horizontal bars:
 The selected parameter is marked with `▸`. The bar shows the parameter's
 position within its min–max range. The numeric value is shown on the right.
 
+Plugin parameters that declare value labels (`ParameterInfo::labels`, e.g.
+the built-in filter's `type`) render as enums instead of bars — shown as
+`◂ lowpass ▸` — and step one named value at a time with `Left`/`Right`
+(or by clicking the left/right half of the row). Numeric entry is disabled
+for enum parameters. In the session file they are still stored as plain
+numeric `params` values (the index into the label list).
+
 | Key | Action |
 |-----|--------|
 | `Down` / `Up` | Move selection in focused pane |
 | `PageDown` / `PageUp` | Jump selection by a page |
 | `Shift+Down` / `Shift+Up` | Move selected effect down/up (reorder, focus follows) |
-| `n` | Add a new instrument (defaults to `builtin:sine`, opens the plugin selector to replace it; full range until set with `R`) |
+| `n` | Add a new instrument (defaults to `builtin:osc`, opens the plugin selector to replace it; full range until set with `R`) |
 | `i` | Replace instrument (opens instrument selector popup) |
 | `R` | Set the selected instrument's key range (opens range popup, prefilled) |
-| `v` | Set the selected instrument's output volume (host-side gain, opens value popup) |
-| `a` | Add effect (opens effect selector popup). New effects default to 0.5 mix (half-wet) |
-| `m` | Add modulator to current instrument |
-| `x` | Set the selected effect's dry/wet mix (host-side blend, opens value popup) |
-| `d` | Delete selected instrument/effect/modulator/pattern (no confirmation) |
-| `t` | Add modulation target (when modulator selected, opens target selector) |
+| `v` | Set the output volume of the selected instrument or group (host-side gain, opens value popup) |
+| `a` | Add effect to the selected instrument, or — on a group/group-effect node — to the group's bus chain (opens effect selector popup). New effects default to 0.5 mix (half-wet); `builtin:filter` defaults to 1.0 (fully wet, since a half-wet filter barely filters) |
+| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO/envelope) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator) |
+| `x` | Set the dry/wet mix of the selected effect or group bus effect (host-side blend, opens value popup) |
+| `g` | Assign the selected instrument to a submix group (new / existing / ungroup, opens popup) |
+| `d` | Delete selected instrument/effect/modulator/pattern/group/group-effect/group-modulator (no confirmation; deleting a group ungroups its members) |
+| `t` | Add modulation target (when a lane **or** group modulator is selected, opens the target selector; a group modulator's selector lists every member instrument's params, the group's bus effects, and sibling group modulators) |
 | `Enter` | Focus parameter list / open value editor on selected parameter |
 | `Esc` | Back to chain focus / close popup |
 | `Left` / `Right` | Decrease / increase selected parameter |
@@ -486,9 +644,9 @@ and prefilled with the current range.
 - `Escape` — cancel and close popup
 
 To build a split: press `n` to add a new instrument (this adds a full-range
-lane defaulting to `builtin:sine` and opens the plugin selector to replace it —
-cancelling the selector leaves the sine in place), then press `R` to set that
-lane's key range. Repeat for each split zone.
+lane defaulting to `builtin:osc` and opens the plugin selector to replace it —
+cancelling the selector leaves the oscillator in place), then press `R` to set
+that lane's key range. Repeat for each split zone.
 
 ### Save As popup
 
@@ -509,12 +667,33 @@ for Ctrl+letter chords and `Ctrl+Shift+S` performs a plain save instead.
 
 ### Modulation target selector popup
 
-Opened by `t` when a modulator is selected. Lists candidate targets for the
-modulator (plugin parameters and sibling modulator parameters).
+Opened by `t` when a modulator is selected. For a **lane** modulator it lists
+candidate targets across the whole instrument chain (every plugin's parameters,
+labelled by plugin, plus sibling lane-modulator parameters). For a **group**
+modulator it lists every member instrument's params (`M<n> <plugin>`), the
+group's bus effects (`Bus <effect>`), and sibling group-modulator params.
 
 - `Up` / `Down` — navigate rows
 - `Enter` — bind target and close popup
 - `Escape` — cancel and close popup
+
+### Modulate popup
+
+Opened by `m` while focused on a plugin parameter (the parameter-centric way
+to wire modulation). Lists: "New LFO", "New envelope", and each existing
+modulator in the relevant rack ("attach → …"). On an instrument/effect param it
+operates on the instrument's **lane** rack; on a group bus-effect param it
+operates on the **group** rack.
+
+- `Up` / `Down` — navigate rows
+- `Enter` — create the chosen modulator (if new) and bind the selected
+  parameter to it as a target (depth 0.5), then close
+- `Escape` — cancel and close popup
+
+This is the inverse of `t`: `t` starts from a modulator and picks a parameter;
+`m` starts from a parameter and picks/creates a modulator. A group modulator
+targeting a *member* instrument is wired from the modulator side (`t`), since
+`m` on a member param creates a lane modulator.
 
 ### Piano tab
 
@@ -615,20 +794,50 @@ Notes sound on key press and stop on key release.
 
 ```
 MIDI sources (hardware keyboards + virtual piano)
+  → Group modulators apply (set_parameter on member + bus-effect targets)
   → For each instrument (filtered by note range):
       → Modulators apply (set_parameter on targets)
       → Instrument → volume gain → N Effects (in series, each with dry/wet mix)
-  → Sum all instrument outputs
+  → Each instrument routes to either:
+      → its submix GROUP's bus  → group volume → N group effects, OR
+      → the master mix directly
+  → Sum all groups + ungrouped instruments
   → Audio output → clip detection
 ```
 
 Each instrument has its own effect chain. MIDI note events are filtered by the
 instrument's key range; CC/pitch bend messages are duplicated to all instruments.
-All instrument outputs are summed together.
 
-Effects can be reordered within an instrument in the Session tab. Instrument
-volume is applied after the instrument's output and before the first effect in
-that instrument's chain.
+**Groups (submix buses).** An instrument can belong to a group. All members of
+a group are summed, then run through the group's own end-of-chain effect chain
+and output volume, before being added to the master. Ungrouped instruments go
+straight to the master. Groups are one level deep (a group holds instruments,
+not other groups). In the audio graph the instrument lanes stay a flat list,
+addressed by `inst` index as usual; group membership is an overlay
+(`InstrumentLane.group: Option<usize>`) and groups own their bus
+effects/volume plus their own modulators — so all the per-instrument commands
+are unchanged.
+
+**Group modulators** are applied at the top of `process()`, before any member
+lane renders: each group's modulators tick (envelopes triggered by the union
+of member ranges), cross-mod resolves, and the resulting parameter writes are
+collected and applied to the member lanes' plugins and the group's bus effects.
+Members then read those values when they render; bus effects read them when the
+group's chain runs. A member's own lane modulator, applied later inside the
+lane, wins if it targets the same parameter as a group modulator.
+
+**Known limitation (instrument reorder + groups):** `SwapInstruments` swaps
+only the instrument plugin between two lanes, while the TUI model swaps the
+whole node (including `group`). Reordering *grouped* instruments can therefore
+desync membership between the TUI view and the audio graph. This predates
+group modulators (it already affects the per-lane `group`/effects on reorder);
+a proper fix would make `SwapInstruments` swap the full lane role. Reordering
+ungrouped instruments is unaffected.
+
+Effects can be reordered within an instrument (or a group bus) in the Session
+tab. Instrument volume is applied after the instrument's output and before its
+first effect; group volume is applied to the member sum before the group's
+first bus effect.
 
 ## Architecture
 
@@ -700,6 +909,67 @@ Plugin loading is behind a trait. Three formats supported:
 - **LV2** — via livi.
 - **CLAP** — via clack-host.
 - **VST3** — via vst3-rs (coupler-rs/vst3-rs) with libloading.
+
+### Built-in plugins
+
+- **Oscillator** (`builtin:osc`) — one polyphonic oscillator with a
+  selectable waveform, per-voice ADSR amplitude envelope. Parameters:
+  `waveform` (enum: sine/triangle/square/saw), `detune` (±2 semitones), `volume`
+  (0–1, smoothed ~5 ms), `attack`/`decay`/`release` (0–10 s), `sustain`
+  (0–1). Envelope defaults (A=4 ms, S=1.0, R=12 ms) reproduce the original
+  click-guard ramps; envelope times are floored to 2 ms so extreme settings
+  stay click-free. Voices ring until their release completes. The old
+  `builtin:sine`/`builtin:triangle`/`builtin:square` IDs still load (as
+  aliases that start on that waveform) so older sessions keep working, but
+  enumeration and the selector show only the unified `builtin:osc`.
+- **Reverb** (`builtin:reverb`) — stereo effect with presets.
+- **Filter** (`builtin:filter`) — stereo multimode filter. Parameters:
+  `cutoff` (0–1, exponential 20 Hz→20 kHz so sweeps move musically),
+  `resonance` (Q 0.5–10, default 0.707), `type` (enum, switchable live),
+  `drive` (1–10, input gain into the analog models' saturation; no effect
+  on the clean types). Types:
+  - `lowpass` / `highpass` / `bandpass` / `notch` — clean 12 dB/oct
+    trapezoidal state-variable filter, stable under cutoff modulation.
+  - `ladder` — Moog/Mother-32-style 4-pole transistor ladder (24 dB/oct,
+    warm, self-oscillates at full resonance).
+  - `acid` — TB-303-style diode-ladder flavor: 18 dB/oct tap with
+    high-passed feedback, so the squelch rides on top while bass stays put.
+  - `ms20` — Korg MS-20-style Sallen-Key (12 dB/oct) with hard-clipped
+    feedback; aggressive, screams at high resonance.
+
+  The ladder/acid use a zero-delay-feedback (TPT) topology with `tan`-
+  prewarped tuning: the resonant feedback is resolved instantaneously (no
+  one-sample delay), so the cutoff does not wander with input level, the
+  resonant peak/self-oscillation track the knob proportionally, and acid
+  keeps its resonance down in the bass. The single tanh on the resonant
+  feedback bounds self-oscillation while staying linear (correctly tuned)
+  for small signals. `drive` saturates the input (`tanh`), adding harmonics
+  — it does not auto-attenuate, so heavy drive gets louder/brighter like a
+  real filter (and like a real filter, harmonics that fall above the cutoff
+  are then filtered out, so driving a closed filter is cleaner than driving
+  an open one).
+
+  **Cutoff convention:** `cutoff` marks the filter's −3 dB point for *every*
+  type — the standard definition, consistent with the clean SVF modes — so
+  switching `type` at the same knob keeps the same brightness. Because a
+  3–4-pole cascade's −3 dB point sits well below its per-stage corner, the
+  analog modes raise the internal corner by a per-mode tuning multiplier
+  (`LADDER_TUNE`/`ACID_TUNE`/`MS20_TUNE`) to compensate. A consequence: at
+  high resonance the resonant peak sits somewhat above the knob (the peak
+  and the −3 dB point are an octave apart in a steep ladder and can't both
+  coincide with the knob) — it still tracks the knob proportionally, so
+  sweeps stay musical.
+
+  All analog models run at 2× internal oversampling; switching type resets
+  filter state. For the analog types, `resonance` maps onto the model's
+  feedback range (full = just past self-oscillation). Cutoff/resonance/
+  drive are smoothed ~5 ms. Defaults to a fully open clean lowpass
+  (transparent). The filter defaults to 1.0 mix (fully wet) when added —
+  unlike other effects (0.5) — because at 50% the dry path passes the
+  frequencies the filter removes (a highpass would barely change the sound).
+  Adjust with `x` if a parallel/blended filter is wanted. The `#[ignore]`d tests `diag_full_report` and
+  `diag_cutoff_consistency` are a measurement harness (Goertzel-based
+  magnitude/THD/slope/aliasing) for iterating on the filter voicing.
 
 ## Plugin I/O handling
 

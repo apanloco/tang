@@ -595,6 +595,7 @@ pub fn load(
                         min: info.min_value as f32,
                         max: info.max_value as f32,
                         default: info.default_value as f32,
+                        ..Default::default()
                     });
                 }
             }

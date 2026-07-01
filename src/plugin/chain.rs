@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
+use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
+use crate::piano_filter::PianoFilter;
+use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
 
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
@@ -283,10 +286,26 @@ impl LfoWaveform {
 }
 
 /// Identifies what a modulation target points at.
+///
+/// Modulators are lane-scoped: one modulator can drive parameters anywhere in
+/// its instrument's chain. `PluginParam.slot` selects the plugin — 0 is the
+/// instrument, 1..N are the effects in order. Cross-mod kinds reference a
+/// sibling modulator by its lane-global index.
 #[derive(Debug, Clone)]
 pub enum ModTargetKind {
-    /// Target a plugin parameter by index.
-    PluginParam { param_index: u32 },
+    /// Target a plugin parameter: `slot` (0 = instrument, 1.. = effect) + index.
+    /// Used by lane-scoped modulators.
+    PluginParam { slot: usize, param_index: u32 },
+    /// (Group-scoped) Target a parameter on a member instrument's chain.
+    /// `member` is the member's ordinal within the group (ascending lane
+    /// order); `slot` is 0 = that instrument, 1..N = its effects.
+    GroupMember {
+        member: usize,
+        slot: usize,
+        param_index: u32,
+    },
+    /// (Group-scoped) Target a parameter on one of the group's own bus effects.
+    GroupBus { effect_index: usize, param_index: u32 },
     /// Target a sibling modulator's LFO rate.
     ModulatorRate { mod_index: usize },
     /// Target a sibling modulator's target depth.
@@ -430,6 +449,26 @@ impl Modulator {
         }
     }
 
+    /// The offset this modulator currently contributes to a target, relative
+    /// to the target's base value.
+    ///
+    /// LFOs are bipolar and wobble ±depth×range around the base. Envelopes
+    /// are unipolar and treat the base as their **peak**: the value rises
+    /// from `base − depth × (base − min)` at idle up to the base at full
+    /// envelope level. With depth 1.0 the envelope spans min→base, so e.g.
+    /// an amp envelope on a volume parameter reaches silence instead of
+    /// trying to push past an already-maxed value (offsets above the base
+    /// would just clamp at param_max and do nothing).
+    fn target_offset(&self, target: &ModTarget) -> f32 {
+        match self.source {
+            ModSource::Lfo { .. } => {
+                self.last_output * target.depth * (target.param_max - target.param_min)
+            }
+            ModSource::Envelope { .. } => {
+                -(1.0 - self.last_output) * target.depth * (target.base_value - target.param_min)
+            }
+        }
+    }
 }
 
 /// Apply cross-modulator targets within a modulator list.
@@ -441,7 +480,6 @@ fn apply_cross_mod(modulators: &mut [Modulator]) {
     let mut mods_to_apply: Vec<(usize, CrossModField, f32)> = Vec::new();
 
     for (src_idx, src) in modulators.iter().enumerate() {
-        let output = src.last_output;
         for target in &src.targets {
             let (tgt_mod_idx, field) = match &target.kind {
                 ModTargetKind::ModulatorRate { mod_index } => (*mod_index, CrossModField::Rate),
@@ -452,14 +490,15 @@ fn apply_cross_mod(modulators: &mut [Modulator]) {
                 ModTargetKind::ModulatorDepth { mod_index, target_index } => {
                     (*mod_index, CrossModField::Depth(*target_index))
                 }
-                ModTargetKind::PluginParam { .. } => continue,
+                ModTargetKind::PluginParam { .. }
+                | ModTargetKind::GroupMember { .. }
+                | ModTargetKind::GroupBus { .. } => continue,
             };
             // Skip self-modulation.
             if tgt_mod_idx == src_idx {
                 continue;
             }
-            let range = target.param_max - target.param_min;
-            let modulated = (target.base_value + output * target.depth * range)
+            let modulated = (target.base_value + src.target_offset(target))
                 .clamp(target.param_min, target.param_max);
             mods_to_apply.push((tgt_mod_idx, field, modulated));
         }
@@ -513,34 +552,54 @@ enum CrossModField {
     Depth(usize),
 }
 
-/// Apply all modulators to a plugin, summing contributions when multiple
-/// modulators target the same parameter. Each parameter gets:
-///   base_value + sum(depth_i * output_i * range)
-/// This prevents the last-modulator-wins overwrite bug.
-fn apply_modulators_to_plugin(modulators: &[Modulator], plugin: &mut dyn Plugin) {
-    // Collect (param_index, base_value, min, max, total_offset).
-    // We use a small vec since most plugins have few modulated params.
-    let mut accum: Vec<(u32, f32, f32, f32, f32)> = Vec::new();
+/// Apply all of a lane's modulators across its chain, summing contributions
+/// when multiple modulators target the same parameter. Each parameter gets:
+///   base_value + sum(offset_i)
+/// where each offset comes from `Modulator::target_offset` (bipolar around
+/// the base for LFOs, rising from below up to the base for envelopes). This
+/// prevents the last-modulator-wins overwrite bug. Targets are routed by
+/// slot: 0 = instrument, 1..N = effects[slot-1].
+fn apply_modulators_to_chain(
+    modulators: &[Modulator],
+    instrument: &mut Option<Box<dyn Plugin>>,
+    effects: &mut [Box<dyn Plugin>],
+) {
+    // Collect (slot, param_index, base_value, min, max, total_offset).
+    let mut accum: Vec<(usize, u32, f32, f32, f32, f32)> = Vec::new();
 
     for m in modulators {
         for target in &m.targets {
-            if let ModTargetKind::PluginParam { param_index } = target.kind {
-                let range = target.param_max - target.param_min;
-                let offset = m.last_output * target.depth * range;
-                if let Some(entry) = accum.iter_mut().find(|e| e.0 == param_index) {
-                    // Accumulate offset; base_value/min/max are the same for all
-                    // targets with the same param_index.
-                    entry.4 += offset;
+            if let ModTargetKind::PluginParam { slot, param_index } = target.kind {
+                let offset = m.target_offset(target);
+                if let Some(entry) = accum
+                    .iter_mut()
+                    .find(|e| e.0 == slot && e.1 == param_index)
+                {
+                    entry.5 += offset;
                 } else {
-                    accum.push((param_index, target.base_value, target.param_min, target.param_max, offset));
+                    accum.push((
+                        slot,
+                        param_index,
+                        target.base_value,
+                        target.param_min,
+                        target.param_max,
+                        offset,
+                    ));
                 }
             }
         }
     }
 
-    for (param_index, base_value, min, max, total_offset) in accum {
+    for (slot, param_index, base_value, min, max, total_offset) in accum {
         let modulated = (base_value + total_offset).clamp(min, max);
-        let _ = plugin.set_parameter(param_index, modulated);
+        let plugin: Option<&mut dyn Plugin> = if slot == 0 {
+            instrument.as_deref_mut()
+        } else {
+            effects.get_mut(slot - 1).map(|b| b.as_mut())
+        };
+        if let Some(p) = plugin {
+            let _ = p.set_parameter(param_index, modulated);
+        }
     }
 }
 
@@ -559,10 +618,69 @@ fn fixup_cross_mod_after_remove(modulators: &mut [Modulator], removed_index: usi
     }
 }
 
+/// After an effect is inserted at effect index `at`, bump plugin-param target
+/// slots so they keep pointing at the same plugins (effects at/after `at`
+/// shifted up one). Slot 0 (instrument) is untouched.
+fn shift_slots_after_insert(modulators: &mut [Modulator], at: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::PluginParam { slot, .. } = &mut t.kind {
+                if *slot > at {
+                    *slot += 1;
+                }
+            }
+        }
+    }
+}
+
+/// After the effect at index `removed` is deleted, drop targets that pointed at
+/// it and shift higher slots down one.
+fn fixup_slots_after_remove(modulators: &mut [Modulator], removed: usize) {
+    let removed_slot = removed + 1;
+    for m in modulators.iter_mut() {
+        m.targets.retain(|t| {
+            !matches!(&t.kind, ModTargetKind::PluginParam { slot, .. } if *slot == removed_slot)
+        });
+        for t in &mut m.targets {
+            if let ModTargetKind::PluginParam { slot, .. } = &mut t.kind {
+                if *slot > removed_slot {
+                    *slot -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// After the effect at `from` moves to `to`, remap plugin-param target slots
+/// through the same permutation so they follow their plugins.
+fn remap_slots_after_reorder(modulators: &mut [Modulator], from: usize, to: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::PluginParam { slot, .. } = &mut t.kind {
+                if *slot >= 1 {
+                    let ei = *slot - 1;
+                    let new_ei = if ei == from {
+                        to
+                    } else if from < to && ei > from && ei <= to {
+                        ei - 1
+                    } else if from > to && ei >= to && ei < from {
+                        ei + 1
+                    } else {
+                        ei
+                    };
+                    *slot = new_ei + 1;
+                }
+            }
+        }
+    }
+}
+
 /// Extract the mod_index from a cross-mod target kind, if any.
 fn cross_mod_index(kind: &ModTargetKind) -> Option<usize> {
     match kind {
-        ModTargetKind::PluginParam { .. } => None,
+        ModTargetKind::PluginParam { .. }
+        | ModTargetKind::GroupMember { .. }
+        | ModTargetKind::GroupBus { .. } => None,
         ModTargetKind::ModulatorRate { mod_index }
         | ModTargetKind::ModulatorAttack { mod_index }
         | ModTargetKind::ModulatorDecay { mod_index }
@@ -575,7 +693,9 @@ fn cross_mod_index(kind: &ModTargetKind) -> Option<usize> {
 /// Decrement cross-mod mod_index values that are greater than `removed_index`.
 fn adjust_cross_mod_index(kind: &mut ModTargetKind, removed_index: usize) {
     let idx = match kind {
-        ModTargetKind::PluginParam { .. } => return,
+        ModTargetKind::PluginParam { .. }
+        | ModTargetKind::GroupMember { .. }
+        | ModTargetKind::GroupBus { .. } => return,
         ModTargetKind::ModulatorRate { mod_index }
         | ModTargetKind::ModulatorAttack { mod_index }
         | ModTargetKind::ModulatorDecay { mod_index }
@@ -606,6 +726,329 @@ fn update_cross_mod_base(modulators: &mut [Modulator], target_mod_index: usize, 
             };
             if matches {
                 target.base_value = value;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group-scoped modulator helpers
+// ---------------------------------------------------------------------------
+
+/// The global lane index of the `member`-th member of `group` (members taken
+/// in ascending lane order), or None if out of range.
+fn group_member_lane(instruments: &[InstrumentLane], group: usize, member: usize) -> Option<usize> {
+    instruments
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.group == Some(group))
+        .nth(member)
+        .map(|(i, _)| i)
+}
+
+/// The (group, member-ordinal) of lane `inst` within its group, or None if the
+/// lane is ungrouped.
+fn lane_member_ordinal(instruments: &[InstrumentLane], inst: usize) -> Option<(usize, usize)> {
+    let group = instruments.get(inst)?.group?;
+    let ordinal = instruments[..inst]
+        .iter()
+        .filter(|l| l.group == Some(group))
+        .count();
+    Some((group, ordinal))
+}
+
+/// Build the trigger MIDI for a group's modulators: note events whose note
+/// falls within any member's range (members with no range match all notes),
+/// plus all non-note events. Drives group-scoped envelope modulators so the
+/// group envelope opens whenever any member would sound a note.
+fn build_group_midi(
+    instruments: &[InstrumentLane],
+    group: usize,
+    midi: &[(u64, [u8; 3])],
+    out: &mut Vec<(u64, [u8; 3])>,
+) {
+    out.clear();
+    for &(frame, bytes) in midi {
+        let status = bytes[0] & 0xF0;
+        if matches!(status, 0x80 | 0x90) {
+            let note = bytes[1];
+            let in_any = instruments
+                .iter()
+                .filter(|l| l.group == Some(group))
+                .any(|l| l.range.is_none_or(|(lo, hi)| note >= lo && note <= hi));
+            if in_any {
+                out.push((frame, bytes));
+            }
+        } else {
+            out.push((frame, bytes));
+        }
+    }
+}
+
+/// A pending parameter write produced by a group modulator.
+enum GroupModWrite {
+    /// A member instrument's plugin: resolved global lane index + chain slot.
+    Member {
+        lane: usize,
+        slot: usize,
+        param_index: u32,
+        value: f32,
+    },
+    /// One of the group's own bus effects.
+    Bus {
+        group: usize,
+        effect_index: usize,
+        param_index: u32,
+        value: f32,
+    },
+}
+
+/// Collect the parameter writes from every group's modulators, summing
+/// contributions when several modulators within a group target the same
+/// parameter (mirrors `apply_modulators_to_chain`). Member ordinals are
+/// resolved to global lane indices against the current membership;
+/// unresolvable targets (e.g. a member that left the group) are skipped.
+fn collect_group_mod_writes(
+    groups: &[Group],
+    instruments: &[InstrumentLane],
+    out: &mut Vec<GroupModWrite>,
+) {
+    out.clear();
+    for (gi, g) in groups.iter().enumerate() {
+        // (lane, slot, param, base, min, max, total_offset)
+        let mut member_acc: Vec<(usize, usize, u32, f32, f32, f32, f32)> = Vec::new();
+        // (effect, param, base, min, max, total_offset)
+        let mut bus_acc: Vec<(usize, u32, f32, f32, f32, f32)> = Vec::new();
+        for m in &g.modulators {
+            for t in &m.targets {
+                match t.kind {
+                    ModTargetKind::GroupMember {
+                        member,
+                        slot,
+                        param_index,
+                    } => {
+                        let Some(lane) = group_member_lane(instruments, gi, member) else {
+                            continue;
+                        };
+                        let off = m.target_offset(t);
+                        if let Some(e) = member_acc
+                            .iter_mut()
+                            .find(|e| e.0 == lane && e.1 == slot && e.2 == param_index)
+                        {
+                            e.6 += off;
+                        } else {
+                            member_acc.push((
+                                lane,
+                                slot,
+                                param_index,
+                                t.base_value,
+                                t.param_min,
+                                t.param_max,
+                                off,
+                            ));
+                        }
+                    }
+                    ModTargetKind::GroupBus {
+                        effect_index,
+                        param_index,
+                    } => {
+                        let off = m.target_offset(t);
+                        if let Some(e) = bus_acc
+                            .iter_mut()
+                            .find(|e| e.0 == effect_index && e.1 == param_index)
+                        {
+                            e.5 += off;
+                        } else {
+                            bus_acc.push((
+                                effect_index,
+                                param_index,
+                                t.base_value,
+                                t.param_min,
+                                t.param_max,
+                                off,
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (lane, slot, param_index, base, min, max, off) in member_acc {
+            let value = (base + off).clamp(min, max);
+            out.push(GroupModWrite::Member {
+                lane,
+                slot,
+                param_index,
+                value,
+            });
+        }
+        for (effect_index, param_index, base, min, max, off) in bus_acc {
+            let value = (base + off).clamp(min, max);
+            out.push(GroupModWrite::Bus {
+                group: gi,
+                effect_index,
+                param_index,
+                value,
+            });
+        }
+    }
+}
+
+/// Apply collected group-modulator writes to the member lanes and bus effects.
+fn apply_group_mod_writes(
+    writes: &[GroupModWrite],
+    instruments: &mut [InstrumentLane],
+    groups: &mut [Group],
+) {
+    for w in writes {
+        match *w {
+            GroupModWrite::Member {
+                lane,
+                slot,
+                param_index,
+                value,
+            } => {
+                if let Some(l) = instruments.get_mut(lane) {
+                    let plugin: Option<&mut dyn Plugin> = if slot == 0 {
+                        l.instrument.as_deref_mut()
+                    } else {
+                        l.effects.get_mut(slot - 1).map(|b| b.as_mut())
+                    };
+                    if let Some(p) = plugin {
+                        let _ = p.set_parameter(param_index, value);
+                    }
+                }
+            }
+            GroupModWrite::Bus {
+                group,
+                effect_index,
+                param_index,
+                value,
+            } => {
+                if let Some(e) = groups
+                    .get_mut(group)
+                    .and_then(|g| g.effects.get_mut(effect_index))
+                {
+                    let _ = e.set_parameter(param_index, value);
+                }
+            }
+        }
+    }
+}
+
+/// After the member at ordinal `removed` leaves a group (membership change or
+/// lane deletion), drop GroupMember targets pointing at it and shift higher
+/// ordinals down one.
+fn fixup_group_member_after_remove(modulators: &mut [Modulator], removed: usize) {
+    for m in modulators.iter_mut() {
+        m.targets.retain(
+            |t| !matches!(t.kind, ModTargetKind::GroupMember { member, .. } if member == removed),
+        );
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member, .. } = &mut t.kind {
+                if *member > removed {
+                    *member -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// After a member joins a group at ordinal `inserted`, bump GroupMember
+/// ordinals at/after it so existing targets keep pointing at their members.
+fn shift_group_member_after_insert(modulators: &mut [Modulator], inserted: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member, .. } = &mut t.kind {
+                if *member >= inserted {
+                    *member += 1;
+                }
+            }
+        }
+    }
+}
+
+/// After bus effect `removed` is deleted, drop GroupBus targets on it and shift
+/// higher effect indices down one.
+fn fixup_group_bus_after_remove(modulators: &mut [Modulator], removed: usize) {
+    for m in modulators.iter_mut() {
+        m.targets.retain(|t| {
+            !matches!(t.kind, ModTargetKind::GroupBus { effect_index, .. } if effect_index == removed)
+        });
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
+                if *effect_index > removed {
+                    *effect_index -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// After bus effect moves from `from` to `to`, remap GroupBus effect indices
+/// through the same permutation so targets follow their effects.
+fn remap_group_bus_after_reorder(modulators: &mut [Modulator], from: usize, to: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
+                let ei = *effect_index;
+                *effect_index = if ei == from {
+                    to
+                } else if from < to && ei > from && ei <= to {
+                    ei - 1
+                } else if from > to && ei >= to && ei < from {
+                    ei + 1
+                } else {
+                    ei
+                };
+            }
+        }
+    }
+}
+
+/// Update the `base_value` of GroupMember targets matching (member, slot,
+/// param) after the user sets that member parameter.
+fn update_group_member_base(
+    modulators: &mut [Modulator],
+    member: usize,
+    slot: usize,
+    param_index: u32,
+    value: f32,
+) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember {
+                member: tm,
+                slot: ts,
+                param_index: tp,
+            } = t.kind
+            {
+                if tm == member && ts == slot && tp == param_index {
+                    t.base_value = value;
+                }
+            }
+        }
+    }
+}
+
+/// Update the `base_value` of GroupBus targets matching (effect, param) after
+/// the user sets that bus-effect parameter.
+fn update_group_bus_base(
+    modulators: &mut [Modulator],
+    effect_index: usize,
+    param_index: u32,
+    value: f32,
+) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupBus {
+                effect_index: te,
+                param_index: tp,
+            } = t.kind
+            {
+                if te == effect_index && tp == param_index {
+                    t.base_value = value;
+                }
             }
         }
     }
@@ -688,45 +1131,86 @@ pub enum GraphCommand {
     RemoveInstrument {
         inst: usize,
     },
-    /// Insert a new modulator into a plugin slot.
-    /// parent_slot: 0 = instrument, 1..N = effects.
+    /// Add a new empty submix group; the new group's index is `groups.len()`.
+    AddGroup,
+    /// Remove a group; its members become ungrouped and higher group indices
+    /// shift down.
+    RemoveGroup {
+        group: usize,
+    },
+    /// Set (or clear) a lane's group membership.
+    SetLaneGroup {
+        inst: usize,
+        group: Option<usize>,
+    },
+    /// Set a group's output volume (applied to the member sum, before its FX).
+    SetGroupVolume {
+        group: usize,
+        value: f32,
+    },
+    /// Insert an effect into a group's bus chain.
+    InsertGroupEffect {
+        group: usize,
+        index: usize,
+        effect: Box<dyn Plugin>,
+        mix: f64,
+    },
+    /// Remove an effect from a group's bus chain.
+    RemoveGroupEffect {
+        group: usize,
+        index: usize,
+    },
+    /// Reorder an effect within a group's bus chain.
+    ReorderGroupEffect {
+        group: usize,
+        from: usize,
+        to: usize,
+    },
+    /// Set a group effect's dry/wet mix.
+    SetGroupMix {
+        group: usize,
+        index: usize,
+        value: f32,
+    },
+    /// Set a parameter on a group bus effect.
+    SetGroupParameter {
+        group: usize,
+        index: usize,
+        param_index: u32,
+        value: f32,
+    },
+    /// Insert a new modulator into the lane (modulators are lane-scoped).
     InsertModulator {
         inst: usize,
-        parent_slot: usize,
         index: usize,
         source: ModSource,
     },
-    /// Remove a modulator from a plugin slot.
+    /// Remove a modulator from the lane.
     RemoveModulator {
         inst: usize,
-        parent_slot: usize,
         index: usize,
     },
     /// Set the rate of an LFO modulator.
     SetModulatorRate {
         inst: usize,
-        parent_slot: usize,
         mod_index: usize,
         rate: f32,
     },
     /// Set the waveform of an LFO modulator.
     SetModulatorWaveform {
         inst: usize,
-        parent_slot: usize,
         mod_index: usize,
         waveform: LfoWaveform,
     },
     /// Replace a modulator's source (for type switching between LFO/Envelope).
     SetModulatorSource {
         inst: usize,
-        parent_slot: usize,
         mod_index: usize,
         source: ModSource,
     },
     /// Set envelope parameters on an Envelope modulator.
     SetModulatorEnvelopeParam {
         inst: usize,
-        parent_slot: usize,
         mod_index: usize,
         attack: f32,
         decay: f32,
@@ -736,7 +1220,6 @@ pub enum GraphCommand {
     /// Add a modulation target to a modulator.
     AddModTarget {
         inst: usize,
-        parent_slot: usize,
         mod_index: usize,
         target: ModTarget,
     },
@@ -744,14 +1227,70 @@ pub enum GraphCommand {
     #[expect(dead_code)]
     RemoveModTarget {
         inst: usize,
-        parent_slot: usize,
         mod_index: usize,
         target_index: usize,
     },
     /// Set the depth of a modulation target.
     SetModTargetDepth {
         inst: usize,
-        parent_slot: usize,
+        mod_index: usize,
+        target_index: usize,
+        depth: f32,
+    },
+    /// Insert a new group-scoped modulator into a group.
+    InsertGroupModulator {
+        group: usize,
+        index: usize,
+        source: ModSource,
+    },
+    /// Remove a group-scoped modulator from a group.
+    RemoveGroupModulator {
+        group: usize,
+        index: usize,
+    },
+    /// Set the rate of a group LFO modulator.
+    SetGroupModulatorRate {
+        group: usize,
+        mod_index: usize,
+        rate: f32,
+    },
+    /// Set the waveform of a group LFO modulator.
+    SetGroupModulatorWaveform {
+        group: usize,
+        mod_index: usize,
+        waveform: LfoWaveform,
+    },
+    /// Replace a group modulator's source (LFO/Envelope type switch).
+    SetGroupModulatorSource {
+        group: usize,
+        mod_index: usize,
+        source: ModSource,
+    },
+    /// Set envelope parameters on a group Envelope modulator.
+    SetGroupModulatorEnvelopeParam {
+        group: usize,
+        mod_index: usize,
+        attack: f32,
+        decay: f32,
+        sustain: f32,
+        release: f32,
+    },
+    /// Add a modulation target to a group modulator.
+    AddGroupModTarget {
+        group: usize,
+        mod_index: usize,
+        target: ModTarget,
+    },
+    /// Remove a modulation target from a group modulator.
+    #[expect(dead_code)]
+    RemoveGroupModTarget {
+        group: usize,
+        mod_index: usize,
+        target_index: usize,
+    },
+    /// Set the depth of a group modulator's target.
+    SetGroupModTargetDepth {
+        group: usize,
         mod_index: usize,
         target_index: usize,
         depth: f32,
@@ -771,6 +1310,7 @@ pub enum GraphCommand {
         inst: usize,
         pattern: Pattern,
         base_note: Option<u8>,
+        in_key: bool,
     },
     /// Clear the pattern for an instrument lane.
     ClearPattern {
@@ -794,6 +1334,12 @@ pub enum GraphCommand {
     SetPatternLooping {
         inst: usize,
         looping: bool,
+    },
+    /// Set whether pattern playback transposes by scale degrees (in-key,
+    /// using the piano scale) or by semitones (chromatic).
+    SetPatternInKey {
+        inst: usize,
+        in_key: bool,
     },
     /// Set the transpose (in semitones) for an instrument lane.
     SetTranspose {
@@ -848,6 +1394,29 @@ struct PatternVoice {
     channel: u8,
 }
 
+/// How pattern notes are mapped to output notes during transposed playback.
+enum NoteMap {
+    /// Shift every note by a fixed number of semitones (preserves intervals).
+    Chromatic(i16),
+    /// Shift by the scale-degree distance from base to trigger, keeping all
+    /// notes aligned with the scale (a major-triad pattern triggered on the
+    /// 2nd degree of a major scale comes out minor).
+    InKey {
+        scale: ScaleSetting,
+        base: u8,
+        trigger: u8,
+    },
+}
+
+impl NoteMap {
+    fn map(&self, note: u8) -> u8 {
+        match *self {
+            NoteMap::Chromatic(transpose) => (note as i16 + transpose).clamp(0, 127) as u8,
+            NoteMap::InKey { scale, base, trigger } => scale.transpose_in_key(note, base, trigger),
+        }
+    }
+}
+
 /// Per-instrument pattern recorder and player.
 struct PatternPlayer {
     pattern: Pattern,
@@ -877,6 +1446,9 @@ struct PatternPlayer {
     length_beats: f32,
     /// Whether the pattern loops when it reaches the end (default: true).
     looping: bool,
+    /// Whether playback transposes by scale degrees of the piano scale
+    /// (in-key) instead of by semitones (chromatic, the default).
+    in_key: bool,
     /// BPM (global, set from main thread).
     bpm: f32,
     /// Notification sender for when recording completes automatically.
@@ -925,6 +1497,7 @@ impl PatternPlayer {
             recording_events: Vec::new(),
             length_beats: 4.0,
             looping: true,
+            in_key: false,
             bpm: 120.0,
             pattern_tx: None,
             inst_index: 0,
@@ -950,11 +1523,13 @@ impl PatternPlayer {
     }
 
     /// Called each audio buffer. Consumes incoming MIDI events, produces
-    /// merged output events (original + pattern playback).
+    /// merged output events (original + pattern playback). `scale` is the
+    /// current piano scale, used when in-key transposition is enabled.
     fn process(
         &mut self,
         midi_in: &[(u64, [u8; 3])],
         buffer_frames: usize,
+        scale: ScaleSetting,
     ) -> &[(u64, [u8; 3])] {
         self.output_events.clear();
 
@@ -978,7 +1553,7 @@ impl PatternPlayer {
             return &self.output_events;
         }
 
-        self.process_playback(midi_in, buffer_frames);
+        self.process_playback(midi_in, buffer_frames, scale);
         &self.output_events
     }
 
@@ -1148,9 +1723,14 @@ impl PatternPlayer {
         }
     }
 
-    fn process_playback(&mut self, midi_in: &[(u64, [u8; 3])], buffer_frames: usize) {
+    fn process_playback(
+        &mut self,
+        midi_in: &[(u64, [u8; 3])],
+        buffer_frames: usize,
+        scale: ScaleSetting,
+    ) {
         let base = match self.base_note {
-            Some(n) => n as i16,
+            Some(n) => n,
             None => {
                 self.output_events.extend_from_slice(midi_in);
                 return;
@@ -1215,7 +1795,11 @@ impl PatternPlayer {
             Some(t) => t,
             None => return,
         };
-        let transpose = trigger as i16 - base;
+        let note_map = if self.in_key {
+            NoteMap::InKey { scale, base, trigger }
+        } else {
+            NoteMap::Chromatic(trigger as i16 - base as i16)
+        };
 
         let pattern_len = self.pattern.length_samples;
         if pattern_len == 0 {
@@ -1228,7 +1812,7 @@ impl PatternPlayer {
         // Check for end-of-pattern
         if buf_end > pattern_len {
             // Emit events from buf_start..pattern_len
-            self.emit_events_in_range(buf_start, pattern_len, transpose, 0);
+            self.emit_events_in_range(buf_start, pattern_len, &note_map, 0);
             // Send note-off for all active voices at the boundary
             for voice in self.active_voices.drain(..) {
                 let boundary_frame = pattern_len - buf_start;
@@ -1241,14 +1825,14 @@ impl PatternPlayer {
                 // Wrap around and continue from the start
                 let remainder = buf_end - pattern_len;
                 let offset = pattern_len - buf_start;
-                self.emit_events_in_range(0, remainder, transpose, offset);
+                self.emit_events_in_range(0, remainder, &note_map, offset);
                 self.playback_pos = remainder;
             } else {
                 // One-shot: stop playback
                 self.playback_pos = pattern_len;
             }
         } else {
-            self.emit_events_in_range(buf_start, buf_end, transpose, 0);
+            self.emit_events_in_range(buf_start, buf_end, &note_map, 0);
             self.playback_pos = buf_end;
             if self.playback_pos >= pattern_len {
                 // Exact boundary
@@ -1271,29 +1855,41 @@ impl PatternPlayer {
         &mut self,
         range_start: u64,
         range_end: u64,
-        transpose: i16,
+        note_map: &NoteMap,
         frame_offset: u64,
     ) {
+        let output_events = &mut self.output_events;
+        let active_voices = &mut self.active_voices;
         for ev in &self.pattern.events {
             if ev.frame >= range_start && ev.frame < range_end {
                 let out_frame = ev.frame - range_start + frame_offset;
-                let transposed_note = (ev.note as i16 + transpose).clamp(0, 127) as u8;
 
                 if ev.status == 0x90 {
                     // Note-on
-                    self.output_events
-                        .push((out_frame, [0x90, transposed_note, ev.velocity]));
-                    self.active_voices.push(PatternVoice {
+                    let mapped_note = note_map.map(ev.note);
+                    output_events.push((out_frame, [0x90, mapped_note, ev.velocity]));
+                    active_voices.push(PatternVoice {
                         pattern_note: ev.note,
-                        playing_note: transposed_note,
+                        playing_note: mapped_note,
                         channel: 0,
                     });
                 } else {
-                    // Note-off
-                    self.output_events
-                        .push((out_frame, [0x80, transposed_note, 0]));
-                    self.active_voices
-                        .retain(|v| v.pattern_note != ev.note);
+                    // Note-off — release the note(s) the matching voices are
+                    // actually sounding, so the off always pairs with its on
+                    // even if the scale changed while the note was held.
+                    let mut released = false;
+                    active_voices.retain(|v| {
+                        if v.pattern_note == ev.note {
+                            output_events.push((out_frame, [0x80 | v.channel, v.playing_note, 0]));
+                            released = true;
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if !released {
+                        output_events.push((out_frame, [0x80, note_map.map(ev.note), 0]));
+                    }
                 }
             }
         }
@@ -1317,14 +1913,16 @@ struct InstrumentLane {
     remapped_events: Vec<(u64, [u8; 3])>,
     transposed_events: Vec<(u64, [u8; 3])>,
     filtered_midi: Vec<(u64, [u8; 3])>,
-    /// Modulators attached to the instrument (slot 0).
-    inst_modulators: Vec<Modulator>,
-    /// Modulators attached to each effect. Index i corresponds to effects[i].
-    effect_modulators: Vec<Vec<Modulator>>,
+    /// Modulators for this whole lane. Each modulator's targets address any
+    /// plugin in the chain by slot (0 = instrument, 1..N = effects).
+    modulators: Vec<Modulator>,
     /// Pattern recorder/player for this instrument.
     pattern: PatternPlayer,
     /// Transpose in semitones applied to note events.
     transpose: i8,
+    /// If `Some(g)`, this lane is a member of group `g`: its output is summed
+    /// into that group's bus (and its group FX) instead of straight to master.
+    group: Option<usize>,
 }
 
 impl InstrumentLane {
@@ -1342,19 +1940,10 @@ impl InstrumentLane {
             remapped_events: Vec::with_capacity(128),
             transposed_events: Vec::with_capacity(128),
             filtered_midi: Vec::with_capacity(128),
-            inst_modulators: Vec::new(),
-            effect_modulators: Vec::new(),
+            modulators: Vec::new(),
             pattern: PatternPlayer::new(48000.0),
             transpose: 0,
-        }
-    }
-
-    /// Get the modulators vec for a given parent slot (0 = instrument, 1..N = effects).
-    fn modulators_for(&mut self, parent_slot: usize) -> Option<&mut Vec<Modulator>> {
-        if parent_slot == 0 {
-            Some(&mut self.inst_modulators)
-        } else {
-            self.effect_modulators.get_mut(parent_slot - 1)
+            group: None,
         }
     }
 
@@ -1400,11 +1989,13 @@ impl InstrumentLane {
 
     /// Process this instrument + effect chain, writing output to `inst_out`.
     /// `inst_out` must have `num_channels` vecs, each with `frames` length.
+    /// `scale` is the current piano scale for in-key pattern transposition.
     fn process(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
         inst_out: &mut [Vec<f32>],
         num_channels: usize,
+        scale: ScaleSetting,
     ) -> anyhow::Result<()> {
         // Filter MIDI by range
         self.filter_midi(midi_events);
@@ -1419,7 +2010,7 @@ impl InstrumentLane {
 
         // Pattern recorder/player — process after remapping, before modulators.
         let frames = inst_out.first().map(|b| b.len()).unwrap_or(0);
-        let effective_events = self.pattern.process(effective_events, frames);
+        let effective_events = self.pattern.process(effective_events, frames, scale);
 
         // Apply transpose to note events.
         let effective_events = if self.transpose != 0 {
@@ -1441,29 +2032,18 @@ impl InstrumentLane {
             effective_events
         };
 
-        // Apply modulators (block-rate: once per buffer, before instrument processing).
-        // Three-pass: tick all → apply cross-mod → apply plugin targets.
+        // Apply modulators (block-rate: once per buffer, before processing the
+        // chain). Lane-scoped: tick all → cross-mod → route each target to its
+        // slot's plugin (instrument or an effect). Applying up front is
+        // equivalent to per-slot application since each plugin reads its
+        // parameters when it processes, later in this same buffer.
         let buffer_size = inst_out.first().map(|b| b.len()).unwrap_or(0);
         if buffer_size > 0 {
-            // Instrument modulators.
-            if let Some(inst) = &mut self.instrument {
-                // Pass 1: tick all.
-                for m in &mut self.inst_modulators {
-                    m.tick(buffer_size, effective_events);
-                }
-                // Pass 2: cross-mod.
-                apply_cross_mod(&mut self.inst_modulators);
-                // Pass 3: apply plugin-param targets (summing all modulators).
-                apply_modulators_to_plugin(&self.inst_modulators, inst.as_mut());
+            for m in &mut self.modulators {
+                m.tick(buffer_size, effective_events);
             }
-            // Effect modulators.
-            for (fx, mods) in self.effects.iter_mut().zip(self.effect_modulators.iter_mut()) {
-                for m in mods.iter_mut() {
-                    m.tick(buffer_size, effective_events);
-                }
-                apply_cross_mod(mods);
-                apply_modulators_to_plugin(mods, fx.as_mut());
-            }
+            apply_cross_mod(&mut self.modulators);
+            apply_modulators_to_chain(&self.modulators, &mut self.instrument, &mut self.effects);
         }
 
         let instrument = match self.instrument.as_mut() {
@@ -1602,15 +2182,138 @@ impl InstrumentLane {
 }
 
 // ---------------------------------------------------------------------------
+// Group — submix bus
+// ---------------------------------------------------------------------------
+
+/// A submix bus. Member lanes (those whose `group` points here) sum into
+/// `accum` instead of the master; the group then applies its output volume and
+/// its own effect chain to that sum, and the result is added to the master.
+/// A group also owns modulators that can drive its members and bus effects
+/// (see `collect_group_mod_writes`).
+struct Group {
+    effects: Vec<Box<dyn Plugin>>,
+    mix_values: Vec<f64>,
+    /// Output gain applied to the member sum, before the group effects.
+    volume: f32,
+    /// Group-scoped modulators. Each target addresses a member instrument's
+    /// chain (`GroupMember`), one of this group's bus effects (`GroupBus`), or
+    /// a sibling group modulator (cross-mod).
+    modulators: Vec<Modulator>,
+    /// Member-sum accumulator (num_channels vecs).
+    accum: Vec<Vec<f32>>,
+    /// Effect ping-pong scratch.
+    buf_a: Vec<Vec<f32>>,
+    buf_b: Vec<Vec<f32>>,
+}
+
+impl Group {
+    fn new(num_channels: usize) -> Self {
+        Group {
+            effects: Vec::new(),
+            mix_values: Vec::new(),
+            volume: 1.0,
+            modulators: Vec::new(),
+            accum: (0..num_channels).map(|_| Vec::new()).collect(),
+            buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
+            buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
+        }
+    }
+
+    /// Resize + zero the accumulator for a fresh buffer.
+    fn begin(&mut self, frames: usize, num_channels: usize) {
+        if self.accum.len() < num_channels {
+            self.accum.resize_with(num_channels, Vec::new);
+        }
+        for ch in self.accum.iter_mut() {
+            ch.resize(frames, 0.0);
+            ch.fill(0.0);
+        }
+    }
+
+    /// Apply volume + the effect chain in place on `accum`, leaving the
+    /// processed bus signal there. Mirrors `InstrumentLane`'s effect loop.
+    // TODO: factor a shared effect-chain helper to remove this duplication.
+    fn finish(&mut self, num_channels: usize, frames: usize) -> anyhow::Result<()> {
+        if (self.volume - 1.0).abs() >= f32::EPSILON {
+            for ch in self.accum.iter_mut().take(num_channels) {
+                for s in ch.iter_mut() {
+                    *s *= self.volume;
+                }
+            }
+        }
+        if self.effects.is_empty() {
+            return Ok(());
+        }
+        for buf in self.buf_a.iter_mut().chain(self.buf_b.iter_mut()) {
+            buf.resize(frames, 0.0);
+            buf.fill(0.0);
+        }
+        for ch in 0..num_channels {
+            if ch < self.accum.len() {
+                self.buf_a[ch].copy_from_slice(&self.accum[ch]);
+            } else {
+                self.buf_a[ch].fill(0.0);
+            }
+        }
+        let mut src_is_a = true;
+        for (effect, &mix) in self.effects.iter_mut().zip(self.mix_values.iter()) {
+            let mix = mix as f32;
+            if src_is_a {
+                {
+                    let mut in_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
+                    let mut out_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
+                    let in_refs = shared_slices(&self.buf_a, &mut in_s);
+                    let out_refs = mut_slices(&mut self.buf_b, &mut out_s);
+                    effect.process(&[], in_refs, out_refs)?;
+                }
+                if mix < 1.0 {
+                    let dry = 1.0 - mix;
+                    for ch in 0..num_channels {
+                        for i in 0..frames {
+                            self.buf_b[ch][i] = self.buf_a[ch][i] * dry + self.buf_b[ch][i] * mix;
+                        }
+                    }
+                }
+            } else {
+                {
+                    let mut in_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
+                    let mut out_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
+                    let in_refs = shared_slices(&self.buf_b, &mut in_s);
+                    let out_refs = mut_slices(&mut self.buf_a, &mut out_s);
+                    effect.process(&[], in_refs, out_refs)?;
+                }
+                if mix < 1.0 {
+                    let dry = 1.0 - mix;
+                    for ch in 0..num_channels {
+                        for i in 0..frames {
+                            self.buf_a[ch][i] = self.buf_b[ch][i] * dry + self.buf_a[ch][i] * mix;
+                        }
+                    }
+                }
+            }
+            src_is_a = !src_is_a;
+        }
+        let final_buf = if src_is_a { &self.buf_a } else { &self.buf_b };
+        for (acc, fin) in self.accum.iter_mut().zip(final_buf.iter()).take(num_channels) {
+            acc.copy_from_slice(fin);
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AudioGraph — multi-instrument audio processor
 // ---------------------------------------------------------------------------
 
 /// An audio graph with multiple instruments, each with its own effect chain.
-/// All instruments are summed together into the final output.
+/// Instruments sum into the master, or — if they belong to a group — into that
+/// group's submix bus, which runs its own effects before reaching the master.
 ///
 /// Commands are drained at the top of every audio callback via try_recv loop.
 pub struct AudioGraph {
     instruments: Vec<InstrumentLane>,
+    /// Submix buses. Lanes with `group == Some(i)` feed `groups[i]`.
+    groups: Vec<Group>,
     /// Accumulation buffer for summing all instruments
     mix_buf: Vec<Vec<f32>>,
     /// Per-instrument scratch buffer (reused across instruments)
@@ -1620,6 +2323,15 @@ pub struct AudioGraph {
     return_tx: Sender<Box<dyn Plugin>>,
     /// Notification channel for pattern recording completion.
     pattern_tx: Option<Sender<PatternNotification>>,
+    /// Shared piano-tab state; read once per buffer for the current scale
+    /// (lock-free atomics) so in-key pattern transposition follows the
+    /// scale picker live. None = default scale (C Major).
+    piano_filter: Option<Arc<PianoFilter>>,
+    /// Reusable scratch for a group's trigger MIDI (union of member ranges),
+    /// rebuilt per group per buffer. Avoids per-buffer allocation.
+    group_midi_scratch: Vec<(u64, [u8; 3])>,
+    /// Reusable scratch for pending group-modulator parameter writes.
+    group_mod_writes: Vec<GroupModWrite>,
 }
 
 impl AudioGraph {
@@ -1631,13 +2343,38 @@ impl AudioGraph {
     ) -> Self {
         AudioGraph {
             instruments: Vec::new(),
+            groups: Vec::new(),
             mix_buf: (0..num_channels).map(|_| Vec::new()).collect(),
             lane_buf: (0..num_channels).map(|_| Vec::new()).collect(),
             num_channels,
             command_rx,
             return_tx,
             pattern_tx: None,
+            piano_filter: None,
+            group_midi_scratch: Vec::with_capacity(128),
+            group_mod_writes: Vec::with_capacity(64),
         }
+    }
+
+    /// The audio sample rate, derived from the first loaded plugin (all plugins
+    /// run at the device rate). Falls back to 48 kHz before any plugin loads.
+    fn graph_sample_rate(&self) -> f32 {
+        self.instruments
+            .iter()
+            .find_map(|l| l.instrument.as_ref().map(|i| i.sample_rate()))
+            .or_else(|| {
+                self.groups
+                    .iter()
+                    .flat_map(|g| g.effects.iter())
+                    .next()
+                    .map(|e| e.sample_rate())
+            })
+            .unwrap_or(48000.0)
+    }
+
+    /// Set the shared piano-tab state used for in-key pattern transposition.
+    pub fn set_piano_filter(&mut self, filter: Arc<PianoFilter>) {
+        self.piano_filter = Some(filter);
     }
 
     /// Set the notification channel for pattern recording completion.
@@ -1692,7 +2429,9 @@ impl AudioGraph {
                             let idx = index.min(lane.effects.len());
                             lane.effects.insert(idx, effect);
                             lane.mix_values.insert(idx, mix);
-                            lane.effect_modulators.insert(idx, Vec::new());
+                            // Bump modulator target slots that pointed at this
+                            // or a later effect.
+                            shift_slots_after_insert(&mut lane.modulators, idx);
                         }
                     }
                 }
@@ -1701,10 +2440,8 @@ impl AudioGraph {
                         if index < lane.effects.len() {
                             let old = lane.effects.remove(index);
                             lane.mix_values.remove(index);
-                            // Remove this effect's modulators along with it.
-                            if index < lane.effect_modulators.len() {
-                                lane.effect_modulators.remove(index);
-                            }
+                            // Drop/shift modulator target slots for this effect.
+                            fixup_slots_after_remove(&mut lane.modulators, index);
                             Some(old)
                         } else {
                             None
@@ -1725,9 +2462,8 @@ impl AudioGraph {
                             let mix = lane.mix_values.remove(from);
                             lane.effects.insert(to, effect);
                             lane.mix_values.insert(to, mix);
-                            // Move effect_modulators along with the effect.
-                            let mods = lane.effect_modulators.remove(from);
-                            lane.effect_modulators.insert(to, mods);
+                            // Remap modulator target slots through the move.
+                            remap_slots_after_reorder(&mut lane.modulators, from, to);
                         }
                     }
                 }
@@ -1748,22 +2484,32 @@ impl AudioGraph {
                                 log::warn!("SetParameter inst={inst} slot={slot} index={param_index}: {e}");
                             }
                         }
-                        // Update modulator base values for matching plugin-param targets.
-                        let mods = if slot == 0 {
-                            Some(&mut lane.inst_modulators)
-                        } else {
-                            lane.effect_modulators.get_mut(slot - 1)
-                        };
-                        if let Some(mods) = mods {
-                            for modulator in mods {
-                                for target in &mut modulator.targets {
-                                    if let ModTargetKind::PluginParam { param_index: pi } = target.kind {
-                                        if pi == param_index {
-                                            target.base_value = value;
-                                        }
+                        // Update modulator base values for targets that point
+                        // at this exact slot + parameter.
+                        for modulator in &mut lane.modulators {
+                            for target in &mut modulator.targets {
+                                if let ModTargetKind::PluginParam {
+                                    slot: tslot,
+                                    param_index: pi,
+                                } = target.kind
+                                {
+                                    if tslot == slot && pi == param_index {
+                                        target.base_value = value;
                                     }
                                 }
                             }
+                        }
+                    }
+                    // Mirror to any group modulator targeting this member param.
+                    if let Some((group, ordinal)) = lane_member_ordinal(&self.instruments, inst) {
+                        if let Some(g) = self.groups.get_mut(group) {
+                            update_group_member_base(
+                                &mut g.modulators,
+                                ordinal,
+                                slot,
+                                param_index,
+                                value,
+                            );
                         }
                     }
                 }
@@ -1816,7 +2562,7 @@ impl AudioGraph {
                         .and_then(|lane| {
                             lane.inst_buf.clear();
                             lane.remapper = None;
-                            lane.inst_modulators.clear();
+                            lane.modulators.clear();
                             lane.instrument.take()
                         });
                     if let Some(old) = old {
@@ -1850,6 +2596,9 @@ impl AudioGraph {
                 }
                 GraphCommand::RemoveInstrument { inst } => {
                     if inst < self.instruments.len() {
+                        // If this lane was a group member, note its ordinal so the
+                        // group's modulators can drop/shift their member targets.
+                        let member_of = lane_member_ordinal(&self.instruments, inst);
                         let mut removed = self.instruments.remove(inst);
                         if let Some(old_inst) = removed.instrument.take() {
                             let _ = self.return_tx.try_send(old_inst);
@@ -1857,63 +2606,174 @@ impl AudioGraph {
                         for effect in removed.effects.drain(..) {
                             let _ = self.return_tx.try_send(effect);
                         }
+                        if let Some((group, ordinal)) = member_of {
+                            if let Some(g) = self.groups.get_mut(group) {
+                                fixup_group_member_after_remove(&mut g.modulators, ordinal);
+                            }
+                        }
                         // Re-index remaining instruments so pattern notifications route correctly.
                         for (i, lane) in self.instruments.iter_mut().enumerate() {
                             lane.pattern.inst_index = i;
                         }
                     }
                 }
+                GraphCommand::AddGroup => {
+                    self.groups.push(Group::new(self.num_channels));
+                }
+                GraphCommand::RemoveGroup { group } => {
+                    if group < self.groups.len() {
+                        let mut removed = self.groups.remove(group);
+                        for effect in removed.effects.drain(..) {
+                            let _ = self.return_tx.try_send(effect);
+                        }
+                        // Fix up lane membership: drop the removed group, shift
+                        // higher group indices down.
+                        for lane in self.instruments.iter_mut() {
+                            match lane.group {
+                                Some(g) if g == group => lane.group = None,
+                                Some(g) if g > group => lane.group = Some(g - 1),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                GraphCommand::SetLaneGroup { inst, group } => {
+                    let valid = group.is_none_or(|g| g < self.groups.len());
+                    if valid && inst < self.instruments.len() {
+                        let old = lane_member_ordinal(&self.instruments, inst);
+                        self.instruments[inst].group = group;
+                        let new = lane_member_ordinal(&self.instruments, inst);
+                        let old_group = old.map(|(g, _)| g);
+                        let new_group = new.map(|(g, _)| g);
+                        // Leaving the old group: drop/shift its member targets.
+                        if let Some((og, oo)) = old {
+                            if old_group != new_group {
+                                if let Some(g) = self.groups.get_mut(og) {
+                                    fixup_group_member_after_remove(&mut g.modulators, oo);
+                                }
+                            }
+                        }
+                        // Joining a new group: bump member targets at/after its slot.
+                        if let Some((ng, no)) = new {
+                            if old_group != new_group {
+                                if let Some(g) = self.groups.get_mut(ng) {
+                                    shift_group_member_after_insert(&mut g.modulators, no);
+                                }
+                            }
+                        }
+                    }
+                }
+                GraphCommand::SetGroupVolume { group, value } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        g.volume = value;
+                    }
+                }
+                GraphCommand::InsertGroupEffect { group, index, effect, mix } => {
+                    let num_channels = self.num_channels;
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if effect.audio_output_count() != num_channels {
+                            log::warn!(
+                                "Rejecting group effect '{}': output channels {} != chain channels {}",
+                                effect.name(),
+                                effect.audio_output_count(),
+                                num_channels,
+                            );
+                            let _ = self.return_tx.try_send(effect);
+                        } else {
+                            let idx = index.min(g.effects.len());
+                            g.effects.insert(idx, effect);
+                            g.mix_values.insert(idx, mix);
+                        }
+                    }
+                }
+                GraphCommand::RemoveGroupEffect { group, index } => {
+                    let old = self.groups.get_mut(group).and_then(|g| {
+                        if index < g.effects.len() {
+                            g.mix_values.remove(index);
+                            let removed = g.effects.remove(index);
+                            // Drop/shift group-mod targets that pointed at it.
+                            fixup_group_bus_after_remove(&mut g.modulators, index);
+                            Some(removed)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(old) = old {
+                        let _ = self.return_tx.try_send(old);
+                    }
+                }
+                GraphCommand::ReorderGroupEffect { group, from, to } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if from < g.effects.len() && to < g.effects.len() && from != to {
+                            let effect = g.effects.remove(from);
+                            let mix = g.mix_values.remove(from);
+                            g.effects.insert(to, effect);
+                            g.mix_values.insert(to, mix);
+                            // Remap group-mod bus targets through the move.
+                            remap_group_bus_after_reorder(&mut g.modulators, from, to);
+                        }
+                    }
+                }
+                GraphCommand::SetGroupMix { group, index, value } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(mix) = g.mix_values.get_mut(index) {
+                            *mix = value as f64;
+                        }
+                    }
+                }
+                GraphCommand::SetGroupParameter { group, index, param_index, value } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(effect) = g.effects.get_mut(index) {
+                            if let Err(e) = effect.set_parameter(param_index, value) {
+                                log::warn!("SetGroupParameter group={group} index={index} param={param_index}: {e}");
+                            }
+                        }
+                        // Track base value for group modulators driving this bus param.
+                        update_group_bus_base(&mut g.modulators, index, param_index, value);
+                    }
+                }
                 GraphCommand::InsertModulator {
                     inst,
-                    parent_slot,
                     index,
                     source,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         let m = Modulator::new(source, lane.sample_rate());
-                        if let Some(mods) = lane.modulators_for(parent_slot) {
-                            let idx = index.min(mods.len());
-                            mods.insert(idx, m);
-                        }
+                        let idx = index.min(lane.modulators.len());
+                        lane.modulators.insert(idx, m);
                     }
                 }
-                GraphCommand::RemoveModulator { inst, parent_slot, index } => {
+                GraphCommand::RemoveModulator { inst, index } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(mods) = lane.modulators_for(parent_slot) {
-                            if index < mods.len() {
-                                mods.remove(index);
-                                // Clean up cross-mod targets in remaining siblings.
-                                fixup_cross_mod_after_remove(mods, index);
-                            }
+                        if index < lane.modulators.len() {
+                            lane.modulators.remove(index);
+                            // Clean up cross-mod targets in remaining siblings.
+                            fixup_cross_mod_after_remove(&mut lane.modulators, index);
                         }
                     }
                 }
                 GraphCommand::SetModulatorRate {
                     inst,
-                    parent_slot,
                     mod_index,
                     rate,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(mods) = lane.modulators_for(parent_slot) {
-                            if let Some(m) = mods.get_mut(mod_index) {
-                                if let ModSource::Lfo { rate: ref mut r, .. } = m.source {
-                                    *r = rate;
-                                }
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
+                            if let ModSource::Lfo { rate: ref mut r, .. } = m.source {
+                                *r = rate;
                             }
-                            // Update cross-mod base values for targets pointing at this rate.
-                            update_cross_mod_base(mods, mod_index, CrossModField::Rate, rate);
                         }
+                        // Update cross-mod base values for targets pointing at this rate.
+                        update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Rate, rate);
                     }
                 }
                 GraphCommand::SetModulatorWaveform {
                     inst,
-                    parent_slot,
                     mod_index,
                     waveform,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
                             if let ModSource::Lfo { waveform: ref mut w, .. } = m.source {
                                 *w = waveform;
                             }
@@ -1922,12 +2782,11 @@ impl AudioGraph {
                 }
                 GraphCommand::SetModulatorSource {
                     inst,
-                    parent_slot,
                     mod_index,
                     source,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
                             m.source = source;
                             m.last_output = 0.0;
                         }
@@ -1935,7 +2794,6 @@ impl AudioGraph {
                 }
                 GraphCommand::SetModulatorEnvelopeParam {
                     inst,
-                    parent_slot,
                     mod_index,
                     attack,
                     decay,
@@ -1943,50 +2801,46 @@ impl AudioGraph {
                     release,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(mods) = lane.modulators_for(parent_slot) {
-                            if let Some(m) = mods.get_mut(mod_index) {
-                                if let ModSource::Envelope {
-                                    attack: ref mut a,
-                                    decay: ref mut d,
-                                    sustain: ref mut s,
-                                    release: ref mut r,
-                                    ..
-                                } = m.source
-                                {
-                                    *a = attack;
-                                    *d = decay;
-                                    *s = sustain;
-                                    *r = release;
-                                }
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
+                            if let ModSource::Envelope {
+                                attack: ref mut a,
+                                decay: ref mut d,
+                                sustain: ref mut s,
+                                release: ref mut r,
+                                ..
+                            } = m.source
+                            {
+                                *a = attack;
+                                *d = decay;
+                                *s = sustain;
+                                *r = release;
                             }
-                            // Update cross-mod base values.
-                            update_cross_mod_base(mods, mod_index, CrossModField::Attack, attack);
-                            update_cross_mod_base(mods, mod_index, CrossModField::Decay, decay);
-                            update_cross_mod_base(mods, mod_index, CrossModField::Sustain, sustain);
-                            update_cross_mod_base(mods, mod_index, CrossModField::Release, release);
                         }
+                        // Update cross-mod base values.
+                        update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Attack, attack);
+                        update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Decay, decay);
+                        update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Sustain, sustain);
+                        update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Release, release);
                     }
                 }
                 GraphCommand::AddModTarget {
                     inst,
-                    parent_slot,
                     mod_index,
                     target,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
                             m.targets.push(target);
                         }
                     }
                 }
                 GraphCommand::RemoveModTarget {
                     inst,
-                    parent_slot,
                     mod_index,
                     target_index,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
                             if target_index < m.targets.len() {
                                 m.targets.remove(target_index);
                             }
@@ -1995,13 +2849,139 @@ impl AudioGraph {
                 }
                 GraphCommand::SetModTargetDepth {
                     inst,
-                    parent_slot,
                     mod_index,
                     target_index,
                     depth,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        if let Some(m) = lane.modulators_for(parent_slot).and_then(|ms| ms.get_mut(mod_index)) {
+                        if let Some(m) = lane.modulators.get_mut(mod_index) {
+                            if let Some(t) = m.targets.get_mut(target_index) {
+                                t.depth = depth;
+                            }
+                        }
+                    }
+                }
+                GraphCommand::InsertGroupModulator {
+                    group,
+                    index,
+                    source,
+                } => {
+                    let sr = self.graph_sample_rate();
+                    if let Some(g) = self.groups.get_mut(group) {
+                        let m = Modulator::new(source, sr);
+                        let idx = index.min(g.modulators.len());
+                        g.modulators.insert(idx, m);
+                    }
+                }
+                GraphCommand::RemoveGroupModulator { group, index } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if index < g.modulators.len() {
+                            g.modulators.remove(index);
+                            fixup_cross_mod_after_remove(&mut g.modulators, index);
+                        }
+                    }
+                }
+                GraphCommand::SetGroupModulatorRate {
+                    group,
+                    mod_index,
+                    rate,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
+                            if let ModSource::Lfo { rate: ref mut r, .. } = m.source {
+                                *r = rate;
+                            }
+                        }
+                        update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Rate, rate);
+                    }
+                }
+                GraphCommand::SetGroupModulatorWaveform {
+                    group,
+                    mod_index,
+                    waveform,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
+                            if let ModSource::Lfo { waveform: ref mut w, .. } = m.source {
+                                *w = waveform;
+                            }
+                        }
+                    }
+                }
+                GraphCommand::SetGroupModulatorSource {
+                    group,
+                    mod_index,
+                    source,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
+                            m.source = source;
+                            m.last_output = 0.0;
+                        }
+                    }
+                }
+                GraphCommand::SetGroupModulatorEnvelopeParam {
+                    group,
+                    mod_index,
+                    attack,
+                    decay,
+                    sustain,
+                    release,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
+                            if let ModSource::Envelope {
+                                attack: ref mut a,
+                                decay: ref mut d,
+                                sustain: ref mut s,
+                                release: ref mut r,
+                                ..
+                            } = m.source
+                            {
+                                *a = attack;
+                                *d = decay;
+                                *s = sustain;
+                                *r = release;
+                            }
+                        }
+                        update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Attack, attack);
+                        update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Decay, decay);
+                        update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Sustain, sustain);
+                        update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Release, release);
+                    }
+                }
+                GraphCommand::AddGroupModTarget {
+                    group,
+                    mod_index,
+                    target,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
+                            m.targets.push(target);
+                        }
+                    }
+                }
+                GraphCommand::RemoveGroupModTarget {
+                    group,
+                    mod_index,
+                    target_index,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
+                            if target_index < m.targets.len() {
+                                m.targets.remove(target_index);
+                            }
+                        }
+                    }
+                }
+                GraphCommand::SetGroupModTargetDepth {
+                    group,
+                    mod_index,
+                    target_index,
+                    depth,
+                } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        if let Some(m) = g.modulators.get_mut(mod_index) {
                             if let Some(t) = m.targets.get_mut(target_index) {
                                 t.depth = depth;
                             }
@@ -2043,29 +3023,32 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::SetPattern { inst, pattern, base_note } => {
+                GraphCommand::SetPattern { inst, pattern, base_note, in_key } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.pattern = pattern;
                         lane.pattern.base_note = base_note;
+                        lane.pattern.in_key = in_key;
                         lane.pattern.enabled = !lane.pattern.pattern.events.is_empty();
                     }
                 }
                 GraphCommand::SwapPatterns { inst_a, inst_b } => {
                     if inst_a < self.instruments.len() && inst_b < self.instruments.len() {
-                        // Swap pattern data, base_note, enabled, length_beats between the two lanes.
-                        let (a_pattern, a_base, a_enabled, a_beats) = {
+                        // Swap pattern data, base_note, enabled, length_beats,
+                        // in_key between the two lanes.
+                        let (a_pattern, a_base, a_enabled, a_beats, a_in_key) = {
                             let p = &self.instruments[inst_a].pattern;
-                            (p.pattern.clone(), p.base_note, p.enabled, p.length_beats)
+                            (p.pattern.clone(), p.base_note, p.enabled, p.length_beats, p.in_key)
                         };
-                        let (b_pattern, b_base, b_enabled, b_beats) = {
+                        let (b_pattern, b_base, b_enabled, b_beats, b_in_key) = {
                             let p = &self.instruments[inst_b].pattern;
-                            (p.pattern.clone(), p.base_note, p.enabled, p.length_beats)
+                            (p.pattern.clone(), p.base_note, p.enabled, p.length_beats, p.in_key)
                         };
                         let pa = &mut self.instruments[inst_a].pattern;
                         pa.pattern = b_pattern;
                         pa.base_note = b_base;
                         pa.enabled = b_enabled;
                         pa.length_beats = b_beats;
+                        pa.in_key = b_in_key;
                         pa.trigger_note = None;
                         pa.held_notes.clear();
                         pa.active_voices.clear();
@@ -2074,6 +3057,7 @@ impl AudioGraph {
                         pb.base_note = a_base;
                         pb.enabled = a_enabled;
                         pb.length_beats = a_beats;
+                        pb.in_key = a_in_key;
                         pb.trigger_note = None;
                         pb.held_notes.clear();
                         pb.active_voices.clear();
@@ -2084,6 +3068,7 @@ impl AudioGraph {
                         lane.pattern.pattern = Pattern::default();
                         lane.pattern.base_note = None;
                         lane.pattern.enabled = false;
+                        lane.pattern.in_key = false;
                         lane.pattern.recording = false;
                         lane.pattern.counting_in = false;
                         lane.pattern.trigger_note = None;
@@ -2105,6 +3090,11 @@ impl AudioGraph {
                 GraphCommand::SetPatternLooping { inst, looping } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.pattern.looping = looping;
+                    }
+                }
+                GraphCommand::SetPatternInKey { inst, in_key } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
+                        lane.pattern.in_key = in_key;
                     }
                 }
                 GraphCommand::SetTranspose { inst, semitones } => {
@@ -2142,19 +3132,76 @@ impl AudioGraph {
             buf.resize(frames, 0.0);
         }
 
-        // Process each instrument, accumulate into mix_buf
+        // Current piano scale, read once per buffer (lock-free).
+        let scale = self
+            .piano_filter
+            .as_ref()
+            .map(|f| f.scale())
+            .unwrap_or_default();
+
+        // Prepare group accumulators for this buffer.
+        for group in self.groups.iter_mut() {
+            group.begin(frames, self.num_channels);
+        }
+
+        // Group-scoped modulators: tick each group's modulators (envelopes are
+        // triggered by the union of its members' ranges), resolve cross-mod,
+        // then apply their targets to member-instrument and bus-effect
+        // parameters now — before the lanes render, so members read the
+        // modulated values (bus effects read them later in group.finish). A
+        // lane modulator hitting the same parameter is applied later inside the
+        // lane's own process() and therefore wins.
+        if frames > 0 {
+            for gi in 0..self.groups.len() {
+                if self.groups[gi].modulators.is_empty() {
+                    continue;
+                }
+                build_group_midi(
+                    &self.instruments,
+                    gi,
+                    midi_events,
+                    &mut self.group_midi_scratch,
+                );
+                for m in &mut self.groups[gi].modulators {
+                    m.tick(frames, &self.group_midi_scratch);
+                }
+                apply_cross_mod(&mut self.groups[gi].modulators);
+            }
+            collect_group_mod_writes(&self.groups, &self.instruments, &mut self.group_mod_writes);
+            apply_group_mod_writes(
+                &self.group_mod_writes,
+                &mut self.instruments,
+                &mut self.groups,
+            );
+        }
+
+        // Process each instrument; route its output to its group's bus (if a
+        // member) or straight to the master mix.
         for inst in self.instruments.iter_mut() {
             // Zero lane_buf
             for buf in self.lane_buf.iter_mut() {
                 buf.fill(0.0);
             }
 
-            inst.process(midi_events, &mut self.lane_buf, self.num_channels)?;
+            inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale)?;
 
-            // Accumulate instrument output into mix_buf
-            for ch in 0..self.num_channels {
-                for i in 0..frames {
-                    self.mix_buf[ch][i] += self.lane_buf[ch][i];
+            let dest = match inst.group {
+                Some(g) if g < self.groups.len() => &mut self.groups[g].accum,
+                _ => &mut self.mix_buf,
+            };
+            for (d, src) in dest.iter_mut().zip(self.lane_buf.iter()).take(self.num_channels) {
+                for (ds, s) in d.iter_mut().zip(src.iter()) {
+                    *ds += *s;
+                }
+            }
+        }
+
+        // Run each group's volume + effect chain, then fold into the master.
+        for group in self.groups.iter_mut() {
+            group.finish(self.num_channels, frames)?;
+            for (m, src) in self.mix_buf.iter_mut().zip(group.accum.iter()).take(self.num_channels) {
+                for (ms, s) in m.iter_mut().zip(src.iter()) {
+                    *ms += *s;
                 }
             }
         }
@@ -2393,10 +3440,18 @@ mod tests {
     }
 
     fn swap_instrument(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: Box<dyn Plugin>) {
+        swap_instrument_at(cmd_tx, 0, inst);
+    }
+
+    fn swap_instrument_at(
+        cmd_tx: &crossbeam_channel::Sender<GraphCommand>,
+        index: usize,
+        inst: Box<dyn Plugin>,
+    ) {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
-                inst: 0,
+                inst: index,
                 instrument: inst,
                 inst_buf,
                 remapper: None,
@@ -2892,6 +3947,45 @@ mod tests {
     }
 
     #[test]
+    fn group_bus_sums_members_and_applies_volume() {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
+        let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
+
+        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2));
+        swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.25));
+        swap_instrument_at(&cmd_tx, 1, ConstInstrument::new(0.25));
+
+        // Group both lanes and halve the group bus volume: (0.25+0.25)*0.5.
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 1, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
+
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(
+            out[0].iter().all(|&s| (s - 0.25).abs() < 1e-6),
+            "grouped sum × group volume should be 0.25, got {}",
+            out[0][0]
+        );
+
+        // Ungroup one member: it now reaches the master directly at full level,
+        // the other stays in the (still 0.5×) group: 0.25 + 0.25*0.5 = 0.375.
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 1, group: None }).unwrap();
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(
+            out[0].iter().all(|&s| (s - 0.375).abs() < 1e-6),
+            "expected 0.375 after ungrouping one member, got {}",
+            out[0][0]
+        );
+
+        drop(return_rx);
+    }
+
+    #[test]
     fn range_filtering() {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
@@ -3136,6 +4230,7 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 default: 0.5,
+                ..Default::default()
             }]
         }
         fn get_parameter(&mut self, idx: u32) -> Option<f32> {
@@ -3155,6 +4250,210 @@ mod tests {
         fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
             anyhow::bail!("no preset {id}")
         }
+    }
+
+    /// Effect that scales its input by a settable `gain` parameter (default 1.0),
+    /// so a modulator driving the gain is observable in the output.
+    struct ParamScaleEffect {
+        gain: f32,
+    }
+
+    impl Plugin for ParamScaleEffect {
+        fn name(&self) -> &str {
+            "ParamScale"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+        fn process(
+            &mut self,
+            _midi_events: &[(u64, [u8; 3])],
+            audio_in: &[&[f32]],
+            audio_out: &mut [&mut [f32]],
+        ) -> anyhow::Result<()> {
+            for (out, inp) in audio_out.iter_mut().zip(audio_in.iter()) {
+                for (o, &i) in out.iter_mut().zip(inp.iter()) {
+                    *o = i * self.gain;
+                }
+            }
+            Ok(())
+        }
+        fn sample_rate(&self) -> f32 {
+            48000.0
+        }
+        fn parameters(&self) -> Vec<ParameterInfo> {
+            vec![ParameterInfo {
+                index: 0,
+                name: "gain".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 1.0,
+                ..Default::default()
+            }]
+        }
+        fn get_parameter(&mut self, idx: u32) -> Option<f32> {
+            if idx == 0 { Some(self.gain) } else { None }
+        }
+        fn set_parameter(&mut self, idx: u32, value: f32) -> anyhow::Result<()> {
+            if idx == 0 {
+                self.gain = value;
+                Ok(())
+            } else {
+                anyhow::bail!("no parameter {idx}")
+            }
+        }
+        fn presets(&self) -> Vec<Preset> {
+            Vec::new()
+        }
+        fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
+            anyhow::bail!("no preset {id}")
+        }
+    }
+
+    /// A group envelope modulator at idle (no notes) with depth 1.0 pulls its
+    /// target parameter from the base all the way down to the parameter's min.
+    /// Here a member instrument's `cutoff` (base 0.5) → 0.0, observable because
+    /// ParamTrackingInstrument outputs its parameter value as audio.
+    #[test]
+    fn group_modulator_drives_member_param() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
+        let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .unwrap();
+
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+
+        cmd_tx
+            .send(GraphCommand::InsertGroupModulator {
+                group: 0,
+                index: 0,
+                source: ModSource::Envelope {
+                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
+                    state: EnvState::Idle, level: 0.0, notes_held: 0,
+                },
+            })
+            .unwrap();
+        cmd_tx
+            .send(GraphCommand::AddGroupModTarget {
+                group: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
+                    depth: 1.0,
+                    base_value: 0.5,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                },
+            })
+            .unwrap();
+
+        // No notes → envelope idle → member cutoff pulled to min (0).
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        assert!(
+            out[0].iter().all(|&s| s.abs() < 1e-6),
+            "idle group envelope at depth 1 should pull member cutoff to 0, got {}",
+            out[0][0]
+        );
+    }
+
+    /// A group modulator can drive one of the group's own bus effects. Here an
+    /// idle envelope (depth 1.0) pulls a bus ParamScaleEffect's gain (base 1.0)
+    /// to 0, silencing the bus.
+    #[test]
+    fn group_modulator_drives_bus_effect() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect {
+                group: 0,
+                index: 0,
+                effect: Box::new(ParamScaleEffect { gain: 1.0 }),
+                mix: 1.0,
+            })
+            .unwrap();
+
+        cmd_tx
+            .send(GraphCommand::InsertGroupModulator {
+                group: 0,
+                index: 0,
+                source: ModSource::Envelope {
+                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
+                    state: EnvState::Idle, level: 0.0, notes_held: 0,
+                },
+            })
+            .unwrap();
+        cmd_tx
+            .send(GraphCommand::AddGroupModTarget {
+                group: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
+                    depth: 1.0,
+                    base_value: 1.0,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                },
+            })
+            .unwrap();
+
+        // No notes → envelope idle → bus gain pulled to 0 (silence). (The
+        // ConstInstrument outputs regardless of notes, so the only thing that
+        // can zero the bus is the modulated gain.)
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        assert!(
+            out[0].iter().all(|&s| s.abs() < 1e-6),
+            "idle group envelope at depth 1 should pull bus gain to 0 (silence), got {}",
+            out[0][0]
+        );
+    }
+
+    /// Group member-target ordinals are fixed up when membership changes:
+    /// a member leaving drops targets pointing at it and shifts higher ordinals
+    /// down; a member joining bumps ordinals at/after the insertion point.
+    #[test]
+    fn group_member_target_fixups() {
+        let mk = |member: usize| Modulator {
+            source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            sample_rate: 48000.0,
+            targets: vec![ModTarget {
+                kind: ModTargetKind::GroupMember { member, slot: 0, param_index: 0 },
+                depth: 0.5,
+                base_value: 0.5,
+                param_min: 0.0,
+                param_max: 1.0,
+            }],
+            last_output: 0.0,
+        };
+        let members = |mods: &[Modulator]| -> Vec<Option<usize>> {
+            mods.iter()
+                .map(|m| match m.targets.first().map(|t| &t.kind) {
+                    Some(ModTargetKind::GroupMember { member, .. }) => Some(*member),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Targets at members 0, 1, 2; member 1 leaves.
+        let mut mods = vec![mk(0), mk(1), mk(2)];
+        fixup_group_member_after_remove(&mut mods, 1);
+        assert_eq!(members(&mods), vec![Some(0), None, Some(1)]);
+
+        // A member joins at ordinal 0: existing ordinals shift up.
+        shift_group_member_after_insert(&mut mods, 0);
+        assert_eq!(members(&mods), vec![Some(1), None, Some(2)]);
     }
 
     #[test]
@@ -3177,7 +4476,6 @@ mod tests {
         cmd_tx
             .send(GraphCommand::InsertModulator {
                 inst: 0,
-                parent_slot: 0,
                 index: 0,
                 source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
             })
@@ -3185,10 +4483,9 @@ mod tests {
         cmd_tx
             .send(GraphCommand::AddModTarget {
                 inst: 0,
-                parent_slot: 0,
                 mod_index: 0,
                 target: ModTarget {
-                    kind: ModTargetKind::PluginParam { param_index: 0 },
+                    kind: ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     depth: 0.5,
                     base_value: 0.5,
                     param_min: 0.0,
@@ -3231,6 +4528,110 @@ mod tests {
     }
 
     #[test]
+    fn envelope_modulator_anchors_base_as_peak() {
+        let (mut graph, cmd_tx, _return_rx) = make_graph(2);
+
+        // Param 0 acts like the oscillator volume: base at max (1.0).
+        let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 1.0 });
+        let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx
+            .send(GraphCommand::SwapInstrument {
+                inst: 0,
+                instrument: inst,
+                inst_buf,
+                remapper: None,
+            })
+            .unwrap();
+
+        // Instant envelope (attack/decay/release = 0, sustain = 1) so each
+        // phase settles within a single buffer.
+        cmd_tx
+            .send(GraphCommand::InsertModulator {
+                inst: 0,
+                index: 0,
+                source: ModSource::Envelope {
+                    attack: 0.0,
+                    decay: 0.0,
+                    sustain: 1.0,
+                    release: 0.0,
+                    state: EnvState::Idle,
+                    level: 0.0,
+                    notes_held: 0,
+                },
+            })
+            .unwrap();
+        cmd_tx
+            .send(GraphCommand::AddModTarget {
+                inst: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::PluginParam { slot: 0, param_index: 0 },
+                    depth: 1.0,
+                    base_value: 1.0,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                },
+            })
+            .unwrap();
+
+        // Idle (no note yet): the envelope holds the param at min — silence.
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        assert!(
+            out[0][0].abs() < 0.01,
+            "idle envelope should pull the param to min, got {}",
+            out[0][0]
+        );
+
+        // Note-on: envelope peaks, restoring the user's base value.
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(
+            (out[0][0] - 1.0).abs() < 0.01,
+            "envelope peak should reach the base value, got {}",
+            out[0][0]
+        );
+
+        // Note-off: release returns the param to min.
+        graph.process(&[note_off(60)], &mut out).unwrap();
+        assert!(
+            out[0][0].abs() < 0.01,
+            "after release the param should return to min, got {}",
+            out[0][0]
+        );
+    }
+
+    #[test]
+    fn envelope_modulator_depth_limits_dip() {
+        // depth 0.5 on base 0.8: idle dips to base - 0.5*(0.8-0.0) = 0.4,
+        // never below — the envelope scales the distance from min to base.
+        let mut m = Modulator::new(
+            ModSource::Envelope {
+                attack: 0.0,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.0,
+                state: EnvState::Idle,
+                level: 0.0,
+                notes_held: 0,
+            },
+            48000.0,
+        );
+        let target = ModTarget {
+            kind: ModTargetKind::PluginParam { slot: 0, param_index: 0 },
+            depth: 0.5,
+            base_value: 0.8,
+            param_min: 0.0,
+            param_max: 1.0,
+        };
+
+        m.tick(64, &[]); // idle: output 0
+        assert!((target.base_value + m.target_offset(&target) - 0.4).abs() < 1e-6);
+
+        m.tick(64, &[note_on(60)]); // instant attack to peak
+        assert!((target.base_value + m.target_offset(&target) - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
     fn modulator_base_value_updated_by_set_parameter() {
         let (mut graph, cmd_tx, _return_rx) = make_graph(2);
 
@@ -3248,7 +4649,6 @@ mod tests {
         cmd_tx
             .send(GraphCommand::InsertModulator {
                 inst: 0,
-                parent_slot: 0,
                 index: 0,
                 source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
             })
@@ -3256,10 +4656,9 @@ mod tests {
         cmd_tx
             .send(GraphCommand::AddModTarget {
                 inst: 0,
-                parent_slot: 0,
                 mod_index: 0,
                 target: ModTarget {
-                    kind: ModTargetKind::PluginParam { param_index: 0 },
+                    kind: ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     depth: 0.5,
                     base_value: 0.5,
                     param_min: 0.0,
@@ -3294,39 +4693,203 @@ mod tests {
     }
 
     #[test]
-    fn remove_effect_removes_its_modulators() {
+    fn lane_modulator_survives_effect_removal() {
         let (mut graph, cmd_tx, _return_rx) = make_graph(2);
 
-        // Set up instrument + 2 effects.
+        // Instrument + 2 effects, plus a lane modulator targeting the
+        // instrument (slot 0).
         swap_instrument(&cmd_tx, ConstInstrument::new(1.0));
         insert_effect(&cmd_tx, 0, Box::new(PassthroughEffect), 1.0);
         insert_effect(&cmd_tx, 1, Box::new(PassthroughEffect), 1.0);
-
-        // Add modulator on effect 1 (parent_slot=2).
         cmd_tx
             .send(GraphCommand::InsertModulator {
                 inst: 0,
-                parent_slot: 2,
                 index: 0,
                 source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
             })
             .unwrap();
-
-        let mut out = make_output();
-        graph.process(&[note_on(60)], &mut out).unwrap();
-
-        // Remove effect at index 0. The modulators on effect 1 (now effect 0)
-        // should still be there.
         cmd_tx
-            .send(GraphCommand::RemoveEffect {
+            .send(GraphCommand::AddModTarget {
                 inst: 0,
-                index: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::PluginParam { slot: 0, param_index: 0 },
+                    depth: 0.5,
+                    base_value: 0.5,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                },
             })
             .unwrap();
 
-        // Should not crash — process after removing effect.
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+
+        // Removing an effect must remap target slots without crashing.
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
         let mut out = make_output();
         graph.process(&[note_on(60)], &mut out).unwrap();
         assert!(out[0].iter().all(|&s| s.is_finite()));
+    }
+
+    #[test]
+    fn modulator_targets_effect_slot() {
+        // A lane modulator whose target points at slot 1 drives the effect's
+        // parameter, not the instrument's — the whole point of lane scoping.
+        let mut inst: Option<Box<dyn Plugin>> =
+            Some(Box::new(ParamTrackingInstrument { param_value: 0.5 }));
+        let mut effects: Vec<Box<dyn Plugin>> =
+            vec![Box::new(ParamTrackingInstrument { param_value: 0.5 })];
+
+        let mut m = Modulator::new(
+            ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            48000.0,
+        );
+        m.targets = vec![ModTarget {
+            kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+            depth: 1.0,
+            base_value: 0.5,
+            param_min: 0.0,
+            param_max: 1.0,
+        }];
+        m.last_output = 1.0; // force the LFO to its peak
+
+        apply_modulators_to_chain(&[m], &mut inst, &mut effects);
+
+        // Effect param pushed to base + depth*range (clamped); instrument untouched.
+        assert!(
+            effects[0].get_parameter(0).unwrap() > 0.9,
+            "effect param should be modulated up, got {:?}",
+            effects[0].get_parameter(0)
+        );
+        assert_eq!(
+            inst.unwrap().get_parameter(0),
+            Some(0.5),
+            "instrument param should be untouched"
+        );
+    }
+
+    #[test]
+    fn slot_remap_helpers() {
+        // A lane modulator with targets on instrument (0), effect 1 (slot 2),
+        // and effect 2 (slot 3).
+        let target = |slot: usize| ModTarget {
+            kind: ModTargetKind::PluginParam { slot, param_index: 0 },
+            depth: 0.5,
+            base_value: 0.0,
+            param_min: 0.0,
+            param_max: 1.0,
+        };
+        let slots = |mods: &[Modulator]| -> Vec<usize> {
+            mods[0]
+                .targets
+                .iter()
+                .filter_map(|t| match t.kind {
+                    ModTargetKind::PluginParam { slot, .. } => Some(slot),
+                    _ => None,
+                })
+                .collect()
+        };
+        let make = || {
+            let mut m = Modulator::new(
+                ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                48000.0,
+            );
+            m.targets = vec![target(0), target(2), target(3)];
+            vec![m]
+        };
+
+        // Insert an effect at index 0 (slot 1): slots >= 1 shift up.
+        let mut mods = make();
+        shift_slots_after_insert(&mut mods, 0);
+        assert_eq!(slots(&mods), vec![0, 3, 4]);
+
+        // Remove effect at index 0 (slot 1): nothing on slot 1, slots > 1 down.
+        let mut mods = make();
+        fixup_slots_after_remove(&mut mods, 0);
+        assert_eq!(slots(&mods), vec![0, 1, 2]);
+
+        // Remove effect at index 1 (slot 2): drop that target, shift slot 3→2.
+        let mut mods = make();
+        fixup_slots_after_remove(&mut mods, 1);
+        assert_eq!(slots(&mods), vec![0, 2]);
+
+        // Reorder effect from index 0 (slot 1) to index 2 (slot 3): effect at
+        // slot 2 → 1, slot 3 → 2 (the moved one isn't targeted here).
+        let mut mods = make();
+        remap_slots_after_reorder(&mut mods, 0, 2);
+        assert_eq!(slots(&mods), vec![0, 1, 2]);
+    }
+
+    // --- Pattern playback transposition ---
+
+    /// A C major triad pattern (C4 E4 G4), one buffer of ons then offs.
+    fn make_pattern_player(in_key: bool) -> PatternPlayer {
+        let mut p = PatternPlayer::new(48000.0);
+        p.pattern = Pattern {
+            events: vec![
+                PatternEvent { frame: 0, status: 0x90, note: 60, velocity: 100 },
+                PatternEvent { frame: 0, status: 0x90, note: 64, velocity: 100 },
+                PatternEvent { frame: 0, status: 0x90, note: 67, velocity: 100 },
+                PatternEvent { frame: 500, status: 0x80, note: 60, velocity: 0 },
+                PatternEvent { frame: 500, status: 0x80, note: 64, velocity: 0 },
+                PatternEvent { frame: 500, status: 0x80, note: 67, velocity: 0 },
+            ],
+            length_samples: 1000,
+        };
+        p.base_note = Some(60);
+        p.enabled = true;
+        p.in_key = in_key;
+        p
+    }
+
+    fn note_ons(events: &[(u64, [u8; 3])]) -> Vec<u8> {
+        events.iter()
+            .filter(|(_, b)| b[0] & 0xF0 == 0x90 && b[2] > 0)
+            .map(|(_, b)| b[1])
+            .collect()
+    }
+
+    fn note_offs(events: &[(u64, [u8; 3])]) -> Vec<u8> {
+        events.iter()
+            .filter(|(_, b)| b[0] & 0xF0 == 0x80 || (b[0] & 0xF0 == 0x90 && b[2] == 0))
+            .map(|(_, b)| b[1])
+            .collect()
+    }
+
+    #[test]
+    fn pattern_chromatic_preserves_intervals() {
+        let mut p = make_pattern_player(false);
+        let scale = ScaleSetting::default(); // C Major
+        // Trigger on D4: chromatic shift +2 gives a D major triad (F# off-scale).
+        let events = p.process(&[note_on(62)], 256, scale).to_vec();
+        assert_eq!(note_ons(&events), vec![62, 66, 69]);
+    }
+
+    #[test]
+    fn pattern_in_key_transposes_by_scale_degrees() {
+        let mut p = make_pattern_player(true);
+        let scale = ScaleSetting::default(); // C Major
+        // Trigger on D4 (2nd degree): C E G shifts one degree to D F A —
+        // the diatonic D minor triad.
+        let events = p.process(&[note_on(62)], 256, scale).to_vec();
+        assert_eq!(note_ons(&events), vec![62, 65, 69]);
+
+        // Note-offs (pattern frame 500, second buffer) release the same
+        // transposed notes that were started.
+        let events = p.process(&[], 256, scale).to_vec();
+        let mut offs = note_offs(&events);
+        offs.sort_unstable();
+        assert_eq!(offs, vec![62, 65, 69]);
+    }
+
+    #[test]
+    fn pattern_in_key_identity_on_base_note() {
+        let mut p = make_pattern_player(true);
+        // A minor scale: the C major pattern is off-root but in-scale.
+        let scale = ScaleSetting { root: 9, scale_idx: 1 };
+        // Triggering the base note plays the pattern back unchanged.
+        let events = p.process(&[note_on(60)], 256, scale).to_vec();
+        assert_eq!(note_ons(&events), vec![60, 64, 67]);
     }
 }

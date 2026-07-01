@@ -11,6 +11,12 @@ pub use text_input::TextInput;
 pub use filter_list::FilterList;
 
 use ratatui::layout::Rect;
+use ratatui::style::Color;
+
+/// Dim color for unselected/secondary UI text: a medium gray, readable on
+/// dark terminals (unlike ANSI DarkGray) but clearly quieter than selected
+/// (white) text. Uses the xterm-256 grayscale ramp.
+pub const DIM: Color = Color::Indexed(245);
 
 /// Compute a centered rectangle within `area`.
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

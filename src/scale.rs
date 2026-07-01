@@ -71,6 +71,44 @@ impl ScaleSetting {
         }
     }
 
+    /// Map a note to its position in this scale: a scale index (degrees count
+    /// across octaves, anchored at the root) plus a chromatic offset in
+    /// semitones for off-scale notes. The offset is measured from the nearest
+    /// scale tone at or below the note, so `note_at(index_of(n)) == n` always.
+    pub fn index_of(&self, note: u8) -> (i32, u8) {
+        let intervals = SCALES[self.scale_idx].intervals;
+        let rel = note as i32 - self.root as i32;
+        let octave = rel.div_euclid(12);
+        let pc = rel.rem_euclid(12) as u8;
+        // intervals[0] is always 0, so a position always exists.
+        let pos = intervals.iter().rposition(|&iv| iv <= pc).unwrap_or(0);
+        (
+            octave * intervals.len() as i32 + pos as i32,
+            pc - intervals[pos],
+        )
+    }
+
+    /// Inverse of `index_of`: the MIDI note (possibly out of 0..=127) at a
+    /// scale index, shifted up by a chromatic offset.
+    pub fn note_at(&self, index: i32, offset: u8) -> i32 {
+        let intervals = SCALES[self.scale_idx].intervals;
+        let len = intervals.len() as i32;
+        let octave = index.div_euclid(len);
+        let pos = index.rem_euclid(len) as usize;
+        self.root as i32 + octave * 12 + intervals[pos] as i32 + offset as i32
+    }
+
+    /// Transpose `note` by scale degrees: the degree distance from `from` to
+    /// `to`, instead of their semitone distance. Off-scale `from`/`to` snap to
+    /// the scale tone below; an off-scale `note` keeps its chromatic offset
+    /// from the scale tone below (passing tones survive). `from == to` always
+    /// returns `note` unchanged. The result is clamped to MIDI range.
+    pub fn transpose_in_key(&self, note: u8, from: u8, to: u8) -> u8 {
+        let shift = self.index_of(to).0 - self.index_of(from).0;
+        let (index, offset) = self.index_of(note);
+        self.note_at(index + shift, offset).clamp(0, 127) as u8
+    }
+
     /// Pretty display name, e.g. "C Major", "F# Dorian".
     pub fn display(&self) -> String {
         format!(
@@ -170,5 +208,65 @@ mod tests {
         assert_eq!(s.degree(64), Some("3"));   // E
         assert_eq!(s.degree(67), Some("5"));   // G
         assert_eq!(s.degree(61), None);        // C#
+    }
+
+    #[test]
+    fn index_round_trip() {
+        let s = ScaleSetting { root: 9, scale_idx: 1 }; // A minor
+        for note in 0..=127u8 {
+            let (index, offset) = s.index_of(note);
+            assert_eq!(s.note_at(index, offset), note as i32);
+        }
+    }
+
+    #[test]
+    fn in_key_triad_qualities() {
+        let s = ScaleSetting { root: 0, scale_idx: 0 }; // C major
+        // C major triad on each degree of C major yields the diatonic triads.
+        let triad = [60u8, 64, 67]; // C4 E4 G4
+        let on = |trigger: u8| -> Vec<u8> {
+            triad.iter().map(|&n| s.transpose_in_key(n, 60, trigger)).collect()
+        };
+        assert_eq!(on(60), vec![60, 64, 67]); // C:  C E G (identity)
+        assert_eq!(on(62), vec![62, 65, 69]); // D:  D F A   (minor)
+        assert_eq!(on(64), vec![64, 67, 71]); // E:  E G B   (minor)
+        assert_eq!(on(65), vec![65, 69, 72]); // F:  F A C   (major)
+        assert_eq!(on(67), vec![67, 71, 74]); // G:  G B D   (major)
+        assert_eq!(on(69), vec![69, 72, 76]); // A:  A C E   (minor)
+        assert_eq!(on(71), vec![71, 74, 77]); // B:  B D F   (diminished)
+        assert_eq!(on(72), vec![72, 76, 79]); // C5: octave up
+        assert_eq!(on(48), vec![48, 52, 55]); // C3: octave down
+    }
+
+    #[test]
+    fn in_key_off_scale_notes_keep_offset() {
+        let s = ScaleSetting { root: 0, scale_idx: 0 }; // C major
+        // Eb4 (63) is off-scale: D + 1 semitone. Shift up one degree (C->D):
+        // D becomes E, so Eb maps to E + 1 = F (65).
+        assert_eq!(s.transpose_in_key(63, 60, 62), 65);
+        // Off-scale trigger snaps down: C#4 trigger behaves like C4.
+        assert_eq!(s.transpose_in_key(64, 60, 61), 64);
+    }
+
+    #[test]
+    fn in_key_chromatic_scale_is_semitone_shift() {
+        let s = ScaleSetting { root: 0, scale_idx: 14 }; // Chromatic
+        assert_eq!(SCALES[14].short, "chromatic");
+        for &(note, from, to) in &[(60u8, 60u8, 63u8), (64, 60, 61), (67, 62, 59)] {
+            let expected = (note as i32 + to as i32 - from as i32).clamp(0, 127) as u8;
+            assert_eq!(s.transpose_in_key(note, from, to), expected);
+        }
+    }
+
+    #[test]
+    fn in_key_pentatonic() {
+        let s = ScaleSetting { root: 0, scale_idx: 9 }; // C major pentatonic
+        assert_eq!(SCALES[9].short, "maj pent");
+        // C D E G A — shifting C4 up one degree from trigger C->D gives D,
+        // E->G (next degree), G->A, A->C5.
+        assert_eq!(s.transpose_in_key(60, 60, 62), 62);
+        assert_eq!(s.transpose_in_key(64, 60, 62), 67);
+        assert_eq!(s.transpose_in_key(67, 60, 62), 69);
+        assert_eq!(s.transpose_in_key(69, 60, 62), 72);
     }
 }

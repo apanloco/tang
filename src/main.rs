@@ -108,10 +108,23 @@ fn main() -> anyhow::Result<()> {
             let params = p.parameters();
             println!("  Parameters:    {}", params.len());
             for param in &params {
-                println!(
-                    "    [{}] {} (min={}, max={}, default={})",
-                    param.index, param.name, param.min, param.max, param.default
-                );
+                if let Some(labels) = &param.labels {
+                    println!(
+                        "    [{}] {} ({}, default={})",
+                        param.index,
+                        param.name,
+                        labels.join("|"),
+                        labels
+                            .get(param.default.round() as usize)
+                            .map(|s| s.as_str())
+                            .unwrap_or("?"),
+                    );
+                } else {
+                    println!(
+                        "    [{}] {} (min={}, max={}, default={})",
+                        param.index, param.name, param.min, param.max, param.default
+                    );
+                }
             }
             let presets = p.presets();
             if presets.is_empty() {
@@ -181,7 +194,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
             range: None,
             transpose: 0,
             instrument: Some(session::PluginConfig {
-                plugin: "builtin:sine".into(),
+                plugin: "builtin:osc".into(),
                 preset: None,
                 volume: 1.0,
                 pitch_bend_range: 2.0,
@@ -191,7 +204,9 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
             }),
             effects: vec![],
             pattern: None,
+            group: None,
         }],
+        groups: vec![],
         piano: None,
     };
 
@@ -224,63 +239,50 @@ fn dirs_config() -> anyhow::Result<std::path::PathBuf> {
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
-/// Returns the loaded modulators for the TUI model.
-fn load_modulators(
-    mod_configs: &[session::ModulatorConfig],
-    parent_slot: usize,
-    parent_params: &[plugin::ParameterInfo],
+/// Build the lane's modulators (lane-scoped) and send them to the audio
+/// thread. Targets address plugins by chain slot (0 = instrument, 1..N =
+/// effect). `chain_params[slot]` holds that plugin's parameters for name→index
+/// resolution.
+///
+/// Migration: modulators come from the instrument's config (slot defaults to
+/// the target's `slot`, i.e. instrument unless set) and — for older sessions —
+/// from each effect's config (those target their own effect, so their slot is
+/// forced to that effect, and their cross-mod sibling indices are offset by
+/// where the effect's group lands in the merged lane list).
+fn load_lane_modulators(
+    inst_config: &session::InstrumentSlotConfig,
+    chain_params: &[Vec<plugin::ParameterInfo>],
     inst_idx: usize,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
 ) -> anyhow::Result<Vec<tui::LoadedModulator>> {
+    // Gather modulator groups with their default slot (instrument = 0, each
+    // effect = its slot) and their base index in the merged lane list.
+    let mut groups: Vec<(&[session::ModulatorConfig], usize)> = Vec::new();
+    if let Some(ref inst) = inst_config.instrument {
+        groups.push((&inst.modulators, 0));
+    }
+    for (i, fx) in inst_config.effects.iter().enumerate() {
+        groups.push((&fx.modulators, i + 1));
+    }
+    let mut bases = Vec::with_capacity(groups.len());
+    let mut acc = 0usize;
+    for (configs, _) in &groups {
+        bases.push(acc);
+        acc += configs.len();
+    }
+
     let mut loaded = Vec::new();
-    for (mod_idx, mod_config) in mod_configs.iter().enumerate() {
-        let (source, loaded_source, desc) = match mod_config.mod_type.as_str() {
-            "envelope" => {
-                let source = plugin::chain::ModSource::Envelope {
-                    attack: mod_config.attack as f32,
-                    decay: mod_config.decay as f32,
-                    sustain: mod_config.sustain as f32,
-                    release: mod_config.release as f32,
-                    state: plugin::chain::EnvState::Idle,
-                    level: 0.0,
-                    notes_held: 0,
-                };
-                let loaded_source = tui::LoadedModSource::Envelope {
-                    attack: mod_config.attack as f32,
-                    decay: mod_config.decay as f32,
-                    sustain: mod_config.sustain as f32,
-                    release: mod_config.release as f32,
-                };
-                (source, loaded_source, "ADSR envelope".to_string())
-            }
-            _ => {
-                // Default: LFO.
-                let waveform = plugin::chain::LfoWaveform::from_str(&mod_config.waveform)
-                    .unwrap_or_else(|| {
-                        log::warn!(
-                            "Unknown waveform '{}', defaulting to sine",
-                            mod_config.waveform
-                        );
-                        plugin::chain::LfoWaveform::Sine
-                    });
-                let source = plugin::chain::ModSource::Lfo {
-                    waveform,
-                    rate: mod_config.rate as f32,
-                    phase: 0.0,
-                };
-                let loaded_source = tui::LoadedModSource::Lfo {
-                    waveform,
-                    rate: mod_config.rate as f32,
-                };
-                let desc = format!("{} {:.1}Hz", waveform.name(), mod_config.rate);
-                (source, loaded_source, desc)
-            }
-        };
+    let mut lane_index = 0usize;
+    for (gi, (mod_configs, default_slot)) in groups.iter().enumerate() {
+        let group_base = bases[gi];
+        let is_instrument_group = *default_slot == 0;
+        for mod_config in mod_configs.iter() {
+            let mod_idx = lane_index;
+        let (source, loaded_source, desc) = build_mod_source(mod_config);
 
         cmd_tx
             .send(plugin::chain::GraphCommand::InsertModulator {
                 inst: inst_idx,
-                parent_slot,
                 index: mod_idx,
                 source,
             })
@@ -289,47 +291,57 @@ fn load_modulators(
         let mut loaded_targets: Vec<tui::LoadedModTarget> = Vec::new();
         for target_config in &mod_config.targets {
             // Determine the target kind and associated metadata.
-            let (kind, label, param_min, param_max, base_value) =
+            let (kind, slot, label, param_min, param_max, base_value) =
                 if let Some(ref param_name) = target_config.param {
-                    // Plugin parameter target.
-                    let param_info = parent_params.iter().find(|p| p.name == *param_name);
+                    // Plugin parameter target. Instrument-group modulators
+                    // honor the target's `slot` (instrument unless set);
+                    // migrated effect modulators target their own effect.
+                    let slot = if is_instrument_group { target_config.slot } else { *default_slot };
+                    let param_info = chain_params
+                        .get(slot)
+                        .and_then(|ps| ps.iter().find(|p| p.name == *param_name));
                     let param_info = match param_info {
                         Some(p) => p,
                         None => {
                             log::warn!(
-                                "Modulator target param '{}' not found in parent slot {}",
-                                param_name,
-                                parent_slot,
+                                "Modulator target param '{param_name}' not found in slot {slot}",
                             );
                             continue;
                         }
                     };
                     (
-                        plugin::chain::ModTargetKind::PluginParam { param_index: param_info.index },
+                        plugin::chain::ModTargetKind::PluginParam { slot, param_index: param_info.index },
+                        slot,
                         param_info.name.clone(),
                         param_info.min,
                         param_info.max,
                         param_info.default,
                     )
                 } else if let Some(mi) = target_config.mod_rate {
+                    let mi = mi + group_base;
                     (plugin::chain::ModTargetKind::ModulatorRate { mod_index: mi },
-                     format!("Mod {} rate", mi), 0.01, 50.0, 1.0)
+                     0, format!("Mod {mi} rate"), 0.01, 50.0, 1.0)
                 } else if let Some(ref pair) = target_config.mod_depth {
-                    let (mi, ti) = (pair.first().copied().unwrap_or(0), pair.get(1).copied().unwrap_or(0));
+                    let mi = pair.first().copied().unwrap_or(0) + group_base;
+                    let ti = pair.get(1).copied().unwrap_or(0);
                     (plugin::chain::ModTargetKind::ModulatorDepth { mod_index: mi, target_index: ti },
-                     format!("Mod {} depth {}", mi, ti), 0.0, 1.0, 0.5)
+                     0, format!("Mod {mi} depth {ti}"), 0.0, 1.0, 0.5)
                 } else if let Some(mi) = target_config.mod_attack {
+                    let mi = mi + group_base;
                     (plugin::chain::ModTargetKind::ModulatorAttack { mod_index: mi },
-                     format!("Mod {} attack", mi), 0.001, 10.0, 0.01)
+                     0, format!("Mod {mi} attack"), 0.001, 10.0, 0.01)
                 } else if let Some(mi) = target_config.mod_decay {
+                    let mi = mi + group_base;
                     (plugin::chain::ModTargetKind::ModulatorDecay { mod_index: mi },
-                     format!("Mod {} decay", mi), 0.001, 10.0, 0.3)
+                     0, format!("Mod {mi} decay"), 0.001, 10.0, 0.3)
                 } else if let Some(mi) = target_config.mod_sustain {
+                    let mi = mi + group_base;
                     (plugin::chain::ModTargetKind::ModulatorSustain { mod_index: mi },
-                     format!("Mod {} sustain", mi), 0.0, 1.0, 0.7)
+                     0, format!("Mod {mi} sustain"), 0.0, 1.0, 0.7)
                 } else if let Some(mi) = target_config.mod_release {
+                    let mi = mi + group_base;
                     (plugin::chain::ModTargetKind::ModulatorRelease { mod_index: mi },
-                     format!("Mod {} release", mi), 0.001, 10.0, 0.5)
+                     0, format!("Mod {mi} release"), 0.001, 10.0, 0.5)
                 } else {
                     log::warn!("Modulator target has no param or mod_* field, skipping");
                     continue;
@@ -346,29 +358,21 @@ fn load_modulators(
             cmd_tx
                 .send(plugin::chain::GraphCommand::AddModTarget {
                     inst: inst_idx,
-                    parent_slot,
                     mod_index: mod_idx,
                     target,
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
             loaded_targets.push(tui::LoadedModTarget {
+                slot,
                 param_name: label.clone(),
-                param_index: match &kind {
-                    plugin::chain::ModTargetKind::PluginParam { param_index } => *param_index,
-                    _ => 0,
-                },
+                kind,
                 depth: target_config.depth as f32,
                 param_min,
                 param_max,
             });
 
-            log::info!(
-                "Modulator {} target: '{}' depth={}",
-                mod_idx,
-                label,
-                target_config.depth,
-            );
+            log::info!("Modulator {mod_idx} target: '{label}' (slot {slot}) depth={}", target_config.depth);
         }
 
         loaded.push(tui::LoadedModulator {
@@ -376,13 +380,196 @@ fn load_modulators(
             targets: loaded_targets,
         });
 
-        log::info!(
-            "Loaded modulator {} for inst={} slot={}: {}",
-            mod_idx,
-            inst_idx,
-            parent_slot,
-            desc,
-        );
+        log::info!("Loaded lane modulator {mod_idx} for inst={inst_idx}: {desc}");
+        lane_index += 1;
+        }
+    }
+    Ok(loaded)
+}
+
+/// Build the audio-thread + TUI source representations and a description for a
+/// modulator config. Shared by the lane and group modulator loaders.
+fn build_mod_source(
+    mod_config: &session::ModulatorConfig,
+) -> (plugin::chain::ModSource, tui::LoadedModSource, String) {
+    match mod_config.mod_type.as_str() {
+        "envelope" => {
+            let source = plugin::chain::ModSource::Envelope {
+                attack: mod_config.attack as f32,
+                decay: mod_config.decay as f32,
+                sustain: mod_config.sustain as f32,
+                release: mod_config.release as f32,
+                state: plugin::chain::EnvState::Idle,
+                level: 0.0,
+                notes_held: 0,
+            };
+            let loaded_source = tui::LoadedModSource::Envelope {
+                attack: mod_config.attack as f32,
+                decay: mod_config.decay as f32,
+                sustain: mod_config.sustain as f32,
+                release: mod_config.release as f32,
+            };
+            (source, loaded_source, "ADSR envelope".to_string())
+        }
+        _ => {
+            // Default: LFO.
+            let waveform = plugin::chain::LfoWaveform::from_str(&mod_config.waveform)
+                .unwrap_or_else(|| {
+                    log::warn!(
+                        "Unknown waveform '{}', defaulting to sine",
+                        mod_config.waveform
+                    );
+                    plugin::chain::LfoWaveform::Sine
+                });
+            let source = plugin::chain::ModSource::Lfo {
+                waveform,
+                rate: mod_config.rate as f32,
+                phase: 0.0,
+            };
+            let loaded_source = tui::LoadedModSource::Lfo {
+                waveform,
+                rate: mod_config.rate as f32,
+            };
+            let desc = format!("{} {:.1}Hz", waveform.name(), mod_config.rate);
+            (source, loaded_source, desc)
+        }
+    }
+}
+
+/// Build a group's modulators and send them to the audio thread. Targets
+/// address a member instrument's chain (`member` + `slot`), one of the group's
+/// own bus effects (`bus`), or a sibling group modulator (`mod_*`).
+/// `member_chains[ordinal][slot]` holds each member's plugin params (slot 0 =
+/// instrument); `bus_params[i]` holds bus effect `i`'s params.
+fn load_group_modulators(
+    group_config: &session::GroupConfig,
+    g_idx: usize,
+    member_chains: &[Vec<Vec<plugin::ParameterInfo>>],
+    bus_params: &[Vec<plugin::ParameterInfo>],
+    cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
+) -> anyhow::Result<Vec<tui::LoadedModulator>> {
+    let mut loaded = Vec::new();
+    for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
+        let (source, loaded_source, desc) = build_mod_source(mod_config);
+        cmd_tx
+            .send(plugin::chain::GraphCommand::InsertGroupModulator {
+                group: g_idx,
+                index: mod_idx,
+                source,
+            })
+            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+
+        let mut loaded_targets: Vec<tui::LoadedModTarget> = Vec::new();
+        for target_config in &mod_config.targets {
+            let (kind, slot, label, param_min, param_max, base_value) =
+                if let Some(member) = target_config.member {
+                    let Some(ref param_name) = target_config.param else {
+                        log::warn!("Group modulator member target without param, skipping");
+                        continue;
+                    };
+                    let slot = target_config.slot;
+                    let param_info = member_chains
+                        .get(member)
+                        .and_then(|chain| chain.get(slot))
+                        .and_then(|ps| ps.iter().find(|p| p.name == *param_name));
+                    let Some(param_info) = param_info else {
+                        log::warn!(
+                            "Group modulator target param '{param_name}' not found (member {member}, slot {slot})"
+                        );
+                        continue;
+                    };
+                    (
+                        plugin::chain::ModTargetKind::GroupMember {
+                            member,
+                            slot,
+                            param_index: param_info.index,
+                        },
+                        slot,
+                        param_info.name.clone(),
+                        param_info.min,
+                        param_info.max,
+                        param_info.default,
+                    )
+                } else if let Some(bus) = target_config.bus {
+                    let Some(ref param_name) = target_config.param else {
+                        log::warn!("Group modulator bus target without param, skipping");
+                        continue;
+                    };
+                    let param_info = bus_params
+                        .get(bus)
+                        .and_then(|ps| ps.iter().find(|p| p.name == *param_name));
+                    let Some(param_info) = param_info else {
+                        log::warn!(
+                            "Group modulator target param '{param_name}' not found (bus {bus})"
+                        );
+                        continue;
+                    };
+                    (
+                        plugin::chain::ModTargetKind::GroupBus {
+                            effect_index: bus,
+                            param_index: param_info.index,
+                        },
+                        0,
+                        param_info.name.clone(),
+                        param_info.min,
+                        param_info.max,
+                        param_info.default,
+                    )
+                } else if let Some(mi) = target_config.mod_rate {
+                    (plugin::chain::ModTargetKind::ModulatorRate { mod_index: mi },
+                     0, format!("Mod {mi} rate"), 0.01, 50.0, 1.0)
+                } else if let Some(ref pair) = target_config.mod_depth {
+                    let mi = pair.first().copied().unwrap_or(0);
+                    let ti = pair.get(1).copied().unwrap_or(0);
+                    (plugin::chain::ModTargetKind::ModulatorDepth { mod_index: mi, target_index: ti },
+                     0, format!("Mod {mi} depth {ti}"), 0.0, 1.0, 0.5)
+                } else if let Some(mi) = target_config.mod_attack {
+                    (plugin::chain::ModTargetKind::ModulatorAttack { mod_index: mi },
+                     0, format!("Mod {mi} attack"), 0.001, 10.0, 0.01)
+                } else if let Some(mi) = target_config.mod_decay {
+                    (plugin::chain::ModTargetKind::ModulatorDecay { mod_index: mi },
+                     0, format!("Mod {mi} decay"), 0.001, 10.0, 0.3)
+                } else if let Some(mi) = target_config.mod_sustain {
+                    (plugin::chain::ModTargetKind::ModulatorSustain { mod_index: mi },
+                     0, format!("Mod {mi} sustain"), 0.0, 1.0, 0.7)
+                } else if let Some(mi) = target_config.mod_release {
+                    (plugin::chain::ModTargetKind::ModulatorRelease { mod_index: mi },
+                     0, format!("Mod {mi} release"), 0.001, 10.0, 0.5)
+                } else {
+                    log::warn!("Group modulator target has no param/member/bus/mod_* field, skipping");
+                    continue;
+                };
+
+            let target = plugin::chain::ModTarget {
+                kind: kind.clone(),
+                depth: target_config.depth as f32,
+                base_value,
+                param_min,
+                param_max,
+            };
+            cmd_tx
+                .send(plugin::chain::GraphCommand::AddGroupModTarget {
+                    group: g_idx,
+                    mod_index: mod_idx,
+                    target,
+                })
+                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+
+            loaded_targets.push(tui::LoadedModTarget {
+                slot,
+                param_name: label,
+                kind,
+                depth: target_config.depth as f32,
+                param_min,
+                param_max,
+            });
+        }
+
+        loaded.push(tui::LoadedModulator {
+            source: loaded_source,
+            targets: loaded_targets,
+        });
+        log::info!("Loaded group modulator {mod_idx} for group={g_idx}: {desc}");
     }
     Ok(loaded)
 }
@@ -489,6 +676,8 @@ fn run_session(
     // Pattern recording completion channel
     let (pattern_tx, pattern_rx) = crossbeam_channel::bounded::<plugin::chain::PatternNotification>(64);
     graph.set_pattern_tx(pattern_tx.clone());
+    // Give the audio thread the live piano scale for in-key pattern transposition.
+    graph.set_piano_filter(piano_filter.clone());
 
     // Start MIDI input
     if let Some(sp) = &splash {
@@ -513,6 +702,78 @@ fn run_session(
     // Build TUI metadata while loading plugins into the graph.
     let mut loaded_instruments: Vec<tui::LoadedInstrument> = Vec::new();
 
+    // Set up submix groups first, so instruments can reference them by index.
+    let mut loaded_groups: Vec<tui::LoadedGroup> = Vec::new();
+    for (g_idx, group_config) in config.groups.iter().enumerate() {
+        cmd_tx
+            .send(plugin::chain::GraphCommand::AddGroup)
+            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        if (group_config.volume - 1.0).abs() > f32::EPSILON {
+            cmd_tx
+                .send(plugin::chain::GraphCommand::SetGroupVolume {
+                    group: g_idx,
+                    value: group_config.volume,
+                })
+                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        }
+        let mut group_effects: Vec<tui::LoadedPlugin> = Vec::new();
+        for (fx_idx, effect_config) in group_config.effects.iter().enumerate() {
+            let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
+            let mut effect = plugin::load(&effect_source, sample_rate_f, max_block_size, &runtime)?;
+            if let Some(ref preset_name) = effect_config.preset {
+                session::apply_preset(&mut effect, preset_name);
+            }
+            let effect_presets = effect.presets();
+            let effect_params = effect.parameters();
+            let effect_baselines: Vec<f32> = effect_params
+                .iter()
+                .map(|p| effect.get_parameter(p.index).unwrap_or(p.default))
+                .collect();
+            let effect_name = effect.name().to_string();
+            cmd_tx
+                .send(plugin::chain::GraphCommand::InsertGroupEffect {
+                    group: g_idx,
+                    index: fx_idx,
+                    effect,
+                    mix: effect_config.mix,
+                })
+                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+            let mut fx_values = effect_baselines.clone();
+            for (name, &value) in &effect_config.params {
+                if let Some(info) = effect_params.iter().find(|p| p.name == *name) {
+                    let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGroupParameter {
+                        group: g_idx,
+                        index: fx_idx,
+                        param_index: info.index,
+                        value: value as f32,
+                    });
+                    if let Some(v) = fx_values.get_mut(info.index as usize) {
+                        *v = value as f32;
+                    }
+                }
+            }
+            group_effects.push(tui::LoadedPlugin {
+                name: effect_name,
+                id: effect_source,
+                is_instrument: false,
+                params: effect_params,
+                param_defaults: effect_baselines,
+                param_values: fx_values,
+                presets: effect_presets,
+                current_preset: effect_config.preset.clone(),
+                mix: effect_config.mix as f32,
+            });
+        }
+        loaded_groups.push(tui::LoadedGroup {
+            name: group_config.name.clone(),
+            volume: group_config.volume,
+            effects: group_effects,
+            // Group modulators are loaded after the instruments, once member
+            // chains are known (so member-target param names resolve).
+            modulators: Vec::new(),
+        });
+    }
+
     // Set up the graph structure: add instrument lanes.
     for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
         cmd_tx
@@ -520,6 +781,16 @@ fn run_session(
                 range: inst_config.range,
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+
+        // Assign group membership (groups were created above).
+        if inst_config.group.is_some() {
+            cmd_tx
+                .send(plugin::chain::GraphCommand::SetLaneGroup {
+                    inst: inst_idx,
+                    group: inst_config.group,
+                })
+                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        }
 
         // Load instrument (if present)
         let loaded_instrument = if let Some(plug_config) = &inst_config.instrument {
@@ -627,15 +898,6 @@ fn run_session(
                 }
             }
 
-            // Load instrument modulators
-            let inst_mods = load_modulators(
-                &plug_config.modulators,
-                0, // parent_slot = instrument
-                &inst_params,
-                inst_idx,
-                &cmd_tx,
-            )?;
-
             Some(tui::LoadedPlugin {
                 name: inst_name,
                 id: instrument_source,
@@ -643,7 +905,6 @@ fn run_session(
                 params: inst_params,
                 param_defaults: inst_baselines,
                 param_values: inst_values,
-                modulators: inst_mods,
                 presets: inst_presets,
                 current_preset: inst_current_preset,
                 mix: 1.0,
@@ -730,15 +991,6 @@ fn run_session(
                 }
             }
 
-            // Load effect modulators
-            let fx_mods = load_modulators(
-                &effect_config.modulators,
-                fx_idx + 1, // parent_slot for effects
-                &effect_params,
-                inst_idx,
-                &cmd_tx,
-            )?;
-
             loaded_effects.push(tui::LoadedPlugin {
                 name: effect_name,
                 id: effect_source,
@@ -746,10 +998,26 @@ fn run_session(
                 params: effect_params,
                 param_defaults: effect_baselines,
                 param_values: fx_values,
-                modulators: fx_mods,
                 presets: effect_presets,
                 current_preset: effect_current_preset,
                 mix: effect_config.mix as f32,
+            });
+        }
+
+        // Build the lane's modulators now that every plugin (and its params)
+        // is loaded, so targets can resolve against any slot in the chain.
+        let chain_params: Vec<Vec<plugin::ParameterInfo>> =
+            std::iter::once(loaded_instrument.as_ref().map(|p| p.params.clone()).unwrap_or_default())
+                .chain(loaded_effects.iter().map(|fx| fx.params.clone()))
+                .collect();
+        let loaded_modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, &cmd_tx)?;
+
+        // Apply instrument transpose (the TUI re-sends this on startup, but
+        // play mode has no other path that applies it).
+        if inst_config.transpose != 0 {
+            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetTranspose {
+                inst: inst_idx,
+                semitones: inst_config.transpose,
             });
         }
 
@@ -774,6 +1042,7 @@ fn run_session(
                 inst: inst_idx,
                 pattern,
                 base_note: p.base_note,
+                in_key: p.in_key,
             });
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm: p.bpm });
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLength {
@@ -799,6 +1068,7 @@ fn run_session(
                 base_note: p.base_note,
                 events: p.events.clone(),
                 enabled: p.enabled,
+                in_key: p.in_key,
             }
         });
 
@@ -817,10 +1087,38 @@ fn run_session(
             volume,
             instrument: loaded_instrument,
             effects: loaded_effects,
+            modulators: loaded_modulators,
             pattern: loaded_pattern,
             pitch_bend_range,
             remap,
+            group: inst_config.group,
         });
+    }
+
+    // Now that all member instruments are loaded, build each group's
+    // modulators (member-target param names resolve against the member chains).
+    for (g_idx, group_config) in config.groups.iter().enumerate() {
+        if group_config.modulators.is_empty() {
+            continue;
+        }
+        // Member chains in ordinal order (members = lanes with group == g_idx).
+        let member_chains: Vec<Vec<Vec<plugin::ParameterInfo>>> = loaded_instruments
+            .iter()
+            .filter(|li| li.group == Some(g_idx))
+            .map(|li| {
+                let mut chain =
+                    vec![li.instrument.as_ref().map(|p| p.params.clone()).unwrap_or_default()];
+                chain.extend(li.effects.iter().map(|fx| fx.params.clone()));
+                chain
+            })
+            .collect();
+        let bus_params: Vec<Vec<plugin::ParameterInfo>> = loaded_groups[g_idx]
+            .effects
+            .iter()
+            .map(|p| p.params.clone())
+            .collect();
+        let mods = load_group_modulators(group_config, g_idx, &member_chains, &bus_params, &cmd_tx)?;
+        loaded_groups[g_idx].modulators = mods;
     }
 
     // All initial commands queued — now start the audio stream
@@ -834,7 +1132,7 @@ fn run_session(
     // --- Branch: TUI view vs plain play mode ---
     if use_tui {
         let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(loaded_instruments, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, held.clone(), piano_filter.clone())?;
+        tui::run(loaded_instruments, loaded_groups, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, held.clone(), piano_filter.clone())?;
     } else {
         // --- Plain play mode (original) ---
 
