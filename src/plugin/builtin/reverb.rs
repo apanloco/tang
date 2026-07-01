@@ -338,6 +338,7 @@ impl Plugin for Reverb {
                 min: p.min,
                 max: p.max,
                 default: p.default,
+                ..Default::default()
             })
             .collect()
     }

@@ -7,13 +7,18 @@ pub mod lv2;
 #[cfg(feature = "vst3")]
 pub mod vst3;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ParameterInfo {
     pub index: u32,
     pub name: String,
     pub min: f32,
     pub max: f32,
     pub default: f32,
+    /// Names for discrete parameter values (e.g. filter types). When set,
+    /// the parameter is an enum: the value is an index into this list (min
+    /// 0, max len-1), and the UI shows names and steps by 1 instead of
+    /// rendering a continuous bar.
+    pub labels: Option<Vec<String>>,
 }
 
 #[derive(Clone)]

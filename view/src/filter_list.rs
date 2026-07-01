@@ -1,3 +1,4 @@
+use crate::DIM;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -128,7 +129,7 @@ impl Widget for FilterList<'_> {
 
         // Row 0: filter input with prompt.
         let prompt = "/ ";
-        let prompt_style = Style::default().fg(Color::DarkGray);
+        let prompt_style = Style::default().fg(DIM);
         let mut x = area.x;
         for ch in prompt.chars() {
             if x >= area.right() {
@@ -147,7 +148,7 @@ impl Widget for FilterList<'_> {
 
         // Row 1: column headers.
         let header_style = Style::default()
-            .fg(Color::DarkGray)
+            .fg(DIM)
             .add_modifier(Modifier::UNDERLINED);
         x = area.x;
         for &(name, width) in self.columns {

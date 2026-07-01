@@ -359,6 +359,7 @@ impl Plugin for Lv2Plugin {
                 min: port.min_value.unwrap_or(0.0),
                 max: port.max_value.unwrap_or(1.0),
                 default: port.default_value,
+                ..Default::default()
             })
             .collect()
     }

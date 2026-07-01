@@ -15,11 +15,23 @@ pub struct RemapTarget {
 // Instrument-centric config
 // ---------------------------------------------------------------------------
 
-/// Top-level session config: a flat list of instruments plus an optional
-/// Piano-tab tonality (root + scale).
+/// Top-level session config: a flat list of instruments, optional submix
+/// groups, and an optional Piano-tab tonality (root + scale).
 pub struct SessionConfig {
     pub instruments: Vec<InstrumentSlotConfig>,
+    pub groups: Vec<GroupConfig>,
     pub piano: Option<PianoConfig>,
+}
+
+/// A submix group: members are the instruments whose `group` index points here.
+pub struct GroupConfig {
+    pub name: Option<String>,
+    pub volume: f32,
+    pub effects: Vec<EffectConfig>,
+    /// Group-scoped modulators. Their targets address member instruments
+    /// (`member` + optional `slot`), bus effects (`bus`), or sibling
+    /// group modulators (`mod_*`).
+    pub modulators: Vec<ModulatorConfig>,
 }
 
 /// Optional `[piano]` section of the session TOML.
@@ -40,6 +52,8 @@ pub struct InstrumentSlotConfig {
     pub instrument: Option<PluginConfig>,
     pub effects: Vec<EffectConfig>,
     pub pattern: Option<PatternConfig>,
+    /// Submix group membership: index into the session's groups, or None.
+    pub group: Option<usize>,
 }
 
 /// Parsed pattern config for an instrument slot.
@@ -50,6 +64,9 @@ pub struct PatternConfig {
     pub base_note: Option<u8>,
     pub events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
     pub enabled: bool,
+    /// Transpose playback by scale degrees of the piano scale instead of
+    /// by semitones.
+    pub in_key: bool,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +94,18 @@ pub struct ModTargetConfig {
     /// Plugin parameter name (mutually exclusive with mod_* fields).
     #[serde(default)]
     pub param: Option<String>,
+    /// Chain slot a `param` target lives on: 0 = instrument (default),
+    /// 1..N = effects in order.
+    #[serde(default)]
+    pub slot: usize,
+    /// (Group modulators) member ordinal a `param` target lands on. Present
+    /// only for group-scoped modulator targets that drive a member instrument.
+    #[serde(default)]
+    pub member: Option<usize>,
+    /// (Group modulators) bus-effect index a `param` target lands on. Present
+    /// only for group-scoped modulator targets that drive a bus effect.
+    #[serde(default)]
+    pub bus: Option<usize>,
     /// Target a sibling modulator's LFO rate (by mod index).
     #[serde(default)]
     pub mod_rate: Option<usize>,
@@ -149,8 +178,22 @@ fn default_mix() -> f64 {
 struct SessionRaw {
     #[serde(default, rename = "instrument")]
     instruments: Vec<InstrumentSlotRaw>,
+    #[serde(default, rename = "group")]
+    groups: Vec<GroupRaw>,
     #[serde(default)]
     piano: Option<PianoConfig>,
+}
+
+#[derive(Deserialize)]
+struct GroupRaw {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default = "default_volume")]
+    volume: f64,
+    #[serde(default, rename = "effect")]
+    effects: Vec<EffectConfig>,
+    #[serde(default, rename = "modulator")]
+    modulators: Vec<ModulatorConfig>,
 }
 
 #[derive(Deserialize)]
@@ -174,6 +217,8 @@ struct InstrumentSlotRaw {
     range: Option<String>,
     #[serde(default)]
     transpose: i8,
+    #[serde(default)]
+    group: Option<usize>,
     #[serde(default, rename = "effect")]
     effects: Vec<EffectConfig>,
     #[serde(default)]
@@ -194,6 +239,9 @@ struct PatternRaw {
     events: Vec<PatternEventRaw>,
     #[serde(default)]
     enabled: bool,
+    /// "chromatic" (default) or "in_key".
+    #[serde(default)]
+    transpose: Option<String>,
 }
 
 fn default_true() -> bool { true }
@@ -254,6 +302,16 @@ fn default_release() -> f64 {
 pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
     let content = std::fs::read_to_string(path)?;
     let raw: SessionRaw = toml::from_str(&content)?;
+    let groups: Vec<GroupConfig> = raw
+        .groups
+        .into_iter()
+        .map(|g| GroupConfig {
+            name: g.name,
+            volume: g.volume as f32,
+            effects: g.effects,
+            modulators: g.modulators,
+        })
+        .collect();
     let mut instruments = Vec::new();
     for slot in raw.instruments {
         let range = slot.range.as_deref().map(parse_range).transpose()?;
@@ -267,15 +325,18 @@ pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
             params: slot.params,
             modulators: slot.modulators,
         });
+        // Drop out-of-range group references defensively.
+        let group = slot.group.filter(|&g| g < groups.len());
         instruments.push(InstrumentSlotConfig {
             range,
             transpose: slot.transpose,
             instrument,
             effects: slot.effects,
             pattern,
+            group,
         });
     }
-    Ok(SessionConfig { instruments, piano: raw.piano })
+    Ok(SessionConfig { instruments, groups, piano: raw.piano })
 }
 
 /// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
@@ -351,6 +412,13 @@ fn parse_pattern_raw(raw: PatternRaw) -> anyhow::Result<PatternConfig> {
         .as_deref()
         .map(parse_note_name)
         .transpose()?;
+    let in_key = match raw.transpose.as_deref() {
+        None | Some("chromatic") => false,
+        Some("in_key") | Some("in-key") | Some("in key") => true,
+        Some(other) => anyhow::bail!(
+            "invalid pattern transpose '{other}', expected 'chromatic' or 'in_key'"
+        ),
+    };
     let mut events = Vec::with_capacity(raw.events.len());
     for ev in &raw.events {
         let note = parse_note_name(&ev.note)?;
@@ -368,6 +436,7 @@ fn parse_pattern_raw(raw: PatternRaw) -> anyhow::Result<PatternConfig> {
         base_note,
         events,
         enabled: raw.enabled,
+        in_key,
     })
 }
 
@@ -472,9 +541,22 @@ pub fn apply_preset(plugin: &mut Box<dyn Plugin>, preset_ref: &str) {
 pub struct SaveInstrumentSlot {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
+    /// Lane-scoped modulators (targets carry their chain slot).
+    pub modulators: Vec<SaveModulator>,
     pub instrument: Option<SaveInstrument>,
     pub effects: Vec<SaveEffect>,
     pub pattern: Option<SavePattern>,
+    /// Submix group membership: index into the saved groups, or None.
+    pub group: Option<usize>,
+}
+
+/// Data needed to serialize a submix group for saving.
+pub struct SaveGroup {
+    pub name: Option<String>,
+    pub volume: f32,
+    pub effects: Vec<SaveEffect>,
+    /// Group-scoped modulators (targets address members / bus effects).
+    pub modulators: Vec<SaveModulator>,
 }
 
 /// Data needed to serialize a pattern for saving.
@@ -485,6 +567,7 @@ pub struct SavePattern {
     pub base_note: Option<u8>,
     pub events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
     pub enabled: bool,
+    pub in_key: bool,
 }
 
 /// Data needed to serialize a modulator for saving.
@@ -503,6 +586,8 @@ pub struct SaveModTarget {
     pub kind: crate::plugin::chain::ModTargetKind,
     pub label: String,
     pub depth: f32,
+    /// Chain slot the target lives on (0 = instrument, 1..N = effect).
+    pub slot: usize,
 }
 
 /// Data needed to serialize an instrument plugin for saving.
@@ -511,7 +596,6 @@ pub struct SaveInstrument {
     pub volume: f32,
     pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
-    pub modulators: Vec<SaveModulator>,
     pub pitch_bend_range: f64,
     pub remap: HashMap<String, RemapTarget>,
 }
@@ -522,7 +606,6 @@ pub struct SaveEffect {
     pub mix: f32,
     pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
-    pub modulators: Vec<SaveModulator>,
 }
 
 /// Serialization output: flat [[instrument]] format.
@@ -530,8 +613,26 @@ pub struct SaveEffect {
 struct SessionOut {
     #[serde(rename = "instrument")]
     instruments: Vec<InstrumentSlotOut>,
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "group")]
+    groups: Vec<GroupOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     piano: Option<PianoOut>,
+}
+
+#[derive(Serialize)]
+struct GroupOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "is_default_volume_f32")]
+    volume: f32,
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
+    effects: Vec<EffectOut>,
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
+    modulators: Vec<ModulatorOut>,
+}
+
+fn is_default_volume_f32(v: &f32) -> bool {
+    (*v - 1.0).abs() < f32::EPSILON
 }
 
 #[derive(Serialize)]
@@ -563,6 +664,8 @@ struct InstrumentSlotOut {
     range: Option<String>,
     #[serde(skip_serializing_if = "is_zero_i8")]
     transpose: i8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -577,6 +680,9 @@ struct PatternOut {
     looping: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     base_note: Option<String>,
+    /// Only written when "in_key" — chromatic is the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transpose: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     events: Vec<PatternEventOut>,
     enabled: bool,
@@ -621,6 +727,15 @@ fn is_lfo_type(s: &String) -> bool {
 struct ModTargetOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     param: Option<String>,
+    /// Chain slot for a plugin-param target (omitted when 0 = instrument).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slot: Option<usize>,
+    /// (Group modulators) member ordinal a `param` target lands on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member: Option<usize>,
+    /// (Group modulators) bus-effect index a `param` target lands on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bus: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mod_rate: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -645,14 +760,15 @@ struct EffectOut {
     preset: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     params: BTreeMap<String, f64>,
-    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
-    modulators: Vec<ModulatorOut>,
 }
 
 fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     use crate::plugin::chain::ModTargetKind;
     let mut out = ModTargetOut {
         param: None,
+        slot: None,
+        member: None,
+        bus: None,
         mod_rate: None,
         mod_depth: None,
         mod_attack: None,
@@ -664,6 +780,22 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     match &t.kind {
         ModTargetKind::PluginParam { .. } => {
             out.param = Some(t.label.clone());
+            // 0 (instrument) is the default and omitted.
+            if t.slot != 0 {
+                out.slot = Some(t.slot);
+            }
+        }
+        ModTargetKind::GroupMember { member, slot, .. } => {
+            out.param = Some(t.label.clone());
+            out.member = Some(*member);
+            // 0 (member's instrument) is the default and omitted.
+            if *slot != 0 {
+                out.slot = Some(*slot);
+            }
+        }
+        ModTargetKind::GroupBus { effect_index, .. } => {
+            out.param = Some(t.label.clone());
+            out.bus = Some(*effect_index);
         }
         ModTargetKind::ModulatorRate { mod_index } => {
             out.mod_rate = Some(*mod_index);
@@ -751,17 +883,36 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
 }
 
 /// Save the current session state to a TOML file.
+fn effect_to_out(fx: &SaveEffect) -> EffectOut {
+    EffectOut {
+        plugin: fx.plugin.clone(),
+        mix: fx.mix,
+        preset: fx.preset.clone(),
+        params: fx.params.iter().map(|(k, v)| (k.clone(), clean_f64(*v))).collect(),
+    }
+}
+
 pub fn save(
     path: &Path,
     instruments: &[SaveInstrumentSlot],
+    groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
 ) -> anyhow::Result<()> {
     let session = SessionOut {
         piano: piano.map(|p| PianoOut { scale: p.scale.clone() }),
+        groups: groups
+            .iter()
+            .map(|g| GroupOut {
+                name: g.name.clone(),
+                volume: g.volume,
+                effects: g.effects.iter().map(effect_to_out).collect(),
+                modulators: mods_to_out(&g.modulators),
+            })
+            .collect(),
         instruments: instruments
             .iter()
             .map(|slot| {
-                let (plugin, volume, preset, params, modulators, pitch_bend_range, remap) = match &slot.instrument {
+                let (plugin, volume, preset, params, pitch_bend_range, remap) = match &slot.instrument {
                     Some(inst) => {
                         let params: BTreeMap<String, f64> = inst
                             .params
@@ -786,12 +937,11 @@ pub fn save(
                             Some(inst.volume),
                             inst.preset.clone(),
                             params,
-                            mods_to_out(&inst.modulators),
                             Some(inst.pitch_bend_range),
                             remap,
                         )
                     }
-                    None => (None, None, None, BTreeMap::new(), vec![], None, BTreeMap::new()),
+                    None => (None, None, None, BTreeMap::new(), None, BTreeMap::new()),
                 };
                 InstrumentSlotOut {
                     plugin,
@@ -800,33 +950,19 @@ pub fn save(
                     params,
                     pitch_bend_range,
                     remap,
-                    modulators,
+                    // Lane modulators serialize at the instrument level.
+                    modulators: mods_to_out(&slot.modulators),
                     range: slot.range.map(format_range),
                     transpose: slot.transpose,
-                    effects: slot
-                        .effects
-                        .iter()
-                        .map(|fx| {
-                            let params: BTreeMap<String, f64> = fx
-                                .params
-                                .iter()
-                                .map(|(k, v)| (k.clone(), clean_f64(*v)))
-                                .collect();
-                            EffectOut {
-                                plugin: fx.plugin.clone(),
-                                mix: fx.mix,
-                                preset: fx.preset.clone(),
-                                params,
-                                modulators: mods_to_out(&fx.modulators),
-                            }
-                        })
-                        .collect(),
+                    group: slot.group,
+                    effects: slot.effects.iter().map(effect_to_out).collect(),
                     pattern: slot.pattern.as_ref().map(|p| {
                         PatternOut {
                             bpm: p.bpm as f64,
                             length_beats: p.length_beats as f64,
                             looping: p.looping,
                             base_note: p.base_note.map(note_name),
+                            transpose: p.in_key.then(|| "in_key".to_string()),
                             events: p.events.iter().map(|&(frame, status, note, vel)| {
                                 PatternEventOut {
                                     frame,
@@ -984,12 +1120,13 @@ range = "C4-C8"
             SaveInstrumentSlot {
                 range: Some((12, 59)), // C0-B3
                 transpose: 0,
+                group: None,
+                modulators: vec![],
                 instrument: Some(SaveInstrument {
                     plugin: "builtin:sine".into(),
                     volume: 0.8,
                     preset: None,
                     params: vec![("cutoff".into(), 0.75)],
-                    modulators: vec![],
                     pitch_bend_range: 2.0,
                     remap: HashMap::new(),
                 }),
@@ -998,19 +1135,19 @@ range = "C4-C8"
                     mix: 0.5,
                     preset: None,
                     params: vec![],
-                    modulators: vec![],
                 }],
                 pattern: None,
             },
             SaveInstrumentSlot {
                 range: None,
                 transpose: 0,
+                group: None,
+                modulators: vec![],
                 instrument: Some(SaveInstrument {
                     plugin: "builtin:sine".into(),
                     volume: 1.0,
                     preset: None,
                     params: vec![],
-                    modulators: vec![],
                     pitch_bend_range: 2.0,
                     remap: HashMap::new(),
                 }),
@@ -1019,7 +1156,7 @@ range = "C4-C8"
             },
         ];
 
-        save(&path, &instruments, None).unwrap();
+        save(&path, &instruments, &[], None).unwrap();
 
         // Reload and verify
         let config = load(path.to_str().unwrap()).unwrap();
@@ -1041,12 +1178,13 @@ range = "C4-C8"
         let instruments = vec![SaveInstrumentSlot {
             range: None,
             transpose: 0,
+            group: None,
+            modulators: vec![],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: Some("Lead".into()),
                 params: vec![],
-                modulators: vec![],
                 pitch_bend_range: 2.0,
                 remap: HashMap::new(),
             }),
@@ -1055,12 +1193,11 @@ range = "C4-C8"
                 mix: 0.4,
                 preset: Some("Arcadia Dream Hall".into()),
                 params: vec![],
-                modulators: vec![],
             }],
             pattern: None,
         }];
 
-        save(&path, &instruments, None).unwrap();
+        save(&path, &instruments, &[], None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1081,22 +1218,24 @@ range = "C4-C8"
         let instruments = vec![SaveInstrumentSlot {
             range: None,
             transpose: 0,
+            group: None,
+            modulators: vec![SaveModulator {
+                source: SaveModSource::Lfo {
+                    waveform: "sine".into(),
+                    rate: 2.5,
+                },
+                targets: vec![SaveModTarget {
+                    kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
+                    label: "cutoff".into(),
+                    depth: 0.75,
+                    slot: 0,
+                }],
+            }],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,
                 params: vec![],
-                modulators: vec![SaveModulator {
-                    source: SaveModSource::Lfo {
-                        waveform: "sine".into(),
-                        rate: 2.5,
-                    },
-                    targets: vec![SaveModTarget {
-                        kind: crate::plugin::chain::ModTargetKind::PluginParam { param_index: 0 },
-                        label: "cutoff".into(),
-                        depth: 0.75,
-                    }],
-                }],
                 pitch_bend_range: 2.0,
                 remap: HashMap::new(),
             }),
@@ -1104,7 +1243,7 @@ range = "C4-C8"
             pattern: None,
         }];
 
-        save(&path, &instruments, None).unwrap();
+        save(&path, &instruments, &[], None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1116,6 +1255,174 @@ range = "C4-C8"
         assert_eq!(m.targets.len(), 1);
         assert_eq!(m.targets[0].param.as_deref(), Some("cutoff"));
         assert!((m.targets[0].depth - 0.75).abs() < 0.01);
+        // Slot defaults to instrument (0).
+        assert_eq!(m.targets[0].slot, 0);
+    }
+
+    #[test]
+    fn save_and_reload_cross_slot_modulator() {
+        // A lane modulator targeting an effect (slot 1) must round-trip the slot.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cross_slot.toml");
+
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: None,
+            modulators: vec![SaveModulator {
+                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 },
+                targets: vec![SaveModTarget {
+                    kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+                    label: "cutoff".into(),
+                    depth: 0.5,
+                    slot: 1,
+                }],
+            }],
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:osc".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![SaveEffect {
+                plugin: "builtin:filter".into(),
+                mix: 1.0,
+                preset: None,
+                params: vec![],
+            }],
+            pattern: None,
+        }];
+        save(&path, &instruments, &[], None).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("slot = 1"), "saved target should record its slot:\n{raw}");
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        assert_eq!(inst.modulators.len(), 1);
+        assert_eq!(inst.modulators[0].targets[0].slot, 1);
+        assert_eq!(inst.modulators[0].targets[0].param.as_deref(), Some("cutoff"));
+    }
+
+    #[test]
+    fn save_and_reload_group() {
+        // A group with a bus effect + volume, and two member instruments,
+        // must round-trip (membership index + group fields).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group.toml");
+
+        let member = |group: Option<usize>| SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group,
+            modulators: vec![],
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:osc".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: None,
+        };
+        let instruments = vec![member(Some(0)), member(Some(0)), member(None)];
+        let groups = vec![SaveGroup {
+            name: Some("Pad".into()),
+            volume: 0.5,
+            effects: vec![SaveEffect {
+                plugin: "builtin:reverb".into(),
+                mix: 1.0,
+                preset: None,
+                params: vec![],
+            }],
+            modulators: vec![],
+        }];
+        save(&path, &instruments, &groups, None).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("[[group]]"), "expected a [[group]] section:\n{raw}");
+        assert!(raw.contains("group = 0"), "members should record group index:\n{raw}");
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        assert_eq!(config.groups.len(), 1);
+        assert_eq!(config.groups[0].name.as_deref(), Some("Pad"));
+        assert!((config.groups[0].volume - 0.5).abs() < 1e-6);
+        assert_eq!(config.groups[0].effects.len(), 1);
+        assert_eq!(config.instruments[0].group, Some(0));
+        assert_eq!(config.instruments[1].group, Some(0));
+        assert_eq!(config.instruments[2].group, None);
+    }
+
+    #[test]
+    fn save_and_reload_group_modulator() {
+        // A group-scoped modulator with a member target and a bus target must
+        // round-trip through `[[group.modulator]]` (member/bus + param name).
+        use crate::plugin::chain::ModTargetKind;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group_mod.toml");
+
+        let member = SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: Some(0),
+            modulators: vec![],
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:osc".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: None,
+        };
+        let groups = vec![SaveGroup {
+            name: None,
+            volume: 1.0,
+            effects: vec![SaveEffect {
+                plugin: "builtin:filter".into(),
+                mix: 1.0,
+                preset: None,
+                params: vec![],
+            }],
+            modulators: vec![SaveModulator {
+                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 2.0 },
+                targets: vec![
+                    SaveModTarget {
+                        kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
+                        label: "cutoff".into(),
+                        depth: 0.5,
+                        slot: 0,
+                    },
+                    SaveModTarget {
+                        kind: ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
+                        label: "cutoff".into(),
+                        depth: 0.25,
+                        slot: 0,
+                    },
+                ],
+            }],
+        }];
+        save(&path, &[member], &groups, None).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("[[group.modulator]]"), "expected group modulator:\n{raw}");
+        assert!(raw.contains("member = 0"), "member target should record member:\n{raw}");
+        assert!(raw.contains("bus = 0"), "bus target should record bus index:\n{raw}");
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        assert_eq!(config.groups[0].modulators.len(), 1);
+        let m = &config.groups[0].modulators[0];
+        assert_eq!(m.targets.len(), 2);
+        assert_eq!(m.targets[0].member, Some(0));
+        assert_eq!(m.targets[0].param.as_deref(), Some("cutoff"));
+        assert_eq!(m.targets[1].bus, Some(0));
+        assert_eq!(m.targets[1].param.as_deref(), Some("cutoff"));
     }
 
     #[test]
@@ -1141,12 +1448,13 @@ range = "C4-C8"
         let instruments = vec![SaveInstrumentSlot {
             range: None,
             transpose: 0,
+            group: None,
+            modulators: vec![],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,
                 params: vec![],
-                modulators: vec![],
                 pitch_bend_range: 2.0,
                 remap,
             }),
@@ -1154,7 +1462,7 @@ range = "C4-C8"
             pattern: None,
         }];
 
-        save(&path, &instruments, None).unwrap();
+        save(&path, &instruments, &[], None).unwrap();
 
         // Output should use inline tables and stable alphabetical ordering.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -1188,12 +1496,13 @@ range = "C4-C8"
         let instruments = vec![SaveInstrumentSlot {
             range: None,
             transpose: 0,
+            group: None,
+            modulators: vec![],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,
                 params: vec![],
-                modulators: vec![],
                 pitch_bend_range: 2.0,
                 remap: HashMap::new(),
             }),
@@ -1201,7 +1510,7 @@ range = "C4-C8"
             pattern: None,
         }];
         let piano = PianoConfig { scale: Some("F# dorian".into()), locked: false };
-        save(&path, &instruments, Some(&piano)).unwrap();
+        save(&path, &instruments, &[], Some(&piano)).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[piano]"));
@@ -1210,6 +1519,73 @@ range = "C4-C8"
         let config = load(path.to_str().unwrap()).unwrap();
         let piano_cfg = config.piano.expect("piano section");
         assert_eq!(piano_cfg.scale.as_deref(), Some("F# dorian"));
+    }
+
+    #[test]
+    fn save_and_reload_pattern_transpose_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pattern.toml");
+
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: None,
+            modulators: vec![],
+            instrument: Some(SaveInstrument {
+                plugin: "builtin:sine".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: Some(SavePattern {
+                bpm: 120.0,
+                length_beats: 4.0,
+                looping: true,
+                base_note: Some(60),
+                events: vec![(0, 0x90, 60, 100), (24000, 0x80, 60, 0)],
+                enabled: true,
+                in_key: true,
+            }),
+        }];
+        save(&path, &instruments, &[], None).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("transpose = \"in_key\""));
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        let pattern = config.instruments[0].pattern.as_ref().expect("pattern");
+        assert!(pattern.in_key);
+
+        // Chromatic (default) round-trips without writing the field.
+        let mut instruments = instruments;
+        instruments[0].pattern.as_mut().unwrap().in_key = false;
+        save(&path, &instruments, &[], None).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("transpose"));
+        let config = load(path.to_str().unwrap()).unwrap();
+        assert!(!config.instruments[0].pattern.as_ref().unwrap().in_key);
+    }
+
+    #[test]
+    fn pattern_transpose_rejects_unknown_value() {
+        let toml = r#"
+[[instrument]]
+plugin = "builtin:sine"
+
+[instrument.pattern]
+transpose = "dorian"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_transpose.toml");
+        std::fs::write(&path, toml).unwrap();
+        let err = match load(path.to_str().unwrap()) {
+            Err(e) => e,
+            Ok(_) => panic!("expected load to fail on unknown transpose value"),
+        };
+        assert!(err.to_string().contains("transpose"));
     }
 
     #[test]

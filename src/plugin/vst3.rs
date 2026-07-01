@@ -1228,6 +1228,7 @@ pub fn load(
             min,
             max,
             default,
+            ..Default::default()
         });
     }
     log::info!("VST3 plugin has {} parameters", params_cache.len());

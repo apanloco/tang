@@ -1,3 +1,4 @@
+use crate::DIM;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -198,7 +199,7 @@ impl<'a> List<'a> {
             cursor_width: 2,
             scrollbar: true,
             scrollbar_style: Style::default().fg(Color::White),
-            scrollbar_track_style: Style::default().fg(Color::DarkGray),
+            scrollbar_track_style: Style::default().fg(DIM),
         }
     }
 

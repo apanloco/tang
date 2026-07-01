@@ -1,3 +1,4 @@
+use crate::DIM;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -22,7 +23,7 @@ impl<'a> TabBar<'a> {
             tabs,
             active,
             status: None,
-            style: Style::default().fg(Color::DarkGray),
+            style: Style::default().fg(DIM),
             active_style: Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
