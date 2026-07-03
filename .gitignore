@@ -1,2 +1,4 @@
 /target
 /.idea
+# Debug captures (e.g. `tang 2> midi.log`, or the --debug MIDI monitor).
+*.log
