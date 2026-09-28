@@ -101,8 +101,59 @@ fn promote_to_realtime() {
     log::info!("Windows: WASAPI handles real-time scheduling");
 }
 
+/// Keep our JACK output ports linked to the system default sink as it changes.
+/// cpal links them to `system:playback_*` once; PipeWire's JACK bridge resolves
+/// that alias to the current default sink, but the links themselves are fixed
+/// and WirePlumber does not move JACK clients the way it moves regular streams.
+/// Dropping the returned sender stops the watcher.
+#[cfg(target_os = "linux")]
+fn follow_default_sink(client_name: String, num_channels: usize) -> Option<crossbeam_channel::Sender<()>> {
+    use jack::PortSpec;
+
+    let client = match jack::Client::new("tang_follow_default", jack::ClientOptions::NO_START_SERVER) {
+        Ok((client, _)) => client,
+        Err(e) => {
+            log::warn!("Cannot follow the default audio sink: {e}");
+            return None;
+        }
+    };
+    let audio_type = jack::AudioIn.jack_port_type().to_owned();
+    let default_sink = move |client: &jack::Client| {
+        client.ports(Some("system:playback_.*"), Some(&audio_type), jack::PortFlags::IS_INPUT)
+    };
+    let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
+    let mut linked = default_sink(&client);
+    std::thread::Builder::new()
+        .name("follow-default-sink".into())
+        .spawn(move || {
+            while stop_rx.recv_timeout(std::time::Duration::from_secs(1))
+                == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+            {
+                let sinks = default_sink(&client);
+                if sinks.is_empty() || sinks == linked {
+                    continue;
+                }
+                log::info!("Default audio sink changed, relinking to {sinks:?}");
+                for ch in 0..num_channels {
+                    let port = format!("{client_name}:out_{ch}");
+                    if !linked.is_empty() {
+                        client.disconnect_ports_by_name(&port, &linked[ch % linked.len()]).ok();
+                    }
+                    if let Err(e) = client.connect_ports_by_name(&port, &sinks[ch % sinks.len()]) {
+                        log::warn!("Failed to link {port}: {e}");
+                    }
+                }
+                linked = sinks;
+            }
+        })
+        .ok()?;
+    Some(stop_tx)
+}
+
 pub struct AudioEngine {
     stream: cpal::Stream,
+    #[cfg(target_os = "linux")]
+    _follow_default_sink: Option<crossbeam_channel::Sender<()>>,
 }
 
 impl AudioEngine {
@@ -236,6 +287,14 @@ impl AudioEngine {
             None,
         )?;
 
-        Ok(AudioEngine { stream })
+        Ok(AudioEngine {
+            stream,
+            #[cfg(target_os = "linux")]
+            _follow_default_sink: if host.id() == cpal::HostId::Jack && device_name.is_none() {
+                follow_default_sink(dev_name, num_channels)
+            } else {
+                None
+            },
+        })
     }
 }

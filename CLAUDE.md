@@ -1014,6 +1014,21 @@ sudo ldconfig
 
 Without this, Tang falls back to ALSA transparently.
 
+**Following the default sink (JACK).** cpal links Tang's output ports to
+`system:playback_*` once at stream start. PipeWire's JACK bridge resolves that
+alias to the current default sink, but the links are fixed, and WirePlumber
+does not move JACK clients to a new default the way it moves ordinary streams
+(e.g. Spotify). So when `--audio-device` is not given, a watcher thread
+(`follow_default_sink` in `src/audio.rs`) re-resolves `system:playback_*`
+about once a second through its own JACK client and relinks Tang's ports when
+the default changes, e.g. when Bluetooth or USB headphones connect or
+disconnect. It only removes the links it made, so extra manual links (qpwgraph)
+survive. The ALSA fallback goes through PipeWire as an ordinary stream, so it
+should follow the default on its own (untested).
+
+TODO: follow the default device on macOS/Windows (cpal binds the stream to one
+device, so this would mean rebuilding the stream).
+
 On Linux, the audio callback thread is promoted to `SCHED_FIFO` real-time
 scheduling (priority 50) on its first invocation. This requires the user to
 have `rtprio` privileges (typically via the `audio` group). Fails silently

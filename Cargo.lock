@@ -2172,6 +2172,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm 0.28.1",
  "env_logger",
+ "jack",
  "libc",
  "libloading 0.8.9",
  "livi",
