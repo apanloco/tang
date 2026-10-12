@@ -8,6 +8,7 @@ use super::Plugin;
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
+use crate::telemetry::{self, Meter, Telemetry};
 
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
@@ -2763,6 +2764,10 @@ pub struct AudioGraph {
     group_member_mod_writes: Vec<GroupMemberModWrite>,
     /// Reusable scratch for the cross-mod writes within one group's rack.
     group_cross_mod_scratch: Vec<CrossModWrite>,
+    /// Where what the graph measures is published; `None` publishes nothing.
+    telemetry: Option<Arc<Telemetry>>,
+    /// The meter of the output mix.
+    master_meter: Meter,
 }
 
 impl AudioGraph {
@@ -2789,6 +2794,8 @@ impl AudioGraph {
             group_bus_drives: Vec::with_capacity(SCRATCH_CAPACITY),
             group_member_mod_writes: Vec::with_capacity(32),
             group_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
+            telemetry: None,
+            master_meter: Meter::new(telemetry::MASTER),
         }
     }
 
@@ -2811,6 +2818,11 @@ impl AudioGraph {
     /// Set the shared piano-tab state used for in-key pattern transposition.
     pub fn set_piano_filter(&mut self, filter: Arc<PianoFilter>) {
         self.piano_filter = Some(filter);
+    }
+
+    /// Publish what the graph measures (see `telemetry`) into `telemetry`.
+    pub fn set_telemetry(&mut self, telemetry: Arc<Telemetry>) {
+        self.telemetry = Some(telemetry);
     }
 
     /// Set the notification channel for MIDI-learn captures.
@@ -3772,6 +3784,12 @@ impl AudioGraph {
                 let copy_len = out.len().min(self.mix_buf[ch].len());
                 out[..copy_len].copy_from_slice(&self.mix_buf[ch][..copy_len]);
             }
+        }
+
+        // What reaches the output, measured.
+        if let Some(telemetry) = &self.telemetry {
+            let fall = telemetry::peak_fall(frames as f32 / self.graph_sample_rate());
+            self.master_meter.update(telemetry, &self.mix_buf, fall);
         }
 
         Ok(())
@@ -6407,6 +6425,95 @@ mod tests {
         }
         graph.drain_commands();
         let allocations = allocations_while_processing(&mut graph, &[note_on(60), note_on(64)], 32);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    // -- Telemetry: the master meter --
+
+    use crate::telemetry::{self, Telemetry};
+
+    /// A graph with one constant-output lane per entry of `values`, publishing to
+    /// a `Telemetry` the test holds on to.
+    fn metered_graph(values: &[f32]) -> (AudioGraph, Arc<Telemetry>) {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+        let (return_tx, _return_rx) = crossbeam_channel::bounded(16);
+        let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
+        let telemetry = Arc::new(Telemetry::new());
+        graph.set_telemetry(telemetry.clone());
+        for (inst, &value) in values.iter().enumerate() {
+            graph.instruments.push(InstrumentLane::new(2));
+            swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(value));
+        }
+        graph.drain_commands();
+        (graph, telemetry)
+    }
+
+    fn master(telemetry: &Telemetry) -> (f32, u32) {
+        (telemetry.load(telemetry::MASTER.peak), telemetry.count(telemetry::MASTER.clips))
+    }
+
+    #[test]
+    fn the_master_meter_publishes_the_peak_of_the_mix() {
+        let (mut graph, telemetry) = metered_graph(&[0.25, 0.5]);
+        assert_eq!(master(&telemetry), (0.0, 0), "nothing before the first buffer");
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        // The two lanes sum to 0.75, and that is what reaches the output.
+        assert!((master(&telemetry).0 - 0.75).abs() < 1e-6, "{:?}", master(&telemetry));
+        assert_eq!(master(&telemetry).1, 0);
+        assert!((out[0][0] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_master_meter_counts_each_buffer_that_goes_beyond_full_scale() {
+        // Each lane is within full scale; their sum is not.
+        let (mut graph, telemetry) = metered_graph(&[0.6, 0.6]);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert_eq!(master(&telemetry).1, 1);
+        graph.process(&[], &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(master(&telemetry).1, 3, "one for every buffer that clipped");
+        assert!((master(&telemetry).0 - 1.2).abs() < 1e-6);
+
+        // Releasing the notes stops the counting, and the peak starts to fall.
+        graph.process(&[note_off(60)], &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        let (peak, clips) = master(&telemetry);
+        assert_eq!(clips, 3, "silence does not clip");
+        let fall = telemetry::peak_fall(FRAMES as f32 / 48000.0);
+        assert!((peak - 1.2 * fall * fall).abs() < 1e-4, "two quiet buffers of falling: {peak}");
+    }
+
+    #[test]
+    fn full_scale_is_not_a_clip() {
+        let (mut graph, telemetry) = metered_graph(&[1.0]);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert_eq!(master(&telemetry), (1.0, 0));
+    }
+
+    #[test]
+    fn a_graph_that_is_given_no_telemetry_publishes_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(2.0));
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 2.0), "the audio is the same, clipping or not");
+    }
+
+    #[test]
+    fn a_silent_graph_reads_zero() {
+        let (mut graph, telemetry) = metered_graph(&[]);
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(master(&telemetry), (0.0, 0));
+    }
+
+    #[test]
+    fn publishing_telemetry_does_not_allocate() {
+        let (mut graph, _telemetry) = metered_graph(&[0.6, 0.6]);
+        let allocations = allocations_while_processing(&mut graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 }

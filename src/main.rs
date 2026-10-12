@@ -16,6 +16,7 @@ mod piano_filter;
 mod plugin;
 mod scale;
 mod session;
+mod telemetry;
 mod tty;
 mod tui;
 
@@ -352,6 +353,8 @@ fn run_session(
     graph.set_learn_tx(learn_tx);
     // Give the audio thread the live piano scale for in-key pattern transposition.
     graph.set_piano_filter(piano_filter.clone());
+    // And the cells it publishes its measurements in (meters, for now).
+    graph.set_telemetry(std::sync::Arc::new(telemetry::Telemetry::new()));
 
     // Start MIDI input
     if let Some(sp) = &splash {
