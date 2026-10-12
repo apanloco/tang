@@ -37,13 +37,17 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
 use crate::app::load::fresh_slot;
-use crate::app::model::{ModSourceSlot, PatternState, PluginSlot, SessionModel};
+use crate::app::model::{
+    ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel, mod_source_slot_to_graph,
+};
 use crate::app::save::to_save;
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
 use crate::piano_filter::{PianoFilter, PianoMode};
-use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
+use crate::plugin::chain::{
+    GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
+};
 use crate::plugin::{self, Plugin, Runtime};
 use crate::session::{self, PianoConfig};
 use crate::telemetry::Telemetry;
@@ -101,6 +105,21 @@ pub struct EngineHandles {
     pub midi_monitor: Arc<MidiMonitor>,
     /// What the audio thread publishes about itself: meters, for now.
     pub telemetry: Arc<Telemetry>,
+}
+
+/// A modulation target to bind (`Controller::add_target`): the parameter it
+/// drives, or the modulator field, and how strongly.
+pub struct NewTarget {
+    pub kind: ModTargetKind,
+    /// The chain slot the parameter is on (0 = the instrument, 1.. = its effects);
+    /// the model keeps it to label the target with its plugin.
+    pub slot: usize,
+    pub param_name: String,
+    pub depth: f32,
+    /// The user's set value of the parameter, where its modulation is centred.
+    pub base_value: f32,
+    pub param_min: f32,
+    pub param_max: f32,
 }
 
 pub struct Controller {
@@ -227,6 +246,54 @@ impl Controller {
             slot.node = lane.node;
             lane.instrument = Some(slot);
         }
+    }
+
+    /// Add a modulator with `source` at the end of the rack at `at` (a lane's or a
+    /// group's): the audio thread gets it, the model a node of its own for it.
+    /// Returns its index in the rack, or `None`, sending nothing, if there is no
+    /// such rack.
+    pub fn add_modulator(&mut self, at: ModulatorLocation, source: ModSourceSlot) -> Option<usize> {
+        let index = self.model.modulators_mut(at)?.len();
+        let graph_source = mod_source_slot_to_graph(&source);
+        let _ = self.cmd_tx.send(match at {
+            ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index, source: graph_source },
+            ModulatorLocation::Group(group) => {
+                GraphCommand::InsertGroupModulator { group, index, source: graph_source }
+            }
+        });
+        let node = self.model.alloc_node();
+        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new() });
+        Some(index)
+    }
+
+    /// Bind `new` as a target of modulator `index` in the rack at `at`, on the audio
+    /// thread and in the model. False, sending nothing, if there is no such
+    /// modulator.
+    pub fn add_target(&mut self, at: ModulatorLocation, index: usize, new: NewTarget) -> bool {
+        let Some(modulator) = self.model.modulators_mut(at).and_then(|rack| rack.get_mut(index)) else {
+            return false;
+        };
+        let target = ModTarget {
+            kind: new.kind.clone(),
+            depth: new.depth,
+            base_value: new.base_value,
+            param_min: new.param_min,
+            param_max: new.param_max,
+            effective: None,
+        };
+        modulator.targets.push(ModTargetSlot {
+            slot: new.slot,
+            param_name: new.param_name,
+            kind: new.kind,
+            depth: new.depth,
+            param_min: new.param_min,
+            param_max: new.param_max,
+        });
+        let _ = self.cmd_tx.send(match at {
+            ModulatorLocation::Lane(inst) => GraphCommand::AddModTarget { inst, mod_index: index, target },
+            ModulatorLocation::Group(group) => GraphCommand::AddGroupModTarget { group, mod_index: index, target },
+        });
+        true
     }
 
     /// Save the session to the file it came from.
@@ -889,5 +956,146 @@ type = "lfo"
         assert_eq!(ctl.catalog.plugins().len(), 1);
         assert_eq!(ctl.poll(), Polled::default());
         assert!(!ctl.dirty, "the catalog is not part of the session");
+    }
+
+    // -- modulators and their targets --
+
+    /// A group (one member) with a lane LFO and a group LFO, and a bare lane.
+    const WITH_MODULATORS: &str = r#"
+[[group]]
+[[group.modulator]]
+rate = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 2.0
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    fn sent(engine: &StubEngine) -> Vec<String> {
+        engine.cmd_rx.try_iter().map(|c| testutil::describe(&c)).collect()
+    }
+
+    fn lfo_source() -> ModSourceSlot {
+        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0 }
+    }
+
+    fn cutoff_target(depth: f32) -> NewTarget {
+        NewTarget {
+            kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+            slot: 1,
+            param_name: "cutoff".to_string(),
+            depth,
+            base_value: 0.35,
+            param_min: 0.0,
+            param_max: 1.0,
+        }
+    }
+
+    #[test]
+    fn add_modulator_puts_one_at_the_end_of_a_lanes_rack_and_tells_the_audio_thread() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
+        assert_eq!(
+            sent(&engine),
+            ["InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]
+        );
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.len(), 2);
+        assert!(matches!(rack[1].source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
+        assert!(rack[1].targets.is_empty());
+        assert_ne!(rack[1].node, rack[0].node, "a node of its own");
+        ctl.model.check_ids().unwrap();
+        assert!(ctl.model.instruments[1].modulators.is_empty(), "the other lane's rack is untouched");
+    }
+
+    #[test]
+    fn add_modulator_in_a_groups_rack_and_of_each_source() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        let envelope = ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 };
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), envelope), Some(1));
+        let learn = ModSourceSlot::MidiLearn { source: None, learning: true };
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), learn), Some(2));
+        assert_eq!(
+            sent(&engine),
+            [
+                "InsertGroupModulator group=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
+                "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
+            ]
+        );
+        assert_eq!(ctl.model.groups[0].modulators.len(), 3);
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is untouched");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_modulator_for_a_rack_that_is_not_there_does_nothing() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(9), lfo_source()), None);
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(9), lfo_source()), None);
+        assert!(sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn add_target_binds_a_parameter_to_a_lane_modulator() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        assert_eq!(
+            sent(&engine),
+            ["AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]"]
+        );
+        let target = &ctl.model.instruments[0].modulators[0].targets[0];
+        assert_eq!((target.slot, target.param_name.as_str(), target.depth), (1, "cutoff", 0.5));
+        assert_eq!((target.param_min, target.param_max), (0.0, 1.0));
+        assert!(matches!(target.kind, crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 }));
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(-0.25)));
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2, "after the first");
+    }
+
+    #[test]
+    fn add_target_binds_a_parameter_to_a_group_modulator() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        let target = NewTarget {
+            kind: crate::plugin::chain::ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 },
+            ..cutoff_target(0.4)
+        };
+        assert!(ctl.add_target(ModulatorLocation::Group(0), 0, target));
+        assert_eq!(
+            sent(&engine),
+            ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=0.350 range=[0.000, 1.000]"]
+        );
+        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1);
+        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
+    }
+
+    #[test]
+    fn add_target_to_a_modulator_that_is_not_there_does_nothing() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert!(!ctl.add_target(ModulatorLocation::Lane(0), 5, cutoff_target(0.5)));
+        assert!(!ctl.add_target(ModulatorLocation::Lane(9), 0, cutoff_target(0.5)));
+        assert!(!ctl.add_target(ModulatorLocation::Group(0), 3, cutoff_target(0.5)));
+        assert!(sent(&engine).is_empty());
+        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
+    }
+
+    #[test]
+    fn modulators_and_targets_do_not_mark_the_session_changed() {
+        // The front-end says when an edit is a change: these only do the work.
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
+        ctl.add_target(ModulatorLocation::Lane(0), 1, cutoff_target(0.5));
+        assert!(!ctl.dirty);
     }
 }

@@ -27,7 +27,7 @@ use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
-use crate::app::controller::Controller;
+use crate::app::controller::{Controller, NewTarget};
 use crate::app::intent::{self, Applied, Gain, Intent};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId,
@@ -847,48 +847,19 @@ impl State {
         };
         let entry = &ts.entries[chosen];
 
-        let target = crate::plugin::chain::ModTarget {
-            kind: entry.kind.clone(),
-            depth: 0.5,
-            base_value: entry.base_value,
-            param_min: entry.param_min,
-            param_max: entry.param_max,
-            effective: None,
-        };
-        match ts.scope {
-            ModulatorLocation::Lane(inst) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget {
-                    inst,
-                    mod_index: ts.mod_index,
-                    target,
-                });
-            }
-            ModulatorLocation::Group(group) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroupModTarget {
-                    group,
-                    mod_index: ts.mod_index,
-                    target,
-                });
-            }
-        }
-
-        let slot = entry.slot;
-        let label = entry.label.clone();
-        let kind = entry.kind.clone();
-        let (min, max) = (entry.param_min, entry.param_max);
-        let mod_index = ts.mod_index;
-        if let Some(mods) = self.ctl.model.modulators_mut(ts.scope) {
-            if let Some(m) = mods.get_mut(mod_index) {
-                m.targets.push(ModTargetSlot {
-                    slot,
-                    param_name: label,
-                    kind,
-                    depth: 0.5,
-                    param_min: min,
-                    param_max: max,
-                });
-            }
-        }
+        self.ctl.add_target(
+            ts.scope,
+            ts.mod_index,
+            NewTarget {
+                kind: entry.kind.clone(),
+                slot: entry.slot,
+                param_name: entry.label.clone(),
+                depth: 0.5,
+                base_value: entry.base_value,
+                param_min: entry.param_min,
+                param_max: entry.param_max,
+            },
+        );
         self.ctl.dirty = true;
         self.rebuild_tree();
     }
@@ -1033,86 +1004,27 @@ impl State {
 
         // Resolve the target modulator index, creating one in the right rack if
         // requested.
-        let mod_index = match choice {
-            ModulateChoice::NewLfo | ModulateChoice::NewEnvelope => {
-                let (graph_source, slot_source) = match choice {
-                    ModulateChoice::NewEnvelope => (
-                        crate::plugin::chain::ModSource::Envelope {
-                            attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                            state: crate::plugin::chain::EnvState::Idle,
-                            level: 0.0,
-                            notes_held: 0,
-                        },
-                        ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
-                    ),
-                    _ => (
-                        crate::plugin::chain::ModSource::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                            phase: 0.0,
-                        },
-                        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0 },
-                    ),
-                };
-                let mod_index = match self.ctl.model.modulators_mut(ms.scope) {
-                    Some(mods) => mods.len(),
-                    None => return,
-                };
-                match ms.scope {
-                    ModulatorLocation::Lane(inst) => {
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::InsertModulator {
-                            inst,
-                            index: mod_index,
-                            source: graph_source,
-                        });
-                    }
-                    ModulatorLocation::Group(group) => {
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::InsertGroupModulator {
-                            group,
-                            index: mod_index,
-                            source: graph_source,
-                        });
-                    }
-                }
-                let node = self.ctl.model.alloc_node();
-                if let Some(mods) = self.ctl.model.modulators_mut(ms.scope) {
-                    mods.push(ModulatorSlot { node, source: slot_source, targets: vec![] });
-                }
-                mod_index
-            }
-            ModulateChoice::Existing(i) => i,
+        let created = match choice {
+            ModulateChoice::NewLfo => self.ctl.add_modulator(ms.scope, ModSourceSlot::new_lfo()),
+            ModulateChoice::NewEnvelope => self.ctl.add_modulator(ms.scope, ModSourceSlot::new_envelope()),
+            ModulateChoice::Existing(i) => Some(i),
         };
+        let Some(mod_index) = created else { return };
 
         // Bind the parameter as a target of that modulator.
-        let kind = ms.target_kind.clone();
-        let target = crate::plugin::chain::ModTarget {
-            kind: kind.clone(),
-            depth: 0.5,
-            base_value: ms.base_value,
-            param_min: ms.param_min,
-            param_max: ms.param_max,
-            effective: None,
-        };
-        match ms.scope {
-            ModulatorLocation::Lane(inst) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
-            }
-            ModulatorLocation::Group(group) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
-            }
-        }
-        if let Some(mods) = self.ctl.model.modulators_mut(ms.scope) {
-            if let Some(m) = mods.get_mut(mod_index) {
-                m.targets.push(ModTargetSlot {
-                    slot: ms.slot,
-                    param_name: ms.param_name,
-                    kind,
-                    depth: 0.5,
-                    param_min: ms.param_min,
-                    param_max: ms.param_max,
-                });
-            }
-        }
+        self.ctl.add_target(
+            ms.scope,
+            mod_index,
+            NewTarget {
+                kind: ms.target_kind,
+                slot: ms.slot,
+                param_name: ms.param_name,
+                depth: 0.5,
+                base_value: ms.base_value,
+                param_min: ms.param_min,
+                param_max: ms.param_max,
+            },
+        );
         self.ctl.dirty = true;
         self.rebuild_tree();
     }
@@ -1333,7 +1245,7 @@ impl State {
     /// control to an LFO's rate, an envelope stage, or a target depth). The
     /// audio thread captures the next CC / pitch-bend and notifies back.
     fn learn_selected_param(&mut self) {
-        use crate::plugin::chain::{ModSource, ModTarget, ModTargetKind};
+        use crate::plugin::chain::ModTargetKind;
         let sel = self.chain_state.selected;
         if sel >= self.tree_entries.len() {
             return;
@@ -1393,57 +1305,23 @@ impl State {
             };
 
         // Create an armed MidiLearn modulator in the right rack.
-        let mod_index = match self.ctl.model.modulators_mut(scope) {
-            Some(ms) => ms.len(),
-            None => return,
-        };
-        match scope {
-            ModulatorLocation::Lane(inst) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::InsertModulator {
-                    inst,
-                    index: mod_index,
-                    source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
-                });
-            }
-            ModulatorLocation::Group(group) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::InsertGroupModulator {
-                    group,
-                    index: mod_index,
-                    source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
-                });
-            }
-        }
-        let node = self.ctl.model.alloc_node();
-        if let Some(ms) = self.ctl.model.modulators_mut(scope) {
-            ms.push(ModulatorSlot {
-                node,
-                source: ModSourceSlot::MidiLearn { source: None, learning: true },
-                targets: vec![],
-            });
-        }
+        let armed = ModSourceSlot::MidiLearn { source: None, learning: true };
+        let Some(mod_index) = self.ctl.add_modulator(scope, armed) else { return };
 
         // Bind the target (depth 1.0 = full-range absolute control).
-        let target = ModTarget { kind: kind.clone(), depth: 1.0, base_value: base, param_min: min, param_max: max, effective: None };
-        match scope {
-            ModulatorLocation::Lane(inst) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
-            }
-            ModulatorLocation::Group(group) => {
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
-            }
-        }
-        if let Some(ms) = self.ctl.model.modulators_mut(scope) {
-            if let Some(m) = ms.get_mut(mod_index) {
-                m.targets.push(ModTargetSlot {
-                    slot: addr.slot(),
-                    param_name: label,
-                    kind,
-                    depth: 1.0,
-                    param_min: min,
-                    param_max: max,
-                });
-            }
-        }
+        self.ctl.add_target(
+            scope,
+            mod_index,
+            NewTarget {
+                kind,
+                slot: addr.slot(),
+                param_name: label,
+                depth: 1.0,
+                base_value: base,
+                param_min: min,
+                param_max: max,
+            },
+        );
         self.ctl.dirty = true;
         self.rebuild_tree();
     }
@@ -2936,49 +2814,13 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 | Some(TreeAddress::GroupModulator { group: g, .. }) => Some(g),
                 _ => None,
             };
-            if let Some(g) = group {
-                if let Some(node) = s.ctl.model.groups.get_mut(g) {
-                    let mod_index = node.modulators.len();
-                    let _ = s.ctl.cmd_tx.send(GraphCommand::InsertGroupModulator {
-                        group: g,
-                        index: mod_index,
-                        source: crate::plugin::chain::ModSource::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                            phase: 0.0,
-                        },
-                    });
-                    node.modulators.push(ModulatorSlot {
-                        node: s.ctl.model.ids.alloc(),
-                        source: ModSourceSlot::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                        },
-                        targets: vec![],
-                    });
-                    s.ctl.dirty = true;
-                    s.rebuild_tree();
-                }
-            } else if let Some(inst) = s.selected_address().and_then(|a| a.inst()) {
-                if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
-                    let mod_index = node.modulators.len();
-                    let _ = s.ctl.cmd_tx.send(GraphCommand::InsertModulator {
-                        inst,
-                        index: mod_index,
-                        source: crate::plugin::chain::ModSource::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                            phase: 0.0,
-                        },
-                    });
-                    node.modulators.push(ModulatorSlot {
-                        node: s.ctl.model.ids.alloc(),
-                        source: ModSourceSlot::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                        },
-                        targets: vec![],
-                    });
+            let rack = match (group, s.selected_address().and_then(|a| a.inst())) {
+                (Some(g), _) => Some(ModulatorLocation::Group(g)),
+                (None, Some(inst)) => Some(ModulatorLocation::Lane(inst)),
+                (None, None) => None,
+            };
+            if let Some(rack) = rack {
+                if s.ctl.add_modulator(rack, ModSourceSlot::new_lfo()).is_some() {
                     s.ctl.dirty = true;
                     s.rebuild_tree();
                 }

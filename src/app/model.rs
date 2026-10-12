@@ -301,6 +301,17 @@ pub enum ModSourceSlot {
 }
 
 impl ModSourceSlot {
+    /// What a modulator added without further ado starts as: a 1 Hz sine.
+    pub fn new_lfo() -> Self {
+        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0 }
+    }
+
+    /// An envelope as the modulate popup makes it: 10 ms attack, 0.3 s decay,
+    /// sustain 0.7, 0.5 s release.
+    pub fn new_envelope() -> Self {
+        ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }
+    }
+
     /// A short label for the source (used in the tree and param pane).
     pub fn label(&self) -> String {
         use crate::plugin::chain::MidiBindSource;
@@ -1408,6 +1419,20 @@ depth = 0.5
         assert!(matches!(
             mod_source_slot_to_graph(&armed),
             ModSource::MidiLearn { source: None, learning: true, .. }
+        ));
+    }
+
+    #[test]
+    fn new_modulators_start_as_a_sine_of_one_hertz_or_the_default_envelope() {
+        use crate::plugin::chain::LfoWaveform;
+        assert!(matches!(
+            ModSourceSlot::new_lfo(),
+            ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0
+        ));
+        assert!(matches!(
+            ModSourceSlot::new_envelope(),
+            ModSourceSlot::Envelope { attack, decay, sustain, release }
+                if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)
         ));
     }
 
