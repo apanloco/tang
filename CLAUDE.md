@@ -659,6 +659,7 @@ numeric `params` values (the index into the label list).
 | `l` | Param focus: MIDI-learn the selected parameter — arms a MIDI modulator and binds the next incoming CC / pitch-bend / aftertouch to it (works on plugin params and modulator fields) |
 | `x` | Set the dry/wet mix of the selected effect or group bus effect (host-side blend, opens value popup) |
 | `g` | Assign the selected instrument to a submix group (new / existing / ungroup, opens popup) |
+| `p` | Open the preset selector for the selected instrument or effect (only if its plugin has presets) |
 | `d` | Delete selected instrument/effect/modulator/pattern/group/group-effect/group-modulator (no confirmation; deleting a group ungroups its members) |
 | `t` | Add modulation target (when a lane **or** group modulator is selected, opens the target selector; a group modulator's selector lists every member instrument's params, the group's bus effects, and sibling group modulators) |
 | `Enter` | Focus parameter list / open value editor on selected parameter |
@@ -676,7 +677,7 @@ Mouse: click to select, drag a parameter bar to set its value, drag the
 parameter scrollbar to scroll. Mouse wheel scrolls the parameter list and the
 Help tab.
 
-TODO: `p` to browse presets for the selected plugin (preset selector popup).
+TODO: `p` on a group bus effect (the `LoadPreset` intent already reaches those).
 TODO: `e` shortcut to open the value entry popup directly (currently use
 `Enter` from chain focus or land on a param and press `Enter`).
 TODO: `Ctrl+R` shortcut to clear a pattern (currently select the pattern
@@ -702,14 +703,14 @@ scan is still running the popup title shows "(scanning…)".
 
 ### Preset selector popup
 
-TODO: Not yet implemented. Planned design:
-
-Opened by `p` on the Session tab.
+Opened by `p` on an instrument or an effect in the chain (not on a group bus
+effect yet). Titled "Select Preset". Nothing opens if the plugin has no presets.
 
 - **Top**: text input for filtering by name
-- **Below**: single-column list of preset names
+- **Below**: single-column list of preset names, starting on the plugin's
+  current preset
 - `Up` / `Down` — navigate rows
-- `Enter` — load preset and close popup
+- `Enter` — load the highlighted preset (the `LoadPreset` intent) and close popup
 - `Escape` — cancel and close popup
 
 ### Value entry popup
