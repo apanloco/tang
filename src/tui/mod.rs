@@ -29,6 +29,14 @@ use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
+use crate::app::model::{
+    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
+    ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
+    fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
+    format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
+    modulator_param_len, modulator_param_range, modulator_row_to_cross_mod,
+    shift_group_member_after_insert,
+};
 use crate::audio;
 use crate::held_notes::HeldNotes;
 use crate::piano_filter::{PianoFilter, PianoMode};
@@ -39,164 +47,6 @@ use crate::scale::{ScaleSetting, NOTE_NAMES};
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
 const TAB_SEP: &str = " │ ";
-
-/// Default dry/wet mix for a newly added effect. Half-wet suits blend/parallel
-/// effects (reverb, delay), the common DAW default for sends.
-const DEFAULT_EFFECT_MIX: f32 = 0.5;
-
-/// Default dry/wet mix for a freshly added effect, by plugin. Filters and
-/// other tone-shaping inserts must be fully wet — at 50% the dry path passes
-/// the very frequencies the filter removes, so e.g. a highpass barely changes
-/// the sound. Blend effects (reverb) keep the half-wet default.
-fn default_effect_mix(id: &str) -> f32 {
-    if id == "builtin:filter" {
-        1.0
-    } else {
-        DEFAULT_EFFECT_MIX
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Plugin slot — main-thread mirror of what the audio thread has
-// ---------------------------------------------------------------------------
-
-struct PluginSlot {
-    name: String,
-    format: String,
-    #[allow(dead_code)]
-    id: String,
-    #[allow(dead_code)]
-    is_instrument: bool,
-    params: Vec<ParamSlot>,
-    /// All presets the plugin reports, cached at load time. Used by the
-    /// preset selector popup.
-    presets: Vec<plugin::Preset>,
-    /// Name of the currently-loaded preset (if any). Tracked for save
-    /// round-trip and display.
-    current_preset: Option<String>,
-    /// Effect dry/wet mix (1.0 = full wet). Only meaningful for effect slots;
-    /// instrument slots leave this at 1.0 and don't read it.
-    mix: f32,
-}
-
-enum ParamKind {
-    Float,
-    Enum(Vec<String>),
-    Separator,
-}
-
-struct ParamSlot {
-    name: String,
-    index: u32,
-    min: f32,
-    max: f32,
-    default: f32,
-    value: f32,
-    kind: ParamKind,
-}
-
-// ---------------------------------------------------------------------------
-// Instrument tree model
-// ---------------------------------------------------------------------------
-
-/// Main-thread mirror of pattern state for an instrument.
-struct PatternState {
-    bpm: f32,
-    length_beats: f32,
-    looping: bool,
-    base_note: Option<u8>,
-    events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
-    enabled: bool,
-    recording: bool,
-    /// Transpose playback by scale degrees (in-key) instead of semitones.
-    in_key: bool,
-}
-
-struct InstrumentNode {
-    range: Option<(u8, u8)>,
-    transpose: i8,
-    /// Host-side output gain, applied before effects (1.0 = unity).
-    volume: f32,
-    instrument: Option<PluginSlot>,
-    effects: Vec<PluginSlot>,
-    /// Lane-scoped modulators. Each target addresses a plugin in this chain by
-    /// slot (0 = instrument, 1..N = effects).
-    modulators: Vec<ModulatorSlot>,
-    pattern: Option<PatternState>,
-    /// Carried through from session config; not editable in the TUI.
-    pitch_bend_range: f64,
-    remap: std::collections::HashMap<String, crate::session::RemapTarget>,
-    /// Submix group membership: index into `State.groups`, or None.
-    group: Option<usize>,
-}
-
-/// A submix group in the TUI model: members are the instruments whose `group`
-/// points here; it sums them and runs its own effect chain + volume.
-struct GroupNode {
-    name: Option<String>,
-    volume: f32,
-    /// Stereo balance pan for the group bus (-1 left … 0 center … +1 right).
-    pan: f32,
-    effects: Vec<PluginSlot>,
-    /// Group-scoped modulators. Each target addresses a member instrument
-    /// (`GroupMember`), a bus effect (`GroupBus`), or a sibling group modulator.
-    modulators: Vec<ModulatorSlot>,
-}
-
-enum ModSourceSlot {
-    Lfo {
-        waveform: crate::plugin::chain::LfoWaveform,
-        rate: f32,
-    },
-    Envelope {
-        attack: f32,
-        decay: f32,
-        sustain: f32,
-        release: f32,
-    },
-    /// A MIDI-learned control (CC or pitch bend). `source` is None while
-    /// `learning` (armed for the next incoming control).
-    MidiLearn {
-        source: Option<crate::plugin::chain::MidiBindSource>,
-        learning: bool,
-    },
-}
-
-impl ModSourceSlot {
-    /// A short label for the source (used in the tree and param pane).
-    fn label(&self) -> String {
-        use crate::plugin::chain::MidiBindSource;
-        match self {
-            ModSourceSlot::Lfo { waveform, rate } => format!("LFO {:.1}Hz {}", rate, waveform.name()),
-            ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
-            ModSourceSlot::MidiLearn { source, learning } => match source {
-                Some(MidiBindSource::Cc(n)) => format!("CC {n}"),
-                Some(MidiBindSource::PitchBend) => "Pitch Bend".to_string(),
-                Some(MidiBindSource::Aftertouch) => "Aftertouch".to_string(),
-                None if *learning => "MIDI (learning…)".to_string(),
-                None => "MIDI (unbound)".to_string(),
-            },
-        }
-    }
-}
-
-struct ModulatorSlot {
-    source: ModSourceSlot,
-    targets: Vec<ModTargetSlot>,
-}
-
-struct ModTargetSlot {
-    /// Slot the target lives on: 0 = instrument, 1..N = effects. Used to label
-    /// the target with its plugin and to resolve cross-mod vs plugin params.
-    slot: usize,
-    param_name: String,
-    kind: crate::plugin::chain::ModTargetKind,
-    depth: f32,
-    #[allow(dead_code)]
-    param_min: f32,
-    #[allow(dead_code)]
-    param_max: f32,
-}
 
 /// Addresses a specific node in the instrument tree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1829,22 +1679,22 @@ impl State {
         let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: new_group });
         // Keep group-modulator member ordinals in sync with membership (mirrors
         // the audio thread's SetLaneGroup fixups).
-        let old = tui_lane_member_ordinal(&self.instruments, inst);
+        let old = lane_member_ordinal(&self.instruments, inst);
         if let Some(node) = self.instruments.get_mut(inst) {
             node.group = new_group;
         }
-        let new = tui_lane_member_ordinal(&self.instruments, inst);
+        let new = lane_member_ordinal(&self.instruments, inst);
         let old_group = old.map(|(g, _)| g);
         let new_group_idx = new.map(|(g, _)| g);
         if old_group != new_group_idx {
             if let Some((og, oo)) = old {
                 if let Some(g) = self.groups.get_mut(og) {
-                    fixup_tui_group_member_after_remove(&mut g.modulators, oo);
+                    fixup_group_member_after_remove(&mut g.modulators, oo);
                 }
             }
             if let Some((ng, no)) = new {
                 if let Some(g) = self.groups.get_mut(ng) {
-                    shift_tui_group_member_after_insert(&mut g.modulators, no);
+                    shift_group_member_after_insert(&mut g.modulators, no);
                 }
             }
         }
@@ -3951,12 +3801,12 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         } else if s.instruments.len() > 1 {
                             // If this lane was a group member, fix up that group's
                             // modulator member ordinals (mirrors the audio thread).
-                            let member_of = tui_lane_member_ordinal(&s.instruments, inst);
+                            let member_of = lane_member_ordinal(&s.instruments, inst);
                             let _ = s.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
                             s.instruments.remove(inst);
                             if let Some((group, ordinal)) = member_of {
                                 if let Some(g) = s.groups.get_mut(group) {
-                                    fixup_tui_group_member_after_remove(&mut g.modulators, ordinal);
+                                    fixup_group_member_after_remove(&mut g.modulators, ordinal);
                                 }
                             }
                             s.dirty = true;
@@ -3977,14 +3827,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             if index < node.modulators.len() {
                                 node.modulators.remove(index);
                                 // Clean up cross-mod targets in siblings.
-                                fixup_tui_cross_mod_after_remove(&mut node.modulators, index);
+                                fixup_cross_mod_after_remove(&mut node.modulators, index);
                             }
                         }
                         // If this lane is a group member, fix up group modulators
                         // that cross-mod its modulators.
-                        if let Some((group, ordinal)) = tui_lane_member_ordinal(&s.instruments, inst) {
+                        if let Some((group, ordinal)) = lane_member_ordinal(&s.instruments, inst) {
                             if let Some(g) = s.groups.get_mut(group) {
-                                fixup_tui_group_member_mod_after_remove(&mut g.modulators, ordinal, index);
+                                fixup_group_member_mod_after_remove(&mut g.modulators, ordinal, index);
                             }
                         }
                         s.dirty = true;
@@ -3996,7 +3846,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             if index < g.effects.len() {
                                 g.effects.remove(index);
                                 // Drop/shift group-mod bus targets after the removed effect.
-                                fixup_tui_group_bus_after_remove(&mut g.modulators, index);
+                                fixup_group_bus_after_remove(&mut g.modulators, index);
                             }
                         }
                         s.dirty = true;
@@ -4008,7 +3858,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             if index < g.modulators.len() {
                                 g.modulators.remove(index);
                                 // Clean up cross-mod targets in sibling group modulators.
-                                fixup_tui_cross_mod_after_remove(&mut g.modulators, index);
+                                fixup_cross_mod_after_remove(&mut g.modulators, index);
                             }
                         }
                         s.dirty = true;
@@ -5510,166 +5360,6 @@ fn render_help(frame: &mut ratatui::Frame, area: Rect, lines: &[String], offset:
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// After removing a modulator at `removed_index` from the TUI model,
-/// clean up cross-mod targets in siblings: remove targets pointing at the
-/// removed index, and decrement indices > removed_index.
-fn fixup_tui_cross_mod_after_remove(modulators: &mut [ModulatorSlot], removed_index: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| {
-            let idx = match &t.kind {
-                ModTargetKind::PluginParam { .. }
-                | ModTargetKind::GroupMember { .. }
-                | ModTargetKind::GroupBus { .. }
-                | ModTargetKind::GroupMemberMod { .. } => None,
-                ModTargetKind::ModulatorRate { mod_index }
-                | ModTargetKind::ModulatorAttack { mod_index }
-                | ModTargetKind::ModulatorDecay { mod_index }
-                | ModTargetKind::ModulatorSustain { mod_index }
-                | ModTargetKind::ModulatorRelease { mod_index }
-                | ModTargetKind::ModulatorDepth { mod_index, .. } => Some(*mod_index),
-            };
-            idx != Some(removed_index)
-        });
-        for t in &mut m.targets {
-            let idx = match &mut t.kind {
-                ModTargetKind::PluginParam { .. }
-                | ModTargetKind::GroupMember { .. }
-                | ModTargetKind::GroupBus { .. }
-                | ModTargetKind::GroupMemberMod { .. } => continue,
-                ModTargetKind::ModulatorRate { mod_index }
-                | ModTargetKind::ModulatorAttack { mod_index }
-                | ModTargetKind::ModulatorDecay { mod_index }
-                | ModTargetKind::ModulatorSustain { mod_index }
-                | ModTargetKind::ModulatorRelease { mod_index }
-                | ModTargetKind::ModulatorDepth { mod_index, .. } => mod_index,
-            };
-            if *idx > removed_index {
-                *idx -= 1;
-            }
-        }
-    }
-}
-
-/// Mirror of the audio-thread `fixup_group_bus_after_remove` for the TUI model:
-/// after a group bus effect at `removed` is deleted, drop GroupBus targets on
-/// it and shift higher bus indices down.
-fn fixup_tui_group_bus_after_remove(modulators: &mut [ModulatorSlot], removed: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| {
-            !matches!(t.kind, ModTargetKind::GroupBus { effect_index, .. } if effect_index == removed)
-        });
-        for t in &mut m.targets {
-            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
-                if *effect_index > removed {
-                    *effect_index -= 1;
-                }
-            }
-        }
-    }
-}
-
-/// TUI-model mirror of `fixup_group_member_after_remove`: after the member at
-/// ordinal `removed` leaves a group, drop GroupMember targets on it and shift
-/// higher ordinals down.
-fn fixup_tui_group_member_after_remove(modulators: &mut [ModulatorSlot], removed: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| match &t.kind {
-            ModTargetKind::GroupMember { member, .. }
-            | ModTargetKind::GroupMemberMod { member, .. } => *member != removed,
-            _ => true,
-        });
-        for t in &mut m.targets {
-            let member = match &mut t.kind {
-                ModTargetKind::GroupMember { member, .. }
-                | ModTargetKind::GroupMemberMod { member, .. } => member,
-                _ => continue,
-            };
-            if *member > removed {
-                *member -= 1;
-            }
-        }
-    }
-}
-
-/// TUI-model mirror of `shift_group_member_after_insert`: after a member joins
-/// a group at ordinal `inserted`, bump group-target member ordinals at/after it.
-fn shift_tui_group_member_after_insert(modulators: &mut [ModulatorSlot], inserted: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        for t in &mut m.targets {
-            let member = match &mut t.kind {
-                ModTargetKind::GroupMember { member, .. }
-                | ModTargetKind::GroupMemberMod { member, .. } => member,
-                _ => continue,
-            };
-            if *member >= inserted {
-                *member += 1;
-            }
-        }
-    }
-}
-
-/// TUI-model mirror of `fixup_group_member_mod_after_remove`: after member
-/// `member`'s lane modulator at `removed` is deleted, drop GroupMemberMod
-/// targets on it and shift that member's higher mod-indices down.
-fn fixup_tui_group_member_mod_after_remove(
-    modulators: &mut [ModulatorSlot],
-    member: usize,
-    removed: usize,
-) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| {
-            !matches!(t.kind, ModTargetKind::GroupMemberMod { member: tm, mod_index, .. } if tm == member && mod_index == removed)
-        });
-        for t in &mut m.targets {
-            if let ModTargetKind::GroupMemberMod { member: tm, mod_index, .. } = &mut t.kind {
-                if *tm == member && *mod_index > removed {
-                    *mod_index -= 1;
-                }
-            }
-        }
-    }
-}
-
-/// The (group, member-ordinal) of TUI instrument `inst`, or None if ungrouped.
-fn tui_lane_member_ordinal(instruments: &[InstrumentNode], inst: usize) -> Option<(usize, usize)> {
-    let group = instruments.get(inst)?.group?;
-    let ordinal = instruments[..inst]
-        .iter()
-        .filter(|n| n.group == Some(group))
-        .count();
-    Some((group, ordinal))
-}
-
-/// Convert a TUI ModSourceSlot to an audio-thread ModSource for GraphCommands.
-fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::ModSource {
-    match slot {
-        ModSourceSlot::Lfo { waveform, rate } => crate::plugin::chain::ModSource::Lfo {
-            waveform: *waveform,
-            rate: *rate,
-            phase: 0.0,
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => crate::plugin::chain::ModSource::Envelope {
-            attack: *attack,
-            decay: *decay,
-            sustain: *sustain,
-            release: *release,
-            state: crate::plugin::chain::EnvState::Idle,
-            level: 0.0,
-            notes_held: 0,
-        },
-        ModSourceSlot::MidiLearn { source, learning } => crate::plugin::chain::ModSource::MidiLearn {
-            source: *source,
-            value: 0.0,
-            learning: *learning,
-        },
-    }
-}
-
 fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
     let params = lp
         .params
@@ -5696,63 +5386,6 @@ fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
         presets: lp.presets,
         current_preset: lp.current_preset,
         mix: lp.mix,
-    }
-}
-
-/// Depth range for a modulator target. Negative depth **inverts** the
-/// modulation direction — e.g. a control that lowers the parameter instead of
-/// raising it, an LFO wobbling in anti-phase, or an envelope that dips below
-/// the base. The audio-side math is a plain multiply, so this is only the
-/// editor's bound; sessions already round-trip negative depth.
-const DEPTH_MIN: f32 = -1.0;
-const DEPTH_MAX: f32 = 1.0;
-
-/// Number of param-pane rows for a modulator: source params + "Targets"
-/// separator + one row per target. Scope-independent (lane or group).
-fn modulator_param_len(m: &ModulatorSlot) -> usize {
-    let fixed = match &m.source {
-        ModSourceSlot::Lfo { .. } => 3,      // Type + Waveform + Rate
-        ModSourceSlot::Envelope { .. } => 5, // Type + A + D + S + R
-        ModSourceSlot::MidiLearn { .. } => 1, // Source-info row only
-    };
-    fixed + 1 + m.targets.len()
-}
-
-/// (min, max) for a modulator pseudo-param at row `pa`, or None for enum /
-/// separator rows. Scope-independent.
-fn modulator_param_range(m: &ModulatorSlot, pa: usize) -> Option<(f32, f32)> {
-    if pa == 0 {
-        return None; // Type enum
-    }
-    match &m.source {
-        ModSourceSlot::Lfo { .. } => match pa {
-            1 => None, // Waveform enum
-            2 => Some((0.01, 50.0)),
-            3 => None, // Separator
-            _ => m.targets.get(pa - 4).map(|_| (DEPTH_MIN, DEPTH_MAX)),
-        },
-        ModSourceSlot::Envelope { .. } => match pa {
-            1 => Some((0.001, 10.0)),
-            2 => Some((0.001, 10.0)),
-            3 => Some((0.0, 1.0)),
-            4 => Some((0.001, 10.0)),
-            5 => None, // Separator
-            _ => m.targets.get(pa - 6).map(|_| (DEPTH_MIN, DEPTH_MAX)),
-        },
-        // Row 0 = source info (handled above), 1 = Targets separator, 2+ = depths.
-        ModSourceSlot::MidiLearn { .. } => match pa {
-            1 => None,
-            _ => m.targets.get(pa - 2).map(|_| (DEPTH_MIN, DEPTH_MAX)),
-        },
-    }
-}
-
-/// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform).
-fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
-    match &m.source {
-        ModSourceSlot::Lfo { .. } => pa == 0 || pa == 1, // Type, Waveform
-        ModSourceSlot::Envelope { .. } => pa == 0,       // Type
-        ModSourceSlot::MidiLearn { .. } => false,        // source row is read-only info
     }
 }
 
@@ -5807,41 +5440,6 @@ fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
                 param_max: DEPTH_MAX,
             }),
         },
-    }
-}
-
-/// Map a modulator's param-pane row `pa` to a cross-mod target on that
-/// modulator (index `mod_index`): its rate/ADSR field or one of its target
-/// depths. Returns `(kind, min, max, base, label)`, or None for enum/separator
-/// rows. Used by MIDI-learn to bind a control to a modulator's own parameter.
-fn modulator_row_to_cross_mod(
-    m: &ModulatorSlot,
-    mod_index: usize,
-    pa: usize,
-) -> Option<(crate::plugin::chain::ModTargetKind, f32, f32, f32, String)> {
-    use crate::plugin::chain::ModTargetKind as K;
-    let depth_at = |off: usize| {
-        let ti = pa - off;
-        m.targets
-            .get(ti)
-            .map(|t| (K::ModulatorDepth { mod_index, target_index: ti }, DEPTH_MIN, DEPTH_MAX, t.depth, format!("Mod {mod_index} depth {ti}")))
-    };
-    match &m.source {
-        ModSourceSlot::Lfo { rate, .. } => match pa {
-            2 => Some((K::ModulatorRate { mod_index }, 0.01, 50.0, *rate, format!("Mod {mod_index} rate"))),
-            _ if pa >= 4 => depth_at(4),
-            _ => None,
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => match pa {
-            1 => Some((K::ModulatorAttack { mod_index }, 0.001, 10.0, *attack, format!("Mod {mod_index} attack"))),
-            2 => Some((K::ModulatorDecay { mod_index }, 0.001, 10.0, *decay, format!("Mod {mod_index} decay"))),
-            3 => Some((K::ModulatorSustain { mod_index }, 0.0, 1.0, *sustain, format!("Mod {mod_index} sustain"))),
-            4 => Some((K::ModulatorRelease { mod_index }, 0.001, 10.0, *release, format!("Mod {mod_index} release"))),
-            _ if pa >= 6 => depth_at(6),
-            _ => None,
-        },
-        ModSourceSlot::MidiLearn { .. } if pa >= 2 => depth_at(2),
-        ModSourceSlot::MidiLearn { .. } => None,
     }
 }
 
@@ -6116,26 +5714,6 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
     }
 
     entries
-}
-
-fn format_from_id(id: &str) -> String {
-    if id.starts_with("builtin:") {
-        "Built-in".into()
-    } else if id.starts_with("lv2:") || id.starts_with("http://") || id.starts_with("urn:") {
-        "LV2".into()
-    } else if id.starts_with("clap:") || id.contains('.') && !id.contains('/') {
-        "CLAP".into()
-    } else if id.starts_with("vst3:") {
-        "VST3".into()
-    } else if id.ends_with(".lv2") {
-        "LV2".into()
-    } else if id.ends_with(".clap") {
-        "CLAP".into()
-    } else if id.ends_with(".vst3") {
-        "VST3".into()
-    } else {
-        "?".into()
-    }
 }
 
 /// Truncate `s` to at most `max` characters, appending an ellipsis when cut.

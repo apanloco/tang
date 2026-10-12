@@ -866,7 +866,9 @@ changes: plugin selections, preset names, parameter values, mix values, volume,
 and effect order. This model is the source of truth for `Ctrl+S` serialization.
 Every user action (preset load, parameter tweak, plugin add/remove, reorder)
 updates both the session model (for saving) and sends a command to the audio
-thread (for playback). The dirty indicator is driven by this model.
+thread (for playback). The dirty indicator is driven by this model. The model
+types and the helpers that keep their indices in step with the audio graph live
+in `src/app/model.rs`.
 
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.

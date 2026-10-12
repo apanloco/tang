@@ -1,5 +1,6 @@
 #![allow(clippy::collapsible_if)]
 
+mod app;
 mod audio;
 mod chord;
 mod cli;

@@ -446,15 +446,24 @@ Each step is a reviewable change; the TUI must not regress at any point.
   After an intentional UI change: `INSTA_UPDATE=always cargo test golden`, then
   review the snapshot diff. *Done:* `cargo test` and clippy green, no behavior
   change.
-- [ ] **2. Extract the model** into `src/app/model.rs` (not `core`: a module
-  named `core` shadows the std crate): `PluginSlot`, `ParamSlot`, `ParamKind`,
-  `PatternState`, `InstrumentNode`, `GroupNode`, `ModSourceSlot`,
-  `ModulatorSlot`, `ModTargetSlot`, plus the pure helpers
-  (`default_effect_mix`, `format_from_id`, the cross-mod / group-ordinal
-  fix-ups, `tui_lane_member_ordinal`, `mod_source_slot_to_graph`,
-  `to_plugin_slot`, `to_modulator_slot`, `modulator_param_*`). The TUI imports
-  them. *Done when:* snapshots unchanged; new unit tests cover the fix-up
-  helpers (they have none today).
+- [x] **2. Extract the model** into `src/app/model.rs` (not `core`: a module
+  named `core` shadows the std crate). Moved: `PluginSlot`, `ParamSlot`,
+  `ParamKind`, `PatternState`, `InstrumentNode`, `GroupNode`, `ModSourceSlot`,
+  `ModulatorSlot`, `ModTargetSlot`, and the pure helpers: `default_effect_mix`,
+  `format_from_id`, the modulator row helpers (`modulator_param_len` /
+  `_range` / `_is_enum`, `modulator_row_to_cross_mod`),
+  `mod_source_slot_to_graph`, the five index fix-ups and `lane_member_ordinal`
+  (the `tui_` prefix is gone from their names). `to_plugin_slot` /
+  `to_modulator_slot` stay in the TUI for now: they convert the `Loaded*`
+  structs, which step 3 deletes. 14 unit tests cover the helpers (the fix-ups
+  had none), each mutation-checked. *Done:* snapshots unchanged; `cargo test`
+  and clippy green on both feature sets.
+  Noticed while moving, not done: the fix-ups exist twice with the same logic
+  (on `ModulatorSlot` here, on the audio `Modulator` in `plugin::chain`), and
+  the modulator row tables (`modulator_param_range`, `modulator_edit_state`,
+  `modulator_row_to_cross_mod`, the rows built in `render_session`) repeat the
+  same ranges. Both are natural to unify once the controller owns edits
+  (steps 5-6).
 - [ ] **3. Extract load** into `app::load::load_session`: the group, instrument,
   effect, pattern and transpose loading from `run_session`, plus
   `load_lane_modulators`, `load_group_modulators`, `build_mod_source`,
