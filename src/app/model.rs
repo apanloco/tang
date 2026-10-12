@@ -13,6 +13,12 @@
 
 use crate::plugin;
 
+/// What a front-end edits: the instrument lanes and the submix groups.
+pub struct SessionModel {
+    pub instruments: Vec<InstrumentNode>,
+    pub groups: Vec<GroupNode>,
+}
+
 /// Default dry/wet mix for a newly added effect. Half-wet suits blend/parallel
 /// effects (reverb, delay), the common DAW default for sends.
 pub const DEFAULT_EFFECT_MIX: f32 = 0.5;

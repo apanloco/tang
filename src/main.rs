@@ -380,7 +380,7 @@ fn run_session(
     )?;
 
     // Load the session: plugins into the audio thread, the model for the front-end.
-    let loaded = app::load::load_session(
+    let model = app::load::load_session(
         &config,
         session_dir,
         sample_rate_f,
@@ -410,7 +410,7 @@ fn run_session(
     // --- Branch: TUI view vs plain play mode ---
     if use_tui {
         let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(loaded.instruments, loaded.groups, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, learn_rx, held.clone(), piano_filter.clone(), midi_monitor.clone())?;
+        tui::run(model, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, learn_rx, held.clone(), piano_filter.clone(), midi_monitor.clone())?;
     } else {
         // --- Plain play mode (original) ---
 

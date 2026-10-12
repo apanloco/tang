@@ -29,10 +29,9 @@ use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
-use crate::app::load::{LoadedGroup, LoadedInstrument, LoadedModSource, LoadedModulator, LoadedPlugin};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
-    ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
+    ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove,
     fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
     fixup_slots_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph,
     modulator_param_is_enum, modulator_param_len, modulator_param_range, modulator_row_to_cross_mod,
@@ -431,8 +430,7 @@ impl State {
     /// `State` around stub channels.
     #[allow(clippy::too_many_arguments)]
     fn new(
-        loaded_instruments: Vec<LoadedInstrument>,
-        loaded_groups: Vec<LoadedGroup>,
+        model: SessionModel,
         cmd_tx: Sender<GraphCommand>,
         midi_tx: Sender<audio::MidiEvent>,
         runtime: plugin::Runtime,
@@ -446,48 +444,7 @@ impl State {
         piano_filter: Arc<PianoFilter>,
         midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
     ) -> State {
-        let groups: Vec<GroupNode> = loaded_groups
-            .into_iter()
-            .map(|g| GroupNode {
-                name: g.name,
-                volume: g.volume,
-                pan: g.pan,
-                effects: g.effects.into_iter().map(to_plugin_slot).collect(),
-                modulators: g.modulators.into_iter().map(to_modulator_slot).collect(),
-            })
-            .collect();
-
-        // Convert loaded instruments into flat InstrumentNode list.
-        let instruments: Vec<InstrumentNode> = loaded_instruments
-            .into_iter()
-            .map(|li| {
-                let instrument = li.instrument.map(to_plugin_slot);
-                let effects = li.effects.into_iter().map(to_plugin_slot).collect();
-                let modulators = li.modulators.into_iter().map(to_modulator_slot).collect();
-                let pattern = li.pattern.map(|p| PatternState {
-                    bpm: p.bpm,
-                    length_beats: p.length_beats,
-                    looping: p.looping,
-                    base_note: p.base_note,
-                    events: p.events,
-                    enabled: p.enabled,
-                    recording: false,
-                    in_key: p.in_key,
-                });
-                InstrumentNode {
-                    range: li.range,
-                    transpose: li.transpose,
-                    volume: li.volume,
-                    instrument,
-                    effects,
-                    modulators,
-                    pattern,
-                    pitch_bend_range: li.pitch_bend_range,
-                    remap: li.remap,
-                    group: li.group,
-                }
-            })
-            .collect();
+        let SessionModel { instruments, groups } = model;
 
         let tree_entries = build_tree_entries(&instruments, &groups);
         let param_len = instruments.first()
@@ -2632,8 +2589,7 @@ impl State {
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    loaded_instruments: Vec<LoadedInstrument>,
-    loaded_groups: Vec<LoadedGroup>,
+    model: SessionModel,
     cmd_tx: Sender<GraphCommand>,
     midi_tx: Sender<audio::MidiEvent>,
     runtime: plugin::Runtime,
@@ -2675,8 +2631,7 @@ pub fn run(
     let catalog_rx = spawn_catalog_scan();
 
     let mut s = State::new(
-        loaded_instruments,
-        loaded_groups,
+        model,
         cmd_tx,
         midi_tx,
         runtime,
@@ -5235,35 +5190,6 @@ fn render_help(frame: &mut ratatui::Frame, area: Rect, lines: &[String], offset:
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
-    let params = lp
-        .params
-        .into_iter()
-        .zip(lp.param_defaults)
-        .zip(lp.param_values)
-        .filter(|((p, _), _)| !p.name.starts_with("(locked)"))
-        .map(|((p, baseline), v)| ParamSlot {
-            kind: p.labels.map_or(ParamKind::Float, ParamKind::Enum),
-            name: p.name,
-            index: p.index,
-            min: p.min,
-            max: p.max,
-            default: baseline,
-            value: v,
-        })
-        .collect();
-    PluginSlot {
-        name: lp.name,
-        format: format_from_id(&lp.id),
-        id: lp.id,
-        is_instrument: lp.is_instrument,
-        params,
-        presets: lp.presets,
-        current_preset: lp.current_preset,
-        mix: lp.mix,
-    }
-}
-
 /// Build the value-entry `EditState` for a modulator pseudo-param at row `pa`,
 /// or None for enum/separator rows. Scope-independent (lane or group).
 fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
@@ -5315,33 +5241,6 @@ fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
                 param_max: DEPTH_MAX,
             }),
         },
-    }
-}
-
-fn to_modulator_slot(lm: LoadedModulator) -> ModulatorSlot {
-    let source = match lm.source {
-        LoadedModSource::Lfo { waveform, rate } => ModSourceSlot::Lfo { waveform, rate },
-        LoadedModSource::Envelope { attack, decay, sustain, release } => {
-            ModSourceSlot::Envelope { attack, decay, sustain, release }
-        }
-        LoadedModSource::MidiLearn { source, learning } => {
-            ModSourceSlot::MidiLearn { source, learning }
-        }
-    };
-    ModulatorSlot {
-        source,
-        targets: lm
-            .targets
-            .into_iter()
-            .map(|lt| ModTargetSlot {
-                slot: lt.slot,
-                param_name: lt.param_name,
-                kind: lt.kind,
-                depth: lt.depth,
-                param_min: lt.param_min,
-                param_max: lt.param_max,
-            })
-            .collect(),
     }
 }
 

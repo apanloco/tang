@@ -440,8 +440,9 @@ Each step is a reviewable change; the TUI must not regress at any point.
   frame-drawing is now backend-agnostic, so it runs against ratatui's
   `TestBackend`); `State::new` extracted from `run` (pure construction — the
   initial transpose / pattern push stays in `run`); `insta` added as a
-  dev-dependency. `src/tui/golden_tests.rs` builds sessions by hand from builtin
-  plugins (until step 3 provides the real loader) and drives them with real key
+  dev-dependency. `src/tui/golden_tests.rs` builds its sessions as TOML text and
+  loads them through the real loader (`app::load`, since step 3; at first they
+  were assembled by hand from builtin plugins) and drives them with real key
   events through `process_event`:
   - 15 golden renders (`src/tui/snapshots/*.snap`) of `examples/split.toml`, a
     group scene (members, bus effect, group LFO + ADSR with a cross-mod target,
@@ -475,15 +476,36 @@ Each step is a reviewable change; the TUI must not regress at any point.
   `modulator_row_to_cross_mod`, the rows built in `render_session`) repeat the
   same ranges. Both are natural to unify once the controller owns edits
   (steps 5-6).
-- [ ] **3. Extract load** into `app::load::load_session`: the group, instrument,
-  effect, pattern and transpose loading from `run_session`, plus
-  `load_lane_modulators`, `load_group_modulators`, `build_mod_source`,
-  `member_mod_field_info`. The `tui::Loaded*` structs disappear (the loader
-  returns the model). `run_session` becomes wiring (channels, engine, splash,
-  mode switch); the splash reports through a progress callback; `play` uses the
-  same loader. *Done when:* `examples/basic.toml` and `split.toml` load against
-  a stub command receiver in tests (asserting the model and the command
-  stream); snapshots, now fed by the real loader, unchanged.
+- [x] **3. Extract load** into `app::load::load_session` (two commits). The
+  group, instrument, effect, pattern and transpose loading moved out of
+  `run_session` with `load_lane_modulators`, `load_group_modulators`,
+  `build_mod_source` and `member_mod_field_info`. `load_session` returns the new
+  `SessionModel { instruments, groups }` (in `app/model.rs`) and the
+  `tui::Loaded*` structs, `to_plugin_slot` and `to_modulator_slot` are gone;
+  `tui::run` and `State::new` take the model. `session::parse(&str)` is split
+  from `session::load(path)` so tests load TOML text. The splash and `play` both
+  follow progress through a callback (`Progress::{Loading, Loaded}`); `main.rs`
+  went from 1376 to 509 lines. The loader sends commands over a channel it is
+  handed, so the tests give it a stub receiver and assert on the model **and**
+  the command stream (`app::testutil::describe` prints one line per command).
+  - 13 loader tests: `basic.toml` and `split.toml`, groups before instruments,
+    group modulators resolved against their own group's members, modulators
+    nested under effects migrating into the lane, unbound MIDI-learn re-arming,
+    command order per lane, locked VST3 parameters hidden and labelled ones
+    turned into enums, unresolvable targets skipped, an unknown plugin and a
+    closed channel failing the load.
+  - The golden tests now feed the real loader and all 15 snapshots are
+    **unchanged**.
+  - Mutation-checked: seven injected loader bugs each fail a test. Three
+    survived the first pass (values not starting from the baseline, group
+    modulators resolving against every grouped lane's chain, unsorted overrides)
+    and got stronger tests.
+  Two behaviour changes, both on purpose: parameter overrides are now applied in
+  name order (they came out of a `HashMap`, so the command stream differed from
+  run to run), and the loader always sends `SetPatternEnabled` (commit
+  `43f7fdc`: `tang play` was enabling patterns the session marks disabled).
+  Unchanged on purpose: the splash counts instrument and effect slots only, not
+  group bus effects. *Done:* `cargo test` and clippy green on both feature sets.
 - [ ] **4. Extract save** into `Session::to_save()` (the body of
   `State::save_session_to`); `session::save` stays the file writer. *Done when:*
   load → save → load round-trips pass for the examples, groups, modulators and

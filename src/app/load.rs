@@ -1,108 +1,22 @@
 //! Loading a session: instantiate its plugins, tell the audio thread what to run
-//! (over the command channel), and hand back what the front-end needs to show.
+//! (over the command channel), and return the session model.
 //!
 //! One loader for every front-end: the TUI and `play` both go through
 //! `load_session`, so a session means the same thing in all of them. It reports
 //! progress through a callback instead of drawing anything, which is how the TUI
 //! splash follows along.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crossbeam_channel::Sender;
 
+use crate::app::model::{
+    GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, ParamKind, ParamSlot,
+    PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
+};
 use crate::plugin::chain::GraphCommand;
 use crate::{plugin, session};
-
-/// A loaded instrument slot, as the loader hands it to the front-end.
-pub struct LoadedInstrument {
-    pub range: Option<(u8, u8)>,
-    pub transpose: i8,
-    /// Host-side output gain from the session (1.0 = unity).
-    pub volume: f32,
-    pub instrument: Option<LoadedPlugin>,
-    pub effects: Vec<LoadedPlugin>,
-    /// Lane-scoped modulators (targets address the chain by slot).
-    pub modulators: Vec<LoadedModulator>,
-    pub pattern: Option<LoadedPattern>,
-    /// Carried through from session config; not editable in the TUI.
-    pub pitch_bend_range: f64,
-    pub remap: std::collections::HashMap<String, crate::session::RemapTarget>,
-    /// Submix group membership (index into the loaded groups), or None.
-    pub group: Option<usize>,
-}
-
-/// A submix group loaded from session config.
-pub struct LoadedGroup {
-    pub name: Option<String>,
-    pub volume: f32,
-    pub pan: f32,
-    pub effects: Vec<LoadedPlugin>,
-    /// Group-scoped modulators loaded from the session.
-    pub modulators: Vec<LoadedModulator>,
-}
-
-/// Pattern data loaded from session config.
-pub struct LoadedPattern {
-    pub bpm: f32,
-    pub length_beats: f32,
-    pub looping: bool,
-    pub base_note: Option<u8>,
-    pub events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
-    pub enabled: bool,
-    pub in_key: bool,
-}
-
-pub enum LoadedModSource {
-    Lfo {
-        waveform: crate::plugin::chain::LfoWaveform,
-        rate: f32,
-    },
-    Envelope {
-        attack: f32,
-        decay: f32,
-        sustain: f32,
-        release: f32,
-    },
-    MidiLearn {
-        source: Option<crate::plugin::chain::MidiBindSource>,
-        learning: bool,
-    },
-}
-
-pub struct LoadedModulator {
-    pub source: LoadedModSource,
-    pub targets: Vec<LoadedModTarget>,
-}
-
-pub struct LoadedModTarget {
-    /// Chain slot for plugin-param targets (0 = instrument, 1..N = effect);
-    /// 0 for cross-mod targets.
-    pub slot: usize,
-    pub param_name: String,
-    pub kind: crate::plugin::chain::ModTargetKind,
-    pub depth: f32,
-    pub param_min: f32,
-    pub param_max: f32,
-}
-
-/// A loaded plugin slot.
-pub struct LoadedPlugin {
-    pub name: String,
-    pub id: String,
-    pub is_instrument: bool,
-    pub params: Vec<plugin::ParameterInfo>,
-    /// Post-preset baseline value per parameter, before any session-file
-    /// overrides are applied. The TUI uses this as `ParamSlot.default` so
-    /// the save filter only writes parameters the user has actually changed
-    /// relative to the active preset.
-    pub param_defaults: Vec<f32>,
-    pub param_values: Vec<f32>,
-    pub presets: Vec<plugin::Preset>,
-    pub current_preset: Option<String>,
-    /// Effect dry/wet mix. 1.0 = full wet. Carried through from session
-    /// config so it round-trips on save. Ignored for instrument slots.
-    pub mix: f32,
-}
 
 /// What `load_session` is doing, for a front-end that wants to show progress
 /// (the TUI splash). Only the plugin slots of instrument lanes are reported, as
@@ -114,17 +28,109 @@ pub enum Progress<'a> {
     Loaded { done: usize },
 }
 
-/// Everything a session load produces for the front-end.
-pub struct LoadedSession {
-    pub instruments: Vec<LoadedInstrument>,
-    pub groups: Vec<LoadedGroup>,
+/// A loaded plugin's parameters, as the loader tracks them.
+struct Params {
+    /// Every parameter the plugin reports, including the ones the model hides (a
+    /// VST3's "(locked)" entries). Modulator targets resolve names against this.
+    all: Vec<plugin::ParameterInfo>,
+    /// Each parameter's post-preset value, before any session-file override: the
+    /// baseline the model compares against to decide what needs saving.
+    baselines: Vec<f32>,
+    /// Each parameter's current value: the baseline plus the session's overrides.
+    values: Vec<f32>,
+}
+
+impl Params {
+    /// Read the values of a freshly loaded, preset-applied plugin.
+    fn snapshot(plugin: &mut Box<dyn plugin::Plugin>) -> Self {
+        let all = plugin.parameters();
+        let baselines: Vec<f32> = all
+            .iter()
+            .map(|p| plugin.get_parameter(p.index).unwrap_or(p.default))
+            .collect();
+        Params { all, values: baselines.clone(), baselines }
+    }
+}
+
+/// Apply the session's parameter overrides, in name order so the command stream is
+/// the same every run. `send` is called with each parameter the plugin has and its new
+/// value, which is also recorded in `params.values`. Returns the names the plugin does
+/// not have.
+fn apply_overrides(
+    params: &mut Params,
+    overrides: &HashMap<String, f64>,
+    mut send: impl FnMut(&plugin::ParameterInfo, f32) -> anyhow::Result<()>,
+) -> anyhow::Result<Vec<String>> {
+    let mut names: Vec<&String> = overrides.keys().collect();
+    names.sort();
+    let mut unknown = Vec::new();
+    for name in names {
+        let value = overrides[name] as f32;
+        match params.all.iter().find(|p| p.name == *name) {
+            Some(info) => {
+                send(info, value)?;
+                if let Some(v) = params.values.get_mut(info.index as usize) {
+                    *v = value;
+                }
+            }
+            None => unknown.push(name.clone()),
+        }
+    }
+    Ok(unknown)
+}
+
+fn names(params: &[plugin::ParameterInfo]) -> String {
+    params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+}
+
+/// The model's slot for a loaded plugin. Parameters a plugin marks "(locked)" are
+/// hidden, and a parameter with value labels becomes an enum.
+fn plugin_slot(
+    name: String,
+    id: String,
+    is_instrument: bool,
+    params: &Params,
+    presets: Vec<plugin::Preset>,
+    current_preset: Option<String>,
+    mix: f32,
+) -> PluginSlot {
+    let slots = params
+        .all
+        .iter()
+        .zip(&params.baselines)
+        .zip(&params.values)
+        .filter(|((p, _), _)| !p.name.starts_with("(locked)"))
+        .map(|((p, &baseline), &value)| ParamSlot {
+            kind: p.labels.clone().map_or(ParamKind::Float, ParamKind::Enum),
+            name: p.name.clone(),
+            index: p.index,
+            min: p.min,
+            max: p.max,
+            default: baseline,
+            value,
+        })
+        .collect();
+    PluginSlot {
+        name,
+        format: format_from_id(&id),
+        id,
+        is_instrument,
+        params: slots,
+        presets,
+        current_preset,
+        mix,
+    }
+}
+
+fn send(cmd_tx: &Sender<GraphCommand>, cmd: GraphCommand) -> anyhow::Result<()> {
+    cmd_tx.send(cmd).map_err(|_| anyhow::anyhow!("command channel closed"))
 }
 
 /// Load `config`: instantiate every plugin, send the audio thread the commands
 /// that build the graph (groups first, then lanes with their plugins, parameters,
 /// modulators, transpose and pattern, then group modulators), and return the
-/// loaded state for the front-end. Blocks on the command channel when it is full,
-/// so the audio thread must be (or soon be) draining it.
+/// session model. Blocks on the command channel when it is full, so the audio
+/// thread must be (or soon be) draining it.
 #[allow(clippy::too_many_arguments)]
 pub fn load_session(
     config: &session::SessionConfig,
@@ -134,83 +140,65 @@ pub fn load_session(
     runtime: &plugin::Runtime,
     cmd_tx: &Sender<GraphCommand>,
     progress: &mut dyn FnMut(Progress),
-) -> anyhow::Result<LoadedSession> {
+) -> anyhow::Result<SessionModel> {
     let mut loaded_slots = 0usize;
-
-    // Build the front-end's view of the session while loading plugins into the graph.
-    let mut loaded_instruments: Vec<LoadedInstrument> = Vec::new();
+    // The parameter lists modulator targets resolve names against: per lane (slot 0 =
+    // the instrument, then its effects) and per group bus effect.
+    let mut lane_params: Vec<Vec<Vec<plugin::ParameterInfo>>> = Vec::new();
+    let mut bus_params: Vec<Vec<Vec<plugin::ParameterInfo>>> = Vec::new();
 
     // Set up submix groups first, so instruments can reference them by index.
-    let mut loaded_groups: Vec<LoadedGroup> = Vec::new();
+    let mut groups: Vec<GroupNode> = Vec::new();
     for (g_idx, group_config) in config.groups.iter().enumerate() {
-        cmd_tx
-            .send(plugin::chain::GraphCommand::AddGroup)
-            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        send(cmd_tx, GraphCommand::AddGroup)?;
         if (group_config.volume - 1.0).abs() > f32::EPSILON {
-            cmd_tx
-                .send(plugin::chain::GraphCommand::SetGroupVolume {
-                    group: g_idx,
-                    value: group_config.volume,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+            send(cmd_tx, GraphCommand::SetGroupVolume { group: g_idx, value: group_config.volume })?;
         }
         if group_config.pan.abs() > f32::EPSILON {
-            cmd_tx
-                .send(plugin::chain::GraphCommand::SetGroupPan {
-                    group: g_idx,
-                    value: group_config.pan,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+            send(cmd_tx, GraphCommand::SetGroupPan { group: g_idx, value: group_config.pan })?;
         }
-        let mut group_effects: Vec<LoadedPlugin> = Vec::new();
+        let mut group_effects: Vec<PluginSlot> = Vec::new();
+        let mut group_bus_params = Vec::new();
         for (fx_idx, effect_config) in group_config.effects.iter().enumerate() {
             let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
             let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
             if let Some(ref preset_name) = effect_config.preset {
                 session::apply_preset(&mut effect, preset_name);
             }
-            let effect_presets = effect.presets();
-            let effect_params = effect.parameters();
-            let effect_baselines: Vec<f32> = effect_params
-                .iter()
-                .map(|p| effect.get_parameter(p.index).unwrap_or(p.default))
-                .collect();
-            let effect_name = effect.name().to_string();
-            cmd_tx
-                .send(plugin::chain::GraphCommand::InsertGroupEffect {
+            let presets = effect.presets();
+            let mut params = Params::snapshot(&mut effect);
+            let name = effect.name().to_string();
+            send(
+                cmd_tx,
+                GraphCommand::InsertGroupEffect {
                     group: g_idx,
                     index: fx_idx,
                     effect,
                     mix: effect_config.mix,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-            let mut fx_values = effect_baselines.clone();
-            for (name, &value) in &effect_config.params {
-                if let Some(info) = effect_params.iter().find(|p| p.name == *name) {
-                    let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGroupParameter {
-                        group: g_idx,
-                        index: fx_idx,
-                        param_index: info.index,
-                        value: value as f32,
-                    });
-                    if let Some(v) = fx_values.get_mut(info.index as usize) {
-                        *v = value as f32;
-                    }
-                }
-            }
-            group_effects.push(LoadedPlugin {
-                name: effect_name,
-                id: effect_source,
-                is_instrument: false,
-                params: effect_params,
-                param_defaults: effect_baselines,
-                param_values: fx_values,
-                presets: effect_presets,
-                current_preset: effect_config.preset.clone(),
-                mix: effect_config.mix as f32,
-            });
+                },
+            )?;
+            apply_overrides(&mut params, &effect_config.params, |info, value| {
+                let _ = cmd_tx.send(GraphCommand::SetGroupParameter {
+                    group: g_idx,
+                    index: fx_idx,
+                    param_index: info.index,
+                    value,
+                });
+                Ok(())
+            })?;
+            group_effects.push(plugin_slot(
+                name,
+                effect_source,
+                false,
+                &params,
+                presets,
+                effect_config.preset.clone(),
+                effect_config.mix as f32,
+            ));
+            group_bus_params.push(params.all);
         }
-        loaded_groups.push(LoadedGroup {
+        bus_params.push(group_bus_params);
+        groups.push(GroupNode {
             name: group_config.name.clone(),
             volume: group_config.volume,
             pan: group_config.pan,
@@ -222,27 +210,21 @@ pub fn load_session(
     }
 
     // Set up the graph structure: add instrument lanes.
+    let mut instruments: Vec<InstrumentNode> = Vec::new();
     for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
-        cmd_tx
-            .send(plugin::chain::GraphCommand::AddInstrument {
-                range: inst_config.range,
-            })
-            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        send(cmd_tx, GraphCommand::AddInstrument { range: inst_config.range })?;
 
         // Assign group membership (groups were created above).
         if inst_config.group.is_some() {
-            cmd_tx
-                .send(plugin::chain::GraphCommand::SetLaneGroup {
-                    inst: inst_idx,
-                    group: inst_config.group,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+            send(cmd_tx, GraphCommand::SetLaneGroup { inst: inst_idx, group: inst_config.group })?;
         }
 
+        // The chain's parameter lists, slot 0 first.
+        let mut chain_params: Vec<Vec<plugin::ParameterInfo>> = Vec::new();
+
         // Load instrument (if present)
-        let loaded_instrument = if let Some(plug_config) = &inst_config.instrument {
-            let instrument_source =
-                session::resolve_plugin_path(&plug_config.plugin, session_dir);
+        let instrument_slot = if let Some(plug_config) = &inst_config.instrument {
+            let instrument_source = session::resolve_plugin_path(&plug_config.plugin, session_dir);
             progress(Progress::Loading(&plug_config.plugin));
             let mut instrument =
                 plugin::load(&instrument_source, sample_rate, max_block_size, runtime)?;
@@ -257,17 +239,12 @@ pub fn load_session(
             if let Some(ref preset_name) = plug_config.preset {
                 session::apply_preset(&mut instrument, preset_name);
             }
-            let inst_presets = instrument.presets();
-            let inst_current_preset = plug_config.preset.clone();
+            let presets = instrument.presets();
 
-            // Snapshot post-preset parameter values; these become the baseline
-            // the TUI compares against to decide which params are user-edited
-            // and need to be saved.
-            let inst_params = instrument.parameters();
-            let inst_baselines: Vec<f32> = inst_params
-                .iter()
-                .map(|p| instrument.get_parameter(p.index).unwrap_or(p.default))
-                .collect();
+            // Snapshot post-preset parameter values; these become the baseline the
+            // model compares against to decide which params are user-edited and
+            // need to be saved.
+            let mut params = Params::snapshot(&mut instrument);
 
             // Build note remapper if configured
             let remapper = if plug_config.remap.is_empty() {
@@ -285,82 +262,67 @@ pub fn load_session(
                 Some(r)
             };
 
-            let inst_name = instrument.name().to_string();
+            let name = instrument.name().to_string();
             let inst_buf = (0..instrument.audio_output_count())
                 .map(|_| Vec::new())
                 .collect();
-            cmd_tx
-                .send(plugin::chain::GraphCommand::SwapInstrument {
-                    inst: inst_idx,
-                    instrument,
-                    inst_buf,
-                    remapper,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+            send(
+                cmd_tx,
+                GraphCommand::SwapInstrument { inst: inst_idx, instrument, inst_buf, remapper },
+            )?;
 
             // Set volume if not default
             if (plug_config.volume - 1.0).abs() > f64::EPSILON {
-                cmd_tx
-                    .send(plugin::chain::GraphCommand::SetVolume {
-                        inst: inst_idx,
-                        value: plug_config.volume as f32,
-                    })
-                    .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+                send(
+                    cmd_tx,
+                    GraphCommand::SetVolume { inst: inst_idx, value: plug_config.volume as f32 },
+                )?;
             }
 
-            // Send instrument parameter overrides. Start from the post-preset
+            // Send instrument parameter overrides. They start from the post-preset
             // baseline so values reflect the active preset's actual settings.
-            let mut inst_values: Vec<f32> = inst_baselines.clone();
-            for (name, &value) in &plug_config.params {
-                if let Some(info) = inst_params.iter().find(|p| p.name == *name) {
-                    cmd_tx
-                        .send(plugin::chain::GraphCommand::SetParameter {
-                            inst: inst_idx,
-                            slot: 0,
-                            param_index: info.index,
-                            value: value as f32,
-                        })
-                        .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-                    if let Some(v) = inst_values.get_mut(info.index as usize) {
-                        *v = value as f32;
-                    }
-                    log::info!("Set instrument '{}' = {}", name, value);
-                } else {
-                    log::warn!(
-                        "Unknown instrument parameter '{}' (available: {})",
-                        name,
-                        inst_params
-                            .iter()
-                            .map(|p| p.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
+            let unknown = apply_overrides(&mut params, &plug_config.params, |info, value| {
+                send(
+                    cmd_tx,
+                    GraphCommand::SetParameter {
+                        inst: inst_idx,
+                        slot: 0,
+                        param_index: info.index,
+                        value,
+                    },
+                )?;
+                log::info!("Set instrument '{}' = {}", info.name, value);
+                Ok(())
+            })?;
+            for name in unknown {
+                log::warn!(
+                    "Unknown instrument parameter '{}' (available: {})",
+                    name,
+                    names(&params.all)
+                );
             }
 
-            Some(LoadedPlugin {
-                name: inst_name,
-                id: instrument_source,
-                is_instrument: true,
-                params: inst_params,
-                param_defaults: inst_baselines,
-                param_values: inst_values,
-                presets: inst_presets,
-                current_preset: inst_current_preset,
-                mix: 1.0,
-            })
+            chain_params.push(params.all.clone());
+            Some(plugin_slot(
+                name,
+                instrument_source,
+                true,
+                &params,
+                presets,
+                plug_config.preset.clone(),
+                1.0,
+            ))
         } else {
+            chain_params.push(Vec::new());
             None
         };
 
         // Load effects
-        let mut loaded_effects: Vec<LoadedPlugin> = Vec::new();
+        let mut effects: Vec<PluginSlot> = Vec::new();
         for (fx_idx, effect_config) in inst_config.effects.iter().enumerate() {
-            let effect_source =
-                session::resolve_plugin_path(&effect_config.plugin, session_dir);
+            let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
             progress(Progress::Loading(&effect_config.plugin));
-            let mut effect =
-                plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
+            let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
             loaded_slots += 1;
             progress(Progress::Loaded { done: loaded_slots });
             log::info!(
@@ -373,77 +335,61 @@ pub fn load_session(
             if let Some(ref preset_name) = effect_config.preset {
                 session::apply_preset(&mut effect, preset_name);
             }
-            let effect_presets = effect.presets();
-            let effect_current_preset = effect_config.preset.clone();
+            let presets = effect.presets();
 
             // Snapshot post-preset values as the save-filter baseline.
-            let effect_params = effect.parameters();
-            let effect_baselines: Vec<f32> = effect_params
-                .iter()
-                .map(|p| effect.get_parameter(p.index).unwrap_or(p.default))
-                .collect();
-            let effect_name = effect.name().to_string();
+            let mut params = Params::snapshot(&mut effect);
+            let name = effect.name().to_string();
 
-            cmd_tx
-                .send(plugin::chain::GraphCommand::InsertEffect {
+            send(
+                cmd_tx,
+                GraphCommand::InsertEffect {
                     inst: inst_idx,
                     index: fx_idx,
                     effect,
                     mix: effect_config.mix,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+                },
+            )?;
 
             // Send parameter overrides for this effect (slot = fx_idx + 1).
-            // Start from the post-preset baseline.
-            let mut fx_values: Vec<f32> = effect_baselines.clone();
-            for (name, &value) in &effect_config.params {
-                if let Some(info) = effect_params.iter().find(|p| p.name == *name) {
-                    cmd_tx
-                        .send(plugin::chain::GraphCommand::SetParameter {
-                            inst: inst_idx,
-                            slot: fx_idx + 1,
-                            param_index: info.index,
-                            value: value as f32,
-                        })
-                        .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-                    if let Some(v) = fx_values.get_mut(info.index as usize) {
-                        *v = value as f32;
-                    }
-                    log::info!("Set effect {} '{}' = {}", fx_idx, name, value);
-                } else {
-                    log::warn!(
-                        "Unknown parameter '{}' for effect {} (available: {})",
-                        name,
-                        fx_idx,
-                        effect_params
-                            .iter()
-                            .map(|p| p.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
+            // They start from the post-preset baseline.
+            let unknown = apply_overrides(&mut params, &effect_config.params, |info, value| {
+                send(
+                    cmd_tx,
+                    GraphCommand::SetParameter {
+                        inst: inst_idx,
+                        slot: fx_idx + 1,
+                        param_index: info.index,
+                        value,
+                    },
+                )?;
+                log::info!("Set effect {} '{}' = {}", fx_idx, info.name, value);
+                Ok(())
+            })?;
+            for name in unknown {
+                log::warn!(
+                    "Unknown parameter '{}' for effect {} (available: {})",
+                    name,
+                    fx_idx,
+                    names(&params.all)
+                );
             }
 
-            loaded_effects.push(LoadedPlugin {
-                name: effect_name,
-                id: effect_source,
-                is_instrument: false,
-                params: effect_params,
-                param_defaults: effect_baselines,
-                param_values: fx_values,
-                presets: effect_presets,
-                current_preset: effect_current_preset,
-                mix: effect_config.mix as f32,
-            });
+            chain_params.push(params.all.clone());
+            effects.push(plugin_slot(
+                name,
+                effect_source,
+                false,
+                &params,
+                presets,
+                effect_config.preset.clone(),
+                effect_config.mix as f32,
+            ));
         }
 
         // Build the lane's modulators now that every plugin (and its params)
         // is loaded, so targets can resolve against any slot in the chain.
-        let chain_params: Vec<Vec<plugin::ParameterInfo>> =
-            std::iter::once(loaded_instrument.as_ref().map(|p| p.params.clone()).unwrap_or_default())
-                .chain(loaded_effects.iter().map(|fx| fx.params.clone()))
-                .collect();
-        let loaded_modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx)?;
+        let modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx)?;
 
         // Apply instrument transpose.
         if inst_config.transpose != 0 {
@@ -454,25 +400,23 @@ pub fn load_session(
         }
 
         // Load pattern if configured.
-        let loaded_pattern = inst_config.pattern.as_ref().map(|p| {
+        let pattern = inst_config.pattern.as_ref().map(|p| {
             // Build Pattern and send to audio graph.
-            let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
-                crate::plugin::chain::PatternEvent {
+            let pattern_events: Vec<plugin::chain::PatternEvent> = p
+                .events
+                .iter()
+                .map(|&(frame, status, note, vel)| plugin::chain::PatternEvent {
                     frame,
                     status,
                     note,
                     velocity: vel,
-                }
-            }).collect();
+                })
+                .collect();
             let beats_per_sec = p.bpm / 60.0;
             let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
-            let pattern = crate::plugin::chain::Pattern {
-                events: pattern_events,
-                length_samples,
-            };
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPattern {
                 inst: inst_idx,
-                pattern,
+                pattern: plugin::chain::Pattern { events: pattern_events, length_samples },
                 base_note: p.base_note,
                 in_key: p.in_key,
             });
@@ -493,13 +437,14 @@ pub fn load_session(
                     looping: false,
                 });
             }
-            LoadedPattern {
+            PatternState {
                 bpm: p.bpm,
                 length_beats: p.length_beats,
                 looping: p.looping,
                 base_note: p.base_note,
                 events: p.events.clone(),
                 enabled: p.enabled,
+                recording: false,
                 in_key: p.in_key,
             }
         });
@@ -513,18 +458,19 @@ pub fn load_session(
             .instrument
             .as_ref()
             .map_or(1.0, |p| p.volume as f32);
-        loaded_instruments.push(LoadedInstrument {
+        instruments.push(InstrumentNode {
             range: inst_config.range,
             transpose: inst_config.transpose,
             volume,
-            instrument: loaded_instrument,
-            effects: loaded_effects,
-            modulators: loaded_modulators,
-            pattern: loaded_pattern,
+            instrument: instrument_slot,
+            effects,
+            modulators,
+            pattern,
             pitch_bend_range,
             remap,
             group: inst_config.group,
         });
+        lane_params.push(chain_params);
     }
 
     // Now that all member instruments are loaded, build each group's
@@ -534,42 +480,30 @@ pub fn load_session(
             continue;
         }
         // Member chains in ordinal order (members = lanes with group == g_idx).
-        let member_chains: Vec<Vec<Vec<plugin::ParameterInfo>>> = loaded_instruments
+        let member_chains: Vec<&[Vec<plugin::ParameterInfo>]> = instruments
             .iter()
-            .filter(|li| li.group == Some(g_idx))
-            .map(|li| {
-                let mut chain =
-                    vec![li.instrument.as_ref().map(|p| p.params.clone()).unwrap_or_default()];
-                chain.extend(li.effects.iter().map(|fx| fx.params.clone()));
-                chain
-            })
+            .zip(&lane_params)
+            .filter(|(lane, _)| lane.group == Some(g_idx))
+            .map(|(_, chain)| chain.as_slice())
             .collect();
         // Member modulators in ordinal order (for group→member-mod cross-mod).
-        let member_mods: Vec<&[LoadedModulator]> = loaded_instruments
+        let member_mods: Vec<&[ModulatorSlot]> = instruments
             .iter()
-            .filter(|li| li.group == Some(g_idx))
-            .map(|li| li.modulators.as_slice())
-            .collect();
-        let bus_params: Vec<Vec<plugin::ParameterInfo>> = loaded_groups[g_idx]
-            .effects
-            .iter()
-            .map(|p| p.params.clone())
+            .filter(|lane| lane.group == Some(g_idx))
+            .map(|lane| lane.modulators.as_slice())
             .collect();
         let mods = load_group_modulators(
             group_config,
             g_idx,
             &member_chains,
             &member_mods,
-            &bus_params,
+            &bus_params[g_idx],
             cmd_tx,
         )?;
-        loaded_groups[g_idx].modulators = mods;
+        groups[g_idx].modulators = mods;
     }
 
-    Ok(LoadedSession {
-        instruments: loaded_instruments,
-        groups: loaded_groups,
-    })
+    Ok(SessionModel { instruments, groups })
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
@@ -588,7 +522,7 @@ fn load_lane_modulators(
     chain_params: &[Vec<plugin::ParameterInfo>],
     inst_idx: usize,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
-) -> anyhow::Result<Vec<LoadedModulator>> {
+) -> anyhow::Result<Vec<ModulatorSlot>> {
     // Gather modulator groups with their default slot (instrument = 0, each
     // effect = its slot) and their base index in the merged lane list.
     let mut groups: Vec<(&[session::ModulatorConfig], usize)> = Vec::new();
@@ -612,17 +546,17 @@ fn load_lane_modulators(
         let is_instrument_group = *default_slot == 0;
         for mod_config in mod_configs.iter() {
             let mod_idx = lane_index;
-        let (source, loaded_source, desc) = build_mod_source(mod_config);
+        let (source_slot, desc) = build_mod_source(mod_config);
 
         cmd_tx
             .send(plugin::chain::GraphCommand::InsertModulator {
                 inst: inst_idx,
                 index: mod_idx,
-                source,
+                source: mod_source_slot_to_graph(&source_slot),
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-        let mut loaded_targets: Vec<LoadedModTarget> = Vec::new();
+        let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
         for target_config in &mod_config.targets {
             // Determine the target kind and associated metadata.
             let (kind, slot, label, param_min, param_max, base_value) =
@@ -697,7 +631,7 @@ fn load_lane_modulators(
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-            loaded_targets.push(LoadedModTarget {
+            loaded_targets.push(ModTargetSlot {
                 slot,
                 param_name: label.clone(),
                 kind,
@@ -709,8 +643,8 @@ fn load_lane_modulators(
             log::info!("Modulator {mod_idx} target: '{label}' (slot {slot}) depth={}", target_config.depth);
         }
 
-        loaded.push(LoadedModulator {
-            source: loaded_source,
+        loaded.push(ModulatorSlot {
+            source: source_slot,
             targets: loaded_targets,
         });
 
@@ -721,29 +655,19 @@ fn load_lane_modulators(
     Ok(loaded)
 }
 
-/// Build the audio-thread + TUI source representations and a description for a
-/// modulator config. Shared by the lane and group modulator loaders.
-fn build_mod_source(
-    mod_config: &session::ModulatorConfig,
-) -> (plugin::chain::ModSource, LoadedModSource, String) {
+/// Build the model's source for a modulator config, with a description for the
+/// log. The audio thread's `ModSource` is derived from it (`mod_source_slot_to_graph`).
+/// Shared by the lane and group modulator loaders.
+fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, String) {
     match mod_config.mod_type.as_str() {
         "envelope" => {
-            let source = plugin::chain::ModSource::Envelope {
-                attack: mod_config.attack as f32,
-                decay: mod_config.decay as f32,
-                sustain: mod_config.sustain as f32,
-                release: mod_config.release as f32,
-                state: plugin::chain::EnvState::Idle,
-                level: 0.0,
-                notes_held: 0,
-            };
-            let loaded_source = LoadedModSource::Envelope {
+            let source = ModSourceSlot::Envelope {
                 attack: mod_config.attack as f32,
                 decay: mod_config.decay as f32,
                 sustain: mod_config.sustain as f32,
                 release: mod_config.release as f32,
             };
-            (source, loaded_source, "ADSR envelope".to_string())
+            (source, "ADSR envelope".to_string())
         }
         "midi" => {
             let bind = if let Some(cc) = mod_config.midi_cc {
@@ -755,23 +679,15 @@ fn build_mod_source(
             } else {
                 None
             };
-            let source = plugin::chain::ModSource::MidiLearn {
-                source: bind,
-                value: 0.0,
-                // Unbound on load ⇒ re-arm so the next control binds.
-                learning: bind.is_none(),
-            };
-            let loaded_source = LoadedModSource::MidiLearn {
-                source: bind,
-                learning: bind.is_none(),
-            };
+            // Unbound on load ⇒ re-arm so the next control binds.
+            let source = ModSourceSlot::MidiLearn { source: bind, learning: bind.is_none() };
             let desc = match bind {
                 Some(plugin::chain::MidiBindSource::Cc(n)) => format!("MIDI CC {n}"),
                 Some(plugin::chain::MidiBindSource::PitchBend) => "MIDI pitch bend".to_string(),
                 Some(plugin::chain::MidiBindSource::Aftertouch) => "MIDI aftertouch".to_string(),
                 None => "MIDI (learning)".to_string(),
             };
-            (source, loaded_source, desc)
+            (source, desc)
         }
         _ => {
             // Default: LFO.
@@ -783,17 +699,9 @@ fn build_mod_source(
                     );
                     plugin::chain::LfoWaveform::Sine
                 });
-            let source = plugin::chain::ModSource::Lfo {
-                waveform,
-                rate: mod_config.rate as f32,
-                phase: 0.0,
-            };
-            let loaded_source = LoadedModSource::Lfo {
-                waveform,
-                rate: mod_config.rate as f32,
-            };
+            let source = ModSourceSlot::Lfo { waveform, rate: mod_config.rate as f32 };
             let desc = format!("{} {:.1}Hz", waveform.name(), mod_config.rate);
-            (source, loaded_source, desc)
+            (source, desc)
         }
     }
 }
@@ -806,27 +714,27 @@ fn build_mod_source(
 /// (base_value, min, max) for a member modulator's field, used to seed a
 /// group→member-modulator cross-mod target on load. Falls back to per-field
 /// defaults if the member modulator's type doesn't match the field.
-fn member_mod_field_info(mm: &LoadedModulator, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
+fn member_mod_field_info(mm: &ModulatorSlot, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
     use plugin::chain::CrossModField;
     match field {
         CrossModField::Rate => {
-            let v = if let LoadedModSource::Lfo { rate, .. } = &mm.source { *rate } else { 1.0 };
+            let v = if let ModSourceSlot::Lfo { rate, .. } = &mm.source { *rate } else { 1.0 };
             (v, 0.01, 50.0)
         }
         CrossModField::Attack => {
-            let v = if let LoadedModSource::Envelope { attack, .. } = &mm.source { *attack } else { 0.01 };
+            let v = if let ModSourceSlot::Envelope { attack, .. } = &mm.source { *attack } else { 0.01 };
             (v, 0.001, 10.0)
         }
         CrossModField::Decay => {
-            let v = if let LoadedModSource::Envelope { decay, .. } = &mm.source { *decay } else { 0.3 };
+            let v = if let ModSourceSlot::Envelope { decay, .. } = &mm.source { *decay } else { 0.3 };
             (v, 0.001, 10.0)
         }
         CrossModField::Sustain => {
-            let v = if let LoadedModSource::Envelope { sustain, .. } = &mm.source { *sustain } else { 0.7 };
+            let v = if let ModSourceSlot::Envelope { sustain, .. } = &mm.source { *sustain } else { 0.7 };
             (v, 0.0, 1.0)
         }
         CrossModField::Release => {
-            let v = if let LoadedModSource::Envelope { release, .. } = &mm.source { *release } else { 0.5 };
+            let v = if let ModSourceSlot::Envelope { release, .. } = &mm.source { *release } else { 0.5 };
             (v, 0.001, 10.0)
         }
         CrossModField::Depth(ti) => {
@@ -839,23 +747,23 @@ fn member_mod_field_info(mm: &LoadedModulator, field: plugin::chain::CrossModFie
 fn load_group_modulators(
     group_config: &session::GroupConfig,
     g_idx: usize,
-    member_chains: &[Vec<Vec<plugin::ParameterInfo>>],
-    member_mods: &[&[LoadedModulator]],
+    member_chains: &[&[Vec<plugin::ParameterInfo>]],
+    member_mods: &[&[ModulatorSlot]],
     bus_params: &[Vec<plugin::ParameterInfo>],
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
-) -> anyhow::Result<Vec<LoadedModulator>> {
+) -> anyhow::Result<Vec<ModulatorSlot>> {
     let mut loaded = Vec::new();
     for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
-        let (source, loaded_source, desc) = build_mod_source(mod_config);
+        let (source_slot, desc) = build_mod_source(mod_config);
         cmd_tx
             .send(plugin::chain::GraphCommand::InsertGroupModulator {
                 group: g_idx,
                 index: mod_idx,
-                source,
+                source: mod_source_slot_to_graph(&source_slot),
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-        let mut loaded_targets: Vec<LoadedModTarget> = Vec::new();
+        let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
         for target_config in &mod_config.targets {
             let (kind, slot, label, param_min, param_max, base_value) =
                 if let Some(member) = target_config.member {
@@ -993,7 +901,7 @@ fn load_group_modulators(
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
-            loaded_targets.push(LoadedModTarget {
+            loaded_targets.push(ModTargetSlot {
                 slot,
                 param_name: label,
                 kind,
@@ -1003,8 +911,8 @@ fn load_group_modulators(
             });
         }
 
-        loaded.push(LoadedModulator {
-            source: loaded_source,
+        loaded.push(ModulatorSlot {
+            source: source_slot,
             targets: loaded_targets,
         });
         log::info!("Loaded group modulator {mod_idx} for group={g_idx}: {desc}");
@@ -1020,7 +928,7 @@ mod tests {
     /// What a load did: the model it returned, the commands it sent (one line
     /// each, see `describe`) and the progress it reported.
     struct Run {
-        loaded: LoadedSession,
+        model: SessionModel,
         commands: Vec<String>,
         progress: Vec<String>,
     }
@@ -1029,7 +937,7 @@ mod tests {
         let config = session::parse(text)?;
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut progress = Vec::new();
-        let loaded = load_session(
+        let model = load_session(
             &config,
             Path::new("."),
             48_000.0,
@@ -1044,7 +952,7 @@ mod tests {
             },
         )?;
         let commands = rx.try_iter().map(|c| describe(&c)).collect();
-        Ok(Run { loaded, commands, progress })
+        Ok(Run { model, commands, progress })
     }
 
     fn load(text: &str) -> Run {
@@ -1215,6 +1123,74 @@ cutoff = 0.25
 "#;
 
     #[test]
+    fn plugin_slots_hide_locked_parameters_and_turn_labelled_ones_into_enums() {
+        let info = |index: u32, name: &str, labels: Option<Vec<&str>>| plugin::ParameterInfo {
+            index,
+            name: name.to_string(),
+            min: 0.0,
+            max: 10.0,
+            default: 5.0,
+            labels: labels.map(|l| l.into_iter().map(String::from).collect()),
+        };
+        let params = Params {
+            all: vec![
+                info(0, "cutoff", None),
+                info(1, "(locked) bypass", None),
+                info(2, "mode", Some(vec!["low", "high"])),
+            ],
+            baselines: vec![1.0, 2.0, 0.0],
+            values: vec![1.5, 2.0, 1.0],
+        };
+        let slot = plugin_slot(
+            "Synth".to_string(),
+            "vst3:Synth".to_string(),
+            true,
+            &params,
+            vec![],
+            Some("Init".to_string()),
+            1.0,
+        );
+        assert_eq!((slot.name.as_str(), slot.format.as_str(), slot.id.as_str()), ("Synth", "VST3", "vst3:Synth"));
+        assert!(slot.is_instrument);
+        assert_eq!(slot.current_preset.as_deref(), Some("Init"));
+        let rows: Vec<_> = slot.params.iter().map(|p| (p.index, p.name.as_str(), p.default, p.value)).collect();
+        assert_eq!(rows, [(0, "cutoff", 1.0, 1.5), (2, "mode", 0.0, 1.0)], "the locked parameter is hidden");
+        assert!(matches!(slot.params[0].kind, ParamKind::Float));
+        assert!(matches!(&slot.params[1].kind, ParamKind::Enum(l) if l == &["low", "high"]));
+        // The loader still resolves modulator targets against the full list.
+        assert_eq!(params.all.len(), 3);
+    }
+
+    #[test]
+    fn parameter_overrides_apply_in_name_order() {
+        // Eight names make an accidentally sorted hash order a 1 in 40320 chance.
+        let letters = ["h", "c", "f", "a", "g", "d", "b", "e"];
+        let mut params = Params {
+            all: letters
+                .iter()
+                .enumerate()
+                .map(|(i, n)| plugin::ParameterInfo { index: i as u32, name: n.to_string(), ..Default::default() })
+                .collect(),
+            baselines: vec![0.0; 8],
+            values: vec![0.0; 8],
+        };
+        let mut overrides: HashMap<String, f64> =
+            letters.iter().enumerate().map(|(i, n)| (n.to_string(), i as f64 + 1.0)).collect();
+        overrides.insert("zzz".to_string(), 9.0);
+        let mut sent = Vec::new();
+        let unknown = apply_overrides(&mut params, &overrides, |info, value| {
+            sent.push((info.name.clone(), value));
+            Ok(())
+        })
+        .unwrap();
+        let names: Vec<&str> = sent.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c", "d", "e", "f", "g", "h"]);
+        assert_eq!(unknown, ["zzz"]);
+        // Each value lands at its parameter's index: "h" is index 0 and was given 1.0.
+        assert_eq!(params.values, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
     fn basic_example_loads_one_lane_with_a_reverb() {
         let run = load(include_str!("../../examples/basic.toml"));
         assert_eq!(
@@ -1226,7 +1202,7 @@ cutoff = 0.25
             ]
         );
         assert_eq!(run.progress, ["loading builtin:sine", "loaded 1", "loading builtin:reverb", "loaded 2"]);
-        let lane = &run.loaded.instruments[0];
+        let lane = &run.model.instruments[0];
         assert_eq!(lane.instrument.as_ref().unwrap().name, "Oscillator");
         assert_eq!(lane.effects[0].name, "Reverb");
         assert_eq!(lane.effects[0].current_preset.as_deref(), Some("Arcadia Dream Hall"));
@@ -1249,9 +1225,9 @@ cutoff = 0.25
                 "AddModTarget inst=1 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.150 base=0.000 range=[-24.000, 24.000]",
             ]
         );
-        assert_eq!(run.loaded.instruments.len(), 2);
-        assert_eq!(run.loaded.instruments[0].range, Some((12, 59)));
-        assert_eq!(run.loaded.instruments[1].modulators[0].targets[0].depth, 0.15);
+        assert_eq!(run.model.instruments.len(), 2);
+        assert_eq!(run.model.instruments[0].range, Some((12, 59)));
+        assert_eq!(run.model.instruments[1].modulators[0].targets[0].depth, 0.15);
     }
 
     #[test]
@@ -1299,12 +1275,49 @@ cutoff = 0.25
                 "loading builtin:filter", "loaded 3", "loading builtin:osc", "loaded 4",
             ]
         );
-        let group = &run.loaded.groups[0];
+        let group = &run.model.groups[0];
         assert_eq!((group.name.as_deref(), group.volume, group.pan), (Some("Pad"), 0.8, -0.3));
         assert_eq!(group.effects.len(), 1);
         assert_eq!(group.modulators.len(), 2);
         assert_eq!(group.modulators[0].targets.len(), 4, "two of the six targets were skipped");
-        assert_eq!(run.loaded.instruments.iter().map(|l| l.group).collect::<Vec<_>>(), [Some(0), Some(0), None]);
+        assert_eq!(run.model.instruments.iter().map(|l| l.group).collect::<Vec<_>>(), [Some(0), Some(0), None]);
+    }
+
+    #[test]
+    fn each_groups_modulators_resolve_against_their_own_members() {
+        // Group B's member 0 is lane 1 (the one with a filter), not lane 0.
+        let run = load(
+            r#"
+[[group]]
+name = "A"
+[[group]]
+name = "B"
+[[group.modulator]]
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+[[instrument.effect]]
+plugin = "builtin:filter"
+"#,
+        );
+        assert!(
+            run.commands.contains(
+                &"AddGroupModTarget group=1 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=1.000 range=[0.000, 1.000]".to_string()
+            ),
+            "{:#?}",
+            run.commands
+        );
+        assert_eq!(run.model.groups[1].modulators[0].targets.len(), 1);
+        assert!(run.model.groups[0].modulators.is_empty());
     }
 
     #[test]
@@ -1327,7 +1340,7 @@ cutoff = 0.25
                 "AddModTarget inst=0 mod=2 kind=ModulatorRate { mod_index: 1 } depth=0.300 base=1.000 range=[0.010, 50.000]",
             ]
         );
-        let lane = &run.loaded.instruments[0];
+        let lane = &run.model.instruments[0];
         assert_eq!(lane.modulators.len(), 3);
         assert_eq!(lane.modulators[1].targets[0].slot, 1);
     }
@@ -1376,15 +1389,35 @@ cutoff = 0.25
                 "AddInstrument range=None",
             ]
         );
-        let lane = &run.loaded.instruments[0];
+        let lane = &run.model.instruments[0];
         assert_eq!((lane.transpose, lane.volume, lane.pitch_bend_range), (-12, 0.5, 4.0));
         assert!(lane.remap.contains_key("G#4"));
-        assert!(run.loaded.instruments[1].instrument.is_none());
+        assert!(run.model.instruments[1].instrument.is_none());
         let osc = lane.instrument.as_ref().unwrap();
-        let waveform = osc.params.iter().position(|p| p.name == "waveform").unwrap();
-        assert_eq!(osc.param_values[waveform], 2.0, "the override is the value");
-        assert_eq!(osc.param_defaults[waveform], 0.0, "the plugin's own value stays the baseline");
+        let waveform = osc.params.iter().find(|p| p.name == "waveform").unwrap();
+        assert_eq!(waveform.value, 2.0, "the override is the value");
+        assert_eq!(waveform.default, 0.0, "the plugin's own value stays the baseline");
+        assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "enums keep their labels");
+        let reverb = &lane.effects[0];
+        let size = reverb.params.iter().find(|p| p.name == "size").unwrap();
+        assert_eq!(size.value, 0.9);
+        assert_ne!(size.default, 0.9, "the preset's value, not the override, is the baseline");
+        assert_eq!(reverb.mix, 0.4);
+        let untouched: Vec<_> = reverb.params.iter().filter(|p| p.name != "size").collect();
+        assert!(!untouched.is_empty());
+        assert!(
+            untouched.iter().all(|p| p.value == p.default),
+            "parameters the session does not override keep their baseline"
+        );
+        assert!(reverb.params.iter().any(|p| p.name == "decay" && p.value != 0.0));
         assert_eq!(run.progress.len(), 6, "three plugin slots, loading + loaded each");
+        let pattern = lane.pattern.as_ref().unwrap();
+        assert_eq!(
+            (pattern.bpm, pattern.length_beats, pattern.looping, pattern.base_note, pattern.enabled, pattern.in_key),
+            (90.0, 2.0, false, Some(60), true, true)
+        );
+        assert_eq!(pattern.events, [(0, 0x90, 60, 100), (24000, 0x80, 60, 0)]);
+        assert!(!pattern.recording, "a loaded pattern is never mid-recording");
     }
 
     #[test]
@@ -1451,7 +1484,7 @@ slot = 4
             ],
             "unknown parameter, no field at all, and a slot past the chain are all dropped"
         );
-        assert!(run.loaded.instruments[0].modulators[0].targets.is_empty());
+        assert!(run.model.instruments[0].modulators[0].targets.is_empty());
     }
 
     #[test]

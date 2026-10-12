@@ -1,17 +1,17 @@
 //! Golden-render tests for the TUI — the regression net for the controller
 //! refactor (`docs/web-ui.md`, phase 0).
 //!
-//! Each test builds a `State` by hand from builtin plugins (until `run_session`'s
-//! loading is extracted, there is no other loader that doesn't need an audio
-//! engine), drives it with real key events through `process_event`, draws it
-//! into ratatui's `TestBackend`, and snapshots the buffer with `insta` —
+//! Each test loads a session (TOML text) through the real loader against a stub
+//! command channel, builds a `State` from the resulting model, drives it with real
+//! key events through `process_event`, draws it into ratatui's `TestBackend`, and
+//! snapshots the buffer with `insta` —
 //! characters *and* styles, because colour carries meaning here (the piano
 //! paints held / root / scale keys with background colour on blank cells).
 //!
 //! After an intentional UI change, regenerate with
 //! `INSTA_UPDATE=always cargo test golden`, then review the snapshot diff.
 
-use std::collections::HashMap;
+use std::path::Path;
 
 use crossbeam_channel::{Receiver, unbounded};
 use crossterm::event::KeyEvent;
@@ -19,12 +19,11 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
 use super::*;
-use crate::app::load::LoadedModTarget;
+use crate::app::load::load_session;
 use crate::app::testutil::describe;
 use crate::midi_monitor::MidiMonitor;
-use crate::plugin::chain::{LfoWaveform, ModTargetKind};
 use crate::scale::ScaleSetting;
-use crate::session::parse_range;
+use crate::session;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const BLOCK: usize = 256;
@@ -45,16 +44,29 @@ struct Harness {
 }
 
 impl Harness {
-    fn new(scene: (Vec<LoadedInstrument>, Vec<LoadedGroup>)) -> Self {
-        let (instruments, groups) = scene;
+    fn new(session_toml: impl AsRef<str>) -> Self {
+        let config = session::parse(session_toml.as_ref()).expect("scene parses");
+        // The loader sends the audio thread its commands; nothing listens here, but
+        // the receiver has to stay alive for the sends to succeed.
+        let (load_tx, _load_rx) = unbounded();
+        let model = load_session(
+            &config,
+            Path::new("."),
+            SAMPLE_RATE,
+            BLOCK,
+            &plugin::Runtime::default(),
+            &load_tx,
+            &mut |_| {},
+        )
+        .expect("scene loads");
+        // What the TUI sends from here on is what `commands()` reports.
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (midi_tx, _midi_rx) = crossbeam_channel::bounded(1024);
         let (_catalog_tx, catalog_rx) = unbounded();
         let (_pattern_tx, pattern_rx) = unbounded();
         let (_learn_tx, learn_rx) = unbounded();
         let mut s = State::new(
-            instruments,
-            groups,
+            model,
             cmd_tx,
             midi_tx,
             plugin::Runtime::default(),
@@ -193,217 +205,148 @@ fn dump_buffer(buf: &Buffer) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Fixtures: sessions built by hand from builtin plugins
+// Fixtures: sessions, as TOML, loaded by the real loader
 // ---------------------------------------------------------------------------
-
-/// A builtin plugin as the loader hands it to the TUI: baselines are the
-/// plugin's own values, `set` are session-file overrides on top.
-fn builtin(id: &str, mix: f32, set: &[(&str, f32)]) -> LoadedPlugin {
-    let mut p = plugin::builtin::load(id, SAMPLE_RATE, BLOCK).expect("builtin loads");
-    let params = p.parameters();
-    let baselines: Vec<f32> = params
-        .iter()
-        .map(|i| p.get_parameter(i.index).unwrap_or(i.default))
-        .collect();
-    let mut values = baselines.clone();
-    for (name, value) in set {
-        let i = params
-            .iter()
-            .position(|i| i.name == *name)
-            .unwrap_or_else(|| panic!("{id} has no parameter {name:?}"));
-        values[i] = *value;
-    }
-    LoadedPlugin {
-        name: p.name().to_string(),
-        id: id.to_string(),
-        is_instrument: p.is_instrument(),
-        params,
-        param_defaults: baselines,
-        param_values: values,
-        presets: p.presets(),
-        current_preset: None,
-        mix,
-    }
-}
-
-fn instrument(plugin: LoadedPlugin) -> LoadedInstrument {
-    LoadedInstrument {
-        range: None,
-        transpose: 0,
-        volume: 1.0,
-        instrument: Some(plugin),
-        effects: vec![],
-        modulators: vec![],
-        pattern: None,
-        pitch_bend_range: 2.0,
-        remap: HashMap::new(),
-        group: None,
-    }
-}
-
-fn range(text: &str) -> Option<(u8, u8)> {
-    Some(parse_range(text).expect("valid range"))
-}
-
-fn lfo(waveform: LfoWaveform, rate: f32, targets: Vec<LoadedModTarget>) -> LoadedModulator {
-    LoadedModulator { source: LoadedModSource::Lfo { waveform, rate }, targets }
-}
-
-fn adsr(attack: f32, decay: f32, sustain: f32, release: f32, targets: Vec<LoadedModTarget>) -> LoadedModulator {
-    LoadedModulator {
-        source: LoadedModSource::Envelope { attack, decay, sustain, release },
-        targets,
-    }
-}
-
-fn param<'a>(p: &'a LoadedPlugin, name: &str) -> &'a plugin::ParameterInfo {
-    p.params
-        .iter()
-        .find(|i| i.name == name)
-        .unwrap_or_else(|| panic!("{} has no parameter {name:?}", p.name))
-}
-
-/// The plugin at chain `slot` (0 = instrument, 1..N = effects).
-fn chain_slot(inst: &LoadedInstrument, slot: usize) -> &LoadedPlugin {
-    if slot == 0 {
-        inst.instrument.as_ref().expect("instrument loaded")
-    } else {
-        &inst.effects[slot - 1]
-    }
-}
-
-fn target_on(slot: usize, info: &plugin::ParameterInfo, kind: ModTargetKind, depth: f32) -> LoadedModTarget {
-    LoadedModTarget {
-        slot,
-        param_name: info.name.clone(),
-        kind,
-        depth,
-        param_min: info.min,
-        param_max: info.max,
-    }
-}
-
-/// Lane modulator target: a parameter somewhere on `inst`'s chain.
-fn lane_target(inst: &LoadedInstrument, slot: usize, name: &str, depth: f32) -> LoadedModTarget {
-    let info = param(chain_slot(inst, slot), name);
-    target_on(slot, info, ModTargetKind::PluginParam { slot, param_index: info.index }, depth)
-}
-
-/// Group modulator target: a parameter on member `member`'s chain.
-fn member_target(
-    inst: &LoadedInstrument,
-    member: usize,
-    slot: usize,
-    name: &str,
-    depth: f32,
-) -> LoadedModTarget {
-    let info = param(chain_slot(inst, slot), name);
-    target_on(
-        slot,
-        info,
-        ModTargetKind::GroupMember { member, slot, param_index: info.index },
-        depth,
-    )
-}
-
-/// Group modulator target: a parameter on one of the group's bus effects.
-fn bus_target(effects: &[LoadedPlugin], effect_index: usize, name: &str, depth: f32) -> LoadedModTarget {
-    let info = param(&effects[effect_index], name);
-    target_on(0, info, ModTargetKind::GroupBus { effect_index, param_index: info.index }, depth)
-}
-
-/// Cross-mod target: a sibling modulator's LFO rate (labelled like the loader does).
-fn rate_target(mod_index: usize, depth: f32) -> LoadedModTarget {
-    LoadedModTarget {
-        slot: 0,
-        param_name: format!("Mod {mod_index} rate"),
-        kind: ModTargetKind::ModulatorRate { mod_index },
-        depth,
-        param_min: 0.01,
-        param_max: 50.0,
-    }
-}
 
 /// `examples/split.toml`: a sine bass (C0–B3) and a square lead (C4–C8), each
 /// with an LFO on `detune` for vibrato.
-fn scene_split() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
-    let mut bass = instrument(builtin("builtin:sine", 1.0, &[]));
-    bass.range = range("C0-B3");
-    let t = lane_target(&bass, 0, "detune", 0.04);
-    bass.modulators.push(lfo(LfoWaveform::Sine, 4.0, vec![t]));
-
-    let mut lead = instrument(builtin("builtin:square", 1.0, &[]));
-    lead.range = range("C4-C8");
-    let t = lane_target(&lead, 0, "detune", 0.15);
-    lead.modulators.push(lfo(LfoWaveform::Sine, 7.0, vec![t]));
-
-    (vec![bass, lead], vec![])
+fn scene_split() -> &'static str {
+    include_str!("../../examples/split.toml")
 }
 
-/// A pad group (two members, a bus reverb, a group LFO and a group ADSR that
-/// cross-mods the LFO's rate) next to an ungrouped bass with a filter swept by
-/// a lane LFO. Exercises every target-label path in the tree.
-fn scene_group() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
-    let mut pad_a = instrument(builtin("builtin:osc", 1.0, &[("waveform", 1.0), ("release", 0.8)]));
-    pad_a.group = Some(0);
+/// The Pad group: a bus reverb, a group LFO on a member's `detune` and the bus
+/// `damping`, and a group ADSR that cross-mods the LFO's rate.
+const GROUP: &str = r#"
+[[group]]
+name = "Pad"
+volume = 0.8
+pan = -0.3
 
-    let mut pad_b = instrument(builtin("builtin:osc", 1.0, &[]));
-    pad_b.range = range("C4-");
-    pad_b.group = Some(0);
-    pad_b.effects.push(builtin("builtin:filter", 1.0, &[("cutoff", 0.6)]));
+[[group.effect]]
+plugin = "builtin:reverb"
 
-    let mut bass = instrument(builtin("builtin:osc", 1.0, &[]));
-    bass.range = range("-B3");
-    bass.volume = 0.8;
-    bass.effects.push(builtin("builtin:filter", 1.0, &[("cutoff", 0.35), ("type", 4.0)]));
-    let t = lane_target(&bass, 1, "cutoff", 0.5);
-    bass.modulators.push(lfo(LfoWaveform::Triangle, 0.2, vec![t]));
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.4
+[[group.modulator.target]]
+bus = 0
+param = "damping"
+depth = 0.25
 
-    let bus = vec![builtin("builtin:reverb", 1.0, &[])];
-    let group = LoadedGroup {
-        name: Some("Pad".to_string()),
-        volume: 0.8,
-        pan: -0.3,
-        modulators: vec![
-            lfo(
-                LfoWaveform::Sine,
-                0.5,
-                vec![member_target(&pad_a, 0, 0, "detune", 0.4), bus_target(&bus, 0, "damping", 0.25)],
-            ),
-            adsr(0.01, 0.3, 0.7, 0.5, vec![rate_target(0, 0.3)]),
-        ],
-        effects: bus,
-    };
+[[group.modulator]]
+type = "envelope"
+[[group.modulator.target]]
+mod_rate = 0
+depth = 0.3
+"#;
 
-    (vec![pad_a, pad_b, bass], vec![group])
+/// The first pad member, a triangle with a longer release.
+const PAD_A: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[instrument.params]
+waveform = 1.0
+release = 0.8
+"#;
+
+/// The second pad member: C4 and up, with a filter.
+const PAD_B: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+range = "C4-"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[instrument.effect.params]
+cutoff = 0.6
+"#;
+
+/// An ungrouped bass up to B3 with a ladder filter swept by a lane LFO.
+const BASS: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+range = "-B3"
+volume = 0.8
+[[instrument.effect]]
+plugin = "builtin:filter"
+[instrument.effect.params]
+cutoff = 0.35
+type = 4.0
+[[instrument.modulator]]
+waveform = "triangle"
+rate = 0.2
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.5
+"#;
+
+/// The pad group (two members, a bus reverb, a group LFO and a group ADSR that
+/// cross-mods the LFO's rate) next to an ungrouped bass with a filter swept by a
+/// lane LFO. Exercises every target-label path in the tree.
+fn scene_group() -> String {
+    [GROUP, PAD_A, PAD_B, BASS].concat()
+}
+
+/// `scene_group()` with the ungrouped bass first (lane 0), so a group membership
+/// change at the front shifts every member ordinal.
+fn scene_group_bass_first() -> String {
+    [GROUP, BASS, PAD_A, PAD_B].concat()
 }
 
 /// One oscillator with a filter and a reverb in series, and a single LFO driving
 /// both (`cutoff` on the filter at slot 1, `damping` on the reverb at slot 2).
-fn scene_two_effects() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
-    let mut lead = instrument(builtin("builtin:osc", 1.0, &[]));
-    lead.effects.push(builtin("builtin:filter", 1.0, &[]));
-    lead.effects.push(builtin("builtin:reverb", 0.5, &[]));
-    let to_filter = lane_target(&lead, 1, "cutoff", 0.4);
-    let to_reverb = lane_target(&lead, 2, "damping", 0.3);
-    lead.modulators.push(lfo(LfoWaveform::Sine, 0.5, vec![to_filter, to_reverb]));
-    (vec![lead], vec![])
+fn scene_two_effects() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.5
+[[instrument.modulator]]
+rate = 0.5
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[instrument.modulator.target]]
+slot = 2
+param = "damping"
+depth = 0.3
+"#
 }
 
 /// A group with a filter and a reverb on its bus, and a group LFO driving both.
-fn scene_bus_pair() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
-    let mut pad = instrument(builtin("builtin:osc", 1.0, &[]));
-    pad.group = Some(0);
-    let bus = vec![builtin("builtin:filter", 1.0, &[]), builtin("builtin:reverb", 0.5, &[])];
-    let targets = vec![bus_target(&bus, 0, "cutoff", 0.4), bus_target(&bus, 1, "damping", 0.3)];
-    let group = LoadedGroup {
-        name: Some("Pad".to_string()),
-        volume: 1.0,
-        pan: 0.0,
-        modulators: vec![lfo(LfoWaveform::Sine, 0.5, targets)],
-        effects: bus,
-    };
-    (vec![pad], vec![group])
+fn scene_bus_pair() -> &'static str {
+    r#"
+[[group]]
+name = "Pad"
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 0.5
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.4
+[[group.modulator.target]]
+bus = 1
+param = "damping"
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+"#
 }
 
 // ---------------------------------------------------------------------------
@@ -566,15 +509,6 @@ fn piano_locked_mode_in_d_dorian() {
 // the keys *do* — the commands sent to the audio thread and the index
 // fix-ups that keep the TUI model and the audio graph in step.
 // ---------------------------------------------------------------------------
-
-/// `scene_group()` with the ungrouped bass moved to lane 0, so a group
-/// membership change at the front shifts every member ordinal.
-fn scene_group_bass_first() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
-    let (mut instruments, groups) = scene_group();
-    let bass = instruments.remove(2);
-    instruments.insert(0, bass);
-    (instruments, groups)
-}
 
 #[test]
 fn arrow_keys_adjust_a_parameter_in_model_and_engine() {
