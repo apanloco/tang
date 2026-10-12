@@ -829,7 +829,8 @@ fn a_saved_session_does_not_keep_targets_of_a_deleted_effect() {
     h.press(KeyCode::Char('d'));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.toml");
-    h.s.save_session_to(&path).unwrap();
+    h.s.ctl.session_path = Some(path.clone());
+    h.s.ctl.save().unwrap();
     let saved = std::fs::read_to_string(&path).unwrap();
     assert!(!saved.contains("cutoff"), "the deleted filter's target was saved:\n{saved}");
     assert!(saved.contains("param = \"damping\""), "{saved}");

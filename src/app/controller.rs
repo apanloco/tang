@@ -29,7 +29,7 @@
 //! The fields are public while the front-ends still edit the model themselves;
 //! they close as those edits become intents (`docs/web-ui.md` step 6).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,12 +37,14 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
 use crate::app::model::{ModSourceSlot, PatternState, SessionModel};
+use crate::app::save::to_save;
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
-use crate::piano_filter::PianoFilter;
+use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
+use crate::session::{self, PianoConfig};
 
 /// How often `poll` looks for newly connected devices.
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -183,6 +185,49 @@ impl Controller {
             devices: None,
             last_device_poll: now,
         }
+    }
+
+    /// Save the session to the file it came from.
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        let Some(path) = self.session_path.clone() else {
+            anyhow::bail!("No session path — cannot save");
+        };
+        self.save_to(&path)
+    }
+
+    /// Save the session as `name` in the directory of its file (the working
+    /// directory if it has none), with `.toml` appended unless `name` already
+    /// ends in it, and from then on save to that file. Returns the path written.
+    /// When it fails nothing changes: the session keeps its file and its mark.
+    pub fn save_as(&mut self, name: &str) -> anyhow::Result<PathBuf> {
+        let path = self.save_as_path(name)?;
+        self.save_to(&path)?;
+        self.session_path = Some(path.clone());
+        Ok(path)
+    }
+
+    fn save_as_path(&self, name: &str) -> anyhow::Result<PathBuf> {
+        let mut name = name.trim().to_string();
+        anyhow::ensure!(!name.is_empty(), "A file name is needed");
+        if !name.ends_with(".toml") {
+            name.push_str(".toml");
+        }
+        let dir = self.session_path.as_deref().and_then(Path::parent).unwrap_or(Path::new("."));
+        Ok(dir.join(name))
+    }
+
+    /// Write the session, with the Piano tab's scale and mode, to `path`. Does
+    /// not touch `session_path`: callers decide what a failed save means for it.
+    fn save_to(&mut self, path: &Path) -> anyhow::Result<()> {
+        let (instruments, groups) = to_save(&self.model.instruments, &self.model.groups);
+        let piano = PianoConfig {
+            scale: Some(self.piano_filter.scale().short()),
+            locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
+        };
+        session::save(path, &instruments, &groups, Some(&piano))?;
+        self.dirty = false;
+        log::info!("Session saved to {}", path.display());
+        Ok(())
     }
 
     /// Have `poll` look for newly connected devices through `watcher`.
@@ -627,6 +672,108 @@ type = "lfo"
         engine.pattern_tx.send(recording(7)).unwrap();
         engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(8))).unwrap();
         assert_eq!(ctl.poll(), CHANGED_MODEL, "the recording that finds nothing does not undo the capture");
+    }
+
+    fn controller_with_file(path: &Path) -> Controller {
+        let (handles, _engine) = testutil::stub_engine();
+        Controller::new(load(testutil::GROUPS).model, handles, Some(path.to_path_buf()))
+    }
+
+    #[test]
+    fn save_writes_the_session_and_the_piano_settings_to_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let mut ctl = controller_with_file(&path);
+        ctl.piano_filter.set_scale(crate::scale::ScaleSetting::parse("D dorian").unwrap());
+        ctl.piano_filter.set_mode(PianoMode::Locked);
+        ctl.dirty = true;
+        ctl.save().unwrap();
+
+        assert!(!ctl.dirty);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let piano = session::parse(&text).unwrap().piano.expect("the piano settings are saved");
+        assert_eq!((piano.scale.as_deref(), piano.locked), (Some("D dorian"), true));
+        testutil::assert_same_model("the saved file", &ctl.model, &load(&text).model);
+    }
+
+    #[test]
+    fn save_needs_a_file_and_keeps_the_mark_when_it_fails() {
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(SessionModel::default(), handles, None);
+        ctl.dirty = true;
+        assert!(ctl.save().is_err());
+        assert!(ctl.dirty);
+
+        // A file where the directory should be: the write fails.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blocker"), "").unwrap();
+        let mut ctl = controller_with_file(&dir.path().join("blocker").join("song.toml"));
+        ctl.dirty = true;
+        assert!(ctl.save().is_err());
+        assert!(ctl.dirty, "a failed save has not saved anything");
+    }
+
+    #[test]
+    fn save_as_writes_beside_the_current_file_and_switches_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("song.toml");
+        let mut ctl = controller_with_file(&old);
+        ctl.dirty = true;
+        let new = ctl.save_as("copy").unwrap();
+
+        assert_eq!(new, dir.path().join("copy.toml"));
+        assert!(new.exists());
+        assert!(!old.exists(), "the old file is not written");
+        assert_eq!(ctl.session_path, Some(new));
+        assert!(!ctl.dirty);
+    }
+
+    #[test]
+    fn save_as_appends_toml_once_and_trims_the_name() {
+        let ctl = controller_with_file(Path::new("/songs/old.toml"));
+        for (name, expected) in [
+            ("mix", "/songs/mix.toml"),
+            ("mix.toml", "/songs/mix.toml"),
+            ("  mix.toml  ", "/songs/mix.toml"),
+            ("a.b", "/songs/a.b.toml"),
+        ] {
+            assert_eq!(ctl.save_as_path(name).unwrap(), PathBuf::from(expected), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn save_as_without_a_current_file_means_the_working_directory() {
+        let (handles, _engine) = testutil::stub_engine();
+        let ctl = Controller::new(SessionModel::default(), handles, None);
+        assert_eq!(ctl.save_as_path("mix").unwrap(), Path::new(".").join("mix.toml"));
+        let ctl = controller_with_file(Path::new("old.toml"));
+        assert_eq!(ctl.save_as_path("mix").unwrap(), Path::new("").join("mix.toml"), "a bare file name has no directory");
+    }
+
+    #[test]
+    fn save_as_needs_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("song.toml");
+        let mut ctl = controller_with_file(&old);
+        ctl.dirty = true;
+        for name in ["", "   "] {
+            assert!(ctl.save_as(name).is_err(), "{name:?}");
+        }
+        assert_eq!(ctl.session_path, Some(old));
+        assert!(ctl.dirty);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_failed_save_as_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blocker"), "").unwrap();
+        let old = dir.path().join("song.toml");
+        let mut ctl = controller_with_file(&old);
+        ctl.dirty = true;
+        assert!(ctl.save_as("blocker/x").is_err());
+        assert_eq!(ctl.session_path, Some(old), "the session keeps its file");
+        assert!(ctl.dirty);
     }
 
     #[test]

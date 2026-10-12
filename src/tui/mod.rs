@@ -4,7 +4,6 @@ mod piano_view;
 pub mod splash;
 
 use std::io;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crossterm::event::{
@@ -2355,33 +2354,6 @@ impl State {
         }
         self.ctl.dirty = true;
     }
-
-    fn save_session(&mut self) {
-        let path = match &self.ctl.session_path {
-            Some(p) => p.clone(),
-            None => {
-                log::warn!("No session path — cannot save");
-                return;
-            }
-        };
-        if let Err(e) = self.save_session_to(&path) {
-            log::error!("Failed to save session: {e}");
-        }
-    }
-
-    /// Save the session to `path`. Does not touch `session_path` — callers
-    /// decide what a failed save means for the current path.
-    fn save_session_to(&mut self, path: &Path) -> anyhow::Result<()> {
-        let (instruments, groups) = crate::app::save::to_save(&self.ctl.model.instruments, &self.ctl.model.groups);
-        let piano = crate::session::PianoConfig {
-            scale: Some(self.ctl.piano_filter.scale().short()),
-            locked: matches!(self.ctl.piano_filter.mode(), PianoMode::Locked),
-        };
-        crate::session::save(path, &instruments, &groups, Some(&piano))?;
-        self.ctl.dirty = false;
-        log::info!("Session saved to {}", path.display());
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2880,33 +2852,16 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.save_as = None,
         KeyCode::Enter => {
-            let mut name = sa.input.value.trim().to_string();
+            let name = sa.input.value.trim().to_string();
             if name.is_empty() {
                 return; // keep popup open until a name is given
             }
-            if !name.ends_with(".toml") {
-                name.push_str(".toml");
-            }
-            // Save into the current session's directory (fallback: cwd).
-            let dir = s
-                .ctl
-                .session_path
-                .as_ref()
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."));
-            let path = dir.join(name);
-            match s.save_session_to(&path) {
-                Ok(()) => {
-                    // Subsequent Ctrl+S now targets the new file.
-                    s.ctl.session_path = Some(path);
-                    s.save_as = None;
-                }
-                Err(e) => {
-                    // Keep the popup (and the original session_path) and show
-                    // the error so the user can fix the name or cancel.
-                    s.save_as.as_mut().unwrap().error = Some(e.to_string());
-                }
+            match s.ctl.save_as(&name) {
+                // Subsequent Ctrl+S now targets the new file.
+                Ok(_) => s.save_as = None,
+                // Keep the popup (and the original session path) and show the
+                // error so the user can fix the name or cancel.
+                Err(e) => s.save_as.as_mut().unwrap().error = Some(e.to_string()),
             }
         }
         KeyCode::Backspace => {
@@ -2990,7 +2945,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             });
         }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-            s.save_session();
+            if let Err(e) = s.ctl.save() {
+                log::error!("Failed to save session: {e}");
+            }
         }
         KeyCode::Char('1') => s.active_tab = 0,
         KeyCode::Char('2') => s.active_tab = 1,

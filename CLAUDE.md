@@ -877,7 +877,7 @@ notification receivers, the state shared with the note senders) belong to
 `app::controller::Controller`; the TUI reaches them through `State::ctl`. The
 controller folds what the audio thread reports (a finished pattern recording, a
 captured MIDI-learn control) into the model, and `poll` tells the TUI what
-changed.
+changed. It also saves the session (`Controller::save`, `save_as`).
 
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
