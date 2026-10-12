@@ -22,6 +22,7 @@ use super::*;
 use crate::app::load::load_session;
 use crate::app::testutil::{DropProbe, describe};
 use crate::midi_monitor::MidiMonitor;
+use crate::plugin::chain::{MidiBindSource, MidiLearnedNotification, ModulatorLocation, PatternNotification};
 use crate::scale::ScaleSetting;
 use crate::session;
 
@@ -43,6 +44,11 @@ struct Harness {
     cmd_rx: Receiver<GraphCommand>,
     /// The audio thread's end of the channel that hands swapped-out plugins back.
     return_tx: crossbeam_channel::Sender<Box<dyn plugin::Plugin>>,
+    /// The audio thread's ends of the notification channels.
+    pattern_tx: crossbeam_channel::Sender<crate::plugin::chain::PatternNotification>,
+    learn_tx: crossbeam_channel::Sender<crate::plugin::chain::MidiLearnedNotification>,
+    /// The scan thread's end; `None` once the scan is over (see `finish_scan`).
+    catalog_tx: Option<crossbeam_channel::Sender<Vec<PluginInfo>>>,
 }
 
 impl Harness {
@@ -64,9 +70,9 @@ impl Harness {
         // What the TUI sends from here on is what `commands()` reports.
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
         let (midi_tx, _midi_rx) = crossbeam_channel::bounded(1024);
-        let (_catalog_tx, catalog_rx) = unbounded();
-        let (_pattern_tx, pattern_rx) = unbounded();
-        let (_learn_tx, learn_rx) = unbounded();
+        let (catalog_tx, catalog_rx) = unbounded();
+        let (pattern_tx, pattern_rx) = unbounded();
+        let (learn_tx, learn_rx) = unbounded();
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut s = State::new(
             Controller::new(return_rx),
@@ -87,7 +93,7 @@ impl Harness {
         // A finished scan with an empty catalog unless a test fills it in.
         s.catalog_scanning = false;
         let terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-        Harness { s, terminal, cmd_rx, return_tx }
+        Harness { s, terminal, cmd_rx, return_tx, pattern_tx, learn_tx, catalog_tx: Some(catalog_tx) }
     }
 
     fn press(&mut self, code: KeyCode) -> &mut Self {
@@ -861,4 +867,229 @@ fn the_tui_reaps_plugins_the_audio_thread_hands_back() {
     tick(&mut h.s);
     let after = *dropped_on.lock().unwrap();
     assert_eq!(after, Some(std::thread::current().id()));
+}
+
+// ---------------------------------------------------------------------------
+// What the audio thread and the plugin scan report back
+// ---------------------------------------------------------------------------
+
+fn recording(inst: usize) -> PatternNotification {
+    PatternNotification {
+        inst,
+        base_note: Some(60),
+        length_beats: 2.0,
+        looping: true,
+        enabled: true,
+        events: vec![(0, 0x90, 60, 100), (24_000, 0x80, 60, 0)],
+    }
+}
+
+#[test]
+fn a_finished_recording_becomes_the_lanes_pattern() {
+    let mut h = Harness::new(scene_split());
+    // It carries the tempo the TUI has when the recording ends.
+    h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars("95").press(KeyCode::Enter);
+    // A one-shot pattern: the player's loop setting travels with the recording.
+    h.pattern_tx.send(PatternNotification { looping: false, ..recording(1) }).unwrap();
+    tick(&mut h.s);
+
+    let pattern = h.s.instruments[1].pattern.as_ref().expect("lane 1 has a pattern now");
+    assert_eq!((pattern.bpm, pattern.length_beats, pattern.looping, pattern.enabled), (95.0, 2.0, false, true));
+    assert_eq!((pattern.base_note, pattern.in_key, pattern.recording), (Some(60), false, false));
+    assert_eq!(pattern.events, [(0, 0x90, 60, 100), (24_000, 0x80, 60, 0)]);
+    assert!(h.s.instruments[0].pattern.is_none());
+    assert!(h.tree().contains(&"├ ▶ Pattern  2 beats, 1 notes"), "{:#?}", h.tree());
+}
+
+#[test]
+fn re_recording_replaces_the_events_but_keeps_the_transpose_mode() {
+    let mut h = Harness::new(
+        r#"
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 120.0
+length_beats = 4.0
+base_note = "C4"
+enabled = false
+looping = false
+transpose = "in_key"
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 12000
+status = "off"
+note = "C4"
+velocity = 0
+"#,
+    );
+    h.pattern_tx.send(recording(0)).unwrap();
+    tick(&mut h.s);
+
+    let pattern = h.s.instruments[0].pattern.as_ref().unwrap();
+    assert!(pattern.in_key, "the transpose mode is the user's, not the recording's");
+    assert_eq!((pattern.length_beats, pattern.looping, pattern.enabled), (2.0, true, true));
+    assert_eq!(pattern.events.len(), 2);
+    assert_eq!(pattern.events[1], (24_000, 0x80, 60, 0));
+}
+
+#[test]
+fn a_recording_with_no_notes_leaves_a_disabled_pattern() {
+    // The user pressed `r` and played nothing: the player keeps an empty,
+    // disabled pattern, and so does the model.
+    let mut h = Harness::new(scene_split());
+    h.pattern_tx
+        .send(PatternNotification { base_note: None, enabled: false, events: vec![], ..recording(1) })
+        .unwrap();
+    tick(&mut h.s);
+
+    let pattern = h.s.instruments[1].pattern.as_ref().expect("the lane still gets a pattern");
+    assert!(!pattern.enabled);
+    assert!(pattern.events.is_empty());
+    assert_eq!(pattern.base_note, None);
+}
+
+#[test]
+fn a_recording_for_a_lane_that_is_gone_is_ignored() {
+    let mut h = Harness::new(scene_split());
+    let before: Vec<String> = h.tree().iter().map(|l| l.to_string()).collect();
+    h.pattern_tx.send(recording(7)).unwrap();
+    tick(&mut h.s);
+    assert_eq!(h.tree(), before);
+    assert!(h.s.instruments.iter().all(|n| n.pattern.is_none()));
+}
+
+/// Arm a MIDI-learn modulator on lane 0's first parameter the way a user does;
+/// returns its index in the lane's rack.
+fn arm_lane_learn(h: &mut Harness) -> usize {
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Enter).press(KeyCode::Char('l'));
+    let index = h.s.instruments[0].modulators.len() - 1;
+    assert!(
+        matches!(h.s.instruments[0].modulators[index].source, ModSourceSlot::MidiLearn { source: None, learning: true }),
+        "`l` arms a modulator"
+    );
+    index
+}
+
+#[test]
+fn a_captured_control_binds_the_armed_lane_modulator() {
+    for (source, label) in [
+        (MidiBindSource::Cc(74), "CC 74"),
+        (MidiBindSource::PitchBend, "Pitch Bend"),
+        (MidiBindSource::Aftertouch, "Aftertouch"),
+    ] {
+        let mut h = Harness::new(scene_split());
+        let index = arm_lane_learn(&mut h);
+        assert!(h.tree().iter().any(|l| l.contains("MIDI (learning…)")));
+        h.s.dirty = false;
+        h.learn_tx
+            .send(MidiLearnedNotification { location: ModulatorLocation::Lane(0), mod_index: index, source })
+            .unwrap();
+        tick(&mut h.s);
+
+        let bound = &h.s.instruments[0].modulators[index].source;
+        assert!(
+            matches!(bound, ModSourceSlot::MidiLearn { source: Some(s), learning: false } if *s == source),
+            "{label}: {bound:?}"
+        );
+        assert!(h.tree().iter().any(|l| l.contains(label)), "{label}: {:#?}", h.tree());
+        assert!(h.s.dirty, "{label}: the binding is part of the saved session");
+    }
+}
+
+#[test]
+fn a_captured_control_binds_the_armed_group_modulator() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('l'));
+    let index = h.s.groups[0].modulators.len() - 1;
+    assert!(matches!(h.s.groups[0].modulators[index].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+
+    h.learn_tx
+        .send(MidiLearnedNotification {
+            location: ModulatorLocation::Group(0),
+            mod_index: index,
+            source: MidiBindSource::Cc(1),
+        })
+        .unwrap();
+    tick(&mut h.s);
+    assert!(matches!(
+        h.s.groups[0].modulators[index].source,
+        ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(1)), learning: false }
+    ));
+    assert!(h.tree().iter().any(|l| l.contains("CC 1 →")), "{:#?}", h.tree());
+}
+
+#[test]
+fn a_capture_for_a_modulator_that_is_not_listening_changes_nothing() {
+    let mut h = Harness::new(scene_split());
+    // Lane 0's only modulator is the vibrato LFO.
+    h.learn_tx
+        .send(MidiLearnedNotification {
+            location: ModulatorLocation::Lane(0),
+            mod_index: 0,
+            source: MidiBindSource::Cc(74),
+        })
+        .unwrap();
+    tick(&mut h.s);
+    assert!(matches!(h.s.instruments[0].modulators[0].source, ModSourceSlot::Lfo { .. }));
+}
+
+fn plugin_info(name: &str, is_instrument: bool) -> PluginInfo {
+    PluginInfo {
+        name: name.to_string(),
+        id: format!("builtin:{}", name.to_lowercase()),
+        is_instrument,
+        param_count: 3,
+        preset_count: 0,
+        path: String::new(),
+        scan_ms: 0,
+    }
+}
+
+#[test]
+fn scanned_plugins_join_the_catalog_sorted_by_name_until_the_scan_ends() {
+    let mut h = Harness::new(scene_split());
+    h.s.catalog_scanning = true;
+    let names = |h: &Harness| h.s.catalog.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+
+    h.catalog_tx.as_ref().unwrap().send(vec![plugin_info("Zeta", true), plugin_info("alpha", false)]).unwrap();
+    tick(&mut h.s);
+    assert_eq!(names(&h), ["alpha", "Zeta"], "sorted without regard to case");
+    assert!(h.s.catalog_scanning);
+
+    h.catalog_tx.as_ref().unwrap().send(vec![plugin_info("Beta", false)]).unwrap();
+    tick(&mut h.s);
+    assert_eq!(names(&h), ["alpha", "Beta", "Zeta"]);
+    assert!(h.s.catalog_scanning, "the scan is not over while its thread is running");
+
+    h.catalog_tx = None; // the scan thread exits
+    tick(&mut h.s);
+    assert!(!h.s.catalog_scanning);
+}
+
+#[test]
+fn an_open_selector_gains_rows_as_the_scan_goes_on_and_keeps_its_filter() {
+    let mut h = Harness::new(scene_split());
+    h.s.catalog_scanning = true;
+    h.catalog_tx.as_ref().unwrap().send(vec![plugin_info("Reverb", false)]).unwrap();
+    tick(&mut h.s);
+    h.press(KeyCode::Char('a')).type_chars("rev");
+    let sel = h.s.selector.as_ref().expect("`a` opens the effect selector");
+    assert_eq!((sel.items.len(), sel.filter.filtered.len()), (1, 1));
+
+    h.catalog_tx
+        .as_ref()
+        .unwrap()
+        .send(vec![plugin_info("Revolver", false), plugin_info("Delay", false), plugin_info("Synth", true)])
+        .unwrap();
+    tick(&mut h.s);
+    let sel = h.s.selector.as_ref().unwrap();
+    assert_eq!(sel.items.len(), 3, "the instrument is not an effect");
+    assert_eq!(sel.filter.input.value, "rev");
+    assert_eq!(sel.filter.filtered.len(), 2, "Reverb and Revolver match, Delay does not");
 }
