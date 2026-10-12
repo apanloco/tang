@@ -88,6 +88,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
             "AddModTarget inst={inst} mod={mod_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
             target.kind, target.depth, target.base_value, target.param_min, target.param_max
         ),
+        C::SetModulatorOutput { location, index, slot } => {
+            format!("SetModulatorOutput {location:?} index={index} slot={}", slot.index())
+        }
         C::SetModulatorRate { inst, mod_index, rate } => {
             format!("SetModulatorRate inst={inst} mod={mod_index} rate={rate:.3}")
         }
@@ -108,12 +111,28 @@ pub fn describe(cmd: &GraphCommand) -> String {
     }
 }
 
+/// A command that only assigns a telemetry slot to a node a command before it
+/// created. They say nothing about the session, and a test that lists what was
+/// sent would have to repeat one after every modulator, so `described` leaves
+/// them out, and `StubEngine::drain` and `Run::telemetry` have them on their own.
+fn is_telemetry(cmd: &GraphCommand) -> bool {
+    matches!(cmd, GraphCommand::SetModulatorOutput { .. })
+}
+
+/// What `describe` says about each of `commands`, except those that only assign
+/// telemetry slots (see `is_telemetry`).
+pub fn described(commands: impl IntoIterator<Item = GraphCommand>) -> Vec<String> {
+    commands.into_iter().filter(|c| !is_telemetry(c)).map(|c| describe(&c)).collect()
+}
+
 /// What a load did: the model it returned, the commands it sent (one line
-/// each, see `describe`) and the progress it reported.
+/// each, see `described`), those that assigned telemetry slots, and the progress
+/// it reported.
 #[derive(Debug)]
 pub struct Run {
     pub model: SessionModel,
     pub commands: Vec<String>,
+    pub telemetry: Vec<String>,
     pub progress: Vec<String>,
 }
 
@@ -135,9 +154,19 @@ pub fn try_load(text: &str) -> anyhow::Result<Run> {
             })
         },
     )?;
-    let commands = rx.try_iter().map(|c| describe(&c)).collect();
+    let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = rx.try_iter().partition(is_telemetry);
+    let telemetry = slot_commands.iter().map(describe).collect();
+    let commands = others.iter().map(describe).collect();
     model.check_ids().map_err(|e| anyhow::anyhow!("the loader's node ids are wrong: {e}"))?;
-    Ok(Run { model, commands, progress })
+    Ok(Run { model, commands, telemetry, progress })
+}
+
+/// Load `text` the way the program does, sending the commands down `cmd_tx`
+/// (to a real graph, say) and returning the model.
+pub fn load_onto(text: &str, cmd_tx: &Sender<GraphCommand>) -> SessionModel {
+    let config = session::parse(text).expect("the session parses");
+    load_session(&config, Path::new("."), 48_000.0, 256, &plugin::Runtime::default(), cmd_tx, &mut |_| {})
+        .expect("the session loads")
 }
 
 pub fn load(text: &str) -> Run {
@@ -156,6 +185,15 @@ pub struct StubEngine {
     pub pattern_tx: Sender<PatternNotification>,
     /// Where it reports captured MIDI-learn controls.
     pub learn_tx: Sender<MidiLearnedNotification>,
+}
+
+impl StubEngine {
+    /// Everything the controller has sent since the last call, as text: the
+    /// commands, and, separately, the ones that only assign telemetry slots.
+    pub fn drain(&self) -> (Vec<String>, Vec<String>) {
+        let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = self.cmd_rx.try_iter().partition(is_telemetry);
+        (others.iter().map(describe).collect(), slot_commands.iter().map(describe).collect())
+    }
 }
 
 /// A finished two-beat recording of one note, as the audio thread reports it.

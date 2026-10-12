@@ -333,6 +333,18 @@ pub enum ModTargetKind {
     ModulatorRelease { mod_index: usize },
 }
 
+impl ModTargetKind {
+    /// Whether the target sets a parameter of a plugin, which has an effective
+    /// value to publish (`ModTarget::effective`); the targets that drive a
+    /// modulator's own fields have none.
+    pub fn has_effective_value(&self) -> bool {
+        matches!(
+            self,
+            ModTargetKind::PluginParam { .. } | ModTargetKind::GroupMember { .. } | ModTargetKind::GroupBus { .. }
+        )
+    }
+}
+
 /// A modulation target: one parameter on the parent plugin or a sibling modulator.
 #[derive(Debug, Clone)]
 pub struct ModTarget {
@@ -1614,7 +1626,6 @@ pub enum GraphCommand {
     },
     /// Publish a modulator's output each buffer into `slot` (telemetry). The slot
     /// stays with the modulator when others around it come and go.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the loader and the front-ends send it from the next commit on"))]
     SetModulatorOutput {
         location: ModulatorLocation,
         index: usize,

@@ -178,7 +178,7 @@ fn invalid(why: impl Into<String>) -> IntentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{self, StubEngine, describe, load};
+    use crate::app::testutil::{self, StubEngine, described, load};
     use crate::plugin::chain::ModulatorLocation;
 
     /// A group with a bus filter and an LFO, a member with a reverb, and a lane
@@ -205,7 +205,7 @@ plugin = "builtin:reverb"
     }
 
     fn sent(engine: &StubEngine) -> Vec<String> {
-        engine.cmd_rx.try_iter().map(|c| describe(&c)).collect()
+        described(engine.cmd_rx.try_iter())
     }
 
     fn node(ctl: &Controller, path: NodePath) -> NodeId {

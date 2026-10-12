@@ -261,8 +261,13 @@ impl Controller {
                 GraphCommand::InsertGroupModulator { group, index, source: graph_source }
             }
         });
+        // Its output is published from now on.
+        let output = self.model.slots.alloc();
+        if let Some(slot) = output {
+            let _ = self.cmd_tx.send(GraphCommand::SetModulatorOutput { location: at, index, slot });
+        }
         let node = self.model.alloc_node();
-        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new() });
+        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output });
         Some(index)
     }
 
@@ -270,16 +275,21 @@ impl Controller {
     /// thread and in the model. False, sending nothing, if there is no such
     /// modulator.
     pub fn add_target(&mut self, at: ModulatorLocation, index: usize, new: NewTarget) -> bool {
-        let Some(modulator) = self.model.modulators_mut(at).and_then(|rack| rack.get_mut(index)) else {
+        if self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_none() {
             return false;
-        };
+        }
+        // A target on a plugin's parameter publishes the value that parameter is set to.
+        let effective = if new.kind.has_effective_value() { self.model.slots.alloc() } else { None };
         let target = ModTarget {
             kind: new.kind.clone(),
             depth: new.depth,
             base_value: new.base_value,
             param_min: new.param_min,
             param_max: new.param_max,
-            effective: None,
+            effective,
+        };
+        let Some(modulator) = self.model.modulators_mut(at).and_then(|rack| rack.get_mut(index)) else {
+            return false;
         };
         modulator.targets.push(ModTargetSlot {
             slot: new.slot,
@@ -288,6 +298,7 @@ impl Controller {
             depth: new.depth,
             param_min: new.param_min,
             param_max: new.param_max,
+            effective,
         });
         let _ = self.cmd_tx.send(match at {
             ModulatorLocation::Lane(inst) => GraphCommand::AddModTarget { inst, mod_index: index, target },
@@ -924,7 +935,7 @@ type = "lfo"
         let lane = &ctl.model.instruments[1];
         assert_eq!(lane.instrument.as_ref().unwrap().node, lane.node, "the plugin sits in the lane's node");
         ctl.model.check_ids().unwrap();
-        let sent: Vec<String> = engine.cmd_rx.try_iter().map(|c| testutil::describe(&c)).collect();
+        let sent: Vec<String> = testutil::described(engine.cmd_rx.try_iter());
         assert_eq!(sent, ["SwapInstrument inst=1 plugin=Filter bufs=2 remap=false"]);
     }
 
@@ -979,7 +990,7 @@ plugin = "builtin:osc"
 "#;
 
     fn sent(engine: &StubEngine) -> Vec<String> {
-        engine.cmd_rx.try_iter().map(|c| testutil::describe(&c)).collect()
+        testutil::described(engine.cmd_rx.try_iter())
     }
 
     fn lfo_source() -> ModSourceSlot {
@@ -1040,9 +1051,11 @@ plugin = "builtin:osc"
     fn add_modulator_for_a_rack_that_is_not_there_does_nothing() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
+        let slots_before = ctl.model.slots.high_water();
         assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(9), lfo_source()), None);
         assert_eq!(ctl.add_modulator(ModulatorLocation::Group(9), lfo_source()), None);
         assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.slots.high_water(), slots_before, "no slot is used up for nothing");
     }
 
     #[test]
@@ -1083,10 +1096,12 @@ plugin = "builtin:osc"
     fn add_target_to_a_modulator_that_is_not_there_does_nothing() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
+        let slots_before = ctl.model.slots.high_water();
         assert!(!ctl.add_target(ModulatorLocation::Lane(0), 5, cutoff_target(0.5)));
         assert!(!ctl.add_target(ModulatorLocation::Lane(9), 0, cutoff_target(0.5)));
         assert!(!ctl.add_target(ModulatorLocation::Group(0), 3, cutoff_target(0.5)));
         assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.slots.high_water(), slots_before, "no slot is used up for nothing");
         assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
     }
 
@@ -1097,5 +1112,132 @@ plugin = "builtin:osc"
         ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
         ctl.add_target(ModulatorLocation::Lane(0), 1, cutoff_target(0.5));
         assert!(!ctl.dirty);
+    }
+
+    #[test]
+    fn add_modulator_gives_the_modulator_an_output_slot_and_tells_the_audio_thread_right_after() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        engine.drain();
+        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
+        ctl.add_modulator(ModulatorLocation::Group(0), lfo_source());
+        let lane = ctl.model.instruments[0].modulators[1].output.unwrap().index();
+        let group = ctl.model.groups[0].modulators[1].output.unwrap().index();
+        assert_ne!(lane, group);
+        let (commands, telemetry) = engine.drain();
+        assert_eq!(commands.len(), 2, "the slot commands are not among the rest: {commands:?}");
+        assert_eq!(
+            telemetry,
+            [
+                format!("SetModulatorOutput Lane(0) index=1 slot={lane}"),
+                format!("SetModulatorOutput Group(0) index=1 slot={group}"),
+            ]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_parameter_target_gets_an_effective_value_slot_and_a_modulator_field_target_none() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        engine.drain();
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Group(0), 0, NewTarget {
+            kind: crate::plugin::chain::ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
+            ..cutoff_target(0.5)
+        }));
+        let cross = NewTarget {
+            kind: crate::plugin::chain::ModTargetKind::ModulatorRate { mod_index: 0 },
+            slot: 0,
+            param_name: "Mod 0 rate".to_string(),
+            ..cutoff_target(0.5)
+        };
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cross));
+        let lane = &ctl.model.instruments[0].modulators[0].targets;
+        let group = &ctl.model.groups[0].modulators[0].targets;
+        assert!(lane[0].effective.is_some() && group[0].effective.is_some());
+        assert_ne!(lane[0].effective, group[0].effective);
+        assert!(lane[1].effective.is_none(), "a modulator's own field has no effective value");
+        ctl.model.check_ids().unwrap();
+        let (_, telemetry) = engine.drain();
+        assert!(telemetry.is_empty(), "targets carry their slot, they are not assigned one");
+    }
+
+    #[test]
+    fn a_target_bound_later_carries_its_slot_to_the_real_engine_too() {
+        use crate::plugin::chain::LfoWaveform;
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(WITH_MODULATORS, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        graph.set_telemetry(handles.telemetry.clone());
+        let mut ctl = Controller::new(model, handles, None);
+        // The lane's LFO (a 2 Hz sine) gets a target on the filter's cutoff,
+        // centred on 0.35 and 0.5 deep.
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        graph.process(&[], &mut out).unwrap();
+
+        let lfo = &ctl.model.instruments[0].modulators[0];
+        let published = ctl.telemetry.load(lfo.targets[0].effective.unwrap());
+        let output = LfoWaveform::Sine.eval(2.0 * 64.0 / 48_000.0);
+        assert!((published - (0.35 + 0.5 * output)).abs() < 1e-5, "{published} for an LFO output of {output}");
+        assert_eq!(ctl.telemetry.load(lfo.output.unwrap()), output);
+    }
+
+    #[test]
+    fn the_slots_the_model_holds_are_the_cells_the_real_engine_publishes_into() {
+        use crate::plugin::chain::LfoWaveform;
+        // A group LFO and a lane LFO, each a square at rate 0 (always +1), driving
+        // the filter's `cutoff` (the member's, through the group) and `resonance`.
+        let session = r#"
+[[group]]
+[[group.modulator]]
+waveform = "square"
+rate = 0.0
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = -0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+waveform = "square"
+rate = 0.0
+[[instrument.modulator.target]]
+slot = 1
+param = "resonance"
+depth = 0.1
+"#;
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(session, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        graph.set_telemetry(handles.telemetry.clone());
+        let ctl = Controller::new(model, handles, None);
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        graph.process(&[], &mut out).unwrap();
+
+        // What the filter says about itself: the parameters' defaults and ranges.
+        let filter = crate::plugin::builtin::load("builtin:filter", 48_000.0, 256).unwrap();
+        let param = |name: &str| filter.parameters().into_iter().find(|p| p.name == name).unwrap();
+        let driven = |name: &str, depth: f32| {
+            let p = param(name);
+            (p.default + depth * (p.max - p.min)).clamp(p.min, p.max)
+        };
+
+        let t = &ctl.telemetry;
+        let group_lfo = &ctl.model.groups[0].modulators[0];
+        let lane_lfo = &ctl.model.instruments[0].modulators[0];
+        assert_eq!(t.load(group_lfo.output.unwrap()), LfoWaveform::Square.eval(0.0), "the group LFO's output");
+        assert_eq!(t.load(lane_lfo.output.unwrap()), 1.0, "the lane LFO's output");
+        let cutoff = t.load(group_lfo.targets[0].effective.unwrap());
+        assert!((cutoff - driven("cutoff", -0.2)).abs() < 1e-6, "member 0's cutoff, through the group: {cutoff}");
+        let resonance = t.load(lane_lfo.targets[0].effective.unwrap());
+        assert!((resonance - driven("resonance", 0.1)).abs() < 1e-6, "the lane's resonance: {resonance}");
+        assert_ne!(cutoff, resonance);
+        ctl.model.check_ids().unwrap();
+        ctl.shutdown();
     }
 }

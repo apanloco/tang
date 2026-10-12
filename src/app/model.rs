@@ -13,6 +13,7 @@
 
 use crate::plugin;
 use crate::plugin::chain::ModulatorLocation;
+use crate::telemetry::{Slot, SlotAllocator};
 
 /// Names a node of the session (an instrument, an effect, a group, a bus effect
 /// or a modulator) for as long as it exists. The engine and the tree address
@@ -53,6 +54,8 @@ pub struct SessionModel {
     pub instruments: Vec<InstrumentNode>,
     pub groups: Vec<GroupNode>,
     pub ids: NodeIds,
+    /// Hands out the telemetry slots the nodes publish into.
+    pub slots: SlotAllocator,
 }
 
 impl SessionModel {
@@ -92,7 +95,10 @@ impl SessionModel {
     }
 
     /// Check that every node has an id of its own, that ids were allocated here,
-    /// and that a lane's instrument plugin carries the lane's id.
+    /// that a lane's instrument plugin carries the lane's id, and that the
+    /// telemetry slots are in order: every modulator has an output slot and every
+    /// target on a plugin parameter an effective-value slot (the others none),
+    /// all different, allocated here, and none the engine's own.
     #[cfg(test)]
     pub fn check_ids(&self) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
@@ -108,6 +114,40 @@ impl SessionModel {
             if let Some(slot) = &lane.instrument {
                 if slot.node != lane.node {
                     return Err(format!("lane {inst} is {:?}, its instrument {:?}", lane.node, slot.node));
+                }
+            }
+        }
+
+        let racks = self
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(g, group)| (format!("group {g}"), &group.modulators))
+            .chain(self.instruments.iter().enumerate().map(|(i, lane)| (format!("lane {i}"), &lane.modulators)));
+        let mut taken = std::collections::HashSet::new();
+        let mut claim = |slot: Option<Slot>, whose: String| -> Result<(), String> {
+            let Some(slot) = slot else { return Err(format!("{whose} has no telemetry slot")) };
+            if slot == crate::telemetry::MASTER.peak || slot == crate::telemetry::MASTER.clips {
+                return Err(format!("{whose} has {slot:?}, which is the master meter's"));
+            }
+            if slot.index() >= self.slots.high_water() {
+                return Err(format!("{whose} has {slot:?}, which was never allocated"));
+            }
+            if !taken.insert(slot) {
+                return Err(format!("{whose} has {slot:?}, which another node has too"));
+            }
+            Ok(())
+        };
+        for (rack, modulators) in racks {
+            for (m, modulator) in modulators.iter().enumerate() {
+                claim(modulator.output, format!("modulator {m} of {rack}"))?;
+                for (t, target) in modulator.targets.iter().enumerate() {
+                    let whose = format!("target {t} of modulator {m} of {rack}");
+                    if target.kind.has_effective_value() {
+                        claim(target.effective, whose)?;
+                    } else if target.effective.is_some() {
+                        return Err(format!("{whose} drives a modulator's field and has an effective-value slot"));
+                    }
                 }
             }
         }
@@ -334,6 +374,10 @@ pub struct ModulatorSlot {
     pub node: NodeId,
     pub source: ModSourceSlot,
     pub targets: Vec<ModTargetSlot>,
+    /// Where the audio thread publishes the modulator's output (telemetry);
+    /// `None` if the slots had run out.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    pub output: Option<Slot>,
 }
 
 #[derive(Debug)]
@@ -348,6 +392,11 @@ pub struct ModTargetSlot {
     pub param_min: f32,
     #[allow(dead_code)]
     pub param_max: f32,
+    /// Where the audio thread publishes the effective value of the parameter the
+    /// target drives (telemetry); `None` for a target that drives a modulator's
+    /// own field, or if the slots had run out.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    pub effective: Option<Slot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -815,6 +864,54 @@ mod tests {
     }
 
     #[test]
+    fn check_ids_notices_telemetry_slots_that_are_missing_shared_reserved_or_strangers() {
+        use crate::app::testutil::GROUPS;
+        use crate::telemetry::MASTER;
+        let fresh = || load(GROUPS).model;
+        assert!(fresh().check_ids().is_ok());
+
+        let mut model = fresh();
+        model.groups[0].modulators[0].output = None;
+        assert!(model.check_ids().unwrap_err().contains("has no telemetry slot"), "a modulator without one");
+
+        let mut model = fresh();
+        model.instruments[1].modulators[0].output = None;
+        let error = model.check_ids().unwrap_err();
+        assert!(error.contains("has no telemetry slot") && error.contains("lane 1"), "a lane's modulator without one: {error}");
+
+        let mut model = fresh();
+        model.groups[0].modulators[0].targets[0].effective = None;
+        assert!(model.check_ids().unwrap_err().contains("has no telemetry slot"), "a parameter target without one");
+
+        let mut model = fresh();
+        model.groups[0].modulators[1].output = model.groups[0].modulators[0].output;
+        assert!(model.check_ids().unwrap_err().contains("another node has too"), "two modulators with one");
+
+        let mut model = fresh();
+        model.groups[0].modulators[0].targets[1].effective = model.groups[0].modulators[0].targets[0].effective;
+        assert!(model.check_ids().unwrap_err().contains("another node has too"), "two targets with one");
+
+        let mut model = fresh();
+        model.groups[0].modulators[0].output = Some(MASTER.clips);
+        assert!(model.check_ids().unwrap_err().contains("master meter's"));
+
+        let mut model = fresh();
+        let high = model.slots.alloc().unwrap(); // allocated here...
+        model.instruments[1].modulators[0].output = Some(high);
+        assert!(model.check_ids().is_ok(), "...so it is fine");
+        let mut model = fresh();
+        model.slots = SlotAllocator::default(); // as if nothing had been allocated: every slot is a stranger
+        assert!(model.check_ids().unwrap_err().contains("never allocated"));
+
+        let mut model = fresh();
+        model.groups[0].modulators[0].targets[3].effective = model.slots.alloc();
+        assert!(
+            model.check_ids().unwrap_err().contains("drives a modulator's field"),
+            "a cross-mod target with an effective-value slot"
+        );
+    }
+
+    #[test]
     fn a_modulator_rack_is_found_by_where_it_lives() {
         let mut model = load(
             r#"
@@ -849,6 +946,7 @@ type = "envelope"
             depth: 0.5,
             param_min: 0.0,
             param_max: 1.0,
+            effective: None,
         }
     }
 
@@ -857,6 +955,7 @@ type = "envelope"
             node: NodeId(0),
             source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0 },
             targets,
+            output: None,
         }
     }
 
@@ -865,6 +964,7 @@ type = "envelope"
             node: NodeId(0),
             source: ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
             targets,
+            output: None,
         }
     }
 
@@ -873,6 +973,7 @@ type = "envelope"
             node: NodeId(0),
             source: ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false },
             targets,
+            output: None,
         }
     }
 

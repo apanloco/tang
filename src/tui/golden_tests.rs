@@ -20,7 +20,7 @@ use ratatui::buffer::Buffer;
 
 use super::*;
 use crate::app::load::load_session;
-use crate::app::testutil::{DropProbe, describe, recording, stub_engine};
+use crate::app::testutil::{DropProbe, described, recording, stub_engine};
 use crate::plugin::PluginInfo;
 use crate::plugin::chain::{MidiBindSource, MidiLearnedNotification, ModulatorLocation};
 use crate::session;
@@ -147,7 +147,7 @@ impl Harness {
 
     /// Everything the TUI has sent to the audio thread since the last call.
     fn commands(&self) -> Vec<String> {
-        self.cmd_rx.try_iter().map(|c| describe(&c)).collect()
+        described(self.cmd_rx.try_iter())
     }
 
     /// Draw a frame and dump it (text + style map).

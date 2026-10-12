@@ -15,7 +15,8 @@ use crate::app::model::{
     GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
     ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
 };
-use crate::plugin::chain::GraphCommand;
+use crate::plugin::chain::{GraphCommand, ModulatorLocation};
+use crate::telemetry::SlotAllocator;
 use crate::{plugin, session};
 
 /// What `load_session` is doing, for a front-end that wants to show progress
@@ -149,6 +150,13 @@ fn send(cmd_tx: &Sender<GraphCommand>, cmd: GraphCommand) -> anyhow::Result<()> 
     cmd_tx.send(cmd).map_err(|_| anyhow::anyhow!("command channel closed"))
 }
 
+/// What the loader hands out as it builds nodes: their ids, and the telemetry
+/// slots modulators and their targets publish into.
+struct Allocators<'a> {
+    ids: &'a mut NodeIds,
+    slots: &'a mut SlotAllocator,
+}
+
 /// Load `config`: instantiate every plugin, send the audio thread the commands
 /// that build the graph (groups first, then lanes with their plugins, parameters,
 /// modulators, transpose and pattern, then group modulators), and return the
@@ -166,6 +174,7 @@ pub fn load_session(
 ) -> anyhow::Result<SessionModel> {
     let mut loaded_slots = 0usize;
     let mut ids = NodeIds::default();
+    let mut slots = SlotAllocator::default();
     // The parameter lists modulator targets resolve names against: per lane (slot 0 =
     // the instrument, then its effects) and per group bus effect.
     let mut lane_params: Vec<Vec<Vec<plugin::ParameterInfo>>> = Vec::new();
@@ -419,7 +428,8 @@ pub fn load_session(
 
         // Build the lane's modulators now that every plugin (and its params)
         // is loaded, so targets can resolve against any slot in the chain.
-        let modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut ids)?;
+        let modulators =
+            load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut Allocators { ids: &mut ids, slots: &mut slots })?;
 
         // Apply instrument transpose.
         if inst_config.transpose != 0 {
@@ -530,12 +540,12 @@ pub fn load_session(
             &member_mods,
             &bus_params[g_idx],
             cmd_tx,
-            &mut ids,
+            &mut Allocators { ids: &mut ids, slots: &mut slots },
         )?;
         groups[g_idx].modulators = mods;
     }
 
-    Ok(SessionModel { instruments, groups, ids })
+    Ok(SessionModel { instruments, groups, ids, slots })
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
@@ -554,7 +564,7 @@ fn load_lane_modulators(
     chain_params: &[Vec<plugin::ParameterInfo>],
     inst_idx: usize,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
-    ids: &mut NodeIds,
+    alloc: &mut Allocators,
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
     // Gather modulator groups with their default slot (instrument = 0, each
     // effect = its slot) and their base index in the merged lane list.
@@ -588,6 +598,10 @@ fn load_lane_modulators(
                 source: mod_source_slot_to_graph(&source_slot),
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        let output = alloc.slots.alloc();
+        if let Some(slot) = output {
+            send(cmd_tx, GraphCommand::SetModulatorOutput { location: ModulatorLocation::Lane(inst_idx), index: mod_idx, slot })?;
+        }
 
         let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
         for target_config in &mod_config.targets {
@@ -648,13 +662,14 @@ fn load_lane_modulators(
                     continue;
                 };
 
+            let effective = if kind.has_effective_value() { alloc.slots.alloc() } else { None };
             let target = plugin::chain::ModTarget {
                 kind: kind.clone(),
                 depth: target_config.depth as f32,
                 base_value,
                 param_min,
                 param_max,
-                effective: None,
+                effective,
             };
 
             cmd_tx
@@ -672,15 +687,17 @@ fn load_lane_modulators(
                 depth: target_config.depth as f32,
                 param_min,
                 param_max,
+                effective,
             });
 
             log::info!("Modulator {mod_idx} target: '{label}' (slot {slot}) depth={}", target_config.depth);
         }
 
         loaded.push(ModulatorSlot {
-            node: ids.alloc(),
+            node: alloc.ids.alloc(),
             source: source_slot,
             targets: loaded_targets,
+            output,
         });
 
         log::info!("Loaded lane modulator {mod_idx} for inst={inst_idx}: {desc}");
@@ -786,7 +803,7 @@ fn load_group_modulators(
     member_mods: &[&[ModulatorSlot]],
     bus_params: &[Vec<plugin::ParameterInfo>],
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
-    ids: &mut NodeIds,
+    alloc: &mut Allocators,
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
     let mut loaded = Vec::new();
     for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
@@ -798,6 +815,10 @@ fn load_group_modulators(
                 source: mod_source_slot_to_graph(&source_slot),
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        let output = alloc.slots.alloc();
+        if let Some(slot) = output {
+            send(cmd_tx, GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(g_idx), index: mod_idx, slot })?;
+        }
 
         let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
         for target_config in &mod_config.targets {
@@ -922,13 +943,14 @@ fn load_group_modulators(
                     continue;
                 };
 
+            let effective = if kind.has_effective_value() { alloc.slots.alloc() } else { None };
             let target = plugin::chain::ModTarget {
                 kind: kind.clone(),
                 depth: target_config.depth as f32,
                 base_value,
                 param_min,
                 param_max,
-                effective: None,
+                effective,
             };
             cmd_tx
                 .send(plugin::chain::GraphCommand::AddGroupModTarget {
@@ -945,13 +967,15 @@ fn load_group_modulators(
                 depth: target_config.depth as f32,
                 param_min,
                 param_max,
+                effective,
             });
         }
 
         loaded.push(ModulatorSlot {
-            node: ids.alloc(),
+            node: alloc.ids.alloc(),
             source: source_slot,
             targets: loaded_targets,
+            output,
         });
         log::info!("Loaded group modulator {mod_idx} for group={g_idx}: {desc}");
     }
@@ -1025,6 +1049,89 @@ mod tests {
         assert!(slot.is_instrument);
         let waveform = slot.params.iter().find(|p| p.name == "waveform").unwrap();
         assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");
+    }
+
+    #[test]
+    fn every_modulator_and_every_parameter_it_drives_gets_a_telemetry_slot() {
+        // `load` also checks the model's slots (all different, none reserved).
+        let run = load(GROUPS);
+        let model = &run.model;
+        let group = &model.groups[0];
+        let lane_lfo = &model.instruments[1].modulators[0];
+        assert!(lane_lfo.output.is_some() && group.modulators.iter().all(|m| m.output.is_some()));
+        // The group LFO's three parameter targets publish what their parameters are
+        // set to; its cross-mod target and the envelope's two (a modulator's own
+        // fields) have no such value.
+        let effective: Vec<Vec<bool>> =
+            group.modulators.iter().map(|m| m.targets.iter().map(|t| t.effective.is_some()).collect()).collect();
+        assert_eq!(effective, [vec![true, true, true, false], vec![false, false]]);
+
+        // Slots 0 and 1 are the master meter's. The lane's modulator comes first
+        // (lanes load before group modulators), then each group modulator with its
+        // targets; the targets the loader skipped took none.
+        let output = |m: &ModulatorSlot| m.output.unwrap().index();
+        assert_eq!(output(lane_lfo), 2);
+        assert_eq!(output(&group.modulators[0]), 3);
+        let driven: Vec<u32> = group.modulators[0].targets.iter().filter_map(|t| t.effective).map(|s| s.index()).collect();
+        assert_eq!(driven, [4, 5, 6]);
+        assert_eq!(output(&group.modulators[1]), 7);
+        assert_eq!(model.slots.high_water(), 8);
+
+        // The audio thread was told, right after each modulator was inserted.
+        assert_eq!(
+            run.telemetry,
+            [
+                "SetModulatorOutput Lane(1) index=0 slot=2",
+                "SetModulatorOutput Group(0) index=0 slot=3",
+                "SetModulatorOutput Group(0) index=1 slot=7",
+            ]
+        );
+    }
+
+    #[test]
+    fn each_of_a_lanes_modulators_is_told_its_own_slot_by_its_index() {
+        // MIDI: four modulators in lane 0, the first with one target.
+        let run = load(MIDI);
+        assert_eq!(
+            run.telemetry,
+            [
+                "SetModulatorOutput Lane(0) index=0 slot=2",
+                // slot 3 is the first modulator's target
+                "SetModulatorOutput Lane(0) index=1 slot=4",
+                "SetModulatorOutput Lane(0) index=2 slot=5",
+                "SetModulatorOutput Lane(0) index=3 slot=6",
+            ]
+        );
+        let outputs: Vec<u32> = run.model.instruments[0].modulators.iter().map(|m| m.output.unwrap().index()).collect();
+        assert_eq!(outputs, [2, 4, 5, 6]);
+    }
+
+    #[test]
+    fn a_session_with_no_modulators_uses_no_slots() {
+        let run = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n");
+        assert_eq!(run.model.slots.high_water(), 2, "only the master meter's");
+        assert!(run.telemetry.is_empty());
+    }
+
+    #[test]
+    fn a_modulator_slot_command_follows_the_command_that_made_the_modulator() {
+        for scene in [MIDI, GROUPS] {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let model = crate::app::testutil::load_onto(scene, &tx);
+            let sent: Vec<String> = rx.try_iter().map(|c| crate::app::testutil::describe(&c)).collect();
+            for (i, line) in sent.iter().enumerate() {
+                if line.starts_with("SetModulatorOutput") {
+                    let before = &sent[i - 1];
+                    assert!(
+                        before.starts_with("InsertModulator") || before.starts_with("InsertGroupModulator"),
+                        "{line} follows {before}"
+                    );
+                }
+            }
+            let modulators: usize = model.instruments.iter().map(|l| l.modulators.len()).sum::<usize>()
+                + model.groups.iter().map(|g| g.modulators.len()).sum::<usize>();
+            assert_eq!(sent.iter().filter(|l| l.starts_with("SetModulatorOutput")).count(), modulators);
+        }
     }
 
     #[test]
