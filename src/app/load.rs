@@ -83,6 +83,24 @@ fn names(params: &[plugin::ParameterInfo]) -> String {
     params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
 }
 
+/// The model's slot for a plugin that has just been loaded and left alone: every
+/// parameter at its declared default, no preset, fully wet. (A session's plugins
+/// get theirs from `plugin_slot` with the values the loader read back.)
+pub fn fresh_slot(plugin: &dyn plugin::Plugin, id: &str) -> PluginSlot {
+    let all = plugin.parameters();
+    let defaults: Vec<f32> = all.iter().map(|p| p.default).collect();
+    let params = Params { all, values: defaults.clone(), baselines: defaults };
+    plugin_slot(
+        plugin.name().to_string(),
+        id.to_string(),
+        plugin.is_instrument(),
+        &params,
+        plugin.presets(),
+        None,
+        1.0,
+    )
+}
+
 /// The model's slot for a loaded plugin. Parameters a plugin marks "(locked)" are
 /// hidden, and a parameter with value labels becomes an enum.
 fn plugin_slot(
@@ -962,6 +980,29 @@ mod tests {
         assert!(matches!(&slot.params[1].kind, ParamKind::Enum(l) if l == &["low", "high"]));
         // The loader still resolves modulator targets against the full list.
         assert_eq!(params.all.len(), 3);
+    }
+
+    #[test]
+    fn a_fresh_slot_describes_the_plugin_at_its_defaults() {
+        let load = |id: &str| plugin::load(id, 48_000.0, 256, &Default::default()).unwrap();
+
+        let reverb = load("builtin:reverb");
+        let slot = fresh_slot(reverb.as_ref(), "builtin:reverb");
+        assert_eq!((slot.name.as_str(), slot.id.as_str(), slot.format.as_str()), ("Reverb", "builtin:reverb", "Built-in"));
+        assert!(!slot.is_instrument);
+        assert_eq!((slot.mix, slot.current_preset.as_deref()), (1.0, None));
+        assert!(!slot.presets.is_empty(), "the plugin's presets come along");
+        assert_eq!(slot.params.len(), reverb.parameters().len());
+        for (row, info) in slot.params.iter().zip(reverb.parameters()) {
+            assert_eq!((row.index, row.name.as_str(), row.min, row.max), (info.index, info.name.as_str(), info.min, info.max));
+            assert_eq!((row.default, row.value), (info.default, info.default), "{}", info.name);
+        }
+
+        let osc = load("builtin:osc");
+        let slot = fresh_slot(osc.as_ref(), "builtin:osc");
+        assert!(slot.is_instrument);
+        let waveform = slot.params.iter().find(|p| p.name == "waveform").unwrap();
+        assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");
     }
 
     #[test]

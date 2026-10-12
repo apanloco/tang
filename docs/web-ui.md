@@ -538,15 +538,44 @@ Each step is a reviewable change; the TUI must not regress at any point.
   inline remap tables lost the space before `}`, and `mod_depth` was written as
   a multi-line array.
   *Done:* `cargo test` and clippy green on both feature sets, snapshots unchanged.
-- [ ] **5. Controller v0.** `app::Controller` takes ownership of the session,
-  `cmd_tx`, runtime, catalog (and its scan thread), session path, dirty flag,
-  the shared `Arc`s, the notification receivers and the `MidiManager`; `State`
-  holds a `Controller`. `Controller::poll()` runs every TUI iteration: it drains
-  pattern / learn / catalog **and reaps `return_rx` and polls MIDI hot-plug**
-  (the two lifecycle bugs in §2). Moves the cursor-free methods
-  (`save_session*`, `load_plugin_slot`, `extend_catalog`). *Done when:*
-  snapshots unchanged; a test shows `poll()` reaps returned plugins; hot-plug
-  verified by hand (connect a controller while the TUI runs).
+- [x] **5. Controller v0.** `app::Controller` owns the session and the engine
+  handles and does the housekeeping between frames; `State` keeps the view and a
+  `ctl: Controller`. Done in eleven commits (tests, moves and two fixes), none of
+  them changing a snapshot:
+  - **Lifecycle.** `poll()` reaps `return_rx` and polls MIDI hot-plug, in the TUI
+    and in `play` (the two bugs of §2; both had been missing from the TUI).
+  - **Session and handles.** `Controller::new(model, EngineHandles, session_path)`
+    holds the model, session path, dirty flag, tempo, command channel, plugin
+    runtime, notification receivers and the `Arc`s shared with the note senders.
+    The fields are public for now, so the TUI keeps editing through disjoint field
+    borrows; step 6 closes them behind intents. `State::new` took fourteen
+    arguments and `tui::run` thirteen; now two and one. The plugin runtime is
+    dropped after the last reap at shutdown (the TUI used to drop it first).
+  - **Notifications and catalog.** `poll()` folds finished pattern recordings and
+    MIDI-learn captures into the model and the plugin scan into
+    `app::catalog::Catalog`, and returns `Polled { model_changed,
+    catalog_changed }` instead of the `bool` sketched in §3.1: a bool cannot tell
+    the TUI whether to rebuild the tree or refresh an open selector. `tick` is
+    now `poll`, then those two reactions. `play` does not scan the catalog.
+  - **Cursor-free methods.** `save`, `save_as` (with its rules: the session's
+    directory, `.toml` appended once, trimmed, a failed save changes nothing),
+    `load_plugin` and `set_instrument` moved; `load::fresh_slot` replaced the
+    TUI's near-copy of the loader's slot construction. The TUI keeps the popups.
+  - One type for where a modulator lives (the engine's `ModulatorLocation`
+    replaced the TUI's `ModScope`), and `SessionModel::modulators_mut`.
+  - **Tests.** Golden tests were added before each move for what the TUI did
+    (notifications, the catalog scan, Ctrl+S and Save As, `n`, a plugin picked
+    from the selector); the controller got its own tests (`stub_engine`, tempo,
+    reaping, every drain, `Polled`, saving, loading) and `Catalog` its own. The
+    moved code was mutation-checked (about 160 injected bugs in all); the
+    survivors were test gaps and got tests.
+  - Found and fixed on the way, each in its own commit with the test first: a
+    finished recording did not mark the session changed (f12), and a MIDI-learn
+    capture with no modulator to bind did (f13).
+  *Done:* `cargo test` and clippy green on both feature sets, snapshots
+  unchanged, `poll()` reaps returned plugins (tests), the TUI and `play` start
+  and quit cleanly under a pseudo-terminal. **Not yet done by hand:** hot-plug
+  with a real MIDI controller while the TUI runs (it needs a device).
 - [ ] **6. Intents v0.** `NodeId`s on model nodes and TUI tree entries;
   `Intent` / `Event` / `Applied` / `IntentError` and `rev`; first family
   `SetParam`, `SetGain` (volume, mix, group volume, pan) and `LoadPreset`. The

@@ -687,60 +687,6 @@ impl State {
         }
     }
 
-    /// Load `source` and build its session-model `PluginSlot`. Returns the
-    /// live plugin (to hand to the audio thread) alongside the slot, or None
-    /// on load failure.
-    fn load_plugin_slot(&self, source: &str) -> Option<(Box<dyn plugin::Plugin>, PluginSlot)> {
-        let loaded = match plugin::load(source, self.ctl.sample_rate, self.ctl.max_block_size, &self.ctl.runtime) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to load plugin '{source}': {e}");
-                return None;
-            }
-        };
-        let params: Vec<ParamSlot> = loaded
-            .parameters()
-            .into_iter()
-            .filter(|p| !p.name.starts_with("(locked)"))
-            .map(|p| ParamSlot {
-                kind: p.labels.map_or(ParamKind::Float, ParamKind::Enum),
-                name: p.name,
-                index: p.index,
-                min: p.min,
-                max: p.max,
-                default: p.default,
-                value: p.default,
-            })
-            .collect();
-        let presets = loaded.presets();
-        let slot = PluginSlot {
-            name: loaded.name().to_string(),
-            format: format_from_id(source),
-            id: source.to_string(),
-            is_instrument: loaded.is_instrument(),
-            params,
-            presets,
-            current_preset: None,
-            mix: 1.0,
-        };
-        Some((loaded, slot))
-    }
-
-    /// Install `loaded`/`slot` as the instrument plugin for lane `inst`, on
-    /// both the audio thread and the session model.
-    fn set_instrument(&mut self, inst: usize, loaded: Box<dyn plugin::Plugin>, slot: PluginSlot) {
-        let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
-        let _ = self.ctl.cmd_tx.send(GraphCommand::SwapInstrument {
-            inst,
-            instrument: loaded,
-            inst_buf,
-            remapper: None,
-        });
-        if let Some(inst_node) = self.ctl.model.instruments.get_mut(inst) {
-            inst_node.instrument = Some(slot);
-        }
-    }
-
     fn confirm_selector(&mut self) {
         let sel = match self.selector.take() {
             Some(s) => s,
@@ -761,14 +707,14 @@ impl State {
         // Load the real plugin.
         let source = entry.id.clone();
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
-        let (loaded, slot) = match self.load_plugin_slot(&source) {
+        let (loaded, slot) = match self.ctl.load_plugin(&source) {
             Some(x) => x,
             None => return,
         };
 
         match sel.mode {
             SelectorMode::Instrument => {
-                self.set_instrument(inst, loaded, slot);
+                self.ctl.set_instrument(inst, loaded, slot);
             }
             SelectorMode::Effect => {
                 let mut slot = slot;
@@ -3004,8 +2950,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             });
             // Default the new lane to builtin:osc so it isn't silent if the
             // selector is cancelled.
-            if let Some((loaded, slot)) = s.load_plugin_slot("builtin:osc") {
-                s.set_instrument(new_idx, loaded, slot);
+            if let Some((loaded, slot)) = s.ctl.load_plugin("builtin:osc") {
+                s.ctl.set_instrument(new_idx, loaded, slot);
             }
             s.ctl.dirty = true;
             s.rebuild_tree();

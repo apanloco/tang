@@ -36,14 +36,15 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
-use crate::app::model::{ModSourceSlot, PatternState, SessionModel};
+use crate::app::load::fresh_slot;
+use crate::app::model::{ModSourceSlot, PatternState, PluginSlot, SessionModel};
 use crate::app::save::to_save;
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
-use crate::plugin::{Plugin, Runtime};
+use crate::plugin::{self, Plugin, Runtime};
 use crate::session::{self, PianoConfig};
 
 /// How often `poll` looks for newly connected devices.
@@ -184,6 +185,36 @@ impl Controller {
             return_rx,
             devices: None,
             last_device_poll: now,
+        }
+    }
+
+    /// Load `source` (a plugin path or id) with the model slot that describes it,
+    /// every parameter at its default. The plugin is for the audio thread; None,
+    /// after logging why, if it does not load.
+    pub fn load_plugin(&self, source: &str) -> Option<(Box<dyn Plugin>, PluginSlot)> {
+        let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to load plugin '{source}': {e}");
+                return None;
+            }
+        };
+        let slot = fresh_slot(loaded.as_ref(), source);
+        Some((loaded, slot))
+    }
+
+    /// Make `loaded`/`slot` the instrument plugin of lane `inst`, on the audio
+    /// thread and in the model.
+    pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, slot: PluginSlot) {
+        let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
+        let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
+            inst,
+            instrument: loaded,
+            inst_buf,
+            remapper: None,
+        });
+        if let Some(lane) = self.model.instruments.get_mut(inst) {
+            lane.instrument = Some(slot);
         }
     }
 
@@ -774,6 +805,45 @@ type = "lfo"
         assert!(ctl.save_as("blocker/x").is_err());
         assert_eq!(ctl.session_path, Some(old), "the session keeps its file");
         assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn load_plugin_gives_the_plugin_and_the_slot_that_describes_it() {
+        let (mut handles, _engine) = testutil::stub_engine();
+        handles.sample_rate = 44_100.0;
+        let ctl = Controller::new(SessionModel::default(), handles, None);
+        let (plugin, slot) = ctl.load_plugin("builtin:osc").expect("a built-in loads");
+        assert_eq!(plugin.sample_rate(), 44_100.0, "it is loaded at the session's sample rate");
+        assert_eq!((slot.name.as_str(), slot.id.as_str(), slot.format.as_str()), ("Oscillator", "builtin:osc", "Built-in"));
+        assert!(slot.is_instrument);
+        assert_eq!(slot.params.len(), plugin.parameters().len());
+    }
+
+    #[test]
+    fn a_plugin_that_does_not_load_is_none() {
+        let (_engine, ctl) = controller_for(TWO_LANES);
+        assert!(ctl.load_plugin("builtin:no-such-plugin").is_none());
+        assert!(ctl.load_plugin("./no-such-plugin.clap").is_none());
+    }
+
+    #[test]
+    fn set_instrument_swaps_it_into_the_audio_thread_and_the_model() {
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        let (plugin, slot) = ctl.load_plugin("builtin:filter").unwrap();
+        ctl.set_instrument(1, plugin, slot);
+
+        assert_eq!(ctl.model.instruments[1].instrument.as_ref().unwrap().name, "Filter");
+        assert_eq!(ctl.model.instruments[0].instrument.as_ref().unwrap().name, "Oscillator", "the other lane is untouched");
+        let sent: Vec<String> = engine.cmd_rx.try_iter().map(|c| testutil::describe(&c)).collect();
+        assert_eq!(sent, ["SwapInstrument inst=1 plugin=Filter bufs=2 remap=false"]);
+    }
+
+    #[test]
+    fn set_instrument_for_a_lane_that_is_gone_changes_no_lane() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (plugin, slot) = ctl.load_plugin("builtin:filter").unwrap();
+        ctl.set_instrument(9, plugin, slot);
+        assert!(ctl.model.instruments.iter().all(|lane| lane.instrument.as_ref().unwrap().name == "Oscillator"));
     }
 
     #[test]
