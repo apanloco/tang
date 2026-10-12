@@ -975,8 +975,9 @@ N+2 threads, no async:
   first callback. The instrument list is owned (moved into) the audio callback
   closure — no mutex needed. A plugin swap mechanism exists via bounded crossbeam
   channels (send new plugin in, receive old plugin back for main-thread drop).
-  Used by the `play` subcommand to load the session's plugins into the audio
-  thread.
+  The loader uses it to put the session's plugins into the audio thread, and
+  `app::controller::Controller::poll` reaps the plugins handed back, in the TUI
+  and in `play`.
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
 - **Main thread** — runs the crossterm event loop, handles keyboard input. The virtual
   piano lives here and pushes into the same MIDI channel as hardware devices.
@@ -999,7 +1000,8 @@ default log levels.
 
 TODO: Mirror audio output into a lock-free ring buffer for the oscilloscope display.
 
-MIDI devices are hot-pluggable — main thread polls for new devices every ~1s.
+MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop and
+the `play` loop) looks for new devices about once a second.
 
 ## Audio host selection
 

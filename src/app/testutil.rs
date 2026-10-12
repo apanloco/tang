@@ -1,6 +1,8 @@
 //! Test helpers shared by the app and TUI tests.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, ThreadId};
 
 use crate::app::load::{Progress, load_session};
 use crate::app::model::SessionModel;
@@ -402,4 +404,68 @@ pub fn assert_same_model(what: &str, a: &SessionModel, b: &SessionModel) {
     let at = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
     let around = |lines: &[&str]| lines[at.saturating_sub(8)..(at + 3).min(lines.len())].join("\n");
     panic!("{what}: the models differ at line {at}\n--- first ---\n{}\n--- second ---\n{}", around(&a), around(&b));
+}
+
+/// A plugin that does nothing but call `on_drop` with the thread that dropped it,
+/// for tests of where and when plugins get dropped.
+pub struct DropProbe {
+    on_drop: Option<Box<dyn FnOnce(ThreadId) + Send>>,
+}
+
+impl DropProbe {
+    pub fn new(on_drop: impl FnOnce(ThreadId) + Send + 'static) -> Self {
+        DropProbe { on_drop: Some(Box::new(on_drop)) }
+    }
+
+    /// A probe, and the slot that will hold the id of the thread that dropped it.
+    pub fn recording() -> (Self, Arc<Mutex<Option<ThreadId>>>) {
+        let slot = Arc::new(Mutex::new(None));
+        let probe_slot = slot.clone();
+        // (Tolerates a poisoned lock: this runs in `drop`, possibly while a test is unwinding.)
+        (Self::new(move |thread| *probe_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(thread)), slot)
+    }
+}
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        if let Some(on_drop) = self.on_drop.take() {
+            on_drop(thread::current().id());
+        }
+    }
+}
+
+impl plugin::Plugin for DropProbe {
+    fn name(&self) -> &str {
+        "DropProbe"
+    }
+    fn is_instrument(&self) -> bool {
+        true
+    }
+    fn sample_rate(&self) -> f32 {
+        48_000.0
+    }
+    fn audio_output_count(&self) -> usize {
+        2
+    }
+    fn audio_input_count(&self) -> usize {
+        0
+    }
+    fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], _: &mut [&mut [f32]]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn parameters(&self) -> Vec<plugin::ParameterInfo> {
+        Vec::new()
+    }
+    fn get_parameter(&mut self, _: u32) -> Option<f32> {
+        None
+    }
+    fn set_parameter(&mut self, _: u32, _: f32) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn presets(&self) -> Vec<plugin::Preset> {
+        Vec::new()
+    }
+    fn load_preset(&mut self, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

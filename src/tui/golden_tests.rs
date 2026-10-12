@@ -20,7 +20,7 @@ use ratatui::buffer::Buffer;
 
 use super::*;
 use crate::app::load::load_session;
-use crate::app::testutil::describe;
+use crate::app::testutil::{DropProbe, describe};
 use crate::midi_monitor::MidiMonitor;
 use crate::scale::ScaleSetting;
 use crate::session;
@@ -41,6 +41,8 @@ struct Harness {
     /// The audio thread's end of the command channel: what the TUI asked the
     /// engine to do. Kept alive so `send` never fails or blocks.
     cmd_rx: Receiver<GraphCommand>,
+    /// The audio thread's end of the channel that hands swapped-out plugins back.
+    return_tx: crossbeam_channel::Sender<Box<dyn plugin::Plugin>>,
 }
 
 impl Harness {
@@ -65,7 +67,9 @@ impl Harness {
         let (_catalog_tx, catalog_rx) = unbounded();
         let (_pattern_tx, pattern_rx) = unbounded();
         let (_learn_tx, learn_rx) = unbounded();
+        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut s = State::new(
+            Controller::new(return_rx),
             model,
             cmd_tx,
             midi_tx,
@@ -83,7 +87,7 @@ impl Harness {
         // A finished scan with an empty catalog unless a test fills it in.
         s.catalog_scanning = false;
         let terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-        Harness { s, terminal, cmd_rx }
+        Harness { s, terminal, cmd_rx, return_tx }
     }
 
     fn press(&mut self, code: KeyCode) -> &mut Self {
@@ -838,4 +842,23 @@ fn harness_sends_nothing_until_asked() {
     let mut h = Harness::new(scene_group());
     let _ = h.dump();
     assert!(h.commands().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Between frames
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_tui_reaps_plugins_the_audio_thread_hands_back() {
+    // Nothing read this channel while the TUI ran: removed plugins piled up in its
+    // 16 slots and, once it was full, the audio thread dropped them itself.
+    let mut h = Harness::new(scene_split());
+    let (probe, dropped_on) = DropProbe::recording();
+    h.return_tx.send(Box::new(probe)).unwrap();
+    let before = *dropped_on.lock().unwrap();
+    assert!(before.is_none());
+
+    tick(&mut h.s);
+    let after = *dropped_on.lock().unwrap();
+    assert_eq!(after, Some(std::thread::current().id()));
 }

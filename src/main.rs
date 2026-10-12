@@ -19,7 +19,7 @@ mod tui;
 
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use clap::Parser;
 use cli::{Cli, Command, EnumerateTarget};
@@ -367,6 +367,11 @@ fn run_session(
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
+    // The controller reaps plugins the audio thread hands back and watches for
+    // MIDI devices being plugged in, in both the TUI and `play`.
+    let mut ctl = app::controller::Controller::new(return_rx);
+    ctl.watch_devices(Box::new(midi_mgr));
+
     // Build audio engine (not playing yet — will start after initial commands are queued)
     if let Some(sp) = &splash {
         sp.status("Starting audio engine…");
@@ -408,9 +413,9 @@ fn run_session(
     log::set_max_level(prev_log_level);
 
     // --- Branch: TUI view vs plain play mode ---
-    if use_tui {
+    let ctl = if use_tui {
         let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(model, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, learn_rx, held.clone(), piano_filter.clone(), midi_monitor.clone())?;
+        tui::run(ctl, model, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, learn_rx, held.clone(), piano_filter.clone(), midi_monitor.clone())?
     } else {
         // --- Plain play mode (original) ---
 
@@ -454,8 +459,6 @@ fn run_session(
 
         log::info!("Playing. Ctrl+Q or Ctrl+C to quit.");
 
-        let mut last_poll = Instant::now();
-
         loop {
             // Poll crossterm events with 10ms timeout
             if event::poll(Duration::from_millis(10))? {
@@ -475,14 +478,8 @@ fn run_session(
                 }
             }
 
-            // Drain returned plugins so they are dropped on the main thread
-            while return_rx.try_recv().is_ok() {}
-
-            // Poll for new MIDI devices every ~1s
-            if last_poll.elapsed() >= Duration::from_secs(1) {
-                midi_mgr.poll_new_devices();
-                last_poll = Instant::now();
-            }
+            // Reap returned plugins and look for new MIDI devices.
+            ctl.poll();
         }
 
         // Cleanup
@@ -492,17 +489,15 @@ fn run_session(
             crossterm::execute!(std::io::stderr(), PopKeyboardEnhancementFlags).ok();
         }
         crossterm::terminal::disable_raw_mode()?;
-    }
+        ctl
+    };
 
     log::info!("Stopping...");
 
     // Shutdown order matters: stop audio first (so callback can't call plugin),
     // then drop MIDI connections, then returned plugins are dropped last.
     engine.stop();
-    drop(midi_mgr);
-
-    // Drain any remaining returned plugins
-    while return_rx.try_recv().is_ok() {}
+    ctl.shutdown();
 
     Ok(())
 }

@@ -29,6 +29,7 @@ use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
+use crate::app::controller::Controller;
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
     ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove,
@@ -399,6 +400,9 @@ struct State {
     param_filter_input: TextInputState,
     param_filtering: bool,
     param_filtered: Vec<usize>,
+    /// Housekeeping that belongs to the session, not to the view: reaping returned
+    /// plugins, MIDI hot-plug. Run by `tick` once per loop iteration.
+    ctl: Controller,
     // Connections to the audio engine.
     cmd_tx: Sender<GraphCommand>,
     #[allow(dead_code)]
@@ -430,6 +434,7 @@ impl State {
     /// `State` around stub channels.
     #[allow(clippy::too_many_arguments)]
     fn new(
+        ctl: Controller,
         model: SessionModel,
         cmd_tx: Sender<GraphCommand>,
         midi_tx: Sender<audio::MidiEvent>,
@@ -491,6 +496,7 @@ impl State {
             param_filter_input: TextInputState::new(""),
             param_filtering: false,
             param_filtered: (0..param_len).collect(),
+            ctl,
             cmd_tx,
             midi_tx,
             runtime,
@@ -2477,6 +2483,7 @@ impl State {
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
+    ctl: Controller,
     model: SessionModel,
     cmd_tx: Sender<GraphCommand>,
     midi_tx: Sender<audio::MidiEvent>,
@@ -2489,7 +2496,7 @@ pub fn run(
     held: Arc<HeldNotes>,
     piano_filter: Arc<PianoFilter>,
     midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Controller> {
     // Suppress Rust logging for the whole TUI lifetime when stderr is the
     // terminal: the background catalog scan and plugin loads log verbosely and
     // would corrupt the alternate screen. Must be set BEFORE the scan spawns,
@@ -2519,6 +2526,7 @@ pub fn run(
     let catalog_rx = spawn_catalog_scan();
 
     let mut s = State::new(
+        ctl,
         model,
         cmd_tx,
         midi_tx,
@@ -2569,7 +2577,66 @@ pub fn run(
     )?;
     crossterm::terminal::disable_raw_mode()?;
 
-    result.map_err(Into::into)
+    // The controller goes back to the caller, which shuts it down once the audio
+    // stream has stopped.
+    result.map(|()| s.ctl).map_err(Into::into)
+}
+
+/// What happens between two frames, with or without user input: the controller's
+/// housekeeping, then what the plugin scan and the audio thread have reported,
+/// folded into the model.
+fn tick(s: &mut State) {
+    s.ctl.poll();
+
+    // Drain plugin catalog batches from the background scan thread.
+    while s.catalog_scanning {
+        match s.catalog_rx.try_recv() {
+            Ok(batch) => s.extend_catalog(batch),
+            Err(crossbeam_channel::TryRecvError::Empty) => break,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                s.catalog_scanning = false;
+            }
+        }
+    }
+
+    // Drain pattern recording completion notifications.
+    while let Ok(notif) = s.pattern_rx.try_recv() {
+        if let Some(inst_node) = s.instruments.get_mut(notif.inst) {
+            // Re-recording replaces the events but keeps the transpose mode.
+            let in_key = inst_node.pattern.as_ref().is_some_and(|p| p.in_key);
+            inst_node.pattern = Some(PatternState {
+                bpm: s.global_bpm,
+                length_beats: notif.length_beats,
+                looping: notif.looping,
+                base_note: notif.base_note,
+                events: notif.events,
+                enabled: notif.enabled,
+                recording: false,
+                in_key,
+            });
+            s.rebuild_tree();
+        }
+    }
+
+    // Drain MIDI-learn captures: fill in the bound control on the model.
+    while let Ok(notif) = s.learn_rx.try_recv() {
+        use crate::plugin::chain::ModulatorLocation;
+        let scope = match notif.location {
+            ModulatorLocation::Lane(inst) => ModScope::Lane(inst),
+            ModulatorLocation::Group(g) => ModScope::Group(g),
+        };
+        if let Some(m) = s
+            .scoped_modulators_mut(scope)
+            .and_then(|ms| ms.get_mut(notif.mod_index))
+        {
+            if let ModSourceSlot::MidiLearn { source, learning } = &mut m.source {
+                *source = Some(notif.source);
+                *learning = false;
+            }
+        }
+        s.dirty = true;
+        s.rebuild_tree();
+    }
 }
 
 fn event_loop(
@@ -2577,55 +2644,7 @@ fn event_loop(
     s: &mut State,
 ) -> io::Result<()> {
     loop {
-        // Drain plugin catalog batches from the background scan thread.
-        while s.catalog_scanning {
-            match s.catalog_rx.try_recv() {
-                Ok(batch) => s.extend_catalog(batch),
-                Err(crossbeam_channel::TryRecvError::Empty) => break,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    s.catalog_scanning = false;
-                }
-            }
-        }
-
-        // Drain pattern recording completion notifications.
-        while let Ok(notif) = s.pattern_rx.try_recv() {
-            if let Some(inst_node) = s.instruments.get_mut(notif.inst) {
-                // Re-recording replaces the events but keeps the transpose mode.
-                let in_key = inst_node.pattern.as_ref().is_some_and(|p| p.in_key);
-                inst_node.pattern = Some(PatternState {
-                    bpm: s.global_bpm,
-                    length_beats: notif.length_beats,
-                    looping: notif.looping,
-                    base_note: notif.base_note,
-                    events: notif.events,
-                    enabled: notif.enabled,
-                    recording: false,
-                    in_key,
-                });
-                s.rebuild_tree();
-            }
-        }
-
-        // Drain MIDI-learn captures: fill in the bound control on the model.
-        while let Ok(notif) = s.learn_rx.try_recv() {
-            use crate::plugin::chain::ModulatorLocation;
-            let scope = match notif.location {
-                ModulatorLocation::Lane(inst) => ModScope::Lane(inst),
-                ModulatorLocation::Group(g) => ModScope::Group(g),
-            };
-            if let Some(m) = s
-                .scoped_modulators_mut(scope)
-                .and_then(|ms| ms.get_mut(notif.mod_index))
-            {
-                if let ModSourceSlot::MidiLearn { source, learning } = &mut m.source {
-                    *source = Some(notif.source);
-                    *learning = false;
-                }
-            }
-            s.dirty = true;
-            s.rebuild_tree();
-        }
+        tick(s);
 
         render(terminal, s)?;
         if s.quit {

@@ -54,7 +54,7 @@ through shared `Arc`s (`HeldNotes`, `PianoFilter`, `MidiMonitor`).
 - In TUI mode nothing drains `return_rx` (removed plugins stay alive in the
   16-slot channel; once it is full, the audio thread's `let _ = try_send(old)`
   drops them on the audio thread), and MIDI hot-plug is never polled (only
-  `play` does). Both are fixed in step 5.
+  `play` does). Both fixed in step 5 (`Controller::poll`, in the TUI and `play`).
 - The model never mirrored the engine's modulator-target fix-ups when an effect
   is removed or reordered (`fixup_slots_after_remove`,
   `remap_slots_after_reorder`, `remap_group_bus_after_reorder` in
