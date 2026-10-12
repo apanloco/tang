@@ -561,6 +561,148 @@ fn typing_a_value_sets_the_parameter() {
 }
 
 #[test]
+fn arrow_keys_and_typing_set_a_bus_effect_parameter() {
+    let mut h = Harness::new(scene_bus_pair());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Left); // the filter's cutoff, 5% down from fully open
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.950"]);
+    let cutoff = &h.s.ctl.model.groups[0].effects[0].params[0];
+    assert_eq!((cutoff.name.as_str(), cutoff.value), ("cutoff", 0.95));
+    assert!(h.s.ctl.dirty);
+
+    h.s.ctl.dirty = false;
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 6).type_chars("0.3").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.300"]);
+    assert_eq!(h.s.ctl.model.groups[0].effects[0].params[0].value, 0.3);
+    assert!(h.s.ctl.dirty);
+
+    // Past the ends of the range (0..1), by the arrows and by typing.
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 6).type_chars("0.99").press(KeyCode::Enter);
+    h.commands();
+    h.press_with(KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=1.000"]);
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 6).type_chars("9").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=1.000"]);
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 6).type_chars("-9").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.000"]);
+}
+
+#[test]
+fn an_enum_parameter_snaps_to_a_whole_value_when_it_was_between_two() {
+    // A preset or a plugin can leave an enum at a fraction; the next step lands
+    // on a label.
+    let mut h = Harness::new(scene_bus_pair());
+    h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[0].value = 0.4; // waveform
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Enter).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=0 value=1.000"]);
+
+    h.press(KeyCode::Esc);
+    h.s.ctl.model.groups[0].effects[0].params[2].value = 0.4; // the filter's type
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=2 value=1.000"]);
+}
+
+#[test]
+fn the_command_carries_the_plugins_own_parameter_index() {
+    // The row and the plugin's index for it differ when a plugin hides
+    // parameters; here one is renumbered to tell them apart.
+    let mut h = Harness::new(scene_bus_pair());
+    h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[1].index = 42; // detune
+    h.s.ctl.model.groups[0].effects[0].params[0].index = 17; // the filter's cutoff
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Enter).press(KeyCode::Down).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=42 value=2.400"]);
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars("3").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=42 value=3.000"]);
+
+    h.press(KeyCode::Esc);
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Up).press(KeyCode::Left); // the parameter cursor was on row 1
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=17 value=0.950"]);
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars("0.5").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=17 value=0.500"]);
+}
+
+#[test]
+fn a_float_parameter_stops_at_the_ends_of_its_range() {
+    // `volume` on the oscillator: 0..1, starting at 1. The command goes out
+    // whether or not the value moved.
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Enter).press(KeyCode::Down).press(KeyCode::Down);
+    h.press_with(KeyCode::Right, KeyModifiers::CONTROL);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=2 value=1.000"; 2]);
+
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars("99").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=2 value=1.000"]);
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars("-5").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=2 value=0.000"]);
+    assert_eq!(h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().params[2].value, 0.0);
+}
+
+#[test]
+fn an_enum_parameter_stops_at_its_first_and_last_label() {
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Enter); // `waveform`: sine, triangle, square, saw
+    for _ in 0..5 {
+        h.press(KeyCode::Right);
+    }
+    let values: Vec<String> = h.commands();
+    assert_eq!(
+        values,
+        [1.0, 2.0, 3.0, 3.0, 3.0].map(|v| format!("SetParameter inst=0 slot=0 param=0 value={v:.3}"))
+    );
+    for _ in 0..5 {
+        h.press(KeyCode::Left);
+    }
+    assert_eq!(
+        h.commands(),
+        [2.0, 1.0, 0.0, 0.0, 0.0].map(|v| format!("SetParameter inst=0 slot=0 param=0 value={v:.3}"))
+    );
+}
+
+#[test]
+fn arrow_keys_edit_the_parameter_the_filter_shows() {
+    // With "res" typed into the parameter filter the first row is `resonance`
+    // (parameter 1 of the filter), not `cutoff`.
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 });
+    h.press(KeyCode::Enter);
+    h.press(KeyCode::Char('/')).type_chars("res").press(KeyCode::Enter);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetParameter inst=2 slot=1 param=1 value=1.182"]);
+    assert!((h.s.ctl.model.instruments[2].effects[0].params[1].value - 1.182).abs() < 1e-3);
+}
+
+#[test]
+fn clicking_and_dragging_a_parameter_bar_sets_its_value() {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    let mut h = Harness::new(scene_split());
+    h.dump(); // draws once, which lays out the panes
+    let area = h.s.areas.param_inner;
+    // `volume` is the third row; the bar starts 27 columns in and spans the
+    // width less 36.
+    let (row, bar_start, bar_width) = (area.y + 2, area.x + 27, area.width - 36);
+    let mouse = |kind, column| Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+
+    let left = crossterm::event::MouseButton::Left;
+    process_event(&mut h.s, mouse(MouseEventKind::Down(left), bar_start + bar_width - 1));
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=2 value=1.000"], "the right end of the bar");
+    process_event(&mut h.s, mouse(MouseEventKind::Drag(left), bar_start));
+    assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=2 value=0.000"], "dragged to the left end");
+    process_event(&mut h.s, mouse(MouseEventKind::Drag(left), bar_start + bar_width / 2));
+    let halfway = h.commands();
+    let value: f32 = halfway[0].rsplit('=').next().unwrap().parse().unwrap();
+    assert!((value - 0.5).abs() < 0.05, "dragged to the middle: {halfway:?}");
+    process_event(&mut h.s, mouse(MouseEventKind::Up(crossterm::event::MouseButton::Left), bar_start));
+    process_event(&mut h.s, mouse(MouseEventKind::Drag(crossterm::event::MouseButton::Left), bar_start));
+    assert_eq!(h.commands(), Vec::<String>::new(), "the drag is over");
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
 fn the_group_header_shows_the_volume_after_an_edit() {
     // The header carries the group's volume, so it has to follow the edits,
     // whichever way they are made.
