@@ -73,6 +73,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
             format!("SetParameter inst={inst} slot={slot} param={param_index} value={value:.3}")
         }
         C::SetMix { inst, slot, value } => format!("SetMix inst={inst} slot={slot} value={value:.3}"),
+        C::LoadPreset { inst, slot, preset_id } => format!("LoadPreset inst={inst} slot={slot} id={preset_id}"),
         C::InsertEffect { inst, index, effect, mix } => {
             format!("InsertEffect inst={inst} index={index} plugin={} mix={mix:.3}", effect.name())
         }

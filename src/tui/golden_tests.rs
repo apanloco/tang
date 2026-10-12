@@ -1603,3 +1603,122 @@ fn deleting_a_lane_leaves_the_others_their_ids() {
     assert_eq!(node_at(&h, NodePath::Instrument(0)), second, "the survivor is lane 0 now, with its old id");
     assert!(h.s.ctl.model.locate(first).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
+
+/// An oscillator (which has no presets) and a reverb on "Vintage Plate".
+const PRESET_SCENE: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+preset = "Vintage Plate"
+"#;
+
+const REVERB_PRESETS: [(&str, &str); 5] = [
+    ("arcadia", "Arcadia Dream Hall"),
+    ("cathedral", "Cathedral"),
+    ("plate", "Vintage Plate"),
+    ("room", "Small Room"),
+    ("ambient", "Ambient Wash"),
+];
+
+/// The value of each of the reverb's parameters, by its own index, once `preset`
+/// is loaded: what the model has to mirror.
+fn reverb_values_with(preset: &str) -> Vec<(u32, f32)> {
+    let mut reverb = plugin::load("builtin:reverb", SAMPLE_RATE, BLOCK, &plugin::Runtime::default()).unwrap();
+    session::apply_preset(&mut reverb, preset);
+    let indexes: Vec<u32> = reverb.parameters().iter().map(|p| p.index).collect();
+    indexes.into_iter().map(|i| (i, reverb.get_parameter(i).unwrap())).collect()
+}
+
+#[test]
+fn p_lists_the_plugins_presets_and_starts_on_the_current_one() {
+    let mut h = Harness::new(PRESET_SCENE);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('p'));
+    let ps = h.s.preset_selector.as_ref().expect("the reverb has presets");
+    let listed: Vec<(&str, &str)> = ps.presets.iter().map(|p| (p.id.as_str(), p.name.as_str())).collect();
+    assert_eq!(listed, REVERB_PRESETS);
+    assert_eq!((ps.inst, ps.slot), (0, 1), "effect 0 is slot 1 for the audio thread");
+    assert_eq!(ps.filter.selected_item(&ps.items).map(|item| item.index), Some(2), "Vintage Plate, the current one");
+}
+
+#[test]
+fn p_opens_only_on_a_lane_plugin_that_has_presets() {
+    let mut h = Harness::new(PRESET_SCENE);
+    h.goto(TreeAddress::Instrument(0)); // the oscillator has none
+    h.press(KeyCode::Char('p'));
+    assert!(h.s.preset_selector.is_none());
+
+    let mut h = Harness::new(scene_bus_pair());
+    for addr in [TreeAddress::Group(0), TreeAddress::GroupEffect { group: 0, index: 1 }, TreeAddress::GroupModulator { group: 0, index: 0 }] {
+        h.goto(addr);
+        h.press(KeyCode::Char('p'));
+        assert!(h.s.preset_selector.is_none(), "{addr:?}");
+    }
+}
+
+#[test]
+fn choosing_a_preset_loads_it_and_mirrors_its_values_into_the_model() {
+    let mut h = Harness::new(PRESET_SCENE);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('p')).type_chars("cathed").press(KeyCode::Enter);
+
+    assert_eq!(h.commands(), ["LoadPreset inst=0 slot=1 id=cathedral"]);
+    assert!(h.s.preset_selector.is_none(), "the popup closes");
+    assert!(h.s.ctl.dirty);
+    let reverb = &h.s.ctl.model.instruments[0].effects[0];
+    assert_eq!(reverb.current_preset.as_deref(), Some("Cathedral"));
+    let expected = reverb_values_with("Cathedral");
+    assert_eq!(reverb.params.len(), expected.len());
+    for row in &reverb.params {
+        let want = expected.iter().find(|(i, _)| *i == row.index).unwrap().1;
+        assert_eq!((row.value, row.default), (want, want), "{}: the preset's value, and the baseline", row.name);
+    }
+}
+
+#[test]
+fn the_arrows_choose_among_the_presets() {
+    let mut h = Harness::new(PRESET_SCENE); // starts on Vintage Plate, the third
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('p')).press(KeyCode::Down).press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["LoadPreset inst=0 slot=1 id=room"]);
+    h.press(KeyCode::Char('p')).press(KeyCode::Up).press(KeyCode::Up).press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["LoadPreset inst=0 slot=1 id=cathedral"]);
+}
+
+#[test]
+fn a_loaded_preset_is_saved_by_name_with_no_parameter_overrides() {
+    let mut h = Harness::new(PRESET_SCENE);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('p')).type_chars("ambient").press(KeyCode::Enter);
+    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model.instruments, &h.s.ctl.model.groups);
+    let reverb = &lanes[0].effects[0];
+    assert_eq!(reverb.preset.as_deref(), Some("Ambient Wash"));
+    assert!(reverb.params.is_empty(), "the preset's values are the baseline, not edits: {:?}", reverb.params);
+
+    // A tweak afterwards is an edit on top of the preset, and the only one.
+    h.press(KeyCode::Enter).press(KeyCode::Right);
+    h.commands();
+    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model.instruments, &h.s.ctl.model.groups);
+    assert_eq!(lanes[0].effects[0].params.len(), 1);
+}
+
+#[test]
+fn escape_and_a_filter_with_no_match_load_nothing() {
+    let mut h = Harness::new(PRESET_SCENE);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('p')).press(KeyCode::Down).press(KeyCode::Esc);
+    assert!(h.s.preset_selector.is_none());
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert!(!h.s.ctl.dirty);
+
+    h.press(KeyCode::Char('p')).type_chars("zzz").press(KeyCode::Enter);
+    assert!(h.s.preset_selector.is_none(), "the popup closes");
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert!(!h.s.ctl.dirty);
+    assert_eq!(h.s.ctl.model.instruments[0].effects[0].current_preset.as_deref(), Some("Vintage Plate"));
+}
