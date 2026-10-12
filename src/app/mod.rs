@@ -4,8 +4,10 @@
 //! It starts with the session model and grows, step by step, into the
 //! controller that applies intents to both the model and the engine.
 
+pub mod apply;
 pub mod catalog;
 pub mod controller;
+pub mod intent;
 pub mod load;
 pub mod model;
 pub mod save;

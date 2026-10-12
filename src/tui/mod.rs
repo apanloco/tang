@@ -27,6 +27,7 @@ use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
 use crate::app::controller::Controller;
+use crate::app::intent::{Applied, Intent};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
@@ -599,25 +600,6 @@ impl State {
             }
             TreeAddress::GroupEffect { group, index } => {
                 self.ctl.model.groups.get(group)?.effects.get(index)
-            }
-        }
-    }
-
-    /// Get a mutable reference to the PluginSlot at the given tree address.
-    fn plugin_at_mut(&mut self, addr: &TreeAddress) -> Option<&mut PluginSlot> {
-        match *addr {
-            TreeAddress::Pattern(_)
-            | TreeAddress::Modulator { .. }
-            | TreeAddress::Group(_)
-            | TreeAddress::GroupModulator { .. } => None,
-            TreeAddress::Instrument(inst) => {
-                self.ctl.model.instruments.get_mut(inst)?.instrument.as_mut()
-            }
-            TreeAddress::Effect { inst, index } => {
-                self.ctl.model.instruments.get_mut(inst)?.effects.get_mut(index)
-            }
-            TreeAddress::GroupEffect { group, index } => {
-                self.ctl.model.groups.get_mut(group)?.effects.get_mut(index)
             }
         }
     }
@@ -1725,25 +1707,12 @@ impl State {
         let addr = self.tree_entries[sel].address;
 
         // Group bus effect params take a dedicated command (no instrument).
-        if let TreeAddress::GroupEffect { group, index } = addr {
+        if let TreeAddress::GroupEffect { .. } = addr {
             let pa = match self.real_param_index() {
                 Some(i) => i,
                 None => return,
             };
-            if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-                param.value = (param.value + delta).clamp(param.min, param.max);
-                if matches!(param.kind, ParamKind::Enum(_)) {
-                    param.value = param.value.round();
-                }
-                let (value, param_index) = (param.value, param.index);
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupParameter {
-                    group,
-                    index,
-                    param_index,
-                    value,
-                });
-                self.ctl.dirty = true;
-            }
+            self.set_plugin_param(&addr, pa, |v| v + delta);
             return;
         }
 
@@ -1785,22 +1754,27 @@ impl State {
             Some(i) => i,
             None => return,
         };
-        let slot = addr.slot();
-        if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-            param.value = (param.value + delta).clamp(param.min, param.max);
-            // Enum params snap to whole values.
-            if matches!(param.kind, ParamKind::Enum(_)) {
-                param.value = param.value.round();
+        self.set_plugin_param(&addr, pa, |v| v + delta);
+    }
+
+    /// Set the parameter in row `row` of the plugin at `addr` to what `f` makes of
+    /// its value now; the controller clamps it (and rounds an enum to a label).
+    fn set_plugin_param(&mut self, addr: &TreeAddress, row: usize, f: impl FnOnce(f32) -> f32) {
+        let Some(plugin) = self.plugin_at(addr) else { return };
+        let Some(param) = plugin.params.get(row) else { return };
+        let intent = Intent::SetParam { node: plugin.node, param: param.index, value: f(param.value) };
+        self.apply(intent);
+    }
+
+    /// Hand an intent to the controller. A refusal is logged and the view
+    /// carries on as it was.
+    fn apply(&mut self, intent: Intent) -> Option<Applied> {
+        match self.ctl.apply(intent) {
+            Ok(applied) => Some(applied),
+            Err(e) => {
+                log::warn!("{e}");
+                None
             }
-            let new_value = param.value;
-            let idx = param.index;
-            let _ = self.ctl.cmd_tx.send(GraphCommand::SetParameter {
-                inst,
-                slot,
-                param_index: idx,
-                value: new_value,
-            });
-            self.ctl.dirty = true;
         }
     }
 
@@ -1970,22 +1944,12 @@ impl State {
         let addr = self.tree_entries[sel].address;
 
         // Group bus effect params take a dedicated command (no instrument).
-        if let TreeAddress::GroupEffect { group, index } = addr {
+        if let TreeAddress::GroupEffect { .. } = addr {
             let pa = match self.real_param_index() {
                 Some(i) => i,
                 None => return,
             };
-            if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-                param.value = value.clamp(param.min, param.max);
-                let (value, param_index) = (param.value, param.index);
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupParameter {
-                    group,
-                    index,
-                    param_index,
-                    value,
-                });
-                self.ctl.dirty = true;
-            }
+            self.set_plugin_param(&addr, pa, |_| value);
             return;
         }
 
@@ -2039,19 +2003,7 @@ impl State {
             Some(i) => i,
             None => return,
         };
-        let slot = addr.slot();
-        if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-            param.value = value.clamp(param.min, param.max);
-            let new_value = param.value;
-            let idx = param.index;
-            let _ = self.ctl.cmd_tx.send(GraphCommand::SetParameter {
-                inst,
-                slot,
-                param_index: idx,
-                value: new_value,
-            });
-            self.ctl.dirty = true;
-        }
+        self.set_plugin_param(&addr, pa, |_| value);
     }
 
     fn set_modulator_param_value(&mut self, inst: usize, mod_index: usize, pa: usize, value: f32) {

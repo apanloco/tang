@@ -109,6 +109,8 @@ pub struct Controller {
     pub dirty: bool,
     /// The tempo patterns are recorded and played at.
     pub global_bpm: f32,
+    /// How many intents have been applied (`Controller::apply`).
+    pub rev: u64,
     /// The installed plugins, for the selector popups. Empty until
     /// `catalog.scan()` is called: sessions that never open a selector (`play`)
     /// do not pay for it.
@@ -168,6 +170,7 @@ impl Controller {
         } = engine;
         Controller {
             global_bpm: initial_bpm(&model),
+            rev: 0,
             catalog: Catalog::default(),
             model,
             session_path,

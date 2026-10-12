@@ -38,7 +38,6 @@ impl NodeIds {
 /// Where a node sits in the model, in the positional terms the audio thread's
 /// commands use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // `Controller::apply` resolves node ids with it (next commit)
 pub enum NodePath {
     /// A lane, with the instrument plugin in it.
     Instrument(usize),
@@ -65,7 +64,6 @@ impl SessionModel {
     /// Every node and where it sits: the groups with their bus effects and
     /// modulators, then the lanes with their effects and modulators. (A lane's
     /// instrument plugin shares the lane's id.)
-    #[allow(dead_code)] // for `locate`, which `Controller::apply` uses (next commit)
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, NodePath)> + '_ {
         let groups = self.groups.iter().enumerate().flat_map(|(group, g)| {
             std::iter::once((g.node, NodePath::Group(group)))
@@ -89,7 +87,6 @@ impl SessionModel {
     }
 
     /// Where the node `id` sits, if it is still in the session.
-    #[allow(dead_code)] // used by `Controller::apply` (next commit)
     pub fn locate(&self, id: NodeId) -> Option<NodePath> {
         self.nodes().find(|(node, _)| *node == id).map(|(_, path)| path)
     }
