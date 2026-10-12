@@ -654,6 +654,7 @@ fn load_lane_modulators(
                 base_value,
                 param_min,
                 param_max,
+                effective: None,
             };
 
             cmd_tx
@@ -927,6 +928,7 @@ fn load_group_modulators(
                 base_value,
                 param_min,
                 param_max,
+                effective: None,
             };
             cmd_tx
                 .send(plugin::chain::GraphCommand::AddGroupModTarget {

@@ -8,7 +8,7 @@ use super::Plugin;
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
-use crate::telemetry::{self, Meter, Telemetry};
+use crate::telemetry::{self, Meter, Slot, Telemetry};
 
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
@@ -343,6 +343,11 @@ pub struct ModTarget {
     pub base_value: f32,
     pub param_min: f32,
     pub param_max: f32,
+    /// Where each buffer's *effective* value of the parameter is published
+    /// (telemetry): what it was set to, the base value plus what every modulator
+    /// on it adds, clamped to its range. The slot stays with the target as the
+    /// chain around it changes; `None` publishes nothing.
+    pub effective: Option<Slot>,
 }
 
 /// ADSR envelope state.
@@ -436,6 +441,9 @@ pub struct Modulator {
     pub targets: Vec<ModTarget>,
     /// Last computed output value (bipolar -1..1 for LFO, unipolar 0..1 for envelope).
     pub last_output: f32,
+    /// Where `last_output` is published each buffer (telemetry); `None`
+    /// publishes nothing.
+    output: Option<Slot>,
     /// Set for one buffer when a `MidiLearn` source just captured a control, so
     /// the graph can notify the main thread. Consumed (taken) by the graph.
     pub last_learned: Option<MidiBindSource>,
@@ -448,6 +456,7 @@ impl Modulator {
             sample_rate,
             targets: Vec::new(),
             last_output: 0.0,
+            output: None,
             last_learned: None,
         }
     }
@@ -696,6 +705,33 @@ pub enum CrossModField {
     Depth(usize),
 }
 
+/// Publish `value`, what a parameter was just set to, into the slot of every
+/// target in `modulators` that is on that parameter (`on_param` says which are).
+fn publish_effective(
+    modulators: &[Modulator],
+    telemetry: &Telemetry,
+    value: f32,
+    on_param: impl Fn(&ModTargetKind) -> bool,
+) {
+    for target in modulators.iter().flat_map(|m| &m.targets) {
+        if let Some(slot) = target.effective {
+            if on_param(&target.kind) {
+                telemetry.store(slot, value);
+            }
+        }
+    }
+}
+
+/// Publish what each of `modulators` put out this buffer, into the slots they
+/// were given.
+fn publish_outputs(modulators: &[Modulator], telemetry: &Telemetry) {
+    for m in modulators {
+        if let Some(slot) = m.output {
+            telemetry.store(slot, m.last_output);
+        }
+    }
+}
+
 /// A parameter some modulators of a lane drive: the chain slot, the parameter's
 /// index, its base value, its range (min, max) and the offsets summed so far.
 type ParamDrive = (usize, u32, f32, f32, f32, f32);
@@ -714,6 +750,7 @@ fn apply_modulators_to_chain(
     instrument: &mut Option<Box<dyn Plugin>>,
     effects: &mut [Box<dyn Plugin>],
     accum: &mut Vec<ParamDrive>,
+    telemetry: Option<&Telemetry>,
 ) {
     accum.clear();
 
@@ -742,6 +779,11 @@ fn apply_modulators_to_chain(
 
     for &(slot, param_index, base_value, min, max, total_offset) in accum.iter() {
         let modulated = (base_value + total_offset).clamp(min, max);
+        if let Some(telemetry) = telemetry {
+            publish_effective(modulators, telemetry, modulated, |kind| {
+                matches!(kind, ModTargetKind::PluginParam { slot: s, param_index: p } if *s == slot && *p == param_index)
+            });
+        }
         let plugin: Option<&mut dyn Plugin> = if slot == 0 {
             instrument.as_deref_mut()
         } else {
@@ -1054,6 +1096,48 @@ fn collect_group_mod_writes(
                 param_index,
                 value,
             });
+        }
+    }
+}
+
+/// Publish what the group modulators' targets were just set to, into their slots:
+/// each target on a member's or a bus effect's parameter gets the value written
+/// to that parameter. A target that does not resolve (its member left the group)
+/// has no write, and publishes nothing.
+fn publish_group_effective(
+    groups: &[Group],
+    instruments: &[InstrumentLane],
+    writes: &[GroupModWrite],
+    telemetry: &Telemetry,
+) {
+    for (gi, g) in groups.iter().enumerate() {
+        for target in g.modulators.iter().flat_map(|m| &m.targets) {
+            let Some(slot) = target.effective else { continue };
+            let value = match target.kind {
+                ModTargetKind::GroupMember { member, slot: chain_slot, param_index } => {
+                    let Some(lane) = group_member_lane(instruments, gi, member) else { continue };
+                    writes.iter().find_map(|w| match *w {
+                        GroupModWrite::Member { lane: l, slot: s, param_index: p, value }
+                            if l == lane && s == chain_slot && p == param_index =>
+                        {
+                            Some(value)
+                        }
+                        _ => None,
+                    })
+                }
+                ModTargetKind::GroupBus { effect_index, param_index } => writes.iter().find_map(|w| match *w {
+                    GroupModWrite::Bus { group, effect_index: e, param_index: p, value }
+                        if group == gi && e == effect_index && p == param_index =>
+                    {
+                        Some(value)
+                    }
+                    _ => None,
+                }),
+                _ => None,
+            };
+            if let Some(value) = value {
+                telemetry.store(slot, value);
+            }
         }
     }
 }
@@ -1527,6 +1611,14 @@ pub enum GraphCommand {
         index: usize,
         param_index: u32,
         value: f32,
+    },
+    /// Publish a modulator's output each buffer into `slot` (telemetry). The slot
+    /// stays with the modulator when others around it come and go.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the loader and the front-ends send it from the next commit on"))]
+    SetModulatorOutput {
+        location: ModulatorLocation,
+        index: usize,
+        slot: Slot,
     },
     /// Insert a new modulator into the lane (modulators are lane-scoped).
     InsertModulator {
@@ -2388,6 +2480,7 @@ impl InstrumentLane {
         inst_out: &mut [Vec<f32>],
         num_channels: usize,
         scale: ScaleSetting,
+        telemetry: Option<&Telemetry>,
     ) -> anyhow::Result<()> {
         // Filter MIDI by range
         self.filter_midi(midi_events);
@@ -2440,6 +2533,7 @@ impl InstrumentLane {
                 &mut self.instrument,
                 &mut self.effects,
                 &mut self.drive_scratch,
+                telemetry,
             );
         }
 
@@ -3234,6 +3328,19 @@ impl AudioGraph {
                         update_group_bus_base(&mut g.modulators, index, param_index, value);
                     }
                 }
+                GraphCommand::SetModulatorOutput { location, index, slot } => {
+                    let rack = match location {
+                        ModulatorLocation::Lane(inst) => {
+                            self.get_instrument_mut(inst).map(|lane| &mut lane.modulators)
+                        }
+                        ModulatorLocation::Group(group) => {
+                            self.groups.get_mut(group).map(|g| &mut g.modulators)
+                        }
+                    };
+                    if let Some(m) = rack.and_then(|rack| rack.get_mut(index)) {
+                        m.output = Some(slot);
+                    }
+                }
                 GraphCommand::InsertModulator {
                     inst,
                     index,
@@ -3713,6 +3820,9 @@ impl AudioGraph {
                     m.tick(frames, &self.group_midi_scratch);
                 }
                 apply_cross_mod(&mut self.groups[gi].modulators, &mut self.group_cross_mod_scratch);
+                if let Some(telemetry) = &self.telemetry {
+                    publish_outputs(&self.groups[gi].modulators, telemetry);
+                }
                 Self::drain_learned(
                     self.learn_tx.as_ref(),
                     &mut self.groups[gi].modulators,
@@ -3734,6 +3844,9 @@ impl AudioGraph {
                 &mut self.group_member_drives,
                 &mut self.group_bus_drives,
             );
+            if let Some(telemetry) = &self.telemetry {
+                publish_group_effective(&self.groups, &self.instruments, &self.group_mod_writes, telemetry);
+            }
             apply_group_mod_writes(
                 &self.group_mod_writes,
                 &mut self.instruments,
@@ -3749,7 +3862,10 @@ impl AudioGraph {
                 buf.fill(0.0);
             }
 
-            inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale)?;
+            inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale, self.telemetry.as_deref())?;
+            if let Some(telemetry) = &self.telemetry {
+                publish_outputs(&inst.modulators, telemetry);
+            }
             // A lane MidiLearn modulator may have just captured a control.
             Self::drain_learned(
                 self.learn_tx.as_ref(),
@@ -4958,6 +5074,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5010,6 +5127,7 @@ mod tests {
                     base_value: 1.0,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5040,8 +5158,10 @@ mod tests {
                 base_value: 0.5,
                 param_min: 0.0,
                 param_max: 1.0,
+                effective: None,
             }],
             last_output: 0.0,
+            output: None,
             last_learned: None,
         };
         let members = |mods: &[Modulator]| -> Vec<Option<usize>> {
@@ -5072,8 +5192,10 @@ mod tests {
                 base_value: 1.0,
                 param_min: 0.01,
                 param_max: 50.0,
+                effective: None,
             }],
             last_output: 0.0,
+            output: None,
             last_learned: None,
         };
         let mm_members = |mods: &[Modulator]| -> Vec<Option<usize>> {
@@ -5099,8 +5221,10 @@ mod tests {
                 base_value: 1.0,
                 param_min: 0.01,
                 param_max: 50.0,
+                effective: None,
             }],
             last_output: 0.0,
+            output: None,
             last_learned: None,
         };
         let mm_idx = |mods: &[Modulator]| -> Vec<Option<usize>> {
@@ -5174,6 +5298,7 @@ mod tests {
                         base_value: 0.5,
                         param_min: 0.0,
                         param_max: 1.0,
+                        effective: None,
                     },
                 })
                 .unwrap();
@@ -5252,6 +5377,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5278,12 +5404,13 @@ mod tests {
 
     #[test]
     fn group_member_slot_fixups_touch_only_that_members_slots() {
-        let target = |kind| ModTarget { kind, depth: 0.5, base_value: 0.5, param_min: 0.0, param_max: 1.0 };
+        let target = |kind| ModTarget { kind, depth: 0.5, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
         let modulator = |targets: Vec<ModTarget>| Modulator {
             source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
             sample_rate: 48000.0,
             targets,
             last_output: 0.0,
+            output: None,
             last_learned: None,
         };
         let on = |member, slot| target(ModTargetKind::GroupMember { member, slot, param_index: 0 });
@@ -5380,6 +5507,7 @@ mod tests {
                     base_value: 10.0,
                     param_min: 0.01,
                     param_max: 50.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5431,6 +5559,7 @@ mod tests {
                     base_value: 0.2,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5491,6 +5620,7 @@ mod tests {
                     base_value: 0.2,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5559,6 +5689,7 @@ mod tests {
                     base_value: 0.0,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5613,6 +5744,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5669,6 +5801,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5764,6 +5897,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5818,6 +5952,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5898,6 +6033,7 @@ mod tests {
                     base_value: 1.0,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -5950,6 +6086,7 @@ mod tests {
             base_value: 0.8,
             param_min: 0.0,
             param_max: 1.0,
+            effective: None,
         };
 
         m.tick(64, &[]); // idle: output 0
@@ -5991,6 +6128,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -6046,6 +6184,7 @@ mod tests {
                     base_value: 0.5,
                     param_min: 0.0,
                     param_max: 1.0,
+                    effective: None,
                 },
             })
             .unwrap();
@@ -6079,10 +6218,11 @@ mod tests {
             base_value: 0.5,
             param_min: 0.0,
             param_max: 1.0,
+            effective: None,
         }];
         m.last_output = 1.0; // force the LFO to its peak
 
-        apply_modulators_to_chain(&[m], &mut inst, &mut effects, &mut Vec::new());
+        apply_modulators_to_chain(&[m], &mut inst, &mut effects, &mut Vec::new(), None);
 
         // Effect param pushed to base + depth*range (clamped); instrument untouched.
         assert!(
@@ -6107,6 +6247,7 @@ mod tests {
             base_value: 0.0,
             param_min: 0.0,
             param_max: 1.0,
+            effective: None,
         };
         let slots = |mods: &[Modulator]| -> Vec<usize> {
             mods[0]
@@ -6274,6 +6415,7 @@ mod tests {
             base_value: 1.0,
             param_min: 0.0,
             param_max: 1.0,
+            effective: None,
         };
         for mod_index in [0, 1] {
             cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index, target: gain() }).unwrap();
@@ -6284,6 +6426,7 @@ mod tests {
             base_value: 2.0,
             param_min: 0.1,
             param_max: 10.0,
+            effective: None,
         };
         cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 2, target: rate }).unwrap();
         graph.drain_commands();
@@ -6333,7 +6476,7 @@ mod tests {
             notes_held: 0,
         };
         cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(3.0) }).unwrap();
-        let gain = |kind| ModTarget { kind, depth: 0.5, base_value: 1.0, param_min: 0.0, param_max: 1.0 };
+        let gain = |kind| ModTarget { kind, depth: 0.5, base_value: 1.0, param_min: 0.0, param_max: 1.0, effective: None };
         cmd_tx
             .send(GraphCommand::AddModTarget {
                 inst: 0,
@@ -6343,7 +6486,7 @@ mod tests {
             .unwrap();
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(1.0) }).unwrap();
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: adsr }).unwrap();
-        let rate = |kind| ModTarget { kind, depth: 0.5, base_value: 2.0, param_min: 0.1, param_max: 10.0 };
+        let rate = |kind| ModTarget { kind, depth: 0.5, base_value: 2.0, param_min: 0.1, param_max: 10.0, effective: None };
         for target in [
             gain(ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }),
             gain(ModTargetKind::GroupMember { member: 1, slot: 1, param_index: 0 }),
@@ -6420,7 +6563,7 @@ mod tests {
             ModTargetKind::PluginParam { slot: 2, param_index: 2 },
             ModTargetKind::PluginParam { slot: 0, param_index: 1 },
         ] {
-            let target = ModTarget { kind, depth: 0.3, base_value: 0.5, param_min: 0.0, param_max: 1.0 };
+            let target = ModTarget { kind, depth: 0.3, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
             cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
         }
         graph.drain_commands();
@@ -6515,5 +6658,559 @@ mod tests {
         let (mut graph, _telemetry) = metered_graph(&[0.6, 0.6]);
         let allocations = allocations_while_processing(&mut graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    // -- Telemetry: modulator outputs and effective values --
+
+    use crate::telemetry::SlotAllocator;
+
+    /// Lane 0 with a constant instrument and a `ParamScaleEffect` (chain slot 1,
+    /// whose parameter 0, `gain`, runs 0 to 1), publishing into a telemetry the
+    /// test holds on to, and the allocator that hands out its slots.
+    struct Rig {
+        graph: AudioGraph,
+        cmd_tx: crossbeam_channel::Sender<GraphCommand>,
+        telemetry: Arc<Telemetry>,
+        slots: SlotAllocator,
+        _return_rx: crossbeam_channel::Receiver<Box<dyn Plugin>>,
+    }
+
+    impl Rig {
+        fn new() -> Rig {
+            let (mut graph, cmd_tx, return_rx) = make_graph(2);
+            let telemetry = Arc::new(Telemetry::new());
+            graph.set_telemetry(telemetry.clone());
+            swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+            insert_effect(&cmd_tx, 0, scale_effect(), 1.0);
+            Rig { graph, cmd_tx, telemetry, slots: SlotAllocator::default(), _return_rx: return_rx }
+        }
+
+        fn slot(&mut self) -> Slot {
+            self.slots.alloc().unwrap()
+        }
+
+        /// A modulator in lane 0 that publishes its output; its slot.
+        fn lane_modulator(&mut self, index: usize, source: ModSource) -> Slot {
+            let slot = self.slot();
+            self.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index, source }).unwrap();
+            self.cmd_tx
+                .send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Lane(0), index, slot })
+                .unwrap();
+            slot
+        }
+
+        /// A target on the effect's `gain`, base 0.5, that publishes its effective value; its slot.
+        fn gain_target(&mut self, mod_index: usize, depth: f32) -> Slot {
+            let slot = self.slot();
+            let target = ModTarget {
+                kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+                depth,
+                base_value: 0.5,
+                param_min: 0.0,
+                param_max: 1.0,
+                effective: Some(slot),
+            };
+            self.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index, target }).unwrap();
+            slot
+        }
+
+        fn process(&mut self, midi: &[(u64, [u8; 3])]) {
+            self.graph.process(midi, &mut make_output()).unwrap();
+        }
+
+        fn read(&self, slot: Slot) -> f32 {
+            self.telemetry.load(slot)
+        }
+    }
+
+    fn lfo(waveform: LfoWaveform, rate: f32) -> ModSource {
+        ModSource::Lfo { waveform, rate, phase: 0.0 }
+    }
+
+    fn adsr(attack: f32) -> ModSource {
+        ModSource::Envelope {
+            attack,
+            decay: 0.1,
+            sustain: 0.5,
+            release: 0.1,
+            state: EnvState::Idle,
+            level: 0.0,
+            notes_held: 0,
+        }
+    }
+
+    /// How far a buffer of `FRAMES` frames moves an LFO of `rate` Hz.
+    fn lfo_phase(rate: f32, buffers: usize) -> f32 {
+        (rate * FRAMES as f32 / 48000.0 * buffers as f32) % 1.0
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn an_lfo_publishes_its_output_after_every_buffer() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, lfo(LfoWaveform::Sine, 100.0));
+        rig.process(&[]);
+        assert_eq!(rig.read(output), LfoWaveform::Sine.eval(lfo_phase(100.0, 1)));
+        rig.process(&[]);
+        assert_eq!(rig.read(output), LfoWaveform::Sine.eval(lfo_phase(100.0, 2)));
+        assert!(rig.read(output) != 0.0, "it moved");
+    }
+
+    #[test]
+    fn an_envelope_publishes_its_level_as_it_attacks_and_releases() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, adsr(0.01));
+        rig.process(&[]);
+        assert_eq!(rig.read(output), 0.0, "idle");
+        rig.process(&[note_on(60)]);
+        let one_step = FRAMES as f32 / 48000.0 / 0.01;
+        assert!(close(rig.read(output), one_step), "{}", rig.read(output));
+        rig.process(&[]);
+        assert!(close(rig.read(output), 2.0 * one_step));
+        // 8 buffers to the peak, then the 0.1 s of decay (75 buffers) down to the sustain.
+        for _ in 0..100 {
+            rig.process(&[]);
+        }
+        assert!(close(rig.read(output), 0.5), "the sustain level: {}", rig.read(output));
+        rig.process(&[note_off(60)]);
+        assert!(rig.read(output) < 0.5, "released: {}", rig.read(output));
+    }
+
+    #[test]
+    fn a_midi_learn_modulator_publishes_the_value_of_its_control() {
+        let mut rig = Rig::new();
+        let source = ModSource::MidiLearn { source: Some(MidiBindSource::Cc(74)), value: 0.0, learning: false };
+        let output = rig.lane_modulator(0, source);
+        rig.process(&[(0, [0xB0, 74, 127])]);
+        assert_eq!(rig.read(output), 1.0);
+        rig.process(&[(0, [0xB0, 74, 0])]);
+        assert_eq!(rig.read(output), 0.0);
+        rig.process(&[(0, [0xB0, 1, 127])]);
+        assert_eq!(rig.read(output), 0.0, "another control does not move it");
+    }
+
+    #[test]
+    fn a_target_publishes_the_value_its_parameter_is_set_to() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Sine, 100.0));
+        let effective = rig.gain_target(0, 0.4);
+        rig.process(&[]);
+        let output = LfoWaveform::Sine.eval(lfo_phase(100.0, 1));
+        // The LFO swings ±depth of the range around the base: 0.5 + 0.4 · output.
+        assert!(close(rig.read(effective), 0.5 + 0.4 * output), "{} for output {output}", rig.read(effective));
+        rig.process(&[]);
+        let output = LfoWaveform::Sine.eval(lfo_phase(100.0, 2));
+        assert!(close(rig.read(effective), 0.5 + 0.4 * output));
+    }
+
+    #[test]
+    fn an_envelope_targets_effective_value_rises_to_the_base() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, adsr(0.01));
+        let effective = rig.gain_target(0, 0.5);
+        rig.process(&[]);
+        // Idle: the base minus depth of the way down to the minimum: 0.5 - 0.5 · 1 · 0.5.
+        assert!(close(rig.read(effective), 0.25), "{}", rig.read(effective));
+        rig.process(&[note_on(60)]);
+        let level = FRAMES as f32 / 48000.0 / 0.01;
+        assert!(close(rig.read(effective), 0.5 - 0.5 * (1.0 - level) * 0.5), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn a_midi_learn_targets_effective_value_adds_the_control_to_the_base() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::MidiLearn { source: Some(MidiBindSource::Cc(74)), value: 0.0, learning: false });
+        let effective = rig.gain_target(0, 0.4);
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.5), "at rest it is the base");
+        rig.process(&[(0, [0xB0, 74, 127])]);
+        assert!(close(rig.read(effective), 0.9), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn modulators_on_the_same_parameter_share_one_effective_value() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // a square at phase 0: always +1
+        rig.lane_modulator(1, adsr(0.01));
+        let from_lfo = rig.gain_target(0, 0.1);
+        let from_envelope = rig.gain_target(1, 0.5);
+        rig.process(&[]);
+        // 0.5 + 0.1 (the LFO) + the envelope's idle offset of -0.5 · 0.5 = 0.35, seen from either cable.
+        assert!(close(rig.read(from_lfo), 0.35), "{}", rig.read(from_lfo));
+        assert_eq!(rig.read(from_lfo), rig.read(from_envelope));
+    }
+
+    #[test]
+    fn the_effective_value_is_clamped_to_the_parameters_range() {
+        // A square LFO at +1 with a depth of three times the range pushes the
+        // parameter far past either end; what is published is where it stopped.
+        for (depth, stops_at) in [(3.0, 1.0), (-3.0, 0.0)] {
+            let mut rig = Rig::new();
+            rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+            let effective = rig.gain_target(0, depth);
+            rig.process(&[]);
+            assert_eq!(rig.read(effective), stops_at, "depth {depth}");
+        }
+    }
+
+    #[test]
+    fn a_target_without_a_slot_publishes_nothing_and_the_audio_is_the_same() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Sine, 100.0));
+        let slot = rig.slot();
+        let target = ModTarget {
+            kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+            depth: 0.4,
+            base_value: 0.5,
+            param_min: 0.0,
+            param_max: 1.0,
+            effective: None,
+        };
+        rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        rig.process(&[note_on(60)]);
+        assert_eq!(rig.read(slot), 0.0, "a slot nobody was given stays as it was");
+    }
+
+    #[test]
+    fn a_modulator_without_a_slot_publishes_nothing() {
+        let mut rig = Rig::new();
+        let unused = rig.slot();
+        rig.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(LfoWaveform::Sine, 100.0) }).unwrap();
+        rig.process(&[]);
+        rig.process(&[]);
+        assert_eq!(rig.read(unused), 0.0);
+    }
+
+    #[test]
+    fn nothing_is_published_without_a_telemetry() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        insert_effect(&cmd_tx, 0, scale_effect(), 1.0);
+        let mut slots = SlotAllocator::default();
+        let (output, effective) = (slots.alloc().unwrap(), slots.alloc().unwrap());
+        cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(LfoWaveform::Sine, 100.0) }).unwrap();
+        cmd_tx
+            .send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Lane(0), index: 0, slot: output })
+            .unwrap();
+        let target = ModTarget {
+            kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+            depth: 0.4,
+            base_value: 0.5,
+            param_min: 0.0,
+            param_max: 1.0,
+            effective: Some(effective),
+        };
+        cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        // It still runs, and the target still modulates.
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| (s - 0.5 * (0.5 + 0.4 * LfoWaveform::Sine.eval(lfo_phase(100.0, 1)))).abs() < 1e-4));
+    }
+
+    #[test]
+    fn a_target_keeps_its_slot_when_the_effects_around_it_come_and_go() {
+        // Two effects, an LFO on each one's gain; the first effect is removed: the
+        // second's target moves to slot 1 and still publishes into its own cell.
+        let mut rig = Rig::new();
+        insert_effect(&rig.cmd_tx, 1, scale_effect(), 1.0);
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        let first = rig.gain_target(0, 0.2); // on slot 1
+        let second = rig.slot();
+        let target = ModTarget {
+            kind: ModTargetKind::PluginParam { slot: 2, param_index: 0 },
+            depth: 0.4,
+            base_value: 0.5,
+            param_min: 0.0,
+            param_max: 1.0,
+            effective: Some(second),
+        };
+        rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(first), 0.7) && close(rig.read(second), 0.9));
+
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        // The first target is gone with its effect; make the survivor's cell readable as changed.
+        rig.telemetry.store(first, -1.0);
+        rig.telemetry.store(second, -1.0);
+        rig.process(&[]);
+        assert_eq!(rig.read(first), -1.0, "the removed target publishes no more");
+        assert!(close(rig.read(second), 0.9), "the survivor still does, from its new slot: {}", rig.read(second));
+    }
+
+    #[test]
+    fn a_modulator_keeps_its_slot_when_the_others_around_it_come_and_go() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        let second = rig.lane_modulator(1, lfo(LfoWaveform::Square, 0.0));
+        rig.telemetry.store(second, -1.0);
+        rig.process(&[]);
+        assert_eq!(rig.read(second), 1.0);
+        rig.cmd_tx.send(GraphCommand::RemoveModulator { inst: 0, index: 0 }).unwrap();
+        rig.telemetry.store(second, -1.0);
+        rig.process(&[]);
+        assert_eq!(rig.read(second), 1.0, "now modulator 0, still its own cell");
+    }
+
+    #[test]
+    fn a_slot_set_for_a_modulator_that_is_not_there_changes_nothing() {
+        let mut rig = Rig::new();
+        let slot = rig.slot();
+        for location in [ModulatorLocation::Lane(0), ModulatorLocation::Lane(9), ModulatorLocation::Group(0)] {
+            rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location, index: 3, slot }).unwrap();
+        }
+        rig.process(&[]);
+        assert_eq!(rig.read(slot), 0.0);
+    }
+
+    /// Two lanes in group 0, each with a constant instrument and a
+    /// `ParamScaleEffect`, a bus effect of the same kind, and an LFO in the group
+    /// (a square at phase 0: always +1) with a target on member 0's, member 1's and
+    /// the bus effect's `gain`, each publishing its effective value, and its own
+    /// output published.
+    struct GroupRig {
+        rig: Rig,
+        output: Slot,
+        member0: Slot,
+        member1: Slot,
+        bus: Slot,
+    }
+
+    impl GroupRig {
+        fn new() -> GroupRig {
+            let (graph, cmd_tx, return_rx) = make_graph(2);
+            let telemetry = Arc::new(Telemetry::new());
+            let mut rig = Rig { graph, cmd_tx, telemetry: telemetry.clone(), slots: SlotAllocator::default(), _return_rx: return_rx };
+            rig.graph.set_telemetry(telemetry);
+            rig.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+            for inst in [0, 1] {
+                rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+                swap_instrument_at(&rig.cmd_tx, inst, ConstInstrument::new(0.1));
+                rig.cmd_tx
+                    .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0 })
+                    .unwrap();
+            }
+            rig.cmd_tx
+                .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 1.0 })
+                .unwrap();
+            let output = rig.slot();
+            rig.cmd_tx
+                .send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) })
+                .unwrap();
+            rig.cmd_tx
+                .send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(0), index: 0, slot: output })
+                .unwrap();
+            let mut group = GroupRig { rig, output, member0: output, member1: output, bus: output };
+            group.member0 = group.target(0, ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }, 0.2);
+            group.member1 = group.target(0, ModTargetKind::GroupMember { member: 1, slot: 1, param_index: 0 }, 0.3);
+            group.bus = group.target(0, ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }, 0.4);
+            group
+        }
+
+        /// A target of group modulator `mod_index`, base 0.5, publishing; its slot.
+        fn target(&mut self, mod_index: usize, kind: ModTargetKind, depth: f32) -> Slot {
+            let slot = self.rig.slot();
+            let target = ModTarget { kind, depth, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: Some(slot) };
+            self.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index, target }).unwrap();
+            slot
+        }
+    }
+
+    #[test]
+    fn a_group_modulator_publishes_its_output() {
+        let mut g = GroupRig::new();
+        g.rig.process(&[]);
+        assert_eq!(g.rig.read(g.output), 1.0);
+    }
+
+    #[test]
+    fn group_targets_publish_the_value_their_member_or_bus_parameter_was_set_to() {
+        let mut g = GroupRig::new();
+        g.rig.process(&[]);
+        // Base 0.5 plus the LFO's +1 times the depth.
+        assert!(close(g.rig.read(g.member0), 0.7), "{}", g.rig.read(g.member0));
+        assert!(close(g.rig.read(g.member1), 0.8), "{}", g.rig.read(g.member1));
+        assert!(close(g.rig.read(g.bus), 0.9), "{}", g.rig.read(g.bus));
+    }
+
+    #[test]
+    fn group_modulators_on_one_member_parameter_share_its_effective_value() {
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx
+            .send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: adsr(0.01) })
+            .unwrap();
+        // The envelope idles at depth 0.5: an offset of -0.5 · 0.5 on member 0's gain,
+        // on top of the LFO's +0.2.
+        let second = g.target(1, ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }, 0.5);
+        g.rig.process(&[]);
+        assert!(close(g.rig.read(g.member0), 0.5 + 0.2 - 0.25), "{}", g.rig.read(g.member0));
+        assert_eq!(g.rig.read(g.member0), g.rig.read(second));
+        assert!(close(g.rig.read(g.member1), 0.8), "the other member is not touched");
+    }
+
+    #[test]
+    fn a_group_target_on_a_member_that_is_not_there_publishes_nothing() {
+        let mut g = GroupRig::new();
+        let ghost = g.target(0, ModTargetKind::GroupMember { member: 5, slot: 1, param_index: 0 }, 0.3);
+        g.rig.process(&[]);
+        assert_eq!(g.rig.read(ghost), 0.0, "the group has no member 5, so nothing is written to publish");
+        assert!(close(g.rig.read(g.member0), 0.7), "the others are unaffected");
+    }
+
+    #[test]
+    fn a_cross_mod_target_publishes_nothing() {
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx
+            .send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: lfo(LfoWaveform::Sine, 1.0) })
+            .unwrap();
+        let cross = g.target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.3);
+        g.rig.process(&[]);
+        assert_eq!(g.rig.read(cross), 0.0, "only parameters of plugins have an effective value here");
+    }
+
+    #[test]
+    fn publishing_modulator_telemetry_does_not_allocate() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Sine, 3.0));
+        rig.lane_modulator(1, adsr(0.01));
+        rig.gain_target(0, 0.3);
+        rig.gain_target(1, 0.3);
+        rig.graph.drain_commands();
+        let allocations = allocations_while_processing(&mut rig.graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "a lane: the audio thread asked the allocator for memory");
+
+        let mut g = GroupRig::new();
+        g.rig.graph.drain_commands();
+        let allocations = allocations_while_processing(&mut g.rig.graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "a group: the audio thread asked the allocator for memory");
+    }
+
+    /// An effect with two parameters, `a` (0) and `b` (1), that passes its input
+    /// through: for telling apart what is published for each.
+    struct TwoParamEffect {
+        values: [f32; 2],
+    }
+
+    impl Plugin for TwoParamEffect {
+        fn name(&self) -> &str {
+            "TwoParam"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+        fn process(
+            &mut self,
+            _midi_events: &[(u64, [u8; 3])],
+            audio_in: &[&[f32]],
+            audio_out: &mut [&mut [f32]],
+        ) -> anyhow::Result<()> {
+            for (out, inp) in audio_out.iter_mut().zip(audio_in.iter()) {
+                out.copy_from_slice(inp);
+            }
+            Ok(())
+        }
+        fn sample_rate(&self) -> f32 {
+            48000.0
+        }
+        fn parameters(&self) -> Vec<ParameterInfo> {
+            ["a", "b"]
+                .iter()
+                .enumerate()
+                .map(|(index, name)| ParameterInfo {
+                    index: index as u32,
+                    name: (*name).into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.5,
+                    ..Default::default()
+                })
+                .collect()
+        }
+        fn get_parameter(&mut self, idx: u32) -> Option<f32> {
+            self.values.get(idx as usize).copied()
+        }
+        fn set_parameter(&mut self, idx: u32, value: f32) -> anyhow::Result<()> {
+            match self.values.get_mut(idx as usize) {
+                Some(v) => {
+                    *v = value;
+                    Ok(())
+                }
+                None => anyhow::bail!("no parameter {idx}"),
+            }
+        }
+        fn presets(&self) -> Vec<Preset> {
+            Vec::new()
+        }
+        fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
+            anyhow::bail!("no preset {id}")
+        }
+    }
+
+    fn two_param_effect() -> Box<dyn Plugin> {
+        Box::new(TwoParamEffect { values: [0.5, 0.5] })
+    }
+
+    #[test]
+    fn two_parameters_of_one_plugin_publish_their_own_values() {
+        let mut rig = Rig::new();
+        // Replace the effect with one that has two parameters.
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        insert_effect(&rig.cmd_tx, 0, two_param_effect(), 1.0);
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        let target = |rig: &mut Rig, param_index, depth| {
+            let slot = rig.slot();
+            let target = ModTarget {
+                kind: ModTargetKind::PluginParam { slot: 1, param_index },
+                depth,
+                base_value: 0.5,
+                param_min: 0.0,
+                param_max: 1.0,
+                effective: Some(slot),
+            };
+            rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+            slot
+        };
+        let (a, b) = (target(&mut rig, 0, 0.2), target(&mut rig, 1, 0.4));
+        rig.process(&[]);
+        assert!(close(rig.read(a), 0.7) && close(rig.read(b), 0.9), "{} {}", rig.read(a), rig.read(b));
+    }
+
+    #[test]
+    fn group_targets_on_different_members_plugins_and_parameters_publish_their_own_values() {
+        let mut g = GroupRig::new();
+        // Member 0's chain: the scale effect (slot 1), then a two-parameter one (slot 2).
+        insert_effect(&g.rig.cmd_tx, 1, two_param_effect(), 1.0);
+        // The bus: the scale effect (0), then a two-parameter one (1).
+        g.rig
+            .cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: two_param_effect(), mix: 1.0 })
+            .unwrap();
+        let slot_2_a = g.target(0, ModTargetKind::GroupMember { member: 0, slot: 2, param_index: 0 }, 0.45);
+        let slot_2_b = g.target(0, ModTargetKind::GroupMember { member: 0, slot: 2, param_index: 1 }, 0.35);
+        let bus_1_a = g.target(0, ModTargetKind::GroupBus { effect_index: 1, param_index: 0 }, 0.05);
+        let bus_1_b = g.target(0, ModTargetKind::GroupBus { effect_index: 1, param_index: 1 }, 0.25);
+        g.rig.process(&[]);
+        let read = |slot| g.rig.read(slot);
+        // Base 0.5 plus the LFO's +1 times the depth; no two the same.
+        for (slot, expected, what) in [
+            (g.member0, 0.7, "member 0, slot 1"),
+            (g.member1, 0.8, "member 1, slot 1"),
+            (slot_2_a, 0.95, "member 0, slot 2, a"),
+            (slot_2_b, 0.85, "member 0, slot 2, b"),
+            (g.bus, 0.9, "bus 0"),
+            (bus_1_a, 0.55, "bus 1, a"),
+            (bus_1_b, 0.75, "bus 1, b"),
+        ] {
+            assert!(close(read(slot), expected), "{what}: {} instead of {expected}", read(slot));
+        }
     }
 }

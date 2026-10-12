@@ -853,6 +853,7 @@ impl State {
             base_value: entry.base_value,
             param_min: entry.param_min,
             param_max: entry.param_max,
+            effective: None,
         };
         match ts.scope {
             ModulatorLocation::Lane(inst) => {
@@ -1090,6 +1091,7 @@ impl State {
             base_value: ms.base_value,
             param_min: ms.param_min,
             param_max: ms.param_max,
+            effective: None,
         };
         match ms.scope {
             ModulatorLocation::Lane(inst) => {
@@ -1421,7 +1423,7 @@ impl State {
         }
 
         // Bind the target (depth 1.0 = full-range absolute control).
-        let target = ModTarget { kind: kind.clone(), depth: 1.0, base_value: base, param_min: min, param_max: max };
+        let target = ModTarget { kind: kind.clone(), depth: 1.0, base_value: base, param_min: min, param_max: max, effective: None };
         match scope {
             ModulatorLocation::Lane(inst) => {
                 let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
