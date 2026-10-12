@@ -445,8 +445,7 @@ pub fn load_session(
                 .collect();
         let loaded_modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx)?;
 
-        // Apply instrument transpose (the TUI re-sends this on startup, but
-        // play mode has no other path that applies it).
+        // Apply instrument transpose.
         if inst_config.transpose != 0 {
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetTranspose {
                 inst: inst_idx,
@@ -482,12 +481,12 @@ pub fn load_session(
                 inst: inst_idx,
                 beats: p.length_beats,
             });
-            if p.enabled {
-                let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternEnabled {
-                    inst: inst_idx,
-                    enabled: true,
-                });
-            }
+            // The engine enables a pattern that has events as soon as it receives it, so
+            // say what the session wants, including "off".
+            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternEnabled {
+                inst: inst_idx,
+                enabled: p.enabled,
+            });
             if !p.looping {
                 let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLooping {
                     inst: inst_idx,
@@ -1386,6 +1385,45 @@ cutoff = 0.25
         assert_eq!(osc.param_values[waveform], 2.0, "the override is the value");
         assert_eq!(osc.param_defaults[waveform], 0.0, "the plugin's own value stays the baseline");
         assert_eq!(run.progress.len(), 6, "three plugin slots, loading + loaded each");
+    }
+
+    #[test]
+    fn a_pattern_the_session_marks_disabled_is_loaded_disabled() {
+        // The engine enables a pattern that has events as soon as it receives it, so the
+        // loader has to say what the session wants. (The TUI used to paper over this by
+        // re-sending the flag at startup; `play` did not.)
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 100.0
+length_beats = 4.0
+base_note = "C4"
+enabled = false
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 12000
+status = "off"
+note = "C4"
+velocity = 0
+"#,
+        );
+        assert_eq!(
+            run.commands,
+            [
+                "AddInstrument range=None",
+                "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
+                "SetPattern inst=0 events=2 length_samples=115200 base_note=Some(60) in_key=false",
+                "SetGlobalBpm bpm=100.0",
+                "SetPatternLength inst=0 beats=4.0",
+                "SetPatternEnabled inst=0 enabled=false",
+            ]
+        );
     }
 
     #[test]

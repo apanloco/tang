@@ -2691,47 +2691,6 @@ pub fn run(
         midi_monitor,
     );
 
-    // Send transpose and pattern data to the audio graph for the loaded instruments.
-    for (inst_idx, inst_node) in s.instruments.iter().enumerate() {
-        if inst_node.transpose != 0 {
-            let _ = s.cmd_tx.send(GraphCommand::SetTranspose {
-                inst: inst_idx,
-                semitones: inst_node.transpose,
-            });
-        }
-        if let Some(ref p) = inst_node.pattern {
-            let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
-                crate::plugin::chain::PatternEvent {
-                    frame,
-                    status,
-                    note,
-                    velocity: vel,
-                }
-            }).collect();
-            let beats_per_sec = p.bpm / 60.0;
-            let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
-            let _ = s.cmd_tx.send(GraphCommand::SetPattern {
-                inst: inst_idx,
-                pattern: crate::plugin::chain::Pattern {
-                    events: pattern_events,
-                    length_samples,
-                },
-                base_note: p.base_note,
-                in_key: p.in_key,
-            });
-            let _ = s.cmd_tx.send(GraphCommand::SetPatternEnabled {
-                inst: inst_idx,
-                enabled: p.enabled,
-            });
-            if !p.looping {
-                let _ = s.cmd_tx.send(GraphCommand::SetPatternLooping {
-                    inst: inst_idx,
-                    looping: false,
-                });
-            }
-        }
-    }
-
     // Probe keyboard enhancement support (must be done before entering raw mode).
     let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
 
