@@ -953,6 +953,21 @@ fn a_recording_with_no_notes_leaves_a_disabled_pattern() {
 }
 
 #[test]
+fn a_finished_recording_marks_the_session_changed() {
+    // `r` marks the session when the recording starts, but the events only
+    // arrive when it ends, and a save in between (during the count-in, say)
+    // clears the mark.
+    let mut h = Harness::new(scene_split());
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Char('r'));
+    assert!(h.s.dirty, "`r` marks the session changed");
+    h.s.dirty = false; // what a save does
+    h.pattern_tx.send(recording(0)).unwrap();
+    tick(&mut h.s);
+    assert!(h.s.dirty, "the recording is part of the session");
+}
+
+#[test]
 fn a_recording_for_a_lane_that_is_gone_is_ignored() {
     let mut h = Harness::new(scene_split());
     let before: Vec<String> = h.tree().iter().map(|l| l.to_string()).collect();
@@ -960,6 +975,7 @@ fn a_recording_for_a_lane_that_is_gone_is_ignored() {
     tick(&mut h.s);
     assert_eq!(h.tree(), before);
     assert!(h.s.instruments.iter().all(|n| n.pattern.is_none()));
+    assert!(!h.s.dirty, "nothing changed");
 }
 
 /// Arm a MIDI-learn modulator on lane 0's first parameter the way a user does;

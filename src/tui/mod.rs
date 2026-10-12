@@ -2614,6 +2614,7 @@ fn tick(s: &mut State) {
                 recording: false,
                 in_key,
             });
+            s.dirty = true;
             s.rebuild_tree();
         }
     }

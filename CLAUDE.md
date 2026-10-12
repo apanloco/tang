@@ -858,7 +858,8 @@ Static text showing all keybindings and usage reference. Scrollable with
 ### Dirty indicator
 
 When the session has unsaved changes (parameter tweaks, plugin adds/removes,
-preset loads, effect reordering), the Session tab label shows an asterisk:
+preset loads, effect reordering, a finished pattern recording, a captured
+MIDI-learn control), the Session tab label shows an asterisk:
 `Session *`. The asterisk clears on save.
 
 ### Session state
