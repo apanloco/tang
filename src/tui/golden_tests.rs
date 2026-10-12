@@ -1369,6 +1369,122 @@ fn harness_sends_nothing_until_asked() {
 }
 
 // ---------------------------------------------------------------------------
+// The CLIP light
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_status_bar_shows_clip_while_the_master_meter_is_clipping() {
+    use crate::telemetry::MASTER;
+    let mut h = Harness::new(scene_split());
+    let t0 = Instant::now();
+    tick_at(&mut h.s, t0);
+    assert!(!h.dump().contains("CLIP"), "dark until the audio thread counts a clipped buffer");
+
+    h.s.ctl.telemetry.bump(MASTER.clips);
+    tick_at(&mut h.s, t0 + Duration::from_millis(100));
+    assert_golden("status_clip", &mut h);
+
+    tick_at(&mut h.s, t0 + Duration::from_millis(2_099));
+    assert!(h.dump().contains("CLIP"), "still on just under two seconds after the last clip");
+    tick_at(&mut h.s, t0 + Duration::from_millis(2_100));
+    assert!(!h.dump().contains("CLIP"), "and off after");
+    assert!(h.dump().contains("120 BPM"), "the tempo is still there");
+}
+
+#[test]
+fn the_tick_the_event_loop_runs_lights_the_clip_light_too() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.telemetry.bump(crate::telemetry::MASTER.clips);
+    tick(&mut h.s);
+    assert!(h.s.clip.is_lit());
+    assert!(h.dump().contains("CLIP"));
+}
+
+#[test]
+fn clips_counted_before_the_tui_started_do_not_light_it() {
+    use crate::app::model::SessionModel;
+    use crate::telemetry::MASTER;
+    let (engine, _audio) = stub_engine();
+    engine.telemetry.bump(MASTER.clips); // the engine clipped while the splash was up
+    let mut s = State::new(Controller::new(SessionModel::default(), engine, None));
+    tick_at(&mut s, Instant::now());
+    assert!(!s.clip.is_lit());
+    s.ctl.telemetry.bump(MASTER.clips);
+    tick_at(&mut s, Instant::now());
+    assert!(s.clip.is_lit(), "a clip after it started watching does");
+}
+
+#[test]
+fn on_a_narrow_terminal_the_clip_light_takes_the_right_end_of_the_tab_bar_like_the_tempo() {
+    use crate::telemetry::MASTER;
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.telemetry.bump(MASTER.clips);
+    tick_at(&mut h.s, Instant::now());
+    let first_row = |h: &mut Harness, width: u16| {
+        h.terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
+        // The dump starts with its size and a heading; the first row of text follows.
+        h.dump().lines().nth(2).unwrap().to_string()
+    };
+    let row = first_row(&mut h, 30);
+    assert!(row.starts_with("(1) Session"), "{row}");
+    assert!(row.contains("CLIP  120 BPM"), "the light is not lost for want of room: {row}");
+    // With no room for the status at all, it is left out (as the tempo always was):
+    // it wants its 13 columns and two to spare.
+    let row = first_row(&mut h, 15);
+    assert!(!row.contains("CLIP") && !row.contains("BPM"), "{row}");
+    let row = first_row(&mut h, 16);
+    assert!(row.contains("CLIP  120 BPM"), "{row}");
+}
+
+/// A real audio graph playing a session of two oscillator lanes at `lane_volume`
+/// each, which publishes into the controller's telemetry, with one note held for a
+/// few buffers: the loudest sample it produced, and whether the status bar shows
+/// CLIP afterwards. (One oscillator peaks at a quarter of full scale at volume 1.)
+fn clip_light_after_playing(lane_volume: f32) -> (f32, bool) {
+    let lane = format!("[[instrument]]\nplugin = \"builtin:osc\"\nvolume = {lane_volume}\n");
+    let config = session::parse(&format!("{lane}{lane}")).unwrap();
+    let (handles, engine) = stub_engine();
+    let model = load_session(
+        &config,
+        Path::new("."),
+        SAMPLE_RATE,
+        BLOCK,
+        &plugin::Runtime::default(),
+        &handles.cmd_tx,
+        &mut |_| {},
+    )
+    .unwrap();
+    let mut graph = crate::plugin::chain::AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+    graph.set_telemetry(handles.telemetry.clone());
+    let mut s = State::new(Controller::new(model, handles, None));
+
+    let mut out = vec![vec![0.0f32; BLOCK]; 2];
+    let t0 = Instant::now();
+    tick_at(&mut s, t0);
+    graph.process(&[(0, [0x90, 60, 127])], &mut out).unwrap();
+    let mut loudest = 0.0f32;
+    for _ in 0..8 {
+        graph.process(&[], &mut out).unwrap();
+        loudest = out[0].iter().fold(loudest, |loudest, sample| loudest.max(sample.abs()));
+    }
+    tick_at(&mut s, t0 + Duration::from_millis(100));
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    terminal.draw(|frame| draw(frame, &mut s)).unwrap();
+    (loudest, dump_buffer(terminal.backend().buffer()).contains("CLIP"))
+}
+
+#[test]
+fn an_engine_that_clips_lights_the_clip_light_and_one_that_does_not_leaves_it_dark() {
+    let (loudest, lit) = clip_light_after_playing(4.0);
+    assert!(loudest > 1.0, "the oscillator at four times the volume is beyond full scale: {loudest}");
+    assert!(lit);
+
+    let (loudest, lit) = clip_light_after_playing(0.5);
+    assert!(loudest > 0.1 && loudest <= 1.0, "a note that is heard and within full scale: {loudest}");
+    assert!(!lit);
+}
+
+// ---------------------------------------------------------------------------
 // Between frames
 // ---------------------------------------------------------------------------
 

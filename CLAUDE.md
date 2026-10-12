@@ -551,10 +551,14 @@ The interface is tab-based.
 The status bar at the top shows all tabs with the active one highlighted.
 The global BPM is displayed on the right side of the status bar (e.g. `120 BPM`).
 
-TODO: A clip indicator (`CLIP` in red) on the right side of the status bar
-when any audio sample exceeds 1.0, holding for ~2 seconds after the last
-clipped sample. Detection via an `AtomicBool` set by the audio thread and
-read by the render loop. Not yet wired up.
+A `CLIP` light (bold red) sits on the right side of the status bar, left of the
+BPM, while the output has clipped lately. The audio thread counts every buffer
+whose mixed output has a sample above full scale (`|s| > 1.0`; exactly 1.0 is
+not a clip) in a telemetry slot (`telemetry::MASTER.clips`, `src/telemetry.rs`);
+the TUI lights `CLIP` when that count has moved since it last looked (once per
+frame, `src/tui/clip.rs`) and keeps it on for 2 seconds after the last move.
+The count only goes up, so any number of readers (the web runtime later) can
+watch it without resetting it. Clips from before the TUI started do not light it.
 
 ### Tabs
 

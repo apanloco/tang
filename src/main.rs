@@ -354,7 +354,8 @@ fn run_session(
     // Give the audio thread the live piano scale for in-key pattern transposition.
     graph.set_piano_filter(piano_filter.clone());
     // And the cells it publishes its measurements in (meters, for now).
-    graph.set_telemetry(std::sync::Arc::new(telemetry::Telemetry::new()));
+    let telemetry = std::sync::Arc::new(telemetry::Telemetry::new());
+    graph.set_telemetry(telemetry.clone());
 
     // Start MIDI input
     if let Some(sp) = &splash {
@@ -429,6 +430,7 @@ fn run_session(
             held,
             piano_filter,
             midi_monitor,
+            telemetry,
         },
         Some(std::path::PathBuf::from(&source)),
     );

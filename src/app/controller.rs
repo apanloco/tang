@@ -46,6 +46,7 @@ use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{self, Plugin, Runtime};
 use crate::session::{self, PianoConfig};
+use crate::telemetry::Telemetry;
 
 /// How often `poll` looks for newly connected devices.
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -98,6 +99,8 @@ pub struct EngineHandles {
     pub piano_filter: Arc<PianoFilter>,
     /// Incoming MIDI, tallied for `--debug`.
     pub midi_monitor: Arc<MidiMonitor>,
+    /// What the audio thread publishes about itself: meters, for now.
+    pub telemetry: Arc<Telemetry>,
 }
 
 pub struct Controller {
@@ -126,6 +129,7 @@ pub struct Controller {
     pub held: Arc<HeldNotes>,
     pub piano_filter: Arc<PianoFilter>,
     pub midi_monitor: Arc<MidiMonitor>,
+    pub telemetry: Arc<Telemetry>,
 
     /// Plugins the audio thread has taken out of the graph.
     return_rx: Receiver<Box<dyn Plugin>>,
@@ -167,6 +171,7 @@ impl Controller {
             held,
             piano_filter,
             midi_monitor,
+            telemetry,
         } = engine;
         Controller {
             global_bpm: initial_bpm(&model),
@@ -185,6 +190,7 @@ impl Controller {
             held,
             piano_filter,
             midi_monitor,
+            telemetry,
             return_rx,
             devices: None,
             last_device_poll: now,

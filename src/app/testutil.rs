@@ -15,6 +15,7 @@ use crate::midi_monitor::MidiMonitor;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::scale::ScaleSetting;
+use crate::telemetry::Telemetry;
 use crate::{plugin, session};
 
 /// One line per command, for asserting on what a front-end or the loader sent
@@ -189,6 +190,7 @@ pub fn stub_engine() -> (EngineHandles, StubEngine) {
         held: Arc::new(HeldNotes::new()),
         piano_filter: Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight)),
         midi_monitor: Arc::new(MidiMonitor::new(false)),
+        telemetry: Arc::new(Telemetry::new()),
     };
     (handles, StubEngine { cmd_rx, midi_rx, return_tx, pattern_tx, learn_tx })
 }

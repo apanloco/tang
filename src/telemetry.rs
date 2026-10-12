@@ -67,7 +67,7 @@ impl Telemetry {
     }
 
     /// The float last published in `slot` (0.0 before anything was).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the TUI reads the meters from the next commit on"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "no front-end shows a peak or a value yet"))]
     pub fn load(&self, slot: Slot) -> f32 {
         self.cells.get(slot.0 as usize).map_or(0.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed)))
     }
@@ -80,7 +80,6 @@ impl Telemetry {
     }
 
     /// How many events `slot` has counted (wrapping, in the unlikely long run).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the TUI reads the meters from the next commit on"))]
     pub fn count(&self, slot: Slot) -> u32 {
         self.cells.get(slot.0 as usize).map_or(0, |cell| cell.load(Ordering::Relaxed))
     }

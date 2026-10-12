@@ -1,10 +1,11 @@
+mod clip;
 #[cfg(test)]
 mod golden_tests;
 mod piano_view;
 pub mod splash;
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -40,6 +41,7 @@ use crate::piano_filter::PianoMode;
 use crate::plugin;
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
 use crate::scale::{ScaleSetting, NOTE_NAMES};
+use crate::telemetry;
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
 const TAB_SEP: &str = " │ ";
@@ -360,6 +362,8 @@ struct Areas {
 struct State {
     /// The session and the engine handles; the view only holds what it shows.
     ctl: Controller,
+    /// The CLIP light of the status bar, fed by the master meter.
+    clip: clip::ClipLight,
     active_tab: usize,
     tree_entries: Vec<TreeEntry>,
     chain_state: ListState,
@@ -405,9 +409,11 @@ impl State {
             .map_or(0, |p| p.params.len());
 
         let help_lines = build_help_lines();
+        let clip = clip::ClipLight::new(ctl.telemetry.count(telemetry::MASTER.clips));
 
         State {
             ctl,
+            clip,
             active_tab: 0,
             chain_state: ListState::new(tree_entries.len()),
             param_state: ListState::new(param_len),
@@ -2283,6 +2289,11 @@ pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
 /// does its housekeeping and folds in what the plugin scan and the audio thread
 /// have reported, and the view catches up with what changed.
 fn tick(s: &mut State) {
+    tick_at(s, Instant::now());
+}
+
+/// `tick`, at the time `now`.
+fn tick_at(s: &mut State, now: Instant) {
     let polled = s.ctl.poll();
     if polled.model_changed {
         s.rebuild_tree();
@@ -2290,6 +2301,7 @@ fn tick(s: &mut State) {
     if polled.catalog_changed {
         s.refresh_selector();
     }
+    s.clip.update(s.ctl.telemetry.count(telemetry::MASTER.clips), now);
 }
 
 fn event_loop(
@@ -3671,19 +3683,25 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
     frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
 
-    // BPM display on the right side of the tab bar.
+    // The right side of the tab bar: the CLIP light while it is lit, then the BPM.
     let bpm_text = format!("{:.0} BPM", s.ctl.global_bpm);
-    let bpm_width = bpm_text.len() as u16;
-    if tab_area.width > bpm_width + 2 {
-        let bpm_area = Rect {
-            x: tab_area.right() - bpm_width - 1,
+    let clip_text = if s.clip.is_lit() { "CLIP  " } else { "" };
+    let status_width = (clip_text.len() + bpm_text.len()) as u16;
+    if tab_area.width > status_width + 2 {
+        let status_area = Rect {
+            x: tab_area.right() - status_width - 1,
             y: tab_area.y,
-            width: bpm_width + 1,
+            width: status_width + 1,
             height: 1,
         };
+        let clip_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         frame.render_widget(
-            Paragraph::new(bpm_text).style(Style::default().fg(DIM)),
-            bpm_area,
+            Paragraph::new(ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled(clip_text, clip_style),
+                ratatui::text::Span::raw(bpm_text),
+            ]))
+            .style(Style::default().fg(DIM)),
+            status_area,
         );
     }
 
