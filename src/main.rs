@@ -367,11 +367,6 @@ fn run_session(
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
-    // The controller reaps plugins the audio thread hands back and watches for
-    // MIDI devices being plugged in, in both the TUI and `play`.
-    let mut ctl = app::controller::Controller::new(return_rx);
-    ctl.watch_devices(Box::new(midi_mgr));
-
     // Build audio engine (not playing yet — will start after initial commands are queued)
     if let Some(sp) = &splash {
         sp.status("Starting audio engine…");
@@ -412,10 +407,31 @@ fn run_session(
     drop(splash);
     log::set_max_level(prev_log_level);
 
+    // From here on the controller owns the session and the engine's handles. It
+    // reaps plugins the audio thread hands back and watches for MIDI devices
+    // being plugged in, in both the TUI and `play`.
+    let mut ctl = app::controller::Controller::new(
+        model,
+        app::controller::EngineHandles {
+            cmd_tx,
+            midi_tx,
+            return_rx,
+            pattern_rx,
+            learn_rx,
+            runtime,
+            sample_rate: sample_rate_f,
+            max_block_size,
+            held,
+            piano_filter,
+            midi_monitor,
+        },
+        Some(std::path::PathBuf::from(&source)),
+    );
+    ctl.watch_devices(Box::new(midi_mgr));
+
     // --- Branch: TUI view vs plain play mode ---
     let ctl = if use_tui {
-        let session_path = Some(std::path::PathBuf::from(source));
-        tui::run(ctl, model, cmd_tx, midi_tx, runtime, sample_rate_f, max_block_size, session_path, pattern_rx, learn_rx, held.clone(), piano_filter.clone(), midi_monitor.clone())?
+        tui::run(ctl)?
     } else {
         // --- Plain play mode (original) ---
 
@@ -455,7 +471,8 @@ fn run_session(
         }
 
         // Create virtual piano
-        let mut virt_piano = piano::VirtualPiano::new(midi_tx, kitty_supported, held.clone(), piano_filter.clone());
+        let mut virt_piano =
+            piano::VirtualPiano::new(ctl.midi_tx.clone(), kitty_supported, ctl.held.clone(), ctl.piano_filter.clone());
 
         log::info!("Playing. Ctrl+Q or Ctrl+C to quit.");
 

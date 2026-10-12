@@ -5,10 +5,8 @@ pub mod splash;
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam_channel::Sender;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
@@ -32,15 +30,13 @@ use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 use crate::app::controller::Controller;
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
-    ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove,
+    ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
     fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
     fixup_slots_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph,
     modulator_param_is_enum, modulator_param_len, modulator_param_range, modulator_row_to_cross_mod,
     remap_group_bus_after_reorder, remap_slots_after_reorder, shift_group_member_after_insert,
 };
-use crate::audio;
-use crate::held_notes::HeldNotes;
-use crate::piano_filter::{PianoFilter, PianoMode};
+use crate::piano_filter::PianoMode;
 use crate::plugin;
 use crate::plugin::chain::GraphCommand;
 use crate::plugin::PluginInfo;
@@ -367,9 +363,9 @@ struct Areas {
 // ---------------------------------------------------------------------------
 
 struct State {
+    /// The session and the engine handles; the view only holds what it shows.
+    ctl: Controller,
     active_tab: usize,
-    instruments: Vec<InstrumentNode>,
-    groups: Vec<GroupNode>,
     tree_entries: Vec<TreeEntry>,
     chain_state: ListState,
     param_state: ListState,
@@ -394,84 +390,38 @@ struct State {
     catalog_scanning: bool,
     areas: Areas,
     quit: bool,
-    session_path: Option<PathBuf>,
-    dirty: bool,
     // Parameter filter (search bar in param pane).
     param_filter_input: TextInputState,
     param_filtering: bool,
     param_filtered: Vec<usize>,
-    /// Housekeeping that belongs to the session, not to the view: reaping returned
-    /// plugins, MIDI hot-plug. Run by `tick` once per loop iteration.
-    ctl: Controller,
-    // Connections to the audio engine.
-    cmd_tx: Sender<GraphCommand>,
-    #[allow(dead_code)]
-    midi_tx: Sender<audio::MidiEvent>,
-    runtime: plugin::Runtime,
-    sample_rate: f32,
-    max_block_size: usize,
     // Pattern state.
-    global_bpm: f32,
     bpm_editing: Option<EditState>,
     gain_editing: Option<GainEditState>,
     save_as: Option<SaveAsState>,
-    pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
-    /// Receives MIDI-learn captures from the audio thread.
-    learn_rx: crossbeam_channel::Receiver<crate::plugin::chain::MidiLearnedNotification>,
     // Piano tab state.
-    held: Arc<HeldNotes>,
-    piano_filter: Arc<PianoFilter>,
     /// Center MIDI octave for the piano view (0..=8). Default 4.
     piano_view_octave: i8,
     scale_selector: Option<ScaleSelectorState>,
-    /// Live incoming-MIDI monitor, shown at the bottom under `--debug`.
-    midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
 }
 
 impl State {
-    /// Build the TUI state from a loaded session. Pure construction: no engine
-    /// commands are sent and no threads are spawned, so tests can build a
-    /// `State` around stub channels.
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        ctl: Controller,
-        model: SessionModel,
-        cmd_tx: Sender<GraphCommand>,
-        midi_tx: Sender<audio::MidiEvent>,
-        runtime: plugin::Runtime,
-        sample_rate: f32,
-        max_block_size: usize,
-        session_path: Option<PathBuf>,
-        catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>,
-        pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
-        learn_rx: crossbeam_channel::Receiver<crate::plugin::chain::MidiLearnedNotification>,
-        held: Arc<HeldNotes>,
-        piano_filter: Arc<PianoFilter>,
-        midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
-    ) -> State {
-        let SessionModel { instruments, groups } = model;
-
-        let tree_entries = build_tree_entries(&instruments, &groups);
-        let param_len = instruments.first()
+    /// Build the TUI state around a controller holding a loaded session. Pure
+    /// construction: no engine commands are sent and no threads are spawned, so
+    /// tests can build a `State` around stub channels.
+    fn new(ctl: Controller, catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>) -> State {
+        let tree_entries = build_tree_entries(&ctl.model.instruments, &ctl.model.groups);
+        let param_len = ctl.model.instruments.first()
             .and_then(|n| n.instrument.as_ref())
             .map_or(0, |p| p.params.len());
 
         let help_lines = build_help_lines();
 
-        // Determine initial BPM from loaded patterns (if any).
-        let initial_bpm = instruments.iter()
-            .filter_map(|n| n.pattern.as_ref())
-            .map(|p| p.bpm)
-            .next()
-            .unwrap_or(120.0);
-
         State {
+            ctl,
             active_tab: 0,
             chain_state: ListState::new(tree_entries.len()),
             param_state: ListState::new(param_len),
             tree_entries,
-            instruments,
-            groups,
             focus_params: false,
             help_lines,
             help_offset: 0,
@@ -491,33 +441,19 @@ impl State {
             catalog_scanning: true,
             areas: Areas::default(),
             quit: false,
-            session_path,
-            dirty: false,
             param_filter_input: TextInputState::new(""),
             param_filtering: false,
             param_filtered: (0..param_len).collect(),
-            ctl,
-            cmd_tx,
-            midi_tx,
-            runtime,
-            sample_rate,
-            max_block_size,
-            global_bpm: initial_bpm,
             bpm_editing: None,
             gain_editing: None,
             save_as: None,
-            pattern_rx,
-            learn_rx,
-            held,
-            piano_filter,
             piano_view_octave: 4,
             scale_selector: None,
-            midi_monitor,
         }
     }
 
     fn rebuild_tree(&mut self) {
-        self.tree_entries = build_tree_entries(&self.instruments, &self.groups);
+        self.tree_entries = build_tree_entries(&self.ctl.model.instruments, &self.ctl.model.groups);
         self.chain_state.set_len(self.tree_entries.len());
         self.sync_param_state();
     }
@@ -532,7 +468,7 @@ impl State {
             let addr = &self.tree_entries[sel].address;
             let param_len = match *addr {
                 TreeAddress::Pattern(inst) => {
-                    self.instruments.get(inst)
+                    self.ctl.model.instruments.get(inst)
                         .and_then(|n| n.pattern.as_ref())
                         .map_or(0, |p| {
                             let mut n = 4; // Length + Enabled + Loop + Transpose
@@ -674,13 +610,13 @@ impl State {
             | TreeAddress::Group(_)
             | TreeAddress::GroupModulator { .. } => None,
             TreeAddress::Instrument(inst) => {
-                self.instruments.get(inst)?.instrument.as_ref()
+                self.ctl.model.instruments.get(inst)?.instrument.as_ref()
             }
             TreeAddress::Effect { inst, index } => {
-                self.instruments.get(inst)?.effects.get(index)
+                self.ctl.model.instruments.get(inst)?.effects.get(index)
             }
             TreeAddress::GroupEffect { group, index } => {
-                self.groups.get(group)?.effects.get(index)
+                self.ctl.model.groups.get(group)?.effects.get(index)
             }
         }
     }
@@ -693,13 +629,13 @@ impl State {
             | TreeAddress::Group(_)
             | TreeAddress::GroupModulator { .. } => None,
             TreeAddress::Instrument(inst) => {
-                self.instruments.get_mut(inst)?.instrument.as_mut()
+                self.ctl.model.instruments.get_mut(inst)?.instrument.as_mut()
             }
             TreeAddress::Effect { inst, index } => {
-                self.instruments.get_mut(inst)?.effects.get_mut(index)
+                self.ctl.model.instruments.get_mut(inst)?.effects.get_mut(index)
             }
             TreeAddress::GroupEffect { group, index } => {
-                self.groups.get_mut(group)?.effects.get_mut(index)
+                self.ctl.model.groups.get_mut(group)?.effects.get_mut(index)
             }
         }
     }
@@ -710,19 +646,19 @@ impl State {
 
     /// A lane modulator by instrument + lane-global index.
     fn modulator(&self, inst: usize, mod_index: usize) -> Option<&ModulatorSlot> {
-        self.instruments.get(inst)?.modulators.get(mod_index)
+        self.ctl.model.instruments.get(inst)?.modulators.get(mod_index)
     }
 
     /// A group-scoped modulator by group + index.
     fn group_modulator(&self, group: usize, mod_index: usize) -> Option<&ModulatorSlot> {
-        self.groups.get(group)?.modulators.get(mod_index)
+        self.ctl.model.groups.get(group)?.modulators.get(mod_index)
     }
 
     /// The modulator list for a scope (lane rack or group rack).
     fn scoped_modulators_mut(&mut self, scope: ModScope) -> Option<&mut Vec<ModulatorSlot>> {
         match scope {
-            ModScope::Lane(inst) => self.instruments.get_mut(inst).map(|n| &mut n.modulators),
-            ModScope::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
+            ModScope::Lane(inst) => self.ctl.model.instruments.get_mut(inst).map(|n| &mut n.modulators),
+            ModScope::Group(group) => self.ctl.model.groups.get_mut(group).map(|g| &mut g.modulators),
         }
     }
 
@@ -785,7 +721,7 @@ impl State {
     /// live plugin (to hand to the audio thread) alongside the slot, or None
     /// on load failure.
     fn load_plugin_slot(&self, source: &str) -> Option<(Box<dyn plugin::Plugin>, PluginSlot)> {
-        let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
+        let loaded = match plugin::load(source, self.ctl.sample_rate, self.ctl.max_block_size, &self.ctl.runtime) {
             Ok(p) => p,
             Err(e) => {
                 log::error!("Failed to load plugin '{source}': {e}");
@@ -824,13 +760,13 @@ impl State {
     /// both the audio thread and the session model.
     fn set_instrument(&mut self, inst: usize, loaded: Box<dyn plugin::Plugin>, slot: PluginSlot) {
         let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
-        let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
+        let _ = self.ctl.cmd_tx.send(GraphCommand::SwapInstrument {
             inst,
             instrument: loaded,
             inst_buf,
             remapper: None,
         });
-        if let Some(inst_node) = self.instruments.get_mut(inst) {
+        if let Some(inst_node) = self.ctl.model.instruments.get_mut(inst) {
             inst_node.instrument = Some(slot);
         }
     }
@@ -868,9 +804,9 @@ impl State {
                 let mut slot = slot;
                 let mix = default_effect_mix(&source);
                 slot.mix = mix;
-                if let Some(inst_node) = self.instruments.get_mut(inst) {
+                if let Some(inst_node) = self.ctl.model.instruments.get_mut(inst) {
                     let insert_at = inst_node.effects.len();
-                    let _ = self.cmd_tx.send(GraphCommand::InsertEffect {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::InsertEffect {
                         inst,
                         index: insert_at,
                         effect: loaded,
@@ -883,9 +819,9 @@ impl State {
                 let mut slot = slot;
                 let mix = default_effect_mix(&source);
                 slot.mix = mix;
-                if let Some(g) = self.groups.get_mut(group) {
+                if let Some(g) = self.ctl.model.groups.get_mut(group) {
                     let insert_at = g.effects.len();
-                    let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::InsertGroupEffect {
                         group,
                         index: insert_at,
                         effect: loaded,
@@ -896,7 +832,7 @@ impl State {
             }
         }
 
-        self.dirty = true;
+        self.ctl.dirty = true;
         self.rebuild_tree();
     }
 
@@ -906,7 +842,7 @@ impl State {
     }
 
     fn open_target_selector(&mut self, inst: usize, mod_index: usize) {
-        let inst_node = match self.instruments.get(inst) {
+        let inst_node = match self.ctl.model.instruments.get(inst) {
             Some(n) => n,
             None => return,
         };
@@ -1012,14 +948,14 @@ impl State {
         };
         match ts.scope {
             ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddModTarget {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget {
                     inst,
                     mod_index: ts.mod_index,
                     target,
                 });
             }
             ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddGroupModTarget {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroupModTarget {
                     group,
                     mod_index: ts.mod_index,
                     target,
@@ -1044,7 +980,7 @@ impl State {
                 });
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
         self.rebuild_tree();
     }
 
@@ -1078,7 +1014,7 @@ impl State {
             FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
             FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
         ];
-        if let Some(node) = self.instruments.get(inst) {
+        if let Some(node) = self.ctl.model.instruments.get(inst) {
             for (i, m) in node.modulators.iter().enumerate() {
                 let label = m.source.label();
                 let idx = choices.len();
@@ -1142,8 +1078,8 @@ impl State {
             FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
         ];
         let rack_len = match scope {
-            ModScope::Lane(inst) => self.instruments.get(inst).map_or(0, |n| n.modulators.len()),
-            ModScope::Group(group) => self.groups.get(group).map_or(0, |g| g.modulators.len()),
+            ModScope::Lane(inst) => self.ctl.model.instruments.get(inst).map_or(0, |n| n.modulators.len()),
+            ModScope::Group(group) => self.ctl.model.groups.get(group).map_or(0, |g| g.modulators.len()),
         };
         for i in 0..rack_len {
             if i == mod_index {
@@ -1215,14 +1151,14 @@ impl State {
                 };
                 match ms.scope {
                     ModScope::Lane(inst) => {
-                        let _ = self.cmd_tx.send(GraphCommand::InsertModulator {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::InsertModulator {
                             inst,
                             index: mod_index,
                             source: graph_source,
                         });
                     }
                     ModScope::Group(group) => {
-                        let _ = self.cmd_tx.send(GraphCommand::InsertGroupModulator {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::InsertGroupModulator {
                             group,
                             index: mod_index,
                             source: graph_source,
@@ -1248,10 +1184,10 @@ impl State {
         };
         match ms.scope {
             ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
             }
             ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
             }
         }
         if let Some(mods) = self.scoped_modulators_mut(ms.scope) {
@@ -1266,7 +1202,7 @@ impl State {
                 });
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
         self.rebuild_tree();
     }
 
@@ -1275,7 +1211,7 @@ impl State {
     /// group's own bus effects (`GroupBus`), and sibling group modulators.
     fn open_group_target_selector(&mut self, group: usize, mod_index: usize) {
         use crate::plugin::chain::ModTargetKind;
-        let group_node = match self.groups.get(group) {
+        let group_node = match self.ctl.model.groups.get(group) {
             Some(g) => g,
             None => return,
         };
@@ -1285,7 +1221,7 @@ impl State {
         // Member instruments' params (instrument slot 0 + effects 1..N), labelled
         // by member ordinal and plugin.
         let members: Vec<&InstrumentNode> =
-            self.instruments.iter().filter(|n| n.group == Some(group)).collect();
+            self.ctl.model.instruments.iter().filter(|n| n.group == Some(group)).collect();
         for (ord, member) in members.iter().enumerate() {
             let chain: Vec<(usize, &PluginSlot)> = std::iter::once(member.instrument.as_ref())
                 .chain(member.effects.iter().map(Some))
@@ -1452,7 +1388,7 @@ impl State {
             FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
             FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
         ];
-        if let Some(node) = self.groups.get(group) {
+        if let Some(node) = self.ctl.model.groups.get(group) {
             for (i, m) in node.modulators.iter().enumerate() {
                 let label = m.source.label();
                 let idx = choices.len();
@@ -1552,14 +1488,14 @@ impl State {
         };
         match scope {
             ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::InsertModulator {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::InsertModulator {
                     inst,
                     index: mod_index,
                     source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
                 });
             }
             ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::InsertGroupModulator {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::InsertGroupModulator {
                     group,
                     index: mod_index,
                     source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
@@ -1577,10 +1513,10 @@ impl State {
         let target = ModTarget { kind: kind.clone(), depth: 1.0, base_value: base, param_min: min, param_max: max };
         match scope {
             ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
             }
             ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
             }
         }
         if let Some(ms) = self.scoped_modulators_mut(scope) {
@@ -1595,20 +1531,20 @@ impl State {
                 });
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
         self.rebuild_tree();
     }
 
     /// Open the "assign to group" popup for instrument `inst`.
     fn open_group_assign(&mut self, inst: usize) {
-        let current = self.instruments.get(inst).and_then(|n| n.group);
+        let current = self.ctl.model.instruments.get(inst).and_then(|n| n.group);
         let mut choices = vec![GroupAssignChoice::New];
         let mut items = vec![FilterListItem { cells: vec!["New group".into()], index: 0 }];
         if current.is_some() {
             choices.push(GroupAssignChoice::Ungroup);
             items.push(FilterListItem { cells: vec!["Ungroup".into()], index: 1 });
         }
-        for (g_idx, group) in self.groups.iter().enumerate() {
+        for (g_idx, group) in self.ctl.model.groups.iter().enumerate() {
             let name = group.name.clone().unwrap_or_else(|| format!("Group {}", g_idx + 1));
             let marker = if current == Some(g_idx) { " (current)" } else { "" };
             let idx = choices.len();
@@ -1634,35 +1570,35 @@ impl State {
             GroupAssignChoice::Ungroup => None,
             GroupAssignChoice::Existing(g) => Some(g),
             GroupAssignChoice::New => {
-                let g = self.groups.len();
-                let _ = self.cmd_tx.send(GraphCommand::AddGroup);
-                self.groups.push(GroupNode { name: None, volume: 1.0, pan: 0.0, effects: vec![], modulators: vec![] });
+                let g = self.ctl.model.groups.len();
+                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroup);
+                self.ctl.model.groups.push(GroupNode { name: None, volume: 1.0, pan: 0.0, effects: vec![], modulators: vec![] });
                 Some(g)
             }
         };
-        let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: new_group });
+        let _ = self.ctl.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: new_group });
         // Keep group-modulator member ordinals in sync with membership (mirrors
         // the audio thread's SetLaneGroup fixups).
-        let old = lane_member_ordinal(&self.instruments, inst);
-        if let Some(node) = self.instruments.get_mut(inst) {
+        let old = lane_member_ordinal(&self.ctl.model.instruments, inst);
+        if let Some(node) = self.ctl.model.instruments.get_mut(inst) {
             node.group = new_group;
         }
-        let new = lane_member_ordinal(&self.instruments, inst);
+        let new = lane_member_ordinal(&self.ctl.model.instruments, inst);
         let old_group = old.map(|(g, _)| g);
         let new_group_idx = new.map(|(g, _)| g);
         if old_group != new_group_idx {
             if let Some((og, oo)) = old {
-                if let Some(g) = self.groups.get_mut(og) {
+                if let Some(g) = self.ctl.model.groups.get_mut(og) {
                     fixup_group_member_after_remove(&mut g.modulators, oo);
                 }
             }
             if let Some((ng, no)) = new {
-                if let Some(g) = self.groups.get_mut(ng) {
+                if let Some(g) = self.ctl.model.groups.get_mut(ng) {
                     shift_group_member_after_insert(&mut g.modulators, no);
                 }
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
         self.rebuild_tree();
     }
 
@@ -1680,7 +1616,7 @@ impl State {
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         // Pre-select the current scale if it's in the list.
-        let current = self.piano_filter.scale();
+        let current = self.ctl.piano_filter.scale();
         if let Some(i) = entries
             .iter()
             .position(|(_, r, s)| *r == current.root && *s == current.scale_idx)
@@ -1704,11 +1640,11 @@ impl State {
             None => return,
         };
         let (root, scale_idx) = ss.entries[item.index];
-        let current = self.piano_filter.scale();
+        let current = self.ctl.piano_filter.scale();
         if current.root != root || current.scale_idx != scale_idx {
             let new_scale = ScaleSetting { root, scale_idx };
-            self.piano_filter.set_scale(new_scale);
-            self.dirty = true;
+            self.ctl.piano_filter.set_scale(new_scale);
+            self.ctl.dirty = true;
             log::info!("Scale set to {}", new_scale.display());
         }
     }
@@ -1717,9 +1653,9 @@ impl State {
     /// slot=1..N = effects.
     fn open_preset_selector(&mut self, inst: usize, slot: usize) {
         let plugin = if slot == 0 {
-            self.instruments.get(inst).and_then(|n| n.instrument.as_ref())
+            self.ctl.model.instruments.get(inst).and_then(|n| n.instrument.as_ref())
         } else {
-            self.instruments.get(inst).and_then(|n| n.effects.get(slot - 1))
+            self.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(slot - 1))
         };
         let plugin = match plugin {
             Some(p) => p,
@@ -1773,9 +1709,9 @@ impl State {
         // plugin to query post-preset parameter values for the UI mirror.
         let source = {
             let plugin = if ps.slot == 0 {
-                self.instruments.get(ps.inst).and_then(|n| n.instrument.as_ref())
+                self.ctl.model.instruments.get(ps.inst).and_then(|n| n.instrument.as_ref())
             } else {
-                self.instruments.get(ps.inst).and_then(|n| n.effects.get(ps.slot - 1))
+                self.ctl.model.instruments.get(ps.inst).and_then(|n| n.effects.get(ps.slot - 1))
             };
             match plugin {
                 Some(p) => p.id.clone(),
@@ -1784,7 +1720,7 @@ impl State {
         };
 
         // Drive the audio thread first — that's what actually changes the sound.
-        let _ = self.cmd_tx.send(GraphCommand::LoadPreset {
+        let _ = self.ctl.cmd_tx.send(GraphCommand::LoadPreset {
             inst: ps.inst,
             slot: ps.slot,
             preset_id: preset_id.clone(),
@@ -1794,7 +1730,7 @@ impl State {
         // via a throwaway plugin instance because the live plugin is owned by
         // the audio thread; loading twice is acceptable at preset-switch time.
         let mut new_values: Option<Vec<f32>> = None;
-        match plugin::load(&source, self.sample_rate, self.max_block_size, &self.runtime) {
+        match plugin::load(&source, self.ctl.sample_rate, self.ctl.max_block_size, &self.ctl.runtime) {
             Ok(mut temp) => {
                 crate::session::apply_preset(&mut temp, &preset_name);
                 let params = temp.parameters();
@@ -1812,9 +1748,9 @@ impl State {
         // Update mirror. Set both `value` and `default` (the save-filter
         // baseline) so the new preset's parameters aren't written as overrides.
         let plugin_mut = if ps.slot == 0 {
-            self.instruments.get_mut(ps.inst).and_then(|n| n.instrument.as_mut())
+            self.ctl.model.instruments.get_mut(ps.inst).and_then(|n| n.instrument.as_mut())
         } else {
-            self.instruments.get_mut(ps.inst).and_then(|n| n.effects.get_mut(ps.slot - 1))
+            self.ctl.model.instruments.get_mut(ps.inst).and_then(|n| n.effects.get_mut(ps.slot - 1))
         };
         if let Some(p) = plugin_mut {
             p.current_preset = Some(preset_name);
@@ -1832,7 +1768,7 @@ impl State {
             }
         }
 
-        self.dirty = true;
+        self.ctl.dirty = true;
         self.rebuild_tree();
     }
 
@@ -1840,23 +1776,23 @@ impl State {
     /// `f` to its current value, clamping to that param's range and mirroring
     /// the change to the audio thread.
     fn set_group_bus_param(&mut self, group: usize, pa: usize, f: impl FnOnce(f32) -> f32) {
-        let Some(g) = self.groups.get_mut(group) else {
+        let Some(g) = self.ctl.model.groups.get_mut(group) else {
             return;
         };
         match pa {
             0 => {
                 g.volume = f(g.volume).clamp(0.0, 4.0);
                 let value = g.volume;
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
             }
             1 => {
                 g.pan = f(g.pan).clamp(-1.0, 1.0);
                 let value = g.pan;
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupPan { group, value });
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupPan { group, value });
             }
             _ => return,
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
     }
 
     fn adjust_param(&mut self, delta: f32) {
@@ -1878,13 +1814,13 @@ impl State {
                     param.value = param.value.round();
                 }
                 let (value, param_index) = (param.value, param.index);
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupParameter {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupParameter {
                     group,
                     index,
                     param_index,
                     value,
                 });
-                self.dirty = true;
+                self.ctl.dirty = true;
             }
             return;
         }
@@ -1936,18 +1872,18 @@ impl State {
             }
             let new_value = param.value;
             let idx = param.index;
-            let _ = self.cmd_tx.send(GraphCommand::SetParameter {
+            let _ = self.ctl.cmd_tx.send(GraphCommand::SetParameter {
                 inst,
                 slot,
                 param_index: idx,
                 value: new_value,
             });
-            self.dirty = true;
+            self.ctl.dirty = true;
         }
     }
 
     fn adjust_pattern_param(&mut self, inst: usize, pa: usize, delta: f32) {
-        let pat = match self.instruments.get_mut(inst)
+        let pat = match self.ctl.model.instruments.get_mut(inst)
             .and_then(|n| n.pattern.as_mut())
         {
             Some(p) => p,
@@ -1957,36 +1893,36 @@ impl State {
             0 => {
                 // Length (beats)
                 pat.length_beats = (pat.length_beats + delta).clamp(1.0, 32.0);
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternLength {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
                     inst, beats: pat.length_beats,
                 });
-                self.dirty = true;
+                self.ctl.dirty = true;
                 self.rebuild_tree();
             }
             1 => {
                 // Enabled (enum toggle)
                 pat.enabled = !pat.enabled;
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternEnabled {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternEnabled {
                     inst, enabled: pat.enabled,
                 });
-                self.dirty = true;
+                self.ctl.dirty = true;
                 self.rebuild_tree();
             }
             2 => {
                 // Loop (enum toggle)
                 pat.looping = !pat.looping;
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternLooping {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternLooping {
                     inst, looping: pat.looping,
                 });
-                self.dirty = true;
+                self.ctl.dirty = true;
             }
             3 => {
                 // Transpose (enum toggle: chromatic / in-key)
                 pat.in_key = !pat.in_key;
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternInKey {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternInKey {
                     inst, in_key: pat.in_key,
                 });
-                self.dirty = true;
+                self.ctl.dirty = true;
             }
             _ => {} // Notes row is informational
         }
@@ -1994,8 +1930,8 @@ impl State {
 
     fn adjust_modulator_param(&mut self, inst: usize, mod_index: usize, pa: usize, delta: f32) {
         // Direct field access (not the modulator_mut helper) so the modulator
-        // borrow stays disjoint from self.cmd_tx for the command sends below.
-        let m = match self.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
+        // borrow stays disjoint from self.ctl.cmd_tx for the command sends below.
+        let m = match self.ctl.model.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
             Some(m) => m,
             None => return,
         };
@@ -2014,7 +1950,7 @@ impl State {
             };
             let graph_source = mod_source_slot_to_graph(&new_source);
             m.source = new_source;
-            let _ = self.cmd_tx.send(GraphCommand::SetModulatorSource {
+            let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorSource {
                 inst, mod_index,
                 source: graph_source,
             });
@@ -2026,7 +1962,7 @@ impl State {
                     if pa == 1 {
                         // Waveform (enum).
                         *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
-                        let _ = self.cmd_tx.send(GraphCommand::SetModulatorWaveform {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorWaveform {
                             inst, mod_index,
                             waveform: *waveform,
                         });
@@ -2034,7 +1970,7 @@ impl State {
                     } else if pa == 2 {
                         // Rate.
                         *rate = (*rate + delta).clamp(0.01, 50.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetModulatorRate {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorRate {
                             inst, mod_index,
                             rate: *rate,
                         });
@@ -2043,7 +1979,7 @@ impl State {
                         // Separator row — no-op.
                     } else if let Some(t) = m.targets.get_mut(pa - 4) {
                         t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
                             inst, mod_index,
                             target_index: pa - 4,
                             depth: t.depth,
@@ -2071,7 +2007,7 @@ impl State {
                             let target_idx = pa - 6;
                             if let Some(t) = m.targets.get_mut(target_idx) {
                                 t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                                let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
+                                let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
                                     inst, mod_index,
                                     target_index: target_idx,
                                     depth: t.depth,
@@ -2080,7 +2016,7 @@ impl State {
                         }
                     }
                     if (1..=4).contains(&pa) {
-                        let _ = self.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
                             inst, mod_index,
                             attack: *attack, decay: *decay, sustain: *sustain, release: *release,
                         });
@@ -2091,7 +2027,7 @@ impl State {
                     if pa >= 2 {
                         if let Some(t) = m.targets.get_mut(pa - 2) {
                             t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
+                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
                                 inst, mod_index,
                                 target_index: pa - 2,
                                 depth: t.depth,
@@ -2101,7 +2037,7 @@ impl State {
                 }
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
     }
 
     fn set_param_value(&mut self, value: f32) {
@@ -2120,13 +2056,13 @@ impl State {
             if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
                 param.value = value.clamp(param.min, param.max);
                 let (value, param_index) = (param.value, param.index);
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupParameter {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupParameter {
                     group,
                     index,
                     param_index,
                     value,
                 });
-                self.dirty = true;
+                self.ctl.dirty = true;
             }
             return;
         }
@@ -2156,14 +2092,14 @@ impl State {
             if pa == 0 {
                 // Length (beats) — set directly.
                 let clamped = value.clamp(1.0, 32.0);
-                if let Some(pat) = self.instruments.get_mut(inst)
+                if let Some(pat) = self.ctl.model.instruments.get_mut(inst)
                     .and_then(|n| n.pattern.as_mut())
                 {
                     pat.length_beats = clamped;
-                    let _ = self.cmd_tx.send(GraphCommand::SetPatternLength {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
                         inst, beats: clamped,
                     });
-                    self.dirty = true;
+                    self.ctl.dirty = true;
                     self.rebuild_tree();
                 }
             }
@@ -2186,20 +2122,20 @@ impl State {
             param.value = value.clamp(param.min, param.max);
             let new_value = param.value;
             let idx = param.index;
-            let _ = self.cmd_tx.send(GraphCommand::SetParameter {
+            let _ = self.ctl.cmd_tx.send(GraphCommand::SetParameter {
                 inst,
                 slot,
                 param_index: idx,
                 value: new_value,
             });
-            self.dirty = true;
+            self.ctl.dirty = true;
         }
     }
 
     fn set_modulator_param_value(&mut self, inst: usize, mod_index: usize, pa: usize, value: f32) {
         // Direct field access (not the modulator_mut helper) so the modulator
-        // borrow stays disjoint from self.cmd_tx for the command sends below.
-        let m = match self.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
+        // borrow stays disjoint from self.ctl.cmd_tx for the command sends below.
+        let m = match self.ctl.model.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
             Some(m) => m,
             None => return,
         };
@@ -2214,7 +2150,7 @@ impl State {
                     return;
                 } else if pa == 2 {
                     *rate = value.clamp(0.01, 50.0);
-                    let _ = self.cmd_tx.send(GraphCommand::SetModulatorRate {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorRate {
                         inst, mod_index, rate: *rate,
                     });
                     self.rebuild_tree();
@@ -2223,7 +2159,7 @@ impl State {
                     return;
                 } else if let Some(t) = m.targets.get_mut(pa - 4) {
                     t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                    let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
                         inst, mod_index,
                         target_index: pa - 4,
                         depth: t.depth,
@@ -2241,17 +2177,17 @@ impl State {
                         let target_idx = pa - 6;
                         if let Some(t) = m.targets.get_mut(target_idx) {
                             t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
+                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
                                 inst, mod_index,
                                 target_index: target_idx,
                                 depth: t.depth,
                             });
                         }
-                        self.dirty = true;
+                        self.ctl.dirty = true;
                         return;
                     }
                 }
-                let _ = self.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
                     inst, mod_index,
                     attack: *attack, decay: *decay, sustain: *sustain, release: *release,
                 });
@@ -2261,7 +2197,7 @@ impl State {
                 if pa >= 2 {
                     if let Some(t) = m.targets.get_mut(pa - 2) {
                         t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
                             inst, mod_index,
                             target_index: pa - 2,
                             depth: t.depth,
@@ -2272,13 +2208,13 @@ impl State {
                 }
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
     }
 
     /// Group-rack mirror of `adjust_modulator_param`: edits the group modulator
     /// at `group`/`mod_index` and emits the corresponding `SetGroupModulator*`.
     fn adjust_group_modulator_param(&mut self, group: usize, mod_index: usize, pa: usize, delta: f32) {
-        let m = match self.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
+        let m = match self.ctl.model.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
             Some(m) => m,
             None => return,
         };
@@ -2296,7 +2232,7 @@ impl State {
             };
             let graph_source = mod_source_slot_to_graph(&new_source);
             m.source = new_source;
-            let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorSource {
+            let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorSource {
                 group, mod_index,
                 source: graph_source,
             });
@@ -2307,14 +2243,14 @@ impl State {
                 ModSourceSlot::Lfo { waveform, rate } => {
                     if pa == 1 {
                         *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorWaveform {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorWaveform {
                             group, mod_index,
                             waveform: *waveform,
                         });
                         self.rebuild_tree();
                     } else if pa == 2 {
                         *rate = (*rate + delta).clamp(0.01, 50.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
                             group, mod_index,
                             rate: *rate,
                         });
@@ -2323,7 +2259,7 @@ impl State {
                         // Separator row — no-op.
                     } else if let Some(t) = m.targets.get_mut(pa - 4) {
                         t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
                             group, mod_index,
                             target_index: pa - 4,
                             depth: t.depth,
@@ -2341,7 +2277,7 @@ impl State {
                             let target_idx = pa - 6;
                             if let Some(t) = m.targets.get_mut(target_idx) {
                                 t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                                let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
+                                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
                                     group, mod_index,
                                     target_index: target_idx,
                                     depth: t.depth,
@@ -2350,7 +2286,7 @@ impl State {
                         }
                     }
                     if (1..=4).contains(&pa) {
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
                             group, mod_index,
                             attack: *attack, decay: *decay, sustain: *sustain, release: *release,
                         });
@@ -2361,7 +2297,7 @@ impl State {
                     if pa >= 2 {
                         if let Some(t) = m.targets.get_mut(pa - 2) {
                             t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
+                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
                                 group, mod_index,
                                 target_index: pa - 2,
                                 depth: t.depth,
@@ -2371,12 +2307,12 @@ impl State {
                 }
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
     }
 
     /// Group-rack mirror of `set_modulator_param_value`.
     fn set_group_modulator_param_value(&mut self, group: usize, mod_index: usize, pa: usize, value: f32) {
-        let m = match self.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
+        let m = match self.ctl.model.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
             Some(m) => m,
             None => return,
         };
@@ -2389,7 +2325,7 @@ impl State {
                     return; // Waveform enum.
                 } else if pa == 2 {
                     *rate = value.clamp(0.01, 50.0);
-                    let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
                         group, mod_index, rate: *rate,
                     });
                     self.rebuild_tree();
@@ -2397,7 +2333,7 @@ impl State {
                     return; // Separator.
                 } else if let Some(t) = m.targets.get_mut(pa - 4) {
                     t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                    let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
+                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
                         group, mod_index,
                         target_index: pa - 4,
                         depth: t.depth,
@@ -2415,17 +2351,17 @@ impl State {
                         let target_idx = pa - 6;
                         if let Some(t) = m.targets.get_mut(target_idx) {
                             t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
+                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
                                 group, mod_index,
                                 target_index: target_idx,
                                 depth: t.depth,
                             });
                         }
-                        self.dirty = true;
+                        self.ctl.dirty = true;
                         return;
                     }
                 }
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
+                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
                     group, mod_index,
                     attack: *attack, decay: *decay, sustain: *sustain, release: *release,
                 });
@@ -2435,7 +2371,7 @@ impl State {
                 if pa >= 2 {
                     if let Some(t) = m.targets.get_mut(pa - 2) {
                         t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
+                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
                             group, mod_index,
                             target_index: pa - 2,
                             depth: t.depth,
@@ -2446,11 +2382,11 @@ impl State {
                 }
             }
         }
-        self.dirty = true;
+        self.ctl.dirty = true;
     }
 
     fn save_session(&mut self) {
-        let path = match &self.session_path {
+        let path = match &self.ctl.session_path {
             Some(p) => p.clone(),
             None => {
                 log::warn!("No session path — cannot save");
@@ -2465,13 +2401,13 @@ impl State {
     /// Save the session to `path`. Does not touch `session_path` — callers
     /// decide what a failed save means for the current path.
     fn save_session_to(&mut self, path: &Path) -> anyhow::Result<()> {
-        let (instruments, groups) = crate::app::save::to_save(&self.instruments, &self.groups);
+        let (instruments, groups) = crate::app::save::to_save(&self.ctl.model.instruments, &self.ctl.model.groups);
         let piano = crate::session::PianoConfig {
-            scale: Some(self.piano_filter.scale().short()),
-            locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
+            scale: Some(self.ctl.piano_filter.scale().short()),
+            locked: matches!(self.ctl.piano_filter.mode(), PianoMode::Locked),
         };
         crate::session::save(path, &instruments, &groups, Some(&piano))?;
-        self.dirty = false;
+        self.ctl.dirty = false;
         log::info!("Session saved to {}", path.display());
         Ok(())
     }
@@ -2481,22 +2417,7 @@ impl State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    ctl: Controller,
-    model: SessionModel,
-    cmd_tx: Sender<GraphCommand>,
-    midi_tx: Sender<audio::MidiEvent>,
-    runtime: plugin::Runtime,
-    sample_rate: f32,
-    max_block_size: usize,
-    session_path: Option<PathBuf>,
-    pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
-    learn_rx: crossbeam_channel::Receiver<crate::plugin::chain::MidiLearnedNotification>,
-    held: Arc<HeldNotes>,
-    piano_filter: Arc<PianoFilter>,
-    midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
-) -> anyhow::Result<Controller> {
+pub fn run(ctl: Controller) -> anyhow::Result<Controller> {
     // Suppress Rust logging for the whole TUI lifetime when stderr is the
     // terminal: the background catalog scan and plugin loads log verbosely and
     // would corrupt the alternate screen. Must be set BEFORE the scan spawns,
@@ -2525,22 +2446,7 @@ pub fn run(
     // in the event loop. The catalog is only needed by the selector popup.
     let catalog_rx = spawn_catalog_scan();
 
-    let mut s = State::new(
-        ctl,
-        model,
-        cmd_tx,
-        midi_tx,
-        runtime,
-        sample_rate,
-        max_block_size,
-        session_path,
-        catalog_rx,
-        pattern_rx,
-        learn_rx,
-        held,
-        piano_filter,
-        midi_monitor,
-    );
+    let mut s = State::new(ctl, catalog_rx);
 
     // Probe keyboard enhancement support (must be done before entering raw mode).
     let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
@@ -2600,12 +2506,12 @@ fn tick(s: &mut State) {
     }
 
     // Drain pattern recording completion notifications.
-    while let Ok(notif) = s.pattern_rx.try_recv() {
-        if let Some(inst_node) = s.instruments.get_mut(notif.inst) {
+    while let Ok(notif) = s.ctl.pattern_rx.try_recv() {
+        if let Some(inst_node) = s.ctl.model.instruments.get_mut(notif.inst) {
             // Re-recording replaces the events but keeps the transpose mode.
             let in_key = inst_node.pattern.as_ref().is_some_and(|p| p.in_key);
             inst_node.pattern = Some(PatternState {
-                bpm: s.global_bpm,
+                bpm: s.ctl.global_bpm,
                 length_beats: notif.length_beats,
                 looping: notif.looping,
                 base_note: notif.base_note,
@@ -2614,13 +2520,13 @@ fn tick(s: &mut State) {
                 recording: false,
                 in_key,
             });
-            s.dirty = true;
+            s.ctl.dirty = true;
             s.rebuild_tree();
         }
     }
 
     // Drain MIDI-learn captures: fill in the bound control on the model.
-    while let Ok(notif) = s.learn_rx.try_recv() {
+    while let Ok(notif) = s.ctl.learn_rx.try_recv() {
         use crate::plugin::chain::ModulatorLocation;
         let scope = match notif.location {
             ModulatorLocation::Lane(inst) => ModScope::Lane(inst),
@@ -2635,7 +2541,7 @@ fn tick(s: &mut State) {
                 *learning = false;
             }
         }
-        s.dirty = true;
+        s.ctl.dirty = true;
         s.rebuild_tree();
     }
 }
@@ -2910,12 +2816,13 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
                 }
             };
             let _ = s
+                .ctl
                 .cmd_tx
                 .send(GraphCommand::SetInstrumentRange { inst, range });
-            if let Some(node) = s.instruments.get_mut(inst) {
+            if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
                 node.range = range;
             }
-            s.dirty = true;
+            s.ctl.dirty = true;
             s.rebuild_tree();
             s.range_edit = None;
         }
@@ -2939,10 +2846,10 @@ fn handle_rename_group_key(s: &mut State, code: KeyCode) {
             let group = rg.group;
             // Empty clears the custom name (falls back to "Group N"). The name
             // is display-only, so no audio-thread command is needed.
-            if let Some(g) = s.groups.get_mut(group) {
+            if let Some(g) = s.ctl.model.groups.get_mut(group) {
                 g.name = if name.is_empty() { None } else { Some(name) };
             }
-            s.dirty = true;
+            s.ctl.dirty = true;
             s.rebuild_tree();
             s.rename_group = None;
         }
@@ -2964,10 +2871,10 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Enter => {
             if let Ok(val) = edit.input.value.trim().parse::<f32>() {
                 let bpm = val.clamp(edit.param_min, edit.param_max);
-                s.global_bpm = bpm;
-                let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
+                s.ctl.global_bpm = bpm;
+                let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
                 // Update all pattern states
-                for inst_node in &mut s.instruments {
+                for inst_node in &mut s.ctl.model.instruments {
                     if let Some(ref mut p) = inst_node.pattern {
                         p.bpm = bpm;
                     }
@@ -2997,37 +2904,37 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
                 match ge.target {
                     GainTarget::Mix { index } => {
                         // Audio slot: 0 = instrument, 1..N = effects.
-                        let _ = s.cmd_tx.send(GraphCommand::SetMix {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetMix {
                             inst,
                             slot: index + 1,
                             value,
                         });
                         if let Some(fx) =
-                            s.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(index))
+                            s.ctl.model.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(index))
                         {
                             fx.mix = value;
                         }
                     }
                     GainTarget::Volume => {
-                        let _ = s.cmd_tx.send(GraphCommand::SetVolume { inst, value });
-                        if let Some(node) = s.instruments.get_mut(inst) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetVolume { inst, value });
+                        if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
                             node.volume = value;
                         }
                     }
                     GainTarget::GroupVolume { group } => {
-                        let _ = s.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
-                        if let Some(g) = s.groups.get_mut(group) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
+                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
                             g.volume = value;
                         }
                     }
                     GainTarget::GroupMix { group, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::SetGroupMix { group, index, value });
-                        if let Some(fx) = s.groups.get_mut(group).and_then(|g| g.effects.get_mut(index)) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGroupMix { group, index, value });
+                        if let Some(fx) = s.ctl.model.groups.get_mut(group).and_then(|g| g.effects.get_mut(index)) {
                             fx.mix = value;
                         }
                     }
                 }
-                s.dirty = true;
+                s.ctl.dirty = true;
             }
             s.gain_editing = None;
         }
@@ -3056,6 +2963,7 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
             }
             // Save into the current session's directory (fallback: cwd).
             let dir = s
+                .ctl
                 .session_path
                 .as_ref()
                 .and_then(|p| p.parent())
@@ -3065,7 +2973,7 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
             match s.save_session_to(&path) {
                 Ok(()) => {
                     // Subsequent Ctrl+S now targets the new file.
-                    s.session_path = Some(path);
+                    s.ctl.session_path = Some(path);
                     s.save_as = None;
                 }
                 Err(e) => {
@@ -3144,6 +3052,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 && modifiers.contains(KeyModifiers::SHIFT) =>
         {
             let current = s
+                .ctl
                 .session_path
                 .as_ref()
                 .and_then(|p| p.file_name())
@@ -3169,12 +3078,12 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             s.open_scale_selector();
         }
         KeyCode::Char('l') if s.active_tab == 1 => {
-            let new_mode = match s.piano_filter.mode() {
+            let new_mode = match s.ctl.piano_filter.mode() {
                 PianoMode::Highlight => PianoMode::Locked,
                 PianoMode::Locked => PianoMode::Highlight,
             };
-            s.piano_filter.set_mode(new_mode);
-            s.dirty = true;
+            s.ctl.piano_filter.set_mode(new_mode);
+            s.ctl.dirty = true;
             log::info!("Piano mode → {}", new_mode.label());
         }
         KeyCode::Char('[') if s.active_tab == 1 && s.piano_view_octave > 0 => {
@@ -3196,9 +3105,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // makes sound even if the selector is dismissed without a pick. Set its
         // key range afterwards with 'R'. This is how you build a keyboard split.
         KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
-            let new_idx = s.instruments.len();
-            let _ = s.cmd_tx.send(GraphCommand::AddInstrument { range: None });
-            s.instruments.push(InstrumentNode {
+            let new_idx = s.ctl.model.instruments.len();
+            let _ = s.ctl.cmd_tx.send(GraphCommand::AddInstrument { range: None });
+            s.ctl.model.instruments.push(InstrumentNode {
                 range: None,
                 transpose: 0,
                 volume: 1.0,
@@ -3215,7 +3124,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if let Some((loaded, slot)) = s.load_plugin_slot("builtin:osc") {
                 s.set_instrument(new_idx, loaded, slot);
             }
-            s.dirty = true;
+            s.ctl.dirty = true;
             s.rebuild_tree();
             // Move the cursor onto the new lane so the selector fills it.
             if let Some(pos) = s.tree_entries.iter().position(
@@ -3232,6 +3141,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('R') if s.active_tab == 0 && !s.focus_params => {
             if let Some(TreeAddress::Group(group)) = s.selected_address().copied() {
                 let initial = s
+                    .ctl
+                    .model
                     .groups
                     .get(group)
                     .and_then(|g| g.name.clone())
@@ -3241,6 +3152,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 s.rename_group = Some(RenameGroupState { group, input });
             } else if let Some(inst) = s.selected_inst() {
                 let initial = s
+                    .ctl
+                    .model
                     .instruments
                     .get(inst)
                     .and_then(|n| n.range)
@@ -3311,9 +3224,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 _ => None,
             };
             if let Some(g) = group {
-                if let Some(node) = s.groups.get_mut(g) {
+                if let Some(node) = s.ctl.model.groups.get_mut(g) {
                     let mod_index = node.modulators.len();
-                    let _ = s.cmd_tx.send(GraphCommand::InsertGroupModulator {
+                    let _ = s.ctl.cmd_tx.send(GraphCommand::InsertGroupModulator {
                         group: g,
                         index: mod_index,
                         source: crate::plugin::chain::ModSource::Lfo {
@@ -3329,13 +3242,13 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         },
                         targets: vec![],
                     });
-                    s.dirty = true;
+                    s.ctl.dirty = true;
                     s.rebuild_tree();
                 }
             } else if let Some(inst) = s.selected_address().and_then(|a| a.inst()) {
-                if let Some(node) = s.instruments.get_mut(inst) {
+                if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
                     let mod_index = node.modulators.len();
-                    let _ = s.cmd_tx.send(GraphCommand::InsertModulator {
+                    let _ = s.ctl.cmd_tx.send(GraphCommand::InsertModulator {
                         inst,
                         index: mod_index,
                         source: crate::plugin::chain::ModSource::Lfo {
@@ -3351,7 +3264,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         },
                         targets: vec![],
                     });
-                    s.dirty = true;
+                    s.ctl.dirty = true;
                     s.rebuild_tree();
                 }
             }
@@ -3400,11 +3313,11 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 _ => None,
             };
             if let Some(inst) = target {
-                if let Some(inst_node) = s.instruments.get_mut(inst) {
+                if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
                     let currently_recording = inst_node.pattern.as_ref().is_some_and(|p| p.recording);
                     if currently_recording {
                         // Stop recording
-                        let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: false });
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: false });
                         if let Some(ref mut p) = inst_node.pattern {
                             p.recording = false;
                         }
@@ -3412,7 +3325,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         // Start recording: create pattern state if needed
                         if inst_node.pattern.is_none() {
                             inst_node.pattern = Some(PatternState {
-                                bpm: s.global_bpm,
+                                bpm: s.ctl.global_bpm,
                                 length_beats: 4.0,
                                 looping: true,
                                 base_note: None,
@@ -3423,15 +3336,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             });
                         }
                         // Send BPM and length first
-                        let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.global_bpm });
-                        let _ = s.cmd_tx.send(GraphCommand::SetPatternLength {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.ctl.global_bpm });
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
                             inst,
                             beats: inst_node.pattern.as_ref().unwrap().length_beats,
                         });
-                        let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: true });
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: true });
                         inst_node.pattern.as_mut().unwrap().recording = true;
                     }
-                    s.dirty = true;
+                    s.ctl.dirty = true;
                     s.rebuild_tree();
                 }
             }
@@ -3440,7 +3353,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // 'b' — edit BPM.
         KeyCode::Char('b') if s.active_tab == 0 && !s.focus_params => {
             s.bpm_editing = Some(EditState {
-                input: TextInputState::new(&format!("{:.0}", s.global_bpm)),
+                input: TextInputState::new(&format!("{:.0}", s.ctl.global_bpm)),
                 param_name: "BPM".to_string(),
                 param_min: 20.0,
                 param_max: 300.0,
@@ -3451,11 +3364,11 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('x') if s.active_tab == 0 && !s.focus_params => {
             let (target, mix) = match s.selected_address().copied() {
                 Some(TreeAddress::Effect { inst, index }) => {
-                    let mix = s.instruments.get(inst).and_then(|n| n.effects.get(index)).map_or(1.0, |fx| fx.mix);
+                    let mix = s.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(index)).map_or(1.0, |fx| fx.mix);
                     (Some((inst, GainTarget::Mix { index })), mix)
                 }
                 Some(TreeAddress::GroupEffect { group, index }) => {
-                    let mix = s.groups.get(group).and_then(|g| g.effects.get(index)).map_or(1.0, |fx| fx.mix);
+                    let mix = s.ctl.model.groups.get(group).and_then(|g| g.effects.get(index)).map_or(1.0, |fx| fx.mix);
                     (Some((0, GainTarget::GroupMix { group, index })), mix)
                 }
                 _ => (None, 1.0),
@@ -3479,12 +3392,12 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('v') if s.active_tab == 0 && !s.focus_params => {
             let (inst, target, volume) = match s.selected_address().copied() {
                 Some(TreeAddress::Group(group)) => {
-                    let volume = s.groups.get(group).map_or(1.0, |g| g.volume);
+                    let volume = s.ctl.model.groups.get(group).map_or(1.0, |g| g.volume);
                     (0, Some(GainTarget::GroupVolume { group }), volume)
                 }
                 Some(addr) => match addr.inst() {
                     Some(inst) => {
-                        let volume = s.instruments.get(inst).map_or(1.0, |n| n.volume);
+                        let volume = s.ctl.model.instruments.get(inst).map_or(1.0, |n| n.volume);
                         (inst, Some(GainTarget::Volume), volume)
                     }
                     None => (0, None, 1.0),
@@ -3511,53 +3424,53 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 let addr = s.tree_entries[sel].address;
                 match addr {
                     TreeAddress::Effect { inst, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
-                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
+                        if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
                             if index < inst_node.effects.len() {
                                 inst_node.effects.remove(index);
                                 // Mirror the audio thread: drop / shift modulator targets.
                                 fixup_slots_after_remove(&mut inst_node.modulators, index);
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
                     TreeAddress::Instrument(inst) => {
                         let has_plugin =
-                            s.instruments.get(inst).is_some_and(|n| n.instrument.is_some());
+                            s.ctl.model.instruments.get(inst).is_some_and(|n| n.instrument.is_some());
                         if has_plugin {
-                            let _ = s.cmd_tx.send(GraphCommand::ClearInstrument { inst });
-                            if let Some(n) = s.instruments.get_mut(inst) {
+                            let _ = s.ctl.cmd_tx.send(GraphCommand::ClearInstrument { inst });
+                            if let Some(n) = s.ctl.model.instruments.get_mut(inst) {
                                 n.instrument = None;
                             }
-                            s.dirty = true;
+                            s.ctl.dirty = true;
                             s.rebuild_tree();
-                        } else if s.instruments.len() > 1 {
+                        } else if s.ctl.model.instruments.len() > 1 {
                             // If this lane was a group member, fix up that group's
                             // modulator member ordinals (mirrors the audio thread).
-                            let member_of = lane_member_ordinal(&s.instruments, inst);
-                            let _ = s.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
-                            s.instruments.remove(inst);
+                            let member_of = lane_member_ordinal(&s.ctl.model.instruments, inst);
+                            let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
+                            s.ctl.model.instruments.remove(inst);
                             if let Some((group, ordinal)) = member_of {
-                                if let Some(g) = s.groups.get_mut(group) {
+                                if let Some(g) = s.ctl.model.groups.get_mut(group) {
                                     fixup_group_member_after_remove(&mut g.modulators, ordinal);
                                 }
                             }
-                            s.dirty = true;
+                            s.ctl.dirty = true;
                             s.rebuild_tree();
                         }
                     }
                     TreeAddress::Pattern(inst) => {
-                        let _ = s.cmd_tx.send(GraphCommand::ClearPattern { inst });
-                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::ClearPattern { inst });
+                        if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
                             inst_node.pattern = None;
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
                     TreeAddress::Modulator { inst, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveModulator { inst, index });
-                        if let Some(node) = s.instruments.get_mut(inst) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveModulator { inst, index });
+                        if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
                             if index < node.modulators.len() {
                                 node.modulators.remove(index);
                                 // Clean up cross-mod targets in siblings.
@@ -3566,45 +3479,45 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                         // If this lane is a group member, fix up group modulators
                         // that cross-mod its modulators.
-                        if let Some((group, ordinal)) = lane_member_ordinal(&s.instruments, inst) {
-                            if let Some(g) = s.groups.get_mut(group) {
+                        if let Some((group, ordinal)) = lane_member_ordinal(&s.ctl.model.instruments, inst) {
+                            if let Some(g) = s.ctl.model.groups.get_mut(group) {
                                 fixup_group_member_mod_after_remove(&mut g.modulators, ordinal, index);
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
                     TreeAddress::GroupEffect { group, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index });
-                        if let Some(g) = s.groups.get_mut(group) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index });
+                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
                             if index < g.effects.len() {
                                 g.effects.remove(index);
                                 // Drop/shift group-mod bus targets after the removed effect.
                                 fixup_group_bus_after_remove(&mut g.modulators, index);
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
                     TreeAddress::GroupModulator { group, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveGroupModulator { group, index });
-                        if let Some(g) = s.groups.get_mut(group) {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveGroupModulator { group, index });
+                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
                             if index < g.modulators.len() {
                                 g.modulators.remove(index);
                                 // Clean up cross-mod targets in sibling group modulators.
                                 fixup_cross_mod_after_remove(&mut g.modulators, index);
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
                     TreeAddress::Group(group) => {
                         // Delete the group: members become ungrouped, higher
                         // group indices shift down.
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveGroup { group });
-                        if group < s.groups.len() {
-                            s.groups.remove(group);
-                            for inst_node in s.instruments.iter_mut() {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveGroup { group });
+                        if group < s.ctl.model.groups.len() {
+                            s.ctl.model.groups.remove(group);
+                            for inst_node in s.ctl.model.instruments.iter_mut() {
                                 match inst_node.group {
                                     Some(g) if g == group => inst_node.group = None,
                                     Some(g) if g > group => inst_node.group = Some(g - 1),
@@ -3612,7 +3525,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                                 }
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
                 }
@@ -3628,7 +3541,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                     let addr = s.tree_entries[sel].address;
                     match addr {
                         TreeAddress::Modulator { inst, index } => {
-                            let edit = s.instruments.get(inst)
+                            let edit = s.ctl.model.instruments.get(inst)
                                 .and_then(|n| n.modulators.get(index))
                                 .and_then(|m| modulator_edit_state(m, pa));
                             if edit.is_some() {
@@ -3636,7 +3549,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             }
                         }
                         TreeAddress::GroupModulator { group, index } => {
-                            let edit = s.groups.get(group)
+                            let edit = s.ctl.model.groups.get(group)
                                 .and_then(|g| g.modulators.get(index))
                                 .and_then(|m| modulator_edit_state(m, pa));
                             if edit.is_some() {
@@ -3644,7 +3557,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             }
                         }
                         TreeAddress::Pattern(inst) => {
-                            let pat = s.instruments.get(inst)
+                            let pat = s.ctl.model.instruments.get(inst)
                                 .and_then(|n| n.pattern.as_ref());
                             if let Some(p) = pat {
                                 match pa {
@@ -3665,7 +3578,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                         TreeAddress::Group(group) => {
                             // Group bus pane: 0 = volume, 1 = pan.
-                            if let Some(g) = s.groups.get(group) {
+                            if let Some(g) = s.ctl.model.groups.get(group) {
                                 let (val, name, min, max) = match pa {
                                     0 => (g.volume, "volume (1.0 = unity)", 0.0, 4.0),
                                     1 => (g.pan, "pan (-1 L … +1 R)", -1.0, 1.0),
@@ -3752,30 +3665,30 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
                     TreeAddress::Effect { inst, index } if index > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderEffect {
                             inst,
                             from: index,
                             to: index - 1,
                         });
-                        if let Some(inst_node) = s.instruments.get_mut(inst) {
+                        if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
                             if index < inst_node.effects.len() {
                                 inst_node.effects.swap(index, index - 1);
                                 remap_slots_after_reorder(&mut inst_node.modulators, index, index - 1);
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         if s.chain_state.selected > 0 {
                             s.chain_state.selected -= 1;
                         }
                     }
                     TreeAddress::Instrument(inst) if inst > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapInstruments {
                             inst_a: inst,
                             inst_b: inst - 1,
                         });
-                        s.instruments.swap(inst, inst - 1);
-                        s.dirty = true;
+                        s.ctl.model.instruments.swap(inst, inst - 1);
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Instrument(inst - 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -3784,15 +3697,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::Pattern(inst) if inst > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapPatterns {
                             inst_a: inst,
                             inst_b: inst - 1,
                         });
-                        let a_pat = s.instruments[inst].pattern.take();
-                        let b_pat = s.instruments[inst - 1].pattern.take();
-                        s.instruments[inst].pattern = b_pat;
-                        s.instruments[inst - 1].pattern = a_pat;
-                        s.dirty = true;
+                        let a_pat = s.ctl.model.instruments[inst].pattern.take();
+                        let b_pat = s.ctl.model.instruments[inst - 1].pattern.take();
+                        s.ctl.model.instruments[inst].pattern = b_pat;
+                        s.ctl.model.instruments[inst - 1].pattern = a_pat;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Pattern(inst - 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -3801,18 +3714,18 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::GroupEffect { group, index } if index > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::ReorderGroupEffect {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderGroupEffect {
                             group,
                             from: index,
                             to: index - 1,
                         });
-                        if let Some(g) = s.groups.get_mut(group) {
+                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
                             if index < g.effects.len() {
                                 g.effects.swap(index, index - 1);
                                 remap_group_bus_after_reorder(&mut g.modulators, index, index - 1);
                             }
                         }
-                        s.dirty = true;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         if s.chain_state.selected > 0 {
                             s.chain_state.selected -= 1;
@@ -3831,30 +3744,30 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
                     TreeAddress::Effect { inst, index } => {
-                        let effect_count = s.instruments.get(inst)
+                        let effect_count = s.ctl.model.instruments.get(inst)
                             .map_or(0, |n| n.effects.len());
                         if index + 1 < effect_count {
-                            let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
+                            let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderEffect {
                                 inst,
                                 from: index,
                                 to: index + 1,
                             });
-                            if let Some(inst_node) = s.instruments.get_mut(inst) {
+                            if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
                                 inst_node.effects.swap(index, index + 1);
                                 remap_slots_after_reorder(&mut inst_node.modulators, index, index + 1);
                             }
-                            s.dirty = true;
+                            s.ctl.dirty = true;
                             s.rebuild_tree();
                             s.chain_state.selected += 1;
                         }
                     }
-                    TreeAddress::Instrument(inst) if inst + 1 < s.instruments.len() => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
+                    TreeAddress::Instrument(inst) if inst + 1 < s.ctl.model.instruments.len() => {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapInstruments {
                             inst_a: inst,
                             inst_b: inst + 1,
                         });
-                        s.instruments.swap(inst, inst + 1);
-                        s.dirty = true;
+                        s.ctl.model.instruments.swap(inst, inst + 1);
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Instrument(inst + 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -3862,16 +3775,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                         s.sync_param_state();
                     }
-                    TreeAddress::Pattern(inst) if inst + 1 < s.instruments.len() => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
+                    TreeAddress::Pattern(inst) if inst + 1 < s.ctl.model.instruments.len() => {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapPatterns {
                             inst_a: inst,
                             inst_b: inst + 1,
                         });
-                        let a_pat = s.instruments[inst].pattern.take();
-                        let b_pat = s.instruments[inst + 1].pattern.take();
-                        s.instruments[inst].pattern = b_pat;
-                        s.instruments[inst + 1].pattern = a_pat;
-                        s.dirty = true;
+                        let a_pat = s.ctl.model.instruments[inst].pattern.take();
+                        let b_pat = s.ctl.model.instruments[inst + 1].pattern.take();
+                        s.ctl.model.instruments[inst].pattern = b_pat;
+                        s.ctl.model.instruments[inst + 1].pattern = a_pat;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Pattern(inst + 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -3880,18 +3793,18 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::GroupEffect { group, index } => {
-                        let count = s.groups.get(group).map_or(0, |g| g.effects.len());
+                        let count = s.ctl.model.groups.get(group).map_or(0, |g| g.effects.len());
                         if index + 1 < count {
-                            let _ = s.cmd_tx.send(GraphCommand::ReorderGroupEffect {
+                            let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderGroupEffect {
                                 group,
                                 from: index,
                                 to: index + 1,
                             });
-                            if let Some(g) = s.groups.get_mut(group) {
+                            if let Some(g) = s.ctl.model.groups.get_mut(group) {
                                 g.effects.swap(index, index + 1);
                                 remap_group_bus_after_reorder(&mut g.modulators, index, index + 1);
                             }
-                            s.dirty = true;
+                            s.ctl.dirty = true;
                             s.rebuild_tree();
                             s.chain_state.selected += 1;
                         }
@@ -4077,7 +3990,7 @@ fn render(
 fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     let area = frame.area();
     // `--debug` carves a MIDI-monitor strip off the bottom (0 rows otherwise).
-    let debug_h: u16 = if s.midi_monitor.is_enabled() { 9 } else { 0 };
+    let debug_h: u16 = if s.ctl.midi_monitor.is_enabled() { 9 } else { 0 };
     let [tab_area, content_area, action_area, debug_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -4090,12 +4003,12 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     s.areas.content = content_area;
     s.areas.action_bar = action_area;
 
-    let session_label = if s.dirty { "(1) Session *" } else { "(1) Session" };
+    let session_label = if s.ctl.dirty { "(1) Session *" } else { "(1) Session" };
     let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
     frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
 
     // BPM display on the right side of the tab bar.
-    let bpm_text = format!("{:.0} BPM", s.global_bpm);
+    let bpm_text = format!("{:.0} BPM", s.ctl.global_bpm);
     let bpm_width = bpm_text.len() as u16;
     if tab_area.width > bpm_width + 2 {
         let bpm_area = Rect {
@@ -4123,8 +4036,8 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
                 content_area,
                 &s.tree_entries,
                 &s.chain_state,
-                &s.instruments,
-                &s.groups,
+                &s.ctl.model.instruments,
+                &s.ctl.model.groups,
                 &s.param_state,
                 s.focus_params,
                 &s.param_filter_input,
@@ -4187,8 +4100,8 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
         _ => {}
     }
 
-    if s.midi_monitor.is_enabled() {
-        render_midi_monitor(frame, debug_area, &s.midi_monitor);
+    if s.ctl.midi_monitor.is_enabled() {
+        render_midi_monitor(frame, debug_area, &s.ctl.midi_monitor);
     }
 }
 
@@ -4946,8 +4859,8 @@ fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
     .areas(status_area);
 
     // ---- Row 1: scale + mode ----
-    let scale = s.piano_filter.scale();
-    let mode = s.piano_filter.mode();
+    let scale = s.ctl.piano_filter.scale();
+    let mode = s.ctl.piano_filter.mode();
     let config_text = format!(
         " Scale: {}   Mode: {}   Octave view: C{}",
         scale.display(),
@@ -4964,7 +4877,7 @@ fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
     );
 
     // ---- Row 2: held notes + chord detection ----
-    let held_notes = s.held.held();
+    let held_notes = s.ctl.held.held();
     let held_names: Vec<String> = held_notes
         .iter()
         .map(|&n| {
@@ -5030,7 +4943,7 @@ fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
     // ---- Keyboard ----
     frame.render_widget(Clear, kb_area);
     let buf = frame.buffer_mut();
-    piano_view::render_keyboard(kb_area, buf, &s.held, &scale, s.piano_view_octave);
+    piano_view::render_keyboard(kb_area, buf, &s.ctl.held, &scale, s.piano_view_octave);
 
     // ---- Scale strip: degree → note pairs ----
     use crate::scale::{SCALES, SCALE_DEGREES};

@@ -871,7 +871,10 @@ Every user action (preset load, parameter tweak, plugin add/remove, reorder)
 updates both the session model (for saving) and sends a command to the audio
 thread (for playback). The dirty indicator is driven by this model. The model
 types and the helpers that keep their indices in step with the audio graph live
-in `src/app/model.rs`.
+in `src/app/model.rs`. The model, the session path, the dirty flag, the tempo
+and the engine handles (command channel, plugin runtime, notification
+receivers, the state shared with the note senders) belong to
+`app::controller::Controller`; the TUI reaches them through `State::ctl`.
 
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
@@ -1132,7 +1135,8 @@ upgrading ratatui, update this version note.
 
 ### TUI tests
 
-`src/tui/golden_tests.rs` builds a `State` by hand, drives it with real key
+`src/tui/golden_tests.rs` builds a `State` by hand around a `Controller` over
+stub engine channels (`app::testutil::stub_engine`), drives it with real key
 events through `process_event`, and checks two things: the rendered frame
 (characters **and** styles, via `insta` and ratatui's `TestBackend`; snapshots
 in `src/tui/snapshots/`) and the commands the TUI sent to the audio thread. After

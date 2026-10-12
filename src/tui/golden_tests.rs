@@ -20,10 +20,8 @@ use ratatui::buffer::Buffer;
 
 use super::*;
 use crate::app::load::load_session;
-use crate::app::testutil::{DropProbe, describe};
-use crate::midi_monitor::MidiMonitor;
+use crate::app::testutil::{DropProbe, describe, stub_engine};
 use crate::plugin::chain::{MidiBindSource, MidiLearnedNotification, ModulatorLocation, PatternNotification};
-use crate::scale::ScaleSetting;
 use crate::session;
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -42,6 +40,8 @@ struct Harness {
     /// The audio thread's end of the command channel: what the TUI asked the
     /// engine to do. Kept alive so `send` never fails or blocks.
     cmd_rx: Receiver<GraphCommand>,
+    /// The notes the controller would play; kept so that sending them cannot fail.
+    _midi_rx: Receiver<crate::audio::MidiEvent>,
     /// The audio thread's end of the channel that hands swapped-out plugins back.
     return_tx: crossbeam_channel::Sender<Box<dyn plugin::Plugin>>,
     /// The audio thread's ends of the notification channels.
@@ -68,32 +68,22 @@ impl Harness {
         )
         .expect("scene loads");
         // What the TUI sends from here on is what `commands()` reports.
-        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
-        let (midi_tx, _midi_rx) = crossbeam_channel::bounded(1024);
+        let (handles, engine) = stub_engine();
         let (catalog_tx, catalog_rx) = unbounded();
-        let (pattern_tx, pattern_rx) = unbounded();
-        let (learn_tx, learn_rx) = unbounded();
-        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
-        let mut s = State::new(
-            Controller::new(return_rx),
-            model,
-            cmd_tx,
-            midi_tx,
-            plugin::Runtime::default(),
-            SAMPLE_RATE,
-            BLOCK,
-            None,
-            catalog_rx,
-            pattern_rx,
-            learn_rx,
-            Arc::new(HeldNotes::new()),
-            Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight)),
-            Arc::new(MidiMonitor::new(false)),
-        );
+        let mut s = State::new(Controller::new(model, handles, None), catalog_rx);
         // A finished scan with an empty catalog unless a test fills it in.
         s.catalog_scanning = false;
         let terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-        Harness { s, terminal, cmd_rx, return_tx, pattern_tx, learn_tx, catalog_tx: Some(catalog_tx) }
+        Harness {
+            s,
+            terminal,
+            cmd_rx: engine.cmd_rx,
+            _midi_rx: engine.midi_rx,
+            return_tx: engine.return_tx,
+            pattern_tx: engine.pattern_tx,
+            learn_tx: engine.learn_tx,
+            catalog_tx: Some(catalog_tx),
+        }
     }
 
     fn press(&mut self, code: KeyCode) -> &mut Self {
@@ -479,7 +469,7 @@ fn piano_c_major_triad_held() {
     // scale strip.
     let mut h = Harness::new(scene_split());
     for note in [60, 64, 67] {
-        h.s.held.note_on(note);
+        h.s.ctl.held.note_on(note);
     }
     h.press(KeyCode::Char('2'));
     assert_golden("piano_c_major_triad_held", &mut h);
@@ -489,7 +479,7 @@ fn piano_c_major_triad_held() {
 fn piano_off_scale_note_held() {
     // C#4 held in C major (Highlight mode): the "wrong note" red.
     let mut h = Harness::new(scene_split());
-    h.s.held.note_on(61);
+    h.s.ctl.held.note_on(61);
     h.press(KeyCode::Char('2'));
     assert_golden("piano_off_scale_note_held", &mut h);
 }
@@ -507,7 +497,7 @@ fn piano_locked_mode_in_d_dorian() {
     // `l` toggles Locked; the scale comes from the shared filter. D dorian,
     // view shifted up an octave.
     let mut h = Harness::new(scene_split());
-    h.s.piano_filter.set_scale(ScaleSetting::parse("D dorian").expect("scale parses"));
+    h.s.ctl.piano_filter.set_scale(ScaleSetting::parse("D dorian").expect("scale parses"));
     h.press(KeyCode::Char('2')).press(KeyCode::Char('l')).press(KeyCode::Char(']'));
     assert_golden("piano_locked_mode_in_d_dorian", &mut h);
 }
@@ -530,10 +520,10 @@ fn arrow_keys_adjust_a_parameter_in_model_and_engine() {
     h.press_with(KeyCode::Left, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["SetParameter inst=0 slot=0 param=1 value=1.920"]);
 
-    let detune = &h.s.instruments[0].instrument.as_ref().unwrap().params[1];
+    let detune = &h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().params[1];
     assert_eq!(detune.name, "detune");
     assert!((detune.value - 1.92).abs() < 1e-4, "{}", detune.value);
-    assert!(h.s.dirty);
+    assert!(h.s.ctl.dirty);
 }
 
 #[test]
@@ -553,7 +543,7 @@ fn typing_a_value_sets_the_parameter() {
     h.press_n(KeyCode::Backspace, 4).type_chars("0.8").press(KeyCode::Enter);
     assert_eq!(h.commands(), ["SetParameter inst=2 slot=1 param=0 value=0.800"]);
     assert!(h.s.editing.is_none(), "the popup closes");
-    assert_eq!(h.s.instruments[2].effects[0].params[0].value, 0.8);
+    assert_eq!(h.s.ctl.model.instruments[2].effects[0].params[0].value, 0.8);
 }
 
 #[test]
@@ -562,7 +552,7 @@ fn the_volume_popup_sets_instrument_volume_clamped_to_four() {
     h.goto(TreeAddress::Instrument(2));
     h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 4).type_chars("9").press(KeyCode::Enter);
     assert_eq!(h.commands(), ["SetVolume inst=2 value=4.000"]);
-    assert_eq!(h.s.instruments[2].volume, 4.0);
+    assert_eq!(h.s.ctl.model.instruments[2].volume, 4.0);
 }
 
 #[test]
@@ -593,7 +583,7 @@ fn adding_an_effect_from_the_selector_uses_the_default_mix() {
     assert_eq!(h.commands(), ["InsertEffect inst=0 index=1 plugin=Filter mix=1.000"]);
     assert_eq!(h.tree()[1], "├ fx Reverb  [Built-in]");
     assert_eq!(h.tree()[2], "├ fx Filter  [Built-in]");
-    assert!(h.s.dirty);
+    assert!(h.s.ctl.dirty);
 }
 
 #[test]
@@ -610,10 +600,10 @@ fn adding_a_group_effect_from_the_selector() {
 fn replacing_the_instrument_loads_a_fresh_plugin() {
     let mut h = Harness::new(scene_split());
     h.s.extend_catalog(plugin::builtin::enumerate_plugins());
-    h.s.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
+    h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
     h.press(KeyCode::Char('i')).press(KeyCode::Enter);
     assert_eq!(h.commands(), ["SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
-    let volume = &h.s.instruments[0].instrument.as_ref().unwrap().params[2];
+    let volume = &h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().params[2];
     assert_eq!((volume.name.as_str(), volume.value), ("volume", 1.0), "edits don't survive a swap");
 }
 
@@ -653,8 +643,8 @@ fn deleting_a_group_modulator_drops_cross_mod_targets_pointing_at_it() {
     h.goto(TreeAddress::GroupModulator { group: 0, index: 0 });
     h.press(KeyCode::Char('d'));
     assert_eq!(h.commands(), ["RemoveGroupModulator group=0 index=0"]);
-    assert_eq!(h.s.groups[0].modulators.len(), 1);
-    assert!(h.s.groups[0].modulators[0].targets.is_empty());
+    assert_eq!(h.s.ctl.model.groups[0].modulators.len(), 1);
+    assert!(h.s.ctl.model.groups[0].modulators[0].targets.is_empty());
     assert!(h.tree().contains(&"  ~ ADSR  (bus)"), "{:#?}", h.tree());
 }
 
@@ -667,7 +657,7 @@ fn deleting_a_group_member_drops_its_modulator_targets() {
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('d')).press(KeyCode::Char('d'));
     assert_eq!(h.commands(), ["ClearInstrument inst=0", "RemoveInstrument inst=0"]);
-    let lfo = &h.s.groups[0].modulators[0];
+    let lfo = &h.s.ctl.model.groups[0].modulators[0];
     assert_eq!(lfo.targets.len(), 1);
     assert_eq!(lfo.targets[0].param_name, "damping");
     assert!(
@@ -686,7 +676,7 @@ fn a_new_group_member_before_existing_ones_shifts_member_ordinals() {
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('g')).press(KeyCode::Down).press(KeyCode::Enter); // "New group" → "Pad"
     assert_eq!(h.commands(), ["SetLaneGroup inst=0 group=Some(0)"]);
-    let target = &h.s.groups[0].modulators[0].targets[0];
+    let target = &h.s.ctl.model.groups[0].modulators[0].targets[0];
     assert!(
         matches!(target.kind, crate::plugin::chain::ModTargetKind::GroupMember { member: 1, .. }),
         "{:?}",
@@ -705,8 +695,8 @@ fn deleting_a_group_ungroups_its_members() {
     h.goto(TreeAddress::Group(0));
     h.press(KeyCode::Char('d'));
     assert_eq!(h.commands(), ["RemoveGroup group=0"]);
-    assert!(h.s.groups.is_empty());
-    assert!(h.s.instruments.iter().all(|n| n.group.is_none()));
+    assert!(h.s.ctl.model.groups.is_empty());
+    assert!(h.s.ctl.model.instruments.iter().all(|n| n.group.is_none()));
     assert_eq!(h.tree().iter().filter(|l| l.starts_with("♪")).count(), 3);
 }
 
@@ -732,7 +722,7 @@ fn the_param_cursor_survives_moving_between_nodes_and_is_clamped() {
 
 /// The `(slot, kind)` of every target of lane modulator 0 on lane 0.
 fn lane_targets(h: &Harness) -> Vec<(usize, String)> {
-    h.s.instruments[0].modulators[0].targets.iter().map(|t| (t.slot, format!("{:?}", t.kind))).collect()
+    h.s.ctl.model.instruments[0].modulators[0].targets.iter().map(|t| (t.slot, format!("{:?}", t.kind))).collect()
 }
 
 #[test]
@@ -796,7 +786,7 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
     assert_eq!(h.tree()[3], "  fx Filter  [Built-in]  (bus)");
     assert!(h.tree().contains(&label.as_str()), "targets follow their effects: {:#?}", h.tree());
     let kinds: Vec<String> =
-        h.s.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+        h.s.ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
     assert_eq!(
         kinds,
         [
@@ -809,7 +799,7 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
     h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["ReorderGroupEffect group=0 from=1 to=0"]);
     let kinds: Vec<String> =
-        h.s.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+        h.s.ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
     assert_eq!(
         kinds,
         [
@@ -893,11 +883,11 @@ fn a_finished_recording_becomes_the_lanes_pattern() {
     h.pattern_tx.send(PatternNotification { looping: false, ..recording(1) }).unwrap();
     tick(&mut h.s);
 
-    let pattern = h.s.instruments[1].pattern.as_ref().expect("lane 1 has a pattern now");
+    let pattern = h.s.ctl.model.instruments[1].pattern.as_ref().expect("lane 1 has a pattern now");
     assert_eq!((pattern.bpm, pattern.length_beats, pattern.looping, pattern.enabled), (95.0, 2.0, false, true));
     assert_eq!((pattern.base_note, pattern.in_key, pattern.recording), (Some(60), false, false));
     assert_eq!(pattern.events, [(0, 0x90, 60, 100), (24_000, 0x80, 60, 0)]);
-    assert!(h.s.instruments[0].pattern.is_none());
+    assert!(h.s.ctl.model.instruments[0].pattern.is_none());
     assert!(h.tree().contains(&"├ ▶ Pattern  2 beats, 1 notes"), "{:#?}", h.tree());
 }
 
@@ -929,7 +919,7 @@ velocity = 0
     h.pattern_tx.send(recording(0)).unwrap();
     tick(&mut h.s);
 
-    let pattern = h.s.instruments[0].pattern.as_ref().unwrap();
+    let pattern = h.s.ctl.model.instruments[0].pattern.as_ref().unwrap();
     assert!(pattern.in_key, "the transpose mode is the user's, not the recording's");
     assert_eq!((pattern.length_beats, pattern.looping, pattern.enabled), (2.0, true, true));
     assert_eq!(pattern.events.len(), 2);
@@ -946,7 +936,7 @@ fn a_recording_with_no_notes_leaves_a_disabled_pattern() {
         .unwrap();
     tick(&mut h.s);
 
-    let pattern = h.s.instruments[1].pattern.as_ref().expect("the lane still gets a pattern");
+    let pattern = h.s.ctl.model.instruments[1].pattern.as_ref().expect("the lane still gets a pattern");
     assert!(!pattern.enabled);
     assert!(pattern.events.is_empty());
     assert_eq!(pattern.base_note, None);
@@ -960,11 +950,11 @@ fn a_finished_recording_marks_the_session_changed() {
     let mut h = Harness::new(scene_split());
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('r'));
-    assert!(h.s.dirty, "`r` marks the session changed");
-    h.s.dirty = false; // what a save does
+    assert!(h.s.ctl.dirty, "`r` marks the session changed");
+    h.s.ctl.dirty = false; // what a save does
     h.pattern_tx.send(recording(0)).unwrap();
     tick(&mut h.s);
-    assert!(h.s.dirty, "the recording is part of the session");
+    assert!(h.s.ctl.dirty, "the recording is part of the session");
 }
 
 #[test]
@@ -974,8 +964,8 @@ fn a_recording_for_a_lane_that_is_gone_is_ignored() {
     h.pattern_tx.send(recording(7)).unwrap();
     tick(&mut h.s);
     assert_eq!(h.tree(), before);
-    assert!(h.s.instruments.iter().all(|n| n.pattern.is_none()));
-    assert!(!h.s.dirty, "nothing changed");
+    assert!(h.s.ctl.model.instruments.iter().all(|n| n.pattern.is_none()));
+    assert!(!h.s.ctl.dirty, "nothing changed");
 }
 
 /// Arm a MIDI-learn modulator on lane 0's first parameter the way a user does;
@@ -983,9 +973,9 @@ fn a_recording_for_a_lane_that_is_gone_is_ignored() {
 fn arm_lane_learn(h: &mut Harness) -> usize {
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Enter).press(KeyCode::Char('l'));
-    let index = h.s.instruments[0].modulators.len() - 1;
+    let index = h.s.ctl.model.instruments[0].modulators.len() - 1;
     assert!(
-        matches!(h.s.instruments[0].modulators[index].source, ModSourceSlot::MidiLearn { source: None, learning: true }),
+        matches!(h.s.ctl.model.instruments[0].modulators[index].source, ModSourceSlot::MidiLearn { source: None, learning: true }),
         "`l` arms a modulator"
     );
     index
@@ -1001,19 +991,19 @@ fn a_captured_control_binds_the_armed_lane_modulator() {
         let mut h = Harness::new(scene_split());
         let index = arm_lane_learn(&mut h);
         assert!(h.tree().iter().any(|l| l.contains("MIDI (learning…)")));
-        h.s.dirty = false;
+        h.s.ctl.dirty = false;
         h.learn_tx
             .send(MidiLearnedNotification { location: ModulatorLocation::Lane(0), mod_index: index, source })
             .unwrap();
         tick(&mut h.s);
 
-        let bound = &h.s.instruments[0].modulators[index].source;
+        let bound = &h.s.ctl.model.instruments[0].modulators[index].source;
         assert!(
             matches!(bound, ModSourceSlot::MidiLearn { source: Some(s), learning: false } if *s == source),
             "{label}: {bound:?}"
         );
         assert!(h.tree().iter().any(|l| l.contains(label)), "{label}: {:#?}", h.tree());
-        assert!(h.s.dirty, "{label}: the binding is part of the saved session");
+        assert!(h.s.ctl.dirty, "{label}: the binding is part of the saved session");
     }
 }
 
@@ -1022,8 +1012,8 @@ fn a_captured_control_binds_the_armed_group_modulator() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('l'));
-    let index = h.s.groups[0].modulators.len() - 1;
-    assert!(matches!(h.s.groups[0].modulators[index].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+    let index = h.s.ctl.model.groups[0].modulators.len() - 1;
+    assert!(matches!(h.s.ctl.model.groups[0].modulators[index].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
 
     h.learn_tx
         .send(MidiLearnedNotification {
@@ -1034,7 +1024,7 @@ fn a_captured_control_binds_the_armed_group_modulator() {
         .unwrap();
     tick(&mut h.s);
     assert!(matches!(
-        h.s.groups[0].modulators[index].source,
+        h.s.ctl.model.groups[0].modulators[index].source,
         ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(1)), learning: false }
     ));
     assert!(h.tree().iter().any(|l| l.contains("CC 1 →")), "{:#?}", h.tree());
@@ -1052,7 +1042,7 @@ fn a_capture_for_a_modulator_that_is_not_listening_changes_nothing() {
         })
         .unwrap();
     tick(&mut h.s);
-    assert!(matches!(h.s.instruments[0].modulators[0].source, ModSourceSlot::Lfo { .. }));
+    assert!(matches!(h.s.ctl.model.instruments[0].modulators[0].source, ModSourceSlot::Lfo { .. }));
 }
 
 fn plugin_info(name: &str, is_instrument: bool) -> PluginInfo {

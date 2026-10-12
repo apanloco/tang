@@ -14,7 +14,7 @@
 use crate::plugin;
 
 /// What a front-end edits: the instrument lanes and the submix groups.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SessionModel {
     pub instruments: Vec<InstrumentNode>,
     pub groups: Vec<GroupNode>,

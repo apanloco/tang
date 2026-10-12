@@ -4,9 +4,17 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
+use crossbeam_channel::{Receiver, Sender};
+
+use crate::app::controller::EngineHandles;
 use crate::app::load::{Progress, load_session};
 use crate::app::model::SessionModel;
-use crate::plugin::chain::GraphCommand;
+use crate::audio::MidiEvent;
+use crate::held_notes::HeldNotes;
+use crate::midi_monitor::MidiMonitor;
+use crate::piano_filter::{PianoFilter, PianoMode};
+use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
+use crate::scale::ScaleSetting;
 use crate::{plugin, session};
 
 /// One line per command, for asserting on what a front-end or the loader sent
@@ -131,6 +139,44 @@ pub fn try_load(text: &str) -> anyhow::Result<Run> {
 
 pub fn load(text: &str) -> Run {
     try_load(text).unwrap_or_else(|e| panic!("load failed: {e:#}"))
+}
+
+/// The audio thread's side of the channels a controller is built around.
+pub struct StubEngine {
+    /// What the controller has sent the audio thread.
+    pub cmd_rx: Receiver<GraphCommand>,
+    /// The notes it would play.
+    pub midi_rx: Receiver<MidiEvent>,
+    /// Where the audio thread hands back plugins it has taken out of the graph.
+    pub return_tx: Sender<Box<dyn plugin::Plugin>>,
+    /// Where it reports finished pattern recordings.
+    pub pattern_tx: Sender<PatternNotification>,
+    /// Where it reports captured MIDI-learn controls.
+    pub learn_tx: Sender<MidiLearnedNotification>,
+}
+
+/// Handles for a `Controller` over stub channels (48 kHz, 256-frame blocks, the
+/// default scale), and the other ends of those channels.
+pub fn stub_engine() -> (EngineHandles, StubEngine) {
+    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+    let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
+    let (return_tx, return_rx) = crossbeam_channel::bounded(16);
+    let (pattern_tx, pattern_rx) = crossbeam_channel::unbounded();
+    let (learn_tx, learn_rx) = crossbeam_channel::unbounded();
+    let handles = EngineHandles {
+        cmd_tx,
+        midi_tx,
+        return_rx,
+        pattern_rx,
+        learn_rx,
+        runtime: plugin::Runtime::default(),
+        sample_rate: 48_000.0,
+        max_block_size: 256,
+        held: Arc::new(HeldNotes::new()),
+        piano_filter: Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight)),
+        midi_monitor: Arc::new(MidiMonitor::new(false)),
+    };
+    (handles, StubEngine { cmd_rx, midi_rx, return_tx, pattern_tx, learn_tx })
 }
 
 pub const GROUPS: &str = r#"
