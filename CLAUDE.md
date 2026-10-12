@@ -904,6 +904,23 @@ use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
 targets of the lane and of its group pointing at the same plugins, as the audio
 thread does.
 
+The audio thread publishes what it is doing through `telemetry::Telemetry`
+(`src/telemetry.rs`, `docs/web-ui.md` §6): a fixed array of atomic cells, one
+*slot* each, that any thread can read. The model owns the `SlotAllocator` and
+gives a slot to each modulator (its output this buffer), to each modulator target
+on a plugin parameter (the value that parameter was set to this buffer, after
+modulation; a target that drives a modulator's own field has none) and two to each
+lane and group (a peak and a clip count; the master's are slots 0 and 1,
+`telemetry::MASTER`). They sit on the model's nodes (`ModulatorSlot.output`,
+`ModTargetSlot.effective`, `InstrumentNode.meter`, `GroupNode.meter`) and reach
+the engine in the `ModTarget` or in `SetModulatorOutput` / `SetLaneMeter` /
+`SetGroupMeter`. A slot is never reused, and a session that runs out of them just
+has items without telemetry. The audio thread only stores (relaxed atomics, no
+allocation, no lock). Lanes, groups, modulators and targets are created through
+the loader or `Controller::{add_lane, add_group, add_modulator, add_target}`,
+which allocate and send the slots; `SessionModel::check_ids` verifies them. The
+`CLIP` light is the only reader so far.
+
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
 Any parameter tweaks made after the preset load are recorded as new overrides.
@@ -955,11 +972,13 @@ MIDI sources (hardware keyboards + virtual piano)
   → For each instrument (filtered by note range):
       → Modulators apply (set_parameter on targets)
       → Instrument → volume gain → N Effects (in series, each with dry/wet mix)
+      → lane meter (peak, clip count)
   → Each instrument routes to either:
-      → its submix GROUP's bus  → group volume → N group effects, OR
+      → its submix GROUP's bus  → group volume → N group effects
+        → group meter, OR
       → the master mix directly
   → Sum all groups + ungrouped instruments
-  → Audio output → clip detection
+  → master meter (peak, clip count) → Audio output
 ```
 
 Each instrument has its own effect chain. MIDI note events are filtered by the
@@ -1190,7 +1209,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   the engine and the TUI ignore.
 - **Telemetry**: the audio thread publishes modulator outputs, effective
   (modulated) parameter values and meters through lock-free slots; the web
-  runtime streams them to the browser as binary frames.
+  runtime streams them to the browser as binary frames. The slots and the
+  engine side are built (see "Session state"); the layout event, the binary
+  frames and the web runtime are not.
 - **Server**: `axum` on its own thread behind the `web` Cargo feature
   (`tang serve`, or `--web` alongside the TUI). One WebSocket per client,
   loopback by default, `Origin`/`Host` checked, token for non-loopback binds.

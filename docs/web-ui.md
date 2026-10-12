@@ -276,20 +276,46 @@ command channel is bounded and `send` blocks, so the owner must never flood it.
 
 ## 6. Telemetry
 
-Telemetry publishes engine truth: modulator outputs (once per buffer, from
-`Modulator::tick`), effective parameter values (the `clamp(base + Σ offsets)`
-result written in `apply_modulators_to_chain` and the group equivalents), and
-per-lane / group / master peak and clip. A scope ring can follow later.
+Telemetry publishes engine truth: modulator outputs (once per buffer), effective
+parameter values (the `clamp(base + Σ offsets)` result written in
+`apply_modulators_to_chain` and the group equivalents), and per-lane / group /
+master peak and clip. A scope ring can follow later.
 
-- **Mechanism.** A preallocated `Telemetry { slots: Box<[AtomicU32]> }` (f32
-  bits, relaxed ordering). The controller allocates slot numbers and passes
-  them to the engine in the commands that create lanes, groups, modulators and
-  targets, so index shifts never re-key a slot. The audio thread only does
-  relaxed stores: no allocation, no locks. If slots run out, that item has no
-  telemetry (logged); audio is unaffected.
+- **Mechanism.** `telemetry::Telemetry` is a preallocated array of 4096
+  `AtomicU32` cells (f32 bits, relaxed ordering); one cell is a *slot*. The main
+  thread's `SlotAllocator` (it lives in `SessionModel`) hands slots out and never
+  takes one back, so index shifts never re-key a slot; slots 0 and 1 are the
+  master meter (`telemetry::MASTER`). A slot reaches the engine in the target's
+  own struct (`ModTarget.effective`) or in a command sent right after the one that
+  creates the item (`SetModulatorOutput`, `SetLaneMeter`, `SetGroupMeter`), which
+  leaves the creating commands as they were. The audio thread only does relaxed
+  stores and one `fetch_add` per clipped buffer: no allocation, no locks (a
+  counting allocator in the tests checks that for lanes, groups, patterns, remapped
+  notes and the built-in plugins). If slots run out, that item has no telemetry
+  (logged); audio is unaffected.
+- **What is published.**
+  - *Modulator output* (`ModulatorSlot.output`): what the modulator put out this
+    buffer, as the engine computed it: an LFO −1…1, an envelope 0…1, a MIDI
+    control 0…1 (pitch bend: 0.5 is centre).
+  - *Effective value* (`ModTargetSlot.effective`): what the target's parameter was
+    set to this buffer, i.e. its base value plus every modulator's offset on it,
+    clamped. It is a slot per target but the same number for every target on one
+    parameter. A target that drives a modulator's own field (cross-mod) has none.
+  - *Meters* (`MeterSlots { peak, clips }`): master, every lane
+    (`InstrumentNode.meter`, measured after the lane's volume and effects and
+    before it joins its group) and every group (`GroupNode.meter`, after its
+    volume, bus effects and pan, before the master). The peak is held and falls
+    20 dB per half second, so a reader at 30 Hz sees at most about 1.3 dB under
+    the loudest sample since its last look. `clips` is a count that goes up by one
+    for each buffer with a sample beyond full scale (|s| > 1.0) and is never
+    reset, so any number of readers can watch it. The TUI's `CLIP` light is the
+    first reader (`src/tui/clip.rs`).
 - **Layout.** A `TelemetryLayout { rev, entries: [{ slot, node, port, kind }] }`
   event tells clients what each slot means. It changes only when the structure
-  does.
+  does. The model already holds every slot (`InstrumentNode.meter`,
+  `GroupNode.meter`, `ModulatorSlot.output`, `ModTargetSlot.effective`) and
+  `SessionModel::check_ids` verifies them (present, unique, allocated here, not
+  the master's), so the layout of step 8 is a projection of the model.
 - **Wire.** WebSocket binary frames: `u8 kind | u8 flags | u16 n |
   u32 layout_rev | n × f32`, where value *i* belongs to layout entry *i*. About
   30 Hz per subscribed channel group (`mod`, `meters`); nothing is sent when
@@ -636,14 +662,68 @@ Each step is a reviewable change; the TUI must not regress at any point.
   5's last commit and this one save byte-identical session files; the TUI (with a
   session, and the default one) and `play` start and quit cleanly. **Not
   checked:** `LoadPreset` on a plugin that hides parameters, and by ear.
-- [ ] **7. Engine telemetry.** `Telemetry` (atomic slots); slot ids carried by
-  `AddInstrument`, `AddGroup`, `InsertModulator`, `InsertGroupModulator`,
-  `AddModTarget`, `AddGroupModTarget`; the audio thread publishes modulator
-  outputs, effective values and per-lane / group / master peak and clip. The TUI
-  gets the `CLIP` indicator from `CLAUDE.md` as the first consumer, which
-  validates the plumbing and closes a TODO. *Done when:* `chain.rs` tests drive
-  `process()` and assert slot values (LFO + target, envelope, MIDI-learn, group
-  modulator writes), and the audio path gains no allocation or locking.
+- [x] **7. Engine telemetry.** `Telemetry` (atomic slots); the audio thread
+  publishes modulator outputs, effective values and per-lane / group / master
+  peak and clip. The TUI gets the `CLIP` indicator from `CLAUDE.md` as the first
+  consumer, which validates the plumbing and closes a TODO. Done in nine commits
+  (§6 describes what came out); the snapshot suite gained one file
+  (`status_clip.snap`) and no existing snapshot changed:
+  - **Allocation first.** A test-only counting allocator (`src/alloc_guard.rs`,
+    `allocations_in`) lets a test say that processing a buffer allocates nothing.
+    It found that the engine did (f18: two allocations per buffer for a lane
+    with a modulator on a parameter, two more per group, from the vectors that
+    collected the cross-mod and parameter writes). Scratch vectors kept between
+    buffers fixed it; 14 injected allocations were all caught. Patterns, remap,
+    transpose and the built-in plugins were already clean, and tests now pin
+    that; each piece of telemetry code below has a no-allocation test too.
+  - **`Telemetry`, `Meter`, the master meter.** `src/telemetry.rs`: the cells,
+    `Slot`, `MeterSlots`, `SlotAllocator` and `Meter` (a held peak falling 20 dB
+    in half a second, a clip count per buffer with |s| > 1.0). `AudioGraph`
+    takes a `Telemetry` (`set_telemetry`) and publishes the master meter. 31
+    injected bugs, all caught.
+  - **`CLIP`.** `src/tui/clip.rs`: a bold red `CLIP` in the status bar, left of
+    the BPM, for two seconds after the master meter's count last moved (`!=`, not
+    `>`: the count wraps). Tested alone, through the golden harness and end to
+    end with a real graph; 20 of 21 mutants caught, the survivor is equivalent.
+  - **Modulator outputs and effective values.** Each modulator publishes what it
+    put out and each parameter target the value its parameter was set to (base
+    plus every modulator on it, clamped; the same number for every target on one
+    parameter), for lane and group modulators. 22 injected bugs; the five
+    survivors showed the fixtures had one parameter and one slot each, so two
+    tests with two-parameter plugins were added.
+  - **The controller makes what has slots.** The TUI had seven places that made
+    a modulator or bound a target, each with its own copy of the lines. Golden
+    tests pinned them first (19 mutants, 17 caught, two tests strengthened), then
+    `Controller::add_modulator` and `add_target` took them over: 158 lines fewer
+    in `tui/mod.rs`. `add_lane` and `add_group` followed for the same reason.
+  - **Slots in the model and the loader.** `SessionModel` owns the
+    `SlotAllocator`; `ModulatorSlot.output`, `ModTargetSlot.effective` and the
+    nodes' `meter` hold what was handed out, by the loader and by the controller.
+    `check_ids` verifies them (present, unique, allocated here, not the master's)
+    and the golden harness runs it after every key press. End to end, a real graph
+    fed the loader's commands publishes into exactly the cells the model names.
+  - **Lane and group meters.** Measured where the buffer already is, so nothing
+    is copied. 25 injected bugs; two survived (a `SetGroupMeter` that always hit
+    group 0, a check that looked at only a meter's first slot) and got a test
+    each.
+  - Found on the way and fixed first, each with the failing test first: f18 (the
+    allocations above) and f20 (targets declared in a session file were centred
+    on the plugin's default instead of the value the session sets).
+  - **Differs from the sketch above.** The slots do not ride in `AddInstrument`,
+    `AddGroup`, `InsertModulator` and `InsertGroupModulator`: a follow-up command
+    (`SetLaneMeter`, `SetGroupMeter`, `SetModulatorOutput`) carries them, so
+    those commands are unchanged; a target's slot is a field of the `ModTarget`
+    that `AddModTarget` / `AddGroupModTarget` already carried. A cross-mod target
+    (one that drives a modulator's own field) has no effective-value slot.
+    `Telemetry::load` and `Slot::index` have no reader outside the tests yet; the
+    layout and the wire of steps 8 and 10 are theirs.
+  *Done:* `cargo test` and clippy green on both feature sets. `chain.rs` tests
+  drive `process()` and assert slot values for an LFO with a target, an envelope,
+  a MIDI-learn control, group modulators and every meter; the audio path does
+  relaxed atomic stores and nothing else. **Not checked:** the `CLIP` light in the
+  real binary. The audio callback does not run in the sandboxed pseudo-terminal
+  sessions used for the manual runs, so that check waits for the null audio
+  backend (step 9).
 - [ ] **8. Graph projection and protocol types.** `Session::graph()`; serde
   types for `Snapshot`, `Event`, `Intent`, `TelemetryLayout`; the
   `ParameterInfo` v2 fields filled in for builtins; `ts-rs` export (feature
