@@ -557,6 +557,23 @@ fn typing_a_value_sets_the_parameter() {
 }
 
 #[test]
+fn the_group_header_shows_the_volume_after_an_edit() {
+    // The header carries the group's volume, so it has to follow the edits,
+    // whichever way they are made.
+    let mut h = Harness::new(scene_group());
+    assert!(h.tree().contains(&"▦ Pad  vol 0.80"), "{:#?}", h.tree());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 6).type_chars("0.25").press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.groups[0].volume, 0.25);
+    assert!(h.tree().contains(&"▦ Pad  vol 0.25"), "after the popup: {:#?}", h.tree());
+
+    // From the parameter pane: Volume is its first row.
+    h.press(KeyCode::Enter).press(KeyCode::Right);
+    assert_eq!(h.s.ctl.model.groups[0].volume, 0.3);
+    assert!(h.tree().contains(&"▦ Pad  vol 0.30"), "after a nudge: {:#?}", h.tree());
+}
+
+#[test]
 fn the_volume_popup_sets_instrument_volume_clamped_to_four() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Instrument(2));

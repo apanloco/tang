@@ -1709,6 +1709,8 @@ impl State {
             _ => return,
         }
         self.ctl.dirty = true;
+        // The group header shows the volume.
+        self.rebuild_tree();
     }
 
     fn adjust_param(&mut self, delta: f32) {
@@ -2779,6 +2781,8 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
                     }
                 }
                 s.ctl.dirty = true;
+                // The group header shows the volume.
+                s.rebuild_tree();
             }
             s.gain_editing = None;
         }
