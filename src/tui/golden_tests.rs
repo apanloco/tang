@@ -977,3 +977,120 @@ fn an_open_selector_gains_rows_as_the_scan_goes_on_and_keeps_its_filter() {
     assert_eq!(sel.filter.input.value, "rev");
     assert_eq!(sel.filter.filtered.len(), 2, "Reverb and Revolver match, Delay does not");
 }
+
+// ---------------------------------------------------------------------------
+// Saving
+// ---------------------------------------------------------------------------
+
+/// A harness whose session came from `song.toml` in a fresh directory.
+fn harness_with_a_file() -> (tempfile::TempDir, std::path::PathBuf, Harness) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("song.toml");
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.session_path = Some(path.clone());
+    (dir, path, h)
+}
+
+fn ctrl_shift() -> KeyModifiers {
+    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+}
+
+#[test]
+fn ctrl_s_writes_the_session_to_its_file_and_clears_the_mark() {
+    let (_dir, path, mut h) = harness_with_a_file();
+    h.s.ctl.piano_filter.set_scale(ScaleSetting::parse("D dorian").unwrap());
+    h.s.ctl.piano_filter.set_mode(PianoMode::Locked);
+    h.s.ctl.dirty = true;
+    h.press_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
+
+    assert!(!h.s.ctl.dirty);
+    let config = session::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(config.instruments.len(), 2, "both lanes are in the file");
+    let piano = config.piano.expect("the Piano tab's scale and mode are saved with the session");
+    assert_eq!((piano.scale.as_deref(), piano.locked), (Some("D dorian"), true));
+}
+
+#[test]
+fn ctrl_s_without_a_session_file_leaves_the_mark() {
+    let mut h = Harness::new(scene_split());
+    assert_eq!(h.s.ctl.session_path, None);
+    h.s.ctl.dirty = true;
+    h.press_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(h.s.ctl.dirty, "nothing was saved");
+}
+
+#[test]
+fn ctrl_shift_s_asks_for_a_name_starting_from_the_current_one() {
+    let (_dir, _path, mut h) = harness_with_a_file();
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    let popup = h.s.save_as.as_ref().expect("the popup opens");
+    assert_eq!(popup.input.value, "song.toml");
+}
+
+#[test]
+fn save_as_writes_a_new_file_next_to_the_old_one_and_switches_to_it() {
+    let (dir, old, mut h) = harness_with_a_file();
+    h.s.ctl.dirty = true;
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    h.press_n(KeyCode::Backspace, 20).type_chars("copy").press(KeyCode::Enter);
+
+    let new = dir.path().join("copy.toml");
+    assert!(new.exists(), "`.toml` is appended");
+    assert!(!old.exists(), "the old file is not written");
+    assert_eq!(h.s.ctl.session_path.as_deref(), Some(new.as_path()), "Ctrl+S now targets the new file");
+    assert!(h.s.save_as.is_none(), "the popup closes");
+    assert!(!h.s.ctl.dirty);
+}
+
+#[test]
+fn save_as_keeps_a_toml_extension_and_trims_the_name() {
+    let (dir, _old, mut h) = harness_with_a_file();
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    h.press_n(KeyCode::Backspace, 20).type_chars("  mix.toml  ").press(KeyCode::Enter);
+    assert!(dir.path().join("mix.toml").exists());
+    assert!(h.s.save_as.is_none());
+}
+
+#[test]
+fn save_as_waits_for_a_name() {
+    let (dir, old, mut h) = harness_with_a_file();
+    h.s.ctl.dirty = true;
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    h.press_n(KeyCode::Backspace, 20).press(KeyCode::Enter);
+    let popup = h.s.save_as.as_ref().expect("the popup stays open");
+    assert_eq!(popup.error, None, "no complaint, it just waits");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was written");
+    assert_eq!(h.s.ctl.session_path.as_deref(), Some(old.as_path()));
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn a_failed_save_as_shows_the_error_and_changes_nothing() {
+    let (dir, old, mut h) = harness_with_a_file();
+    std::fs::write(dir.path().join("blocker"), "a file, not a directory").unwrap();
+    h.s.ctl.dirty = true;
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    h.press_n(KeyCode::Backspace, 20).type_chars("blocker/x").press(KeyCode::Enter);
+
+    let popup = h.s.save_as.as_ref().expect("the popup stays open");
+    assert!(popup.error.is_some(), "the error is shown in the popup");
+    assert_eq!(h.s.ctl.session_path.as_deref(), Some(old.as_path()), "the old file stays the session's");
+    assert!(h.s.ctl.dirty);
+
+    // Editing the name clears the error, so that it can be fixed.
+    h.press(KeyCode::Char('y'));
+    assert_eq!(h.s.save_as.as_ref().unwrap().error, None, "typing");
+    h.press(KeyCode::Enter);
+    assert!(h.s.save_as.as_ref().unwrap().error.is_some(), "still a file in the way");
+    h.press(KeyCode::Backspace);
+    assert_eq!(h.s.save_as.as_ref().unwrap().error, None, "Backspace");
+}
+
+#[test]
+fn escape_closes_save_as_without_saving() {
+    let (dir, _old, mut h) = harness_with_a_file();
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    h.press(KeyCode::Esc);
+    assert!(h.s.save_as.is_none());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
