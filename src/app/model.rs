@@ -121,6 +121,49 @@ impl SessionModel {
             ModulatorLocation::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
         }
     }
+
+    /// Take the effect at `index` out of lane `inst`'s chain, the way the audio
+    /// thread's `RemoveEffect` does: the modulator targets on it go with it, and
+    /// the ones on later plugins of the chain move down a slot so that they keep
+    /// pointing at the same plugins. Those are the lane's own modulators and, if
+    /// the lane is a group member, the group's. `None` (and no change) if the lane
+    /// has no such effect.
+    pub fn remove_effect(&mut self, inst: usize, index: usize) -> Option<PluginSlot> {
+        let member_of = lane_member_ordinal(&self.instruments, inst);
+        let lane = self.instruments.get_mut(inst)?;
+        if index >= lane.effects.len() {
+            return None;
+        }
+        let removed = lane.effects.remove(index);
+        fixup_slots_after_remove(&mut lane.modulators, index);
+        if let Some((group, member)) = member_of {
+            if let Some(g) = self.groups.get_mut(group) {
+                fixup_member_slots_after_remove(&mut g.modulators, member, index);
+            }
+        }
+        Some(removed)
+    }
+
+    /// Move the effect at `from` to `to` in lane `inst`'s chain, the way the audio
+    /// thread's `ReorderEffect` does: the modulator targets of the lane and of its
+    /// group follow their plugins to the new slots. False (and no change) if either
+    /// index is outside the chain or they are the same.
+    pub fn move_effect(&mut self, inst: usize, from: usize, to: usize) -> bool {
+        let member_of = lane_member_ordinal(&self.instruments, inst);
+        let Some(lane) = self.instruments.get_mut(inst) else { return false };
+        if from >= lane.effects.len() || to >= lane.effects.len() || from == to {
+            return false;
+        }
+        let effect = lane.effects.remove(from);
+        lane.effects.insert(to, effect);
+        remap_slots_after_reorder(&mut lane.modulators, from, to);
+        if let Some((group, member)) = member_of {
+            if let Some(g) = self.groups.get_mut(group) {
+                remap_member_slots_after_reorder(&mut g.modulators, member, from, to);
+            }
+        }
+        true
+    }
 }
 
 /// Default dry/wet mix for a newly added effect. Half-wet suits blend/parallel
@@ -599,6 +642,47 @@ pub fn remap_slots_after_reorder(modulators: &mut [ModulatorSlot], from: usize, 
     }
 }
 
+/// Session-model mirror of `fixup_member_slots_after_remove`: after the effect at
+/// index `removed` is deleted from member `member`'s lane, drop the group targets
+/// that pointed at it and shift that member's higher slots down one, so every
+/// remaining target still points at the same plugin. Other members' targets and
+/// slot 0 (the instrument) never move.
+pub fn fixup_member_slots_after_remove(modulators: &mut [ModulatorSlot], member: usize, removed: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    let removed_slot = removed + 1;
+    for m in modulators.iter_mut() {
+        m.targets.retain(|t| {
+            !matches!(&t.kind, ModTargetKind::GroupMember { member: tm, slot, .. }
+                if *tm == member && *slot == removed_slot)
+        });
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
+                if *tm == member && *slot > removed_slot {
+                    *slot -= 1;
+                    t.slot = *slot;
+                }
+            }
+        }
+    }
+}
+
+/// Session-model mirror of `remap_member_slots_after_reorder`: after the effect at
+/// `from` moves to `to` in member `member`'s lane, remap that member's group
+/// target slots through the same permutation so they follow their plugins.
+pub fn remap_member_slots_after_reorder(modulators: &mut [ModulatorSlot], member: usize, from: usize, to: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
+                if *tm == member && *slot >= 1 {
+                    *slot = remap_index(*slot - 1, from, to) + 1;
+                    t.slot = *slot;
+                }
+            }
+        }
+    }
+}
+
 /// Session-model mirror of `remap_group_bus_after_reorder`: after bus effect
 /// `from` moves to `to`, remap `GroupBus` effect indices through the same
 /// permutation so targets follow their effects.
@@ -1016,6 +1100,216 @@ type = "envelope"
         // Moving an effect onto itself changes nothing.
         remap_slots_after_reorder(&mut mods, 1, 1);
         assert_eq!(slot_of(&mods[0]), [0, 1, 2, 3, 0]);
+    }
+
+    /// A group target on member `member`'s chain `slot`, as the target selector makes it.
+    fn member_target(member: usize, slot: usize, param_index: u32) -> ModTargetSlot {
+        ModTargetSlot { slot, ..target(K::GroupMember { member, slot, param_index }) }
+    }
+
+    #[test]
+    fn member_slot_fixup_after_effect_removal_touches_only_that_members_slots() {
+        // Member 0 has effects at slots 1..=3, member 1 one at slot 1. Effect 0 of member 0 is removed.
+        let mut mods = vec![lfo(vec![
+            member_target(0, 0, 1),
+            member_target(0, 1, 5),
+            member_target(0, 2, 6),
+            member_target(0, 3, 7),
+            member_target(1, 1, 8),
+            member_target(1, 2, 9),
+            plugin_target(2, 4),
+            target(K::GroupBus { effect_index: 2, param_index: 3 }),
+        ])];
+        fixup_member_slots_after_remove(&mut mods, 0, 0);
+        assert_eq!(
+            slots(&mods[0]),
+            [
+                (0, "GroupMember { member: 0, slot: 0, param_index: 1 }".to_string()),
+                (1, "GroupMember { member: 0, slot: 1, param_index: 6 }".to_string()),
+                (2, "GroupMember { member: 0, slot: 2, param_index: 7 }".to_string()),
+                (1, "GroupMember { member: 1, slot: 1, param_index: 8 }".to_string()),
+                (2, "GroupMember { member: 1, slot: 2, param_index: 9 }".to_string()),
+                (2, "PluginParam { slot: 2, param_index: 4 }".to_string()),
+                (0, "GroupBus { effect_index: 2, param_index: 3 }".to_string()),
+            ],
+            "the removed slot's target is gone, later slots of that member move down, nothing else does"
+        );
+        // Removing what is now the last effect of member 0 only drops its own targets.
+        fixup_member_slots_after_remove(&mut mods, 0, 1);
+        assert_eq!(
+            kinds(&mods[0]),
+            [
+                "GroupMember { member: 0, slot: 0, param_index: 1 }",
+                "GroupMember { member: 0, slot: 1, param_index: 6 }",
+                "GroupMember { member: 1, slot: 1, param_index: 8 }",
+                "GroupMember { member: 1, slot: 2, param_index: 9 }",
+                "PluginParam { slot: 2, param_index: 4 }",
+                "GroupBus { effect_index: 2, param_index: 3 }",
+            ]
+        );
+        // The other racks' targets move too.
+        let mut racks = vec![lfo(vec![member_target(0, 2, 1)]), adsr(vec![member_target(0, 3, 2)])];
+        fixup_member_slots_after_remove(&mut racks, 0, 0);
+        assert_eq!((racks[0].targets[0].slot, racks[1].targets[0].slot), (1, 2));
+    }
+
+    #[test]
+    fn member_slot_remap_after_reorder_follows_the_plugins_of_that_member() {
+        // Member 0's effects A, B, C at slots 1, 2, 3, each with a target; A moves to the end.
+        let mut mods = vec![lfo(vec![
+            member_target(0, 0, 9),
+            member_target(0, 1, 10),
+            member_target(0, 2, 11),
+            member_target(0, 3, 12),
+            member_target(1, 1, 13),
+            member_target(1, 2, 14),
+            plugin_target(1, 15),
+        ])];
+        remap_member_slots_after_reorder(&mut mods, 0, 0, 2);
+        let slot_of = |m: &ModulatorSlot| m.targets.iter().map(|t| t.slot).collect::<Vec<_>>();
+        assert_eq!(slot_of(&mods[0]), [0, 3, 1, 2, 1, 2, 1], "A -> 3, B -> 1, C -> 2; member 1 and the lane's own stay");
+        // The kind agrees with the target's own slot, and the parameters are unchanged.
+        assert_eq!(
+            kinds(&mods[0])[1..4],
+            [
+                "GroupMember { member: 0, slot: 3, param_index: 10 }",
+                "GroupMember { member: 0, slot: 1, param_index: 11 }",
+                "GroupMember { member: 0, slot: 2, param_index: 12 }",
+            ]
+        );
+        // Moving it back restores the original slots; moving an effect onto itself changes nothing.
+        remap_member_slots_after_reorder(&mut mods, 0, 2, 0);
+        assert_eq!(slot_of(&mods[0]), [0, 1, 2, 3, 1, 2, 1]);
+        remap_member_slots_after_reorder(&mut mods, 0, 1, 1);
+        assert_eq!(slot_of(&mods[0]), [0, 1, 2, 3, 1, 2, 1]);
+        // The other way: the last effect moves to the front.
+        remap_member_slots_after_reorder(&mut mods, 0, 2, 0);
+        assert_eq!(slot_of(&mods[0]), [0, 2, 3, 1, 1, 2, 1], "C -> 1, A -> 2, B -> 3");
+    }
+
+    /// An ungrouped lane with a filter and a reverb, then a group member (lane 1,
+    /// member 0) with the same, driven by a lane LFO and by a group LFO that each
+    /// have a target on both: told apart by parameter index, `cutoff` (0) is the
+    /// filter's and `damping` (2) the reverb's.
+    const MEMBER_WITH_EFFECTS: &str = r#"
+[[group]]
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[group.modulator.target]]
+member = 0
+slot = 2
+param = "damping"
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.5
+[[instrument.modulator.target]]
+slot = 2
+param = "damping"
+depth = 0.5
+"#;
+
+    fn lane_and_group_slots(model: &SessionModel) -> (Vec<usize>, Vec<usize>) {
+        let of = |m: &ModulatorSlot| m.targets.iter().map(|t| t.slot).collect::<Vec<_>>();
+        (of(&model.instruments[1].modulators[0]), of(&model.groups[0].modulators[0]))
+    }
+
+    #[test]
+    fn removing_an_effect_moves_the_targets_of_its_lane_and_of_its_group() {
+        let mut model = load(MEMBER_WITH_EFFECTS).model;
+        assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+        let removed = model.remove_effect(1, 0).expect("the filter");
+        assert_eq!(removed.name, "Filter");
+        assert_eq!(model.instruments[1].effects.len(), 1);
+        assert_eq!(model.instruments[1].effects[0].name, "Reverb");
+        // The reverb's `damping` is in slot 1 now, in both racks, and the filter's targets are gone.
+        assert_eq!(lane_and_group_slots(&model), ([1].to_vec(), [1].to_vec()));
+        assert_eq!(kinds(&model.instruments[1].modulators[0]), ["PluginParam { slot: 1, param_index: 2 }"]);
+        assert_eq!(kinds(&model.groups[0].modulators[0]), ["GroupMember { member: 0, slot: 1, param_index: 2 }"]);
+    }
+
+    #[test]
+    fn removing_an_effect_of_an_ungrouped_lane_leaves_the_groups_targets() {
+        let mut model = load(MEMBER_WITH_EFFECTS).model;
+        assert_eq!(model.remove_effect(0, 0).expect("the ungrouped lane's filter").name, "Filter");
+        assert_eq!(model.instruments[0].effects.len(), 1);
+        assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn removing_an_effect_that_is_not_there_changes_nothing() {
+        let mut model = load(MEMBER_WITH_EFFECTS).model;
+        assert!(model.remove_effect(1, 2).is_none(), "the chain has two effects");
+        assert!(model.remove_effect(1, 9).is_none());
+        assert!(model.remove_effect(0, 2).is_none(), "the ungrouped lane has two");
+        assert!(model.remove_effect(9, 0).is_none(), "there is no lane 9");
+        assert_eq!(model.instruments[1].effects.len(), 2);
+        assert_eq!(model.instruments[0].effects.len(), 2);
+        assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn moving_an_effect_moves_the_targets_of_its_lane_and_of_its_group_with_it() {
+        let mut model = load(MEMBER_WITH_EFFECTS).model;
+        assert!(model.move_effect(1, 0, 1));
+        let names: Vec<&str> = model.instruments[1].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Reverb", "Filter"]);
+        // `cutoff` followed the filter to slot 2, `damping` the reverb to slot 1.
+        assert_eq!(lane_and_group_slots(&model), ([2, 1].to_vec(), [2, 1].to_vec()));
+        assert_eq!(
+            kinds(&model.groups[0].modulators[0]),
+            ["GroupMember { member: 0, slot: 2, param_index: 0 }", "GroupMember { member: 0, slot: 1, param_index: 2 }"]
+        );
+
+        // Back again, the other way round.
+        assert!(model.move_effect(1, 1, 0));
+        let names: Vec<&str> = model.instruments[1].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Filter", "Reverb"]);
+        assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn moving_an_effect_of_an_ungrouped_lane_leaves_the_groups_targets() {
+        let mut model = load(MEMBER_WITH_EFFECTS).model;
+        assert!(model.move_effect(0, 0, 1));
+        let names: Vec<&str> = model.instruments[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Reverb", "Filter"]);
+        assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn moving_an_effect_nowhere_changes_nothing() {
+        let mut model = load(MEMBER_WITH_EFFECTS).model;
+        assert!(!model.move_effect(1, 0, 0), "onto itself");
+        assert!(!model.move_effect(1, 0, 2), "past the end");
+        assert!(!model.move_effect(1, 2, 0), "from past the end");
+        assert!(!model.move_effect(9, 0, 1), "no such lane");
+        let names: Vec<&str> = model.instruments[1].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Filter", "Reverb"]);
+        assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
     }
 
     #[test]

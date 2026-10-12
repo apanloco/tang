@@ -32,9 +32,9 @@ use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
     fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
-    fixup_slots_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph,
-    modulator_param_is_enum, modulator_param_len, modulator_param_range, modulator_row_to_cross_mod,
-    remap_group_bus_after_reorder, remap_slots_after_reorder, shift_group_member_after_insert,
+    format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
+    modulator_param_len, modulator_param_range, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
+    shift_group_member_after_insert,
 };
 use crate::piano_filter::PianoMode;
 use crate::plugin;
@@ -3102,13 +3102,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 match addr {
                     TreeAddress::Effect { inst, index } => {
                         let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
-                        if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
-                            if index < inst_node.effects.len() {
-                                inst_node.effects.remove(index);
-                                // Mirror the audio thread: drop / shift modulator targets.
-                                fixup_slots_after_remove(&mut inst_node.modulators, index);
-                            }
-                        }
+                        // Mirror the audio thread: drop / shift modulator targets.
+                        let _ = s.ctl.model.remove_effect(inst, index);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
@@ -3347,12 +3342,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             from: index,
                             to: index - 1,
                         });
-                        if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
-                            if index < inst_node.effects.len() {
-                                inst_node.effects.swap(index, index - 1);
-                                remap_slots_after_reorder(&mut inst_node.modulators, index, index - 1);
-                            }
-                        }
+                        s.ctl.model.move_effect(inst, index, index - 1);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                         if s.chain_state.selected > 0 {
@@ -3429,10 +3419,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                                 from: index,
                                 to: index + 1,
                             });
-                            if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
-                                inst_node.effects.swap(index, index + 1);
-                                remap_slots_after_reorder(&mut inst_node.modulators, index, index + 1);
-                            }
+                            s.ctl.model.move_effect(inst, index, index + 1);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
                             s.chain_state.selected += 1;

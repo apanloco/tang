@@ -363,6 +363,47 @@ group = 0
 "#
 }
 
+/// A group of two oscillators with effects, and a group LFO driving three of those
+/// plugins: member 0's filter (`cutoff`, slot 1) and reverb (`damping`, slot 2),
+/// and member 1's filter (`cutoff`, slot 1).
+fn scene_member_effects() -> &'static str {
+    r#"
+[[group]]
+name = "Pad"
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[group.modulator.target]]
+member = 0
+slot = 2
+param = "damping"
+depth = 0.3
+[[group.modulator.target]]
+member = 1
+slot = 1
+param = "cutoff"
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+"#
+}
+
 // ---------------------------------------------------------------------------
 // Session tab
 // ---------------------------------------------------------------------------
@@ -1195,6 +1236,123 @@ fn a_saved_session_does_not_keep_targets_of_a_deleted_effect() {
     assert!(saved.contains("param = \"damping\""), "{saved}");
     assert!(saved.contains("slot = 1"), "the reverb moved to slot 1:\n{saved}");
     assert!(!saved.contains("slot = 2"), "no target may point past the chain:\n{saved}");
+}
+
+// A group modulator addresses a member's plugins by (member, slot) too, so the
+// same has to hold for it when a member's effects go or move.
+
+/// The `(member, slot, param_index, row slot)` of every target of group modulator
+/// 0 that addresses a member's plugin, in the target order.
+fn member_targets(h: &Harness) -> Vec<(usize, usize, u32, usize)> {
+    use crate::plugin::chain::ModTargetKind;
+    h.s.ctl.model.groups[0].modulators[0]
+        .targets
+        .iter()
+        .filter_map(|t| match t.kind {
+            ModTargetKind::GroupMember { member, slot, param_index } => Some((member, slot, param_index, t.slot)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The tree line of group modulator 0.
+fn group_lfo_line(h: &Harness) -> &str {
+    h.tree().into_iter().find(|l| l.contains("~ LFO")).expect("the group LFO is in the tree")
+}
+
+const MEMBER_LFO_LINE: &str =
+    "  ~ LFO 0.5Hz sine → M0 Filter: cutoff (40%), M0 Reverb: damping (30%), M1 Filter: cutoff (20%)  (bus)";
+
+#[test]
+fn a_member_effect_scene_labels_each_target_with_its_plugin() {
+    let h = Harness::new(scene_member_effects());
+    assert_eq!(group_lfo_line(&h), MEMBER_LFO_LINE);
+    // cutoff is parameter 0 of the filter, damping parameter 2 of the reverb.
+    assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2), (1, 1, 0, 1)]);
+}
+
+#[test]
+fn deleting_a_member_effect_drops_its_group_targets_and_shifts_the_later_slots() {
+    let mut h = Harness::new(scene_member_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+    // Member 0's filter and its target are gone and its reverb is in slot 1 now;
+    // member 1 is another lane and keeps its filter's target in slot 1.
+    assert_eq!(member_targets(&h), [(0, 1, 2, 1), (1, 1, 0, 1)]);
+    assert_eq!(group_lfo_line(&h), "  ~ LFO 0.5Hz sine → M0 Reverb: damping (30%), M1 Filter: cutoff (20%)  (bus)");
+}
+
+#[test]
+fn deleting_the_last_member_effect_keeps_the_earlier_group_targets() {
+    let mut h = Harness::new(scene_member_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 1 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=1"]);
+    assert_eq!(member_targets(&h), [(0, 1, 0, 1), (1, 1, 0, 1)]);
+    assert_eq!(group_lfo_line(&h), "  ~ LFO 0.5Hz sine → M0 Filter: cutoff (40%), M1 Filter: cutoff (20%)  (bus)");
+}
+
+#[test]
+fn deleting_an_effect_of_the_second_member_leaves_the_first_members_targets() {
+    // Lane 1 is member 1: the ordinal, not the lane index, finds its targets.
+    let mut h = Harness::new(scene_member_effects());
+    h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveEffect inst=1 index=0"]);
+    assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2)]);
+}
+
+#[test]
+fn deleting_an_effect_of_a_lane_outside_the_group_leaves_the_group_targets() {
+    // The same scene with an ungrouped lane in front: its effect is not a member's.
+    let scene = format!(
+        "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n{}",
+        scene_member_effects()
+    );
+    let mut h = Harness::new(scene);
+    assert_eq!(member_targets(&h).len(), 3);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+    assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2), (1, 1, 0, 1)]);
+}
+
+#[test]
+fn reordering_member_effects_moves_the_group_targets_with_their_plugins() {
+    let mut h = Harness::new(scene_member_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["ReorderEffect inst=0 from=0 to=1"]);
+    // The reverb is first now, but the LFO still drives the same two plugins:
+    // cutoff follows the filter to slot 2, damping the reverb to slot 1.
+    assert_eq!(member_targets(&h), [(0, 2, 0, 2), (0, 1, 2, 1), (1, 1, 0, 1)]);
+    assert_eq!(group_lfo_line(&h), MEMBER_LFO_LINE);
+
+    // ...and moving it back restores the original slots.
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["ReorderEffect inst=0 from=1 to=0"]);
+    assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2), (1, 1, 0, 1)]);
+    assert_eq!(group_lfo_line(&h), MEMBER_LFO_LINE);
+}
+
+#[test]
+fn a_saved_session_does_not_keep_group_targets_of_a_deleted_member_effect() {
+    // The symptom the stale model produced: the reverb's target was written out
+    // with its old slot 2, and the filter's with slot 1, so on reload the filter's
+    // modulation landed on the reverb and the reverb's on nothing.
+    let mut h = Harness::new(scene_member_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('d'));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.toml");
+    h.s.ctl.session_path = Some(path.clone());
+    h.s.ctl.save().unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(!saved.contains("slot = 2"), "no target may point past the member's chain:\n{saved}");
+    assert_eq!(saved.matches("param = \"cutoff\"").count(), 1, "only member 1's cutoff is left:\n{saved}");
+    assert_eq!(saved.matches("param = \"damping\"").count(), 1, "{saved}");
+    assert_eq!(saved.matches("slot = 1").count(), 2, "member 0's damping and member 1's cutoff:\n{saved}");
 }
 
 // ---------------------------------------------------------------------------
