@@ -40,6 +40,7 @@ cpal = { version = "0.15", features = ["jack"] }
 
 [dev-dependencies]
 tempfile = "3"
+insta = "1"
 
 # lv2-sys upstream (RustAudio/rust-lv2) doesn't compile on macOS — its
 # unsupported.rs hits a compile_error! instead of using the Linux bindings.

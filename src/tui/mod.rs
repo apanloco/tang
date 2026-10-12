@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod golden_tests;
 mod piano_view;
 pub mod splash;
 
@@ -573,6 +575,133 @@ struct State {
 }
 
 impl State {
+    /// Build the TUI state from a loaded session. Pure construction: no engine
+    /// commands are sent and no threads are spawned, so tests can build a
+    /// `State` around stub channels.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        loaded_instruments: Vec<LoadedInstrument>,
+        loaded_groups: Vec<LoadedGroup>,
+        cmd_tx: Sender<GraphCommand>,
+        midi_tx: Sender<audio::MidiEvent>,
+        runtime: plugin::Runtime,
+        sample_rate: f32,
+        max_block_size: usize,
+        session_path: Option<PathBuf>,
+        catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>,
+        pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
+        learn_rx: crossbeam_channel::Receiver<crate::plugin::chain::MidiLearnedNotification>,
+        held: Arc<HeldNotes>,
+        piano_filter: Arc<PianoFilter>,
+        midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
+    ) -> State {
+        let groups: Vec<GroupNode> = loaded_groups
+            .into_iter()
+            .map(|g| GroupNode {
+                name: g.name,
+                volume: g.volume,
+                pan: g.pan,
+                effects: g.effects.into_iter().map(to_plugin_slot).collect(),
+                modulators: g.modulators.into_iter().map(to_modulator_slot).collect(),
+            })
+            .collect();
+
+        // Convert loaded instruments into flat InstrumentNode list.
+        let instruments: Vec<InstrumentNode> = loaded_instruments
+            .into_iter()
+            .map(|li| {
+                let instrument = li.instrument.map(to_plugin_slot);
+                let effects = li.effects.into_iter().map(to_plugin_slot).collect();
+                let modulators = li.modulators.into_iter().map(to_modulator_slot).collect();
+                let pattern = li.pattern.map(|p| PatternState {
+                    bpm: p.bpm,
+                    length_beats: p.length_beats,
+                    looping: p.looping,
+                    base_note: p.base_note,
+                    events: p.events,
+                    enabled: p.enabled,
+                    recording: false,
+                    in_key: p.in_key,
+                });
+                InstrumentNode {
+                    range: li.range,
+                    transpose: li.transpose,
+                    volume: li.volume,
+                    instrument,
+                    effects,
+                    modulators,
+                    pattern,
+                    pitch_bend_range: li.pitch_bend_range,
+                    remap: li.remap,
+                    group: li.group,
+                }
+            })
+            .collect();
+
+        let tree_entries = build_tree_entries(&instruments, &groups);
+        let param_len = instruments.first()
+            .and_then(|n| n.instrument.as_ref())
+            .map_or(0, |p| p.params.len());
+
+        let help_lines = build_help_lines();
+
+        // Determine initial BPM from loaded patterns (if any).
+        let initial_bpm = instruments.iter()
+            .filter_map(|n| n.pattern.as_ref())
+            .map(|p| p.bpm)
+            .next()
+            .unwrap_or(120.0);
+
+        State {
+            active_tab: 0,
+            chain_state: ListState::new(tree_entries.len()),
+            param_state: ListState::new(param_len),
+            tree_entries,
+            instruments,
+            groups,
+            focus_params: false,
+            help_lines,
+            help_offset: 0,
+            scrollbar_dragging: false,
+            param_dragging: false,
+            param_scrollbar_dragging: false,
+            editing: None,
+            range_edit: None,
+            rename_group: None,
+            selector: None,
+            target_selector: None,
+            modulate: None,
+            group_assign: None,
+            preset_selector: None,
+            catalog: Vec::new(),
+            catalog_rx,
+            catalog_scanning: true,
+            areas: Areas::default(),
+            quit: false,
+            session_path,
+            dirty: false,
+            param_filter_input: TextInputState::new(""),
+            param_filtering: false,
+            param_filtered: (0..param_len).collect(),
+            cmd_tx,
+            midi_tx,
+            runtime,
+            sample_rate,
+            max_block_size,
+            global_bpm: initial_bpm,
+            bpm_editing: None,
+            gain_editing: None,
+            save_as: None,
+            pattern_rx,
+            learn_rx,
+            held,
+            piano_filter,
+            piano_view_octave: 4,
+            scale_selector: None,
+            midi_monitor,
+        }
+    }
+
     fn rebuild_tree(&mut self) {
         self.tree_entries = build_tree_entries(&self.instruments, &self.groups);
         self.chain_state.set_len(self.tree_entries.len());
@@ -2785,67 +2914,27 @@ pub fn run(
     // in the event loop. The catalog is only needed by the selector popup.
     let catalog_rx = spawn_catalog_scan();
 
-    let groups: Vec<GroupNode> = loaded_groups
-        .into_iter()
-        .map(|g| GroupNode {
-            name: g.name,
-            volume: g.volume,
-            pan: g.pan,
-            effects: g.effects.into_iter().map(to_plugin_slot).collect(),
-            modulators: g.modulators.into_iter().map(to_modulator_slot).collect(),
-        })
-        .collect();
+    let mut s = State::new(
+        loaded_instruments,
+        loaded_groups,
+        cmd_tx,
+        midi_tx,
+        runtime,
+        sample_rate,
+        max_block_size,
+        session_path,
+        catalog_rx,
+        pattern_rx,
+        learn_rx,
+        held,
+        piano_filter,
+        midi_monitor,
+    );
 
-    // Convert loaded instruments into flat InstrumentNode list.
-    let instruments: Vec<InstrumentNode> = loaded_instruments
-        .into_iter()
-        .map(|li| {
-            let instrument = li.instrument.map(to_plugin_slot);
-            let effects = li.effects.into_iter().map(to_plugin_slot).collect();
-            let modulators = li.modulators.into_iter().map(to_modulator_slot).collect();
-            let pattern = li.pattern.map(|p| PatternState {
-                bpm: p.bpm,
-                length_beats: p.length_beats,
-                looping: p.looping,
-                base_note: p.base_note,
-                events: p.events,
-                enabled: p.enabled,
-                recording: false,
-                in_key: p.in_key,
-            });
-            InstrumentNode {
-                range: li.range,
-                transpose: li.transpose,
-                volume: li.volume,
-                instrument,
-                effects,
-                modulators,
-                pattern,
-                pitch_bend_range: li.pitch_bend_range,
-                remap: li.remap,
-                group: li.group,
-            }
-        })
-        .collect();
-
-    let tree_entries = build_tree_entries(&instruments, &groups);
-    let param_len = instruments.first()
-        .and_then(|n| n.instrument.as_ref())
-        .map_or(0, |p| p.params.len());
-
-    let help_lines = build_help_lines();
-
-    // Determine initial BPM from loaded patterns (if any).
-    let initial_bpm = instruments.iter()
-        .filter_map(|n| n.pattern.as_ref())
-        .map(|p| p.bpm)
-        .next()
-        .unwrap_or(120.0);
-
-    // Send transpose and pattern data to audio graph for loaded instruments.
-    for (inst_idx, inst_node) in instruments.iter().enumerate() {
+    // Send transpose and pattern data to the audio graph for the loaded instruments.
+    for (inst_idx, inst_node) in s.instruments.iter().enumerate() {
         if inst_node.transpose != 0 {
-            let _ = cmd_tx.send(GraphCommand::SetTranspose {
+            let _ = s.cmd_tx.send(GraphCommand::SetTranspose {
                 inst: inst_idx,
                 semitones: inst_node.transpose,
             });
@@ -2861,7 +2950,7 @@ pub fn run(
             }).collect();
             let beats_per_sec = p.bpm / 60.0;
             let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
-            let _ = cmd_tx.send(GraphCommand::SetPattern {
+            let _ = s.cmd_tx.send(GraphCommand::SetPattern {
                 inst: inst_idx,
                 pattern: crate::plugin::chain::Pattern {
                     events: pattern_events,
@@ -2870,67 +2959,18 @@ pub fn run(
                 base_note: p.base_note,
                 in_key: p.in_key,
             });
-            let _ = cmd_tx.send(GraphCommand::SetPatternEnabled {
+            let _ = s.cmd_tx.send(GraphCommand::SetPatternEnabled {
                 inst: inst_idx,
                 enabled: p.enabled,
             });
             if !p.looping {
-                let _ = cmd_tx.send(GraphCommand::SetPatternLooping {
+                let _ = s.cmd_tx.send(GraphCommand::SetPatternLooping {
                     inst: inst_idx,
                     looping: false,
                 });
             }
         }
     }
-
-    let mut s = State {
-        active_tab: 0,
-        chain_state: ListState::new(tree_entries.len()),
-        param_state: ListState::new(param_len),
-        tree_entries,
-        instruments,
-        groups,
-        focus_params: false,
-        help_lines,
-        help_offset: 0,
-        scrollbar_dragging: false,
-        param_dragging: false,
-        param_scrollbar_dragging: false,
-        editing: None,
-        range_edit: None,
-        rename_group: None,
-        selector: None,
-        target_selector: None,
-        modulate: None,
-        group_assign: None,
-        preset_selector: None,
-        catalog: Vec::new(),
-        catalog_rx,
-        catalog_scanning: true,
-        areas: Areas::default(),
-        quit: false,
-        session_path,
-        dirty: false,
-        param_filter_input: TextInputState::new(""),
-        param_filtering: false,
-        param_filtered: (0..param_len).collect(),
-        cmd_tx,
-        midi_tx,
-        runtime,
-        sample_rate,
-        max_block_size,
-        global_bpm: initial_bpm,
-        bpm_editing: None,
-        gain_editing: None,
-        save_as: None,
-        pattern_rx,
-        learn_rx,
-        held,
-        piano_filter,
-        piano_view_octave: 4,
-        scale_selector: None,
-        midi_monitor,
-    };
 
     // Probe keyboard enhancement support (must be done before entering raw mode).
     let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
@@ -4440,124 +4480,128 @@ fn render(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     s: &mut State,
 ) -> io::Result<()> {
-    terminal.draw(|frame| {
-        let area = frame.area();
-        // `--debug` carves a MIDI-monitor strip off the bottom (0 rows otherwise).
-        let debug_h: u16 = if s.midi_monitor.is_enabled() { 9 } else { 0 };
-        let [tab_area, content_area, action_area, debug_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(debug_h),
-        ])
-        .areas(area);
+    terminal.draw(|frame| draw(frame, s))?;
+    Ok(())
+}
 
-        s.areas.tab = tab_area;
-        s.areas.content = content_area;
-        s.areas.action_bar = action_area;
+/// Draw one frame. Kept free of the terminal backend so the golden-render
+/// tests (`golden_tests.rs`) can drive it through ratatui's `TestBackend`.
+fn draw(frame: &mut ratatui::Frame, s: &mut State) {
+    let area = frame.area();
+    // `--debug` carves a MIDI-monitor strip off the bottom (0 rows otherwise).
+    let debug_h: u16 = if s.midi_monitor.is_enabled() { 9 } else { 0 };
+    let [tab_area, content_area, action_area, debug_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(debug_h),
+    ])
+    .areas(area);
 
-        let session_label = if s.dirty { "(1) Session *" } else { "(1) Session" };
-        let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
-        frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
+    s.areas.tab = tab_area;
+    s.areas.content = content_area;
+    s.areas.action_bar = action_area;
 
-        // BPM display on the right side of the tab bar.
-        let bpm_text = format!("{:.0} BPM", s.global_bpm);
-        let bpm_width = bpm_text.len() as u16;
-        if tab_area.width > bpm_width + 2 {
-            let bpm_area = Rect {
-                x: tab_area.right() - bpm_width - 1,
-                y: tab_area.y,
-                width: bpm_width + 1,
-                height: 1,
-            };
+    let session_label = if s.dirty { "(1) Session *" } else { "(1) Session" };
+    let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
+    frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
+
+    // BPM display on the right side of the tab bar.
+    let bpm_text = format!("{:.0} BPM", s.global_bpm);
+    let bpm_width = bpm_text.len() as u16;
+    if tab_area.width > bpm_width + 2 {
+        let bpm_area = Rect {
+            x: tab_area.right() - bpm_width - 1,
+            y: tab_area.y,
+            width: bpm_width + 1,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(bpm_text).style(Style::default().fg(DIM)),
+            bpm_area,
+        );
+    }
+
+    match s.active_tab {
+        0 => {
+            // Pre-compute approximate inner heights and sync scroll offsets
+            // so mouse click_at uses the correct offset.
+            let inner_h = content_area.height.saturating_sub(2) as usize;
+            s.chain_state.ensure_visible(inner_h);
+            s.param_state.ensure_visible(inner_h);
+
+            let (ci, pi) = render_session(
+                frame,
+                content_area,
+                &s.tree_entries,
+                &s.chain_state,
+                &s.instruments,
+                &s.groups,
+                &s.param_state,
+                s.focus_params,
+                &s.param_filter_input,
+                s.param_filtering,
+                &s.param_filtered,
+            );
+            s.areas.chain_inner = ci;
+            s.areas.param_inner = pi;
+
+            render_action_bar(frame, action_area, &s.tree_entries, &s.chain_state, s.focus_params);
+
+            if let Some(edit) = &s.editing {
+                render_edit_popup(frame, area, edit);
+            }
+            if let Some(re) = &s.range_edit {
+                render_range_edit_popup(frame, area, re);
+            }
+            if let Some(rg) = &s.rename_group {
+                render_rename_group_popup(frame, area, rg);
+            }
+            if let Some(sel) = &s.selector {
+                render_selector_popup(frame, area, sel, s.catalog_scanning);
+            }
+            if let Some(ts) = &s.target_selector {
+                render_target_selector_popup(frame, area, ts);
+            }
+            if let Some(ms) = &s.modulate {
+                render_modulate_popup(frame, area, ms);
+            }
+            if let Some(gs) = &s.group_assign {
+                render_group_assign_popup(frame, area, gs);
+            }
+            if let Some(ps) = &s.preset_selector {
+                render_preset_selector_popup(frame, area, ps);
+            }
+            if let Some(edit) = &s.bpm_editing {
+                render_edit_popup(frame, area, edit);
+            }
+            if let Some(ge) = &s.gain_editing {
+                render_edit_popup(frame, area, &ge.edit);
+            }
+            if let Some(sa) = &s.save_as {
+                render_save_as_popup(frame, area, sa);
+            }
+        }
+        1 => {
+            render_piano_tab(frame, content_area, s);
+            if let Some(ss) = &s.scale_selector {
+                render_scale_selector_popup(frame, area, ss);
+            }
+        }
+        2 => {
             frame.render_widget(
-                Paragraph::new(bpm_text).style(Style::default().fg(DIM)),
-                bpm_area,
+                Paragraph::new("Oscilloscope — not yet implemented")
+                    .style(Style::default().fg(DIM)),
+                content_area,
             );
         }
+        3 => render_help(frame, content_area, &s.help_lines, s.help_offset),
+        _ => {}
+    }
 
-        match s.active_tab {
-            0 => {
-                // Pre-compute approximate inner heights and sync scroll offsets
-                // so mouse click_at uses the correct offset.
-                let inner_h = content_area.height.saturating_sub(2) as usize;
-                s.chain_state.ensure_visible(inner_h);
-                s.param_state.ensure_visible(inner_h);
-
-                let (ci, pi) = render_session(
-                    frame,
-                    content_area,
-                    &s.tree_entries,
-                    &s.chain_state,
-                    &s.instruments,
-                    &s.groups,
-                    &s.param_state,
-                    s.focus_params,
-                    &s.param_filter_input,
-                    s.param_filtering,
-                    &s.param_filtered,
-                );
-                s.areas.chain_inner = ci;
-                s.areas.param_inner = pi;
-
-                render_action_bar(frame, action_area, &s.tree_entries, &s.chain_state, s.focus_params);
-
-                if let Some(edit) = &s.editing {
-                    render_edit_popup(frame, area, edit);
-                }
-                if let Some(re) = &s.range_edit {
-                    render_range_edit_popup(frame, area, re);
-                }
-                if let Some(rg) = &s.rename_group {
-                    render_rename_group_popup(frame, area, rg);
-                }
-                if let Some(sel) = &s.selector {
-                    render_selector_popup(frame, area, sel, s.catalog_scanning);
-                }
-                if let Some(ts) = &s.target_selector {
-                    render_target_selector_popup(frame, area, ts);
-                }
-                if let Some(ms) = &s.modulate {
-                    render_modulate_popup(frame, area, ms);
-                }
-                if let Some(gs) = &s.group_assign {
-                    render_group_assign_popup(frame, area, gs);
-                }
-                if let Some(ps) = &s.preset_selector {
-                    render_preset_selector_popup(frame, area, ps);
-                }
-                if let Some(edit) = &s.bpm_editing {
-                    render_edit_popup(frame, area, edit);
-                }
-                if let Some(ge) = &s.gain_editing {
-                    render_edit_popup(frame, area, &ge.edit);
-                }
-                if let Some(sa) = &s.save_as {
-                    render_save_as_popup(frame, area, sa);
-                }
-            }
-            1 => {
-                render_piano_tab(frame, content_area, s);
-                if let Some(ss) = &s.scale_selector {
-                    render_scale_selector_popup(frame, area, ss);
-                }
-            }
-            2 => {
-                frame.render_widget(
-                    Paragraph::new("Oscilloscope — not yet implemented")
-                        .style(Style::default().fg(DIM)),
-                    content_area,
-                );
-            }
-            3 => render_help(frame, content_area, &s.help_lines, s.help_offset),
-            _ => {}
-        }
-
-        if s.midi_monitor.is_enabled() {
-            render_midi_monitor(frame, debug_area, &s.midi_monitor);
-        }
-    })?;
-    Ok(())
+    if s.midi_monitor.is_enabled() {
+        render_midi_monitor(frame, debug_area, &s.midi_monitor);
+    }
 }
 
 /// Live incoming-MIDI tally shown at the bottom under `--debug`. Each row is one

@@ -425,13 +425,27 @@ implementations. The TUI golden tests are the regression net.
 
 Each step is a reviewable change; the TUI must not regress at any point.
 
-- [ ] **1. TUI safety net.** Make `render` generic over `Backend`; extract
-  `State::new` (used by `run` and by tests); add `insta` golden-render tests
-  (`TestBackend`) for `examples/split.toml` (chain + parameter pane), a selected
-  modulator, a group with a bus effect and a group modulator, an open selector
-  popup, and the Piano tab. Fixtures are built by hand from builtin plugins until
-  step 3 provides the real loader. *Done when:* snapshots are committed and
-  `cargo test` is green, with no behavior change.
+- [x] **1. TUI safety net.** `draw(frame, state)` split out of `render` (the
+  frame-drawing is now backend-agnostic, so it runs against ratatui's
+  `TestBackend`); `State::new` extracted from `run` (pure construction — the
+  initial transpose / pattern push stays in `run`); `insta` added as a
+  dev-dependency. `src/tui/golden_tests.rs` builds sessions by hand from builtin
+  plugins (until step 3 provides the real loader) and drives them with real key
+  events through `process_event`:
+  - 15 golden renders (`src/tui/snapshots/*.snap`) of `examples/split.toml`, a
+    group scene (members, bus effect, group LFO + ADSR with a cross-mod target,
+    a filtered bass), the selector / target / modulate / value / group-assign
+    popups, and the Piano tab. Snapshots hold the characters **and** a per-cell
+    style map, because the piano paints its keys with background colour on blank
+    cells.
+  - 17 scenario tests: key sequence → commands sent to the audio thread + the
+    tree the user sees, including the index fix-ups (bus-effect / group-modulator
+    / group-member removal, member join) that steps 2–6 move.
+  - Mutation-checked: disabling a fix-up, changing a default mix, a one-unit
+    colour change and a dropped `BOLD` each fail the expected tests.
+  After an intentional UI change: `INSTA_UPDATE=always cargo test golden`, then
+  review the snapshot diff. *Done:* `cargo test` and clippy green, no behavior
+  change.
 - [ ] **2. Extract the model** into `src/app/model.rs` (not `core`: a module
   named `core` shadows the std crate): `PluginSlot`, `ParamSlot`, `ParamKind`,
   `PatternState`, `InstrumentNode`, `GroupNode`, `ModSourceSlot`,

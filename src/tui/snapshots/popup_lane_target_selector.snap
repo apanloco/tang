@@ -1,0 +1,77 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+┌ Chain ─────────────────────────────────────────┐┌ LFO 0.2Hz triangle ────────────────────────────────────────────────┐
+│▦ Pad  vol 0.80                                 ││  Type                     ◂ LFO ▸                                  │
+│  ♪ Oscillator  [Built-in]                      ││  Waveform                 ◂ triangle ▸                             │
+│  ♪ Oscillator  [Built-in]  C4-                 ││  Rate (Hz)                ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.20│
+│  ╰ fx Filter  [Built-in]                       ││  Targets                  ──────                                   │
+│  fx Reverb  [Built-in]  (bus)                  ││  cutoff depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░     0.50│
+│  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││                                                                    │
+│  ~ ADSR → Mod 0 rate (┌ Select Target Parameter ─────────────────────────────────────────────┐                       │
+│♪ Oscillator  [Built-in│/                                                                     │                       │
+│├ fx Filter  [Built-in]│Plugin              Parameter                                         │                       │
+│╰ ~ LFO 0.2Hz triangle │Oscillator          waveform                                          │                       │
+│                       │Oscillator          detune                                            │                       │
+│                       │Oscillator          volume                                            │                       │
+│                       │Oscillator          attack                                            │                       │
+│                       │Oscillator          decay                                             │                       │
+│                       │Oscillator          sustain                                           │                       │
+│                       │Oscillator          release                                           │                       │
+│                       │Oscillator          pan                                               │                       │
+│                       │Filter              cutoff                                            │                       │
+│                       │Filter              resonance                                         │                       │
+│                       │Filter              type                                              │                       │
+│                       │Filter              drive                                             │                       │
+│                       └──────────────────────────────────────────────────────────────────────┘                       │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
+ t  add target  d  delete
+── styles ('.' = default) ──
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbb.................................cbcccccccccccccccccccccccccccccccccc..................................b
+cbbbbbbbbbbbbbbbbbbbbbbbbbb......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.............................b
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbbb.......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb....................................................................b
+cbbbbbbbbbbbbbbbbbbbbbbbdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.......................b
+cbbbbbbbbbbbbbbbbbbbbbbbdbbe...................................................................d.......................b
+cbbbbbbbbbbbbbbbbbbbbbbbdffffff..............fffffffff.........................................d.......................b
+caaaaaaaaaaaaaaaaaaaaaaadaaaaaaaaaa..........aaaaaaaa..........................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................d......................................................................d.......................b
+c.......................dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.......................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+eeeccccccccccc.eeeccccccc
+── legend ──
+a  fg=White bg=Reset mod=BOLD
+b  fg=Indexed(245) bg=Reset mod=-
+c  fg=White bg=Reset mod=-
+d  fg=Magenta bg=Reset mod=-
+e  fg=Black bg=White mod=BOLD
+f  fg=Indexed(245) bg=Reset mod=UNDERLINED

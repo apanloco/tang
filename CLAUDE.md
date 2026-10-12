@@ -1123,6 +1123,15 @@ The TUI is built on ratatui 0.30 with the crossterm backend. We target the
 latest ratatui release and adopt new APIs as they become available. When
 upgrading ratatui, update this version note.
 
+### TUI tests
+
+`src/tui/golden_tests.rs` builds a `State` by hand, drives it with real key
+events through `process_event`, and checks two things: the rendered frame
+(characters **and** styles, via `insta` and ratatui's `TestBackend`; snapshots
+in `src/tui/snapshots/`) and the commands the TUI sent to the audio thread. After
+an intentional UI change run `INSTA_UPDATE=always cargo test golden` and review
+the snapshot diff.
+
 ## Web UI (planned)
 
 A browser front-end to the same Tang process (local or LAN). Audio, plugins

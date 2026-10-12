@@ -1,0 +1,89 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+ Scale: C Major   Mode: Highlight   Octave view: C4
+ Held: C4(1) E4(3) G4(5)   Chord: C (I)
+
+
+
+                │           │        │           │        │           │        │           │        │
+                │           │        │           │        │           │        │           │        │
+                │           │        │           │        │           │        │           │        │
+                │           │        │           │        │           │        │           │        │
+                │           │        │           │        │           │        │           │        │
+                │           │        │           │        │           │        │           │        │
+         C# D#  │ F# G# A#  │ C# D#  │ F# G# A#  │ C# D#  │ F# G# A#  │ C# D#  │ F# G# A#  │ C# D#  │ F# G# A#
+          │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
+          │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
+          │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
+          │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
+          │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
+          │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
+        C │D │E │F │G │A │B │C │D │E │F │G │A │B │C │D │E │F │G │A │B │C │D │E │F │G │A │B │C │D │E │F │G │A │B
+       C2                   C3                   C4                   C5                   C6
+
+
+
+
+
+
+
+
+                                         1:C   2:D   3:E   4:F   5:G   6:A   7:B
+ [k] scale  [l] mode  [[/]] octave  [Esc] back
+
+── styles ('.' = default) ──
+aaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaa..................................................................aaaaaaaa
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+aaaaaaacccccccccccccccccaaaaaaaaaaddddd
+
+
+
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeffeffeegeffeffeffeegeffeffeegeffeffeffeehiffeffiigeffiffeffeegeffeffeegeffeffeffeegeffeffeegeffeffeffee
+.......eeegeegeegeegeegeegeegeegeegeegeegeegeegeehiigeehiigeehiigeegeegeegeegeegeegeegeegeegeegeegeegeegeegeegee
+.......eeegeegeegeegeegeegeegeegeegeegeegeegeegeehiigeehiigeehiigeegeegeegeegeegeegeegeegeegeegeegeegeegeegeegee
+.......eeegeegeegeegeegeegeegeegeegeegeegeegeegeehiigeehiigeehiigeegeegeegeegeegeegeegeegeegeegeegeegeegeegeegee
+.......eeegeegeegeegeegeegeegeegeegeegeegeegeegeehiigeehiigeehiigeegeegeegeegeegeegeegeegeegeegeegeegeegeegeegee
+.......eeegeegeegeegeegeegeegeegeegeegeegeegeegeehiigeehiigeehiigeegeegeegeegeegeegeegeegeegeegeegeegeegeegeegee
+.......eeegeegeegeegeegeegeegeegeegeegeegeegeegeehiigeehiigeehiigeegeegeegeegeegeegeegeegeegeegeegeegeegeegeegee
+.......jkjlmmlmmlmmlmmlmmlmmnkjlmmlmmlmmlmmlmmlmmnkjlmmlomlmmlomlmmlmmnkjlmmlmmlmmlmmlmmlmmnkjlmmlmmlmmlmmlmmlmm
+.......pp...................pp...................pp...................pp...................pp
+
+
+
+
+
+
+
+
+.........................................qqd...qqr...qqr...qqr...qqr...qqr...qqr
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+── legend ──
+a  fg=Indexed(245) bg=Reset mod=-
+b  fg=White bg=Reset mod=BOLD
+c  fg=White bg=Reset mod=-
+d  fg=Rgb(240, 185, 70) bg=Reset mod=BOLD
+e  fg=Rgb(80, 80, 80) bg=Rgb(240, 240, 235) mod=-
+f  fg=Rgb(170, 170, 175) bg=Rgb(25, 25, 30) mod=-
+g  fg=Rgb(150, 150, 150) bg=Rgb(240, 240, 235) mod=-
+h  fg=Rgb(150, 150, 150) bg=Rgb(205, 205, 200) mod=-
+i  fg=Rgb(80, 80, 80) bg=Rgb(205, 205, 200) mod=-
+j  fg=Black bg=Rgb(240, 185, 70) mod=-
+k  fg=Black bg=Rgb(240, 185, 70) mod=BOLD
+l  fg=Rgb(150, 150, 150) bg=Rgb(110, 195, 215) mod=-
+m  fg=Black bg=Rgb(110, 195, 215) mod=-
+n  fg=Rgb(150, 150, 150) bg=Rgb(240, 185, 70) mod=-
+o  fg=Black bg=Rgb(110, 195, 215) mod=BOLD
+p  fg=Rgb(180, 180, 180) bg=Reset mod=-
+q  fg=Rgb(120, 120, 120) bg=Reset mod=-
+r  fg=Rgb(120, 200, 215) bg=Reset mod=-
