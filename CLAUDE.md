@@ -1123,6 +1123,41 @@ The TUI is built on ratatui 0.30 with the crossterm backend. We target the
 latest ratatui release and adopt new APIs as they become available. When
 upgrading ratatui, update this version note.
 
+## Web UI (planned)
+
+A browser front-end to the same Tang process (local or LAN). Audio, plugins
+and MIDI stay native — the browser is a control surface, never an audio
+engine — and the TUI stays first-class. Full design, protocol sketch and the
+phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
+
+- **Controller** (`src/app/`): a plain struct that owns the live session
+  model, the engine handles and the plugin catalog. Front-ends call
+  `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
+  feature, so no feature ever has two implementations.
+- **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s;
+  today's lane/group/modulator structure is projected into it. Node layout is
+  stored in the session TOML as optional `ui = { x, y, pinned }` tables that
+  the engine and the TUI ignore.
+- **Telemetry**: the audio thread publishes modulator outputs, effective
+  (modulated) parameter values and meters through lock-free slots; the web
+  runtime streams them to the browser as binary frames.
+- **Server**: `axum` on its own thread behind the `web` Cargo feature
+  (`tang serve`, or `--web` alongside the TUI). One WebSocket per client,
+  loopback by default, `Origin`/`Host` checked, token for non-loopback binds.
+  The audio, MIDI and controller threads stay synchronous.
+- **Frontend** (`web/`): TypeScript + React + Vite, React Flow for the patch
+  canvas, a framework-agnostic client layer, generated protocol types.
+- **Scope**: track A first — a "rack-as-patch" canvas over the existing engine
+  (serial audio chain, block-rate lane-global modulation, cables = modulation
+  targets). A patchable synth engine (`builtin:patch`, track B) comes later.
+
+TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md`.
+TODO: `tang serve <session.toml>`, `--web[=addr]` and `--audio-device none`
+(a timer-driven null audio backend for CI and headless use).
+TODO: `NoteInput` — one lock-free note path shared by hardware MIDI, the
+virtual piano and the browser.
+TODO: `ui` layout fields in the session format.
+
 ## Platform
 
 Cross-platform: Linux, macOS, Windows.
