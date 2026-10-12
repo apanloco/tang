@@ -671,6 +671,9 @@ fn is_default_pan_f32(v: &f32) -> bool {
 struct PianoOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     scale: Option<String>,
+    /// Only written when on — highlight mode is the default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    locked: bool,
 }
 
 /// One [[instrument]] table in the output. Plugin fields are at the top level.
@@ -970,7 +973,7 @@ pub fn save(
     piano: Option<&PianoConfig>,
 ) -> anyhow::Result<()> {
     let session = SessionOut {
-        piano: piano.map(|p| PianoOut { scale: p.scale.clone() }),
+        piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         groups: groups
             .iter()
             .map(|g| GroupOut {
@@ -1703,6 +1706,44 @@ range = "C4-C8"
         let config = load(path.to_str().unwrap()).unwrap();
         let piano_cfg = config.piano.expect("piano section");
         assert_eq!(piano_cfg.scale.as_deref(), Some("F# dorian"));
+    }
+
+    #[test]
+    fn save_and_reload_piano_lock() {
+        // The Piano tab's lock toggle is session state: `[piano] locked = true` is
+        // read at startup, so a save has to write it back.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("locked.toml");
+        let instruments = || {
+            vec![SaveInstrumentSlot {
+                range: None,
+                transpose: 0,
+                group: None,
+                modulators: vec![],
+                instrument: Some(SaveInstrument {
+                    plugin: "builtin:sine".into(),
+                    volume: 1.0,
+                    preset: None,
+                    params: vec![],
+                    pitch_bend_range: 2.0,
+                    remap: HashMap::new(),
+                }),
+                effects: vec![],
+                pattern: None,
+            }]
+        };
+
+        let locked = PianoConfig { scale: Some("C major".into()), locked: true };
+        save(&path, &instruments(), &[], Some(&locked)).unwrap();
+        let config = load(path.to_str().unwrap()).unwrap();
+        assert!(config.piano.expect("piano section").locked);
+
+        // Highlight mode is the default and stays out of the file.
+        let open = PianoConfig { scale: Some("C major".into()), locked: false };
+        save(&path, &instruments(), &[], Some(&open)).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("locked"), "{raw}");
+        assert!(!load(path.to_str().unwrap()).unwrap().piano.expect("piano section").locked);
     }
 
     #[test]

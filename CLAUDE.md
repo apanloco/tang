@@ -823,6 +823,7 @@ Key colors (in order of priority):
 | Key | Action |
 |-----|--------|
 | `k` | Open scale picker (root + scale type, filterable) |
+| `l` | Toggle Locked mode: off-scale notes are dropped at the sender (Highlight, the default, only colours them) |
 | `[` | Shift view octave down |
 | `]` | Shift view octave up |
 
@@ -832,6 +833,7 @@ section:
 ```toml
 [piano]
 scale = "C major"
+locked = true           # optional; Locked mode, default false (Highlight)
 ```
 
 Accepted forms include sharps (`C#`), flats (`Bb`), short names
