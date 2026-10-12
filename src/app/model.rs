@@ -420,6 +420,74 @@ pub fn fixup_group_member_mod_after_remove(
     }
 }
 
+/// Where index `i` lands when the element at `from` moves to `to` and the
+/// elements in between slide over by one.
+fn remap_index(i: usize, from: usize, to: usize) -> usize {
+    if i == from {
+        to
+    } else if from < to && i > from && i <= to {
+        i - 1
+    } else if from > to && i >= to && i < from {
+        i + 1
+    } else {
+        i
+    }
+}
+
+/// Session-model mirror of the audio thread's `fixup_slots_after_remove`: after
+/// the effect at index `removed` is deleted from a lane's chain, drop the
+/// plugin-param targets that pointed at it and shift higher slots down one, so
+/// every remaining target still points at the same plugin. Slot 0 (the
+/// instrument) never moves.
+pub fn fixup_slots_after_remove(modulators: &mut [ModulatorSlot], removed: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    let removed_slot = removed + 1;
+    for m in modulators.iter_mut() {
+        m.targets.retain(|t| {
+            !matches!(&t.kind, ModTargetKind::PluginParam { slot, .. } if *slot == removed_slot)
+        });
+        for t in &mut m.targets {
+            if let ModTargetKind::PluginParam { slot, .. } = &mut t.kind {
+                if *slot > removed_slot {
+                    *slot -= 1;
+                    t.slot = *slot;
+                }
+            }
+        }
+    }
+}
+
+/// Session-model mirror of `remap_slots_after_reorder`: after the effect at
+/// `from` moves to `to`, remap plugin-param target slots through the same
+/// permutation so they follow their plugins.
+pub fn remap_slots_after_reorder(modulators: &mut [ModulatorSlot], from: usize, to: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::PluginParam { slot, .. } = &mut t.kind {
+                if *slot >= 1 {
+                    *slot = remap_index(*slot - 1, from, to) + 1;
+                    t.slot = *slot;
+                }
+            }
+        }
+    }
+}
+
+/// Session-model mirror of `remap_group_bus_after_reorder`: after bus effect
+/// `from` moves to `to`, remap `GroupBus` effect indices through the same
+/// permutation so targets follow their effects.
+pub fn remap_group_bus_after_reorder(modulators: &mut [ModulatorSlot], from: usize, to: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
+                *effect_index = remap_index(*effect_index, from, to);
+            }
+        }
+    }
+}
+
 /// The (group, member-ordinal) of instrument `inst`, or None if ungrouped.
 pub fn lane_member_ordinal(instruments: &[InstrumentNode], inst: usize) -> Option<(usize, usize)> {
     let group = instruments.get(inst)?.group?;
@@ -657,6 +725,118 @@ mod tests {
                 "ModulatorRate { mod_index: 1 }",
             ]
         );
+    }
+
+    /// A lane modulator target on chain `slot` (0 = instrument, 1.. = effects).
+    fn plugin_target(slot: usize, param_index: u32) -> ModTargetSlot {
+        ModTargetSlot { slot, ..target(K::PluginParam { slot, param_index }) }
+    }
+
+    /// Each target's own `slot` field and its kind, as the tree and the save code see them.
+    fn slots(m: &ModulatorSlot) -> Vec<(usize, String)> {
+        m.targets.iter().map(|t| (t.slot, format!("{:?}", t.kind))).collect()
+    }
+
+    #[test]
+    fn slot_fixup_after_effect_removal_drops_that_slot_and_shifts_later_ones() {
+        // Chain: instrument, then effects 0, 1, 2 at slots 1, 2, 3. Effect 0 is removed.
+        let mut mods = vec![lfo(vec![
+            plugin_target(0, 1),
+            plugin_target(1, 5),
+            plugin_target(2, 6),
+            plugin_target(3, 7),
+            target(K::ModulatorRate { mod_index: 1 }),
+            target(K::GroupMember { member: 0, slot: 2, param_index: 4 }),
+        ])];
+        fixup_slots_after_remove(&mut mods, 0);
+        assert_eq!(
+            slots(&mods[0]),
+            [
+                (0, "PluginParam { slot: 0, param_index: 1 }".to_string()),
+                (1, "PluginParam { slot: 1, param_index: 6 }".to_string()),
+                (2, "PluginParam { slot: 2, param_index: 7 }".to_string()),
+                (0, "ModulatorRate { mod_index: 1 }".to_string()),
+                (0, "GroupMember { member: 0, slot: 2, param_index: 4 }".to_string()),
+            ]
+        );
+        // Removing the last effect only drops its own targets.
+        fixup_slots_after_remove(&mut mods, 1);
+        assert_eq!(
+            slots(&mods[0]).iter().map(|(slot, _)| *slot).collect::<Vec<_>>(),
+            [0, 1, 0, 0],
+        );
+    }
+
+    #[test]
+    fn slot_remap_after_reorder_follows_the_plugins() {
+        // Effects A, B, C at slots 1, 2, 3, each with one target; A moves to the end.
+        let mut mods = vec![lfo(vec![
+            plugin_target(0, 9),
+            plugin_target(1, 10),
+            plugin_target(2, 11),
+            plugin_target(3, 12),
+            target(K::ModulatorRate { mod_index: 0 }),
+        ])];
+        remap_slots_after_reorder(&mut mods, 0, 2);
+        let slot_of = |m: &ModulatorSlot| m.targets.iter().map(|t| t.slot).collect::<Vec<_>>();
+        assert_eq!(slot_of(&mods[0]), [0, 3, 1, 2, 0], "A -> 3, B -> 1, C -> 2");
+        // The kind agrees with the target's own slot, and the parameters are unchanged.
+        assert_eq!(
+            kinds(&mods[0])[1..4],
+            [
+                "PluginParam { slot: 3, param_index: 10 }",
+                "PluginParam { slot: 1, param_index: 11 }",
+                "PluginParam { slot: 2, param_index: 12 }",
+            ]
+        );
+        // Moving it back restores the original slots.
+        remap_slots_after_reorder(&mut mods, 2, 0);
+        assert_eq!(slot_of(&mods[0]), [0, 1, 2, 3, 0]);
+        // Moving an effect onto itself changes nothing.
+        remap_slots_after_reorder(&mut mods, 1, 1);
+        assert_eq!(slot_of(&mods[0]), [0, 1, 2, 3, 0]);
+    }
+
+    #[test]
+    fn bus_remap_after_reorder_follows_the_effects() {
+        let mut mods = vec![lfo(vec![
+            target(K::GroupBus { effect_index: 0, param_index: 1 }),
+            target(K::GroupBus { effect_index: 1, param_index: 2 }),
+            target(K::GroupBus { effect_index: 2, param_index: 3 }),
+            target(K::PluginParam { slot: 2, param_index: 4 }),
+            target(K::GroupMember { member: 1, slot: 2, param_index: 5 }),
+        ])];
+        remap_group_bus_after_reorder(&mut mods, 2, 0);
+        assert_eq!(
+            kinds(&mods[0]),
+            [
+                "GroupBus { effect_index: 1, param_index: 1 }",
+                "GroupBus { effect_index: 2, param_index: 2 }",
+                "GroupBus { effect_index: 0, param_index: 3 }",
+                "PluginParam { slot: 2, param_index: 4 }",
+                "GroupMember { member: 1, slot: 2, param_index: 5 }",
+            ]
+        );
+    }
+
+    #[test]
+    fn remap_index_agrees_with_actually_moving_an_element() {
+        for n in 1..=6usize {
+            for from in 0..n {
+                for to in 0..n {
+                    let mut chain: Vec<usize> = (0..n).collect();
+                    let moved = chain.remove(from);
+                    chain.insert(to, moved);
+                    for original in 0..n {
+                        assert_eq!(
+                            chain[remap_index(original, from, to)],
+                            original,
+                            "n={n} from={from} to={to}: element {original} should land where the move put it"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn node(group: Option<usize>) -> InstrumentNode {

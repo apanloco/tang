@@ -33,9 +33,9 @@ use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
     fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
-    format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
-    modulator_param_len, modulator_param_range, modulator_row_to_cross_mod,
-    shift_group_member_after_insert,
+    fixup_slots_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph,
+    modulator_param_is_enum, modulator_param_len, modulator_param_range, modulator_row_to_cross_mod,
+    remap_group_bus_after_reorder, remap_slots_after_reorder, shift_group_member_after_insert,
 };
 use crate::audio;
 use crate::held_notes::HeldNotes;
@@ -3783,6 +3783,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         if let Some(inst_node) = s.instruments.get_mut(inst) {
                             if index < inst_node.effects.len() {
                                 inst_node.effects.remove(index);
+                                // Mirror the audio thread: drop / shift modulator targets.
+                                fixup_slots_after_remove(&mut inst_node.modulators, index);
                             }
                         }
                         s.dirty = true;
@@ -4026,6 +4028,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         if let Some(inst_node) = s.instruments.get_mut(inst) {
                             if index < inst_node.effects.len() {
                                 inst_node.effects.swap(index, index - 1);
+                                remap_slots_after_reorder(&mut inst_node.modulators, index, index - 1);
                             }
                         }
                         s.dirty = true;
@@ -4074,6 +4077,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         if let Some(g) = s.groups.get_mut(group) {
                             if index < g.effects.len() {
                                 g.effects.swap(index, index - 1);
+                                remap_group_bus_after_reorder(&mut g.modulators, index, index - 1);
                             }
                         }
                         s.dirty = true;
@@ -4105,6 +4109,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             });
                             if let Some(inst_node) = s.instruments.get_mut(inst) {
                                 inst_node.effects.swap(index, index + 1);
+                                remap_slots_after_reorder(&mut inst_node.modulators, index, index + 1);
                             }
                             s.dirty = true;
                             s.rebuild_tree();
@@ -4152,6 +4157,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             });
                             if let Some(g) = s.groups.get_mut(group) {
                                 g.effects.swap(index, index + 1);
+                                remap_group_bus_after_reorder(&mut g.modulators, index, index + 1);
                             }
                             s.dirty = true;
                             s.rebuild_tree();

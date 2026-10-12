@@ -165,6 +165,10 @@ fn describe(cmd: &GraphCommand) -> String {
         C::RemoveInstrument { inst } => format!("RemoveInstrument inst={inst}"),
         C::RemoveGroup { group } => format!("RemoveGroup group={group}"),
         C::ClearInstrument { inst } => format!("ClearInstrument inst={inst}"),
+        C::ReorderEffect { inst, from, to } => format!("ReorderEffect inst={inst} from={from} to={to}"),
+        C::ReorderGroupEffect { group, from, to } => {
+            format!("ReorderGroupEffect group={group} from={from} to={to}")
+        }
         C::SwapInstrument { inst, .. } => format!("SwapInstrument inst={inst}"),
         C::InsertEffect { inst, index, mix, .. } => {
             format!("InsertEffect inst={inst} index={index} mix={mix:.3}")
@@ -427,6 +431,34 @@ fn scene_group() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
     };
 
     (vec![pad_a, pad_b, bass], vec![group])
+}
+
+/// One oscillator with a filter and a reverb in series, and a single LFO driving
+/// both (`cutoff` on the filter at slot 1, `damping` on the reverb at slot 2).
+fn scene_two_effects() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
+    let mut lead = instrument(builtin("builtin:osc", 1.0, &[]));
+    lead.effects.push(builtin("builtin:filter", 1.0, &[]));
+    lead.effects.push(builtin("builtin:reverb", 0.5, &[]));
+    let to_filter = lane_target(&lead, 1, "cutoff", 0.4);
+    let to_reverb = lane_target(&lead, 2, "damping", 0.3);
+    lead.modulators.push(lfo(LfoWaveform::Sine, 0.5, vec![to_filter, to_reverb]));
+    (vec![lead], vec![])
+}
+
+/// A group with a filter and a reverb on its bus, and a group LFO driving both.
+fn scene_bus_pair() -> (Vec<LoadedInstrument>, Vec<LoadedGroup>) {
+    let mut pad = instrument(builtin("builtin:osc", 1.0, &[]));
+    pad.group = Some(0);
+    let bus = vec![builtin("builtin:filter", 1.0, &[]), builtin("builtin:reverb", 0.5, &[])];
+    let targets = vec![bus_target(&bus, 0, "cutoff", 0.4), bus_target(&bus, 1, "damping", 0.3)];
+    let group = LoadedGroup {
+        name: Some("Pad".to_string()),
+        volume: 1.0,
+        pan: 0.0,
+        modulators: vec![lfo(LfoWaveform::Sine, 0.5, targets)],
+        effects: bus,
+    };
+    (vec![pad], vec![group])
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +834,118 @@ fn the_param_cursor_survives_moving_between_nodes_and_is_clamped() {
     assert_eq!((h.s.param_state.selected, h.s.param_state.len), (7, 8), "same row on the next oscillator");
     h.goto(TreeAddress::Group(0));
     assert_eq!((h.s.param_state.selected, h.s.param_state.len), (1, 2), "clamped to the bus pane");
+}
+
+// The engine remaps or drops a modulator's plugin targets when its effects are
+// removed or reordered, so that modulation keeps following the same plugin. The
+// model has to do the same, or the tree shows the wrong plugin and a saved
+// session attaches the modulation to a different effect on reload.
+
+/// The `(slot, kind)` of every target of lane modulator 0 on lane 0.
+fn lane_targets(h: &Harness) -> Vec<(usize, String)> {
+    h.s.instruments[0].modulators[0].targets.iter().map(|t| (t.slot, format!("{:?}", t.kind))).collect()
+}
+
+#[test]
+fn deleting_an_effect_drops_its_modulator_targets_and_shifts_later_slots() {
+    let mut h = Harness::new(scene_two_effects());
+    assert_eq!(h.tree()[3], "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Reverb: damping (30%)");
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+    // The reverb's `damping` (parameter 2) moved from slot 2 to slot 1 and the filter's target is gone.
+    assert_eq!(lane_targets(&h), [(1, "PluginParam { slot: 1, param_index: 2 }".to_string())]);
+    assert_eq!(
+        h.tree(),
+        ["♪ Oscillator  [Built-in]", "├ fx Reverb  [Built-in]", "╰ ~ LFO 0.5Hz sine → Reverb: damping (30%)"]
+    );
+}
+
+#[test]
+fn deleting_the_last_effect_keeps_the_earlier_targets() {
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 1 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=1"]);
+    assert_eq!(
+        h.tree(),
+        ["♪ Oscillator  [Built-in]", "├ fx Filter  [Built-in]", "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%)"]
+    );
+}
+
+#[test]
+fn reordering_effects_moves_modulator_targets_with_their_plugins() {
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["ReorderEffect inst=0 from=0 to=1"]);
+    // Reverb is now first, but the LFO still drives the same two plugins.
+    assert_eq!(h.tree()[1], "├ fx Reverb  [Built-in]");
+    assert_eq!(h.tree()[2], "├ fx Filter  [Built-in]");
+    assert_eq!(h.tree()[3], "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Reverb: damping (30%)");
+    let slots: Vec<usize> = lane_targets(&h).iter().map(|t| t.0).collect();
+    assert_eq!(slots, [2, 1], "cutoff follows the filter to slot 2, damping the reverb to slot 1");
+
+    // ...and moving it back restores the original slots.
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["ReorderEffect inst=0 from=1 to=0"]);
+    let slots: Vec<usize> = lane_targets(&h).iter().map(|t| t.0).collect();
+    assert_eq!(slots, [1, 2]);
+    assert_eq!(h.tree()[3], "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Reverb: damping (30%)");
+}
+
+#[test]
+fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
+    let mut h = Harness::new(scene_bus_pair());
+    let label = "  ~ LFO 0.5Hz sine → Bus Filter: cutoff (40%), Bus Reverb: damping (25%)  (bus)";
+    let label = label.replace("(25%)", "(30%)");
+    assert!(h.tree().contains(&label.as_str()), "{:#?}", h.tree());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["ReorderGroupEffect group=0 from=0 to=1"]);
+    assert_eq!(h.tree()[2], "  fx Reverb  [Built-in]  (bus)");
+    assert_eq!(h.tree()[3], "  fx Filter  [Built-in]  (bus)");
+    assert!(h.tree().contains(&label.as_str()), "targets follow their effects: {:#?}", h.tree());
+    let kinds: Vec<String> =
+        h.s.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+    assert_eq!(
+        kinds,
+        [
+            "GroupBus { effect_index: 1, param_index: 0 }".to_string(),
+            "GroupBus { effect_index: 0, param_index: 2 }".to_string(),
+        ]
+    );
+
+    // Moving the filter back up restores the original indices.
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["ReorderGroupEffect group=0 from=1 to=0"]);
+    let kinds: Vec<String> =
+        h.s.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+    assert_eq!(
+        kinds,
+        [
+            "GroupBus { effect_index: 0, param_index: 0 }".to_string(),
+            "GroupBus { effect_index: 1, param_index: 2 }".to_string(),
+        ]
+    );
+    assert!(h.tree().contains(&label.as_str()), "{:#?}", h.tree());
+}
+
+#[test]
+fn a_saved_session_does_not_keep_targets_of_a_deleted_effect() {
+    // The symptom the stale model produced: the old target was written out with
+    // its old slot, and on reload attached to whichever effect now sits there.
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('d'));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.toml");
+    h.s.save_session_to(&path).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(!saved.contains("cutoff"), "the deleted filter's target was saved:\n{saved}");
+    assert!(saved.contains("param = \"damping\""), "{saved}");
+    assert!(saved.contains("slot = 1"), "the reverb moved to slot 1:\n{saved}");
+    assert!(!saved.contains("slot = 2"), "no target may point past the chain:\n{saved}");
 }
 
 // ---------------------------------------------------------------------------

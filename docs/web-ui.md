@@ -55,6 +55,17 @@ through shared `Arc`s (`HeldNotes`, `PianoFilter`, `MidiMonitor`).
   16-slot channel; once it is full, the audio thread's `let _ = try_send(old)`
   drops them on the audio thread), and MIDI hot-plug is never polled (only
   `play` does). Both are fixed in step 5.
+- The model never mirrored the engine's modulator-target fix-ups when an effect
+  is removed or reordered (`fixup_slots_after_remove`,
+  `remap_slots_after_reorder`, `remap_group_bus_after_reorder` in
+  `plugin::chain`). After such an edit the TUI kept stale targets (shown as
+  `→ fx1: cutoff`) and saved them with the old slots, so a reload could attach a
+  modulation to a different effect. Found while writing the fix-up tests; fixed
+  right after step 2. Still open: the engine's `RemoveEffect` / `ReorderEffect`
+  handlers only fix the lane's own modulators, so a group modulator's
+  `GroupMember` target on that lane's effect slots keeps its old slot (by
+  reading the handlers; no test exercises it). The controller's remove /
+  reorder intents (steps 5-6) are the place to fix both sides.
 
 **Not plumbed to any UI yet:** modulator outputs, effective (modulated)
 parameter values, meters/clip, scope.
