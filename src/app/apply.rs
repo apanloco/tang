@@ -7,8 +7,9 @@
 
 use crate::app::controller::Controller;
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError};
-use crate::app::model::{NodeId, NodePath, ParamKind, PluginSlot};
+use crate::app::model::{NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::plugin::chain::GraphCommand;
+use crate::{plugin, session};
 
 /// Where the audio thread finds the plugin an intent concerns.
 enum PluginAt {
@@ -23,6 +24,7 @@ impl Controller {
         let event = match intent {
             Intent::SetParam { node, param, value } => self.set_param(node, param, value)?,
             Intent::SetGain { node, gain, value } => self.set_gain(node, gain, value)?,
+            Intent::LoadPreset { node, preset } => self.load_preset(node, &preset)?,
         };
         self.dirty = true;
         self.rev += 1;
@@ -87,6 +89,52 @@ impl Controller {
         Ok(Event::GainSet { node, gain, value })
     }
 
+    fn load_preset(&mut self, node: NodeId, preset_id: &str) -> Result<Event, IntentError> {
+        let at = self.locate_plugin(node)?;
+        let PluginAt::Lane { inst, slot } = at else {
+            return Err(invalid("a bus effect has no presets to load"));
+        };
+        let plugin = self.plugin_at(&at).ok_or_else(|| invalid("that instrument has no plugin"))?;
+        let preset = plugin
+            .presets
+            .iter()
+            .find(|p| p.id == preset_id)
+            .cloned()
+            .ok_or_else(|| invalid(format!("the plugin has no preset {preset_id}")))?;
+        let source = plugin.id.clone();
+
+        // The audio thread first: that is what changes the sound.
+        let _ = self.cmd_tx.send(GraphCommand::LoadPreset { inst, slot, preset_id: preset.id.clone() });
+
+        let values = self.values_after_preset(&source, &preset.name);
+        let mut mirrored = Vec::new();
+        if let Some(plugin) = self.plugin_at(&at) {
+            plugin.current_preset = Some(preset.name.clone());
+            if let Some(values) = values {
+                mirrored = mirror_values(&mut plugin.params, &values);
+            }
+        }
+        Ok(Event::PresetLoaded { node, preset: preset.name, values: mirrored })
+    }
+
+    /// What a plugin's parameters are once `preset` is loaded, by the plugin's own
+    /// index, read from a second instance: the live one is on the audio thread, and
+    /// loading twice is acceptable at preset-switch time. None, after a warning, if
+    /// the plugin does not load again.
+    fn values_after_preset(&self, source: &str, preset: &str) -> Option<Vec<(u32, f32)>> {
+        match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
+            Ok(mut second) => {
+                session::apply_preset(&mut second, preset);
+                let params = second.parameters();
+                Some(params.iter().map(|p| (p.index, second.get_parameter(p.index).unwrap_or(p.default))).collect())
+            }
+            Err(e) => {
+                log::warn!("Failed to mirror preset values for {source}: {e}");
+                None
+            }
+        }
+    }
+
     /// Where the plugin in node `node` is, if it is a node with a plugin.
     fn locate_plugin(&self, node: NodeId) -> Result<PluginAt, IntentError> {
         match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
@@ -105,6 +153,22 @@ impl Controller {
             PluginAt::Bus { group, index } => self.model.groups[group].effects.get_mut(index),
         }
     }
+}
+
+/// Give each parameter row the value its plugin reports for it, as the value and as
+/// the baseline, so that a preset's values are not saved as the user's edits. Rows
+/// are matched to `values` by the plugin's own parameter index; a row with no value
+/// keeps what it has. Returns what was set.
+fn mirror_values(rows: &mut [ParamSlot], values: &[(u32, f32)]) -> Vec<(u32, f32)> {
+    let mut set = Vec::new();
+    for row in rows {
+        if let Some(&(_, value)) = values.iter().find(|(index, _)| *index == row.index) {
+            row.value = value;
+            row.default = value;
+            set.push((row.index, value));
+        }
+    }
+    set
 }
 
 fn invalid(why: impl Into<String>) -> IntentError {
@@ -404,6 +468,96 @@ plugin = "builtin:reverb"
             before
         );
         assert_eq!(ctl.model.instruments[1].volume, 1.0, "the other lane");
+    }
+
+    /// What a reverb reports for each parameter, by its own index, once `preset`
+    /// is loaded into it: what the model has to mirror.
+    fn reverb_values_after(preset: &str) -> Vec<(u32, f32)> {
+        let mut reverb = crate::plugin::load("builtin:reverb", 48_000.0, 256, &Default::default()).unwrap();
+        crate::session::apply_preset(&mut reverb, preset);
+        let indexes: Vec<u32> = reverb.parameters().iter().map(|p| p.index).collect();
+        indexes.into_iter().map(|i| (i, reverb.get_parameter(i).unwrap())).collect()
+    }
+
+    #[test]
+    fn load_preset_loads_it_on_the_audio_thread_and_mirrors_its_values_in_the_model() {
+        let (engine, mut ctl) = controller();
+        let reverb_at = NodePath::Effect { inst: 0, index: 0 };
+        let reverb = node(&ctl, reverb_at);
+        let before: Vec<f32> = ctl.model.instruments[0].effects[0].params.iter().map(|p| p.value).collect();
+
+        let applied = ctl.apply(Intent::LoadPreset { node: reverb, preset: "cathedral".to_string() }).unwrap();
+        let expected = reverb_values_after("Cathedral");
+        assert_eq!(
+            applied,
+            Applied { rev: 1, events: vec![Event::PresetLoaded { node: reverb, preset: "Cathedral".to_string(), values: expected.clone() }] }
+        );
+        assert_eq!(sent(&engine), ["LoadPreset inst=0 slot=1 id=cathedral"]);
+        assert!(ctl.dirty);
+
+        let slot = &ctl.model.instruments[0].effects[0];
+        assert_eq!(slot.current_preset.as_deref(), Some("Cathedral"));
+        for row in &slot.params {
+            let want = expected.iter().find(|(i, _)| *i == row.index).unwrap().1;
+            assert_eq!((row.value, row.default), (want, want), "{}: the preset's value, and the baseline", row.name);
+        }
+        let after: Vec<f32> = slot.params.iter().map(|p| p.value).collect();
+        assert_ne!(before, after, "the preset changed something");
+    }
+
+    #[test]
+    fn load_preset_leaves_the_rest_of_the_session_alone() {
+        let (_engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let osc: Vec<f32> = ctl.model.instruments[0].instrument.as_ref().unwrap().params.iter().map(|p| p.value).collect();
+        let bus: Vec<f32> = ctl.model.groups[0].effects[0].params.iter().map(|p| p.value).collect();
+        ctl.apply(Intent::LoadPreset { node: reverb, preset: "plate".to_string() }).unwrap();
+        let osc_after: Vec<f32> = ctl.model.instruments[0].instrument.as_ref().unwrap().params.iter().map(|p| p.value).collect();
+        let bus_after: Vec<f32> = ctl.model.groups[0].effects[0].params.iter().map(|p| p.value).collect();
+        assert_eq!((osc, bus), (osc_after, bus_after));
+        assert_eq!(ctl.model.instruments[0].instrument.as_ref().unwrap().current_preset, None);
+    }
+
+    #[test]
+    fn load_preset_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let ghost = NodeId(9_999);
+        let cases = [
+            ("an id the plugin lacks", Intent::LoadPreset { node: reverb, preset: "no-such".to_string() }, invalid("the plugin has no preset no-such")),
+            ("a name, not an id", Intent::LoadPreset { node: reverb, preset: "Cathedral".to_string() }, invalid("the plugin has no preset Cathedral")),
+            ("an instrument without presets", Intent::LoadPreset { node: lane(&ctl), preset: "cathedral".to_string() }, invalid("the plugin has no preset cathedral")),
+            ("a bus effect", Intent::LoadPreset { node: node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }), preset: "x".to_string() }, invalid("a bus effect has no presets to load")),
+            ("a group", Intent::LoadPreset { node: node(&ctl, NodePath::Group(0)), preset: "x".to_string() }, invalid("that node has no plugin")),
+            ("a lane without an instrument", Intent::LoadPreset { node: node(&ctl, NodePath::Instrument(1)), preset: "x".to_string() }, invalid("that instrument has no plugin")),
+            ("a node that is not there", Intent::LoadPreset { node: ghost, preset: "cathedral".to_string() }, IntentError::NotFound(ghost)),
+        ];
+        for (what, intent, error) in cases {
+            assert_eq!(ctl.apply(intent), Err(error), "{what}");
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert_eq!(ctl.model.instruments[0].effects[0].current_preset, None);
+    }
+
+    #[test]
+    fn mirror_values_matches_rows_to_values_by_the_plugins_own_index() {
+        let row = |index: u32, value: f32| ParamSlot {
+            name: format!("p{index}"),
+            index,
+            min: 0.0,
+            max: 1.0,
+            default: value,
+            value,
+            kind: ParamKind::Float,
+        };
+        // A plugin with hidden parameters numbers the rows it shows 5, 9 and 12;
+        // it also reports a hidden 7, and nothing for 12.
+        let mut rows = vec![row(5, 0.5), row(9, 0.5), row(12, 0.5)];
+        let set = mirror_values(&mut rows, &[(5, 0.1), (7, 0.7), (9, 0.9)]);
+        assert_eq!(set, [(5, 0.1), (9, 0.9)]);
+        let now: Vec<(f32, f32)> = rows.iter().map(|r| (r.value, r.default)).collect();
+        assert_eq!(now, [(0.1, 0.1), (0.9, 0.9), (0.5, 0.5)]);
     }
 
     #[test]

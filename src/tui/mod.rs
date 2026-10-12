@@ -1599,83 +1599,18 @@ impl State {
     }
 
     fn confirm_preset_selector(&mut self) {
-        let ps = match self.preset_selector.take() {
-            Some(s) => s,
-            None => return,
-        };
-        let chosen_idx = match ps.filter.selected_item(&ps.items) {
-            Some(item) => item.index,
-            None => return,
-        };
-        let chosen = &ps.presets[chosen_idx];
-        let preset_name = chosen.name.clone();
-        let preset_id = chosen.id.clone();
-
-        // Look up the slot's plugin source id so we can build a temporary
-        // plugin to query post-preset parameter values for the UI mirror.
-        let source = {
-            let plugin = if ps.slot == 0 {
-                self.ctl.model.instruments.get(ps.inst).and_then(|n| n.instrument.as_ref())
-            } else {
-                self.ctl.model.instruments.get(ps.inst).and_then(|n| n.effects.get(ps.slot - 1))
-            };
-            match plugin {
-                Some(p) => p.id.clone(),
-                None => return,
-            }
-        };
-
-        // Drive the audio thread first — that's what actually changes the sound.
-        let _ = self.ctl.cmd_tx.send(GraphCommand::LoadPreset {
-            inst: ps.inst,
-            slot: ps.slot,
-            preset_id: preset_id.clone(),
-        });
-
-        // Mirror the preset's parameter values into the TUI slot. We do this
-        // via a throwaway plugin instance because the live plugin is owned by
-        // the audio thread; loading twice is acceptable at preset-switch time.
-        let mut new_values: Option<Vec<f32>> = None;
-        match plugin::load(&source, self.ctl.sample_rate, self.ctl.max_block_size, &self.ctl.runtime) {
-            Ok(mut temp) => {
-                crate::session::apply_preset(&mut temp, &preset_name);
-                let params = temp.parameters();
-                let mut values = Vec::with_capacity(params.len());
-                for p in &params {
-                    values.push(temp.get_parameter(p.index).unwrap_or(p.default));
-                }
-                new_values = Some(values);
-            }
-            Err(e) => {
-                log::warn!("Failed to mirror preset values for {source}: {e}");
-            }
-        }
-
-        // Update mirror. Set both `value` and `default` (the save-filter
-        // baseline) so the new preset's parameters aren't written as overrides.
-        let plugin_mut = if ps.slot == 0 {
-            self.ctl.model.instruments.get_mut(ps.inst).and_then(|n| n.instrument.as_mut())
+        let Some(ps) = self.preset_selector.take() else { return };
+        let Some(item) = ps.filter.selected_item(&ps.items) else { return };
+        let preset = ps.presets[item.index].id.clone();
+        let lane = self.ctl.model.instruments.get(ps.inst);
+        let plugin = if ps.slot == 0 {
+            lane.and_then(|n| n.instrument.as_ref())
         } else {
-            self.ctl.model.instruments.get_mut(ps.inst).and_then(|n| n.effects.get_mut(ps.slot - 1))
+            lane.and_then(|n| n.effects.get(ps.slot - 1))
         };
-        if let Some(p) = plugin_mut {
-            p.current_preset = Some(preset_name);
-            if let Some(values) = new_values {
-                for (i, slot) in p.params.iter_mut().enumerate() {
-                    let v = values
-                        .get(slot.index as usize)
-                        .copied()
-                        .or_else(|| values.get(i).copied());
-                    if let Some(v) = v {
-                        slot.value = v;
-                        slot.default = v;
-                    }
-                }
-            }
-        }
-
-        self.ctl.dirty = true;
-        self.rebuild_tree();
+        let Some(plugin) = plugin else { return };
+        let intent = Intent::LoadPreset { node: plugin.node, preset };
+        self.apply(intent);
     }
 
     /// Set a group's host-side bus param (0 = volume, 1 = pan) to what `f` makes
@@ -1780,7 +1715,9 @@ impl State {
             match event {
                 // The group header shows the volume.
                 intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
-                intent::Event::ParamSet { .. } | intent::Event::GainSet { .. } => {}
+                intent::Event::ParamSet { .. }
+                | intent::Event::GainSet { .. }
+                | intent::Event::PresetLoaded { .. } => {}
             }
         }
     }

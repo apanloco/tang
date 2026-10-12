@@ -21,6 +21,9 @@ pub enum Intent {
     /// has to be one it applies to. The controller clamps `value` to the gain's
     /// range.
     SetGain { node: NodeId, gain: Gain, value: f32 },
+    /// Load one of the plugin's presets, by its id, into an instrument or an
+    /// effect node. The parameters take the preset's values.
+    LoadPreset { node: NodeId, preset: String },
 }
 
 /// A host-side gain, outside the plugin's own parameter list.
@@ -55,6 +58,9 @@ pub enum Event {
     ParamSet { node: NodeId, param: u32, value: f32 },
     /// A gain now has `value` (after clamping).
     GainSet { node: NodeId, gain: Gain, value: f32 },
+    /// A preset is loaded, by name; these are the parameters it set, by the
+    /// plugin's own index, with their new values.
+    PresetLoaded { node: NodeId, preset: String, values: Vec<(u32, f32)> },
 }
 
 /// An intent that was carried out.
