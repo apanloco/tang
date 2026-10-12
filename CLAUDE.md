@@ -885,6 +885,20 @@ not saved. The engine and the tree address nodes by position, which shifts when
 others come and go; an id stays with its node. A lane's instrument plugin sits in
 the lane's node. `SessionModel::locate` turns an id back into a position.
 
+Edits that have an `Intent` go through `Controller::apply`, which changes the
+model and the audio thread together and answers with `Event`s (`app::intent`,
+`app::apply`; `docs/web-ui.md` §5). Built so far: `SetParam` (clamped to the
+parameter's range, an enum rounded to a whole value), `SetGain` (instrument
+volume, effect and bus-effect mix, group volume and pan, each with its own
+range) and `LoadPreset` (by preset id; the values the preset set are mirrored
+into the model). Every applied intent bumps `Controller::rev`; one that fails
+(`NotFound`, `Invalid`) changes nothing. The TUI's parameter, gain and preset
+edits use them. Its other edits still change the model and send the command
+themselves, until their intents exist; for deleting and moving an effect they
+use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
+targets of the lane and of its group pointing at the same plugins, as the audio
+thread does.
+
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
 Any parameter tweaks made after the preset load are recorded as new overrides.
@@ -1163,7 +1177,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
 - **Controller** (`src/app/`): a plain struct that owns the live session
   model, the engine handles and the plugin catalog. Front-ends call
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
-  feature, so no feature ever has two implementations.
+  feature, so no feature ever has two implementations. Built so far: `SetParam`,
+  `SetGain` and `LoadPreset` (see "Session state").
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s;
   today's lane/group/modulator structure is projected into it. Node layout is
   stored in the session TOML as optional `ui = { x, y, pinned }` tables that

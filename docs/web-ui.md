@@ -162,6 +162,13 @@ slot / index); the controller resolves an id to a position per intent, and the
 TUI's index fix-ups (`fixup_tui_*`, `shift_tui_*`) move into the model so they
 run in one place.
 
+*Today:* the model is `SessionModel` (instruments, groups and the `NodeIds`
+allocator; the BPM and the piano mirror still sit on the controller), the ids
+exist for every node and `locate` turns one into a position, and the index
+fix-ups already live in `app::model` (the `fixup_*` / `remap_*` functions and
+`SessionModel::{remove_effect, move_effect}`). Edges have no ids yet: a
+modulation target is still a row of its modulator.
+
 ### 4.2 Graph projection
 
 The wire model is graph-shaped even though the engine is lane-shaped: nodes,
@@ -231,7 +238,7 @@ lists all of them). Attaching a cable pins its target automatically.
 resolves cursor → ids and then calls `apply`.
 
 - Params and gains: `SetParam`, `SetGain { Volume | Mix | GroupVolume |
-  GroupPan }`, `LoadPreset`.
+  GroupPan }`, `LoadPreset` (built in step 6; the rest of the list is not).
 - Structure: `AddInstrument`, `ReplaceInstrument`, `AddEffect { parent }`,
   `RemoveNode`, `MoveEffect`, `SetRange`, `AssignGroup`, `AddGroup`,
   `RenameGroup`.
@@ -242,11 +249,14 @@ resolves cursor → ids and then calls `apply`.
   `Redo`.
 - Layout: `SetNodeUi` (not undoable; marks the session dirty).
 
-`apply` returns `Applied { events, undo }` or an `IntentError` (`NotFound`,
-`Invalid`, `Busy`, `Io`, …). Every request carries a client `req_id` for the
+`apply` returns `Applied { rev, events, undo }` or an `IntentError` (`NotFound`,
+`Invalid`, `Busy`, `Io`, …); today `Applied` has no `undo` and the errors are
+`NotFound` and `Invalid`. Every request carries a client `req_id` for the
 ack/err reply. Note on/off bypasses the controller (§3.3).
 
-Events carry a monotonically increasing `rev`: `ParamSet`, `NodeAdded`,
+Events carry a monotonically increasing `rev` (today it sits on `Applied`, one
+per intent, and the events themselves do not carry it; the protocol of step 8
+puts it on each): `ParamSet`, `NodeAdded`,
 `NodeUpdated`, `NodeRemoved`, `EdgeAdded`, `EdgeUpdated`, `EdgeRemoved`,
 `OrderChanged`, `Meta` (dirty, path, BPM, piano), `PluginLoading`,
 `PluginLoaded`, `PluginFailed`, `CatalogBatch`, `PatternRecorded`,
@@ -576,15 +586,56 @@ Each step is a reviewable change; the TUI must not regress at any point.
   unchanged, `poll()` reaps returned plugins (tests), the TUI and `play` start
   and quit cleanly under a pseudo-terminal. **Not yet done by hand:** hot-plug
   with a real MIDI controller while the TUI runs (it needs a device).
-- [ ] **6. Intents v0.** `NodeId`s on model nodes and TUI tree entries;
-  `Intent` / `Event` / `Applied` / `IntentError` and `rev`; first family
-  `SetParam`, `SetGain` (volume, mix, group volume, pan) and `LoadPreset`. The
-  TUI's parameter and gain edit paths resolve cursor → ids and call `apply`;
-  the clamping and enum rounding in `adjust_param` / `set_param_value` /
-  `set_group_bus_param`, and the preset-value mirroring, move into the
-  controller. *Done when:* tests cover each intent (model, commands, events,
-  invalid ids); snapshots unchanged; param tweaks and preset loads behave as
-  before in a manual run.
+- [x] **6. Intents v0.** Ten commits (three tests-first pins, four features,
+  three fixes), none of them changing a snapshot:
+  - **Node ids.** Every node of the model has a `NodeId`: groups, bus effects,
+    lanes, effects and modulators (a lane's instrument plugin shares its lane's
+    id). `SessionModel::alloc_node` hands them out, never reusing one during a
+    run; they are not saved. The loader and every place that adds a node
+    allocate; `SessionModel::{nodes, locate}` resolve an id to a `NodePath`, the
+    positional address the engine uses. The golden harness checks the ids after
+    every key press (unique, allocated here, instrument = lane). **The TUI tree
+    entries do not carry ids:** they keep their positional `TreeAddress`, and the
+    TUI reads the id from the model at the cursor when it builds an intent. A tree
+    keyed by id is for when the TUI builds more intents (`TreeAddress` and
+    `NodePath` are nearly the same type).
+  - **Intents.** `app::intent` has `Intent`, `Event`, `Applied { rev, events }`
+    and `IntentError { NotFound, Invalid }`; `Controller::apply` (`app::apply`)
+    resolves the node, edits the model, sends the engine command and answers with
+    the events, the revision going up by one per applied intent and a failed one
+    changing nothing. `SetParam` clamps to the parameter's range and rounds enums
+    to a whole value; `SetGain` covers instrument volume, effect and bus-effect
+    mix, group volume and pan, each with its own range; `LoadPreset` takes the
+    preset's id and reports the values it set, matched to rows by the plugin's own
+    parameter index (not by position: f16). The TUI's `adjust_param`,
+    `set_param_value`, `set_group_bus_param`, the value popups and the preset popup
+    build intents and react to the events (`State::apply` / `react_to`); the
+    clamping, the enum rounding and the preset-value mirroring now live in the
+    controller.
+  - **`Applied` has `rev` and `events` but no `undo` yet** (§5 sketched
+    `{ events, undo }`): the undo UI is phase 1. The old values `apply` needs for
+    the inverse are at hand where it overwrites them, so adding `undo` touches
+    `app::apply` only. `Busy` and `Io` errors come with the intents that can
+    produce them.
+  - **Tests.** Golden tests pinned what the TUI did before each move (parameter
+    edits, gain popups, presets); `app::apply` has unit tests for each intent
+    (model, commands, events, unknown and wrong-kind nodes, no change on error).
+    About 170 bugs were injected into the new code; the survivors were test gaps
+    (given tests) or equivalent mutants.
+  - Found and fixed on the way, each with the test first: the group header kept
+    its old volume after edits (f15), preset values were matched to rows by
+    position, wrong for a plugin that hides parameters (f16), and a group
+    modulator's target on a member's plugin did not follow that plugin when the
+    member's effects were inserted, removed or moved (f08: the engine in one
+    commit, the model and the TUI in the next; `SessionModel::remove_effect` /
+    `move_effect` are where the Effect intents will land).
+  *Done:* `cargo test` and clippy green on both feature sets, snapshots
+  unchanged. Manual run under a pseudo-terminal: the same keys (oscillator
+  detune and volume, a preset load and an edit after it, a group's volume and pan,
+  the volume and mix popups, a bus-effect parameter) against the binary of step
+  5's last commit and this one save byte-identical session files; the TUI (with a
+  session, and the default one) and `play` start and quit cleanly. **Not
+  checked:** `LoadPreset` on a plugin that hides parameters, and by ear.
 - [ ] **7. Engine telemetry.** `Telemetry` (atomic slots); slot ids carried by
   `AddInstrument`, `AddGroup`, `InsertModulator`, `InsertGroupModulator`,
   `AddModTarget`, `AddGroupModTarget`; the audio thread publishes modulator
