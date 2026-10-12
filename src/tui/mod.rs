@@ -27,9 +27,9 @@ use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
 use crate::app::controller::Controller;
-use crate::app::intent::{Applied, Intent};
+use crate::app::intent::{self, Applied, Gain, Intent};
 use crate::app::model::{
-    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
+    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
     fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
     fixup_slots_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph,
@@ -215,25 +215,29 @@ struct EditState {
     param_max: f32,
 }
 
-/// Which host-side gain a `GainEditState` is editing.
-enum GainTarget {
-    /// Dry/wet mix of the effect at `effects[index]`.
-    Mix { index: usize },
-    /// Instrument output volume (applied before effects).
-    Volume,
-    /// A group's output volume.
-    GroupVolume { group: usize },
-    /// Dry/wet mix of a group bus effect.
-    GroupMix { group: usize, index: usize },
-}
-
 /// Editing a host-side gain (effect mix or instrument/group volume) via the
 /// value popup. These live outside the plugin parameter list.
 struct GainEditState {
-    /// Instrument index for instrument-scoped targets (ignored for group ones).
-    inst: usize,
-    target: GainTarget,
+    node: NodeId,
+    gain: Gain,
     edit: EditState,
+}
+
+impl GainEditState {
+    /// A popup for `gain` of `node`, starting at its `current` value.
+    fn new(node: NodeId, gain: Gain, current: f32, label: &str) -> Self {
+        let (param_min, param_max) = gain.range();
+        GainEditState {
+            node,
+            gain,
+            edit: EditState {
+                input: TextInputState::new(&format!("{current:.2}")),
+                param_name: label.to_string(),
+                param_min,
+                param_max,
+            },
+        }
+    }
 }
 
 /// One entry in the target selector popup.
@@ -1674,29 +1678,19 @@ impl State {
         self.rebuild_tree();
     }
 
-    /// Update a group's host-side bus param (0 = volume, 1 = pan) by applying
-    /// `f` to its current value, clamping to that param's range and mirroring
-    /// the change to the audio thread.
+    /// Set a group's host-side bus param (0 = volume, 1 = pan) to what `f` makes
+    /// of its value now; the controller clamps it to the param's range.
     fn set_group_bus_param(&mut self, group: usize, pa: usize, f: impl FnOnce(f32) -> f32) {
-        let Some(g) = self.ctl.model.groups.get_mut(group) else {
+        let Some(g) = self.ctl.model.groups.get(group) else {
             return;
         };
-        match pa {
-            0 => {
-                g.volume = f(g.volume).clamp(0.0, 4.0);
-                let value = g.volume;
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
-            }
-            1 => {
-                g.pan = f(g.pan).clamp(-1.0, 1.0);
-                let value = g.pan;
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupPan { group, value });
-            }
+        let (gain, current) = match pa {
+            0 => (Gain::GroupVolume, g.volume),
+            1 => (Gain::GroupPan, g.pan),
             _ => return,
-        }
-        self.ctl.dirty = true;
-        // The group header shows the volume.
-        self.rebuild_tree();
+        };
+        let intent = Intent::SetGain { node: g.node, gain, value: f(current) };
+        self.apply(intent);
     }
 
     fn adjust_param(&mut self, delta: f32) {
@@ -1726,8 +1720,7 @@ impl State {
         // A group's host-side bus params (Volume + Pan).
         if let TreeAddress::Group(group) = addr {
             let pa = self.param_state.selected;
-            let range = self.selected_param_range().unwrap_or((0.0, 1.0));
-            self.set_group_bus_param(group, pa, |v| (v + delta).clamp(range.0, range.1));
+            self.set_group_bus_param(group, pa, |v| v + delta);
             return;
         }
 
@@ -1770,10 +1763,24 @@ impl State {
     /// carries on as it was.
     fn apply(&mut self, intent: Intent) -> Option<Applied> {
         match self.ctl.apply(intent) {
-            Ok(applied) => Some(applied),
+            Ok(applied) => {
+                self.react_to(&applied.events);
+                Some(applied)
+            }
             Err(e) => {
                 log::warn!("{e}");
                 None
+            }
+        }
+    }
+
+    /// Bring what the view derives from the model up to date with `events`.
+    fn react_to(&mut self, events: &[intent::Event]) {
+        for event in events {
+            match event {
+                // The group header shows the volume.
+                intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
+                intent::Event::ParamSet { .. } | intent::Event::GainSet { .. } => {}
             }
         }
     }
@@ -2700,45 +2707,9 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.gain_editing = None,
         KeyCode::Enter => {
-            if let Ok(val) = ge.edit.input.value.trim().parse::<f32>() {
-                let value = val.clamp(ge.edit.param_min, ge.edit.param_max);
-                let inst = ge.inst;
-                match ge.target {
-                    GainTarget::Mix { index } => {
-                        // Audio slot: 0 = instrument, 1..N = effects.
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetMix {
-                            inst,
-                            slot: index + 1,
-                            value,
-                        });
-                        if let Some(fx) =
-                            s.ctl.model.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(index))
-                        {
-                            fx.mix = value;
-                        }
-                    }
-                    GainTarget::Volume => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetVolume { inst, value });
-                        if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
-                            node.volume = value;
-                        }
-                    }
-                    GainTarget::GroupVolume { group } => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
-                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
-                            g.volume = value;
-                        }
-                    }
-                    GainTarget::GroupMix { group, index } => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGroupMix { group, index, value });
-                        if let Some(fx) = s.ctl.model.groups.get_mut(group).and_then(|g| g.effects.get_mut(index)) {
-                            fx.mix = value;
-                        }
-                    }
-                }
-                s.ctl.dirty = true;
-                // The group header shows the volume.
-                s.rebuild_tree();
+            let (node, gain) = (ge.node, ge.gain);
+            if let Ok(value) = ge.edit.input.value.trim().parse::<f32>() {
+                s.apply(Intent::SetGain { node, gain, value });
             }
             s.gain_editing = None;
         }
@@ -3155,59 +3126,35 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'x' — edit the dry/wet mix of the selected effect (host-side blend).
         KeyCode::Char('x') if s.active_tab == 0 && !s.focus_params => {
-            let (target, mix) = match s.selected_address().copied() {
+            let effect = match s.selected_address().copied() {
                 Some(TreeAddress::Effect { inst, index }) => {
-                    let mix = s.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(index)).map_or(1.0, |fx| fx.mix);
-                    (Some((inst, GainTarget::Mix { index })), mix)
+                    s.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(index))
                 }
                 Some(TreeAddress::GroupEffect { group, index }) => {
-                    let mix = s.ctl.model.groups.get(group).and_then(|g| g.effects.get(index)).map_or(1.0, |fx| fx.mix);
-                    (Some((0, GainTarget::GroupMix { group, index })), mix)
+                    s.ctl.model.groups.get(group).and_then(|g| g.effects.get(index))
                 }
-                _ => (None, 1.0),
+                _ => None,
             };
-            if let Some((inst, target)) = target {
-                s.gain_editing = Some(GainEditState {
-                    inst,
-                    target,
-                    edit: EditState {
-                        input: TextInputState::new(&format!("{mix:.2}")),
-                        param_name: "mix (0=dry, 1=wet)".to_string(),
-                        param_min: 0.0,
-                        param_max: 1.0,
-                    },
-                });
+            if let Some(fx) = effect {
+                s.gain_editing = Some(GainEditState::new(fx.node, Gain::Mix, fx.mix, "mix (0=dry, 1=wet)"));
             }
         }
 
         // 'v' — edit the output volume of the selected instrument or group
         // (host-side gain, applied before effects). UI range 0–4.
         KeyCode::Char('v') if s.active_tab == 0 && !s.focus_params => {
-            let (inst, target, volume) = match s.selected_address().copied() {
+            let target = match s.selected_address().copied() {
                 Some(TreeAddress::Group(group)) => {
-                    let volume = s.ctl.model.groups.get(group).map_or(1.0, |g| g.volume);
-                    (0, Some(GainTarget::GroupVolume { group }), volume)
+                    s.ctl.model.groups.get(group).map(|g| (g.node, Gain::GroupVolume, g.volume))
                 }
-                Some(addr) => match addr.inst() {
-                    Some(inst) => {
-                        let volume = s.ctl.model.instruments.get(inst).map_or(1.0, |n| n.volume);
-                        (inst, Some(GainTarget::Volume), volume)
-                    }
-                    None => (0, None, 1.0),
-                },
-                None => (0, None, 1.0),
+                Some(addr) => addr
+                    .inst()
+                    .and_then(|inst| s.ctl.model.instruments.get(inst))
+                    .map(|n| (n.node, Gain::Volume, n.volume)),
+                None => None,
             };
-            if let Some(target) = target {
-                s.gain_editing = Some(GainEditState {
-                    inst,
-                    target,
-                    edit: EditState {
-                        input: TextInputState::new(&format!("{volume:.2}")),
-                        param_name: "volume (1.0 = unity)".to_string(),
-                        param_min: 0.0,
-                        param_max: 4.0,
-                    },
-                });
+            if let Some((node, gain, volume)) = target {
+                s.gain_editing = Some(GainEditState::new(node, gain, volume, "volume (1.0 = unity)"));
             }
         }
 

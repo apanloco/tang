@@ -6,7 +6,7 @@
 //! nothing, and does not count as a revision.
 
 use crate::app::controller::Controller;
-use crate::app::intent::{Applied, Event, Intent, IntentError};
+use crate::app::intent::{Applied, Event, Gain, Intent, IntentError};
 use crate::app::model::{NodeId, NodePath, ParamKind, PluginSlot};
 use crate::plugin::chain::GraphCommand;
 
@@ -22,6 +22,7 @@ impl Controller {
     pub fn apply(&mut self, intent: Intent) -> Result<Applied, IntentError> {
         let event = match intent {
             Intent::SetParam { node, param, value } => self.set_param(node, param, value)?,
+            Intent::SetGain { node, gain, value } => self.set_gain(node, gain, value)?,
         };
         self.dirty = true;
         self.rev += 1;
@@ -50,6 +51,40 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::ParamSet { node, param, value })
+    }
+
+    fn set_gain(&mut self, node: NodeId, gain: Gain, value: f32) -> Result<Event, IntentError> {
+        let path = self.model.locate(node).ok_or(IntentError::NotFound(node))?;
+        if !value.is_finite() {
+            return Err(invalid(format!("{value} is not a value for {gain:?}")));
+        }
+        let (min, max) = gain.range();
+        let value = value.max(min).min(max);
+        let command = match (gain, path) {
+            (Gain::Volume, NodePath::Instrument(inst)) => {
+                self.model.instruments[inst].volume = value;
+                GraphCommand::SetVolume { inst, value }
+            }
+            (Gain::Mix, NodePath::Effect { inst, index }) => {
+                self.model.instruments[inst].effects[index].mix = value;
+                GraphCommand::SetMix { inst, slot: index + 1, value }
+            }
+            (Gain::Mix, NodePath::GroupEffect { group, index }) => {
+                self.model.groups[group].effects[index].mix = value;
+                GraphCommand::SetGroupMix { group, index, value }
+            }
+            (Gain::GroupVolume, NodePath::Group(group)) => {
+                self.model.groups[group].volume = value;
+                GraphCommand::SetGroupVolume { group, value }
+            }
+            (Gain::GroupPan, NodePath::Group(group)) => {
+                self.model.groups[group].pan = value;
+                GraphCommand::SetGroupPan { group, value }
+            }
+            _ => return Err(invalid(format!("{gain:?} does not apply to that node"))),
+        };
+        let _ = self.cmd_tx.send(command);
+        Ok(Event::GainSet { node, gain, value })
     }
 
     /// Where the plugin in node `node` is, if it is a node with a plugin.
@@ -261,6 +296,114 @@ plugin = "builtin:reverb"
             Err(IntentError::NotFound(reverb))
         );
         assert_eq!(sent(&engine), Vec::<String>::new());
+    }
+
+    fn gain(ctl: &mut Controller, node: NodeId, gain: Gain, value: f32) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SetGain { node, gain, value })
+    }
+
+    #[test]
+    fn set_gain_sets_each_kind_of_gain_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let group = node(&ctl, NodePath::Group(0));
+
+        let instrument = lane(&ctl);
+        let applied = gain(&mut ctl, instrument, Gain::Volume, 0.5).unwrap();
+        assert_eq!(applied, Applied { rev: 1, events: vec![Event::GainSet { node: instrument, gain: Gain::Volume, value: 0.5 }] });
+        gain(&mut ctl, reverb, Gain::Mix, 0.25).unwrap();
+        gain(&mut ctl, bus, Gain::Mix, 0.75).unwrap();
+        gain(&mut ctl, group, Gain::GroupVolume, 2.0).unwrap();
+        gain(&mut ctl, group, Gain::GroupPan, -0.5).unwrap();
+
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetVolume inst=0 value=0.500",
+                "SetMix inst=0 slot=1 value=0.250",
+                "SetGroupMix group=0 fx=0 value=0.750",
+                "SetGroupVolume group=0 value=2.000",
+                "SetGroupPan group=0 value=-0.500",
+            ]
+        );
+        assert_eq!(ctl.model.instruments[0].volume, 0.5);
+        assert_eq!(ctl.model.instruments[0].effects[0].mix, 0.25);
+        assert_eq!(ctl.model.groups[0].effects[0].mix, 0.75);
+        assert_eq!((ctl.model.groups[0].volume, ctl.model.groups[0].pan), (2.0, -0.5));
+        assert_eq!(ctl.rev, 5);
+        assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn set_gain_clamps_to_each_gains_range() {
+        let (_engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let group = node(&ctl, NodePath::Group(0));
+        let cases = [
+            (lane(&ctl), Gain::Volume, [(9.0, 4.0), (-1.0, 0.0), (4.0, 4.0), (0.0, 0.0)]),
+            (reverb, Gain::Mix, [(2.0, 1.0), (-0.5, 0.0), (1.0, 1.0), (0.0, 0.0)]),
+            (group, Gain::GroupVolume, [(9.0, 4.0), (-1.0, 0.0), (4.0, 4.0), (0.0, 0.0)]),
+            (group, Gain::GroupPan, [(3.0, 1.0), (-3.0, -1.0), (1.0, 1.0), (-1.0, -1.0)]),
+        ];
+        for (node, kind, values) in cases {
+            for (asked, got) in values {
+                let applied = gain(&mut ctl, node, kind, asked).unwrap();
+                assert_eq!(applied.events, [Event::GainSet { node, gain: kind, value: got }], "{kind:?} {asked}");
+            }
+        }
+        assert_eq!(Gain::Volume.range(), (0.0, 4.0));
+        assert_eq!(Gain::Mix.range(), (0.0, 1.0));
+        assert_eq!(Gain::GroupVolume.range(), (0.0, 4.0));
+        assert_eq!(Gain::GroupPan.range(), (-1.0, 1.0));
+    }
+
+    #[test]
+    fn set_gain_refuses_a_gain_that_does_not_apply_to_the_node() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let group = node(&ctl, NodePath::Group(0));
+        let lfo = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let ghost = NodeId(9_999);
+        let wrong = |g: Gain| IntentError::Invalid(format!("{g:?} does not apply to that node"));
+
+        let cases = [
+            (lane(&ctl), Gain::Mix, wrong(Gain::Mix)),
+            (lane(&ctl), Gain::GroupVolume, wrong(Gain::GroupVolume)),
+            (lane(&ctl), Gain::GroupPan, wrong(Gain::GroupPan)),
+            (reverb, Gain::Volume, wrong(Gain::Volume)),
+            (reverb, Gain::GroupPan, wrong(Gain::GroupPan)),
+            (bus, Gain::Volume, wrong(Gain::Volume)),
+            (group, Gain::Volume, wrong(Gain::Volume)),
+            (group, Gain::Mix, wrong(Gain::Mix)),
+            (lfo, Gain::Volume, wrong(Gain::Volume)),
+            (lfo, Gain::Mix, wrong(Gain::Mix)),
+            (ghost, Gain::Volume, IntentError::NotFound(ghost)),
+        ];
+        for (node, kind, error) in cases {
+            assert_eq!(gain(&mut ctl, node, kind, 0.5), Err(error), "{node:?} {kind:?}");
+        }
+        let instrument = lane(&ctl);
+        for value in [f32::NAN, f32::INFINITY] {
+            assert!(matches!(gain(&mut ctl, instrument, Gain::Volume, value), Err(IntentError::Invalid(_))), "{value}");
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert_eq!(ctl.model.instruments[0].volume, 1.0);
+    }
+
+    #[test]
+    fn set_gain_changes_only_the_node_it_names() {
+        let (_engine, mut ctl) = controller();
+        let before = (ctl.model.instruments[0].effects[0].mix, ctl.model.groups[0].effects[0].mix, ctl.model.groups[0].volume);
+        let instrument = lane(&ctl);
+        gain(&mut ctl, instrument, Gain::Volume, 0.5).unwrap();
+        assert_eq!(
+            (ctl.model.instruments[0].effects[0].mix, ctl.model.groups[0].effects[0].mix, ctl.model.groups[0].volume),
+            before
+        );
+        assert_eq!(ctl.model.instruments[1].volume, 1.0, "the other lane");
     }
 
     #[test]

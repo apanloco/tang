@@ -16,6 +16,36 @@ pub enum Intent {
     /// `param` is the plugin's own index for it. The controller clamps `value` to
     /// the parameter's range and rounds an enum parameter to a whole value.
     SetParam { node: NodeId, param: u32, value: f32 },
+    /// Set a host-side gain: an instrument's volume, a group's volume or pan, or
+    /// the dry/wet mix of an effect or bus effect. `gain` says which, and the node
+    /// has to be one it applies to. The controller clamps `value` to the gain's
+    /// range.
+    SetGain { node: NodeId, gain: Gain, value: f32 },
+}
+
+/// A host-side gain, outside the plugin's own parameter list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gain {
+    /// An instrument's output volume, applied before its effects: 0 to 4, 1 is
+    /// unity.
+    Volume,
+    /// An effect's, or a bus effect's, dry/wet mix: 0 (dry) to 1 (wet).
+    Mix,
+    /// A group's output volume: 0 to 4.
+    GroupVolume,
+    /// A group's stereo balance: -1 (left) to 1 (right).
+    GroupPan,
+}
+
+impl Gain {
+    /// The lowest and the highest value.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            Gain::Volume | Gain::GroupVolume => (0.0, 4.0),
+            Gain::Mix => (0.0, 1.0),
+            Gain::GroupPan => (-1.0, 1.0),
+        }
+    }
 }
 
 /// What happened, in terms a front-end can apply to its own copy of the session.
@@ -23,6 +53,8 @@ pub enum Intent {
 pub enum Event {
     /// A parameter now has `value` (after clamping and rounding).
     ParamSet { node: NodeId, param: u32, value: f32 },
+    /// A gain now has `value` (after clamping).
+    GainSet { node: NodeId, gain: Gain, value: f32 },
 }
 
 /// An intent that was carried out.
