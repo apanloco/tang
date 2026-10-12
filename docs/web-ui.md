@@ -506,10 +506,36 @@ Each step is a reviewable change; the TUI must not regress at any point.
   `43f7fdc`: `tang play` was enabling patterns the session marks disabled).
   Unchanged on purpose: the splash counts instrument and effect slots only, not
   group bus effects. *Done:* `cargo test` and clippy green on both feature sets.
-- [ ] **4. Extract save** into `Session::to_save()` (the body of
-  `State::save_session_to`); `session::save` stays the file writer. *Done when:*
-  load → save → load round-trips pass for the examples, groups, modulators and
-  MIDI-learn.
+- [x] **4. Extract save** into `app::save::to_save(instruments, groups)`. The
+  123-line body of `State::save_session_to` moved out of the TUI (which now
+  builds the piano config, calls `session::save`, clears the dirty flag and
+  logs); it returns the `Save*` structs `session::save` already took. The plan
+  said `Session::to_save()`, but the TUI still holds lanes and groups as two
+  fields, so it is a function of those until step 5 gives the controller a
+  `SessionModel` to own. `session::save` is split into `to_toml(..) -> String`
+  and the file writer, which now creates the missing directory (the TUI used
+  to).
+  - `app::save::tests`: eight scenes (`basic.toml`, `split.toml`, and six built
+    from builtin plugins: groups, legacy nested modulators, MIDI-learn, lane
+    settings with remap / presets / pattern, cross-modulation of every kind, a
+    disabled pattern) are loaded, saved and loaded again. The engine commands
+    match, the models match (compared through their `Debug` dumps, so a field
+    added later is covered without touching the test), and a second save writes
+    the same text. The model types derive `Debug` for this; the loader's scenes
+    moved into `app::testutil` to be shared.
+  - Mutation-checked with a small runner (inject, test, restore): 45 injected
+    bugs in `to_save` (each field dropped or reset), all caught. Two survived
+    the first pass (an instrument's preset, a forced `enabled`) and got a test
+    each.
+  - Before the TUI switched over, a throwaway test compared the old inline body
+    with `to_save` + `to_toml` on ten scenes at four edit stages (40 saves, each
+    edited one different from the unedited): byte-identical.
+  - Found on the way and fixed first, in its own commit: the Piano tab's lock
+    (`[piano] locked`) was read at startup but never written back.
+  Noticed while reading the output, not part of this step: saved files carry f32
+  noise (`depth = 0.03999999910593033` for a source `0.04`), inline remap tables
+  lose the space before `}`, and `mod_depth` is written as a multi-line array.
+  *Done:* `cargo test` and clippy green on both feature sets, snapshots unchanged.
 - [ ] **5. Controller v0.** `app::Controller` takes ownership of the session,
   `cmd_tx`, runtime, catalog (and its scan thread), session path, dirty flag,
   the shared `Arc`s, the notification receivers and the `MidiManager`; `State`

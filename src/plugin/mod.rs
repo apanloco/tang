@@ -21,7 +21,7 @@ pub struct ParameterInfo {
     pub labels: Option<Vec<String>>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Preset {
     pub name: String,
     pub id: String,

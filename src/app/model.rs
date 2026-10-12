@@ -14,6 +14,7 @@
 use crate::plugin;
 
 /// What a front-end edits: the instrument lanes and the submix groups.
+#[derive(Debug)]
 pub struct SessionModel {
     pub instruments: Vec<InstrumentNode>,
     pub groups: Vec<GroupNode>,
@@ -39,6 +40,7 @@ pub fn default_effect_mix(id: &str) -> f32 {
 // Plugin slot — main-thread mirror of what the audio thread has
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct PluginSlot {
     pub name: String,
     pub format: String,
@@ -58,12 +60,14 @@ pub struct PluginSlot {
     pub mix: f32,
 }
 
+#[derive(Debug)]
 pub enum ParamKind {
     Float,
     Enum(Vec<String>),
     Separator,
 }
 
+#[derive(Debug)]
 pub struct ParamSlot {
     pub name: String,
     pub index: u32,
@@ -79,6 +83,7 @@ pub struct ParamSlot {
 // ---------------------------------------------------------------------------
 
 /// Main-thread mirror of pattern state for an instrument.
+#[derive(Debug)]
 pub struct PatternState {
     pub bpm: f32,
     pub length_beats: f32,
@@ -91,6 +96,7 @@ pub struct PatternState {
     pub in_key: bool,
 }
 
+#[derive(Debug)]
 pub struct InstrumentNode {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
@@ -111,6 +117,7 @@ pub struct InstrumentNode {
 
 /// A submix group: its members are the instruments whose `group` points here;
 /// it sums them and runs its own effect chain + volume.
+#[derive(Debug)]
 pub struct GroupNode {
     pub name: Option<String>,
     pub volume: f32,
@@ -122,6 +129,7 @@ pub struct GroupNode {
     pub modulators: Vec<ModulatorSlot>,
 }
 
+#[derive(Debug)]
 pub enum ModSourceSlot {
     Lfo {
         waveform: crate::plugin::chain::LfoWaveform,
@@ -159,11 +167,13 @@ impl ModSourceSlot {
     }
 }
 
+#[derive(Debug)]
 pub struct ModulatorSlot {
     pub source: ModSourceSlot,
     pub targets: Vec<ModTargetSlot>,
 }
 
+#[derive(Debug)]
 pub struct ModTargetSlot {
     /// Slot the target lives on: 0 = instrument, 1..N = effects. Used to label
     /// the target with its plugin and to resolve cross-mod vs plugin params.

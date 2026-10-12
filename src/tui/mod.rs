@@ -2459,124 +2459,12 @@ impl State {
     /// Save the session to `path`. Does not touch `session_path` — callers
     /// decide what a failed save means for the current path.
     fn save_session_to(&mut self, path: &Path) -> anyhow::Result<()> {
-        // Ensure parent directory exists (e.g. ~/.config/tang/sessions/).
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    anyhow::anyhow!("failed to create directory {}: {e}", parent.display())
-                })?;
-            }
-        }
-
-        let mods_to_save = |mods: &[ModulatorSlot]| -> Vec<crate::session::SaveModulator> {
-            mods.iter()
-                .map(|m| {
-                    let source = match &m.source {
-                        ModSourceSlot::Lfo { waveform, rate } => {
-                            crate::session::SaveModSource::Lfo {
-                                waveform: waveform.name().to_string(),
-                                rate: *rate,
-                            }
-                        }
-                        ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                            crate::session::SaveModSource::Envelope {
-                                attack: *attack,
-                                decay: *decay,
-                                sustain: *sustain,
-                                release: *release,
-                            }
-                        }
-                        ModSourceSlot::MidiLearn { source, .. } => {
-                            use crate::plugin::chain::MidiBindSource;
-                            crate::session::SaveModSource::MidiLearn {
-                                cc: match source {
-                                    Some(MidiBindSource::Cc(n)) => Some(*n),
-                                    _ => None,
-                                },
-                                pitch_bend: matches!(source, Some(MidiBindSource::PitchBend)),
-                                aftertouch: matches!(source, Some(MidiBindSource::Aftertouch)),
-                            }
-                        }
-                    };
-                    crate::session::SaveModulator {
-                        source,
-                        targets: m
-                            .targets
-                            .iter()
-                            .map(|t| crate::session::SaveModTarget {
-                                kind: t.kind.clone(),
-                                label: t.param_name.clone(),
-                                depth: t.depth,
-                                slot: t.slot,
-                            })
-                            .collect(),
-                    }
-                })
-                .collect()
-        };
-        let to_save_effect = |fx: &PluginSlot| crate::session::SaveEffect {
-            plugin: fx.id.clone(),
-            mix: fx.mix,
-            preset: fx.current_preset.clone(),
-            params: fx
-                .params
-                .iter()
-                .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
-                .map(|p| (p.name.clone(), p.value))
-                .collect(),
-        };
-        let save_groups: Vec<crate::session::SaveGroup> = self
-            .groups
-            .iter()
-            .map(|g| crate::session::SaveGroup {
-                name: g.name.clone(),
-                volume: g.volume,
-                pan: g.pan,
-                effects: g.effects.iter().map(&to_save_effect).collect(),
-                modulators: mods_to_save(&g.modulators),
-            })
-            .collect();
-        let save_instruments: Vec<crate::session::SaveInstrumentSlot> = self
-            .instruments
-            .iter()
-            .map(|sp| crate::session::SaveInstrumentSlot {
-                range: sp.range,
-                transpose: sp.transpose,
-                group: sp.group,
-                modulators: mods_to_save(&sp.modulators),
-                instrument: sp.instrument.as_ref().map(|inst| {
-                    crate::session::SaveInstrument {
-                        plugin: inst.id.clone(),
-                        volume: sp.volume,
-                        preset: inst.current_preset.clone(),
-                        params: inst
-                            .params
-                            .iter()
-                            .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
-                            .map(|p| (p.name.clone(), p.value))
-                            .collect(),
-                        pitch_bend_range: sp.pitch_bend_range,
-                        remap: sp.remap.clone(),
-                    }
-                }),
-                effects: sp.effects.iter().map(&to_save_effect).collect(),
-                pattern: sp.pattern.as_ref().map(|p| crate::session::SavePattern {
-                    bpm: p.bpm,
-                    length_beats: p.length_beats,
-                    looping: p.looping,
-                    base_note: p.base_note,
-                    events: p.events.clone(),
-                    enabled: p.enabled,
-                    in_key: p.in_key,
-                }),
-            })
-            .collect();
-
-        let piano_config = crate::session::PianoConfig {
+        let (instruments, groups) = crate::app::save::to_save(&self.instruments, &self.groups);
+        let piano = crate::session::PianoConfig {
             scale: Some(self.piano_filter.scale().short()),
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
-        crate::session::save(path, &save_instruments, &save_groups, Some(&piano_config))?;
+        crate::session::save(path, &instruments, &groups, Some(&piano))?;
         self.dirty = false;
         log::info!("Session saved to {}", path.display());
         Ok(())

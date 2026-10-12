@@ -956,7 +956,6 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
         .collect()
 }
 
-/// Save the current session state to a TOML file.
 fn effect_to_out(fx: &SaveEffect) -> EffectOut {
     EffectOut {
         plugin: fx.plugin.clone(),
@@ -966,12 +965,12 @@ fn effect_to_out(fx: &SaveEffect) -> EffectOut {
     }
 }
 
-pub fn save(
-    path: &Path,
+/// The session as TOML text, which is what `save` writes to the file.
+pub fn to_toml(
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let session = SessionOut {
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         groups: groups
@@ -1055,7 +1054,24 @@ pub fn save(
     };
 
     let content = toml::to_string_pretty(&session)?;
-    let content = inline_remap_entries(&content)?;
+    inline_remap_entries(&content)
+}
+
+/// Write the session to `path`, creating its directory first (a new session's
+/// default home is `~/.config/tang/sessions/`).
+pub fn save(
+    path: &Path,
+    instruments: &[SaveInstrumentSlot],
+    groups: &[SaveGroup],
+    piano: Option<&PianoConfig>,
+) -> anyhow::Result<()> {
+    let content = to_toml(instruments, groups, piano)?;
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("failed to create directory {}: {e}", parent.display()))?;
+        }
+    }
     std::fs::write(path, content)?;
     Ok(())
 }
@@ -1706,6 +1722,24 @@ range = "C4-C8"
         let config = load(path.to_str().unwrap()).unwrap();
         let piano_cfg = config.piano.expect("piano section");
         assert_eq!(piano_cfg.scale.as_deref(), Some("F# dorian"));
+    }
+
+    #[test]
+    fn save_creates_the_sessions_directory() {
+        // A new session's home (~/.config/tang/sessions/) does not exist before the first save.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tang").join("sessions").join("session-1.toml");
+        let lane = SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: None,
+            modulators: vec![],
+            instrument: None,
+            effects: vec![],
+            pattern: None,
+        };
+        save(&path, &[lane], &[], None).unwrap();
+        assert_eq!(load(path.to_str().unwrap()).unwrap().instruments.len(), 1);
     }
 
     #[test]
