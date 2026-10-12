@@ -134,6 +134,7 @@ pub fn try_load(text: &str) -> anyhow::Result<Run> {
         },
     )?;
     let commands = rx.try_iter().map(|c| describe(&c)).collect();
+    model.check_ids().map_err(|e| anyhow::anyhow!("the loader's node ids are wrong: {e}"))?;
     Ok(Run { model, commands, progress })
 }
 

@@ -189,9 +189,10 @@ impl Controller {
     }
 
     /// Load `source` (a plugin path or id) with the model slot that describes it,
-    /// every parameter at its default. The plugin is for the audio thread; None,
-    /// after logging why, if it does not load.
-    pub fn load_plugin(&self, source: &str) -> Option<(Box<dyn Plugin>, PluginSlot)> {
+    /// every parameter at its default, in a node of its own. The plugin is for the
+    /// audio thread; None, after logging why, if it does not load. (An
+    /// instrument takes its lane's node instead, in `set_instrument`.)
+    pub fn load_plugin(&mut self, source: &str) -> Option<(Box<dyn Plugin>, PluginSlot)> {
         let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
             Ok(p) => p,
             Err(e) => {
@@ -199,13 +200,13 @@ impl Controller {
                 return None;
             }
         };
-        let slot = fresh_slot(loaded.as_ref(), source);
+        let slot = fresh_slot(loaded.as_ref(), source, self.model.alloc_node());
         Some((loaded, slot))
     }
 
     /// Make `loaded`/`slot` the instrument plugin of lane `inst`, on the audio
-    /// thread and in the model.
-    pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, slot: PluginSlot) {
+    /// thread and in the model. The plugin sits in the lane's node.
+    pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, mut slot: PluginSlot) {
         let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
         let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
             inst,
@@ -214,6 +215,7 @@ impl Controller {
             remapper: None,
         });
         if let Some(lane) = self.model.instruments.get_mut(inst) {
+            slot.node = lane.node;
             lane.instrument = Some(slot);
         }
     }
@@ -811,7 +813,7 @@ type = "lfo"
     fn load_plugin_gives_the_plugin_and_the_slot_that_describes_it() {
         let (mut handles, _engine) = testutil::stub_engine();
         handles.sample_rate = 44_100.0;
-        let ctl = Controller::new(SessionModel::default(), handles, None);
+        let mut ctl = Controller::new(SessionModel::default(), handles, None);
         let (plugin, slot) = ctl.load_plugin("builtin:osc").expect("a built-in loads");
         assert_eq!(plugin.sample_rate(), 44_100.0, "it is loaded at the session's sample rate");
         assert_eq!((slot.name.as_str(), slot.id.as_str(), slot.format.as_str()), ("Oscillator", "builtin:osc", "Built-in"));
@@ -820,8 +822,17 @@ type = "lfo"
     }
 
     #[test]
+    fn each_loaded_plugin_gets_a_node_of_its_own() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (_, first) = ctl.load_plugin("builtin:filter").unwrap();
+        let (_, second) = ctl.load_plugin("builtin:filter").unwrap();
+        assert_ne!(first.node, second.node);
+        assert!(ctl.model.nodes().all(|(id, _)| id != first.node && id != second.node), "nor does any node in the session have them");
+    }
+
+    #[test]
     fn a_plugin_that_does_not_load_is_none() {
-        let (_engine, ctl) = controller_for(TWO_LANES);
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
         assert!(ctl.load_plugin("builtin:no-such-plugin").is_none());
         assert!(ctl.load_plugin("./no-such-plugin.clap").is_none());
     }
@@ -834,6 +845,9 @@ type = "lfo"
 
         assert_eq!(ctl.model.instruments[1].instrument.as_ref().unwrap().name, "Filter");
         assert_eq!(ctl.model.instruments[0].instrument.as_ref().unwrap().name, "Oscillator", "the other lane is untouched");
+        let lane = &ctl.model.instruments[1];
+        assert_eq!(lane.instrument.as_ref().unwrap().node, lane.node, "the plugin sits in the lane's node");
+        ctl.model.check_ids().unwrap();
         let sent: Vec<String> = engine.cmd_rx.try_iter().map(|c| testutil::describe(&c)).collect();
         assert_eq!(sent, ["SwapInstrument inst=1 plugin=Filter bufs=2 remap=false"]);
     }

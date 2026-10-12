@@ -14,14 +14,109 @@
 use crate::plugin;
 use crate::plugin::chain::ModulatorLocation;
 
+/// Names a node of the session (an instrument, an effect, a group, a bus effect
+/// or a modulator) for as long as it exists. The engine and the tree address
+/// nodes by position, which shifts when others come and go; a `NodeId` does not.
+/// Allocated by the model, never reused during a run, not saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId(pub u32);
+
+/// Hands out `NodeId`s, each one once.
+#[derive(Debug, Default)]
+pub struct NodeIds {
+    next: u32,
+}
+
+impl NodeIds {
+    pub fn alloc(&mut self) -> NodeId {
+        let id = NodeId(self.next);
+        self.next += 1;
+        id
+    }
+}
+
+/// Where a node sits in the model, in the positional terms the audio thread's
+/// commands use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // `Controller::apply` resolves node ids with it (next commit)
+pub enum NodePath {
+    /// A lane, with the instrument plugin in it.
+    Instrument(usize),
+    Effect { inst: usize, index: usize },
+    Group(usize),
+    GroupEffect { group: usize, index: usize },
+    Modulator { at: ModulatorLocation, index: usize },
+}
+
 /// What a front-end edits: the instrument lanes and the submix groups.
 #[derive(Debug, Default)]
 pub struct SessionModel {
     pub instruments: Vec<InstrumentNode>,
     pub groups: Vec<GroupNode>,
+    pub ids: NodeIds,
 }
 
 impl SessionModel {
+    /// A `NodeId` no other node has had.
+    pub fn alloc_node(&mut self) -> NodeId {
+        self.ids.alloc()
+    }
+
+    /// Every node and where it sits: the groups with their bus effects and
+    /// modulators, then the lanes with their effects and modulators. (A lane's
+    /// instrument plugin shares the lane's id.)
+    #[allow(dead_code)] // for `locate`, which `Controller::apply` uses (next commit)
+    pub fn nodes(&self) -> impl Iterator<Item = (NodeId, NodePath)> + '_ {
+        let groups = self.groups.iter().enumerate().flat_map(|(group, g)| {
+            std::iter::once((g.node, NodePath::Group(group)))
+                .chain(g.effects.iter().enumerate().map(move |(index, fx)| {
+                    (fx.node, NodePath::GroupEffect { group, index })
+                }))
+                .chain(g.modulators.iter().enumerate().map(move |(index, m)| {
+                    (m.node, NodePath::Modulator { at: ModulatorLocation::Group(group), index })
+                }))
+        });
+        let lanes = self.instruments.iter().enumerate().flat_map(|(inst, lane)| {
+            std::iter::once((lane.node, NodePath::Instrument(inst)))
+                .chain(lane.effects.iter().enumerate().map(move |(index, fx)| {
+                    (fx.node, NodePath::Effect { inst, index })
+                }))
+                .chain(lane.modulators.iter().enumerate().map(move |(index, m)| {
+                    (m.node, NodePath::Modulator { at: ModulatorLocation::Lane(inst), index })
+                }))
+        });
+        groups.chain(lanes)
+    }
+
+    /// Where the node `id` sits, if it is still in the session.
+    #[allow(dead_code)] // used by `Controller::apply` (next commit)
+    pub fn locate(&self, id: NodeId) -> Option<NodePath> {
+        self.nodes().find(|(node, _)| *node == id).map(|(_, path)| path)
+    }
+
+    /// Check that every node has an id of its own, that ids were allocated here,
+    /// and that a lane's instrument plugin carries the lane's id.
+    #[cfg(test)]
+    pub fn check_ids(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for (id, path) in self.nodes() {
+            if id.0 >= self.ids.next {
+                return Err(format!("{path:?} has {id:?}, which was never allocated"));
+            }
+            if !seen.insert(id) {
+                return Err(format!("{path:?} has {id:?}, which another node has too"));
+            }
+        }
+        for (inst, lane) in self.instruments.iter().enumerate() {
+            if let Some(slot) = &lane.instrument {
+                if slot.node != lane.node {
+                    return Err(format!("lane {inst} is {:?}, its instrument {:?}", lane.node, slot.node));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The modulator rack at `at`: a lane's or a group's, if it exists.
     pub fn modulators_mut(&mut self, at: ModulatorLocation) -> Option<&mut Vec<ModulatorSlot>> {
         match at {
@@ -53,6 +148,9 @@ pub fn default_effect_mix(id: &str) -> f32 {
 
 #[derive(Debug)]
 pub struct PluginSlot {
+    /// The node the plugin sits in: its own for an effect or a bus effect, the
+    /// lane's for an instrument.
+    pub node: NodeId,
     pub name: String,
     pub format: String,
     #[allow(dead_code)]
@@ -109,6 +207,7 @@ pub struct PatternState {
 
 #[derive(Debug)]
 pub struct InstrumentNode {
+    pub node: NodeId,
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
     /// Host-side output gain, applied before effects (1.0 = unity).
@@ -130,6 +229,7 @@ pub struct InstrumentNode {
 /// it sums them and runs its own effect chain + volume.
 #[derive(Debug)]
 pub struct GroupNode {
+    pub node: NodeId,
     pub name: Option<String>,
     pub volume: f32,
     /// Stereo balance pan for the group bus (-1 left … 0 center … +1 right).
@@ -180,6 +280,7 @@ impl ModSourceSlot {
 
 #[derive(Debug)]
 pub struct ModulatorSlot {
+    pub node: NodeId,
     pub source: ModSourceSlot,
     pub targets: Vec<ModTargetSlot>,
 }
@@ -557,6 +658,71 @@ mod tests {
     use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModSource, ModTargetKind as K};
 
     #[test]
+    fn every_node_is_found_by_its_id() {
+        use crate::app::testutil::GROUPS;
+        let model = load(GROUPS).model;
+        model.check_ids().unwrap();
+
+        let nodes: Vec<(NodeId, NodePath)> = model.nodes().collect();
+        let expected = model.groups.len()
+            + model.groups.iter().map(|g| g.effects.len() + g.modulators.len()).sum::<usize>()
+            + model.instruments.len()
+            + model.instruments.iter().map(|l| l.effects.len() + l.modulators.len()).sum::<usize>();
+        assert_eq!(nodes.len(), expected, "one node per group, lane, effect, bus effect and modulator");
+        for (id, path) in &nodes {
+            assert_eq!(model.locate(*id), Some(*path), "{id:?}");
+        }
+        let has = |f: fn(&NodePath) -> bool| nodes.iter().any(|(_, p)| f(p));
+        assert!(has(|p| matches!(p, NodePath::Instrument(_))));
+        assert!(has(|p| matches!(p, NodePath::Effect { .. })));
+        assert!(has(|p| matches!(p, NodePath::Group(_))));
+        assert!(has(|p| matches!(p, NodePath::GroupEffect { .. })));
+        assert!(has(|p| matches!(p, NodePath::Modulator { at: ModulatorLocation::Lane(_), .. })));
+        assert!(has(|p| matches!(p, NodePath::Modulator { at: ModulatorLocation::Group(_), .. })));
+
+        assert_eq!(model.locate(NodeId(9_999)), None, "an id nothing has");
+    }
+
+    #[test]
+    fn a_lanes_instrument_sits_in_the_lanes_node() {
+        let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").model;
+        let lane = &model.instruments[0];
+        assert_eq!(lane.instrument.as_ref().unwrap().node, lane.node);
+        assert_ne!(lane.effects[0].node, lane.node, "an effect is a node of its own");
+    }
+
+    #[test]
+    fn ids_are_handed_out_once() {
+        let mut ids = NodeIds::default();
+        let a = ids.alloc();
+        let b = ids.alloc();
+        assert_ne!(a, b);
+        let mut model = SessionModel::default();
+        let first = model.alloc_node();
+        assert_ne!(model.alloc_node(), first);
+    }
+
+    #[test]
+    fn check_ids_notices_duplicates_strangers_and_a_mismatched_instrument() {
+        let fresh = || load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").model;
+
+        let mut model = fresh();
+        assert!(model.check_ids().is_ok());
+
+        model.instruments[0].effects[0].node = model.instruments[0].node;
+        assert!(model.check_ids().unwrap_err().contains("another node has"), "a duplicate");
+
+        let mut model = fresh();
+        model.instruments[0].effects[0].node = NodeId(500);
+        assert!(model.check_ids().unwrap_err().contains("never allocated"), "a stranger");
+
+        let mut model = fresh();
+        let other = model.alloc_node();
+        model.instruments[0].instrument.as_mut().unwrap().node = other;
+        assert!(model.check_ids().unwrap_err().contains("its instrument"), "an instrument in another node");
+    }
+
+    #[test]
     fn a_modulator_rack_is_found_by_where_it_lives() {
         let mut model = load(
             r#"
@@ -596,6 +762,7 @@ type = "envelope"
 
     fn lfo(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
+            node: NodeId(0),
             source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0 },
             targets,
         }
@@ -603,6 +770,7 @@ type = "envelope"
 
     fn adsr(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
+            node: NodeId(0),
             source: ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
             targets,
         }
@@ -610,6 +778,7 @@ type = "envelope"
 
     fn midi(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
+            node: NodeId(0),
             source: ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false },
             targets,
         }
@@ -896,6 +1065,7 @@ type = "envelope"
 
     fn node(group: Option<usize>) -> InstrumentNode {
         InstrumentNode {
+            node: NodeId(0),
             range: None,
             transpose: 0,
             volume: 1.0,

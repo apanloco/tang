@@ -102,6 +102,10 @@ impl Harness {
 
     fn press_with(&mut self, code: KeyCode, modifiers: KeyModifiers) -> &mut Self {
         process_event(&mut self.s, Event::Key(KeyEvent::new(code, modifiers)));
+        // Whatever the key did, every node still has an id of its own.
+        if let Err(e) = self.s.ctl.model.check_ids() {
+            panic!("after {code:?} {modifiers:?}: {e}");
+        }
         self
     }
 
@@ -1179,4 +1183,153 @@ fn escape_closes_save_as_without_saving() {
     h.press(KeyCode::Esc);
     assert!(h.s.save_as.is_none());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Node ids
+// ---------------------------------------------------------------------------
+//
+// The harness checks after every key that each node has an id of its own; these
+// check that an id stays with its node while others come, go and move.
+
+use crate::app::model::{NodeId, NodePath};
+
+fn node_at(h: &Harness, path: NodePath) -> NodeId {
+    h.s.ctl
+        .model
+        .nodes()
+        .find(|(_, p)| *p == path)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no node at {path:?}"))
+}
+
+fn all_nodes(h: &Harness) -> Vec<NodeId> {
+    h.s.ctl.model.nodes().map(|(id, _)| id).collect()
+}
+
+#[test]
+fn an_added_effect_gets_a_new_id_and_the_others_keep_theirs() {
+    let mut h = Harness::new(scene_two_effects());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let before = all_nodes(&h);
+    h.press(KeyCode::Char('a')).type_chars("reverb").press(KeyCode::Enter);
+
+    let added = node_at(&h, NodePath::Effect { inst: 0, index: 2 });
+    assert!(!before.contains(&added), "the new effect has an id of its own");
+    assert!(before.iter().all(|id| all_nodes(&h).contains(id)), "the others keep theirs");
+}
+
+#[test]
+fn a_new_lane_shares_one_id_between_itself_and_its_oscillator() {
+    let mut h = Harness::new(scene_split());
+    let before = all_nodes(&h);
+    h.press(KeyCode::Char('n'));
+    let lane = &h.s.ctl.model.instruments[2];
+    assert!(!before.contains(&lane.node));
+    assert_eq!(lane.instrument.as_ref().unwrap().node, lane.node);
+
+    // Choosing another instrument for it keeps the lane's node.
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.s.selector = None;
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('i')).type_chars("oscillator").press(KeyCode::Enter);
+    let lane = &h.s.ctl.model.instruments[2];
+    assert_eq!(lane.instrument.as_ref().unwrap().node, lane.node);
+}
+
+#[test]
+fn replacing_the_instrument_keeps_the_lanes_id() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let lane = node_at(&h, NodePath::Instrument(0));
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+    assert_eq!(node_at(&h, NodePath::Instrument(0)), lane);
+    assert_eq!(h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().node, lane);
+}
+
+#[test]
+fn new_modulators_and_groups_get_ids_of_their_own() {
+    let mut h = Harness::new(scene_group());
+    let before = all_nodes(&h);
+
+    // A lane modulator and a group modulator, with `m` on the chain.
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('m'));
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('m'));
+    // A MIDI-learn modulator in each rack, with `l` on a parameter.
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Enter).press(KeyCode::Char('l')).press(KeyCode::Esc);
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('l')).press(KeyCode::Esc);
+    // A new group, for the bass.
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('g')).press(KeyCode::Enter);
+
+    let after = all_nodes(&h);
+    let added: Vec<_> = after.iter().filter(|id| !before.contains(id)).collect();
+    assert_eq!(added.len(), 5, "two `m`, two `l` and a group: {added:?}");
+    assert!(before.iter().all(|id| after.contains(id)));
+}
+
+#[test]
+fn m_on_a_parameter_makes_a_modulator_of_its_own_bound_to_it() {
+    // "New LFO" is the first row of the popup. The bass has one lane modulator
+    // already; the pad's bus has two group modulators.
+    let mut h = Harness::new(scene_group());
+    let before = all_nodes(&h);
+
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
+    let lane_mods = &h.s.ctl.model.instruments[2].modulators;
+    assert_eq!(lane_mods.len(), 2);
+    let new = lane_mods.last().unwrap();
+    assert!(!before.contains(&new.node), "the lane modulator has an id of its own");
+    assert_eq!(new.targets.len(), 1, "it is bound to the parameter it was made from");
+    assert!(h.commands()[0].starts_with("InsertModulator inst=2 index=1"));
+
+    h.press(KeyCode::Esc);
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
+    let group_mods = &h.s.ctl.model.groups[0].modulators;
+    assert_eq!(group_mods.len(), 3);
+    let new = group_mods.last().unwrap();
+    assert!(!before.contains(&new.node), "the group modulator has an id of its own");
+    assert_eq!(new.targets.len(), 1);
+}
+
+#[test]
+fn ids_follow_their_nodes_when_effects_move_or_go() {
+    let mut h = Harness::new(scene_two_effects());
+    let filter = node_at(&h, NodePath::Effect { inst: 0, index: 0 });
+    let reverb = node_at(&h, NodePath::Effect { inst: 0, index: 1 });
+    let lfo = node_at(&h, NodePath::Modulator { at: ModulatorLocation::Lane(0), index: 0 });
+
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(node_at(&h, NodePath::Effect { inst: 0, index: 0 }), reverb, "the reverb moved up");
+    assert_eq!(node_at(&h, NodePath::Effect { inst: 0, index: 1 }), filter, "the filter moved down");
+
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('d'));
+    assert_eq!(node_at(&h, NodePath::Effect { inst: 0, index: 0 }), filter, "the filter is first now");
+    assert!(h.s.ctl.model.locate(reverb).is_none(), "the deleted effect's id is gone, and not handed out again");
+    assert_eq!(node_at(&h, NodePath::Modulator { at: ModulatorLocation::Lane(0), index: 0 }), lfo);
+}
+
+#[test]
+fn deleting_a_lane_leaves_the_others_their_ids() {
+    let mut h = Harness::new(scene_split());
+    let first = node_at(&h, NodePath::Instrument(0));
+    let second = node_at(&h, NodePath::Instrument(1));
+    h.goto(TreeAddress::Instrument(0));
+    // The first `d` empties the lane, the second removes it.
+    h.press(KeyCode::Char('d'));
+    assert_eq!(node_at(&h, NodePath::Instrument(0)), first, "an emptied lane is still the same node");
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.s.ctl.model.instruments.len(), 1);
+    assert_eq!(node_at(&h, NodePath::Instrument(0)), second, "the survivor is lane 0 now, with its old id");
+    assert!(h.s.ctl.model.locate(first).is_none());
 }

@@ -1081,8 +1081,9 @@ impl State {
                         });
                     }
                 }
+                let node = self.ctl.model.alloc_node();
                 if let Some(mods) = self.ctl.model.modulators_mut(ms.scope) {
-                    mods.push(ModulatorSlot { source: slot_source, targets: vec![] });
+                    mods.push(ModulatorSlot { node, source: slot_source, targets: vec![] });
                 }
                 mod_index
             }
@@ -1418,8 +1419,10 @@ impl State {
                 });
             }
         }
+        let node = self.ctl.model.alloc_node();
         if let Some(ms) = self.ctl.model.modulators_mut(scope) {
             ms.push(ModulatorSlot {
+                node,
                 source: ModSourceSlot::MidiLearn { source: None, learning: true },
                 targets: vec![],
             });
@@ -1487,8 +1490,9 @@ impl State {
             GroupAssignChoice::Existing(g) => Some(g),
             GroupAssignChoice::New => {
                 let g = self.ctl.model.groups.len();
+                let node = self.ctl.model.alloc_node();
                 let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroup);
-                self.ctl.model.groups.push(GroupNode { name: None, volume: 1.0, pan: 0.0, effects: vec![], modulators: vec![] });
+                self.ctl.model.groups.push(GroupNode { node, name: None, volume: 1.0, pan: 0.0, effects: vec![], modulators: vec![] });
                 Some(g)
             }
         };
@@ -2939,8 +2943,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // key range afterwards with 'R'. This is how you build a keyboard split.
         KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
             let new_idx = s.ctl.model.instruments.len();
+            let node = s.ctl.model.alloc_node();
             let _ = s.ctl.cmd_tx.send(GraphCommand::AddInstrument { range: None });
             s.ctl.model.instruments.push(InstrumentNode {
+                node,
                 range: None,
                 transpose: 0,
                 volume: 1.0,
@@ -3069,6 +3075,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         },
                     });
                     node.modulators.push(ModulatorSlot {
+                        node: s.ctl.model.ids.alloc(),
                         source: ModSourceSlot::Lfo {
                             waveform: crate::plugin::chain::LfoWaveform::Sine,
                             rate: 1.0,
@@ -3091,6 +3098,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         },
                     });
                     node.modulators.push(ModulatorSlot {
+                        node: s.ctl.model.ids.alloc(),
                         source: ModSourceSlot::Lfo {
                             waveform: crate::plugin::chain::LfoWaveform::Sine,
                             rate: 1.0,
@@ -5294,6 +5302,7 @@ mod tests {
     fn modulator_target_depth_allows_negative() {
         // A depth row must be editable across -1..1 so modulation can invert.
         let m = ModulatorSlot {
+            node: crate::app::model::NodeId(0),
             source: ModSourceSlot::Lfo {
                 waveform: crate::plugin::chain::LfoWaveform::Sine,
                 rate: 1.0,

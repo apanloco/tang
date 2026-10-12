@@ -12,8 +12,8 @@ use std::path::Path;
 use crossbeam_channel::Sender;
 
 use crate::app::model::{
-    GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, ParamKind, ParamSlot,
-    PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
+    GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
+    ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
 };
 use crate::plugin::chain::GraphCommand;
 use crate::{plugin, session};
@@ -84,13 +84,15 @@ fn names(params: &[plugin::ParameterInfo]) -> String {
 }
 
 /// The model's slot for a plugin that has just been loaded and left alone: every
-/// parameter at its declared default, no preset, fully wet. (A session's plugins
-/// get theirs from `plugin_slot` with the values the loader read back.)
-pub fn fresh_slot(plugin: &dyn plugin::Plugin, id: &str) -> PluginSlot {
+/// parameter at its declared default, no preset, fully wet. `node` is the node
+/// the plugin sits in. (A session's plugins get theirs from `plugin_slot` with
+/// the values the loader read back.)
+pub fn fresh_slot(plugin: &dyn plugin::Plugin, id: &str, node: NodeId) -> PluginSlot {
     let all = plugin.parameters();
     let defaults: Vec<f32> = all.iter().map(|p| p.default).collect();
     let params = Params { all, values: defaults.clone(), baselines: defaults };
     plugin_slot(
+        node,
         plugin.name().to_string(),
         id.to_string(),
         plugin.is_instrument(),
@@ -103,7 +105,9 @@ pub fn fresh_slot(plugin: &dyn plugin::Plugin, id: &str) -> PluginSlot {
 
 /// The model's slot for a loaded plugin. Parameters a plugin marks "(locked)" are
 /// hidden, and a parameter with value labels becomes an enum.
+#[allow(clippy::too_many_arguments)]
 fn plugin_slot(
+    node: NodeId,
     name: String,
     id: String,
     is_instrument: bool,
@@ -129,6 +133,7 @@ fn plugin_slot(
         })
         .collect();
     PluginSlot {
+        node,
         name,
         format: format_from_id(&id),
         id,
@@ -160,6 +165,7 @@ pub fn load_session(
     progress: &mut dyn FnMut(Progress),
 ) -> anyhow::Result<SessionModel> {
     let mut loaded_slots = 0usize;
+    let mut ids = NodeIds::default();
     // The parameter lists modulator targets resolve names against: per lane (slot 0 =
     // the instrument, then its effects) and per group bus effect.
     let mut lane_params: Vec<Vec<Vec<plugin::ParameterInfo>>> = Vec::new();
@@ -168,6 +174,7 @@ pub fn load_session(
     // Set up submix groups first, so instruments can reference them by index.
     let mut groups: Vec<GroupNode> = Vec::new();
     for (g_idx, group_config) in config.groups.iter().enumerate() {
+        let group_node = ids.alloc();
         send(cmd_tx, GraphCommand::AddGroup)?;
         if (group_config.volume - 1.0).abs() > f32::EPSILON {
             send(cmd_tx, GraphCommand::SetGroupVolume { group: g_idx, value: group_config.volume })?;
@@ -205,6 +212,7 @@ pub fn load_session(
                 Ok(())
             })?;
             group_effects.push(plugin_slot(
+                ids.alloc(),
                 name,
                 effect_source,
                 false,
@@ -217,6 +225,7 @@ pub fn load_session(
         }
         bus_params.push(group_bus_params);
         groups.push(GroupNode {
+            node: group_node,
             name: group_config.name.clone(),
             volume: group_config.volume,
             pan: group_config.pan,
@@ -230,6 +239,7 @@ pub fn load_session(
     // Set up the graph structure: add instrument lanes.
     let mut instruments: Vec<InstrumentNode> = Vec::new();
     for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
+        let lane_node = ids.alloc();
         send(cmd_tx, GraphCommand::AddInstrument { range: inst_config.range })?;
 
         // Assign group membership (groups were created above).
@@ -322,6 +332,7 @@ pub fn load_session(
 
             chain_params.push(params.all.clone());
             Some(plugin_slot(
+                lane_node,
                 name,
                 instrument_source,
                 true,
@@ -395,6 +406,7 @@ pub fn load_session(
 
             chain_params.push(params.all.clone());
             effects.push(plugin_slot(
+                ids.alloc(),
                 name,
                 effect_source,
                 false,
@@ -407,7 +419,7 @@ pub fn load_session(
 
         // Build the lane's modulators now that every plugin (and its params)
         // is loaded, so targets can resolve against any slot in the chain.
-        let modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx)?;
+        let modulators = load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut ids)?;
 
         // Apply instrument transpose.
         if inst_config.transpose != 0 {
@@ -477,6 +489,7 @@ pub fn load_session(
             .as_ref()
             .map_or(1.0, |p| p.volume as f32);
         instruments.push(InstrumentNode {
+            node: lane_node,
             range: inst_config.range,
             transpose: inst_config.transpose,
             volume,
@@ -517,11 +530,12 @@ pub fn load_session(
             &member_mods,
             &bus_params[g_idx],
             cmd_tx,
+            &mut ids,
         )?;
         groups[g_idx].modulators = mods;
     }
 
-    Ok(SessionModel { instruments, groups })
+    Ok(SessionModel { instruments, groups, ids })
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
@@ -540,6 +554,7 @@ fn load_lane_modulators(
     chain_params: &[Vec<plugin::ParameterInfo>],
     inst_idx: usize,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
+    ids: &mut NodeIds,
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
     // Gather modulator groups with their default slot (instrument = 0, each
     // effect = its slot) and their base index in the merged lane list.
@@ -662,6 +677,7 @@ fn load_lane_modulators(
         }
 
         loaded.push(ModulatorSlot {
+            node: ids.alloc(),
             source: source_slot,
             targets: loaded_targets,
         });
@@ -769,6 +785,7 @@ fn load_group_modulators(
     member_mods: &[&[ModulatorSlot]],
     bus_params: &[Vec<plugin::ParameterInfo>],
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
+    ids: &mut NodeIds,
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
     let mut loaded = Vec::new();
     for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
@@ -930,6 +947,7 @@ fn load_group_modulators(
         }
 
         loaded.push(ModulatorSlot {
+            node: ids.alloc(),
             source: source_slot,
             targets: loaded_targets,
         });
@@ -963,6 +981,7 @@ mod tests {
             values: vec![1.5, 2.0, 1.0],
         };
         let slot = plugin_slot(
+            NodeId(7),
             "Synth".to_string(),
             "vst3:Synth".to_string(),
             true,
@@ -987,7 +1006,8 @@ mod tests {
         let load = |id: &str| plugin::load(id, 48_000.0, 256, &Default::default()).unwrap();
 
         let reverb = load("builtin:reverb");
-        let slot = fresh_slot(reverb.as_ref(), "builtin:reverb");
+        let slot = fresh_slot(reverb.as_ref(), "builtin:reverb", NodeId(3));
+        assert_eq!(slot.node, NodeId(3));
         assert_eq!((slot.name.as_str(), slot.id.as_str(), slot.format.as_str()), ("Reverb", "builtin:reverb", "Built-in"));
         assert!(!slot.is_instrument);
         assert_eq!((slot.mix, slot.current_preset.as_deref()), (1.0, None));
@@ -999,7 +1019,7 @@ mod tests {
         }
 
         let osc = load("builtin:osc");
-        let slot = fresh_slot(osc.as_ref(), "builtin:osc");
+        let slot = fresh_slot(osc.as_ref(), "builtin:osc", NodeId(4));
         assert!(slot.is_instrument);
         let waveform = slot.params.iter().find(|p| p.name == "waveform").unwrap();
         assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");

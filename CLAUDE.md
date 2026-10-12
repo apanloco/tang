@@ -879,6 +879,12 @@ controller folds what the audio thread reports (a finished pattern recording, a
 captured MIDI-learn control) into the model, and `poll` tells the TUI what
 changed. It also saves the session (`Controller::save`, `save_as`).
 
+Every node of the model (an instrument lane, an effect, a group, a bus effect, a
+modulator) has a `NodeId`: allocated by the model, never reused during a run,
+not saved. The engine and the tree address nodes by position, which shifts when
+others come and go; an id stays with its node. A lane's instrument plugin sits in
+the lane's node. `SessionModel::locate` turns an id back into a position.
+
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
 Any parameter tweaks made after the preset load are recorded as new overrides.
