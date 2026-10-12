@@ -1196,6 +1196,67 @@ fn shift_group_member_after_insert(modulators: &mut [Modulator], inserted: usize
     }
 }
 
+/// After an effect is inserted at effect index `at` on member `member`'s lane,
+/// bump the group-target slots on that member that pointed at that effect or a
+/// later one, so they keep pointing at the same plugins (the group counterpart of
+/// `shift_slots_after_insert`). Slot 0, the instrument, never moves.
+fn shift_member_slots_after_insert(modulators: &mut [Modulator], member: usize, at: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
+                if *tm == member && *slot > at {
+                    *slot += 1;
+                }
+            }
+        }
+    }
+}
+
+/// After the effect at index `removed` is deleted from member `member`'s lane,
+/// drop the group targets that pointed at it and shift that member's higher
+/// slots down one (the group counterpart of `fixup_slots_after_remove`).
+fn fixup_member_slots_after_remove(modulators: &mut [Modulator], member: usize, removed: usize) {
+    let removed_slot = removed + 1;
+    for m in modulators.iter_mut() {
+        m.targets.retain(|t| {
+            !matches!(&t.kind, ModTargetKind::GroupMember { member: tm, slot, .. }
+                if *tm == member && *slot == removed_slot)
+        });
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
+                if *tm == member && *slot > removed_slot {
+                    *slot -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// After the effect at `from` moves to `to` on member `member`'s lane, remap that
+/// member's group-target slots through the same permutation so they follow their
+/// plugins (the group counterpart of `remap_slots_after_reorder`).
+fn remap_member_slots_after_reorder(modulators: &mut [Modulator], member: usize, from: usize, to: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
+                if *tm == member && *slot >= 1 {
+                    let ei = *slot - 1;
+                    let new_ei = if ei == from {
+                        to
+                    } else if from < to && ei > from && ei <= to {
+                        ei - 1
+                    } else if from > to && ei >= to && ei < from {
+                        ei + 1
+                    } else {
+                        ei
+                    };
+                    *slot = new_ei + 1;
+                }
+            }
+        }
+    }
+}
+
 /// After bus effect `removed` is deleted, drop GroupBus targets on it and shift
 /// higher effect indices down one.
 fn fixup_group_bus_after_remove(modulators: &mut [Modulator], removed: usize) {
@@ -2769,6 +2830,7 @@ impl AudioGraph {
                     mix,
                 } => {
                     let num_channels = self.num_channels;
+                    let mut inserted_at = None;
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         if effect.audio_output_count() != num_channels {
                             log::warn!(
@@ -2785,7 +2847,14 @@ impl AudioGraph {
                             // Bump modulator target slots that pointed at this
                             // or a later effect.
                             shift_slots_after_insert(&mut lane.modulators, idx);
+                            inserted_at = Some(idx);
                         }
+                    }
+                    // The same for group modulators targeting this lane's plugins.
+                    if let Some(idx) = inserted_at {
+                        self.fix_group_member_targets(inst, |mods, member| {
+                            shift_member_slots_after_insert(mods, member, idx)
+                        });
                     }
                 }
                 GraphCommand::RemoveEffect { inst, index } => {
@@ -2802,6 +2871,10 @@ impl AudioGraph {
                     });
                     if let Some(old) = old {
                         let _ = self.return_tx.try_send(old);
+                        // The same for group modulators targeting this lane's plugins.
+                        self.fix_group_member_targets(inst, |mods, member| {
+                            fixup_member_slots_after_remove(mods, member, index)
+                        });
                     }
                 }
                 GraphCommand::ReorderEffect {
@@ -2809,6 +2882,7 @@ impl AudioGraph {
                     from,
                     to,
                 } => {
+                    let mut moved = false;
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         if from < lane.effects.len() && to < lane.effects.len() && from != to {
                             let effect = lane.effects.remove(from);
@@ -2817,7 +2891,14 @@ impl AudioGraph {
                             lane.mix_values.insert(to, mix);
                             // Remap modulator target slots through the move.
                             remap_slots_after_reorder(&mut lane.modulators, from, to);
+                            moved = true;
                         }
+                    }
+                    // The same for group modulators targeting this lane's plugins.
+                    if moved {
+                        self.fix_group_member_targets(inst, |mods, member| {
+                            remap_member_slots_after_reorder(mods, member, from, to)
+                        });
                     }
                 }
                 GraphCommand::SetParameter {
@@ -3504,6 +3585,17 @@ impl AudioGraph {
 
     fn get_instrument_mut(&mut self, inst: usize) -> Option<&mut InstrumentLane> {
         self.instruments.get_mut(inst)
+    }
+
+    /// Run `fix` on the modulators of the group that lane `inst` belongs to, with
+    /// the lane's member ordinal in it; does nothing for an ungrouped lane. For
+    /// keeping group targets on a member's plugins when its chain changes.
+    fn fix_group_member_targets(&mut self, inst: usize, fix: impl FnOnce(&mut [Modulator], usize)) {
+        if let Some((group, ordinal)) = lane_member_ordinal(&self.instruments, inst) {
+            if let Some(g) = self.groups.get_mut(group) {
+                fix(&mut g.modulators, ordinal);
+            }
+        }
     }
 
     /// Process audio: drain commands, run all instruments, sum to output.
@@ -4951,6 +5043,233 @@ mod tests {
         let mut mmi = vec![mk_mm_idx(0), mk_mm_idx(1), mk_mm_idx(2)];
         fixup_group_member_mod_after_remove(&mut mmi, 0, 1);
         assert_eq!(mm_idx(&mmi), vec![Some(0), None, Some(1)]);
+    }
+
+    // A group modulator's member targets name the member's plugins by chain slot
+    // (0 = the instrument, 1.. = its effects). When effects are added, removed or
+    // moved on the member lane the targets have to follow their plugins, as they do
+    // for the lane's own modulators.
+
+    /// Targets of group 0's first modulator as (member, slot, param_index).
+    fn member_slots(graph: &AudioGraph) -> Vec<(usize, usize, u32)> {
+        graph.groups[0].modulators[0]
+            .targets
+            .iter()
+            .filter_map(|t| match t.kind {
+                ModTargetKind::GroupMember { member, slot, param_index } => Some((member, slot, param_index)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Lane 0 outside group 0 (with one effect), lanes 1 and 2 in it (with two
+    /// effects and one), so a lane's index is not its member ordinal; a group LFO
+    /// with targets at (member, slot) = (0, 0), (0, 1), (0, 2) and (1, 1), told
+    /// apart by parameter indexes 0 to 3. Member 0 is lane 1, member 1 is lane 2.
+    fn group_lfo_on_member_effects() -> (
+        AudioGraph,
+        crossbeam_channel::Sender<GraphCommand>,
+        crossbeam_channel::Receiver<Box<dyn Plugin>>,
+    ) {
+        let (mut graph, cmd_tx, rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for inst in [1, 2] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+        }
+        for (inst, effects) in [(0, 1), (1, 2), (2, 1)] {
+            for index in 0..effects {
+                cmd_tx
+                    .send(GraphCommand::InsertEffect { inst, index, effect: Box::new(ParamScaleEffect { gain: 1.0 }), mix: 1.0 })
+                    .unwrap();
+            }
+        }
+        cmd_tx
+            .send(GraphCommand::InsertGroupModulator {
+                group: 0,
+                index: 0,
+                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            })
+            .unwrap();
+        for (param_index, (member, slot)) in [(0, 0), (0, 1), (0, 2), (1, 1)].into_iter().enumerate() {
+            cmd_tx
+                .send(GraphCommand::AddGroupModTarget {
+                    group: 0,
+                    mod_index: 0,
+                    target: ModTarget {
+                        kind: ModTargetKind::GroupMember { member, slot, param_index: param_index as u32 },
+                        depth: 0.5,
+                        base_value: 0.5,
+                        param_min: 0.0,
+                        param_max: 1.0,
+                    },
+                })
+                .unwrap();
+        }
+        graph.drain_commands();
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 1, 1), (0, 2, 2), (1, 1, 3)]);
+        (graph, cmd_tx, rr)
+    }
+
+    fn scale_effect() -> Box<dyn Plugin> {
+        Box::new(ParamScaleEffect { gain: 1.0 })
+    }
+
+    #[test]
+    fn removing_an_effect_moves_the_group_modulators_targets_on_that_member() {
+        let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 1, index: 0 }).unwrap();
+        graph.drain_commands();
+        // The effect in slot 1 is gone with its target; the one in slot 2 is in
+        // slot 1 now. The instrument's and the other member's are untouched.
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 1, 2), (1, 1, 3)]);
+    }
+
+    #[test]
+    fn removing_an_effect_on_the_second_member_leaves_the_first_members_targets() {
+        let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 2, index: 0 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 1, 1), (0, 2, 2)]);
+    }
+
+    #[test]
+    fn moving_an_effect_moves_the_group_modulators_targets_with_it() {
+        let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
+        cmd_tx.send(GraphCommand::ReorderEffect { inst: 1, from: 0, to: 1 }).unwrap();
+        graph.drain_commands();
+        // Parameter 1 belongs to the effect that was first and is second now.
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 2, 1), (0, 1, 2), (1, 1, 3)]);
+    }
+
+    #[test]
+    fn inserting_an_effect_moves_the_group_modulators_targets_after_it() {
+        let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 0, effect: scale_effect(), mix: 1.0 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 2, 1), (0, 3, 2), (1, 1, 3)]);
+
+        // An effect added at the end moves nothing.
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 3, effect: scale_effect(), mix: 1.0 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 2, 1), (0, 3, 2), (1, 1, 3)]);
+    }
+
+    #[test]
+    fn effects_on_a_lane_outside_the_group_leave_the_group_modulators_alone() {
+        let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index: 0, effect: scale_effect(), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::ReorderEffect { inst: 0, from: 0, to: 1 }).unwrap();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 1, 1), (0, 2, 2), (1, 1, 3)]);
+    }
+
+    #[test]
+    fn commands_that_change_no_chain_leave_the_group_modulators_targets_alone() {
+        let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
+        // A target on a plugin that is not there (member 1 has one effect): only a
+        // removal that really removed something may shift it.
+        cmd_tx
+            .send(GraphCommand::AddGroupModTarget {
+                group: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::GroupMember { member: 1, slot: 3, param_index: 4 },
+                    depth: 0.5,
+                    base_value: 0.5,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                },
+            })
+            .unwrap();
+        graph.drain_commands();
+        let before = member_slots(&graph);
+        assert_eq!(before, [(0, 0, 0), (0, 1, 1), (0, 2, 2), (1, 1, 3), (1, 3, 4)]);
+
+        // An effect that is not there, a move to nowhere, a move to the same place,
+        // and a lane that does not exist.
+        for command in [
+            GraphCommand::RemoveEffect { inst: 2, index: 1 },
+            GraphCommand::RemoveEffect { inst: 1, index: 9 },
+            GraphCommand::ReorderEffect { inst: 1, from: 0, to: 9 },
+            GraphCommand::ReorderEffect { inst: 1, from: 9, to: 0 },
+            GraphCommand::ReorderEffect { inst: 1, from: 1, to: 1 },
+            GraphCommand::RemoveEffect { inst: 9, index: 0 },
+            GraphCommand::ReorderEffect { inst: 9, from: 0, to: 1 },
+        ] {
+            cmd_tx.send(command).unwrap();
+        }
+        graph.drain_commands();
+        assert_eq!(member_slots(&graph), before);
+    }
+
+    #[test]
+    fn group_member_slot_fixups_touch_only_that_members_slots() {
+        let target = |kind| ModTarget { kind, depth: 0.5, base_value: 0.5, param_min: 0.0, param_max: 1.0 };
+        let modulator = |targets: Vec<ModTarget>| Modulator {
+            source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            sample_rate: 48000.0,
+            targets,
+            last_output: 0.0,
+            last_learned: None,
+        };
+        let on = |member, slot| target(ModTargetKind::GroupMember { member, slot, param_index: 0 });
+        // Targets that are not a member's plugin slots, and must never move.
+        let others = || {
+            modulator(vec![
+                target(ModTargetKind::GroupBus { effect_index: 2, param_index: 0 }),
+                target(ModTargetKind::GroupMemberMod { member: 0, mod_index: 2, field: CrossModField::Rate }),
+                target(ModTargetKind::ModulatorRate { mod_index: 2 }),
+                target(ModTargetKind::PluginParam { slot: 2, param_index: 0 }),
+            ])
+        };
+        let build = || vec![modulator(vec![on(0, 0), on(0, 1), on(0, 2), on(1, 1), on(1, 2)]), others()];
+        let slots = |mods: &[Modulator]| -> Vec<(usize, usize)> {
+            mods[0]
+                .targets
+                .iter()
+                .filter_map(|t| match t.kind {
+                    ModTargetKind::GroupMember { member, slot, .. } => Some((member, slot)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let untouched = |mods: &[Modulator]| format!("{:?}", mods[1].targets.iter().map(|t| &t.kind).collect::<Vec<_>>());
+        let original = untouched(&build());
+
+        // The effect at index 0 of member 0 is removed (slot 1).
+        let mut mods = build();
+        fixup_member_slots_after_remove(&mut mods, 0, 0);
+        assert_eq!(slots(&mods), [(0, 0), (0, 1), (1, 1), (1, 2)]);
+        assert_eq!(untouched(&mods), original);
+
+        // The one at index 1 of member 1 (slot 2), the last.
+        let mut mods = build();
+        fixup_member_slots_after_remove(&mut mods, 1, 1);
+        assert_eq!(slots(&mods), [(0, 0), (0, 1), (0, 2), (1, 1)]);
+
+        // An effect is inserted at index 0 of member 1: its slots 1 and up move.
+        let mut mods = build();
+        shift_member_slots_after_insert(&mut mods, 1, 0);
+        assert_eq!(slots(&mods), [(0, 0), (0, 1), (0, 2), (1, 2), (1, 3)]);
+        assert_eq!(untouched(&mods), original);
+        // ...at index 1 of member 0: slot 2 and up move, slot 1 stays.
+        let mut mods = build();
+        shift_member_slots_after_insert(&mut mods, 0, 1);
+        assert_eq!(slots(&mods), [(0, 0), (0, 1), (0, 3), (1, 1), (1, 2)]);
+
+        // Member 0's first effect moves to the end of two (index 0 to 1), then back.
+        let mut mods = build();
+        remap_member_slots_after_reorder(&mut mods, 0, 0, 1);
+        assert_eq!(slots(&mods), [(0, 0), (0, 2), (0, 1), (1, 1), (1, 2)]);
+        assert_eq!(untouched(&mods), original);
+        remap_member_slots_after_reorder(&mut mods, 0, 1, 0);
+        assert_eq!(slots(&mods), [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2)]);
+        // The last of member 1's two moves to the front.
+        remap_member_slots_after_reorder(&mut mods, 1, 1, 0);
+        assert_eq!(slots(&mods), [(0, 0), (0, 1), (0, 2), (1, 2), (1, 1)]);
     }
 
     /// A group envelope modulator (idle, depth 1) drives a member instrument's
