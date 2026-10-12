@@ -51,6 +51,18 @@ impl Params {
             .collect();
         Params { all, values: baselines.clone(), baselines }
     }
+
+    /// The parameter list modulator targets resolve against, each parameter's
+    /// `default` replaced by what it is set to now (after the preset and the
+    /// session's overrides): a target is centred on that, as it is when the user
+    /// binds one in the TUI, not on what the plugin starts at.
+    fn for_targets(&self) -> Vec<plugin::ParameterInfo> {
+        self.all
+            .iter()
+            .zip(&self.values)
+            .map(|(info, &value)| plugin::ParameterInfo { default: value, ..info.clone() })
+            .collect()
+    }
 }
 
 /// Apply the session's parameter overrides, in name order so the command stream is
@@ -230,7 +242,7 @@ pub fn load_session(
                 effect_config.preset.clone(),
                 effect_config.mix as f32,
             ));
-            group_bus_params.push(params.all);
+            group_bus_params.push(params.for_targets());
         }
         bus_params.push(group_bus_params);
         groups.push(GroupNode {
@@ -339,7 +351,7 @@ pub fn load_session(
                 );
             }
 
-            chain_params.push(params.all.clone());
+            chain_params.push(params.for_targets());
             Some(plugin_slot(
                 lane_node,
                 name,
@@ -413,7 +425,7 @@ pub fn load_session(
                 );
             }
 
-            chain_params.push(params.all.clone());
+            chain_params.push(params.for_targets());
             effects.push(plugin_slot(
                 ids.alloc(),
                 name,
@@ -1085,6 +1097,103 @@ mod tests {
                 "SetModulatorOutput Group(0) index=0 slot=3",
                 "SetModulatorOutput Group(0) index=1 slot=7",
             ]
+        );
+    }
+
+    /// The `AddModTarget` / `AddGroupModTarget` lines of a load.
+    fn target_commands(run: &crate::app::testutil::Run) -> Vec<&str> {
+        run.commands.iter().map(String::as_str).filter(|c| c.starts_with("Add") && c.contains("ModTarget")).collect()
+    }
+
+    #[test]
+    fn a_lane_target_is_centred_on_what_the_session_sets_the_parameter_to() {
+        // The oscillator's `detune` and the filter's `cutoff` are set, and an LFO
+        // drives each: it wobbles around the value the session set, not around the
+        // plugin's default (0 and 1).
+        let run = load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\ndetune = 3.0\n\
+             [[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = 0.35\n\
+             [[instrument.modulator]]\n\
+             [[instrument.modulator.target]]\nparam = \"detune\"\ndepth = 0.5\n\
+             [[instrument.modulator.target]]\nslot = 1\nparam = \"cutoff\"\ndepth = 0.5\n",
+        );
+        assert_eq!(
+            target_commands(&run),
+            [
+                "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.500 base=3.000 range=[-24.000, 24.000]",
+                "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_target_is_centred_on_the_value_a_preset_gave_the_parameter() {
+        // A parameter the preset moves off its default, and one the session sets on
+        // top of the preset: the first is centred on the preset's value, the second
+        // on the session's.
+        let mut reverb = crate::plugin::builtin::load("builtin:reverb", 48_000.0, 256).unwrap();
+        let params = reverb.parameters();
+        let named = |name: &str| params.iter().find(|p| p.name == name).unwrap().clone();
+        let (damping, size) = (named("damping"), named("size"));
+        let preset = reverb
+            .presets()
+            .into_iter()
+            .find(|p| {
+                reverb.load_preset(&p.id).unwrap();
+                reverb.get_parameter(damping.index) != Some(damping.default)
+            })
+            .expect("a preset that moves `damping`");
+        reverb.load_preset(&preset.id).unwrap();
+        let preset_damping = reverb.get_parameter(damping.index).unwrap();
+
+        let run = load(&format!(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n\
+             [[instrument.effect]]\nplugin = \"builtin:reverb\"\npreset = \"{}\"\n[instrument.effect.params]\nsize = 0.9\n\
+             [[instrument.modulator]]\n\
+             [[instrument.modulator.target]]\nslot = 1\nparam = \"damping\"\ndepth = 0.5\n\
+             [[instrument.modulator.target]]\nslot = 1\nparam = \"size\"\ndepth = 0.5\n",
+            preset.name
+        ));
+        let commands = target_commands(&run);
+        let base = |c: &str| c.split("base=").nth(1).unwrap().split(' ').next().unwrap().to_string();
+        assert_eq!(base(commands[0]), format!("{preset_damping:.3}"), "{}", commands[0]);
+        assert_ne!(base(commands[0]), format!("{:.3}", damping.default));
+        assert_eq!(base(commands[1]), "0.900", "{}", commands[1]);
+        let _ = size;
+    }
+
+    #[test]
+    fn group_targets_are_centred_on_the_session_s_values_too() {
+        // A member's filter `cutoff` and the bus reverb's `damping` are set, and a
+        // group LFO drives each.
+        let run = load(
+            "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n[group.effect.params]\ndamping = 0.6\n\
+             [[group.modulator]]\n\
+             [[group.modulator.target]]\nmember = 0\nslot = 1\nparam = \"cutoff\"\ndepth = 0.5\n\
+             [[group.modulator.target]]\nbus = 0\nparam = \"damping\"\ndepth = 0.5\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n\
+             [[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = 0.35\n",
+        );
+        assert_eq!(
+            target_commands(&run),
+            [
+                "AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
+                "AddGroupModTarget group=0 mod=0 kind=GroupBus { effect_index: 0, param_index: 2 } depth=0.500 base=0.600 range=[0.000, 1.000]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_parameter_the_session_leaves_alone_keeps_its_default_as_the_centre() {
+        let run = load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n\
+             [[instrument.effect]]\nplugin = \"builtin:filter\"\n\
+             [[instrument.modulator]]\n\
+             [[instrument.modulator.target]]\nslot = 1\nparam = \"cutoff\"\ndepth = 0.5\n",
+        );
+        assert_eq!(
+            target_commands(&run),
+            ["AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 1.000]"]
         );
     }
 

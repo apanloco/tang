@@ -1186,7 +1186,8 @@ plugin = "builtin:osc"
     fn the_slots_the_model_holds_are_the_cells_the_real_engine_publishes_into() {
         use crate::plugin::chain::LfoWaveform;
         // A group LFO and a lane LFO, each a square at rate 0 (always +1), driving
-        // the filter's `cutoff` (the member's, through the group) and `resonance`.
+        // the filter's `cutoff` (the member's, through the group; the session sets
+        // it to 0.5) and `resonance` (left at its default).
         let session = r#"
 [[group]]
 [[group.modulator]]
@@ -1203,6 +1204,8 @@ plugin = "builtin:osc"
 group = 0
 [[instrument.effect]]
 plugin = "builtin:filter"
+[instrument.effect.params]
+cutoff = 0.5
 [[instrument.modulator]]
 waveform = "square"
 rate = 0.0
@@ -1222,9 +1225,9 @@ depth = 0.1
         // What the filter says about itself: the parameters' defaults and ranges.
         let filter = crate::plugin::builtin::load("builtin:filter", 48_000.0, 256).unwrap();
         let param = |name: &str| filter.parameters().into_iter().find(|p| p.name == name).unwrap();
-        let driven = |name: &str, depth: f32| {
+        let driven = |name: &str, base: f32, depth: f32| {
             let p = param(name);
-            (p.default + depth * (p.max - p.min)).clamp(p.min, p.max)
+            (base + depth * (p.max - p.min)).clamp(p.min, p.max)
         };
 
         let t = &ctl.telemetry;
@@ -1233,9 +1236,15 @@ depth = 0.1
         assert_eq!(t.load(group_lfo.output.unwrap()), LfoWaveform::Square.eval(0.0), "the group LFO's output");
         assert_eq!(t.load(lane_lfo.output.unwrap()), 1.0, "the lane LFO's output");
         let cutoff = t.load(group_lfo.targets[0].effective.unwrap());
-        assert!((cutoff - driven("cutoff", -0.2)).abs() < 1e-6, "member 0's cutoff, through the group: {cutoff}");
+        assert!(
+            (cutoff - driven("cutoff", 0.5, -0.2)).abs() < 1e-6,
+            "member 0's cutoff, through the group, centred on the 0.5 the session sets: {cutoff}"
+        );
         let resonance = t.load(lane_lfo.targets[0].effective.unwrap());
-        assert!((resonance - driven("resonance", 0.1)).abs() < 1e-6, "the lane's resonance: {resonance}");
+        assert!(
+            (resonance - driven("resonance", param("resonance").default, 0.1)).abs() < 1e-6,
+            "the lane's resonance, centred on its default: {resonance}"
+        );
         assert_ne!(cutoff, resonance);
         ctl.model.check_ids().unwrap();
         ctl.shutdown();
