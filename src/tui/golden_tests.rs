@@ -1484,6 +1484,185 @@ fn an_engine_that_clips_lights_the_clip_light_and_one_that_does_not_leaves_it_da
     assert!(!lit);
 }
 
+// The ways the TUI makes a modulator or binds a target, pinned command for
+// command and field for field before they move into the controller: the
+// modulate popup (`m` on a parameter), the target selector (`t` on a modulator)
+// and MIDI-learn (`l` on a parameter).
+
+/// `(slot, param_name, kind, depth, min, max)` of every target of a modulator.
+fn target_fields(targets: &[crate::app::model::ModTargetSlot]) -> Vec<(usize, String, String, f32, f32, f32)> {
+    targets
+        .iter()
+        .map(|t| (t.slot, t.param_name.clone(), format!("{:?}", t.kind), t.depth, t.param_min, t.param_max))
+        .collect()
+}
+
+/// The bass lane's filter with its `cutoff` (0.35, 0 to 1) selected in the parameter pane.
+fn on_the_bass_filters_cutoff() -> Harness {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 });
+    h.press(KeyCode::Enter);
+    h
+}
+
+#[test]
+fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }",
+            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
+        ]
+    );
+    let made = &h.s.ctl.model.instruments[2].modulators[1];
+    assert!(matches!(made.source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
+    assert_eq!(
+        target_fields(&made.targets),
+        [(1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 0.5, 0.0, 1.0)]
+    );
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn the_modulate_popup_can_make_an_envelope_instead() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertModulator inst=2 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
+            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
+        ]
+    );
+    let made = &h.s.ctl.model.instruments[2].modulators[1];
+    assert!(
+        matches!(
+            made.source,
+            ModSourceSlot::Envelope { attack, decay, sustain, release }
+                if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)
+        ),
+        "{:?}",
+        made.source
+    );
+    assert_eq!(made.targets.len(), 1);
+}
+
+#[test]
+fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]"],
+        "no new modulator, a second target on the bass's LFO"
+    );
+    let modulators = &h.s.ctl.model.instruments[2].modulators;
+    assert_eq!(modulators.len(), 1);
+    assert_eq!(target_fields(&modulators[0].targets).len(), 2);
+    assert_eq!(target_fields(&modulators[0].targets)[1].1, "cutoff");
+}
+
+#[test]
+fn the_modulate_popup_on_a_bus_parameter_makes_a_group_modulator() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }",
+            "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
+        ]
+    );
+    let made = &h.s.ctl.model.groups[0].modulators[2];
+    assert_eq!(
+        target_fields(&made.targets),
+        [(0, "decay".to_string(), "GroupBus { effect_index: 0, param_index: 0 }".to_string(), 0.5, 0.1, 0.99)]
+    );
+}
+
+#[test]
+fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
+    // The first row of each list: the lane's own oscillator `waveform`, and the
+    // first member's.
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Modulator { inst: 2, index: 0 });
+    h.press(KeyCode::Char('t')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
+    );
+    let bound = target_fields(&h.s.ctl.model.instruments[2].modulators[0].targets);
+    assert_eq!(bound.len(), 2, "the LFO had one target already");
+    assert_eq!(
+        bound[1],
+        (0, "waveform".to_string(), "PluginParam { slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 3.0)
+    );
+
+    // Further down the list are the lane's effects: the oscillator's eight
+    // parameters, then the filter's `cutoff` (chain slot 1).
+    h.goto(TreeAddress::Modulator { inst: 2, index: 0 });
+    h.press(KeyCode::Char('t')).press_n(KeyCode::Down, 8).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]"]
+    );
+    let bound = target_fields(&h.s.ctl.model.instruments[2].modulators[0].targets);
+    assert_eq!(bound.len(), 3);
+    assert_eq!(
+        bound[2],
+        (1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 0.5, 0.0, 1.0),
+        "the chain slot of a filter's parameter is 1"
+    );
+
+    h.goto(TreeAddress::GroupModulator { group: 0, index: 0 });
+    h.press(KeyCode::Char('t')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 3.000]"]
+    );
+    let bound = target_fields(&h.s.ctl.model.groups[0].modulators[0].targets);
+    assert_eq!(bound.len(), 3, "the group LFO had two targets already");
+    assert_eq!(
+        bound[2],
+        (0, "waveform".to_string(), "GroupMember { member: 0, slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 3.0)
+    );
+}
+
+#[test]
+fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('l'));
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertModulator inst=2 index=1 source=MidiLearn { source: None, value: 0.0, learning: true }",
+            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=1.000 base=0.350 range=[0.000, 1.000]",
+        ]
+    );
+    let armed = &h.s.ctl.model.instruments[2].modulators[1];
+    assert!(matches!(armed.source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+    assert_eq!(
+        target_fields(&armed.targets),
+        [(1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 1.0, 0.0, 1.0)]
+    );
+
+    // On a group's bus effect it goes in the group's rack.
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('l'));
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
+            "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=1.000 base=0.880 range=[0.100, 0.990]",
+        ]
+    );
+    assert_eq!(h.s.ctl.model.groups[0].modulators[2].targets.len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Between frames
 // ---------------------------------------------------------------------------
