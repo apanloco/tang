@@ -12,12 +12,23 @@
 //! controller and the web projection planned in `docs/web-ui.md` build on it.
 
 use crate::plugin;
+use crate::plugin::chain::ModulatorLocation;
 
 /// What a front-end edits: the instrument lanes and the submix groups.
 #[derive(Debug, Default)]
 pub struct SessionModel {
     pub instruments: Vec<InstrumentNode>,
     pub groups: Vec<GroupNode>,
+}
+
+impl SessionModel {
+    /// The modulator rack at `at`: a lane's or a group's, if it exists.
+    pub fn modulators_mut(&mut self, at: ModulatorLocation) -> Option<&mut Vec<ModulatorSlot>> {
+        match at {
+            ModulatorLocation::Lane(inst) => self.instruments.get_mut(inst).map(|n| &mut n.modulators),
+            ModulatorLocation::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
+        }
+    }
 }
 
 /// Default dry/wet mix for a newly added effect. Half-wet suits blend/parallel
@@ -542,7 +553,35 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::testutil::load;
     use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModSource, ModTargetKind as K};
+
+    #[test]
+    fn a_modulator_rack_is_found_by_where_it_lives() {
+        let mut model = load(
+            r#"
+[[group]]
+[[group.modulator]]
+type = "lfo"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "lfo"
+[[instrument.modulator]]
+type = "envelope"
+"#,
+        )
+        .model;
+        assert_eq!(model.modulators_mut(ModulatorLocation::Lane(0)).map(|m| m.len()), Some(2));
+        assert_eq!(model.modulators_mut(ModulatorLocation::Group(0)).map(|m| m.len()), Some(1));
+        assert!(model.modulators_mut(ModulatorLocation::Lane(1)).is_none());
+        assert!(model.modulators_mut(ModulatorLocation::Group(1)).is_none());
+
+        // It is the rack itself, not a copy.
+        model.modulators_mut(ModulatorLocation::Group(0)).unwrap().pop();
+        assert_eq!((model.instruments[0].modulators.len(), model.groups[0].modulators.len()), (2, 0));
+    }
 
     fn target(kind: K) -> ModTargetSlot {
         ModTargetSlot {

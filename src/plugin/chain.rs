@@ -1632,8 +1632,10 @@ pub struct Pattern {
     pub length_samples: u64,
 }
 
-/// Which modulator rack a modulator lives in (for learn notifications).
-#[derive(Debug, Clone, Copy)]
+/// Which modulator rack a modulator lives in: an instrument lane's or a
+/// submix group's. Named by learn notifications, the session model and the
+/// front-ends' popups alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulatorLocation {
     Lane(usize),
     Group(usize),
