@@ -159,7 +159,6 @@ impl SlotAllocator {
     }
 
     /// The two slots of a meter, both or neither.
-    #[cfg_attr(not(test), expect(dead_code, reason = "lanes and groups get meters in a later commit"))]
     pub fn meter(&mut self) -> Option<MeterSlots> {
         if self.next + 1 >= CAPACITY {
             // Not enough left for a pair: leave the last one rather than half a meter.

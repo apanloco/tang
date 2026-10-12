@@ -13,7 +13,7 @@
 
 use crate::plugin;
 use crate::plugin::chain::ModulatorLocation;
-use crate::telemetry::{Slot, SlotAllocator};
+use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 
 /// Names a node of the session (an instrument, an effect, a group, a bus effect
 /// or a modulator) for as long as it exists. The engine and the tree address
@@ -96,9 +96,10 @@ impl SessionModel {
 
     /// Check that every node has an id of its own, that ids were allocated here,
     /// that a lane's instrument plugin carries the lane's id, and that the
-    /// telemetry slots are in order: every modulator has an output slot and every
-    /// target on a plugin parameter an effective-value slot (the others none),
-    /// all different, allocated here, and none the engine's own.
+    /// telemetry slots are in order: every lane and group has a meter (two slots),
+    /// every modulator an output slot and every target on a plugin parameter an
+    /// effective-value slot (the others none), all different, allocated here, and
+    /// none the engine's own.
     #[cfg(test)]
     pub fn check_ids(&self) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
@@ -138,6 +139,16 @@ impl SessionModel {
             }
             Ok(())
         };
+        for (g, group) in self.groups.iter().enumerate() {
+            let meter = group.meter;
+            claim(meter.map(|m| m.peak), format!("the meter of group {g}"))?;
+            claim(meter.map(|m| m.clips), format!("the meter of group {g}"))?;
+        }
+        for (i, lane) in self.instruments.iter().enumerate() {
+            let meter = lane.meter;
+            claim(meter.map(|m| m.peak), format!("the meter of lane {i}"))?;
+            claim(meter.map(|m| m.clips), format!("the meter of lane {i}"))?;
+        }
         for (rack, modulators) in racks {
             for (m, modulator) in modulators.iter().enumerate() {
                 claim(modulator.output, format!("modulator {m} of {rack}"))?;
@@ -303,6 +314,10 @@ pub struct InstrumentNode {
     pub remap: std::collections::HashMap<String, crate::session::RemapTarget>,
     /// Submix group membership: index into the session's groups, or None.
     pub group: Option<usize>,
+    /// Where the audio thread publishes the lane's output level (telemetry);
+    /// `None` if the slots had run out.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    pub meter: Option<MeterSlots>,
 }
 
 /// A submix group: its members are the instruments whose `group` points here;
@@ -318,6 +333,10 @@ pub struct GroupNode {
     /// Group-scoped modulators. Each target addresses a member instrument
     /// (`GroupMember`), a bus effect (`GroupBus`), or a sibling group modulator.
     pub modulators: Vec<ModulatorSlot>,
+    /// Where the audio thread publishes the bus's output level (telemetry);
+    /// `None` if the slots had run out.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    pub meter: Option<MeterSlots>,
 }
 
 #[derive(Debug)]
@@ -882,6 +901,37 @@ mod tests {
         let mut model = fresh();
         model.groups[0].modulators[0].targets[0].effective = None;
         assert!(model.check_ids().unwrap_err().contains("has no telemetry slot"), "a parameter target without one");
+
+        let mut model = fresh();
+        model.instruments[0].meter = None;
+        assert!(model.check_ids().unwrap_err().contains("the meter of lane 0"), "a lane without a meter");
+
+        let mut model = fresh();
+        model.groups[0].meter = None;
+        assert!(model.check_ids().unwrap_err().contains("the meter of group 0"), "a group without a meter");
+
+        let mut model = fresh();
+        let meter = model.groups[0].meter.unwrap();
+        model.groups[0].meter = Some(crate::telemetry::MeterSlots { peak: meter.peak, clips: meter.peak });
+        assert!(model.check_ids().unwrap_err().contains("another node has too"), "a meter whose two slots are one");
+
+        let mut model = fresh();
+        model.instruments[2].meter = model.instruments[1].meter;
+        assert!(model.check_ids().unwrap_err().contains("another node has too"), "two lanes with one meter");
+
+        let mut model = fresh();
+        model.instruments[0].meter = Some(MASTER);
+        assert!(model.check_ids().unwrap_err().contains("master meter's"), "a lane with the master meter's");
+
+        // Each of a meter's two slots is looked at, not only the first.
+        let mut model = fresh();
+        let own = model.instruments[0].meter.unwrap();
+        model.instruments[0].meter = Some(crate::telemetry::MeterSlots { peak: own.peak, clips: MASTER.clips });
+        assert!(model.check_ids().unwrap_err().contains("master meter's"), "a lane's clip counter that is the master's");
+        let mut model = fresh();
+        let own = model.groups[0].meter.unwrap();
+        model.groups[0].meter = Some(crate::telemetry::MeterSlots { peak: own.peak, clips: MASTER.clips });
+        assert!(model.check_ids().unwrap_err().contains("master meter's"), "a group's clip counter that is the master's");
 
         let mut model = fresh();
         model.groups[0].modulators[1].output = model.groups[0].modulators[0].output;
@@ -1479,6 +1529,7 @@ depth = 0.5
             pitch_bend_range: 2.0,
             remap: Default::default(),
             group,
+            meter: None,
         }
     }
 

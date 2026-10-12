@@ -91,6 +91,12 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModulatorOutput { location, index, slot } => {
             format!("SetModulatorOutput {location:?} index={index} slot={}", slot.index())
         }
+        C::SetLaneMeter { inst, slots } => {
+            format!("SetLaneMeter inst={inst} peak={} clips={}", slots.peak.index(), slots.clips.index())
+        }
+        C::SetGroupMeter { group, slots } => {
+            format!("SetGroupMeter group={group} peak={} clips={}", slots.peak.index(), slots.clips.index())
+        }
         C::SetModulatorRate { inst, mod_index, rate } => {
             format!("SetModulatorRate inst={inst} mod={mod_index} rate={rate:.3}")
         }
@@ -116,7 +122,10 @@ pub fn describe(cmd: &GraphCommand) -> String {
 /// sent would have to repeat one after every modulator, so `described` leaves
 /// them out, and `StubEngine::drain` and `Run::telemetry` have them on their own.
 fn is_telemetry(cmd: &GraphCommand) -> bool {
-    matches!(cmd, GraphCommand::SetModulatorOutput { .. })
+    matches!(
+        cmd,
+        GraphCommand::SetModulatorOutput { .. } | GraphCommand::SetLaneMeter { .. } | GraphCommand::SetGroupMeter { .. }
+    )
 }
 
 /// What `describe` says about each of `commands`, except those that only assign

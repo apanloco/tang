@@ -38,7 +38,8 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::catalog::Catalog;
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel, mod_source_slot_to_graph,
+    GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel,
+    mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::audio::MidiEvent;
@@ -246,6 +247,56 @@ impl Controller {
             slot.node = lane.node;
             lane.instrument = Some(slot);
         }
+    }
+
+    /// Add an empty instrument lane at the end, full range and in no group: the
+    /// audio thread gets it with a meter, the model a node of its own for it.
+    /// Returns its index. (The lane makes no sound until an instrument is put in.)
+    pub fn add_lane(&mut self) -> usize {
+        let inst = self.model.instruments.len();
+        let node = self.model.alloc_node();
+        let _ = self.cmd_tx.send(GraphCommand::AddInstrument { range: None });
+        let meter = self.model.slots.meter();
+        if let Some(slots) = meter {
+            let _ = self.cmd_tx.send(GraphCommand::SetLaneMeter { inst, slots });
+        }
+        self.model.instruments.push(InstrumentNode {
+            node,
+            range: None,
+            transpose: 0,
+            volume: 1.0,
+            instrument: None,
+            effects: Vec::new(),
+            modulators: Vec::new(),
+            pattern: None,
+            pitch_bend_range: 2.0,
+            remap: Default::default(),
+            group: None,
+            meter,
+        });
+        inst
+    }
+
+    /// Add an empty submix group at the end, with a meter: the audio thread gets
+    /// it and the model a node of its own for it. Returns its index.
+    pub fn add_group(&mut self) -> usize {
+        let group = self.model.groups.len();
+        let node = self.model.alloc_node();
+        let _ = self.cmd_tx.send(GraphCommand::AddGroup);
+        let meter = self.model.slots.meter();
+        if let Some(slots) = meter {
+            let _ = self.cmd_tx.send(GraphCommand::SetGroupMeter { group, slots });
+        }
+        self.model.groups.push(GroupNode {
+            node,
+            name: None,
+            volume: 1.0,
+            pan: 0.0,
+            effects: Vec::new(),
+            modulators: Vec::new(),
+            meter,
+        });
+        group
     }
 
     /// Add a modulator with `source` at the end of the rack at `at` (a lane's or a
@@ -1246,6 +1297,74 @@ depth = 0.1
             "the lane's resonance, centred on its default: {resonance}"
         );
         assert_ne!(cutoff, resonance);
+        ctl.model.check_ids().unwrap();
+        ctl.shutdown();
+    }
+
+    // -- lanes and groups --
+
+    #[test]
+    fn add_lane_adds_an_empty_full_range_lane_with_a_meter_and_tells_the_audio_thread() {
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        engine.drain();
+        assert_eq!(ctl.add_lane(), 2);
+        let lane = &ctl.model.instruments[2];
+        assert!(lane.instrument.is_none() && lane.effects.is_empty() && lane.modulators.is_empty());
+        assert_eq!((lane.range, lane.volume, lane.transpose, lane.group), (None, 1.0, 0, None));
+        assert_eq!(lane.pitch_bend_range, 2.0);
+        assert!(lane.pattern.is_none());
+        let meter = lane.meter.expect("a meter");
+        let (commands, telemetry) = engine.drain();
+        assert_eq!(commands, ["AddInstrument range=None"]);
+        assert_eq!(telemetry, [format!("SetLaneMeter inst=2 peak={} clips={}", meter.peak.index(), meter.clips.index())]);
+        assert_ne!(lane.node, ctl.model.instruments[1].node, "a node of its own");
+        ctl.model.check_ids().unwrap();
+        assert_eq!(ctl.add_lane(), 3);
+        assert_ne!(ctl.model.instruments[3].meter, ctl.model.instruments[2].meter, "a meter of its own");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_group_adds_an_empty_group_with_a_meter_and_tells_the_audio_thread() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        engine.drain();
+        assert_eq!(ctl.add_group(), 1);
+        let group = &ctl.model.groups[1];
+        assert!(group.effects.is_empty() && group.modulators.is_empty());
+        assert_eq!((group.name.as_deref(), group.volume, group.pan), (None, 1.0, 0.0));
+        let meter = group.meter.expect("a meter");
+        let (commands, telemetry) = engine.drain();
+        assert_eq!(commands, ["AddGroup"]);
+        assert_eq!(telemetry, [format!("SetGroupMeter group=1 peak={} clips={}", meter.peak.index(), meter.clips.index())]);
+        assert_ne!(group.node, ctl.model.groups[0].node);
+        assert_ne!(Some(meter), ctl.model.groups[0].meter);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_and_a_group_the_controller_adds_are_measured_by_the_real_engine() {
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(TWO_LANES, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        graph.set_telemetry(handles.telemetry.clone());
+        let mut ctl = Controller::new(model, handles, None);
+        let lane = ctl.add_lane();
+        let (plugin, slot) = ctl.load_plugin("builtin:osc").unwrap();
+        ctl.set_instrument(lane, plugin, slot);
+        let group = ctl.add_group();
+        let _ = ctl.cmd_tx.send(GraphCommand::SetLaneGroup { inst: lane, group: Some(group) });
+        ctl.model.instruments[lane].group = Some(group);
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        // A note, a few buffers of it.
+        graph.process(&[(0, [0x90, 60, 127])], &mut out).unwrap();
+        for _ in 0..4 {
+            graph.process(&[], &mut out).unwrap();
+        }
+        let peak = |meter: Option<crate::telemetry::MeterSlots>| ctl.telemetry.load(meter.unwrap().peak);
+        let new_lane = peak(ctl.model.instruments[lane].meter);
+        assert!(new_lane > 0.01, "the new lane's own output: {new_lane}");
+        assert_eq!(peak(ctl.model.groups[group].meter), new_lane, "the group holds only that lane");
+        assert!(peak(ctl.model.instruments[0].meter) > 0.01, "and the first lane, sounding too: {}", peak(ctl.model.instruments[0].meter));
         ctl.model.check_ids().unwrap();
         ctl.shutdown();
     }

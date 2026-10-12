@@ -197,6 +197,10 @@ pub fn load_session(
     for (g_idx, group_config) in config.groups.iter().enumerate() {
         let group_node = ids.alloc();
         send(cmd_tx, GraphCommand::AddGroup)?;
+        let meter = slots.meter();
+        if let Some(slots) = meter {
+            send(cmd_tx, GraphCommand::SetGroupMeter { group: g_idx, slots })?;
+        }
         if (group_config.volume - 1.0).abs() > f32::EPSILON {
             send(cmd_tx, GraphCommand::SetGroupVolume { group: g_idx, value: group_config.volume })?;
         }
@@ -254,6 +258,7 @@ pub fn load_session(
             // Group modulators are loaded after the instruments, once member
             // chains are known (so member-target param names resolve).
             modulators: Vec::new(),
+            meter,
         });
     }
 
@@ -262,6 +267,10 @@ pub fn load_session(
     for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
         let lane_node = ids.alloc();
         send(cmd_tx, GraphCommand::AddInstrument { range: inst_config.range })?;
+        let lane_meter = slots.meter();
+        if let Some(slots) = lane_meter {
+            send(cmd_tx, GraphCommand::SetLaneMeter { inst: inst_idx, slots })?;
+        }
 
         // Assign group membership (groups were created above).
         if inst_config.group.is_some() {
@@ -522,6 +531,7 @@ pub fn load_session(
             pitch_bend_range,
             remap,
             group: inst_config.group,
+            meter: lane_meter,
         });
         lane_params.push(chain_params);
     }
@@ -1078,24 +1088,30 @@ mod tests {
             group.modulators.iter().map(|m| m.targets.iter().map(|t| t.effective.is_some()).collect()).collect();
         assert_eq!(effective, [vec![true, true, true, false], vec![false, false]]);
 
-        // Slots 0 and 1 are the master meter's. The lane's modulator comes first
-        // (lanes load before group modulators), then each group modulator with its
-        // targets; the targets the loader skipped took none.
+        // Slots 0 and 1 are the master meter's. Then, in the order the loader sends
+        // things: the group's meter (2, 3), lane 0's (4, 5), lane 1's (6, 7) and the
+        // output of its LFO (8), lane 2's meter (9, 10); then the group modulators,
+        // each output followed by its targets (the ones the loader skipped took no
+        // slot).
         let output = |m: &ModulatorSlot| m.output.unwrap().index();
-        assert_eq!(output(lane_lfo), 2);
-        assert_eq!(output(&group.modulators[0]), 3);
+        assert_eq!(output(lane_lfo), 8);
+        assert_eq!(output(&group.modulators[0]), 11);
         let driven: Vec<u32> = group.modulators[0].targets.iter().filter_map(|t| t.effective).map(|s| s.index()).collect();
-        assert_eq!(driven, [4, 5, 6]);
-        assert_eq!(output(&group.modulators[1]), 7);
-        assert_eq!(model.slots.high_water(), 8);
+        assert_eq!(driven, [12, 13, 14]);
+        assert_eq!(output(&group.modulators[1]), 15);
+        assert_eq!(model.slots.high_water(), 16);
 
-        // The audio thread was told, right after each modulator was inserted.
+        // The audio thread was told, right after each node was added.
         assert_eq!(
             run.telemetry,
             [
-                "SetModulatorOutput Lane(1) index=0 slot=2",
-                "SetModulatorOutput Group(0) index=0 slot=3",
-                "SetModulatorOutput Group(0) index=1 slot=7",
+                "SetGroupMeter group=0 peak=2 clips=3",
+                "SetLaneMeter inst=0 peak=4 clips=5",
+                "SetLaneMeter inst=1 peak=6 clips=7",
+                "SetModulatorOutput Lane(1) index=0 slot=8",
+                "SetLaneMeter inst=2 peak=9 clips=10",
+                "SetModulatorOutput Group(0) index=0 slot=11",
+                "SetModulatorOutput Group(0) index=1 slot=15",
             ]
         );
     }
@@ -1204,22 +1220,45 @@ mod tests {
         assert_eq!(
             run.telemetry,
             [
-                "SetModulatorOutput Lane(0) index=0 slot=2",
-                // slot 3 is the first modulator's target
-                "SetModulatorOutput Lane(0) index=1 slot=4",
-                "SetModulatorOutput Lane(0) index=2 slot=5",
-                "SetModulatorOutput Lane(0) index=3 slot=6",
+                "SetLaneMeter inst=0 peak=2 clips=3",
+                "SetModulatorOutput Lane(0) index=0 slot=4",
+                // slot 5 is the first modulator's target
+                "SetModulatorOutput Lane(0) index=1 slot=6",
+                "SetModulatorOutput Lane(0) index=2 slot=7",
+                "SetModulatorOutput Lane(0) index=3 slot=8",
             ]
         );
         let outputs: Vec<u32> = run.model.instruments[0].modulators.iter().map(|m| m.output.unwrap().index()).collect();
-        assert_eq!(outputs, [2, 4, 5, 6]);
+        assert_eq!(outputs, [4, 6, 7, 8]);
     }
 
     #[test]
-    fn a_session_with_no_modulators_uses_no_slots() {
+    fn a_session_with_no_modulators_uses_a_meter_for_each_lane_and_nothing_else() {
         let run = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n");
-        assert_eq!(run.model.slots.high_water(), 2, "only the master meter's");
-        assert!(run.telemetry.is_empty());
+        assert_eq!(run.model.slots.high_water(), 4, "the master meter's two, and the lane's");
+        assert_eq!(run.telemetry, ["SetLaneMeter inst=0 peak=2 clips=3"]);
+        let meter = run.model.instruments[0].meter.unwrap();
+        assert_eq!((meter.peak.index(), meter.clips.index()), (2, 3));
+        assert!(run.model.groups.is_empty());
+    }
+
+    #[test]
+    fn a_group_and_its_lanes_each_get_a_meter_as_they_are_added() {
+        let run = load(
+            "[[group]]\n[[group]]\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 1\n[[instrument]]\nplugin = \"builtin:osc\"\n",
+        );
+        assert_eq!(
+            run.telemetry,
+            [
+                "SetGroupMeter group=0 peak=2 clips=3",
+                "SetGroupMeter group=1 peak=4 clips=5",
+                "SetLaneMeter inst=0 peak=6 clips=7",
+                "SetLaneMeter inst=1 peak=8 clips=9",
+            ]
+        );
+        let slots = |m: Option<crate::telemetry::MeterSlots>| m.map(|m| (m.peak.index(), m.clips.index()));
+        assert_eq!(run.model.groups.iter().map(|g| slots(g.meter)).collect::<Vec<_>>(), [Some((2, 3)), Some((4, 5))]);
+        assert_eq!(run.model.instruments.iter().map(|l| slots(l.meter)).collect::<Vec<_>>(), [Some((6, 7)), Some((8, 9))]);
     }
 
     #[test]

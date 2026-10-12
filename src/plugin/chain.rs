@@ -8,7 +8,7 @@ use super::Plugin;
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
-use crate::telemetry::{self, Meter, Slot, Telemetry};
+use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
@@ -1571,8 +1571,20 @@ pub enum GraphCommand {
     RemoveInstrument {
         inst: usize,
     },
+    /// Publish a lane's output (after its volume and effects, before it joins its
+    /// group or the master) into a meter's slots each buffer (telemetry).
+    SetLaneMeter {
+        inst: usize,
+        slots: MeterSlots,
+    },
     /// Add a new empty submix group; the new group's index is `groups.len()`.
     AddGroup,
+    /// Publish a group's output (after its volume, effects and pan, before it
+    /// joins the master) into a meter's slots each buffer (telemetry).
+    SetGroupMeter {
+        group: usize,
+        slots: MeterSlots,
+    },
     /// Remove a group; its members become ungrouped and higher group indices
     /// shift down.
     RemoveGroup {
@@ -2390,6 +2402,8 @@ struct InstrumentLane {
     /// summed parameter drives), kept so the audio thread does not allocate.
     cross_mod_scratch: Vec<CrossModWrite>,
     drive_scratch: Vec<ParamDrive>,
+    /// Measures the lane's output; `None` publishes nothing.
+    meter: Option<Meter>,
     /// Pattern recorder/player for this instrument.
     pattern: PatternPlayer,
     /// Transpose in semitones applied to note events.
@@ -2423,6 +2437,7 @@ impl InstrumentLane {
             modulators: Vec::new(),
             cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             drive_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
+            meter: None,
             pattern: PatternPlayer::new(48000.0),
             transpose: 0,
             group: None,
@@ -2709,6 +2724,8 @@ struct Group {
     /// Effect ping-pong scratch.
     buf_a: Vec<Vec<f32>>,
     buf_b: Vec<Vec<f32>>,
+    /// Measures the group's output; `None` publishes nothing.
+    meter: Option<Meter>,
 }
 
 impl Group {
@@ -2722,6 +2739,7 @@ impl Group {
             accum: (0..num_channels).map(|_| Vec::new()).collect(),
             buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
             buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
+            meter: None,
         }
     }
 
@@ -3221,6 +3239,16 @@ impl AudioGraph {
                 }
                 GraphCommand::AddGroup => {
                     self.groups.push(Group::new(self.num_channels));
+                }
+                GraphCommand::SetLaneMeter { inst, slots } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
+                        lane.meter = Some(Meter::new(slots));
+                    }
+                }
+                GraphCommand::SetGroupMeter { group, slots } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        g.meter = Some(Meter::new(slots));
+                    }
                 }
                 GraphCommand::RemoveGroup { group } => {
                     if group < self.groups.len() {
@@ -3797,6 +3825,12 @@ impl AudioGraph {
             buf.resize(frames, 0.0);
         }
 
+        // How far a meter's peak falls over this buffer, if anything is measured.
+        let fall = self
+            .telemetry
+            .as_ref()
+            .map(|_| telemetry::peak_fall(frames as f32 / self.graph_sample_rate()));
+
         // Current piano scale, read once per buffer (lock-free).
         let scale = self
             .piano_filter
@@ -3874,8 +3908,11 @@ impl AudioGraph {
             }
 
             inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale, self.telemetry.as_deref())?;
-            if let Some(telemetry) = &self.telemetry {
+            if let (Some(telemetry), Some(fall)) = (&self.telemetry, fall) {
                 publish_outputs(&inst.modulators, telemetry);
+                if let Some(meter) = inst.meter.as_mut() {
+                    meter.update(telemetry, &self.lane_buf, fall);
+                }
             }
             // A lane MidiLearn modulator may have just captured a control.
             Self::drain_learned(
@@ -3898,6 +3935,9 @@ impl AudioGraph {
         // Run each group's volume + effect chain, then fold into the master.
         for group in self.groups.iter_mut() {
             group.finish(self.num_channels, frames)?;
+            if let (Some(telemetry), Some(fall), Some(meter)) = (&self.telemetry, fall, group.meter.as_mut()) {
+                meter.update(telemetry, &group.accum, fall);
+            }
             for (m, src) in self.mix_buf.iter_mut().zip(group.accum.iter()).take(self.num_channels) {
                 for (ms, s) in m.iter_mut().zip(src.iter()) {
                     *ms += *s;
@@ -3914,8 +3954,7 @@ impl AudioGraph {
         }
 
         // What reaches the output, measured.
-        if let Some(telemetry) = &self.telemetry {
-            let fall = telemetry::peak_fall(frames as f32 / self.graph_sample_rate());
+        if let (Some(telemetry), Some(fall)) = (&self.telemetry, fall) {
             self.master_meter.update(telemetry, &self.mix_buf, fall);
         }
 
@@ -7223,5 +7262,198 @@ mod tests {
         ] {
             assert!(close(read(slot), expected), "{what}: {} instead of {expected}", read(slot));
         }
+    }
+
+    // -- Telemetry: lane and group meters --
+
+    /// One lane per entry of `values` (a constant instrument), each in the group
+    /// `groups[i]` names (an index into `group_count` groups) or in none, with the
+    /// meter slots the test holds: `(lane meters, group meters)`.
+    struct MeterRig {
+        graph: AudioGraph,
+        cmd_tx: crossbeam_channel::Sender<GraphCommand>,
+        telemetry: Arc<Telemetry>,
+        lanes: Vec<MeterSlots>,
+        groups: Vec<MeterSlots>,
+        slots: SlotAllocator,
+        _return_rx: crossbeam_channel::Receiver<Box<dyn Plugin>>,
+    }
+
+    impl MeterRig {
+        fn new(values: &[f32], lane_groups: &[Option<usize>], group_count: usize) -> MeterRig {
+            let (graph, cmd_tx, return_rx) = make_graph(2);
+            let mut rig = MeterRig {
+                graph,
+                cmd_tx,
+                telemetry: Arc::new(Telemetry::new()),
+                lanes: Vec::new(),
+                groups: Vec::new(),
+                slots: SlotAllocator::default(),
+                _return_rx: return_rx,
+            };
+            rig.graph.set_telemetry(rig.telemetry.clone());
+            for _ in 0..group_count {
+                rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+                let meter = rig.slots.meter().unwrap();
+                rig.cmd_tx.send(GraphCommand::SetGroupMeter { group: rig.groups.len(), slots: meter }).unwrap();
+                rig.groups.push(meter);
+            }
+            for (inst, &value) in values.iter().enumerate() {
+                if inst > 0 {
+                    rig.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+                }
+                swap_instrument_at(&rig.cmd_tx, inst, ConstInstrument::new(value));
+                rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: lane_groups[inst] }).unwrap();
+                let meter = rig.slots.meter().unwrap();
+                rig.cmd_tx.send(GraphCommand::SetLaneMeter { inst, slots: meter }).unwrap();
+                rig.lanes.push(meter);
+            }
+            rig
+        }
+
+        /// A lane with no instrument in it, and its meter.
+        fn empty_lane(&mut self) -> MeterSlots {
+            let inst = self.lanes.len();
+            self.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            let meter = self.slots.meter().unwrap();
+            self.cmd_tx.send(GraphCommand::SetLaneMeter { inst, slots: meter }).unwrap();
+            meter
+        }
+
+        fn play(&mut self) {
+            self.graph.process(&[note_on(60)], &mut make_output()).unwrap();
+        }
+
+        fn read(&self, meter: MeterSlots) -> (f32, u32) {
+            (self.telemetry.load(meter.peak), self.telemetry.count(meter.clips))
+        }
+    }
+
+    #[test]
+    fn each_lane_publishes_the_peak_of_its_own_output() {
+        let mut rig = MeterRig::new(&[0.25, 0.5], &[None, None], 0);
+        rig.play();
+        assert!((rig.read(rig.lanes[0]).0 - 0.25).abs() < 1e-6 && rig.read(rig.lanes[0]).1 == 0);
+        assert!((rig.read(rig.lanes[1]).0 - 0.5).abs() < 1e-6 && rig.read(rig.lanes[1]).1 == 0);
+        assert!((rig.telemetry.load(telemetry::MASTER.peak) - 0.75).abs() < 1e-6, "and the master the sum");
+    }
+
+    #[test]
+    fn a_lane_publishes_what_comes_out_of_it_after_its_volume_and_effects() {
+        let mut rig = MeterRig::new(&[0.4], &[None], 0);
+        rig.cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 2.0 }).unwrap();
+        insert_effect(&rig.cmd_tx, 0, Box::new(ScaleEffect(0.5)), 1.0);
+        rig.play();
+        // 0.4, doubled by the lane's volume and halved by its effect.
+        assert!((rig.read(rig.lanes[0]).0 - 0.4).abs() < 1e-6, "{:?}", rig.read(rig.lanes[0]));
+        // Without the effect it would be 0.8, and with a stronger one it clips.
+        let mut rig = MeterRig::new(&[0.4], &[None], 0);
+        insert_effect(&rig.cmd_tx, 0, Box::new(ScaleEffect(3.0)), 1.0);
+        rig.play();
+        assert_eq!(rig.read(rig.lanes[0]).1, 1);
+        assert!((rig.read(rig.lanes[0]).0 - 1.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_lane_that_clips_counts_a_clip_of_its_own_and_the_others_do_not() {
+        let mut rig = MeterRig::new(&[1.5, 0.25], &[None, None], 0);
+        rig.play();
+        rig.play();
+        assert_eq!(rig.read(rig.lanes[0]).1, 2, "one per buffer");
+        assert_eq!(rig.read(rig.lanes[1]).1, 0);
+        assert_eq!(rig.telemetry.count(telemetry::MASTER.clips), 2, "the sum clipped too");
+    }
+
+    #[test]
+    fn a_lane_in_a_group_is_measured_before_it_joins_the_group() {
+        let mut rig = MeterRig::new(&[0.3, 0.3], &[Some(0), Some(0)], 1);
+        rig.cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 2.0 }).unwrap();
+        rig.play();
+        for lane in [0, 1] {
+            assert!((rig.read(rig.lanes[lane]).0 - 0.3).abs() < 1e-6, "lane {lane}: {:?}", rig.read(rig.lanes[lane]));
+        }
+        // The two lanes sum to 0.6, and the group's volume doubles that.
+        assert!((rig.read(rig.groups[0]).0 - 1.2).abs() < 1e-6, "{:?}", rig.read(rig.groups[0]));
+        assert_eq!(rig.read(rig.groups[0]).1, 1, "the bus clips while the lanes do not");
+        assert_eq!((rig.read(rig.lanes[0]).1, rig.read(rig.lanes[1]).1), (0, 0));
+        assert!((rig.telemetry.load(telemetry::MASTER.peak) - 1.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_group_publishes_what_comes_out_of_it_after_its_volume_and_its_effects() {
+        let mut rig = MeterRig::new(&[0.3, 0.3], &[Some(0), Some(0)], 1);
+        rig.cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 2.0 }).unwrap();
+        rig.cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(0.5)), mix: 1.0 })
+            .unwrap();
+        rig.play();
+        // 0.6, doubled, halved.
+        assert!((rig.read(rig.groups[0]).0 - 0.6).abs() < 1e-6, "{:?}", rig.read(rig.groups[0]));
+        assert_eq!(rig.read(rig.groups[0]).1, 0);
+    }
+
+    #[test]
+    fn each_group_publishes_the_sum_of_its_own_lanes() {
+        // Group 1 has lanes 0 and 1, group 0 has lane 2, and group 2 has nobody.
+        let mut rig = MeterRig::new(&[0.1, 0.2, 0.4], &[Some(1), Some(1), Some(0)], 3);
+        rig.play();
+        let peaks: Vec<f32> = rig.groups.iter().map(|&g| rig.read(g).0).collect();
+        for (group, (peak, expected)) in peaks.iter().zip([0.4, 0.3, 0.0]).enumerate() {
+            assert!((peak - expected).abs() < 1e-6, "group {group}: {peak} instead of {expected}");
+        }
+    }
+
+    #[test]
+    fn a_group_that_nobody_is_in_reads_zero_and_a_lane_without_an_instrument_too() {
+        let mut rig = MeterRig::new(&[0.5], &[None], 1);
+        let empty = rig.empty_lane();
+        rig.play();
+        assert_eq!(rig.read(rig.groups[0]), (0.0, 0));
+        assert_eq!(rig.read(empty), (0.0, 0));
+        assert!((rig.read(rig.lanes[0]).0 - 0.5).abs() < 1e-6, "the lane with sound is unaffected");
+    }
+
+    #[test]
+    fn meters_set_for_lanes_and_groups_that_are_not_there_change_nothing() {
+        let mut rig = MeterRig::new(&[0.5], &[None], 0);
+        let stray = rig.slots.meter().unwrap();
+        rig.cmd_tx.send(GraphCommand::SetLaneMeter { inst: 7, slots: stray }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetGroupMeter { group: 7, slots: stray }).unwrap();
+        rig.play();
+        assert!((rig.read(rig.lanes[0]).0 - 0.5).abs() < 1e-6);
+        assert_eq!(rig.read(stray), (0.0, 0), "nothing was given those cells");
+    }
+
+    #[test]
+    fn a_lane_keeps_its_meter_when_the_lane_before_it_is_removed() {
+        let mut rig = MeterRig::new(&[0.25, 0.5], &[None, None], 0);
+        rig.play();
+        rig.cmd_tx.send(GraphCommand::RemoveInstrument { inst: 0 }).unwrap();
+        rig.telemetry.store(rig.lanes[0].peak, -1.0);
+        rig.telemetry.store(rig.lanes[1].peak, -1.0);
+        rig.play();
+        assert_eq!(rig.read(rig.lanes[0]).0, -1.0, "the removed lane publishes no more");
+        assert!((rig.read(rig.lanes[1]).0 - 0.5).abs() < 1e-6, "the other is lane 0 now, and still its own meter");
+    }
+
+    #[test]
+    fn a_lane_or_group_without_telemetry_publishes_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(2.0));
+        let meter = SlotAllocator::default().meter().unwrap();
+        cmd_tx.send(GraphCommand::SetLaneMeter { inst: 0, slots: meter }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupMeter { group: 0, slots: meter }).unwrap();
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 2.0), "the audio is the same");
+    }
+
+    #[test]
+    fn publishing_meters_does_not_allocate() {
+        let mut rig = MeterRig::new(&[0.6, 0.6, 0.2], &[Some(0), Some(0), None], 1);
+        rig.graph.drain_commands();
+        let allocations = allocations_while_processing(&mut rig.graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 }

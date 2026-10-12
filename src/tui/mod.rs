@@ -1361,11 +1361,7 @@ impl State {
             GroupAssignChoice::Ungroup => None,
             GroupAssignChoice::Existing(g) => Some(g),
             GroupAssignChoice::New => {
-                let g = self.ctl.model.groups.len();
-                let node = self.ctl.model.alloc_node();
-                let _ = self.ctl.cmd_tx.send(GraphCommand::AddGroup);
-                self.ctl.model.groups.push(GroupNode { node, name: None, volume: 1.0, pan: 0.0, effects: vec![], modulators: vec![] });
-                Some(g)
+                Some(self.ctl.add_group())
             }
         };
         let _ = self.ctl.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: new_group });
@@ -2694,22 +2690,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // makes sound even if the selector is dismissed without a pick. Set its
         // key range afterwards with 'R'. This is how you build a keyboard split.
         KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
-            let new_idx = s.ctl.model.instruments.len();
-            let node = s.ctl.model.alloc_node();
-            let _ = s.ctl.cmd_tx.send(GraphCommand::AddInstrument { range: None });
-            s.ctl.model.instruments.push(InstrumentNode {
-                node,
-                range: None,
-                transpose: 0,
-                volume: 1.0,
-                instrument: None,
-                effects: vec![],
-                modulators: vec![],
-                pattern: None,
-                pitch_bend_range: 2.0,
-                remap: Default::default(),
-                group: None,
-            });
+            let new_idx = s.ctl.add_lane();
             // Default the new lane to builtin:osc so it isn't silent if the
             // selector is cancelled.
             if let Some((loaded, slot)) = s.ctl.load_plugin("builtin:osc") {
