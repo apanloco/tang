@@ -703,6 +703,134 @@ fn clicking_and_dragging_a_parameter_bar_sets_its_value() {
 }
 
 #[test]
+fn the_gain_popups_open_on_the_current_value() {
+    let mut h = Harness::new(scene_group());
+    let prefill = |h: &Harness| h.s.gain_editing.as_ref().map(|g| g.edit.input.value.clone());
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('v'));
+    assert_eq!(prefill(&h).as_deref(), Some("0.80"), "the bass's volume");
+    h.press(KeyCode::Esc);
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('v'));
+    assert_eq!(prefill(&h).as_deref(), Some("0.80"), "the group's volume");
+    h.press(KeyCode::Esc);
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 });
+    h.press(KeyCode::Char('x'));
+    assert_eq!(prefill(&h).as_deref(), Some("1.00"), "the filter's mix");
+}
+
+#[test]
+fn the_mix_popup_sets_a_lane_effects_dry_wet_within_zero_and_one() {
+    let mut h = Harness::new(scene_two_effects()); // a filter, then a reverb at 0.5
+    h.goto(TreeAddress::Effect { inst: 0, index: 1 });
+    h.press(KeyCode::Char('x'));
+    assert_eq!(h.s.gain_editing.as_ref().unwrap().edit.input.value, "0.50");
+    h.press_n(KeyCode::Backspace, 6).type_chars("0.25").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetMix inst=0 slot=2 value=0.250"]);
+    assert_eq!(h.s.ctl.model.instruments[0].effects[1].mix, 0.25);
+    assert_eq!(h.s.ctl.model.instruments[0].effects[0].mix, 1.0, "the other effect is untouched");
+    assert!(h.s.ctl.dirty);
+
+    for (typed, command, mix) in [("5", "SetMix inst=0 slot=2 value=1.000", 1.0), ("-2", "SetMix inst=0 slot=2 value=0.000", 0.0)] {
+        h.press(KeyCode::Char('x')).press_n(KeyCode::Backspace, 6).type_chars(typed).press(KeyCode::Enter);
+        assert_eq!(h.commands(), [command]);
+        assert_eq!(h.s.ctl.model.instruments[0].effects[1].mix, mix);
+    }
+}
+
+#[test]
+fn the_mix_popup_sets_a_bus_effects_dry_wet_within_zero_and_one() {
+    let mut h = Harness::new(scene_bus_pair()); // a filter, then a reverb at 0.5
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 1 });
+    h.press(KeyCode::Char('x')).press_n(KeyCode::Backspace, 6).type_chars("0.1").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupMix group=0 fx=1 value=0.100"]);
+    assert_eq!(h.s.ctl.model.groups[0].effects[1].mix, 0.1);
+    assert_eq!(h.s.ctl.model.groups[0].effects[0].mix, 1.0, "the other bus effect is untouched");
+    assert!(h.s.ctl.dirty);
+    h.press(KeyCode::Char('x')).press_n(KeyCode::Backspace, 6).type_chars("7").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupMix group=0 fx=1 value=1.000"]);
+}
+
+#[test]
+fn the_volume_popup_sets_a_groups_volume_within_zero_and_four() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 6).type_chars("1.5").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupVolume group=0 value=1.500"]);
+    assert_eq!(h.s.ctl.model.groups[0].volume, 1.5);
+    assert!(h.s.ctl.dirty);
+    for (typed, command) in [("9", "SetGroupVolume group=0 value=4.000"), ("-1", "SetGroupVolume group=0 value=0.000")] {
+        h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 6).type_chars(typed).press(KeyCode::Enter);
+        assert_eq!(h.commands(), [command]);
+    }
+}
+
+#[test]
+fn the_volume_popup_on_any_node_of_a_lane_sets_the_lanes_volume() {
+    let mut h = Harness::new(scene_group());
+    for addr in [TreeAddress::Effect { inst: 2, index: 0 }, TreeAddress::Modulator { inst: 2, index: 0 }] {
+        h.goto(addr);
+        h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 6).type_chars("0.6").press(KeyCode::Enter);
+        assert_eq!(h.commands(), ["SetVolume inst=2 value=0.600"], "{addr:?}");
+    }
+    assert_eq!(h.s.ctl.model.instruments[2].volume, 0.6);
+    assert_eq!(h.s.ctl.model.instruments[0].volume, 1.0, "the other lanes keep theirs");
+}
+
+#[test]
+fn the_mix_popup_opens_only_on_an_effect() {
+    let mut h = Harness::new(scene_group());
+    for addr in [TreeAddress::Instrument(2), TreeAddress::Group(0), TreeAddress::Modulator { inst: 2, index: 0 }] {
+        h.goto(addr);
+        h.press(KeyCode::Char('x'));
+        assert!(h.s.gain_editing.is_none(), "{addr:?}");
+    }
+}
+
+#[test]
+fn a_gain_popup_ignores_what_is_not_a_number_and_escape_cancels() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 6).type_chars("abc").press(KeyCode::Enter);
+    assert!(h.s.gain_editing.is_none(), "the popup closes");
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert_eq!(h.s.ctl.model.instruments[2].volume, 0.8);
+    assert!(!h.s.ctl.dirty);
+
+    h.press(KeyCode::Char('v')).press_n(KeyCode::Backspace, 6).type_chars("2").press(KeyCode::Esc);
+    assert!(h.s.gain_editing.is_none());
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert_eq!(h.s.ctl.model.instruments[2].volume, 0.8);
+    assert!(!h.s.ctl.dirty);
+}
+
+#[test]
+fn the_parameter_pane_sets_a_groups_volume_and_pan() {
+    // The group's two rows, Volume (0..4, 0.8 to start) and Pan (-1..1, -0.3).
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Enter).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupVolume group=0 value=0.850"]);
+    h.press_with(KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetGroupVolume group=0 value=0.950"]);
+    assert!((h.s.ctl.model.groups[0].volume - 0.95).abs() < 1e-5);
+    assert!(h.s.ctl.dirty);
+
+    h.press(KeyCode::Down).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupPan group=0 value=-0.250"]);
+    assert!((h.s.ctl.model.groups[0].pan + 0.25).abs() < 1e-5);
+    h.press_n(KeyCode::Right, 30);
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetGroupPan group=0 value=1.000"), "stops at hard right");
+
+    // Typed values are clamped to each row's range.
+    h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars("-5").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupPan group=0 value=-1.000"]);
+    h.press(KeyCode::Up).press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars("9").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetGroupVolume group=0 value=4.000"]);
+    assert_eq!(h.s.ctl.model.groups[0].volume, 4.0);
+}
+
+#[test]
 fn the_group_header_shows_the_volume_after_an_edit() {
     // The header carries the group's volume, so it has to follow the edits,
     // whichever way they are made.
