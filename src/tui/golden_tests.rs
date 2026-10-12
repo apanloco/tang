@@ -1043,6 +1043,27 @@ fn a_capture_for_a_modulator_that_is_not_listening_changes_nothing() {
         .unwrap();
     tick(&mut h.s);
     assert!(matches!(h.s.ctl.model.instruments[0].modulators[0].source, ModSourceSlot::Lfo { .. }));
+    assert!(!h.s.ctl.dirty, "nothing changed");
+}
+
+#[test]
+fn a_capture_for_a_modulator_that_is_gone_changes_nothing() {
+    // The user armed a modulator and deleted it before the control arrived.
+    let mut h = Harness::new(scene_group());
+    let before: Vec<String> = h.tree().iter().map(|l| l.to_string()).collect();
+    for location in [
+        ModulatorLocation::Lane(0),
+        ModulatorLocation::Lane(7),
+        ModulatorLocation::Group(0),
+        ModulatorLocation::Group(7),
+    ] {
+        h.learn_tx
+            .send(MidiLearnedNotification { location, mod_index: 9, source: MidiBindSource::PitchBend })
+            .unwrap();
+    }
+    tick(&mut h.s);
+    assert!(!h.s.ctl.dirty, "nothing changed");
+    assert_eq!(h.tree(), before);
 }
 
 fn plugin_info(name: &str, is_instrument: bool) -> PluginInfo {

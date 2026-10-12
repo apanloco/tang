@@ -2539,10 +2539,10 @@ fn tick(s: &mut State) {
             if let ModSourceSlot::MidiLearn { source, learning } = &mut m.source {
                 *source = Some(notif.source);
                 *learning = false;
+                s.ctl.dirty = true;
+                s.rebuild_tree();
             }
         }
-        s.ctl.dirty = true;
-        s.rebuild_tree();
     }
 }
 
