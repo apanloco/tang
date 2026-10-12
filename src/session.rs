@@ -649,9 +649,9 @@ struct SessionOut {
 struct GroupOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    #[serde(skip_serializing_if = "is_default_volume_f32")]
+    #[serde(skip_serializing_if = "is_default_volume_f32", serialize_with = "f32_clean")]
     volume: f32,
-    #[serde(skip_serializing_if = "is_default_pan_f32")]
+    #[serde(skip_serializing_if = "is_default_pan_f32", serialize_with = "f32_clean")]
     pan: f32,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
@@ -661,6 +661,19 @@ struct GroupOut {
 
 fn is_default_volume_f32(v: &f32) -> bool {
     (*v - 1.0).abs() < f32::EPSILON
+}
+
+/// Write an f32 the way it was typed: widening 0.8_f32 to f64 would print
+/// `0.800000011920929`.
+fn f32_clean<S: serde::Serializer>(v: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(clean_f64(*v))
+}
+
+fn f32_clean_opt<S: serde::Serializer>(v: &Option<f32>, serializer: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(v) => serializer.serialize_f64(clean_f64(*v)),
+        None => serializer.serialize_none(),
+    }
 }
 
 fn is_default_pan_f32(v: &f32) -> bool {
@@ -682,7 +695,7 @@ struct InstrumentSlotOut {
     // Instrument plugin fields (top-level).
     #[serde(skip_serializing_if = "Option::is_none")]
     plugin: Option<String>,
-    #[serde(skip_serializing_if = "is_default_volume_f32_opt")]
+    #[serde(skip_serializing_if = "is_default_volume_f32_opt", serialize_with = "f32_clean_opt")]
     volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     preset: Option<String>,
@@ -795,7 +808,7 @@ struct ModTargetOut {
 #[derive(Serialize)]
 struct EffectOut {
     plugin: String,
-    #[serde(skip_serializing_if = "is_default_mix_f32")]
+    #[serde(skip_serializing_if = "is_default_mix_f32", serialize_with = "f32_clean")]
     mix: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     preset: Option<String>,
@@ -816,7 +829,7 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
         mod_decay: None,
         mod_sustain: None,
         mod_release: None,
-        depth: t.depth as f64,
+        depth: clean_f64(t.depth),
     };
     match &t.kind {
         ModTargetKind::PluginParam { .. } => {
@@ -915,7 +928,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                 SaveModSource::Lfo { waveform, rate } => ModulatorOut {
                     mod_type: "lfo".into(),
                     waveform: Some(waveform.clone()),
-                    rate: Some(*rate as f64),
+                    rate: Some(clean_f64(*rate)),
                     attack: None,
                     decay: None,
                     sustain: None,
@@ -929,10 +942,10 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     mod_type: "envelope".into(),
                     waveform: None,
                     rate: None,
-                    attack: Some(*attack as f64),
-                    decay: Some(*decay as f64),
-                    sustain: Some(*sustain as f64),
-                    release: Some(*release as f64),
+                    attack: Some(clean_f64(*attack)),
+                    decay: Some(clean_f64(*decay)),
+                    sustain: Some(clean_f64(*sustain)),
+                    release: Some(clean_f64(*release)),
                     midi_cc: None,
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
@@ -1032,8 +1045,8 @@ pub fn to_toml(
                     effects: slot.effects.iter().map(effect_to_out).collect(),
                     pattern: slot.pattern.as_ref().map(|p| {
                         PatternOut {
-                            bpm: p.bpm as f64,
-                            length_beats: p.length_beats as f64,
+                            bpm: clean_f64(p.bpm),
+                            length_beats: clean_f64(p.length_beats),
                             looping: p.looping,
                             base_note: p.base_note.map(note_name),
                             transpose: p.in_key.then(|| "in_key".to_string()),
@@ -1053,7 +1066,8 @@ pub fn to_toml(
             .collect(),
     };
 
-    let content = toml::to_string_pretty(&session)?;
+    // Not `to_string_pretty`: it writes arrays one element per line.
+    let content = toml::to_string(&session)?;
     inline_remap_entries(&content)
 }
 
@@ -1097,6 +1111,7 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
                             inline.insert(k, val.clone());
                         }
                     }
+                    inline.fmt();
                     let pitch = parse_note_name(&key).unwrap_or(0);
                     entries.push((pitch, key, inline));
                 }
@@ -1670,7 +1685,7 @@ range = "C4-C8"
         // Output should use inline tables and stable alphabetical ordering.
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(
-            raw.contains(r#""F#2" = { note = "F2", detune = 1.0}"#)
+            raw.contains(r#""F#2" = { note = "F2", detune = 1.0 }"#)
                 && !raw.contains(r#"[instrument.remap."F#2"]"#),
             "expected inline table for F#2, got:\n{raw}"
         );

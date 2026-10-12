@@ -126,6 +126,22 @@ mod tests {
     const BASIC: &str = include_str!("../../examples/basic.toml");
     const SPLIT: &str = include_str!("../../examples/split.toml");
 
+    /// Values that are not exact in binary, on an instrument and its pattern.
+    const ODD_TEMPO: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.7
+[instrument.pattern]
+bpm = 93.7
+length_beats = 3.3
+base_note = "C4"
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+"#;
+
     const SCENES: &[(&str, &str)] = &[
         ("basic", BASIC),
         ("split", SPLIT),
@@ -135,6 +151,7 @@ mod tests {
         ("settings", SETTINGS),
         ("cross-mod", CROSS_MOD),
         ("disabled-pattern", DISABLED_PATTERN),
+        ("odd-tempo", ODD_TEMPO),
     ];
 
     /// The file a save of this model writes.
@@ -154,6 +171,44 @@ mod tests {
             assert_same_model(name, &first.model, &second.model);
             assert_eq!(file, saved(&second.model), "{name}: saving twice gives a different file");
         }
+    }
+
+    // What a saved file looks like. Hand-edited files get rewritten on every save, so
+    // the writer has to keep to the style the docs show.
+
+    #[test]
+    fn numbers_are_written_the_way_they_were_typed() {
+        let file = saved(&load(GROUPS).model);
+        for line in ["volume = 0.8", "pan = -0.3", "mix = 0.6", "attack = 0.02", "decay = 0.4", "depth = -0.3"] {
+            assert!(file.lines().any(|l| l == line), "no `{line}` in:\n{file}");
+        }
+        let file = saved(&load(ODD_TEMPO).model);
+        for line in ["volume = 0.7", "bpm = 93.7", "length_beats = 3.3"] {
+            assert!(file.lines().any(|l| l == line), "no `{line}` in:\n{file}");
+        }
+        // Whatever the scene: an f32 widened to f64 shows up as a long run of digits.
+        for (name, text) in SCENES {
+            let file = saved(&load(text).model);
+            let noisy: Vec<&str> = file.lines().filter(|l| longest_fraction(l) >= 8).collect();
+            assert!(noisy.is_empty(), "{name}: numbers with float noise:\n{}", noisy.join("\n"));
+        }
+    }
+
+    /// Digits after the longest decimal point on the line.
+    fn longest_fraction(line: &str) -> usize {
+        line.split('.').skip(1).map(|rest| rest.chars().take_while(char::is_ascii_digit).count()).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn remapped_keys_are_written_as_inline_tables() {
+        let file = saved(&load(SETTINGS).model);
+        assert!(file.contains("\"G#4\" = { note = \"G4\", detune = 1.0 }"), "{file}");
+    }
+
+    #[test]
+    fn a_cross_mod_depth_target_stays_on_one_line() {
+        let file = saved(&load(GROUPS).model);
+        assert!(file.contains("mod_depth = [0, 2]"), "{file}");
     }
 
     #[test]

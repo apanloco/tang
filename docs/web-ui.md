@@ -532,9 +532,10 @@ Each step is a reviewable change; the TUI must not regress at any point.
     edited one different from the unedited): byte-identical.
   - Found on the way and fixed first, in its own commit: the Piano tab's lock
     (`[piano] locked`) was read at startup but never written back.
-  Noticed while reading the output, not part of this step: saved files carry f32
-  noise (`depth = 0.03999999910593033` for a source `0.04`), inline remap tables
-  lose the space before `}`, and `mod_depth` is written as a multi-line array.
+  Noticed while reading the output, fixed right after in its own commit: saved
+  files carried f32 noise (`depth = 0.03999999910593033` for a source `0.04`),
+  inline remap tables lost the space before `}`, and `mod_depth` was written as
+  a multi-line array.
   *Done:* `cargo test` and clippy green on both feature sets, snapshots unchanged.
 - [ ] **5. Controller v0.** `app::Controller` takes ownership of the session,
   `cmd_tx`, runtime, catalog (and its scan thread), session path, dirty flag,
