@@ -1,5 +1,7 @@
 #![allow(clippy::collapsible_if)]
 
+#[cfg(test)]
+mod alloc_guard;
 mod app;
 mod audio;
 mod chord;

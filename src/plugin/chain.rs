@@ -12,6 +12,10 @@ use crate::session::{self, RemapTarget};
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
 
+/// How many entries the per-buffer scratch lists start with: room for the
+/// modulation of a busy lane, so that they do not grow on the audio thread.
+const SCRATCH_CAPACITY: usize = 64;
+
 /// Pre-computed remap entry for a single note.
 #[derive(Debug, Clone)]
 struct RemapEntry {
@@ -594,13 +598,19 @@ impl Modulator {
     }
 }
 
+/// One cross-mod write waiting to be applied: the sibling modulator, which of its
+/// fields, and the new value.
+type CrossModWrite = (usize, CrossModField, f32);
+
 /// Apply cross-modulator targets within a modulator list.
 ///
 /// For each modulator, applies its `last_output` to any sibling modulator targets
 /// (rate, ADSR params, depth). Self-modulation (targeting own index) is skipped.
-fn apply_cross_mod(modulators: &mut [Modulator]) {
+/// `mods_to_apply` is scratch space the caller keeps between buffers, so that this
+/// does not allocate once it has grown to fit.
+fn apply_cross_mod(modulators: &mut [Modulator], mods_to_apply: &mut Vec<CrossModWrite>) {
     // Collect modifications first (avoids simultaneous borrow issues).
-    let mut mods_to_apply: Vec<(usize, CrossModField, f32)> = Vec::new();
+    mods_to_apply.clear();
 
     for (src_idx, src) in modulators.iter().enumerate() {
         for target in &src.targets {
@@ -629,7 +639,7 @@ fn apply_cross_mod(modulators: &mut [Modulator]) {
     }
 
     // Apply collected modifications.
-    for (tgt_idx, field, value) in mods_to_apply {
+    for &(tgt_idx, field, value) in mods_to_apply.iter() {
         if let Some(tgt) = modulators.get_mut(tgt_idx) {
             apply_cross_mod_field(tgt, field, value);
         }
@@ -685,20 +695,26 @@ pub enum CrossModField {
     Depth(usize),
 }
 
+/// A parameter some modulators of a lane drive: the chain slot, the parameter's
+/// index, its base value, its range (min, max) and the offsets summed so far.
+type ParamDrive = (usize, u32, f32, f32, f32, f32);
+
 /// Apply all of a lane's modulators across its chain, summing contributions
 /// when multiple modulators target the same parameter. Each parameter gets:
 ///   base_value + sum(offset_i)
 /// where each offset comes from `Modulator::target_offset` (bipolar around
 /// the base for LFOs, rising from below up to the base for envelopes). This
 /// prevents the last-modulator-wins overwrite bug. Targets are routed by
-/// slot: 0 = instrument, 1..N = effects[slot-1].
+/// slot: 0 = instrument, 1..N = effects[slot-1]. `accum` is scratch space the
+/// caller keeps between buffers, so that this does not allocate once it has grown
+/// to fit.
 fn apply_modulators_to_chain(
     modulators: &[Modulator],
     instrument: &mut Option<Box<dyn Plugin>>,
     effects: &mut [Box<dyn Plugin>],
+    accum: &mut Vec<ParamDrive>,
 ) {
-    // Collect (slot, param_index, base_value, min, max, total_offset).
-    let mut accum: Vec<(usize, u32, f32, f32, f32, f32)> = Vec::new();
+    accum.clear();
 
     for m in modulators {
         for target in &m.targets {
@@ -723,7 +739,7 @@ fn apply_modulators_to_chain(
         }
     }
 
-    for (slot, param_index, base_value, min, max, total_offset) in accum {
+    for &(slot, param_index, base_value, min, max, total_offset) in accum.iter() {
         let modulated = (base_value + total_offset).clamp(min, max);
         let plugin: Option<&mut dyn Plugin> = if slot == 0 {
             instrument.as_deref_mut()
@@ -938,22 +954,34 @@ enum GroupModWrite {
     },
 }
 
+/// A member's parameter that group modulators drive: the lane, the chain slot, the
+/// parameter's index, its base value, its range (min, max) and the offsets summed
+/// so far.
+type MemberDrive = (usize, usize, u32, f32, f32, f32, f32);
+
+/// A bus effect's parameter that group modulators drive: the effect, the
+/// parameter's index, its base value, its range (min, max) and the offsets summed
+/// so far.
+type BusDrive = (usize, u32, f32, f32, f32, f32);
+
 /// Collect the parameter writes from every group's modulators, summing
 /// contributions when several modulators within a group target the same
 /// parameter (mirrors `apply_modulators_to_chain`). Member ordinals are
 /// resolved to global lane indices against the current membership;
 /// unresolvable targets (e.g. a member that left the group) are skipped.
+/// `member_acc` and `bus_acc` are scratch space the caller keeps between buffers,
+/// so that this does not allocate once they have grown to fit.
 fn collect_group_mod_writes(
     groups: &[Group],
     instruments: &[InstrumentLane],
     out: &mut Vec<GroupModWrite>,
+    member_acc: &mut Vec<MemberDrive>,
+    bus_acc: &mut Vec<BusDrive>,
 ) {
     out.clear();
     for (gi, g) in groups.iter().enumerate() {
-        // (lane, slot, param, base, min, max, total_offset)
-        let mut member_acc: Vec<(usize, usize, u32, f32, f32, f32, f32)> = Vec::new();
-        // (effect, param, base, min, max, total_offset)
-        let mut bus_acc: Vec<(usize, u32, f32, f32, f32, f32)> = Vec::new();
+        member_acc.clear();
+        bus_acc.clear();
         for m in &g.modulators {
             for t in &m.targets {
                 match t.kind {
@@ -1008,7 +1036,7 @@ fn collect_group_mod_writes(
                 }
             }
         }
-        for (lane, slot, param_index, base, min, max, off) in member_acc {
+        for &(lane, slot, param_index, base, min, max, off) in member_acc.iter() {
             let value = (base + off).clamp(min, max);
             out.push(GroupModWrite::Member {
                 lane,
@@ -1017,7 +1045,7 @@ fn collect_group_mod_writes(
                 value,
             });
         }
-        for (effect_index, param_index, base, min, max, off) in bus_acc {
+        for &(effect_index, param_index, base, min, max, off) in bus_acc.iter() {
             let value = (base + off).clamp(min, max);
             out.push(GroupModWrite::Bus {
                 group: gi,
@@ -2254,6 +2282,10 @@ struct InstrumentLane {
     /// Modulators for this whole lane. Each modulator's targets address any
     /// plugin in the chain by slot (0 = instrument, 1..N = effects).
     modulators: Vec<Modulator>,
+    /// Scratch space for applying the modulators each buffer (cross-mod writes,
+    /// summed parameter drives), kept so the audio thread does not allocate.
+    cross_mod_scratch: Vec<CrossModWrite>,
+    drive_scratch: Vec<ParamDrive>,
     /// Pattern recorder/player for this instrument.
     pattern: PatternPlayer,
     /// Transpose in semitones applied to note events.
@@ -2285,6 +2317,8 @@ impl InstrumentLane {
             transposed_events: Vec::with_capacity(128),
             filtered_midi: Vec::with_capacity(128),
             modulators: Vec::new(),
+            cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
+            drive_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             pattern: PatternPlayer::new(48000.0),
             transpose: 0,
             group: None,
@@ -2399,8 +2433,13 @@ impl InstrumentLane {
             for m in &mut self.modulators {
                 m.tick(buffer_size, effective_events);
             }
-            apply_cross_mod(&mut self.modulators);
-            apply_modulators_to_chain(&self.modulators, &mut self.instrument, &mut self.effects);
+            apply_cross_mod(&mut self.modulators, &mut self.cross_mod_scratch);
+            apply_modulators_to_chain(
+                &self.modulators,
+                &mut self.instrument,
+                &mut self.effects,
+                &mut self.drive_scratch,
+            );
         }
 
         let instrument = match self.instrument.as_mut() {
@@ -2715,10 +2754,15 @@ pub struct AudioGraph {
     /// Reusable scratch for a group's trigger MIDI (union of member ranges),
     /// rebuilt per group per buffer. Avoids per-buffer allocation.
     group_midi_scratch: Vec<(u64, [u8; 3])>,
-    /// Reusable scratch for pending group-modulator parameter writes.
+    /// Reusable scratch for pending group-modulator parameter writes, and for
+    /// summing what the modulators of a group drive on each parameter.
     group_mod_writes: Vec<GroupModWrite>,
+    group_member_drives: Vec<MemberDrive>,
+    group_bus_drives: Vec<BusDrive>,
     /// Reusable scratch for pending group→member-modulator cross-mod writes.
     group_member_mod_writes: Vec<GroupMemberModWrite>,
+    /// Reusable scratch for the cross-mod writes within one group's rack.
+    group_cross_mod_scratch: Vec<CrossModWrite>,
 }
 
 impl AudioGraph {
@@ -2741,7 +2785,10 @@ impl AudioGraph {
             piano_filter: None,
             group_midi_scratch: Vec::with_capacity(128),
             group_mod_writes: Vec::with_capacity(64),
+            group_member_drives: Vec::with_capacity(SCRATCH_CAPACITY),
+            group_bus_drives: Vec::with_capacity(SCRATCH_CAPACITY),
             group_member_mod_writes: Vec::with_capacity(32),
+            group_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
         }
     }
 
@@ -3653,7 +3700,7 @@ impl AudioGraph {
                 for m in &mut self.groups[gi].modulators {
                     m.tick(frames, &self.group_midi_scratch);
                 }
-                apply_cross_mod(&mut self.groups[gi].modulators);
+                apply_cross_mod(&mut self.groups[gi].modulators, &mut self.group_cross_mod_scratch);
                 Self::drain_learned(
                     self.learn_tx.as_ref(),
                     &mut self.groups[gi].modulators,
@@ -3668,7 +3715,13 @@ impl AudioGraph {
                 &mut self.group_member_mod_writes,
             );
             apply_group_member_mod_writes(&self.group_member_mod_writes, &mut self.instruments);
-            collect_group_mod_writes(&self.groups, &self.instruments, &mut self.group_mod_writes);
+            collect_group_mod_writes(
+                &self.groups,
+                &self.instruments,
+                &mut self.group_mod_writes,
+                &mut self.group_member_drives,
+                &mut self.group_bus_drives,
+            );
             apply_group_mod_writes(
                 &self.group_mod_writes,
                 &mut self.instruments,
@@ -6011,7 +6064,7 @@ mod tests {
         }];
         m.last_output = 1.0; // force the LFO to its peak
 
-        apply_modulators_to_chain(&[m], &mut inst, &mut effects);
+        apply_modulators_to_chain(&[m], &mut inst, &mut effects, &mut Vec::new());
 
         // Effect param pushed to base + depth*range (clamped); instrument untouched.
         assert!(
@@ -6148,5 +6201,212 @@ mod tests {
         // Triggering the base note plays the pattern back unchanged.
         let events = p.process(&[note_on(60)], 256, scale).to_vec();
         assert_eq!(note_ons(&events), vec![60, 64, 67]);
+    }
+
+    // -- The audio path does not allocate once it is running --
+    //
+    // `process()` runs on the audio thread, where a trip to the allocator can
+    // stall the callback. Commands are another matter (they build the graph and
+    // may allocate), so each test sets the graph up, lets one buffer settle any
+    // scratch space and then counts the allocations of the buffers that follow.
+
+    /// Count what `buffers` buffers allocate, after two that may grow scratch space.
+    fn allocations_while_processing(graph: &mut AudioGraph, midi: &[(u64, [u8; 3])], buffers: usize) -> usize {
+        let mut out = make_output();
+        graph.process(midi, &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..buffers {
+                graph.process(&[], &mut out).unwrap();
+            }
+        });
+        allocations
+    }
+
+    /// A lane with a constant instrument and a `ParamScaleEffect`, whose `gain` is
+    /// driven by an LFO and by an ADSR together (two modulators on one parameter),
+    /// and whose first LFO's rate is driven by a second one (cross-mod).
+    fn lane_with_modulators() -> (
+        AudioGraph,
+        crossbeam_channel::Sender<GraphCommand>,
+        crossbeam_channel::Receiver<Box<dyn Plugin>>,
+    ) {
+        let (mut graph, cmd_tx, rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        insert_effect(&cmd_tx, 0, scale_effect(), 1.0);
+        let sources = [
+            ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, phase: 0.0 },
+            ModSource::Envelope {
+                attack: 0.01,
+                decay: 0.1,
+                sustain: 0.5,
+                release: 0.1,
+                state: EnvState::Idle,
+                level: 0.0,
+                notes_held: 0,
+            },
+            ModSource::Lfo { waveform: LfoWaveform::Triangle, rate: 0.5, phase: 0.0 },
+        ];
+        for (index, source) in sources.into_iter().enumerate() {
+            cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index, source }).unwrap();
+        }
+        let gain = || ModTarget {
+            kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+            depth: 0.5,
+            base_value: 1.0,
+            param_min: 0.0,
+            param_max: 1.0,
+        };
+        for mod_index in [0, 1] {
+            cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index, target: gain() }).unwrap();
+        }
+        let rate = ModTarget {
+            kind: ModTargetKind::ModulatorRate { mod_index: 0 },
+            depth: 0.5,
+            base_value: 2.0,
+            param_min: 0.1,
+            param_max: 10.0,
+        };
+        cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 2, target: rate }).unwrap();
+        graph.drain_commands();
+        (graph, cmd_tx, rr)
+    }
+
+    #[test]
+    fn processing_does_not_allocate_while_lane_modulators_run() {
+        let (mut graph, _cmd_tx, _rr) = lane_with_modulators();
+        // A note held through the measured buffers keeps the ADSR moving.
+        let allocations = allocations_while_processing(&mut graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    /// A group of two lanes with sound and a `ParamScaleEffect` each, a bus effect,
+    /// a group volume and pan, and a group LFO that drives the `gain` of both
+    /// members' effects and of the bus effect, and the rate of an LFO in member 0
+    /// (group → member-modulator cross-mod). A group ADSR cross-mods the group
+    /// LFO's rate, and member 0's LFO drives its own effect. (Only real parameters
+    /// are targeted: a plugin that refuses a parameter allocates its error.)
+    fn busy_group() -> (
+        AudioGraph,
+        crossbeam_channel::Sender<GraphCommand>,
+        crossbeam_channel::Receiver<Box<dyn Plugin>>,
+    ) {
+        let (mut graph, cmd_tx, rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for inst in [0, 1] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+            swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(0.1));
+            cmd_tx
+                .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0 })
+                .unwrap();
+        }
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 0.5 }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.8 }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: -0.3 }).unwrap();
+        let lfo = |rate| ModSource::Lfo { waveform: LfoWaveform::Sine, rate, phase: 0.0 };
+        let adsr = ModSource::Envelope {
+            attack: 0.01,
+            decay: 0.1,
+            sustain: 0.5,
+            release: 0.1,
+            state: EnvState::Idle,
+            level: 0.0,
+            notes_held: 0,
+        };
+        cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(3.0) }).unwrap();
+        let gain = |kind| ModTarget { kind, depth: 0.5, base_value: 1.0, param_min: 0.0, param_max: 1.0 };
+        cmd_tx
+            .send(GraphCommand::AddModTarget {
+                inst: 0,
+                mod_index: 0,
+                target: gain(ModTargetKind::PluginParam { slot: 1, param_index: 0 }),
+            })
+            .unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(1.0) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: adsr }).unwrap();
+        let rate = |kind| ModTarget { kind, depth: 0.5, base_value: 2.0, param_min: 0.1, param_max: 10.0 };
+        for target in [
+            gain(ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }),
+            gain(ModTargetKind::GroupMember { member: 1, slot: 1, param_index: 0 }),
+            gain(ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }),
+            rate(ModTargetKind::GroupMemberMod { member: 0, mod_index: 0, field: CrossModField::Rate }),
+        ] {
+            cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        }
+        cmd_tx
+            .send(GraphCommand::AddGroupModTarget {
+                group: 0,
+                mod_index: 1,
+                target: rate(ModTargetKind::ModulatorRate { mod_index: 0 }),
+            })
+            .unwrap();
+        graph.drain_commands();
+        (graph, cmd_tx, rr)
+    }
+
+    #[test]
+    fn processing_does_not_allocate_while_group_modulators_run() {
+        let (mut graph, _cmd_tx, _rr) = busy_group();
+        let allocations = allocations_while_processing(&mut graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn processing_does_not_allocate_while_a_pattern_plays() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        let on = |note| PatternEvent { frame: 0, status: 0x90, note, velocity: 100 };
+        let off = |note| PatternEvent { frame: 500, status: 0x80, note, velocity: 0 };
+        let pattern = Pattern { events: vec![on(60), on(64), on(67), off(60), off(64), off(67)], length_samples: 1000 };
+        cmd_tx.send(GraphCommand::SetPattern { inst: 0, pattern, base_note: Some(60), in_key: true }).unwrap();
+        graph.drain_commands();
+        // The held key starts the pattern; 40 buffers of 64 frames loop it twice.
+        let allocations = allocations_while_processing(&mut graph, &[note_on(62)], 40);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn processing_does_not_allocate_while_notes_are_remapped_and_transposed() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let inst = ConstInstrument::new(0.5);
+        let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
+        let remapper = NoteRemapper::from_config(&make_remap(&[("G#4", "G4", 1.0)]), 2.0).unwrap();
+        cmd_tx
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: Some(remapper) })
+            .unwrap();
+        cmd_tx.send(GraphCommand::SetTranspose { inst: 0, semitones: 2 }).unwrap();
+        cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((40, 90)) }).unwrap();
+        graph.drain_commands();
+        let allocations = allocations_while_processing(&mut graph, &[note_on(68), note_on(60)], 16);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn processing_does_not_allocate_with_the_built_in_plugins_and_modulators() {
+        let load = |name: &str| crate::plugin::builtin::load(name, 48000.0, 64).unwrap();
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let osc = load("builtin:osc");
+        let inst_buf = (0..osc.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: osc, inst_buf, remapper: None })
+            .unwrap();
+        insert_effect(&cmd_tx, 0, load("builtin:filter"), 1.0);
+        insert_effect(&cmd_tx, 1, load("builtin:reverb"), 0.5);
+        cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 0.8 }).unwrap();
+        let lfo = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, phase: 0.0 };
+        cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo }).unwrap();
+        // The filter's `cutoff` (0) and the reverb's `damping` (2), and the oscillator's `detune` (1).
+        for kind in [
+            ModTargetKind::PluginParam { slot: 1, param_index: 0 },
+            ModTargetKind::PluginParam { slot: 2, param_index: 2 },
+            ModTargetKind::PluginParam { slot: 0, param_index: 1 },
+        ] {
+            let target = ModTarget { kind, depth: 0.3, base_value: 0.5, param_min: 0.0, param_max: 1.0 };
+            cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        }
+        graph.drain_commands();
+        let allocations = allocations_while_processing(&mut graph, &[note_on(60), note_on(64)], 32);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 }
