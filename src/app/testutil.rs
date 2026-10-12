@@ -155,6 +155,18 @@ pub struct StubEngine {
     pub learn_tx: Sender<MidiLearnedNotification>,
 }
 
+/// A finished two-beat recording of one note, as the audio thread reports it.
+pub fn recording(inst: usize) -> PatternNotification {
+    PatternNotification {
+        inst,
+        base_note: Some(60),
+        length_beats: 2.0,
+        looping: true,
+        enabled: true,
+        events: vec![(0, 0x90, 60, 100), (24_000, 0x80, 60, 0)],
+    }
+}
+
 /// Handles for a `Controller` over stub channels (48 kHz, 256-frame blocks, the
 /// default scale), and the other ends of those channels.
 pub fn stub_engine() -> (EngineHandles, StubEngine) {

@@ -871,10 +871,13 @@ Every user action (preset load, parameter tweak, plugin add/remove, reorder)
 updates both the session model (for saving) and sends a command to the audio
 thread (for playback). The dirty indicator is driven by this model. The model
 types and the helpers that keep their indices in step with the audio graph live
-in `src/app/model.rs`. The model, the session path, the dirty flag, the tempo
-and the engine handles (command channel, plugin runtime, notification
-receivers, the state shared with the note senders) belong to
-`app::controller::Controller`; the TUI reaches them through `State::ctl`.
+in `src/app/model.rs`. The model, the session path, the dirty flag, the tempo,
+the plugin catalog and the engine handles (command channel, plugin runtime,
+notification receivers, the state shared with the note senders) belong to
+`app::controller::Controller`; the TUI reaches them through `State::ctl`. The
+controller folds what the audio thread reports (a finished pattern recording, a
+captured MIDI-learn control) into the model, and `poll` tells the TUI what
+changed.
 
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
@@ -987,7 +990,8 @@ N+2 threads, no async:
   piano lives here and pushes into the same MIDI channel as hardware devices.
 - **Catalog scan thread** (TUI only, transient) — enumerates installed plugins
   for the selector popup at TUI startup and exits when done. Sends per-format
-  batches over an unbounded channel drained by the TUI event loop.
+  batches over an unbounded channel that `Controller::poll` drains into
+  `app::catalog::Catalog`.
 - **Splash render thread** (TUI only, transient) — owns the terminal during
   session plugin loading, animating the startup splash while the main thread
   loads plugins. Exits before `tui::run` takes over the terminal.

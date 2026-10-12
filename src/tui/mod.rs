@@ -39,7 +39,6 @@ use crate::app::model::{
 use crate::piano_filter::PianoMode;
 use crate::plugin;
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
-use crate::plugin::PluginInfo;
 use crate::scale::{ScaleSetting, NOTE_NAMES};
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
@@ -375,11 +374,6 @@ struct State {
     modulate: Option<ModulateState>,
     group_assign: Option<GroupAssignState>,
     preset_selector: Option<PresetSelectorState>,
-    catalog: Vec<PluginInfo>,
-    /// Receives per-format catalog batches from the background scan thread.
-    catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>,
-    /// True until the background catalog scan finishes (channel disconnects).
-    catalog_scanning: bool,
     areas: Areas,
     quit: bool,
     // Parameter filter (search bar in param pane).
@@ -400,7 +394,7 @@ impl State {
     /// Build the TUI state around a controller holding a loaded session. Pure
     /// construction: no engine commands are sent and no threads are spawned, so
     /// tests can build a `State` around stub channels.
-    fn new(ctl: Controller, catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>) -> State {
+    fn new(ctl: Controller) -> State {
         let tree_entries = build_tree_entries(&ctl.model.instruments, &ctl.model.groups);
         let param_len = ctl.model.instruments.first()
             .and_then(|n| n.instrument.as_ref())
@@ -428,9 +422,6 @@ impl State {
             modulate: None,
             group_assign: None,
             preset_selector: None,
-            catalog: Vec::new(),
-            catalog_rx,
-            catalog_scanning: true,
             areas: Areas::default(),
             quit: false,
             param_filter_input: TextInputState::new(""),
@@ -647,7 +638,9 @@ impl State {
     }
 
     fn selector_items(&self, mode: SelectorMode) -> Vec<FilterListItem> {
-        self.catalog
+        self.ctl
+            .catalog
+            .plugins()
             .iter()
             .enumerate()
             .filter(|(_, e)| match mode {
@@ -683,15 +676,9 @@ impl State {
         });
     }
 
-    /// Fold newly scanned plugins into the catalog and refresh an open
-    /// selector popup (keeping its filter text) so rows appear as the
-    /// background scan progresses.
-    fn extend_catalog(&mut self, batch: Vec<PluginInfo>) {
-        if batch.is_empty() {
-            return;
-        }
-        self.catalog.extend(batch);
-        self.catalog.sort_by_key(|a| a.name.to_lowercase());
+    /// Rebuild the rows of an open selector popup from the catalog, keeping its
+    /// filter text, so that rows appear as the background scan progresses.
+    fn refresh_selector(&mut self) {
         if let Some(mode) = self.selector.as_ref().map(|sel| sel.mode) {
             let items = self.selector_items(mode);
             if let Some(sel) = self.selector.as_mut() {
@@ -767,7 +754,7 @@ impl State {
                 return;
             }
         };
-        let entry = &self.catalog[chosen];
+        let entry = &self.ctl.catalog.plugins()[chosen];
 
         // Determine which instrument to operate on from current selection.
         let inst = self.selected_inst().unwrap_or(0);
@@ -2401,7 +2388,7 @@ impl State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(ctl: Controller) -> anyhow::Result<Controller> {
+pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
     // Suppress Rust logging for the whole TUI lifetime when stderr is the
     // terminal: the background catalog scan and plugin loads log verbosely and
     // would corrupt the alternate screen. Must be set BEFORE the scan spawns,
@@ -2426,11 +2413,11 @@ pub fn run(ctl: Controller) -> anyhow::Result<Controller> {
 
     // Scan the plugin catalog on a background thread so the TUI can draw
     // immediately — a full scan instantiates every installed plugin and can
-    // take seconds. Results arrive per-format on `catalog_rx` and are drained
-    // in the event loop. The catalog is only needed by the selector popup.
-    let catalog_rx = spawn_catalog_scan();
+    // take seconds. Results arrive per format and are folded in by
+    // `Controller::poll`. The catalog is only needed by the selector popup.
+    ctl.catalog.scan();
 
-    let mut s = State::new(ctl, catalog_rx);
+    let mut s = State::new(ctl);
 
     // Probe keyboard enhancement support (must be done before entering raw mode).
     let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
@@ -2472,58 +2459,16 @@ pub fn run(ctl: Controller) -> anyhow::Result<Controller> {
     result.map(|()| s.ctl).map_err(Into::into)
 }
 
-/// What happens between two frames, with or without user input: the controller's
-/// housekeeping, then what the plugin scan and the audio thread have reported,
-/// folded into the model.
+/// What happens between two frames, with or without user input: the controller
+/// does its housekeeping and folds in what the plugin scan and the audio thread
+/// have reported, and the view catches up with what changed.
 fn tick(s: &mut State) {
-    s.ctl.poll();
-
-    // Drain plugin catalog batches from the background scan thread.
-    while s.catalog_scanning {
-        match s.catalog_rx.try_recv() {
-            Ok(batch) => s.extend_catalog(batch),
-            Err(crossbeam_channel::TryRecvError::Empty) => break,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                s.catalog_scanning = false;
-            }
-        }
+    let polled = s.ctl.poll();
+    if polled.model_changed {
+        s.rebuild_tree();
     }
-
-    // Drain pattern recording completion notifications.
-    while let Ok(notif) = s.ctl.pattern_rx.try_recv() {
-        if let Some(inst_node) = s.ctl.model.instruments.get_mut(notif.inst) {
-            // Re-recording replaces the events but keeps the transpose mode.
-            let in_key = inst_node.pattern.as_ref().is_some_and(|p| p.in_key);
-            inst_node.pattern = Some(PatternState {
-                bpm: s.ctl.global_bpm,
-                length_beats: notif.length_beats,
-                looping: notif.looping,
-                base_note: notif.base_note,
-                events: notif.events,
-                enabled: notif.enabled,
-                recording: false,
-                in_key,
-            });
-            s.ctl.dirty = true;
-            s.rebuild_tree();
-        }
-    }
-
-    // Drain MIDI-learn captures: fill in the bound control on the model.
-    while let Ok(notif) = s.ctl.learn_rx.try_recv() {
-        if let Some(m) = s
-            .ctl
-            .model
-            .modulators_mut(notif.location)
-            .and_then(|ms| ms.get_mut(notif.mod_index))
-        {
-            if let ModSourceSlot::MidiLearn { source, learning } = &mut m.source {
-                *source = Some(notif.source);
-                *learning = false;
-                s.ctl.dirty = true;
-                s.rebuild_tree();
-            }
-        }
+    if polled.catalog_changed {
+        s.refresh_selector();
     }
 }
 
@@ -4040,7 +3985,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
                 render_rename_group_popup(frame, area, rg);
             }
             if let Some(sel) = &s.selector {
-                render_selector_popup(frame, area, sel, s.catalog_scanning);
+                render_selector_popup(frame, area, sel, s.ctl.catalog.is_scanning());
             }
             if let Some(ts) = &s.target_selector {
                 render_target_selector_popup(frame, area, ts);
@@ -5324,26 +5269,6 @@ fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Optio
         pos += total;
     }
     None
-}
-
-/// Enumerate all plugin formats on a background thread, sending each format's
-/// results as a separate batch so the selector fills in progressively (built-ins
-/// arrive instantly, VST3 — which instantiates every plugin — arrives last).
-/// The channel disconnecting signals that the scan is complete.
-fn spawn_catalog_scan() -> crossbeam_channel::Receiver<Vec<PluginInfo>> {
-    let (tx, rx) = crossbeam_channel::unbounded();
-    std::thread::spawn(move || {
-        let _ = tx.send(plugin::builtin::enumerate_plugins());
-
-        #[cfg(feature = "lv2")]
-        let _ = tx.send(plugin::lv2::enumerate_plugins());
-
-        let _ = tx.send(plugin::clap::enumerate_plugins());
-
-        #[cfg(feature = "vst3")]
-        let _ = tx.send(plugin::vst3::enumerate_plugins());
-    });
-    rx
 }
 
 fn build_help_lines() -> Vec<String> {

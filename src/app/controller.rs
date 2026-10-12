@@ -9,10 +9,16 @@
 //! - **the engine's handles** (`EngineHandles`): the command channel to the
 //!   audio thread, the plugin runtime, the notification receivers and the state
 //!   shared with the note senders;
+//! - **the plugin catalog**, scanned on a background thread (`app::catalog`);
 //!
 //! and it does the housekeeping every front-end used to do for itself, or
 //! forget:
 //!
+//! - **Notifications.** What the audio thread reports (a pattern recording that
+//!   has finished, a control a MIDI-learn modulator has captured) is folded
+//!   into the model, and what the catalog scan finds into the catalog.
+//!   `poll` returns what changed, so that a front-end redraws only what it
+//!   shows.
 //! - **Reaping.** When the audio thread swaps or removes a plugin it hands the
 //!   old one back over a channel so that it is dropped here, on the owner
 //!   thread. Dropping a plugin can take milliseconds and free memory, which the
@@ -29,7 +35,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::app::model::SessionModel;
+use crate::app::catalog::Catalog;
+use crate::app::model::{ModSourceSlot, PatternState, SessionModel};
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
@@ -42,6 +49,15 @@ const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The tempo of a session none of whose patterns has been recorded.
 const DEFAULT_BPM: f32 = 120.0;
+
+/// What a `poll` changed, for the front-end to redraw from.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Polled {
+    /// The model changed: a recording finished or a control was captured.
+    pub model_changed: bool,
+    /// Plugins joined the catalog.
+    pub catalog_changed: bool,
+}
 
 /// Something that notices devices being plugged in: the MIDI manager.
 pub trait DeviceWatcher {
@@ -90,6 +106,10 @@ pub struct Controller {
     pub dirty: bool,
     /// The tempo patterns are recorded and played at.
     pub global_bpm: f32,
+    /// The installed plugins, for the selector popups. Empty until
+    /// `catalog.scan()` is called: sessions that never open a selector (`play`)
+    /// do not pay for it.
+    pub catalog: Catalog,
 
     pub cmd_tx: Sender<GraphCommand>,
     pub midi_tx: Sender<MidiEvent>,
@@ -145,6 +165,7 @@ impl Controller {
         } = engine;
         Controller {
             global_bpm: initial_bpm(&model),
+            catalog: Catalog::default(),
             model,
             session_path,
             dirty: false,
@@ -170,11 +191,11 @@ impl Controller {
     }
 
     /// Housekeeping, to be called on every iteration of the front-end's loop.
-    pub fn poll(&mut self) {
-        self.poll_at(Instant::now());
+    pub fn poll(&mut self) -> Polled {
+        self.poll_at(Instant::now())
     }
 
-    fn poll_at(&mut self, now: Instant) {
+    fn poll_at(&mut self, now: Instant) -> Polled {
         self.reap();
         if now.duration_since(self.last_device_poll) >= DEVICE_POLL_INTERVAL {
             self.last_device_poll = now;
@@ -182,6 +203,64 @@ impl Controller {
                 devices.poll_new_devices();
             }
         }
+        Polled {
+            catalog_changed: self.catalog.poll(),
+            model_changed: self.fold_in_notifications(),
+        }
+    }
+
+    /// Fold what the audio thread has reported into the model. True if the
+    /// model changed.
+    fn fold_in_notifications(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(recording) = self.pattern_rx.try_recv() {
+            changed |= self.finish_recording(recording);
+        }
+        while let Ok(capture) = self.learn_rx.try_recv() {
+            changed |= self.bind_capture(capture);
+        }
+        changed
+    }
+
+    /// A pattern recording has finished: it becomes the lane's pattern, at the
+    /// tempo it was recorded at. One for a lane that is gone changes nothing.
+    fn finish_recording(&mut self, recording: PatternNotification) -> bool {
+        let Some(lane) = self.model.instruments.get_mut(recording.inst) else {
+            return false;
+        };
+        // Re-recording replaces the events but keeps the transpose mode.
+        let in_key = lane.pattern.as_ref().is_some_and(|p| p.in_key);
+        lane.pattern = Some(PatternState {
+            bpm: self.global_bpm,
+            length_beats: recording.length_beats,
+            looping: recording.looping,
+            base_note: recording.base_note,
+            events: recording.events,
+            enabled: recording.enabled,
+            recording: false,
+            in_key,
+        });
+        self.dirty = true;
+        true
+    }
+
+    /// A MIDI-learn modulator has captured a control: bind it. One for a
+    /// modulator that is gone, or no longer listening, changes nothing.
+    fn bind_capture(&mut self, capture: MidiLearnedNotification) -> bool {
+        let Some(modulator) = self
+            .model
+            .modulators_mut(capture.location)
+            .and_then(|rack| rack.get_mut(capture.mod_index))
+        else {
+            return false;
+        };
+        let ModSourceSlot::MidiLearn { source, learning } = &mut modulator.source else {
+            return false;
+        };
+        *source = Some(capture.source);
+        *learning = false;
+        self.dirty = true;
+        true
     }
 
     /// Drop the plugins the audio thread has handed back.
@@ -206,8 +285,8 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::app::testutil::{self, DropProbe, StubEngine, load};
-    use crate::plugin::chain::{AudioGraph, GraphCommand};
+    use crate::app::testutil::{self, DropProbe, StubEngine, load, recording};
+    use crate::plugin::chain::{AudioGraph, GraphCommand, MidiBindSource, ModulatorLocation};
 
     fn controller() -> (StubEngine, Controller) {
         let (handles, engine) = testutil::stub_engine();
@@ -334,5 +413,241 @@ mod tests {
         assert!(!ctl.dirty);
         assert_eq!(ctl.session_path, Some(PathBuf::from("song.toml")));
         assert!(!ctl.model.instruments.is_empty(), "the model is the one it was given");
+    }
+
+    fn controller_for(session: &str) -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(session).model, handles, None))
+    }
+
+    const TWO_LANES: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\n";
+
+    const CHANGED_MODEL: Polled = Polled { model_changed: true, catalog_changed: false };
+
+    #[test]
+    fn polling_with_nothing_to_report_changes_nothing() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        assert_eq!(ctl.poll(), Polled::default());
+        assert!(!ctl.dirty);
+    }
+
+    #[test]
+    fn a_finished_recording_becomes_the_lanes_pattern() {
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        // It carries the tempo the session has when the recording ends, and the
+        // player's loop setting.
+        ctl.global_bpm = 95.0;
+        engine.pattern_tx.send(PatternNotification { looping: false, ..recording(1) }).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+
+        let pattern = ctl.model.instruments[1].pattern.as_ref().expect("lane 1 has a pattern now");
+        assert_eq!((pattern.bpm, pattern.length_beats, pattern.looping, pattern.enabled), (95.0, 2.0, false, true));
+        assert_eq!((pattern.base_note, pattern.in_key, pattern.recording), (Some(60), false, false));
+        assert_eq!(pattern.events, [(0, 0x90, 60, 100), (24_000, 0x80, 60, 0)]);
+        assert!(ctl.model.instruments[0].pattern.is_none());
+        assert!(ctl.dirty, "the recording is part of the session");
+        assert_eq!(ctl.poll(), Polled::default(), "it is reported once");
+    }
+
+    #[test]
+    fn re_recording_replaces_the_events_but_keeps_the_transpose_mode() {
+        let (engine, mut ctl) = controller_for(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 120.0
+length_beats = 4.0
+base_note = "C4"
+enabled = false
+looping = false
+transpose = "in_key"
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 12000
+status = "off"
+note = "C4"
+velocity = 0
+"#,
+        );
+        engine.pattern_tx.send(recording(0)).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+
+        let pattern = ctl.model.instruments[0].pattern.as_ref().unwrap();
+        assert!(pattern.in_key, "the transpose mode is the user's, not the recording's");
+        assert_eq!((pattern.length_beats, pattern.looping, pattern.enabled), (2.0, true, true));
+        assert_eq!(pattern.events, [(0, 0x90, 60, 100), (24_000, 0x80, 60, 0)]);
+    }
+
+    #[test]
+    fn a_recording_with_no_notes_leaves_a_disabled_pattern() {
+        // The user pressed `r` and played nothing: the player keeps an empty,
+        // disabled pattern, and so does the model.
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        engine
+            .pattern_tx
+            .send(PatternNotification { base_note: None, enabled: false, events: vec![], ..recording(1) })
+            .unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+
+        let pattern = ctl.model.instruments[1].pattern.as_ref().expect("the lane still gets a pattern");
+        assert!(!pattern.enabled);
+        assert!(pattern.events.is_empty());
+        assert_eq!(pattern.base_note, None);
+    }
+
+    #[test]
+    fn a_recording_for_a_lane_that_is_gone_changes_nothing() {
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        engine.pattern_tx.send(recording(7)).unwrap();
+        assert_eq!(ctl.poll(), Polled::default());
+        assert!(ctl.model.instruments.iter().all(|lane| lane.pattern.is_none()));
+        assert!(!ctl.dirty, "nothing changed");
+    }
+
+    #[test]
+    fn recordings_are_folded_in_in_the_order_they_were_sent() {
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        engine.pattern_tx.send(PatternNotification { length_beats: 2.0, ..recording(0) }).unwrap();
+        engine.pattern_tx.send(PatternNotification { length_beats: 3.0, ..recording(0) }).unwrap();
+        engine.pattern_tx.send(recording(1)).unwrap();
+        engine.pattern_tx.send(recording(7)).unwrap(); // changes nothing, and must not hide the rest
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+        assert_eq!(ctl.model.instruments[0].pattern.as_ref().unwrap().length_beats, 3.0, "the later one wins");
+        assert!(ctl.model.instruments[1].pattern.is_some(), "all of them are drained in one poll");
+    }
+
+    /// Lane 0 has an armed MIDI-learn modulator (index 0) and an LFO (index 1);
+    /// its group has an armed one too.
+    const ARMED: &str = r#"
+[[group]]
+[[group.modulator]]
+type = "midi"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "midi"
+[[instrument.modulator]]
+type = "lfo"
+"#;
+
+    fn capture(location: ModulatorLocation, mod_index: usize, source: MidiBindSource) -> MidiLearnedNotification {
+        MidiLearnedNotification { location, mod_index, source }
+    }
+
+    #[test]
+    fn a_captured_control_binds_the_armed_lane_modulator() {
+        for source in [MidiBindSource::Cc(74), MidiBindSource::PitchBend, MidiBindSource::Aftertouch] {
+            let (engine, mut ctl) = controller_for(ARMED);
+            assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+            engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, source)).unwrap();
+            assert_eq!(ctl.poll(), CHANGED_MODEL, "{source:?}");
+
+            let bound = &ctl.model.instruments[0].modulators[0].source;
+            assert!(
+                matches!(bound, ModSourceSlot::MidiLearn { source: Some(s), learning: false } if *s == source),
+                "{source:?}: {bound:?}"
+            );
+            assert!(ctl.dirty, "{source:?}: the binding is part of the saved session");
+            assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "the group's is untouched");
+        }
+    }
+
+    #[test]
+    fn a_captured_control_binds_the_armed_group_modulator() {
+        let (engine, mut ctl) = controller_for(ARMED);
+        engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(1))).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+        assert!(matches!(
+            ctl.model.groups[0].modulators[0].source,
+            ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(1)), learning: false }
+        ));
+        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "the lane's is untouched");
+        assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn a_capture_with_no_modulator_to_take_it_changes_nothing() {
+        let (engine, mut ctl) = controller_for(ARMED);
+        for (location, mod_index) in [
+            (ModulatorLocation::Lane(0), 1), // the LFO is not listening
+            (ModulatorLocation::Lane(0), 9), // no such modulator
+            (ModulatorLocation::Lane(7), 0), // no such lane
+            (ModulatorLocation::Group(0), 9),
+            (ModulatorLocation::Group(7), 0),
+        ] {
+            engine.learn_tx.send(capture(location, mod_index, MidiBindSource::PitchBend)).unwrap();
+        }
+        assert_eq!(ctl.poll(), Polled::default());
+        assert!(!ctl.dirty, "nothing changed");
+        assert!(matches!(ctl.model.instruments[0].modulators[1].source, ModSourceSlot::Lfo { .. }));
+        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+    }
+
+    #[test]
+    fn captures_are_folded_in_in_the_order_they_were_sent() {
+        let (engine, mut ctl) = controller_for(ARMED);
+        // The model mirrors the audio thread, which may learn a modulator again:
+        // the last word on lane 0's modulator is Cc(2). The group's comes after.
+        engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, MidiBindSource::Cc(1))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, MidiBindSource::Cc(2))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(3))).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+        assert!(matches!(
+            ctl.model.instruments[0].modulators[0].source,
+            ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(2)), learning: false }
+        ));
+        assert!(
+            matches!(
+                ctl.model.groups[0].modulators[0].source,
+                ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(3)), learning: false }
+            ),
+            "all of them are drained in one poll"
+        );
+    }
+
+    #[test]
+    fn a_recording_and_a_capture_in_one_poll_are_both_reported() {
+        let (engine, mut ctl) = controller_for(ARMED);
+        engine.pattern_tx.send(recording(0)).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, MidiBindSource::Cc(7))).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+        assert!(ctl.model.instruments[0].pattern.is_some());
+        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: Some(_), .. }));
+
+        // Either one alone is enough, whichever order they are drained in.
+        engine.pattern_tx.send(recording(0)).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Lane(7), 0, MidiBindSource::Cc(7))).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL, "the capture that finds nothing does not undo the recording");
+        engine.pattern_tx.send(recording(7)).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(8))).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL, "the recording that finds nothing does not undo the capture");
+    }
+
+    #[test]
+    fn plugins_the_scan_finds_are_reported_once() {
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(SessionModel::default(), handles, None);
+        let (scan, batches) = crossbeam_channel::unbounded();
+        ctl.catalog.follow(batches);
+        let found = |name: &str| crate::plugin::PluginInfo {
+            name: name.to_string(),
+            id: format!("builtin:{name}"),
+            is_instrument: false,
+            param_count: 0,
+            preset_count: 0,
+            path: String::new(),
+            scan_ms: 0,
+        };
+        scan.send(vec![found("Delay")]).unwrap();
+        assert_eq!(ctl.poll(), Polled { model_changed: false, catalog_changed: true });
+        assert_eq!(ctl.catalog.plugins().len(), 1);
+        assert_eq!(ctl.poll(), Polled::default());
+        assert!(!ctl.dirty, "the catalog is not part of the session");
     }
 }

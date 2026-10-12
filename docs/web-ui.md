@@ -106,9 +106,10 @@ hub.
 ```rust
 impl Controller {
     fn apply(&mut self, intent: Intent) -> Result<Applied, IntentError>;
-    fn poll(&mut self) -> bool;          // notifications, catalog batches, loader
+    fn poll(&mut self) -> Polled;        // notifications, catalog batches, loader
                                          // completions, reap returned plugins,
-                                         // MIDI hot-plug; true if state changed
+                                         // MIDI hot-plug; what changed (model,
+                                         // catalog), so a front-end redraws only that
     fn snapshot(&self) -> Snapshot;
     fn subscribe(&mut self, sink: EventSink) -> SubscriberId;
 }
