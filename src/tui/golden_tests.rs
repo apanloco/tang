@@ -597,6 +597,24 @@ fn adding_an_effect_from_the_selector_uses_the_default_mix() {
 }
 
 #[test]
+fn an_effect_from_the_selector_comes_with_its_presets_and_enum_parameters() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.press(KeyCode::Char('a')).type_chars("reverb").press(KeyCode::Enter);
+    h.press(KeyCode::Char('a')).type_chars("filter").press(KeyCode::Enter);
+
+    let effects = &h.s.ctl.model.instruments[0].effects;
+    let reverb = &effects[0];
+    assert_eq!((reverb.name.as_str(), reverb.id.as_str(), reverb.is_instrument), ("Reverb", "builtin:reverb", false));
+    assert!(!reverb.presets.is_empty(), "the preset list comes with the plugin");
+    assert_eq!(reverb.current_preset, None);
+    let filter = &effects[1];
+    let kind = filter.params.iter().find(|p| p.name == "type").map(|p| &p.kind);
+    assert!(matches!(kind, Some(ParamKind::Enum(labels)) if labels.len() > 4), "the filter's type is an enum");
+    assert!(filter.params.iter().all(|p| p.value == p.default));
+}
+
+#[test]
 fn adding_a_group_effect_from_the_selector() {
     let mut h = Harness::new(scene_group());
     h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
@@ -604,6 +622,56 @@ fn adding_a_group_effect_from_the_selector() {
     h.press(KeyCode::Char('a')).type_chars("filter").press(KeyCode::Enter);
     assert_eq!(h.commands(), ["InsertGroupEffect group=0 index=1 plugin=Filter mix=1.000"]);
     assert!(h.tree().contains(&"  fx Filter  [Built-in]  (bus)"));
+}
+
+#[test]
+fn n_adds_a_full_range_oscillator_lane_and_opens_the_instrument_selector() {
+    let mut h = Harness::new(scene_split());
+    let lanes = h.s.ctl.model.instruments.len();
+    h.press(KeyCode::Char('n'));
+
+    // The lane exists on the audio thread with an oscillator in it already, so
+    // that it makes sound even if the selector is dismissed.
+    assert_eq!(
+        h.commands(),
+        ["AddInstrument range=None", "SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false"]
+    );
+    assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
+    let lane = &h.s.ctl.model.instruments[lanes];
+    assert_eq!((lane.range, lane.transpose, lane.volume, lane.group), (None, 0, 1.0, None));
+    assert!(lane.effects.is_empty() && lane.modulators.is_empty() && lane.pattern.is_none());
+    let osc = lane.instrument.as_ref().expect("the lane defaults to the oscillator");
+    assert_eq!((osc.name.as_str(), osc.id.as_str(), osc.format.as_str()), ("Oscillator", "builtin:osc", "Built-in"));
+    assert!(osc.is_instrument);
+    assert_eq!((osc.mix, osc.current_preset.as_deref()), (1.0, None));
+    assert!(osc.params.iter().all(|p| p.value == p.default), "a new plugin starts at its defaults");
+    let waveform = osc.params.iter().find(|p| p.name == "waveform").unwrap();
+    assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");
+    assert!(h.s.ctl.dirty);
+    assert_eq!(h.s.selected_address().copied(), Some(TreeAddress::Instrument(lanes)), "the cursor is on the new lane");
+    assert_eq!(h.s.selector.as_ref().map(|sel| sel.mode), Some(SelectorMode::Instrument));
+}
+
+#[test]
+fn cancelling_the_selector_after_n_leaves_the_oscillator() {
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Char('n'));
+    h.commands();
+    h.press(KeyCode::Esc);
+    assert!(h.s.selector.is_none());
+    assert_eq!(h.commands(), Vec::<String>::new(), "nothing more is sent");
+    assert_eq!(h.s.ctl.model.instruments[2].instrument.as_ref().unwrap().name, "Oscillator");
+}
+
+#[test]
+fn choosing_a_plugin_after_n_swaps_it_into_the_new_lane() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.press(KeyCode::Char('n'));
+    h.commands();
+    h.type_chars("oscillator").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false"]);
+    assert!(h.s.selector.is_none());
 }
 
 #[test]
