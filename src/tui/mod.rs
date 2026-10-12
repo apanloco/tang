@@ -29,6 +29,7 @@ use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
+use crate::app::load::{LoadedGroup, LoadedInstrument, LoadedModSource, LoadedModulator, LoadedPlugin};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
@@ -2628,97 +2629,6 @@ impl State {
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
-
-/// Information about a loaded instrument slot for the TUI.
-pub struct LoadedInstrument {
-    pub range: Option<(u8, u8)>,
-    pub transpose: i8,
-    /// Host-side output gain from the session (1.0 = unity).
-    pub volume: f32,
-    pub instrument: Option<LoadedPlugin>,
-    pub effects: Vec<LoadedPlugin>,
-    /// Lane-scoped modulators (targets address the chain by slot).
-    pub modulators: Vec<LoadedModulator>,
-    pub pattern: Option<LoadedPattern>,
-    /// Carried through from session config; not editable in the TUI.
-    pub pitch_bend_range: f64,
-    pub remap: std::collections::HashMap<String, crate::session::RemapTarget>,
-    /// Submix group membership (index into the loaded groups), or None.
-    pub group: Option<usize>,
-}
-
-/// A submix group loaded from session config, passed to the TUI.
-pub struct LoadedGroup {
-    pub name: Option<String>,
-    pub volume: f32,
-    pub pan: f32,
-    pub effects: Vec<LoadedPlugin>,
-    /// Group-scoped modulators loaded from the session.
-    pub modulators: Vec<LoadedModulator>,
-}
-
-/// Pattern data loaded from session config, passed to the TUI.
-pub struct LoadedPattern {
-    pub bpm: f32,
-    pub length_beats: f32,
-    pub looping: bool,
-    pub base_note: Option<u8>,
-    pub events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
-    pub enabled: bool,
-    pub in_key: bool,
-}
-
-pub enum LoadedModSource {
-    Lfo {
-        waveform: crate::plugin::chain::LfoWaveform,
-        rate: f32,
-    },
-    Envelope {
-        attack: f32,
-        decay: f32,
-        sustain: f32,
-        release: f32,
-    },
-    MidiLearn {
-        source: Option<crate::plugin::chain::MidiBindSource>,
-        learning: bool,
-    },
-}
-
-pub struct LoadedModulator {
-    pub source: LoadedModSource,
-    pub targets: Vec<LoadedModTarget>,
-}
-
-pub struct LoadedModTarget {
-    /// Chain slot for plugin-param targets (0 = instrument, 1..N = effect);
-    /// 0 for cross-mod targets.
-    pub slot: usize,
-    pub param_name: String,
-    pub kind: crate::plugin::chain::ModTargetKind,
-    pub depth: f32,
-    pub param_min: f32,
-    pub param_max: f32,
-}
-
-/// Information about a loaded plugin slot, passed from play() to the TUI.
-pub struct LoadedPlugin {
-    pub name: String,
-    pub id: String,
-    pub is_instrument: bool,
-    pub params: Vec<plugin::ParameterInfo>,
-    /// Post-preset baseline value per parameter, before any session-file
-    /// overrides are applied. The TUI uses this as `ParamSlot.default` so
-    /// the save filter only writes parameters the user has actually changed
-    /// relative to the active preset.
-    pub param_defaults: Vec<f32>,
-    pub param_values: Vec<f32>,
-    pub presets: Vec<plugin::Preset>,
-    pub current_preset: Option<String>,
-    /// Effect dry/wet mix. 1.0 = full wet. Carried through from session
-    /// config so it round-trips on save. Ignored for instrument slots.
-    pub mix: f32,
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(

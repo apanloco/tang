@@ -19,6 +19,8 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
 use super::*;
+use crate::app::load::LoadedModTarget;
+use crate::app::testutil::describe;
 use crate::midi_monitor::MidiMonitor;
 use crate::plugin::chain::{LfoWaveform, ModTargetKind};
 use crate::scale::ScaleSetting;
@@ -136,63 +138,6 @@ fn assert_golden(name: &str, h: &mut Harness) {
     settings.set_prepend_module_to_snapshot(false);
     settings.set_omit_expression(true);
     settings.bind(|| insta::assert_snapshot!(name, dump));
-}
-
-/// One line per command the scenario tests care about. Anything else shows as
-/// `<other>`, which still changes the snapshot when an unexpected command shows
-/// up (`GraphCommand` carries boxed plugins, so it has no `Debug`).
-fn describe(cmd: &GraphCommand) -> String {
-    use GraphCommand as C;
-    match cmd {
-        C::SetParameter { inst, slot, param_index, value } => {
-            format!("SetParameter inst={inst} slot={slot} param={param_index} value={value:.3}")
-        }
-        C::SetGroupParameter { group, index, param_index, value } => {
-            format!("SetGroupParameter group={group} fx={index} param={param_index} value={value:.3}")
-        }
-        C::SetVolume { inst, value } => format!("SetVolume inst={inst} value={value:.3}"),
-        C::SetMix { inst, slot, value } => format!("SetMix inst={inst} slot={slot} value={value:.3}"),
-        C::InsertModulator { inst, index, .. } => format!("InsertModulator inst={inst} index={index}"),
-        C::RemoveModulator { inst, index } => format!("RemoveModulator inst={inst} index={index}"),
-        C::InsertGroupModulator { group, index, .. } => {
-            format!("InsertGroupModulator group={group} index={index}")
-        }
-        C::RemoveGroupModulator { group, index } => {
-            format!("RemoveGroupModulator group={group} index={index}")
-        }
-        C::RemoveGroupEffect { group, index } => format!("RemoveGroupEffect group={group} index={index}"),
-        C::RemoveEffect { inst, index } => format!("RemoveEffect inst={inst} index={index}"),
-        C::RemoveInstrument { inst } => format!("RemoveInstrument inst={inst}"),
-        C::RemoveGroup { group } => format!("RemoveGroup group={group}"),
-        C::ClearInstrument { inst } => format!("ClearInstrument inst={inst}"),
-        C::ReorderEffect { inst, from, to } => format!("ReorderEffect inst={inst} from={from} to={to}"),
-        C::ReorderGroupEffect { group, from, to } => {
-            format!("ReorderGroupEffect group={group} from={from} to={to}")
-        }
-        C::SwapInstrument { inst, .. } => format!("SwapInstrument inst={inst}"),
-        C::InsertEffect { inst, index, mix, .. } => {
-            format!("InsertEffect inst={inst} index={index} mix={mix:.3}")
-        }
-        C::InsertGroupEffect { group, index, mix, .. } => {
-            format!("InsertGroupEffect group={group} index={index} mix={mix:.3}")
-        }
-        C::SetLaneGroup { inst, group } => format!("SetLaneGroup inst={inst} group={group:?}"),
-        C::SetGroupMix { group, index, value } => {
-            format!("SetGroupMix group={group} fx={index} value={value:.3}")
-        }
-        C::SetGroupVolume { group, value } => format!("SetGroupVolume group={group} value={value:.3}"),
-        C::SetInstrumentRange { inst, range } => format!("SetInstrumentRange inst={inst} range={range:?}"),
-        C::SetModulatorRate { inst, mod_index, rate } => {
-            format!("SetModulatorRate inst={inst} mod={mod_index} rate={rate:.3}")
-        }
-        C::SetModTargetDepth { inst, mod_index, target_index, depth } => {
-            format!("SetModTargetDepth inst={inst} mod={mod_index} target={target_index} depth={depth:.3}")
-        }
-        C::SetGroupModTargetDepth { group, mod_index, target_index, depth } => {
-            format!("SetGroupModTargetDepth group={group} mod={mod_index} target={target_index} depth={depth:.3}")
-        }
-        _ => "<other>".to_string(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -699,9 +644,9 @@ fn adding_an_effect_from_the_selector_uses_the_default_mix() {
     let mut h = Harness::new(scene_split());
     h.s.extend_catalog(plugin::builtin::enumerate_plugins());
     h.press(KeyCode::Char('a')).type_chars("reverb").press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["InsertEffect inst=0 index=0 mix=0.500"]);
+    assert_eq!(h.commands(), ["InsertEffect inst=0 index=0 plugin=Reverb mix=0.500"]);
     h.press(KeyCode::Char('a')).type_chars("filter").press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["InsertEffect inst=0 index=1 mix=1.000"]);
+    assert_eq!(h.commands(), ["InsertEffect inst=0 index=1 plugin=Filter mix=1.000"]);
     assert_eq!(h.tree()[1], "├ fx Reverb  [Built-in]");
     assert_eq!(h.tree()[2], "├ fx Filter  [Built-in]");
     assert!(h.s.dirty);
@@ -713,7 +658,7 @@ fn adding_a_group_effect_from_the_selector() {
     h.s.extend_catalog(plugin::builtin::enumerate_plugins());
     h.goto(TreeAddress::Group(0));
     h.press(KeyCode::Char('a')).type_chars("filter").press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["InsertGroupEffect group=0 index=1 mix=1.000"]);
+    assert_eq!(h.commands(), ["InsertGroupEffect group=0 index=1 plugin=Filter mix=1.000"]);
     assert!(h.tree().contains(&"  fx Filter  [Built-in]  (bus)"));
 }
 
@@ -723,7 +668,7 @@ fn replacing_the_instrument_loads_a_fresh_plugin() {
     h.s.extend_catalog(plugin::builtin::enumerate_plugins());
     h.s.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
     h.press(KeyCode::Char('i')).press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["SwapInstrument inst=0"]);
+    assert_eq!(h.commands(), ["SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
     let volume = &h.s.instruments[0].instrument.as_ref().unwrap().params[2];
     assert_eq!((volume.name.as_str(), volume.value), ("volume", 1.0), "edits don't survive a swap");
 }
@@ -733,7 +678,7 @@ fn m_on_an_instrument_adds_an_lfo_to_its_lane() {
     let mut h = Harness::new(scene_split());
     h.goto(TreeAddress::Instrument(1));
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1"]);
+    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]);
     assert_eq!(h.tree()[4], "╰ ~ LFO 1.0Hz sine");
 }
 
@@ -742,7 +687,7 @@ fn m_on_a_group_adds_an_lfo_to_the_groups_rack() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2"]);
+    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]);
 }
 
 #[test]

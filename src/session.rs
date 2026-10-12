@@ -316,7 +316,12 @@ fn default_release() -> f64 {
 
 pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
     let content = std::fs::read_to_string(path)?;
-    let raw: SessionRaw = toml::from_str(&content)?;
+    parse(&content)
+}
+
+/// Parse session TOML text (the body of `load`, usable without a file).
+pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
+    let raw: SessionRaw = toml::from_str(content)?;
     let groups: Vec<GroupConfig> = raw
         .groups
         .into_iter()
