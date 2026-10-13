@@ -94,6 +94,14 @@ export class Editor {
     return this.#attempt(`change the instrument of ${this.#name(node)} to ${this.#pluginName(plugin)}`, { type: "replaceInstrument", node, plugin });
   }
 
+  /**
+   * Load the preset `preset` (its `id`) into the plugin of the instrument or effect `node` (a lane's: a bus effect has no presets to
+   * load): the plugin's parameters take its values. True if it was loaded (the page says why if it was not, by the preset's name).
+   */
+  loadPreset(node: NodeId, preset: string): Promise<boolean> {
+    return this.#attempt(`load ${this.#presetName(node, preset)} into ${this.#name(node)}`, { type: "loadPreset", node, preset });
+  }
+
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */
   addCable(modulator: NodeId, node: NodeId, param: number): Promise<boolean> {
     const words = cableLabel(this.#name(modulator), this.#name(node), this.#paramName(node, param));
@@ -129,6 +137,13 @@ export class Editor {
   /** What a plugin is called, by the catalog the server told, or by its id if the catalog is not known (yet) or does not have it. */
   #pluginName(id: string): string {
     return this.#client.state.catalog?.entries.find((entry) => entry.id === id)?.name ?? id;
+  }
+
+  /** What a plugin's preset is called, by the plugin's own list, or by its id if the node or the preset is not known. */
+  #presetName(node: NodeId, id: string): string {
+    const found = this.#graph?.nodes.find((n) => n.id === node);
+    const plugin = found?.kind === "instrument" || found?.kind === "effect" ? found.plugin : null;
+    return plugin?.presets.find((preset) => preset.id === id)?.name ?? id;
   }
 
   #name(node: NodeId): string {

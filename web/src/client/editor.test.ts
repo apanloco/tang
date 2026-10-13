@@ -224,6 +224,39 @@ describe("replacing an instrument", () => {
   });
 });
 
+describe("loading a preset", () => {
+  /** The tracer's reverb on a lane that has one (an effect with presets: the reach fixture's reverb of lane 9, in a group). */
+  const LANE_REVERB = 10;
+
+  test("resolves true when the plugin has the preset, which the session shows, and says nothing", async () => {
+    const { client, notices, editor } = await open({ snapshot: reachFixture.snapshot });
+    expect(await editor.loadPreset(LANE_REVERB, "cathedral")).toBe(true);
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === LANE_REVERB);
+    expect(node?.kind === "effect" && node.plugin.currentPreset).toBe("Cathedral");
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a preset the plugin does not have, a bus effect and a node that has no plugin: it resolves false, and the page says what it could not do and why, by the preset's name", async () => {
+    const { client, notices, editor } = await open({ snapshot: reachFixture.snapshot });
+    expect(await editor.loadPreset(LANE_REVERB, "no-such-preset")).toBe(false);
+    expect(await editor.loadPreset(3, "cathedral")).toBe(false); // group 2's bus effect
+    expect(await editor.loadPreset(0, "cathedral")).toBe(false); // a group
+    expect(said(notices)).toEqual([
+      "Could not load no-such-preset into Reverb 2: the plugin has no preset no-such-preset",
+      "Could not load Cathedral into Reverb 1: a bus effect has no presets to load",
+      "Could not load cathedral into Group 1: that node has no plugin",
+    ]);
+    expect(client.state.snapshot).toEqual(reachFixture.snapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open({ snapshot: reachFixture.snapshot });
+    client.stop();
+    expect(await editor.loadPreset(LANE_REVERB, "plate")).toBe(false);
+    expect(said(notices)).toEqual(["Could not load Vintage Plate into Reverb 2: Not connected to the server."]);
+  });
+});
+
 describe("showing what was added", () => {
   test("is asked for each node the page added, in the order they were, once the session has it", async () => {
     const { editor, shown } = await open();

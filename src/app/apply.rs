@@ -2123,6 +2123,54 @@ type = "midi"
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched.model);
     }
 
+    /// What the controller says each preset of each built-in plugin does, for the web client's mock engine to say the same: the values the
+    /// plugin has for its parameters after the preset, by the preset's id, as `PresetLoaded` carries them: the file
+    /// `web/src/client/fixtures/builtins.presets.json`, which this test keeps current.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_the_builtin_presets_is_current() {
+        let mut plugins = serde_json::Map::new();
+        for info in plugin::builtin::enumerate_plugins().into_iter().filter(|p| p.preset_count > 0) {
+            let (_engine, mut ctl) = controller_with_builtins();
+            let lane0 = lane(&ctl);
+            let node = if info.is_instrument {
+                replace_instrument(&mut ctl, lane0, &info.id).unwrap();
+                lane0
+            } else {
+                add_effect(&mut ctl, lane0, &info.id).unwrap();
+                ctl.model.instruments[0].effects.last().unwrap().node
+            };
+            let ids: Vec<String> = match ctl.model.locate(node).unwrap() {
+                NodePath::Instrument(inst) => ctl.model.instruments[inst].instrument.as_ref().unwrap().presets.iter().map(|p| p.id.clone()).collect(),
+                NodePath::Effect { inst, index } => ctl.model.instruments[inst].effects[index].presets.iter().map(|p| p.id.clone()).collect(),
+                other => panic!("{other:?} has no plugin"),
+            };
+            assert_eq!(ids.len(), info.preset_count, "{}", info.id);
+            let mut by_preset = serde_json::Map::new();
+            for preset in ids {
+                let applied = ctl.apply(Intent::LoadPreset { node, preset: preset.clone() }).unwrap();
+                let [Event::PresetLoaded { values, .. }] = applied.events.as_slice() else { panic!("one PresetLoaded: {:?}", applied.events) };
+                assert!(!values.is_empty(), "{} {preset}: the controller reports values", info.id);
+                by_preset.insert(preset, serde_json::to_value(values).unwrap());
+            }
+            plugins.insert(info.id.clone(), serde_json::Value::Object(by_preset));
+        }
+        let fresh = serde_json::to_string_pretty(&plugins).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/builtins.presets.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the built-in presets do now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     /// What the web client's mock engine makes of an instrument it is asked to add or to put in a lane, for each built-in
     /// instrument: the node the controller makes for it, without the ids (the mock hands out its own): the file
     /// `web/src/client/fixtures/builtins.instruments.json`, which this test keeps current.

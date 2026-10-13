@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import type { CatalogEntry, Edge, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
-import { builtinCatalog, builtinEffects, builtinInstruments, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 
@@ -1354,6 +1354,100 @@ describe("replacing an instrument", () => {
     await first.request(replace(oscillator.id, "builtin:osc"));
     await until(() => second.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id)?.kind === "instrument" && second.state.snapshot.meta.dirty, "the second client's snapshot");
     expect(second.state.snapshot).toEqual(first.state.snapshot);
+  });
+});
+
+describe("loading a preset", () => {
+  const reach = reachFixture.snapshot;
+  const load = (node: number, preset: string): Intent => ({ type: "loadPreset", node, preset });
+  /** The reverb of lane 9, which is in a group, and the one on group 2's bus. */
+  const LANE_REVERB = 10;
+  const BUS_REVERB = 3;
+  const paramsOf = (snapshot: Snapshot | null, node: number) => {
+    const found = snapshot?.graph.nodes.find((n) => n.id === node);
+    if (found?.kind !== "effect") throw new Error(`node ${String(node)} is not an effect`);
+    return found.plugin;
+  };
+
+  test("is what the controller says it is: the preset's name, and the values the plugin has for its parameters after it", async () => {
+    const client = await open(new MockServer({ snapshot: reach }));
+    await client.request(load(LANE_REVERB, "cathedral"));
+    const plugin = paramsOf(client.state.snapshot, LANE_REVERB);
+    expect(plugin.currentPreset).toBe("Cathedral");
+    const wanted = builtinPresets["builtin:reverb"]?.cathedral ?? [];
+    expect(wanted.length).toBeGreaterThan(5);
+    for (const { param, value } of wanted) {
+      const row = plugin.params.find((p) => p.index === param);
+      // (The value is the parameter's, and its default too: the controller keeps a preset's values as the baseline.)
+      expect([row?.value, row?.default], `parameter ${String(param)}`).toEqual([value, value]);
+    }
+    // The plugin of the other reverb, and the rest of the session, are as they were.
+    expect(paramsOf(client.state.snapshot, BUS_REVERB)).toEqual(paramsOf(reach, BUS_REVERB));
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+  });
+
+  test("has values of its own for each preset of the reverb, and they name the reverb's parameters", () => {
+    const reverb = builtinEffects["builtin:reverb"]?.plugin;
+    const presets = builtinPresets["builtin:reverb"] ?? {};
+    expect(Object.keys(presets).sort()).toEqual((reverb?.presets ?? []).map((p) => p.id).sort());
+    const indices = new Set((reverb?.params ?? []).map((p) => p.index));
+    for (const [id, values] of Object.entries(presets)) {
+      expect(values.length, id).toBe(indices.size);
+      for (const { param } of values) expect(indices.has(param), `${id}: parameter ${String(param)}`).toBe(true);
+    }
+    // They differ: loading another preset changes something.
+    expect(JSON.stringify(presets.cathedral)).not.toBe(JSON.stringify(presets.room));
+  });
+
+  test("goes from one preset to another, and the last is the one the plugin has", async () => {
+    const client = await open(new MockServer({ snapshot: reach }));
+    await client.request(load(LANE_REVERB, "cathedral"));
+    await client.request(load(LANE_REVERB, "room"));
+    const plugin = paramsOf(client.state.snapshot, LANE_REVERB);
+    expect(plugin.currentPreset).toBe("Small Room");
+    const room = builtinPresets["builtin:reverb"]?.room ?? [];
+    for (const { param, value } of room) expect(plugin.params.find((p) => p.index === param)?.value).toBe(value);
+  });
+
+  test("is told to the other clients as the event it is, and their copy of the plugin has the values too", async () => {
+    const server = new MockServer({ snapshot: reach });
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(load(LANE_REVERB, "plate"));
+    await until(() => paramsOf(second.state.snapshot, LANE_REVERB).currentPreset === "Vintage Plate", "the second client's copy");
+    expect(paramsOf(second.state.snapshot, LANE_REVERB)).toEqual(paramsOf(first.state.snapshot, LANE_REVERB));
+  });
+
+  test("is refused for a bus effect, a node that has no plugin, an instrument that has none and a preset the plugin does not have, and changes nothing", async () => {
+    const client = await open(new MockServer({ snapshot: reach }));
+    const refused = [
+      [load(BUS_REVERB, "cathedral"), "invalid", "a bus effect has no presets to load"],
+      [load(0, "cathedral"), "invalid", "that node has no plugin"], // a group
+      [load(15, "cathedral"), "invalid", "that node has no plugin"], // a modulator
+      [load(14, "cathedral"), "invalid", "that instrument has no plugin"], // a lane with no instrument
+      [load(LANE_REVERB, "no-such-preset"), "invalid", "the plugin has no preset no-such-preset"],
+      [load(4, "cathedral"), "invalid", "the plugin has no preset cathedral"], // an oscillator has no presets
+      [load(424242, "cathedral"), "notFound", "there is no node 424242"],
+      [load(MASTER, "cathedral"), "notFound", `there is no node ${String(MASTER)}`],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(reach);
+  });
+
+  test("of a plugin the mock has no values for is told with none (a plugin of the machine: its values are its own)", async () => {
+    // A node whose plugin is not a built-in, with a preset the mock cannot say anything about.
+    const foreign = structuredClone(reach);
+    const node = foreign.graph.nodes.find((n) => n.id === LANE_REVERB);
+    if (node?.kind !== "effect") throw new Error("no reverb");
+    node.plugin = { ...node.plugin, id: "vst3:Reverbator", format: "VST3", presets: [{ id: "big", name: "Big" }] };
+    const client = await open(new MockServer({ snapshot: foreign }));
+    await client.request(load(LANE_REVERB, "big"));
+    const plugin = paramsOf(client.state.snapshot, LANE_REVERB);
+    expect(plugin.currentPreset).toBe("Big");
+    expect(plugin.params).toEqual(paramsOf(foreign, LANE_REVERB).params);
   });
 });
 

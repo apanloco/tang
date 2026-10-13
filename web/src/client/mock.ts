@@ -29,7 +29,7 @@ import type {
   WireError,
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
-import { builtinCatalog, builtinEffects, builtinInstruments, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
 
@@ -399,6 +399,22 @@ function replaceInstrumentOutcome(snapshot: Snapshot, lane: NodeId, plugin: stri
   return { restructured: { ...taken, graph: { ...taken.graph, nodes: taken.graph.nodes.map((n) => (n.id === lane ? replaced : n)) } } };
 }
 
+/**
+ * A preset loaded into the plugin of `node`, as the controller does it (`load_preset`): the plugin has to be one of a lane (a bus
+ * effect's cannot be loaded into: the audio thread addresses a preset by the lane's slot), and has the preset; the event says
+ * the preset's name and the values the plugin has for its parameters after it. A built-in's are the controller's own (a fixture);
+ * a plugin of the machine's the mock knows nothing of, so it says none.
+ */
+function presetOutcome(snapshot: Snapshot, node: Node, id: string): Outcome {
+  if (node.kind !== "instrument" && node.kind !== "effect") return invalid("that node has no plugin");
+  if (node.kind === "effect" && snapshot.graph.nodes.find((n) => n.id === node.parent)?.kind === "group") return invalid("a bus effect has no presets to load");
+  if (!node.plugin) return invalid("that instrument has no plugin");
+  const preset = node.plugin.presets.find((p) => p.id === id);
+  if (!preset) return invalid(`the plugin has no preset ${id}`);
+  const values = builtinPresets[node.plugin.id]?.[id] ?? [];
+  return { event: { type: "presetLoaded", node: node.id, preset: preset.name, values } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -438,12 +454,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
       const [low, high] = GAIN_RANGES[intent.gain];
       return { event: { type: "gainSet", node: node.id, gain: intent.gain, value: clamp(intent.value, low, high) } };
     }
-    case "loadPreset": {
-      const preset = pluginOf(node)?.presets.find((p) => p.id === intent.preset);
-      if (!preset) return invalid(`the plugin has no preset ${intent.preset}`);
-      // (The values a preset sets are the plugin's business; a mock has none to report.)
-      return { event: { type: "presetLoaded", node: node.id, preset: preset.name, values: [] } };
-    }
+    case "loadPreset":
+      return presetOutcome(snapshot, node, intent.preset);
     case "setModulatorField":
       return fieldOutcome(node, intent.field, intent.value);
   }

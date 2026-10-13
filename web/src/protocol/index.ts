@@ -22,6 +22,7 @@ export type { Param } from "./generated/Param";
 export type { ParamValue } from "./generated/ParamValue";
 export type { Plugin } from "./generated/Plugin";
 export type { Port } from "./generated/Port";
+export type { Preset } from "./generated/Preset";
 export type { ServerMessage } from "./generated/ServerMessage";
 export type { SlotKind } from "./generated/SlotKind";
 export type { Snapshot } from "./generated/Snapshot";

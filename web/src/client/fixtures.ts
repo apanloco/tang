@@ -4,10 +4,11 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Node, NodeId, NoteRange, Plugin, Snapshot } from "../protocol";
+import type { CatalogEntry, Node, NodeId, NoteRange, ParamValue, Plugin, Snapshot } from "../protocol";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
+import builtinPresetValues from "./fixtures/builtins.presets.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
@@ -39,6 +40,12 @@ export const builtinInstruments = builtinInstrumentNodes as unknown as Record<
   string,
   { name: string; kind: "instrument"; plugin: Plugin; range: NoteRange | null; transpose: number; volume: number }
 >;
+
+/**
+ * What the controller says each preset of each built-in plugin does (`PresetLoaded`'s values: what the plugin has for its
+ * parameters after it), by the plugin's id and the preset's id. Written by Rust (`the_web_clients_fixture_of_the_builtin_presets_is_current`).
+ */
+export const builtinPresets = builtinPresetValues as unknown as Record<string, Record<string, ParamValue[]>>;
 
 /** The master's node id, as the server numbers it (`NodeId::MASTER`). */
 export const MASTER: NodeId = 4294967295;
