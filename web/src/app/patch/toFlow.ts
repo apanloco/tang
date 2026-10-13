@@ -32,6 +32,10 @@ export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "m
 export interface PatchNodeData extends Record<string, unknown> {
   /** The node of the session this one is the picture of. */
   node: NodeId;
+  /** What to call it. */
+  name: string;
+  /** What kind of plugin it has (`Built-in`, `LV2`, `CLAP`, `VST3`), if it has one. */
+  format: string | null;
   /** The parameters of its plugin it shows as controls, by the plugin's own index. */
   pinned: readonly number[];
 }
@@ -225,7 +229,12 @@ export function toFlow(graph: Graph): Flow {
     type: node.kind,
     position: positions.get(node.id) ?? { x: 0, y: 0 },
     width: NODE_WIDTH,
-    data: { node: node.id, pinned: pinned.get(node.id) ?? [] },
+    data: {
+      node: node.id,
+      name: node.name,
+      format: node.kind === "instrument" || node.kind === "effect" ? (node.plugin?.format ?? null) : null,
+      pinned: pinned.get(node.id) ?? [],
+    },
     draggable: false,
     deletable: false,
   }));

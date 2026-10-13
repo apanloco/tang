@@ -150,6 +150,20 @@ describe("the nodes on the canvas", () => {
     }
   });
 
+  test("are told their names, and the format of their plugins when they have one", () => {
+    const flow = toFlow(tracerSnapshot.graph);
+    expect(flow.nodes.map((node) => [node.data.name, node.data.format])).toEqual([
+      ["Oscillator", "Built-in"],
+      ["Filter", "Built-in"],
+      ["LFO 0.5Hz sine", null],
+      ["Master", null],
+    ]);
+    const empty: Graph = { nodes: [instrumentOf(1, null)], edges: [] };
+    expect(at(toFlow(empty), 1).data.format).toBeNull();
+    const formats: Graph = { nodes: [{ ...effect(2, 1), plugin: { ...plugin(1), format: "CLAP" } } as Node], edges: [] };
+    expect(at(toFlow(formats), 2).data.format).toBe("CLAP");
+  });
+
   test("have an instrument and its effects in a row, left to right, in the order of the chain, with room for a cable between", () => {
     expect(COLUMN).toBeGreaterThan(NODE_WIDTH);
     const flow = toFlow(twoLanes);
