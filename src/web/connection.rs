@@ -11,7 +11,7 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "the server (later in step 10) drives it"))]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use crossbeam_channel::{Sender, TrySendError};
@@ -19,6 +19,7 @@ use crossbeam_channel::{Sender, TrySendError};
 use crate::app::intent::Intent;
 use crate::app::protocol::{ClientMessage, ErrorCode, PROTOCOL, ServerMessage, WireError};
 use crate::note_input::{Delivery, NoteInput};
+use crate::web::Shared;
 use crate::web::hub::{ClientId, Hub, Outgoing};
 use crate::web::security::Policy;
 
@@ -33,12 +34,6 @@ pub enum OwnerRequest {
     Subscribe { client: ClientId },
     /// Apply an intent and answer `req_id`.
     Apply { client: ClientId, req_id: u32, intent: Intent },
-}
-
-/// What the server shares with every connection.
-pub struct Shared {
-    /// The session's revision, kept up to date by the owner, for `Hello`.
-    pub rev: AtomicU64,
 }
 
 /// Whether the connection goes on.
@@ -247,7 +242,7 @@ mod tests {
     use tokio::sync::mpsc::Receiver;
 
     use super::*;
-    use crate::app::model::NodeId;
+    use crate::app::model::{NodeId, SessionModel};
     use crate::audio::MidiEvent;
     use crate::held_notes::HeldNotes;
     use crate::piano_filter::{PianoFilter, PianoMode};
@@ -275,7 +270,7 @@ mod tests {
         let filter = Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight));
         let notes = NoteInput::new(midi_tx, held.clone(), filter.clone());
         let t0 = Instant::now();
-        let shared = Arc::new(Shared { rev: AtomicU64::new(7) });
+        let shared = Arc::new(Shared::new(7, SessionModel::default().telemetry_layout()));
         let context = Context { hub: hub.clone(), policy: Arc::new(policy), shared, owner: owner_tx, notes, limits };
         let conn = Connection::new(id, context, t0);
         Rig { conn, id, out, owner, midi, hub, filter, held, t0 }
@@ -526,7 +521,7 @@ mod tests {
         let context = Context {
             hub,
             policy: Arc::new(open_policy()),
-            shared: Arc::new(Shared { rev: AtomicU64::new(0) }),
+            shared: Arc::new(Shared::new(0, SessionModel::default().telemetry_layout())),
             owner: owner_tx,
             notes,
             limits: Limits::default(),

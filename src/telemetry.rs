@@ -72,6 +72,19 @@ impl Telemetry {
         self.cells.get(slot.0 as usize).map_or(0.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed)))
     }
 
+    /// The float last published in the slot numbered `index`, as a layout names it;
+    /// 0.0 for a number that is not a slot.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) reads the values for its telemetry frames"))]
+    pub fn load_index(&self, index: u32) -> f32 {
+        self.cells.get(index as usize).map_or(0.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed)))
+    }
+
+    /// How many events the slot numbered `index` has counted.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) reads the values for its telemetry frames"))]
+    pub fn count_index(&self, index: u32) -> u32 {
+        self.cells.get(index as usize).map_or(0, |cell| cell.load(Ordering::Relaxed))
+    }
+
     /// Count one more event in `slot`.
     pub fn bump(&self, slot: Slot) {
         if let Some(cell) = self.cells.get(slot.0 as usize) {
@@ -191,6 +204,19 @@ mod tests {
         t.store(a, f32::INFINITY);
         assert_eq!(t.load(a), f32::INFINITY, "the bits are kept as they are");
         assert_eq!(t.load(b), -1.5, "a slot only changes when it is stored to");
+    }
+
+    #[test]
+    fn a_slot_can_be_read_by_its_number() {
+        let t = Telemetry::new();
+        let mut slots = SlotAllocator::default();
+        let (a, b) = (slots.alloc().unwrap(), slots.alloc().unwrap());
+        t.store(a, 0.75);
+        t.bump(b);
+        t.bump(b);
+        assert_eq!((t.load_index(a.index()), t.count_index(b.index())), (0.75, 2));
+        assert_eq!((t.load_index(b.index()), t.count_index(a.index())), (f32::from_bits(2), 0.75f32.to_bits()), "the same cells, whichever way they are read");
+        assert_eq!((t.load_index(CAPACITY), t.count_index(CAPACITY), t.load_index(u32::MAX)), (0.0, 0, 0.0), "no such slot");
     }
 
     #[test]

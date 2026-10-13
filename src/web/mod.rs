@@ -8,6 +8,36 @@
 //! back through the hub to every client's bounded queue, and notes go straight to
 //! the audio thread through `NoteInput`.
 
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
+
+use crate::app::layout::TelemetryLayout;
+
 pub mod connection;
 pub mod hub;
+pub mod owner;
 pub mod security;
+
+/// What the owner of the controller shares with every connection and the telemetry
+/// pusher: things they only read.
+pub struct Shared {
+    /// The session's revision, for `Hello`.
+    pub rev: AtomicU64,
+    /// What the telemetry slots mean now, for the frames.
+    layout: Mutex<Arc<TelemetryLayout>>,
+}
+
+impl Shared {
+    #[cfg_attr(not(test), expect(dead_code, reason = "the server (later in step 10) makes it"))]
+    pub fn new(rev: u64, layout: TelemetryLayout) -> Shared {
+        Shared { rev: AtomicU64::new(rev), layout: Mutex::new(Arc::new(layout)) }
+    }
+
+    pub fn layout(&self) -> Arc<TelemetryLayout> {
+        self.layout.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
+    pub fn set_layout(&self, layout: TelemetryLayout) {
+        *self.layout.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(layout);
+    }
+}
