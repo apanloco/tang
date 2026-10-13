@@ -1,8 +1,8 @@
 // Reading telemetry for a drawing loop (docs/web-ui.md §9.4). A drawing reads its value on
 // every frame, so the work of finding the value's slot is done once for each layout and
 // not once for each frame: the reader keeps the position it found until the layout changes.
-import type { NodeId, Port, SlotKind, TelemetryChannel } from "../protocol";
-import type { TelemetryBuffers } from "./telemetry";
+import type { NodeId, Port, SlotKind } from "../protocol";
+import type { LayoutChannel, TelemetryBuffers } from "./telemetry";
 
 /**
  * A function that gives the latest value of `kind` at `port` of `node` in `channel`, or
@@ -12,7 +12,7 @@ import type { TelemetryBuffers } from "./telemetry";
  */
 export function slotReader(
   telemetry: TelemetryBuffers,
-  channel: TelemetryChannel,
+  channel: LayoutChannel,
   node: NodeId,
   port: Port,
   kind: SlotKind,

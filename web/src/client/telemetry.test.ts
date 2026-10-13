@@ -33,9 +33,18 @@ describe("decoding a frame", () => {
     expect(Array.from(decoded?.values ?? [])).toEqual([1, -2.5, 0.25]);
   });
 
-  test("knows the meters from the modulation", () => {
+  test("knows the meters from the modulation and from the held notes", () => {
     expect(decodeFrame(frame(0, 7, []))?.channel).toBe("meters");
     expect(decodeFrame(frame(1, 7, []))?.channel).toBe("modulation");
+    expect(decodeFrame(frame(2, 0, []))?.channel).toBe("held");
+  });
+
+  test("reads the held notes as the Rust side writes them: a value for each note, no layout", () => {
+    // The bytes of `telemetry_frame(Held, 0, &[0.0, 1.0])`.
+    const decoded = decodeFrame(new Uint8Array([2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f]));
+    expect(decoded?.channel).toBe("held");
+    expect(decoded?.layoutRev).toBe(0);
+    expect(Array.from(decoded?.values ?? [])).toEqual([0, 1]);
   });
 
   test("reads a view into a bigger buffer as well as a whole one", () => {
@@ -54,7 +63,7 @@ describe("decoding a frame", () => {
   test("gives null for what is not a frame", () => {
     expect(decodeFrame(new ArrayBuffer(0))).toBeNull();
     expect(decodeFrame(new ArrayBuffer(7))).toBeNull();
-    expect(decodeFrame(frame(2, 1, [1]))).toBeNull(); // a channel this client does not know
+    expect(decodeFrame(frame(3, 1, [1]))).toBeNull(); // a channel this client does not know
     expect(decodeFrame(frame(255, 1, []))).toBeNull();
     const short = new Uint8Array(frame(0, 1, [1, 2])).subarray(0, 12); // says two values, has one
     expect(decodeFrame(short)).toBeNull();
@@ -95,6 +104,63 @@ describe("the index", () => {
     expect(portKey({ type: "param", index: 4 })).not.toBe(portKey({ type: "param", index: 3 }));
     expect(portKey({ type: "depth", edge: 3 })).not.toBe(portKey({ type: "param", index: 3 }));
     expect(portKey({ type: "audioIn" })).not.toBe(portKey({ type: "audioOut" }));
+  });
+});
+
+describe("the held notes in the buffers", () => {
+  const noteFrame = (...held: number[]) => {
+    const values = new Array<number>(128).fill(0);
+    for (const note of held) values[note] = 1;
+    return decodeFrame(frame(2, 0, values)) ?? never();
+  };
+
+  test("are known before there is a layout and follow none: a frame is taken, and the notes are by their numbers", () => {
+    const buffers = new TelemetryBuffers();
+    expect(buffers.has("held")).toBe(false);
+    expect(buffers.isHeld(60)).toBe(false);
+    expect(buffers.accept(noteFrame(60, 64))).toBe(true);
+    expect(buffers.has("held")).toBe(true);
+    expect([buffers.isHeld(59), buffers.isHeld(60), buffers.isHeld(61), buffers.isHeld(64)]).toEqual([false, true, false, true]);
+    expect(buffers.frames).toBe(1);
+    expect(buffers.values("held")?.length).toBe(128);
+  });
+
+  test("are taken into the array a reader already holds, and the next frame says what is held now", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(noteFrame(60));
+    const mine = buffers.values("held");
+    buffers.accept(noteFrame(62));
+    expect(buffers.values("held")).toBe(mine);
+    expect([buffers.isHeld(60), buffers.isHeld(62)]).toEqual([false, true]);
+  });
+
+  test("refuse a frame that does not have a value for each of the 128 notes, and keep what they have", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(noteFrame(60));
+    const short = decodeFrame(frame(2, 0, new Array<number>(127).fill(1))) ?? never();
+    const long = decodeFrame(frame(2, 0, new Array<number>(129).fill(1))) ?? never();
+    expect(buffers.accept(short)).toBe(false);
+    expect(buffers.accept(long)).toBe(false);
+    expect(buffers.isHeld(60)).toBe(true);
+    expect(buffers.frames).toBe(1);
+  });
+
+  test("are not forgotten when the layout changes, which they do not follow, and do not need one to be heard", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(noteFrame(60));
+    buffers.setLayout(layout);
+    expect(buffers.has("held")).toBe(true);
+    expect(buffers.isHeld(60)).toBe(true);
+    buffers.setLayout({ ...layout, rev: layout.rev + 1 });
+    expect(buffers.has("held")).toBe(true);
+    expect(buffers.isHeld(60)).toBe(true);
+    expect(buffers.layoutRev).toBe(layout.rev + 1);
+  });
+
+  test("say that a note that is not on the keyboard is not held, whatever its number", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(noteFrame(0, 127));
+    expect([buffers.isHeld(0), buffers.isHeld(127), buffers.isHeld(128), buffers.isHeld(-1)]).toEqual([true, true, false, false]);
   });
 });
 

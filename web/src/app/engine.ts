@@ -47,6 +47,6 @@ export function createConnection(location: Pick<Location, "protocol" | "host" | 
   const engine = engineFor(location.search);
   const mock = (): MockServer => new MockServer(snapshotOf(sceneFor(location.search)));
   const transport = engine === "mock" ? mock().transport : webSocketTransport(serverUrl(location));
-  // The views draw the levels and what the modulators do, which the server only makes for those who ask.
-  return { client: new Client({ transport, token: tokenFromHash(location.hash), telemetry: ["meters", "modulation"] }), engine };
+  // The views draw the levels, what the modulators do and the keys that are held, which the server only makes for those who ask.
+  return { client: new Client({ transport, token: tokenFromHash(location.hash), telemetry: ["meters", "modulation", "held"] }), engine };
 }

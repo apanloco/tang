@@ -5,12 +5,19 @@ import { FRAME_HEADER_LEN } from "../protocol";
 import type { NodeId, Port, SlotKind, TelemetryChannel, TelemetryLayout } from "../protocol";
 
 /** The channel numbers of a frame's header, in order. */
-const CHANNELS: readonly TelemetryChannel[] = ["meters", "modulation"];
+const CHANNELS: readonly TelemetryChannel[] = ["meters", "modulation", "held"];
+
+/** The channels whose values are the entries of a list in the layout (the held notes follow none). */
+export type LayoutChannel = Exclude<TelemetryChannel, "held">;
+const LAYOUT_CHANNELS: readonly LayoutChannel[] = ["meters", "modulation"];
+
+/** How many notes there are: a frame of the held notes has a value for each of them, at the place of its number. */
+export const NOTES = 128;
 
 /** One telemetry frame: the current values of one channel. */
 export interface Frame {
   channel: TelemetryChannel;
-  /** The `rev` of the layout the values follow. */
+  /** The `rev` of the layout the values follow (0 for the held notes, which follow none). */
   layoutRev: number;
   /** Value *i* belongs to entry *i* of the channel's list in that layout. */
   values: Float32Array;
@@ -45,7 +52,7 @@ export function portKey(port: Port): string {
   }
 }
 
-function entryKey(channel: TelemetryChannel, node: NodeId, port: string, kind: SlotKind): string {
+function entryKey(channel: LayoutChannel, node: NodeId, port: string, kind: SlotKind): string {
   return `${channel}/${node}/${port}/${kind}`;
 }
 
@@ -54,7 +61,7 @@ export class TelemetryIndex {
   readonly #positions = new Map<string, number>();
 
   constructor(readonly layout: TelemetryLayout) {
-    for (const channel of CHANNELS) {
+    for (const channel of LAYOUT_CHANNELS) {
       layout[channel].forEach((entry, position) => {
         this.#positions.set(entryKey(channel, entry.node, portKey(entry.port), entry.kind), position);
       });
@@ -62,7 +69,7 @@ export class TelemetryIndex {
   }
 
   /** The position of the value of `kind` at `port` of `node`, if the layout has it. */
-  find(channel: TelemetryChannel, node: NodeId, port: Port, kind: SlotKind): number | undefined {
+  find(channel: LayoutChannel, node: NodeId, port: Port, kind: SlotKind): number | undefined {
     return this.#positions.get(entryKey(channel, node, portKey(port), kind));
   }
 }
@@ -70,12 +77,13 @@ export class TelemetryIndex {
 /**
  * The latest values of each channel. A channel's array is made when the layout is set
  * and written in place by every frame after it, so a loop that has read it once
- * always sees the newest values.
+ * always sees the newest values. (The held notes follow no layout: their array is there
+ * from the start, a value for each note, and is not reset by a layout.)
  */
 export class TelemetryBuffers {
   #index: TelemetryIndex | null = null;
-  readonly #latest = new Map<TelemetryChannel, Float32Array>();
-  /** The channels that have had a frame of the layout that is set. */
+  readonly #latest = new Map<TelemetryChannel, Float32Array>([["held", new Float32Array(NOTES)]]);
+  /** The channels that have had a frame of the layout that is set (the held notes: a frame at all). */
   readonly #heard = new Set<TelemetryChannel>();
   #frames = 0;
 
@@ -83,9 +91,10 @@ export class TelemetryBuffers {
   setLayout(layout: TelemetryLayout): void {
     if (this.#index?.layout.rev === layout.rev && this.#sameLengths(layout)) return;
     this.#index = new TelemetryIndex(layout);
-    this.#latest.clear();
-    this.#heard.clear();
-    for (const channel of CHANNELS) this.#latest.set(channel, new Float32Array(layout[channel].length));
+    for (const channel of LAYOUT_CHANNELS) {
+      this.#latest.set(channel, new Float32Array(layout[channel].length));
+      this.#heard.delete(channel);
+    }
   }
 
   /** The `rev` of the layout that is set: what a reader that has found a slot goes by to know the slot may have moved. */
@@ -105,7 +114,9 @@ export class TelemetryBuffers {
    */
   accept(frame: Frame): boolean {
     const latest = this.#latest.get(frame.channel);
-    if (!this.#index || this.#index.layout.rev !== frame.layoutRev || latest?.length !== frame.values.length) return false;
+    // (The held notes follow no layout: a frame of them is one value for each of the notes, and is taken at any time.)
+    const fits = frame.channel === "held" ? true : this.#index?.layout.rev === frame.layoutRev;
+    if (!fits || latest?.length !== frame.values.length) return false;
     latest.set(frame.values);
     this.#heard.add(frame.channel);
     this.#frames += 1;
@@ -118,14 +129,19 @@ export class TelemetryBuffers {
   }
 
   /** Where the value of `kind` at `port` of `node` is in the channel's values. */
-  find(channel: TelemetryChannel, node: NodeId, port: Port, kind: SlotKind): number | undefined {
+  find(channel: LayoutChannel, node: NodeId, port: Port, kind: SlotKind): number | undefined {
     return this.#index?.find(channel, node, port, kind);
   }
 
   /** The latest value of `kind` at `port` of `node`, if the layout has it. */
-  value(channel: TelemetryChannel, node: NodeId, port: Port, kind: SlotKind): number | undefined {
+  value(channel: LayoutChannel, node: NodeId, port: Port, kind: SlotKind): number | undefined {
     const at = this.find(channel, node, port, kind);
     return at === undefined ? undefined : this.#latest.get(channel)?.[at];
+  }
+
+  /** Whether note number `note` is held, by whichever source holds it, as of the latest frame: none is before one has come. */
+  isHeld(note: number): boolean {
+    return (this.#latest.get("held")?.[note] ?? 0) > 0;
   }
 
   /** How many frames have been taken: a loop can tell whether there is anything new. */
@@ -134,6 +150,6 @@ export class TelemetryBuffers {
   }
 
   #sameLengths(layout: TelemetryLayout): boolean {
-    return CHANNELS.every((channel) => this.#latest.get(channel)?.length === layout[channel].length);
+    return LAYOUT_CHANNELS.every((channel) => this.#latest.get(channel)?.length === layout[channel].length);
   }
 }

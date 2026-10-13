@@ -495,11 +495,14 @@ function shape(waveform: "sine" | "triangle" | "saw" | "square", phase: number):
   }
 }
 
+/** The number of a channel in the header of its frames. */
+const CHANNEL_NUMBERS: Record<TelemetryChannel, number> = { meters: 0, modulation: 1, held: 2 };
+
 /** The bytes of a telemetry frame, as the server writes them (`telemetry_frame`). */
 function frameBytes(channel: TelemetryChannel, layoutRev: number, values: readonly number[]): ArrayBuffer {
   const buffer = new ArrayBuffer(8 + 4 * values.length);
   const view = new DataView(buffer);
-  view.setUint8(0, channel === "meters" ? 0 : 1);
+  view.setUint8(0, CHANNEL_NUMBERS[channel]);
   view.setUint16(2, values.length, true);
   view.setUint32(4, layoutRev, true);
   values.forEach((value, i) => {
@@ -705,6 +708,11 @@ export class MockServer {
 
   /** The values of a channel's list in the layout, as of `seconds`; `peaks` is the meters' state, kept from frame to frame. */
   frame(channel: TelemetryChannel, seconds: number, peaks: Map<number, number>, elapsed: number): ArrayBuffer {
+    // (The held notes follow no layout: a value for each of the 128 notes, 1 for one that any connection holds.)
+    if (channel === "held") {
+      const held = this.heldNotes;
+      return frameBytes(channel, 0, Array.from({ length: 128 }, (_, note) => (held.has(note) ? 1 : 0)));
+    }
     const { telemetry } = this.#snapshot;
     const nodes = this.#snapshot.graph.nodes;
     const outputOf = (id: NodeId): number => {

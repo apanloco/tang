@@ -35,7 +35,7 @@ export interface Rig {
 export async function rig(ui: ReactNode, options: MockOptions = {}): Promise<Rig> {
   const time = { seconds: 0 };
   const server = new MockServer({ telemetryPeriod: 5, clock: () => time.seconds, ...options });
-  const client = new Client({ transport: server.transport, telemetry: ["meters", "modulation"], reconnectDelay: () => 60_000 });
+  const client = new Client({ transport: server.transport, telemetry: ["meters", "modulation", "held"], reconnectDelay: () => 60_000 });
   const clock = new Clock();
   const frames = new FrameLoop(clock);
   const view = render(

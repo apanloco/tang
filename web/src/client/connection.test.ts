@@ -6,6 +6,7 @@ import type { ClientOptions, Transport } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
+import { decodeFrame } from "./telemetry";
 
 const filter = nodeNamed(tracerSnapshot, "Filter");
 const lfo = nodeNamed(tracerSnapshot, "LFO");
@@ -1513,6 +1514,54 @@ describe("setting the keys of a lane", () => {
     const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
     await client.request(set({ low: 0, high: 59 }, 14));
     expect(keys(client, 14)).toEqual({ low: 0, high: 59 });
+  });
+});
+
+describe("the held notes", () => {
+  test("are told to a client that asks for them as a value for each note, one for each that any client holds", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const watcher = await open(server, { telemetry: ["held"] });
+    await until(() => watcher.telemetry.has("held"), "the first frame");
+    expect(watcher.telemetry.values("held")?.length).toBe(128);
+    expect([60, 64].map((note) => watcher.telemetry.isHeld(note))).toEqual([false, false]);
+    player.noteOn(60);
+    player.noteOn(64);
+    await until(() => watcher.telemetry.isHeld(60) && watcher.telemetry.isHeld(64), "the two notes");
+    expect(Array.from(watcher.telemetry.values("held") ?? []).filter((value) => value > 0)).toHaveLength(2);
+    player.noteOff(60);
+    await until(() => !watcher.telemetry.isHeld(60), "the first note ending");
+    expect(watcher.telemetry.isHeld(64)).toBe(true);
+  });
+
+  test("end with the client that held them", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const watcher = await open(server, { telemetry: ["held"] });
+    player.noteOn(67);
+    await until(() => watcher.telemetry.isHeld(67), "the note");
+    player.stop();
+    await until(() => !watcher.telemetry.isHeld(67), "the note ending with the client");
+  });
+
+  test("are a frame as the server makes it: channel 2, no layout, a value for each of the notes", () => {
+    const server = new MockServer();
+    // (A session that has changed has a revision of its own, which this frame does not carry.)
+    server.apply(cutoff(0.25));
+    const bytes = server.frame("held", 0, new Map(), 0);
+    expect(new Uint8Array(bytes)[0]).toBe(2);
+    const decoded = decodeFrame(bytes);
+    expect(decoded?.channel).toBe("held");
+    expect(decoded?.layoutRev).toBe(0);
+    expect(decoded?.values).toHaveLength(128);
+  });
+
+  test("are not told to a client that did not ask for them", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server, { telemetry: ["meters"] });
+    player.noteOn(60);
+    await quiet(60);
+    expect(player.telemetry.has("held")).toBe(false);
   });
 });
 

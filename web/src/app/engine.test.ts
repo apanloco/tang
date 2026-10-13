@@ -88,11 +88,11 @@ describe("the connection of a page", () => {
     socket.readyState = FakeSocket.OPEN;
     socket.onopen?.();
     socket.onmessage?.({ data: JSON.stringify({ type: "hello", protocol: 1, rev: 0, features: [], needsToken: true }) });
-    // (It also asks for the telemetry that the views draw: the levels, and what the modulators do.)
+    // (It also asks for the telemetry that the views draw: the levels, what the modulators do, and the keys that are held.)
     expect(socket.sent.map((text) => JSON.parse(text) as unknown)).toEqual([
       { type: "auth", token: "0123abcd" },
       { type: "subscribe" },
-      { type: "telemetry", channels: ["meters", "modulation"] },
+      { type: "telemetry", channels: ["meters", "modulation", "held"] },
     ]);
     client.stop();
   });
