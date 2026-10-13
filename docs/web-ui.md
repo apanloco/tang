@@ -1533,12 +1533,13 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the controller's. Found by me on the way: f40 (a cable driving the depth of a cable that was gone
     after its modulator was removed), f50 (the mock dropped the slot of a value another cable still
     drove).
-  - **Numbers.** 764 Rust tests in the default build (679 before the step), 908 with the web feature
-    (820), 635 Vitest tests (502), 31 browser tests (22); about 220 mutations of the code written
+  - **Numbers.** 788 Rust tests in the default build (679 before the step), 932 with the web feature
+    (820), 686 Vitest tests (502), 35 browser tests (22); about 220 mutations of the code written
     in the second half of the step (the survivors are named in the commit messages: two equivalent
     ones in the client's reach rule and its list, an id that is the same function at both ends, a
-    refused add that reads the session) and some 70 of the groundwork before it. `tui/mod.rs` is
-    4,644 lines (4,788). 174 local commits since `feat/midi-learn-mpe-expression`, none pushed.
+    refused add that reads the session) and some 70 of the groundwork before it, and more than a
+    hundred for the fixes of the review below. `tui/mod.rs` is 4,681 lines (4,788). 187 local
+    commits since `feat/midi-learn-mpe-expression`, none pushed.
   - **Both paths and both front-ends.** The browser tests: seven on the mock engine (a drag, the
     ports marked while dragging and only the ones that take the cable, a drop where it does not belong
     and a drop out of reach, a modulator added and dragged from at once, the list, the buttons), two on
@@ -1581,6 +1582,35 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the server's own refusal say the same words, and the check does not keep the port; the
     real program, given a taken port and a session that is not there, says the port first
     (it said the session before); six mutations, all caught.
+  - **The review of step 15** (an independent agent, read-only, on its own worktree; each of its
+    ten findings was checked against the code before anything was changed) found one serious bug
+    and several that a person meets with a keyboard or in a real browser and the browser tests had
+    not: **f54, taking a cable or a modulator out left what it drove at the value the cable last
+    wrote**: the plugin kept 0.7 where the knob and the model said 0.5, until someone touched the
+    knob (the TUI's `d` had always given the value back, and the browser's "×" was the new way to meet
+    it). The controller gives the user's value back now for whatever the removed cables drove and
+    nothing else drives (`Driven`, `SessionModel::driven_by`; a first attempt in the audio thread was
+    dropped, as it wrote one cable's value into another's place). **f55**, the TUI addresses its tree
+    by position, so a node that a browser added or took out above its cursor left the cursor, a value
+    being typed and the open popups on whatever had come to their place: the cursor follows its node
+    (by id and kind of entry), and a popup that holds a place is closed when the tree changes. **f56**,
+    a cable let go over the lower half of a knob drew nothing, and at the foot of a cell went to the
+    knob below. **f57**, Tab out of the "+" menu went to the end of the page. **f58**, the focus fell
+    to the page after the "×" on a cable. **f59**, two nodes could have one name on the canvas.
+    **f61**, CLAUDE.md said the pusher was not built. **f62**, a native select draws a cable on every
+    arrow key on Windows and Linux (suspected; macOS opens the list instead, so it could not be seen
+    here): the list is a menu now, with a heading for each plugin, a height limit and a letter that finds
+    a parameter. **f60** (the mock's telemetry layout is not the controller's: harmless, open, low),
+    and one that was true and had been fixed already (f49). Its own checks of 360 random sequences
+    of intents, the order of the protocol, the reach rule and the layout found nothing. Each fix has
+    its test, seen to fail first.
+  - **Found by me while fixing them.** f63: the loader centred a cable from one modulator to another's
+    rate, stage or depth on a default and not on what the file gives that field, so a saved session
+    came back with an LFO at 2 Hz swept around 1 Hz (fixed). Open, for phase 1: **f64**, loading a preset
+    may leave the audio thread's base values of the cables stale (from reading `load_preset`, not
+    tested), and **f65**, a lane that leaves a group may leave what the group's cables drove at their
+    last value (the same class as f54, not tested: the TUI's `g` is not an intent yet). f52 (a flaky
+    browser test of the stress scene) and f53 (the TUI's piano), found in step 16, are fixed.
   - **Found by me on the way, open: replacing a lane's instrument keeps the cables on the old one.**
     `Controller::set_instrument` swaps the plugin and leaves the lane's modulators as they were, so a
     cable on slot 0 keeps the old plugin's parameter *index*, range and label: with a different
