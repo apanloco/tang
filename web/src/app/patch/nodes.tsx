@@ -3,12 +3,12 @@
 // values, so that a value that changes renders its control and nothing else.
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { useMemo } from "react";
+import { useContext, useMemo } from "react";
 import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
-import { nodeById, presetsOf } from "../../client/selectors";
+import { nodeById, paramCountOf, presetsOf } from "../../client/selectors";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
 import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
@@ -18,6 +18,7 @@ import { useClient, useClientSelection, useClientState, useEditor, useFrames } f
 import { focusWhenPossible } from "../focus";
 import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell } from "./controls";
 import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
+import { InspectorContext, paramsButtonId } from "./inspector";
 import type { PatchNode } from "./toFlow";
 
 function Header({ name, badge, children }: { name: string; badge?: string | null; children?: ReactNode }) {
@@ -147,6 +148,31 @@ function PresetMenu({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
+/**
+ * The button of an instrument or an effect that puts all the parameters of its plugin in the panel (the node has room for a few
+ * knobs): pressed again, it takes the panel away. Nothing for a plugin that has no parameters.
+ */
+function ParamsButton({ node, name }: { node: NodeId; name: string }) {
+  const inspector = useContext(InspectorContext);
+  const count = useClientState((state) => paramCountOf(state, node));
+  if (count === 0) return null;
+  return (
+    <button
+      type="button"
+      id={paramsButtonId(node)}
+      className="tang-menu-button tang-node__params nodrag nopan"
+      aria-label={`Parameters of ${name}`}
+      title={`All the parameters of ${name}`}
+      aria-expanded={inspector.inspected === node}
+      onClick={() => {
+        inspector.toggle(node);
+      }}
+    >
+      ⚙
+    </button>
+  );
+}
+
 /** The button of a modulator or an effect that takes it out, with the cables that drive it; the focus goes to the button that adds one like it to its lane or group. */
 function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name: string; parent: NodeId | null; focusTo: (parent: NodeId) => string }) {
   const editor = useEditor();
@@ -181,12 +207,14 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         {effect ? (
           <span className="tang-node__actions">
             <PresetMenu node={data.node} name={data.name} />
+            <ParamsButton node={data.node} name={data.name} />
             <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
           </span>
         ) : (
           <span className="tang-node__actions">
             <ChangeInstrumentMenu node={data.node} name={data.name} empty={data.format === null} />
             <PresetMenu node={data.node} name={data.name} />
+            <ParamsButton node={data.node} name={data.name} />
             <AddEffectMenu node={data.node} name={data.name} />
             <AddModulatorMenu node={data.node} name={data.name} />
           </span>

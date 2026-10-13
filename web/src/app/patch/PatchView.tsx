@@ -9,9 +9,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Graph, NodeId } from "../../protocol";
 import { useClientSelection, useEditor, useReveals } from "../ClientProvider";
+import { focusWhenPossible } from "../focus";
 import { cableOf, canDraw, ConnectingContext, drawableFrom } from "./connection";
 import { AudioEdge, ModulationEdge } from "./edges";
+import { InspectorContext, paramsButtonId } from "./inspector";
+import type { Inspector } from "./inspector";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
+import { ParamPanel } from "./ParamPanel";
 import { sameStructure, toFlow } from "./toFlow";
 import type { Flow } from "./toFlow";
 import { rectOf, viewToShow } from "./view";
@@ -95,6 +99,24 @@ export function PatchView() {
   const editor = useEditor();
   // The parameters that take the cable being dragged, for their ports to say so.
   const [connecting, setConnecting] = useState<ReadonlySet<string> | null>(null);
+  // The plugin whose parameters are in the panel, if the panel is open.
+  const [inspected, setInspected] = useState<NodeId | null>(null);
+  const inspector = useMemo<Inspector>(
+    () => ({
+      inspected,
+      toggle: (node) => {
+        setInspected((now) => (now === node ? null : node));
+      },
+    }),
+    [inspected],
+  );
+  const closePanel = useCallback(
+    (focusBack: boolean) => {
+      setInspected(null);
+      if (focusBack && inspected !== null) focusWhenPossible(paramsButtonId(inspected));
+    },
+    [inspected],
+  );
 
   const onConnectStart = useCallback<OnConnectStart>(
     (_event, { nodeId, handleType }) => {
@@ -123,32 +145,37 @@ export function PatchView() {
 
   return (
     <div className="tang-patch" data-testid="patch" data-connecting={connecting ? "" : undefined}>
-      <ConnectingContext.Provider value={connecting}>
-        <ReactFlow
-          nodes={flow.nodes}
-          edges={flow.edges}
-          nodeTypes={NODE_TYPES}
-          edgeTypes={EDGE_TYPES}
-          colorMode="dark"
-          fitView
-          fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
-          minZoom={0.2}
-          maxZoom={1.5}
-          connectionRadius={40}
-          connectionLineStyle={CONNECTION_LINE}
-          isValidConnection={isValidConnection}
-          onConnectStart={onConnectStart}
-          onConnectEnd={onConnectEnd}
-          onConnect={onConnect}
-          edgesFocusable={false}
-          elementsSelectable={false}
-          deleteKeyCode={null}
-        >
-          <Background gap={24} />
-          <Controls showInteractive={false} />
-          <ShowWhatWasAdded graph={graph} flow={flow} />
-        </ReactFlow>
-      </ConnectingContext.Provider>
+      <InspectorContext.Provider value={inspector}>
+        <div className="tang-patch__canvas">
+          <ConnectingContext.Provider value={connecting}>
+            <ReactFlow
+              nodes={flow.nodes}
+              edges={flow.edges}
+              nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
+              colorMode="dark"
+              fitView
+              fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
+              minZoom={0.2}
+              maxZoom={1.5}
+              connectionRadius={40}
+              connectionLineStyle={CONNECTION_LINE}
+              isValidConnection={isValidConnection}
+              onConnectStart={onConnectStart}
+              onConnectEnd={onConnectEnd}
+              onConnect={onConnect}
+              edgesFocusable={false}
+              elementsSelectable={false}
+              deleteKeyCode={null}
+            >
+              <Background gap={24} />
+              <Controls showInteractive={false} />
+              <ShowWhatWasAdded graph={graph} flow={flow} />
+            </ReactFlow>
+          </ConnectingContext.Provider>
+        </div>
+        {inspected !== null ? <ParamPanel key={inspected} node={inspected} onClose={closePanel} /> : null}
+      </InspectorContext.Provider>
     </div>
   );
 }

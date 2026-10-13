@@ -195,6 +195,21 @@ describe("the page", () => {
     expect(await screen.findByText("Could not add Oscillator as an instrument: Not connected to the server.")).toBeTruthy();
   });
 
+  test("does not play a note for a key typed in the filter of a plugin's parameters, which is for text; the same key anywhere else plays", async () => {
+    const { server } = page();
+    await screen.findByText("Connected");
+    fireEvent.click(await screen.findByRole("button", { name: "Parameters of Oscillator" }));
+    const search = await screen.findByRole("searchbox", { name: "Filter the parameters of Oscillator" });
+    fireEvent.keyDown(search, { code: "KeyZ", key: "z" });
+    fireEvent.keyUp(search, { code: "KeyZ", key: "z" });
+    // (Z is a C, and X, which is typed on the page, a D: if the first had played, it would have been sent before the second.)
+    fireEvent.keyDown(document.body, { code: "KeyX", key: "x" });
+    fireEvent.keyUp(document.body, { code: "KeyX", key: "x" });
+    await waitFor(() => {
+      expect(server.received.filter((message) => message.type === "noteOn").map((message) => (message as { note: number }).note)).toEqual([50]);
+    });
+  });
+
   test("keeps the session as JSON closed, and writes it only while it is open", async () => {
     page();
     await screen.findByText("Connected");

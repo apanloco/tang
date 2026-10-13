@@ -1,0 +1,135 @@
+/* The panel of a plugin's parameters, docked at the right of the canvas, and the rows in it. */
+.tang-panel {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--tang-space-2);
+  width: 340px;
+  min-height: 0;
+  padding: var(--tang-space-3);
+  border-left: 1px solid var(--tang-border);
+  background: var(--tang-surface);
+  color: var(--tang-text);
+}
+
+.tang-panel__header {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+}
+
+.tang-panel__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tang-text-size);
+}
+
+.tang-panel__search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--tang-space-1) var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+}
+
+.tang-panel__search:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-panel__count,
+.tang-panel__none {
+  margin: 0;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+/* The rows scroll; the filter and the count above them stay. */
+.tang-panel__rows {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--tang-space-2);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tang-panel__rows > * {
+  flex: none;
+}
+
+.tang-panel__more {
+  padding: var(--tang-space-1) var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  cursor: pointer;
+}
+
+.tang-panel__more:hover {
+  border-color: var(--tang-modulation);
+}
+
+.tang-panel__more:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* A parameter as a row: its whole name above, then the slider and its value; the bar of what a cable makes of it under them. */
+.tang-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: var(--tang-space-2);
+  row-gap: 2px;
+}
+
+.tang-row__name {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-row__slider {
+  width: 100%;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--tang-value);
+}
+
+.tang-row__select {
+  grid-column: 1 / -1;
+  width: 100%;
+  padding: 2px;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-font);
+}
+
+.tang-row__value {
+  min-width: 7ch;
+  text-align: right;
+  font: var(--tang-text-small) / 1 var(--tang-mono);
+}
+
+.tang-row .tang-livebar {
+  grid-column: 1 / -1;
+  height: 4px;
+}

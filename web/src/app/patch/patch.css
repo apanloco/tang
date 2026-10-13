@@ -2,7 +2,15 @@
    CONTROL_ROW_HEIGHT, NODE_PADDING, NODE_WIDTH): a node is 304px wide, its header is 44px
    and each row of four controls is 108px. */
 .tang-patch {
+  display: flex;
   width: 100%;
+  height: 100%;
+}
+
+/* The canvas takes what the panel of parameters, when it is open, leaves. */
+.tang-patch__canvas {
+  flex: 1;
+  min-width: 0;
   height: 100%;
 }
 
@@ -76,6 +84,11 @@
   font-family: var(--tang-mono);
   font-size: 11px;
   letter-spacing: 0.02em;
+}
+
+/* (The one that opens the parameters in the panel: a glyph too.) */
+.tang-menu-button.tang-node__params {
+  min-width: 26px;
 }
 
 /* (The one that loads a preset: a glyph too.) */
