@@ -101,6 +101,80 @@ fn promote_to_realtime() {
     log::info!("Windows: WASAPI handles real-time scheduling");
 }
 
+/// What an audio callback does with the audio thread's end of the session, apart
+/// from where the samples go: take the MIDI that has arrived, render the graph into
+/// one buffer per channel, and interleave them into the output. The buffers are
+/// made once and reused, so a block is rendered without allocating.
+struct Renderer {
+    graph: AudioGraph,
+    midi_rx: Receiver<MidiEvent>,
+    /// The MIDI that arrived since the last block.
+    midi_events: Vec<MidiEvent>,
+    /// One buffer per channel, a block long.
+    channel_bufs: Vec<Vec<f32>>,
+    num_channels: usize,
+}
+
+impl Renderer {
+    fn new(graph: AudioGraph, midi_rx: Receiver<MidiEvent>, buffer_size: usize) -> Self {
+        let num_channels = graph.num_channels();
+        Renderer {
+            graph,
+            midi_rx,
+            midi_events: Vec::with_capacity(64),
+            channel_bufs: (0..num_channels).map(|_| vec![0.0f32; buffer_size]).collect(),
+            num_channels,
+        }
+    }
+
+    /// Fill `data`, interleaved (`frames * channels` samples), with the next block;
+    /// `cb_num` is the number of the block, for the log. Silence if the graph fails.
+    fn render(&mut self, data: &mut [f32], cb_num: u64) {
+        let num_channels = self.num_channels;
+
+        // Drain all pending MIDI events (reuse the pre-allocated vec)
+        self.midi_events.clear();
+        while let Ok(event) = self.midi_rx.try_recv() {
+            self.midi_events.push(event);
+        }
+
+        if !self.midi_events.is_empty() {
+            log::debug!(
+                "Audio cb #{cb_num}: processing {} MIDI event(s) into {} frames",
+                self.midi_events.len(),
+                data.len() / num_channels
+            );
+        }
+
+        let frames = data.len() / num_channels;
+
+        // Resize and zero pre-allocated per-channel buffers
+        for buf in self.channel_bufs.iter_mut() {
+            buf.resize(frames, 0.0);
+            buf.fill(0.0);
+        }
+
+        if let Err(e) = self.graph.process(&self.midi_events, &mut self.channel_bufs) {
+            log::error!("Audio graph process error: {e}");
+            data.fill(0.0);
+            return;
+        }
+
+        // Interleave back into the output buffer
+        for frame in 0..frames {
+            for ch in 0..num_channels {
+                data[frame * num_channels + ch] = self.channel_bufs[ch][frame];
+            }
+        }
+
+        // Log peak level when there were MIDI events
+        if !self.midi_events.is_empty() {
+            let peak = data.iter().fold(0.0f32, |max, &s| max.max(s.abs()));
+            log::debug!("Audio cb #{cb_num}: output peak = {peak:.6}");
+        }
+    }
+}
+
 pub struct AudioEngine {
     stream: cpal::Stream,
 }
@@ -129,7 +203,7 @@ impl AudioEngine {
     /// Build the audio engine but don't start playing yet.
     /// Call `play()` after queuing initial graph commands.
     pub fn build(
-        mut graph: AudioGraph,
+        graph: AudioGraph,
         midi_rx: Receiver<MidiEvent>,
         device_name: Option<&str>,
         sample_rate: u32,
@@ -164,11 +238,8 @@ impl AudioEngine {
             buffer_size
         );
 
-        // Pre-allocate buffers that live in the closure and are reused every callback
-        let mut midi_events: Vec<MidiEvent> = Vec::with_capacity(64);
-        let mut channel_bufs: Vec<Vec<f32>> = (0..num_channels)
-            .map(|_| vec![0.0f32; buffer_size as usize])
-            .collect();
+        // The renderer lives in the closure; its buffers are reused every callback
+        let mut renderer = Renderer::new(graph, midi_rx, buffer_size as usize);
 
         let mut callback_count: u64 = 0;
 
@@ -184,46 +255,7 @@ impl AudioEngine {
                     promote_to_realtime();
                 }
 
-                // Drain all pending MIDI events (reuse pre-allocated vec)
-                midi_events.clear();
-                while let Ok(event) = midi_rx.try_recv() {
-                    midi_events.push(event);
-                }
-
-                if !midi_events.is_empty() {
-                    log::debug!(
-                        "Audio cb #{cb_num}: processing {} MIDI event(s) into {} frames",
-                        midi_events.len(),
-                        data.len() / num_channels
-                    );
-                }
-
-                let frames = data.len() / num_channels;
-
-                // Resize and zero pre-allocated per-channel buffers
-                for buf in channel_bufs.iter_mut() {
-                    buf.resize(frames, 0.0);
-                    buf.fill(0.0);
-                }
-
-                if let Err(e) = graph.process(&midi_events, &mut channel_bufs) {
-                    log::error!("Audio graph process error: {e}");
-                    data.fill(0.0);
-                    return;
-                }
-
-                // Interleave back into cpal output buffer
-                for frame in 0..frames {
-                    for ch in 0..num_channels {
-                        data[frame * num_channels + ch] = channel_bufs[ch][frame];
-                    }
-                }
-
-                // Log peak level when there were MIDI events
-                if !midi_events.is_empty() {
-                    let peak = data.iter().fold(0.0f32, |max, &s| max.max(s.abs()));
-                    log::debug!("Audio cb #{cb_num}: output peak = {peak:.6}");
-                }
+                renderer.render(data, cb_num);
             },
             move |err| {
                 let msg = err.to_string();
@@ -237,5 +269,169 @@ impl AudioEngine {
         )?;
 
         Ok(AudioEngine { stream })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::testutil::load_onto;
+
+    const NOTE_ON_A4: MidiEvent = (0, [0x90, 69, 100]);
+
+    /// A renderer for `session`, with the channels it listens on and the audio
+    /// thread's end of the plugin hand-back channel kept alive.
+    struct Rig {
+        renderer: Renderer,
+        midi_tx: crossbeam_channel::Sender<MidiEvent>,
+        _return_rx: Receiver<Box<dyn crate::plugin::Plugin>>,
+    }
+
+    fn rig(session: &str, buffer_size: usize) -> Rig {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
+        let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
+        let graph = AudioGraph::new(2, cmd_rx, return_tx);
+        let mut renderer = Renderer::new(graph, midi_rx, buffer_size);
+        load_onto(session, &cmd_tx);
+        renderer.graph.drain_commands();
+        Rig { renderer, midi_tx, _return_rx: return_rx }
+    }
+
+    #[test]
+    fn a_renderer_with_nothing_in_the_graph_renders_silence() {
+        let mut rig = rig("", 64);
+        let mut data = vec![0.5f32; 64 * 2];
+        rig.renderer.render(&mut data, 0);
+        assert!(data.iter().all(|&s| s == 0.0), "the block is overwritten, not mixed into");
+    }
+
+    #[test]
+    fn a_note_sent_before_the_block_sounds_in_it_and_the_channels_are_interleaved() {
+        // Hard left: the right channel is silent, so the interleaving shows.
+        let mut rig = rig("[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\npan = -1.0\n", 256);
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        let mut data = vec![0.0f32; 256 * 2];
+        // The note is on from the first block; its envelope has risen a few blocks in.
+        for cb in 0..4 {
+            rig.renderer.render(&mut data, cb);
+        }
+        let left: Vec<f32> = data.iter().step_by(2).copied().collect();
+        let right: Vec<f32> = data.iter().skip(1).step_by(2).copied().collect();
+        let peak = |channel: &[f32]| channel.iter().fold(0.0f32, |max, &s| max.max(s.abs()));
+        assert!(peak(&left) > 0.1, "the left channel carries the note: {left:?}");
+        // The pan is smoothed over a few milliseconds, so the right channel has not
+        // quite settled to silence; it is far below the left.
+        assert!(peak(&right) < peak(&left) / 10.0, "and the right is nearly silent: {right:?}");
+    }
+
+    #[test]
+    fn a_block_is_as_long_as_the_buffer_it_is_given() {
+        let mut rig = rig("[[instrument]]\nplugin = \"builtin:osc\"\n", 256);
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        // Shorter than the size the renderer was made for, and then longer: both are fine.
+        for frames in [100, 300] {
+            let mut data = vec![0.0f32; frames * 2];
+            rig.renderer.render(&mut data, 0);
+            assert_eq!(data.len(), frames * 2);
+        }
+    }
+
+    #[test]
+    fn the_midi_of_one_block_is_not_rendered_again_in_the_next() {
+        let mut rig = rig("[[instrument]]\nplugin = \"builtin:osc\"\n", 64);
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        let mut data = vec![0.0f32; 64 * 2];
+        rig.renderer.render(&mut data, 0);
+        assert_eq!(rig.renderer.midi_events.len(), 1);
+        rig.renderer.render(&mut data, 1);
+        assert!(rig.renderer.midi_events.is_empty(), "nothing arrived, so nothing is in the second block");
+    }
+
+    #[test]
+    fn a_block_is_rendered_from_zero_not_on_top_of_the_one_before() {
+        // A note that has been released and has died away leaves nothing behind.
+        let mut rig = rig("[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nrelease = 0.002\n", 64);
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        let mut data = vec![0.0f32; 64 * 2];
+        rig.renderer.render(&mut data, 0);
+        assert!(data.iter().any(|&s| s != 0.0));
+        rig.midi_tx.send((0, [0x80, 69, 0])).unwrap();
+        for cb in 1..20 {
+            rig.renderer.render(&mut data, cb);
+        }
+        assert!(data.iter().all(|&s| s == 0.0), "the tail is over, and the block is silent: {:?}", &data[..8]);
+    }
+
+    /// An instrument whose `process` always fails.
+    struct Failing;
+
+    impl crate::plugin::Plugin for Failing {
+        fn name(&self) -> &str {
+            "Failing"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn sample_rate(&self) -> f32 {
+            48_000.0
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
+        fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], _: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            anyhow::bail!("this plugin cannot render")
+        }
+        fn parameters(&self) -> Vec<crate::plugin::ParameterInfo> {
+            Vec::new()
+        }
+        fn get_parameter(&mut self, _: u32) -> Option<f32> {
+            None
+        }
+        fn set_parameter(&mut self, _: u32, _: f32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<crate::plugin::Preset> {
+            Vec::new()
+        }
+        fn load_preset(&mut self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_graph_that_fails_leaves_silence_in_the_block() {
+        use crate::plugin::chain::GraphCommand;
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(8);
+        let (return_tx, _return_rx) = crossbeam_channel::bounded(8);
+        let (midi_tx, midi_rx) = crossbeam_channel::bounded(8);
+        let mut renderer = Renderer::new(AudioGraph::new(2, cmd_rx, return_tx), midi_rx, 64);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx
+            .send(GraphCommand::SwapInstrument {
+                inst: 0,
+                instrument: Box::new(Failing),
+                inst_buf: vec![Vec::new(), Vec::new()],
+                remapper: None,
+            })
+            .unwrap();
+        midi_tx.send(NOTE_ON_A4).unwrap();
+        let mut data = vec![0.7f32; 64 * 2];
+        renderer.render(&mut data, 0);
+        assert!(data.iter().all(|&s| s == 0.0), "what the callback was handed is not played");
+    }
+
+    #[test]
+    fn midi_that_arrived_is_taken_off_the_channel() {
+        let mut rig = rig("[[instrument]]\nplugin = \"builtin:osc\"\n", 64);
+        for _ in 0..3 {
+            rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        }
+        let mut data = vec![0.0f32; 64 * 2];
+        rig.renderer.render(&mut data, 0);
+        assert!(rig.midi_tx.is_empty(), "all of it, in one block");
     }
 }
