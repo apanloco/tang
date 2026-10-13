@@ -34,7 +34,8 @@ interface Place {
  * A button that opens a menu: the pattern of the WAI-ARIA authoring practices. The menu is drawn in the page and
  * not where the button is (the button is in a node of the canvas, which would put the menu under the next node
  * and move it with the canvas), so it closes when the page is scrolled, sized, or pressed anywhere else. The
- * arrow keys, Home and End move between its items, Enter or Space chooses, Escape and Tab leave it.
+ * arrow keys, Home and End move between its items, Enter or Space chooses, Escape leaves it for the button
+ * and Tab leaves it for what comes after the button (or before it, with Shift).
  */
 export function MenuButton<Id extends string>({ label, id, items, onChoose, children }: MenuButtonProps<Id>) {
   const [place, setPlace] = useState<Place | null>(null);
@@ -105,7 +106,9 @@ export function MenuButton<Id extends string>({ label, id, items, onChoose, chil
       event.stopPropagation();
       close(true);
     } else if (event.key === "Tab") {
-      close(false);
+      // The menu is drawn at the end of the page, so a Tab from it would go to whatever comes after the page's
+      // last control: the focus goes back to the button first, and the Tab that comes after goes on from there.
+      close(true);
     }
   };
 

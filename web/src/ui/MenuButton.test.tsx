@@ -132,11 +132,16 @@ describe("a menu button", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  test("is left by Tab, which goes on to what comes next", () => {
-    const { trigger } = mount();
-    fireEvent.click(trigger);
-    fireEvent.keyDown(item(0), { key: "Tab" });
-    expect(screen.queryByRole("menu")).toBeNull();
+  test("is left by Tab, which goes on from the button: the menu is not where the button is, so the focus is put back first", () => {
+    for (const shiftKey of [false, true]) {
+      const { trigger } = mount();
+      fireEvent.click(trigger);
+      fireEvent.keyDown(item(0), { key: "Tab", shiftKey });
+      expect(screen.queryByRole("menu")).toBeNull();
+      // (The browser's own Tab, which comes after this, goes to the next or the previous control from where the focus is.)
+      expect(document.activeElement).toBe(trigger);
+      cleanup();
+    }
   });
 
   test("is closed by a press anywhere else, and by the page being scrolled or sized, without choosing", () => {

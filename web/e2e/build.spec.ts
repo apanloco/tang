@@ -134,6 +134,37 @@ test("a modulator added from the menu has an output to drag from at once", async
   await expect(cables(page)).toHaveCount(2);
 });
 
+/** What has the focus, in words. */
+const focused = (page: Page): Promise<string> =>
+  page.evaluate(() => {
+    const element = document.activeElement;
+    return `${element?.tagName ?? "nothing"} ${element?.getAttribute("aria-label") ?? element?.textContent ?? ""}`.trim();
+  });
+
+test("Tab out of the add menu goes on from its button, as Tab does when the menu is closed", async ({ page }) => {
+  await open(page);
+  const add = page.getByRole("button", { name: "Add a modulator to Oscillator" });
+  // What Tab, and Shift+Tab, come to from the button with the menu closed.
+  await add.focus();
+  await page.keyboard.press("Tab");
+  const after = await focused(page);
+  await add.focus();
+  await page.keyboard.press("Shift+Tab");
+  const before = await focused(page);
+  expect([after, before]).not.toContain("nothing");
+  expect(after).not.toBe(before);
+  // And from the open menu: the menu is in the page, not in the node, so Tab from it would have gone to
+  // whatever comes after the last thing in the page.
+  for (const [keys, expected] of [["Tab", after], ["Shift+Tab", before]] as const) {
+    await add.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("menu")).toBeVisible();
+    await page.keyboard.press(keys);
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    expect(await focused(page), keys).toBe(expected);
+  }
+});
+
 test("a cable is drawn from the keyboard, from the list at the foot of a modulator", async ({ page }) => {
   await open(page);
   const picker = page.getByRole("combobox", { name: "Cable from LFO to" });
