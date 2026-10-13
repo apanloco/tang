@@ -37,11 +37,15 @@ const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
   { id: "midiLearn", label: "MIDI control" },
 ];
 
+/** The `id` of the button that adds a modulator to the lane or group `node`, which what takes a modulator out gives the focus to. */
+const addModulatorId = (node: NodeId): string => `add-modulator-${String(node)}`;
+
 /** The button of a lane or a group that adds a modulator to it: a menu of the kinds. */
 function AddModulatorMenu({ node, name }: { node: NodeId; name: string }) {
   const editor = useEditor();
   return (
     <MenuButton
+      id={addModulatorId(node)}
       label={`Add a modulator to ${name}`}
       items={MODULATOR_KINDS}
       onChoose={(kind) => {
@@ -85,6 +89,27 @@ export function sameModulatorShape(a: Node | undefined, b: Node | undefined): bo
   return a.source.type !== "midiLearn" || JSON.stringify(a.source) === JSON.stringify(b.source);
 }
 
+/** The button of a modulator that takes it out, with its cables; the focus goes to the button that adds one to its lane or group. */
+function RemoveModulatorButton({ node, name, parent }: { node: NodeId; name: string; parent: NodeId | null }) {
+  const editor = useEditor();
+  return (
+    <button
+      type="button"
+      className="tang-node__remove nodrag nopan"
+      aria-label={`Remove ${name}`}
+      title={`Remove ${name}`}
+      onClick={() => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        void editor.removeModulator(node).then((removed) => {
+          if (removed && parent !== null) document.getElementById(addModulatorId(parent))?.focus();
+        });
+      }}
+    >
+      ×
+    </button>
+  );
+}
+
 /** A modulator: what it is, its settings as controls, and what it puts out as it does so. */
 export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
@@ -98,7 +123,9 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const settings = source ? settingsOf(source) : [];
   return (
     <div className="tang-node tang-node--modulator">
-      <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind} />
+      <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}>
+        <RemoveModulatorButton node={data.node} name={data.name} parent={node?.parent ?? null} />
+      </Header>
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">
           {settings.map((field) => (

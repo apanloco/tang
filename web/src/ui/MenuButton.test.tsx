@@ -45,6 +45,15 @@ describe("a menu button", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  test("has the id it is given, which something that gives the focus back can find it by", () => {
+    render(
+      <MenuButton label="Add" id="the-button" items={ITEMS} onChoose={vi.fn()}>
+        +
+      </MenuButton>,
+    );
+    expect(document.getElementById("the-button")).toBe(screen.getByRole("button", { name: "Add" }));
+  });
+
   test("opens a menu of the items when pressed, in the page and not in the node it is in, with the first item focused", () => {
     const { trigger } = mount();
     fireEvent.click(trigger);

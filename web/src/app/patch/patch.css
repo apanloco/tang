@@ -174,3 +174,53 @@
   min-width: 4ch;
   text-align: right;
 }
+
+/* The button that takes a modulator out, at the end of its header. */
+.tang-node__remove {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--tang-radius);
+  background: none;
+  color: var(--tang-text-muted);
+  font: inherit;
+  font-size: var(--tang-text-size);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tang-node__remove:hover,
+.tang-depth__remove:hover {
+  border-color: var(--tang-danger);
+  color: var(--tang-text);
+}
+
+.tang-node__remove:focus-visible,
+.tang-depth__remove:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* ...and the one on a cable, beside its depth. */
+.tang-depth-anchor {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-depth__remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--tang-border);
+  border-radius: 50%;
+  background: var(--tang-surface);
+  color: var(--tang-text-muted);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  line-height: 1;
+  cursor: pointer;
+}

@@ -12,6 +12,8 @@ export interface MenuItem<Id extends string = string> {
 export interface MenuButtonProps<Id extends string = string> {
   /** What pressing the button does, for a screen reader (and a tooltip): the button itself is a glyph. */
   label: string;
+  /** The `id` of the button, for whatever has to give the focus back to it. */
+  id?: string;
   items: readonly MenuItem<Id>[];
   /** The id of the item that was chosen. */
   onChoose: (id: Id) => void;
@@ -34,7 +36,7 @@ interface Place {
  * and move it with the canvas), so it closes when the page is scrolled, sized, or pressed anywhere else. The
  * arrow keys, Home and End move between its items, Enter or Space chooses, Escape and Tab leave it.
  */
-export function MenuButton<Id extends string>({ label, items, onChoose, children }: MenuButtonProps<Id>) {
+export function MenuButton<Id extends string>({ label, id, items, onChoose, children }: MenuButtonProps<Id>) {
   const [place, setPlace] = useState<Place | null>(null);
   const [focused, setFocused] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -111,6 +113,7 @@ export function MenuButton<Id extends string>({ label, items, onChoose, children
     <>
       <button
         ref={trigger}
+        id={id}
         type="button"
         className="tang-menu-button nodrag nopan"
         aria-label={label}

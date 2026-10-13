@@ -404,6 +404,75 @@ describe("the patch", () => {
     });
   });
 
+  describe("taking a modulator or a cable out", () => {
+    test("is offered on every modulator, by a button that names it, and on no other node", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      const names = (await screen.findAllByRole("button", { name: /^Remove / })).map((button) => button.getAttribute("aria-label")).filter((name) => !name?.startsWith("Remove cable"));
+      // The fixture's modulators: two LFOs of lanes and one of a group (numbered), two envelopes, a control.
+      expect(names.sort()).toEqual(["Remove ADSR 1", "Remove ADSR 2", "Remove LFO 1", "Remove LFO 2", "Remove LFO 3", "Remove MIDI (learning…)"].sort());
+      for (const id of [0, 1, 4, 14, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove / })).toBeNull();
+    });
+
+    test("takes a modulator out when its button is pressed, with its cable, and the focus goes to the button that adds one to its lane", async () => {
+      const { requests, view } = await rig(<PatchView />);
+      fireEvent.click(within(await nodeOf(lfo.id)).getByRole("button", { name: "Remove LFO" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "removeNode", node: lfo.id }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelector(`[data-id="${String(lfo.id)}"]`)).toBeNull();
+      });
+      expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(0);
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a modulator to Oscillator" }));
+      });
+    });
+
+    test("says why when the modulator could not be taken out, and it stays", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      fireEvent.click(within(await nodeOf(lfo.id)).getByRole("button", { name: "Remove LFO" }));
+      expect(await screen.findByText("Could not remove LFO: Not connected to the server.")).toBeTruthy();
+      expect(await nodeOf(lfo.id)).toBeTruthy();
+    });
+
+    test("has a button on each cable that takes it out, which names the cable", async () => {
+      const { requests, view } = await rig(<PatchView />);
+      const button = await screen.findByRole("button", { name: "Remove cable LFO → Filter: cutoff" });
+      fireEvent.click(button);
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "removeEdge", edge: 0 }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(0);
+      });
+      // The modulator stays, and there is no depth to turn.
+      expect(await nodeOf(lfo.id)).toBeTruthy();
+      expect(screen.queryByRole("slider", { name: /^Depth of/ })).toBeNull();
+    });
+
+    test("names two cables of two modulators of one name apart", async () => {
+      const snapshot: Snapshot = structuredClone(tracerSnapshot);
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });
+      snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
+      await rig(<PatchView />, { snapshot });
+      expect(await screen.findByRole("button", { name: "Remove cable LFO 1 → Filter: cutoff" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Remove cable LFO 2 → Filter: cutoff" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Remove LFO 2" })).toBeTruthy();
+    });
+  });
+
   test("gives the master a level meter with a clip light", async () => {
     await rig(<PatchView />);
     const master = await nodeOf(4294967295);
