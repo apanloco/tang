@@ -143,7 +143,8 @@ impl ScaleSetting {
         ];
         let try_match = |table: &[(&str, u8)]| -> Option<(u8, &str)> {
             for (name, root) in table {
-                if s.len() >= name.len() && s[..name.len()].eq_ignore_ascii_case(name) {
+                // (`get`, not a slice: text that is not ASCII can have a letter that the name's length ends in the middle of.)
+                if s.get(..name.len()).is_some_and(|head| head.eq_ignore_ascii_case(name)) {
                     return Some((*root, &s[name.len()..]));
                 }
             }
@@ -188,6 +189,14 @@ mod tests {
         let p = ScaleSetting::parse("F# Natural Minor").unwrap();
         assert_eq!(p.root, 6);
         assert_eq!(SCALES[p.scale_idx].short, "minor");
+    }
+
+    #[test]
+    fn parse_refuses_text_that_is_not_a_scale_whatever_its_letters_are() {
+        // (A root is matched by its first bytes; where they end inside a letter of more than one byte, there is no root.)
+        for text in ["", "C", "Cé", "é", "C#é major", "日本語", "Db é", "A\u{301} major", "C major é", "banana", "H major"] {
+            assert!(ScaleSetting::parse(text).is_none(), "{text:?}");
+        }
     }
 
     #[test]
