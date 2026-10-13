@@ -605,6 +605,11 @@ fn load_lane_modulators(
         acc += configs.len();
     }
 
+    // The configs of the lane's modulators in the order they are loaded, which is how a cable between them
+    // addresses them: where it is centred is what the file gives the field it drives.
+    let siblings: Vec<&session::ModulatorConfig> = groups.iter().flat_map(|(configs, _)| configs.iter()).collect();
+    let sibling = |index: usize, field| sibling_field_info(siblings.get(index).copied(), field);
+
     let mut loaded = Vec::new();
     let mut lane_index = 0usize;
     for (gi, (mod_configs, default_slot)) in groups.iter().enumerate() {
@@ -657,29 +662,35 @@ fn load_lane_modulators(
                     )
                 } else if let Some(mi) = target_config.mod_rate {
                     let mi = mi + group_base;
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Rate);
                     (plugin::chain::ModTargetKind::ModulatorRate { mod_index: mi },
-                     0, format!("Mod {mi} rate"), 0.01, 50.0, 1.0)
+                     0, format!("Mod {mi} rate"), min, max, base)
                 } else if let Some(ref pair) = target_config.mod_depth {
                     let mi = pair.first().copied().unwrap_or(0) + group_base;
                     let ti = pair.get(1).copied().unwrap_or(0);
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Depth(ti));
                     (plugin::chain::ModTargetKind::ModulatorDepth { mod_index: mi, target_index: ti },
-                     0, format!("Mod {mi} depth {ti}"), 0.0, 1.0, 0.5)
+                     0, format!("Mod {mi} depth {ti}"), min, max, base)
                 } else if let Some(mi) = target_config.mod_attack {
                     let mi = mi + group_base;
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Attack);
                     (plugin::chain::ModTargetKind::ModulatorAttack { mod_index: mi },
-                     0, format!("Mod {mi} attack"), 0.001, 10.0, 0.01)
+                     0, format!("Mod {mi} attack"), min, max, base)
                 } else if let Some(mi) = target_config.mod_decay {
                     let mi = mi + group_base;
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Decay);
                     (plugin::chain::ModTargetKind::ModulatorDecay { mod_index: mi },
-                     0, format!("Mod {mi} decay"), 0.001, 10.0, 0.3)
+                     0, format!("Mod {mi} decay"), min, max, base)
                 } else if let Some(mi) = target_config.mod_sustain {
                     let mi = mi + group_base;
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Sustain);
                     (plugin::chain::ModTargetKind::ModulatorSustain { mod_index: mi },
-                     0, format!("Mod {mi} sustain"), 0.0, 1.0, 0.7)
+                     0, format!("Mod {mi} sustain"), min, max, base)
                 } else if let Some(mi) = target_config.mod_release {
                     let mi = mi + group_base;
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Release);
                     (plugin::chain::ModTargetKind::ModulatorRelease { mod_index: mi },
-                     0, format!("Mod {mi} release"), 0.001, 10.0, 0.5)
+                     0, format!("Mod {mi} release"), min, max, base)
                 } else {
                     log::warn!("Modulator target has no param or mod_* field, skipping");
                     continue;
@@ -791,32 +802,46 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
 /// group→member-modulator cross-mod target on load. Falls back to per-field
 /// defaults if the member modulator's type doesn't match the field.
 fn member_mod_field_info(mm: &ModulatorSlot, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
+    field_info(&mm.source, |ti| mm.targets.get(ti).map(|t| t.depth), field)
+}
+
+/// The same for a cable from one modulator of a rack to another, before the rack is loaded: the modulator is
+/// described by its config, which has the value the file gives the field (the modulator may not be there, and
+/// then the field has its default). The cable's modulation is centred on it.
+fn sibling_field_info(config: Option<&session::ModulatorConfig>, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
+    match config {
+        Some(config) => field_info(&build_mod_source(config).0, |ti| config.targets.get(ti).map(|t| t.depth as f32), field),
+        None => field_info(&ModSourceSlot::Lfo { waveform: plugin::chain::LfoWaveform::Sine, rate: 1.0 }, |_| None, field),
+    }
+}
+
+/// (base value, min, max) of `field` of a modulator that has `source` and whose cables have the depths
+/// `depth_of` says: where a cable that drives the field is centred, and the range it is held to. A field
+/// the kind of modulator does not have has the default.
+fn field_info(source: &ModSourceSlot, depth_of: impl Fn(usize) -> Option<f32>, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
     use plugin::chain::CrossModField;
     match field {
         CrossModField::Rate => {
-            let v = if let ModSourceSlot::Lfo { rate, .. } = &mm.source { *rate } else { 1.0 };
+            let v = if let ModSourceSlot::Lfo { rate, .. } = source { *rate } else { 1.0 };
             (v, 0.01, 50.0)
         }
         CrossModField::Attack => {
-            let v = if let ModSourceSlot::Envelope { attack, .. } = &mm.source { *attack } else { 0.01 };
+            let v = if let ModSourceSlot::Envelope { attack, .. } = source { *attack } else { 0.01 };
             (v, 0.001, 10.0)
         }
         CrossModField::Decay => {
-            let v = if let ModSourceSlot::Envelope { decay, .. } = &mm.source { *decay } else { 0.3 };
+            let v = if let ModSourceSlot::Envelope { decay, .. } = source { *decay } else { 0.3 };
             (v, 0.001, 10.0)
         }
         CrossModField::Sustain => {
-            let v = if let ModSourceSlot::Envelope { sustain, .. } = &mm.source { *sustain } else { 0.7 };
+            let v = if let ModSourceSlot::Envelope { sustain, .. } = source { *sustain } else { 0.7 };
             (v, 0.0, 1.0)
         }
         CrossModField::Release => {
-            let v = if let ModSourceSlot::Envelope { release, .. } = &mm.source { *release } else { 0.5 };
+            let v = if let ModSourceSlot::Envelope { release, .. } = source { *release } else { 0.5 };
             (v, 0.001, 10.0)
         }
-        CrossModField::Depth(ti) => {
-            let v = mm.targets.get(ti).map(|t| t.depth).unwrap_or(0.5);
-            (v, 0.0, 1.0)
-        }
+        CrossModField::Depth(ti) => (depth_of(ti).unwrap_or(0.5), 0.0, 1.0),
     }
 }
 
@@ -829,6 +854,8 @@ fn load_group_modulators(
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
     alloc: &mut Allocators,
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
+    // A cable between the group's modulators is centred on what the file gives the field it drives.
+    let sibling = |index: usize, field| sibling_field_info(group_config.modulators.get(index), field);
     let mut loaded = Vec::new();
     for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
         let (source_slot, desc) = build_mod_source(mod_config);
@@ -943,25 +970,31 @@ fn load_group_modulators(
                         param_info.default,
                     )
                 } else if let Some(mi) = target_config.mod_rate {
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Rate);
                     (plugin::chain::ModTargetKind::ModulatorRate { mod_index: mi },
-                     0, format!("Mod {mi} rate"), 0.01, 50.0, 1.0)
+                     0, format!("Mod {mi} rate"), min, max, base)
                 } else if let Some(ref pair) = target_config.mod_depth {
                     let mi = pair.first().copied().unwrap_or(0);
                     let ti = pair.get(1).copied().unwrap_or(0);
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Depth(ti));
                     (plugin::chain::ModTargetKind::ModulatorDepth { mod_index: mi, target_index: ti },
-                     0, format!("Mod {mi} depth {ti}"), 0.0, 1.0, 0.5)
+                     0, format!("Mod {mi} depth {ti}"), min, max, base)
                 } else if let Some(mi) = target_config.mod_attack {
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Attack);
                     (plugin::chain::ModTargetKind::ModulatorAttack { mod_index: mi },
-                     0, format!("Mod {mi} attack"), 0.001, 10.0, 0.01)
+                     0, format!("Mod {mi} attack"), min, max, base)
                 } else if let Some(mi) = target_config.mod_decay {
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Decay);
                     (plugin::chain::ModTargetKind::ModulatorDecay { mod_index: mi },
-                     0, format!("Mod {mi} decay"), 0.001, 10.0, 0.3)
+                     0, format!("Mod {mi} decay"), min, max, base)
                 } else if let Some(mi) = target_config.mod_sustain {
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Sustain);
                     (plugin::chain::ModTargetKind::ModulatorSustain { mod_index: mi },
-                     0, format!("Mod {mi} sustain"), 0.0, 1.0, 0.7)
+                     0, format!("Mod {mi} sustain"), min, max, base)
                 } else if let Some(mi) = target_config.mod_release {
+                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Release);
                     (plugin::chain::ModTargetKind::ModulatorRelease { mod_index: mi },
-                     0, format!("Mod {mi} release"), 0.001, 10.0, 0.5)
+                     0, format!("Mod {mi} release"), min, max, base)
                 } else {
                     log::warn!("Group modulator target has no param/member/bus/mod_* field, skipping");
                     continue;
@@ -1493,8 +1526,8 @@ mod tests {
                 "AddGroupModTarget group=0 mod=0 kind=GroupBus { effect_index: 0, param_index: 2 } depth=0.250 base=0.350 range=[0.000, 1.000]",
                 "AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 1, mod_index: 0, field: Rate } depth=0.200 base=3.000 range=[0.010, 50.000]",
                 "InsertGroupModulator group=0 index=1 source=Envelope { attack: 0.02, decay: 0.4, sustain: 0.5, release: 1.0, state: Idle, level: 0.0, notes_held: 0 }",
-                "AddGroupModTarget group=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.300 base=1.000 range=[0.010, 50.000]",
-                "AddGroupModTarget group=0 mod=1 kind=ModulatorDepth { mod_index: 0, target_index: 2 } depth=0.100 base=0.500 range=[0.000, 1.000]",
+                "AddGroupModTarget group=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.300 base=0.500 range=[0.010, 50.000]",
+                "AddGroupModTarget group=0 mod=1 kind=ModulatorDepth { mod_index: 0, target_index: 2 } depth=0.100 base=0.250 range=[0.000, 1.000]",
             ]
         );
         // Progress covers the lanes' plugin slots only; the group's bus effect is not counted.
@@ -1567,7 +1600,7 @@ plugin = "builtin:filter"
                 "InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 3.0, phase: 0.0 }",
                 "AddModTarget inst=0 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.200 base=1.000 range=[0.000, 1.000]",
                 "InsertModulator inst=0 index=2 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0 }",
-                "AddModTarget inst=0 mod=2 kind=ModulatorRate { mod_index: 1 } depth=0.300 base=1.000 range=[0.010, 50.000]",
+                "AddModTarget inst=0 mod=2 kind=ModulatorRate { mod_index: 1 } depth=0.300 base=3.000 range=[0.010, 50.000]",
             ]
         );
         let lane = &run.model.instruments[0];
@@ -1610,6 +1643,62 @@ type = "envelope"
         assert_eq!(lane.modulators.len(), 2);
         assert_eq!((lane.modulators[0].targets[0].slot, lane.modulators[0].targets[0].param_name.as_str()), (1, "cutoff"));
         run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_to_a_modulators_rate_stage_or_depth_is_centred_on_what_the_file_has_there() {
+        // m0 drives, one cable each, the rate of m1 (an LFO at 2 Hz), the four stages of m2 (an
+        // envelope) and the depth of m1's first cable (0.4). A cable's modulation is centred on the
+        // value it drives, and that is the value the file gives the field, not a default.
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+mod_rate = 1
+[[instrument.modulator.target]]
+mod_attack = 2
+[[instrument.modulator.target]]
+mod_decay = 2
+[[instrument.modulator.target]]
+mod_sustain = 2
+[[instrument.modulator.target]]
+mod_release = 2
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.4
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.2
+decay = 0.4
+sustain = 0.6
+release = 0.8
+"#,
+        );
+        let base = |c: &String| c.split("base=").nth(1).unwrap().split(' ').next().unwrap().to_string();
+        let bases: Vec<String> = run.commands.iter().filter(|c| c.starts_with("AddModTarget inst=0 mod=0 ")).map(base).collect();
+        assert_eq!(bases, ["2.000", "0.200", "0.400", "0.600", "0.800", "0.400"]);
+    }
+
+    #[test]
+    fn a_cable_to_a_modulator_the_file_does_not_have_is_centred_on_the_default() {
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 3.0
+[[instrument.modulator.target]]
+mod_rate = 7
+"#,
+        );
+        assert!(run.commands.iter().any(|c| c.contains("kind=ModulatorRate { mod_index: 7 } depth=0.500 base=1.000 range=[0.010, 50.000]")), "{:#?}", run.commands);
     }
 
     #[test]
