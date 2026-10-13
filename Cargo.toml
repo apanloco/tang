@@ -10,9 +10,9 @@ edition = "2024"
 default = ["lv2", "vst3"]
 lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
-# The browser front-end (docs/web-ui.md). Off by default. So far it only adds the
-# TypeScript generated from the protocol types (`app::protocol`).
-web = ["dep:ts-rs"]
+# The browser front-end (docs/web-ui.md). Off by default: the TypeScript
+# generated from the protocol types (`app::protocol`) and the web runtime (`web`).
+web = ["dep:ts-rs", "dep:getrandom"]
 
 [dependencies]
 view = { path = "view" }
@@ -35,6 +35,7 @@ clack-extensions = { git = "https://github.com/prokopyl/clack", features = ["cla
 vst3 = { version = "0.3", optional = true }
 libloading = { version = "0.8", optional = true }
 ts-rs = { version = "12", optional = true }
+getrandom = { version = "0.4", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

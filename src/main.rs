@@ -20,6 +20,8 @@ mod session;
 mod telemetry;
 mod tty;
 mod tui;
+#[cfg(feature = "web")]
+mod web;
 
 use std::io::Write;
 use std::path::Path;
