@@ -6,7 +6,7 @@
 //! nothing, and does not count as a revision.
 
 use crate::app::controller::Controller;
-use crate::app::intent::{Applied, Event, Gain, Intent, IntentError};
+use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ParamValue};
 use crate::app::model::{NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::plugin::chain::GraphCommand;
 use crate::{plugin, session};
@@ -159,13 +159,13 @@ impl Controller {
 /// the baseline, so that a preset's values are not saved as the user's edits. Rows
 /// are matched to `values` by the plugin's own parameter index; a row with no value
 /// keeps what it has. Returns what was set.
-fn mirror_values(rows: &mut [ParamSlot], values: &[(u32, f32)]) -> Vec<(u32, f32)> {
+fn mirror_values(rows: &mut [ParamSlot], values: &[(u32, f32)]) -> Vec<ParamValue> {
     let mut set = Vec::new();
     for row in rows {
         if let Some(&(_, value)) = values.iter().find(|(index, _)| *index == row.index) {
             row.value = value;
             row.default = value;
-            set.push((row.index, value));
+            set.push(ParamValue { param: row.index, value });
         }
     }
     set
@@ -472,11 +472,11 @@ plugin = "builtin:reverb"
 
     /// What a reverb reports for each parameter, by its own index, once `preset`
     /// is loaded into it: what the model has to mirror.
-    fn reverb_values_after(preset: &str) -> Vec<(u32, f32)> {
+    fn reverb_values_after(preset: &str) -> Vec<ParamValue> {
         let mut reverb = crate::plugin::load("builtin:reverb", 48_000.0, 256, &Default::default()).unwrap();
         crate::session::apply_preset(&mut reverb, preset);
         let indexes: Vec<u32> = reverb.parameters().iter().map(|p| p.index).collect();
-        indexes.into_iter().map(|i| (i, reverb.get_parameter(i).unwrap())).collect()
+        indexes.into_iter().map(|i| ParamValue { param: i, value: reverb.get_parameter(i).unwrap() }).collect()
     }
 
     #[test]
@@ -498,7 +498,7 @@ plugin = "builtin:reverb"
         let slot = &ctl.model.instruments[0].effects[0];
         assert_eq!(slot.current_preset.as_deref(), Some("Cathedral"));
         for row in &slot.params {
-            let want = expected.iter().find(|(i, _)| *i == row.index).unwrap().1;
+            let want = expected.iter().find(|v| v.param == row.index).unwrap().value;
             assert_eq!((row.value, row.default), (want, want), "{}: the preset's value, and the baseline", row.name);
         }
         let after: Vec<f32> = slot.params.iter().map(|p| p.value).collect();
@@ -555,7 +555,7 @@ plugin = "builtin:reverb"
         // it also reports a hidden 7, and nothing for 12.
         let mut rows = vec![row(5, 0.5), row(9, 0.5), row(12, 0.5)];
         let set = mirror_values(&mut rows, &[(5, 0.1), (7, 0.7), (9, 0.9)]);
-        assert_eq!(set, [(5, 0.1), (9, 0.9)]);
+        assert_eq!(set, [ParamValue { param: 5, value: 0.1 }, ParamValue { param: 9, value: 0.9 }]);
         let now: Vec<(f32, f32)> = rows.iter().map(|r| (r.value, r.default)).collect();
         assert_eq!(now, [(0.1, 0.1), (0.9, 0.9), (0.5, 0.5)]);
     }

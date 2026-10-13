@@ -32,7 +32,7 @@ mod typescript {
 
     use ts_rs::{Config, TS};
 
-    use crate::app::model::NodeId;
+    use crate::app::intent::{Event, Intent, StampedEvent};
 
     /// Where the generated TypeScript is committed.
     fn generated_dir() -> PathBuf {
@@ -46,7 +46,9 @@ mod typescript {
         // environment of whoever runs the test. `u64` counts (revisions) stay far
         // below 2^53, so they are plain numbers rather than `bigint`.
         let cfg = Config::new().with_large_int("number").with_out_dir(dir);
-        NodeId::export_all(&cfg)?;
+        Intent::export_all(&cfg)?;
+        Event::export_all(&cfg)?;
+        StampedEvent::export_all(&cfg)?;
         Ok(())
     }
 
