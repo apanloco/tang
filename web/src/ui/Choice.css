@@ -1,0 +1,30 @@
+.tang-choice {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 72px;
+}
+
+.tang-choice__label {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-choice__select {
+  padding: 2px var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: var(--tang-text-small) / 1.4 var(--tang-font);
+}
+
+.tang-choice__select:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-choice__select:disabled {
+  opacity: 0.7;
+}
