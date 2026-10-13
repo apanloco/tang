@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
@@ -24,8 +24,16 @@ function page(options: MockOptions = {}) {
   return { server, client, view };
 }
 
-/** The text of the session as the page shows it. */
+/** The text of the session as the page shows it, once whoever is looking has asked to see it. */
 const shown = (): string => document.querySelector(".tang-session")?.textContent ?? "";
+
+/** Open the session as JSON, which the page keeps closed (and does not write while it is). */
+function openJson(): void {
+  const details = document.querySelector("details");
+  if (!details) throw new Error("the page has no session as JSON");
+  details.open = true;
+  fireEvent(details, new Event("toggle"));
+}
 
 describe("the page", () => {
   test("connects, says so, and shows the session as the server sent it", async () => {
@@ -34,6 +42,7 @@ describe("the page", () => {
     await waitFor(() => {
       expect(screen.getByRole("status").textContent).toBe("Connected");
     });
+    openJson();
     expect(JSON.parse(shown())).toEqual(tracerSnapshot);
     expect(shown()).toContain('\n  "graph"'); // written out for a person to read
     expect(screen.getByText("mock engine")).toBeTruthy();
@@ -61,6 +70,7 @@ describe("the page", () => {
   test("shows a change somebody else makes", async () => {
     const { server } = page();
     await screen.findByText("Connected");
+    openJson();
     expect(shown()).not.toContain("0.123");
     server.apply({ type: "setParam", node: filter.id, param: 0, value: 0.123 });
     await waitFor(() => {
@@ -71,6 +81,7 @@ describe("the page", () => {
   test("goes on showing the session while the connection is lost, and says it is", async () => {
     const { server } = page();
     await screen.findByText("Connected");
+    openJson();
     server.drop();
     await screen.findByText("Connection lost, reconnecting…");
     expect(JSON.parse(shown())).toEqual(tracerSnapshot);
@@ -82,7 +93,41 @@ describe("the page", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toMatch(/protocol 1 and the server speaks 9/);
     expect(screen.getByRole("status").textContent).toBe("Disconnected");
+    openJson();
     expect(shown()).toBe("");
+  });
+
+  test("shows the session as a patch: the nodes of the tracer and the cables between them", async () => {
+    page();
+    await screen.findByText("Connected");
+    const patch = await screen.findByTestId("patch");
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(4);
+    });
+    expect(Array.from(patch.querySelectorAll(".tang-node__name")).map((name) => name.textContent)).toEqual([
+      "Oscillator",
+      "Filter",
+      "LFO 0.5Hz sine",
+      "Master",
+    ]);
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__edge")).toHaveLength(3);
+    });
+  });
+
+  test("keeps the session as JSON closed, and writes it only while it is open", async () => {
+    page();
+    await screen.findByText("Connected");
+    expect(document.querySelector("details")?.open).toBe(false);
+    expect(document.querySelector(".tang-session")).toBeNull();
+    openJson();
+    expect(document.querySelector(".tang-session")).not.toBeNull();
+    const details = document.querySelector("details");
+    if (details) {
+      details.open = false;
+      fireEvent(details, new Event("toggle"));
+    }
+    expect(document.querySelector(".tang-session")).toBeNull();
   });
 
   test("leaves the server when it is taken off the page", async () => {

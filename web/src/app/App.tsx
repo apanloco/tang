@@ -1,16 +1,38 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { useClientState } from "./ClientProvider";
 import type { EngineKind } from "./engine";
+import { PatchView } from "./patch/PatchView";
 import "./App.css";
 
-/** The whole page, for now: the state of the connection and the session as the server sent it. */
+/** The session as JSON, for whoever wants to see what the server sent. Made only while it is shown: it is a lot to write on every change. */
+function SessionJson() {
+  const snapshot = useClientState((state) => state.snapshot);
+  const raw = useMemo(() => (snapshot ? JSON.stringify(snapshot, null, 2) : null), [snapshot]);
+  return raw ? <pre className="tang-session">{raw}</pre> : null;
+}
+
+function RawSession() {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="tang-raw"
+      open={open}
+      onToggle={(event) => {
+        setOpen(event.currentTarget.open);
+      }}
+    >
+      <summary>Session as JSON</summary>
+      {open ? <SessionJson /> : null}
+    </details>
+  );
+}
+
+/** The whole page: the state of the connection, the session as a patch, and the session as the server sent it. */
 export function App({ engine }: { engine: EngineKind }) {
   const status = useClientState((state) => state.status);
   const problem = useClientState((state) => state.problem);
-  const snapshot = useClientState((state) => state.snapshot);
-  const raw = useMemo(() => (snapshot ? JSON.stringify(snapshot, null, 2) : null), [snapshot]);
 
   return (
     <div className="tang-app">
@@ -25,7 +47,10 @@ export function App({ engine }: { engine: EngineKind }) {
             {problem}
           </p>
         ) : null}
-        {raw ? <pre className="tang-session">{raw}</pre> : null}
+        <div className="tang-app__patch">
+          <PatchView />
+        </div>
+        <RawSession />
       </main>
     </div>
   );

@@ -28,13 +28,33 @@
 }
 
 .tang-app__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tang-app__patch {
   flex: 1;
   min-height: 0;
+}
+
+.tang-raw {
+  max-height: 40%;
   overflow: auto;
-  padding: var(--tang-space-4);
+  border-top: 1px solid var(--tang-border);
+  background: var(--tang-surface);
+}
+
+.tang-raw > summary {
+  padding: var(--tang-space-2) var(--tang-space-4);
+  cursor: pointer;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
 }
 
 .tang-app__problem {
+  margin: var(--tang-space-4);
   max-width: 48em;
   padding: var(--tang-space-3) var(--tang-space-4);
   border: 1px solid var(--tang-danger);

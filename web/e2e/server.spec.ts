@@ -17,6 +17,8 @@ test("the page connects to the real server and shows its session", async ({ page
   await page.goto("/");
   await expect(page.getByRole("status")).toHaveText("Connected");
   await expect(page.getByText("server", { exact: true })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "cutoff" })).toBeVisible();
+  await page.getByText("Session as JSON").click();
   const session = JSON.parse((await page.locator(".tang-session").textContent()) ?? "") as Session;
   expect(session.meta.file).toBe("tracer.toml");
   expect(session.graph.nodes.map((node) => node.name)).toEqual(expect.arrayContaining(["Oscillator", "Filter"]));
@@ -63,5 +65,6 @@ test("a change another front-end makes appears on the page", async ({ page }) =>
   while (reply.type !== "ack") reply = await messages.next();
   socket.close();
 
-  await expect(page.locator(".tang-session")).toContainText("3.14159");
+  // The resonance knob of the filter shows it.
+  await expect(page.getByRole("slider", { name: "resonance" })).toHaveAttribute("aria-valuenow", "3.14159");
 });

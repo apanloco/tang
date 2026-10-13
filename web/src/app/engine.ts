@@ -20,5 +20,6 @@ export interface Connection {
 export function createConnection(location: Pick<Location, "protocol" | "host" | "search" | "hash">): Connection {
   const engine = engineFor(location.search);
   const transport = engine === "mock" ? new MockServer().transport : webSocketTransport(serverUrl(location));
-  return { client: new Client({ transport, token: tokenFromHash(location.hash) }), engine };
+  // The views draw the levels and what the modulators do, which the server only makes for those who ask.
+  return { client: new Client({ transport, token: tokenFromHash(location.hash), telemetry: ["meters", "modulation"] }), engine };
 }
