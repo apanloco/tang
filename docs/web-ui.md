@@ -1,9 +1,10 @@
 # Web UI — design
 
-Status: **planned**. Nothing here is implemented yet. `CLAUDE.md` carries the
-short version and the TODOs; this file is the long form. Update both as steps
-land (tick the boxes in §12, move TODOs out of `CLAUDE.md` into the relevant
-section). Decisions are listed in §14 with their status.
+Status: **phase 0 is built** (the 13 steps of §12); phases 1 and on (§11) are
+planned. `CLAUDE.md` carries the short version and the TODOs; this file is the
+long form. Update both as steps land (tick the boxes in §12, move TODOs out of
+`CLAUDE.md` into the relevant section). Decisions are listed in §14 with their
+status.
 
 ## 1. Goals and non-goals
 
@@ -163,9 +164,9 @@ future away from the synchronous rest of the program. Its parts, each in
 - One semaphore permit per connection bounds how many there are (32; the 33rd gets
   503) and tells a stopping server when they have all gone.
 - Not built: keep-alive pings (a client that vanishes without closing is noticed
-  when something is written to it), and events for what the audio thread reports
-  to the controller (a finished pattern recording, a captured MIDI-learn control):
-  they change the model, and a connected client sees them at its next snapshot.
+  when something is written to it). (What the audio thread reports to the
+  controller, a finished pattern recording or a captured MIDI-learn control, has no
+  event of its own, but reaches a connected client as a snapshot: §3.4.)
 
 ### 3.3 Real-time note lane
 
@@ -176,6 +177,94 @@ WebSocket, are handled in the web runtime and call `NoteInput` directly, with no
 controller round trip. The runtime tracks the notes each connection holds and
 sends note-offs when the connection drops, so a closed tab cannot leave notes
 stuck.
+
+### 3.4 The TUI and the web runtime on one controller (step 13)
+
+`tang --web[=ADDR]` runs the TUI and the web interface on one controller. The main
+thread owns it, and its loop, `tui::event_loop`, waits for the terminal, the browsers
+and a tick together.
+
+- **The loop.** crossterm can only be polled, so the terminal is read on a thread of
+  its own (`tui/terminal_input.rs`: it polls with a 50 ms wait, which is also the most
+  that dropping it waits, and sends what it reads, a failure included, over a
+  channel). The loop `select!`s on that channel, the requests of the browsers
+  (`Runtime::requests`, a clone of the owner's receiver; `never()` when there is no
+  web interface, and again once the server is gone, or the loop would spin on a
+  channel that has nothing more to give) and a 100 ms tick. Every turn: `tick` (the
+  controller's `poll`, the catalog, the CLIP light), `Owner::refresh`, draw; then it
+  waits; and what came is handled: the terminal's events that are waiting, all of
+  them before the next frame, then `Controller::resync`; or a browser's request and
+  those behind it. `event_loop` and `render` are generic over the ratatui backend, so
+  the tests run the real loop against a `TestBackend`. `tui/web.rs` is the runtime as
+  far as the loop needs it, with a stand-in for builds without the `web` feature
+  (`Web` has no values there, and the loop has no cfgs).
+- **Web to TUI.** A request is applied by the owner (`Runtime::serve`), which hands
+  back the intents it applied; the loop reacts to them as `State::apply` does to the
+  TUI's own (`react_to`: a group's volume is in its header in the tree). The rest of
+  what the TUI shows it reads from the model when it draws, so a value a browser set
+  is on the screen with the next frame, and a step the TUI takes starts from it.
+- **TUI to web.** What the TUI changes through intents (parameters, gains, presets)
+  reaches the browsers as the events `apply` publishes. The rest of what it does
+  (`n`, `R`, `b`, `g`, `d`, `m`, `t`, …) it still does to the model directly, and
+  nothing tells the browsers. `Controller::resync` finds it by comparing.
+  `app::subscribers::Subscribers` keeps what its subscribers have been told: the
+  snapshot the first one started from with every intent applied to it
+  (`Snapshot::apply`: the rules of `Controller::apply` read from the other side, as the
+  client's `applyEvent` reads them). `resync` builds the snapshot of the session now and
+  compares; if they differ it bumps `rev` and gives the subscribers the snapshot
+  (`EventSink::resync`). The web runtime's `HubSink` sends it as a `snapshot` message to
+  the subscribed clients and sets the revision and the layout that the connections and
+  the telemetry frames read. With nobody subscribed nothing is built. The loop calls it
+  after each batch of the terminal's input, and `poll` calls it when the audio thread has
+  reported something, so a finished pattern recording or a captured MIDI-learn control
+  reaches a browser too (as a snapshot, not as an event of its own). Every TUI edit that
+  becomes an intent leaves less for it to find.
+  - The test that matters is `Snapshot::apply`'s: for intents of every kind (a value
+    clamped, an enum rounded, a preset) the snapshot after the events is the controller's
+    own. It found two rules the client's reducer lacked: an intent leaves the session
+    dirty (`meta.dirty`), and the values a preset sets are the parameters' defaults, as
+    the controller keeps them as the baseline (f27, f28, fixed).
+  - A subscriber that keeps a copy the way a client does (the tests' `Mirror`) ends up at
+    the controller's snapshot whatever was done to the session; an intent applied to what
+    it has not heard of (a lane added in the TUI and not yet resynced) leaves a snapshot
+    for it to take, not a wrong copy.
+  - Cost: a `resync` that finds nothing takes about 0.13 ms in a debug build for 8 lanes
+    with modulators (57 nodes, 50 KB of JSON), of which the snapshot is 0.1 ms; it runs
+    once per batch of the terminal's input, not on the tick.
+- **The browser's side** needs nothing new: the client takes a `snapshot` at any time
+  (replacing its copy and the layout). A `layout` message is still sent for a layout
+  that changes with no resync; one that a snapshot carried is not told twice
+  (`HubSink::resync` sets it in `Shared`, and `Owner::refresh` compares with that).
+- **What the TUI shows.** The tab bar says where the web interface listens and how many
+  browsers are on it, `web 127.0.0.1:8765 (2)`, before the CLIP light and the tempo, and
+  shortened to `web (2)` or left out so that it never touches the tabs. The Help tab has
+  the address to open (with the token, if there is one) and, for an address beyond this
+  machine, the two warnings `tang serve` logs. The address and the warnings are printed
+  on stdout before the TUI takes the screen (the TUI's log is off). A port that is taken
+  is an error before the terminal is taken over.
+- **The flag.** `--web[=ADDR]` is the top level's, for the TUI alone: the address (an IP
+  and a port, `127.0.0.1:8765` by default) comes only after an `=`, so that `tang --web
+  x.toml` is a session; `--web-origin` (repeatable) needs it; written before a
+  subcommand it parses and `Cli::check` refuses it (`serve` has `--web-bind`). In a
+  build without the `web` feature it is refused before the session is loaded.
+- **Checked.** The tests run the real loop with a real server and a WebSocket client on
+  a thread of its own, which presses keys by sending them to the loop: a cutoff set in
+  the browser is where the TUI's next step starts from, and the browser hears that step
+  as an event; the tempo and a new lane set in the TUI reach the browser as snapshots; a
+  browser that comes late is told the current revision; a group volume and a preset set
+  in a browser show in the TUI; a stopped server does not make the loop spin. By hand:
+  the real program on the null backend (nothing heard), the TUI in a pty read through a
+  terminal emulator and a real Chromium on its page, 18 checks both ways, all passed
+  (the cutoff and the resonance each way; the session's asterisk; a lane added in the
+  TUI, with the values set before still in the browser; the browser counted in the tab
+  bar and no longer once it closes; the TUI quits with status 0).
+- **Costs and limits.** One thread runs the TUI and answers the browsers: a plugin load
+  a browser asks for blocks the TUI and the other way (§3.1's known cost), and a browser
+  dragging a knob makes the TUI draw once for each frame's request, up to 60 a second. A
+  port that is taken is found only after the session has loaded, because the server needs
+  the controller to start (f29). The events of one intent share its revision, and a
+  client takes the second of two for a repeat (f30; every intent makes one event today).
+  The terminal reader was run on macOS only (crossterm's reader is used from a thread).
 
 ## 4. Model
 
@@ -328,7 +417,9 @@ in one object, `Applied::stamped()` makes them): `ParamSet`, `NodeAdded`,
 `PluginLoaded`, `PluginFailed`, `CatalogBatch`, `PatternRecorded`,
 `MidiLearned`, `Devices`, `Resync`. Structural events carry whole replacement
 nodes so client reducers stay trivial; value events are tiny. A client that sees
-a gap in `rev` refetches a snapshot.
+a gap in `rev` refetches a snapshot. (**As built, step 13:** the structural events
+are not built, and until they are the controller's `resync` stands in for them: a
+change no intent made is told by a snapshot at a revision of its own, §3.4.)
 
 **Undo / redo.** Each `Applied.undo` holds inverse intents. Structural removals
 also carry the removed subtree (with its modulation edges) and the plugin
@@ -444,8 +535,10 @@ master peak and clip. A scope ring can follow later.
     `subscribe`, `telemetry { channels }`, `request { reqId, intent }`,
     `noteOn { note, velocity }`, `noteOff { note }`.
   - server → client: `hello { protocol, rev, features, needsToken }` (first),
-    `snapshot { snapshot }` (the answer to `subscribe`), `event { event }` (a
-    `StampedEvent`), `layout { layout }`, `ack { reqId, rev }`,
+    `snapshot { snapshot }` (the answer to `subscribe`, and, since step 13, also sent
+    unasked to the subscribed when the session changed in a way no event describes: the
+    client replaces its copy, the layout included, and carries on from the revision in
+    it), `event { event }` (a `StampedEvent`), `layout { layout }`, `ack { reqId, rev }`,
     `rejected { reqId, error }`, `closing { error }` (the last thing before the
     server closes), with `error = { code, message }`, `code` one of `notFound`,
     `invalid`, `badRequest`, `unauthorized`, `rateLimited`, `overloaded`.
@@ -706,7 +799,9 @@ implementations. The TUI golden tests are the regression net.
 0. **Foundations:** controller and graph model, protocol, telemetry v1,
    `tang serve`, web skeleton, mock engine, CI. *Exit:* an LFO visibly drives a
    filter-cutoff knob in the browser, matching what you hear, and the TUI and
-   browser reflect each other's changes.
+   browser reflect each other's changes. (Built, steps 1 to 13, and checked except
+   for "what you hear": the browser tests and the parity check ran on the null
+   backend, and the dot is the engine's own value as the audio thread sets it.)
 1. **Session parity:** outline and inspector, chain editing, presets, pickers,
    save, undo / redo, off-thread plugin loads, parameter metadata for the
    CLAP / VST3 / LV2 backends. *Exit:* build a session in the browser and load
@@ -1229,11 +1324,43 @@ Each step is a reviewable change; the TUI must not regress at any point.
     `npm run e2e` runs the browser tests one at a time (they share the real program's one
     session, and each puts the filter back as the example has it); the commit count needs the
     Vite dev server, which is what Playwright starts.
-- [ ] **13. TUI and web together.** `tang --web[=addr]`: the TUI loop reads
+- [x] **13. TUI and web together.** `tang --web[=addr]`: the TUI loop reads
   terminal events on a reader thread and `select!`s over them, web requests,
   controller notifications and a tick. Changes in either front-end show up in
   the other. *Done when:* a manual parity check passes both ways and a test
   drives both paths against one controller.
+  - **As built:** §3.4 says how; ten commits, in this order. `Snapshot::apply`, the
+    Rust side of the client's reducer, written against the controller's own snapshot
+    (it found f27 and f28, which were fixed on the client with their own tests first);
+    `app::subscribers` (the sinks, moved out of the controller); `Controller::resync`,
+    which finds what no intent made by comparing what the subscribers were told with the
+    session; the web side of it (`HubSink::resync`, and an owner that can serve a foreign
+    loop); the TUI loop on a reader thread's channel; the TUI loop serving the web
+    runtime, with the tab bar and the Help tab; the flag; and the warnings for an
+    address beyond this machine.
+  - **Numbers.** 642 Rust tests in the default build (598 before the step), 777 with the
+    web feature, 436 Vitest tests (428); the 16 browser tests are as they were. 103
+    mutations of the step's code were tried; every one that could change behaviour is
+    caught (those that survived at first, a failure that comes behind other events in
+    the loop and the arithmetic of the tab bar's label, led to stricter tests; two were
+    equivalent, an arm that does what the fallback does and a guard that was there
+    twice, which is gone).
+  - **Both paths against one controller:** `tui::golden_tests::with_web` runs the real
+    `event_loop` with a real server, and a WebSocket client on a thread of its own that
+    presses keys by sending them to the loop (§3.4 says what it checks).
+  - **The manual parity check**, scripted and run once, not part of CI: the real
+    program on the null backend (`tang --web --audio-device none`, nothing heard), the TUI
+    in a pty read through a small terminal emulator, and a real Chromium (Playwright) on
+    the page it serves. 18 checks, both ways, all passed (§3.4). The scripts are not in
+    the repository: a pty host in Python and a Playwright script of a few hundred lines.
+  - **Not checked:** by ear (the null backend); `--web` on Linux and Windows (the
+    terminal reader and `crossterm` on a console; CI has the tests, not a terminal);
+    several browsers at once in the TUI (one was); a session with plugins that take
+    seconds to load, whose load a browser asks for; a terminal that is not a pty.
+  - **Open, noted on the way:** f29 (a taken port is found after the session has
+    loaded) and f30 (the events of one intent share its revision). `tui/mod.rs` is 5,100
+    lines and `golden_tests.rs` 2,650: the TUI wants splitting (the loop and the web
+    glue, the status bar, the popups) before it takes more.
 
 ## 13. Later: track B (`builtin:patch`)
 
@@ -1267,6 +1394,8 @@ mixer, delay, …) are the natural first increment.
 | D13 | `web/dist` is embedded with `rust-embed`, with a committed `.gitkeep` so that the program builds without Node; the interface's content security policy has no `unsafe-*` | Built (step 11) |
 | D14 | Telemetry never passes through React: one frame loop, readers that find their slot once for each layout, DOM writes only when a value moved; controls are controlled components, and what a control shows while the server catches up, and the one intent a frame, are the `Drive`'s | Built (step 12) |
 | D15 | React Flow draws the canvas; `toFlow` is a pure function of the graph, nodes are functions of their data with controls that read their own values, and the canvas is laid out again only when the structure of the session changes | Built (step 12) |
+| D16 | The TUI loop selects on a reader thread's channel, the browsers' requests and a tick, on the one controller; what the TUI changes without an intent is found by comparing what the subscribers were told with the session (`resync`, a snapshot at a revision of its own), until every edit is an intent | Built (step 13) |
+| D17 | `--web[=ADDR]` is a flag of the TUI alone, with `serve`'s arguments (`127.0.0.1:8765`, `--web-origin`, a token beyond loopback); the address comes only after an `=`; the address and the warnings are printed before the TUI starts and shown in the tab bar and on the Help tab | Built (step 13) |
 
 Open questions
 

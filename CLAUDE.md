@@ -13,6 +13,7 @@ This is Tang, a terminal-based audio plugin host.
 tang                             # launch TUI with default session
 tang session.toml                # launch TUI with specified session
 tang play session.toml           # play session with virtual piano (no TUI)
+tang --web session.toml          # TUI, and serve the session to a browser too (needs --features web)
 tang serve session.toml          # serve the session to a browser (no TUI; needs --features web)
 tang enumerate plugins           # list installed LV2, CLAP, and VST3 plugins
 tang enumerate builtins          # list built-in plugins
@@ -43,6 +44,21 @@ Pressure (learnable) or is routed to a CC. Implemented as a lock-free-ish
 `Arc<MidiMonitor>` (`src/midi_monitor.rs`) written by the MIDI input thread and
 read by the render loop; a no-op when the flag is off.
 
+**`--web[=<addr>]`** (the TUI only; needs a build with `--features web`, without
+which it is refused before the session is loaded) serves the session to browsers
+while the TUI runs, so that what is changed in either shows in the other. The
+address, an IP and a port, comes only after an `=` (`tang --web=0.0.0.0:9000`; so
+`tang --web x.toml` is a session) and is `127.0.0.1:8765` without one;
+`--web-origin <origin>` (repeatable, needs `--web`) lets another page connect, a
+dev server's, say. As for `serve`, beyond loopback a token is made and put in the
+address's fragment. The address (with the same warnings `serve` logs, for an address
+beyond this machine) is printed on stdout before the TUI takes the screen, and shown
+while it runs: in the tab bar (`web 127.0.0.1:8765 (2)`, where it listens and how
+many browsers are on it, shortened or left out on a narrow terminal) and on the Help
+tab. A port that is taken is an error before the terminal is taken over. `play` and
+`serve` do not take it (`serve` has `--web-bind`). See "Web UI" and
+`docs/web-ui.md` §3.4.
+
 The `play` and `serve` subcommands take the session path as an optional
 positional argument. When launched without a session path, the TUI (or the
 subcommand) starts an in-memory default
@@ -72,8 +88,9 @@ SIGHUP closes the browsers and stops the program. `--web-bind` (default
 puts it in the address's fragment (`http://host:port/#token=…`); `--web-origin`
 (repeatable) lets another page connect, a dev server's, say. Works with
 `--audio-device none`, which is how CI and the end-to-end tests run it. Without a
-MIDI subsystem (a container) it warns and carries on. At the moment the page at `/`
-is a placeholder: the interface itself is step 11 onwards of `docs/web-ui.md`.
+MIDI subsystem (a container) it warns and carries on. The page at `/` is the web
+interface (`web/`, read from the disk in a debug build and embedded in a release
+build; a placeholder if it was not built).
 
 ## Config file
 
@@ -567,6 +584,9 @@ stderr is suppressed (redirected stderr still gets logs).
 The interface is tab-based.
 The status bar at the top shows all tabs with the active one highlighted.
 The global BPM is displayed on the right side of the status bar (e.g. `120 BPM`).
+With `--web`, left of the CLIP light and the BPM, it says where the web interface
+listens and how many browsers are connected (`web 127.0.0.1:8765 (2)`; `web (2)`
+on a narrow terminal, nothing if even that would touch the tabs).
 
 A `CLIP` light (bold red) sits on the right side of the status bar, left of the
 BPM, while the output has clipped lately. The audio thread counts every buffer
@@ -875,7 +895,9 @@ from the global virtual piano which is only wired up in `play` mode).
 ### Help tab
 
 Static text showing all keybindings and usage reference. Scrollable with
-`Up`/`Down`.
+`Up`/`Down`. With `--web` it starts with the address of the web interface, to open
+in a browser (with the token, if there is one), and a warning when it listens beyond
+this machine.
 
 ### Dirty indicator
 
@@ -920,6 +942,18 @@ themselves, until their intents exist; for deleting and moving an effect they
 use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
 targets of the lane and of its group pointing at the same plugins, as the audio
 thread does.
+
+Whoever mirrors the session (the web runtime, for its browsers) subscribes an
+`EventSink` (`app::subscribers`). The controller tells each about every applied
+intent, and keeps what they have been told as a snapshot with every intent applied
+to it (`Snapshot::apply`: the rules of `apply` read from the other side, which the web
+client's `applyEvent` follows too). Because the TUI's other edits and what the audio
+thread reports change the model with no intent, `Controller::resync` compares that
+snapshot with the session now, and if they differ gives the sinks a snapshot to start
+again from (`EventSink::resync`), at a revision of its own. The TUI loop calls it
+after handling its input, and `poll` when the audio thread's reports changed the
+model; with nobody subscribed it does nothing. Each TUI edit that becomes an intent
+leaves less for it to find. (Compiled with the `web` feature or in tests only.)
 
 The audio thread publishes what it is doing through `telemetry::Telemetry`
 (`src/telemetry.rs`, `docs/web-ui.md` §6): a fixed array of atomic cells, one
@@ -1048,8 +1082,16 @@ island of async, on a thread of its own):
   `app::controller::Controller::poll` reaps the plugins handed back, in the TUI,
   in `play` and in the headless loop of `serve`.
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
-- **Main thread** — runs the crossterm event loop, handles keyboard input. The virtual
-  piano lives here and pushes into the same MIDI channel as hardware devices.
+- **Main thread** — runs the TUI loop (`tui::event_loop`), which waits on a channel
+  of the terminal's events, the web interface's requests when there is one
+  (`--web`) and a 100 ms tick, and draws; or the `play` loop, or the headless loop of
+  `serve`. The virtual piano lives here and pushes into the same MIDI channel as
+  hardware devices.
+- **Terminal reader thread** (TUI only) — `tang-terminal`: crossterm can only be
+  polled, so this thread polls the terminal (50 ms at a time, so that stopping it is
+  quick), and sends what it reads, a failure included, to the loop
+  (`src/tui/terminal_input.rs`). It is started when the terminal is set up and
+  stopped before it is restored.
 - **Catalog scan thread** (TUI only, transient) — enumerates installed plugins
   for the selector popup at TUI startup and exits when done. Sends per-format
   batches over an unbounded channel that `Controller::poll` drains into
@@ -1057,13 +1099,14 @@ island of async, on a thread of its own):
 - **Splash render thread** (TUI only, transient) — owns the terminal during
   session plugin loading, animating the startup splash while the main thread
   loads plugins. Exits before `tui::run` takes over the terminal.
-- **Web server thread** (`web` feature, `tang serve`) — `tang-web`, a
+- **Web server thread** (`web` feature, `tang serve` and `tang --web`) — `tang-web`, a
   current-thread tokio runtime that runs the HTTP server, one task per WebSocket
   and the telemetry pusher (`src/web/server.rs`, `pusher.rs`). It never touches
   the controller: requests go to the main thread over a channel (`web::owner`),
   what the controller applies and the telemetry come back through the hub to
   each client's bounded queue, and notes go straight to `NoteInput`. In `tang serve`
-  the main thread runs the headless loop (`web::runtime`).
+  the main thread runs the headless loop (`web::runtime`); in `tang --web` the TUI
+  loop answers the requests among its own business (`src/tui/web.rs`).
 
 The shared LV2 world (`plugin::Runtime`) is created lazily on the first LV2
 plugin load, not at startup — building the world scans every installed LV2
@@ -1267,8 +1310,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`src/app/snapshots/`); review the diff when it changes
   (`INSTA_UPDATE=always cargo test the_tracer`).
 - **Server** (`src/web/`, built; step 10): `axum` on its own thread behind the
-  `web` Cargo feature, started by `tang serve` (`--web` alongside the TUI is step
-  13). Routes `/` (a placeholder page) and `/ws`; one WebSocket per client with a
+  `web` Cargo feature, started by `tang serve` or by `tang --web`. Routes `/` (the
+  embedded interface) and `/ws`; one WebSocket per client with a
   bounded outgoing queue (a client that falls behind is told and closed, and
   reconnects from a snapshot); loopback by default, `Origin`/`Host` checked on every
   request, a token for non-loopback binds, limits on message size, request rate,
@@ -1308,17 +1351,31 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   that says so). `web/dist/` keeps a `.gitkeep` so that the program builds without
   Node. The tracer's snapshot in `web/src/client/fixtures/` is generated:
   `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types.
+- **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
+  runs the TUI and the web interface on one controller, on the main thread. The loop
+  applies a browser's requests and reacts to what they changed (a value a browser set
+  is on the TUI's screen with the next frame, and a step the TUI takes starts from
+  it); what the TUI changes through intents reaches the browsers as events, and the
+  rest of what it does by a snapshot (`Controller::resync`, see "Session state").
+  Tested by running the real loop with a real server and a WebSocket client that
+  presses keys by sending them to the loop (`tui::golden_tests::with_web`), and by
+  hand with the real program in a pty and a real browser (18 checks, both ways).
 - **Scope**: track A first — a "rack-as-patch" canvas over the existing engine
   (serial audio chain, block-rate lane-global modulation, cables = modulation
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
-TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md` (step 13 is left).
-TODO: `--web[=addr]` (the web runtime alongside the TUI; step 13).
+Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Phase 1 (session
+parity) is next, §11.
 TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
 TODO: patterns as graph nodes (they have no `NodeId` yet).
-TODO: events for what the audio thread reports to the controller (a finished
-pattern recording, a captured MIDI-learn control): connected browsers only see
-them at their next snapshot.
+TODO: events of their own for what the audio thread reports to the controller (a
+finished pattern recording, a captured MIDI-learn control) and for what the TUI
+changes without an intent: until then connected browsers are given a snapshot
+(`Controller::resync`).
+TODO: bind the web interface's port before the session loads, so that a taken port
+is reported at once (it is found after the load now).
+TODO: the events of one intent share its revision, which a client takes for a repeat
+if there is more than one (every intent makes one event today).
 TODO: the held-notes telemetry channel (a 16-byte bitset, on change) and keep-alive
 pings for WebSockets.
 
