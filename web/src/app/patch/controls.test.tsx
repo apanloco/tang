@@ -292,6 +292,37 @@ describe("the modulation of a parameter", () => {
   });
 });
 
+describe("a parameter that a modulator drives", () => {
+  const lfo = nodeNamed(tracerSnapshot, "LFO");
+
+  test("does not render the control again when the modulator's rate or waveform is turned, which the ring does not depend on", async () => {
+    let renders = 0;
+    const { server, client } = await rig(
+      <Profiler id="cutoff" onRender={() => (renders += 1)}>
+        <ParamControl node={filter.id} index={0} />
+      </Profiler>,
+    );
+    const settled = renders;
+    const rev = client.state.snapshot?.rev ?? 0;
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 5 });
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 6 });
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "waveform", value: 3 });
+    });
+    await waitFor(() => {
+      expect(client.state.snapshot?.rev).toBe(rev + 3);
+    });
+    expect(renders).toBe(settled);
+    // What the ring does depend on: how deep the cable goes.
+    act(() => {
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: 0.1 });
+    });
+    await waitFor(() => {
+      expect(renders).toBeGreaterThan(settled);
+    });
+  });
+});
+
 describe("a host-side gain of a node", () => {
   test("is a knob called Volume for an instrument, over 0 to 4, at the value it has", async () => {
     await rig(<GainControl node={oscillator.id} gain="volume" />);
@@ -651,10 +682,21 @@ describe("whether two sets of modulators are the same", () => {
     expect(sameModulations([one], [one, one])).toBe(false);
   });
 
-  test("they are not when a depth differs, or a source is another one", () => {
+  test("they are when a modulator's settings differ, which the ring does not depend on, and not when a depth or a kind does", () => {
+    expect(sameModulations([one], [{ source: { ...lfo, rate: 9, waveform: "saw" }, amount: 0.4 }])).toBe(true);
+    expect(sameModulations([{ source: envelope, amount: 0.4 }], [{ source: { ...envelope, attack: 5, sustain: 1 }, amount: 0.4 }])).toBe(true);
     expect(sameModulations([one], [{ source: lfo, amount: 0.5 }])).toBe(false);
-    expect(sameModulations([one], [{ source: { ...lfo }, amount: 0.4 }])).toBe(false); // another modulator, though alike
     expect(sameModulations([one], [{ source: envelope, amount: 0.4 }])).toBe(false);
+  });
+
+  test("they are not when a control is bound to another, or is bound that was not, and are when it only stops learning", () => {
+    const control = (c: { type: "cc"; number: number } | { type: "pitchBend" } | null, learning = false) => ({ source: { type: "midiLearn", control: c, learning } as const, amount: 0.4 });
+    expect(sameModulations([control({ type: "cc", number: 74 })], [control({ type: "cc", number: 74 })])).toBe(true);
+    expect(sameModulations([control({ type: "cc", number: 74 })], [control({ type: "cc", number: 1 })])).toBe(false);
+    expect(sameModulations([control({ type: "cc", number: 74 })], [control({ type: "pitchBend" })])).toBe(false);
+    expect(sameModulations([control(null, true)], [control({ type: "cc", number: 74 })])).toBe(false);
+    expect(sameModulations([control(null, true)], [control(null, false)])).toBe(true);
+    expect(sameModulations([control(null, true)], [one])).toBe(false);
   });
 
   test("they are not when the order differs", () => {

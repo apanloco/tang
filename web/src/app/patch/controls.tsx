@@ -32,9 +32,20 @@ export function sameParamFacts(a: Param | undefined, b: Param | undefined): bool
   );
 }
 
-/** Whether two lists of modulators are the same ones, at the same depths. */
+/**
+ * Whether two modulators are the same as far as the ring of a knob goes: the same kind, and for a control the
+ * one it is bound to. (An LFO's rate and waveform and an envelope's stages move the dot, not the ring, which is
+ * how far the modulator can swing the value: turning them is not for the knobs they drive to draw again.)
+ */
+function sameKindOfSource(a: Modulation["source"], b: Modulation["source"]): boolean {
+  if (a === b) return true;
+  if (a.type === "midiLearn" && b.type === "midiLearn") return JSON.stringify(a.control) === JSON.stringify(b.control);
+  return a.type === b.type;
+}
+
+/** Whether two lists of modulators are the same ones, of the same kinds, at the same depths. */
 export function sameModulations(a: readonly Modulation[], b: readonly Modulation[]): boolean {
-  return a.length === b.length && a.every((modulation, i) => modulation.source === b[i]?.source && modulation.amount === b[i].amount);
+  return a.length === b.length && a.every((modulation, i) => modulation.amount === b[i]?.amount && sameKindOfSource(modulation.source, b[i].source));
 }
 
 /** A value with its unit, if the parameter has one. */
