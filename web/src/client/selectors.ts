@@ -1,6 +1,7 @@
 // Reading the session in the client's store: the parts of it a view shows, found by the id of
 // the node they are of. Pure, on the state, so that a view can hand one to a store hook.
-import type { Gain, Node, NodeId, Param } from "../protocol";
+import { WAVEFORMS } from "../protocol";
+import type { EdgeId, Gain, ModulatorField, Node, NodeId, Param } from "../protocol";
 import type { ClientState } from "./connection";
 
 /** The node of the session with this id, if the client has a session and it has one. */
@@ -23,4 +24,29 @@ export function gainOf(state: ClientState, id: NodeId, gain: Gain): number | und
   if (gain === "groupVolume" && node?.kind === "group") return node.volume;
   if (gain === "groupPan" && node?.kind === "group") return node.pan;
   return undefined;
+}
+
+/**
+ * The value of a setting of the modulator in node `id`, if it has that setting (`withSetting` in
+ * reducers.ts is the other way round): an LFO's rate, or its waveform as the index the intent
+ * takes, or a stage of an envelope.
+ */
+export function modulatorFieldOf(state: ClientState, id: NodeId, field: ModulatorField): number | undefined {
+  const node = nodeById(state, id);
+  if (node?.kind !== "modulator") return undefined;
+  const { source } = node;
+  if (source.type === "lfo") {
+    if (field === "rate") return source.rate;
+    if (field === "waveform") return WAVEFORMS.indexOf(source.waveform);
+  }
+  if (source.type === "envelope") {
+    if (field === "attack" || field === "decay" || field === "sustain" || field === "release") return source[field];
+  }
+  return undefined;
+}
+
+/** How deep the modulation cable with this id pulls, if there is one. */
+export function cableDepthOf(state: ClientState, id: EdgeId): number | undefined {
+  const cable = state.snapshot?.graph.edges.find((edge) => edge.kind === "modulation" && edge.id === id);
+  return cable?.kind === "modulation" ? cable.amount : undefined;
 }

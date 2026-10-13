@@ -358,6 +358,30 @@ describe("the controls of a session", () => {
     ]);
   });
 
+  test("are one for each setting of a modulator, and one for each cable's depth", () => {
+    const { drive } = setup();
+    expect(drive.modulatorField(2, "rate")).toBe(drive.modulatorField(2, "rate"));
+    expect(drive.modulatorField(2, "rate")).not.toBe(drive.modulatorField(2, "attack"));
+    expect(drive.modulatorField(2, "rate")).not.toBe(drive.modulatorField(3, "rate"));
+    expect(drive.cableDepth(7)).toBe(drive.cableDepth(7));
+    expect(drive.cableDepth(7)).not.toBe(drive.cableDepth(8));
+    // (Not the control of a parameter or a gain that has the same numbers.)
+    expect(drive.modulatorField(2, "rate")).not.toBe(drive.param(2, 0));
+    expect(drive.cableDepth(2)).not.toBe(drive.gain(2, "volume"));
+    expect(drive.cableDepth(2)).not.toBe(drive.param(2, 0));
+  });
+
+  test("send a setting of a modulator as setModulatorField and a cable's depth as setEdgeDepth", () => {
+    const { drive, calls, clock } = setup();
+    drive.modulatorField(5, "sustain").set(0.25);
+    drive.cableDepth(9).set(-0.75);
+    clock.tick(16);
+    expect(calls.map((call) => call.intent)).toEqual([
+      { type: "setModulatorField", node: 5, field: "sustain", value: 0.25 },
+      { type: "setEdgeDepth", edge: 9, depth: -0.75 },
+    ]);
+  });
+
   test("do not share a frame's worth: each sends its own", () => {
     const { drive, calls, clock } = setup();
     drive.param(1, 0).set(0.1);

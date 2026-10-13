@@ -8,7 +8,7 @@
 // gain): `set` it as often as you like, and it shows what it was set to until what it sent
 // has been answered, at which point the session's own value (which is by then the
 // server's last word) is what shows.
-import type { Gain, Intent, NodeId } from "../protocol";
+import type { EdgeId, Gain, Intent, ModulatorField, NodeId } from "../protocol";
 import type { FrameLoop } from "./frameloop";
 
 /** How intents get to the server: `Client.request`, or a stand-in. */
@@ -122,7 +122,7 @@ export class Control {
   }
 }
 
-/** The controls of a session, one for each parameter or gain that has been asked for. */
+/** The controls of a session, one for each parameter, gain, setting of a modulator or cable that has been asked for. */
 export class Drive {
   readonly #controls = new Map<string, Control>();
   readonly #options: DriveOptions;
@@ -139,6 +139,16 @@ export class Drive {
   /** The control of a host-side gain of `node`. */
   gain(node: NodeId, gain: Gain): Control {
     return this.#control(`gain:${String(node)}:${gain}`, (value) => ({ type: "setGain", node, gain, value }));
+  }
+
+  /** The control of a setting of the modulator in `node`: an LFO's rate or waveform, a stage of an envelope. */
+  modulatorField(node: NodeId, field: ModulatorField): Control {
+    return this.#control(`field:${String(node)}:${field}`, (value) => ({ type: "setModulatorField", node, field, value }));
+  }
+
+  /** The control of how deep a modulation cable pulls. */
+  cableDepth(edge: EdgeId): Control {
+    return this.#control(`depth:${String(edge)}`, (depth) => ({ type: "setEdgeDepth", edge, depth }));
   }
 
   #control(key: string, make: (value: number) => Intent): Control {
