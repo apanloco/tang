@@ -116,3 +116,32 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The browser tests drive a real browser against the real program on the null audio
+      # backend (no sound card or MIDI port is used): the page through Vite, and `tang serve`
+      # behind it. The debug build of tang, without the plugin formats the tests do not need.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install apt packages
+        working-directory: .
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-dev
+
+      - name: Build tang
+        working-directory: .
+        run: cargo build --no-default-features --features web
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: npm run e2e
+
+      - name: Keep the report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 7

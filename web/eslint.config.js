@@ -24,6 +24,12 @@ export default defineConfig(
     },
   },
 
+  // The app runs in a browser: no Node in it (the configs and the browser tests are another matter).
+  {
+    files: ["src/**"],
+    rules: { "no-restricted-globals": ["error", "process", "Buffer", "require", "__dirname"] },
+  },
+
   // The scripts and configs are plain JavaScript run by Node: no types to check against.
   {
     files: ["**/*.{js,mjs}"],
