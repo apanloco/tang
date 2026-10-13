@@ -1207,9 +1207,11 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Found by the browser tests, and fixed.** React Flow gives a node that can be neither
     dragged nor selected `pointer-events: none`, which put the pane over every knob: the
     drag did nothing, and the 19 jsdom tests of the canvas passed because jsdom has no CSS
-    (f25). And a gesture's end could send a second intent in a frame that had sent one (f26,
-    §9.4): `commit` now waits for the next frame when this control has already sent in this
-    one.
+    (f25). Looking into a failure of the drag test also showed a hole in the rule of §9.4
+    (f26): a gesture's end could send a second intent in a frame that had sent one. (The
+    failure itself was a bug of the test, whose socket spy logged its own reset requests as
+    the page's; the hole was real, and `commit` now waits for the next frame when this
+    control has already sent in this one.)
   - **Not checked:** by ear (the dot is the engine's own value as the audio thread sets it
     on the plugin, read from the telemetry, and the null backend was used, so nothing was
     heard); the CI job `web` with the new specs (the branch has not been pushed), and
