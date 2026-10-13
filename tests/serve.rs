@@ -591,6 +591,55 @@ async fn a_browser_sets_the_keys_of_a_lane_and_a_note_outside_them_is_silent_and
     assert_eq!(refused["error"]["message"], "the range goes from F#6 down to E2: its low note has to be the lower", "{refused}");
 }
 
+/// Read frames until the held notes' (channel 2: 128 values, one for each note, 1 for a note that is held) satisfy `done`, and
+/// return them. Fails, with what the server logged, when they have not within `within`.
+async fn held_until(client: &mut Client, tang: &Tang, within: Duration, what: &str, done: impl Fn(&[f32]) -> bool) -> Vec<f32> {
+    let deadline = Instant::now() + within;
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        if let Ok(Some(Ok(Message::Binary(frame)))) = tokio::time::timeout(Duration::from_millis(500), client.next()).await {
+            if frame[0] != 2 {
+                continue;
+            }
+            assert_eq!((frame[1], u16::from_le_bytes([frame[2], frame[3]]), u32::from_le_bytes(frame[4..8].try_into().unwrap())), (0, 128, 0), "128 notes, and no layout");
+            last = frame[8..].chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+            if done(&last) {
+                return last;
+            }
+        }
+    }
+    let held: Vec<_> = last.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(note, _)| note).collect();
+    panic!("{what}: the held notes were {held:?} after {within:?}\n{}", tang.log());
+}
+
+#[tokio::test]
+async fn the_notes_that_are_held_are_told_to_every_browser_that_asks_whoever_holds_them() {
+    let tang = Tang::start();
+    let (mut player, _, _) = listening(&tang).await;
+    let mut watcher = connect(&tang).await;
+    next_json(&mut watcher).await;
+    tell(&mut watcher, json!({"type": "subscribe"})).await;
+    assert_eq!(next_json(&mut watcher).await["type"], "snapshot");
+    tell(&mut watcher, json!({"type": "telemetry", "channels": ["held"]})).await;
+
+    // Nothing is held to begin with, and the frame is a value for each of the 128 notes.
+    let none = held_until(&mut watcher, &tang, SOON, "the first frame", |_| true).await;
+    assert_eq!(none.len(), 128);
+    assert!(none.iter().all(|v| *v == 0.0), "{none:?}");
+
+    // What one browser plays, another sees, by the number of the note.
+    tell(&mut player, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    tell(&mut player, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    let two = held_until(&mut watcher, &tang, SOON, "the two notes", |v| v[60] == 1.0 && v[64] == 1.0).await;
+    assert_eq!(two.iter().filter(|v| **v > 0.0).count(), 2, "and no other");
+    tell(&mut player, json!({"type": "noteOff", "note": 60})).await;
+    held_until(&mut watcher, &tang, SOON, "the first note ending", |v| v[60] == 0.0 && v[64] == 1.0).await;
+
+    // A browser that goes with a note held leaves nothing held: the server ends its notes.
+    drop(player);
+    held_until(&mut watcher, &tang, SOON, "the note ending with the browser that held it", |v| v.iter().all(|x| *x == 0.0)).await;
+}
+
 /// The next value, in a frame of the modulation channel of the layout `rev`, at place `at` of it (frames of another layout, and of other channels, are skipped).
 async fn modulation_value(client: &mut Client, rev: u32, at: usize) -> f32 {
     let deadline = Instant::now() + Duration::from_secs(10);

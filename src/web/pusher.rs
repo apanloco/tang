@@ -19,20 +19,23 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use crate::app::layout::{SlotKind, TelemetryLayout};
 use crate::app::protocol::{TelemetryChannel, telemetry_frame};
+use crate::held_notes::HeldNotes;
 use crate::telemetry::Telemetry;
 use crate::web::Shared;
 use crate::web::hub::{Hub, Outgoing};
 
 /// Every channel there is, in the order of their numbers.
-const CHANNELS: [TelemetryChannel; 2] = [TelemetryChannel::Meters, TelemetryChannel::Modulation];
+const CHANNELS: [TelemetryChannel; 3] = [TelemetryChannel::Meters, TelemetryChannel::Modulation, TelemetryChannel::Held];
 
 /// The frame of `channel`: the value of every entry of its list in `layout`, in order,
 /// as the atomics hold it now. A count (how many buffers clipped) goes as a float, which
 /// is exact up to 2^24 of them; a client watches a count change rather than reading it.
-pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Telemetry) -> Vec<u8> {
+/// (The held notes have no layout and are not in the slots: they are `held_frame`.)
+pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Telemetry, held: &HeldNotes) -> Vec<u8> {
     let entries = match channel {
         TelemetryChannel::Meters => &layout.meters,
         TelemetryChannel::Modulation => &layout.modulation,
+        TelemetryChannel::Held => return held_frame(held),
     };
     let values: Vec<f32> = entries
         .iter()
@@ -44,24 +47,32 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
     telemetry_frame(channel, layout.rev, &values)
 }
 
+/// The frame of the held notes: a value for each of the 128 notes, 1 for one that is held, 0 for the rest, at the place
+/// of its number. It is as long every time (a client reads it by note number, and a bitset would take the same
+/// care to unpack for 128 values that cost 512 bytes thirty times a second), and follows no layout.
+pub fn held_frame(held: &HeldNotes) -> Vec<u8> {
+    let values: Vec<f32> = (0..128u8).map(|note| if held.is_held(note) { 1.0 } else { 0.0 }).collect();
+    telemetry_frame(TelemetryChannel::Held, 0, &values)
+}
+
 /// One turn: queue a frame for the clients of each channel that somebody wants.
-pub fn push_once(hub: &Hub, shared: &Shared, telemetry: &Telemetry) {
+pub fn push_once(hub: &Hub, shared: &Shared, telemetry: &Telemetry, held: &HeldNotes) {
     for channel in CHANNELS {
         if hub.wanted(channel) {
-            let frame = frame(channel, &shared.layout(), telemetry);
+            let frame = frame(channel, &shared.layout(), telemetry, held);
             hub.send_telemetry(channel, &Outgoing::Binary(frame.into()));
         }
     }
 }
 
 /// Push every `period` until told to stop.
-pub async fn run(hub: Arc<Hub>, shared: Arc<Shared>, telemetry: Arc<Telemetry>, period: Duration, mut stop: watch::Receiver<bool>) {
+pub async fn run(hub: Arc<Hub>, shared: Arc<Shared>, telemetry: Arc<Telemetry>, held: Arc<HeldNotes>, period: Duration, mut stop: watch::Receiver<bool>) {
     let mut ticker = interval(period);
     // A late tick is not made up for with a burst: the values are the latest anyway.
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
-            _ = ticker.tick() => push_once(&hub, &shared, &telemetry),
+            _ = ticker.tick() => push_once(&hub, &shared, &telemetry, &held),
             // (The guard `wait_for` returns is not `Send`, so it must not outlive this future.)
             _ = async { let _ = stop.wait_for(|stopped| *stopped).await; } => break,
         }
@@ -76,6 +87,7 @@ mod tests {
     use crate::app::layout::LayoutEntry;
     use crate::app::protocol::FRAME_HEADER_LEN;
     use crate::app::testutil::load;
+    use crate::held_notes::HeldNotes;
     use crate::telemetry::Slot;
 
     /// A session with everything a layout has entries for: two lanes, one with a filter
@@ -166,10 +178,10 @@ plugin = "builtin:osc"
             expected_modulation.push(value);
         }
 
-        let meters = decode(&frame(TelemetryChannel::Meters, &layout, &telemetry));
+        let meters = decode(&frame(TelemetryChannel::Meters, &layout, &telemetry, &HeldNotes::new()));
         assert_eq!((meters.channel, meters.flags, meters.rev), (0, 0, layout.rev));
         assert_eq!(meters.values, expected_meters);
-        let modulation = decode(&frame(TelemetryChannel::Modulation, &layout, &telemetry));
+        let modulation = decode(&frame(TelemetryChannel::Modulation, &layout, &telemetry, &HeldNotes::new()));
         assert_eq!((modulation.channel, modulation.flags, modulation.rev), (1, 0, layout.rev));
         assert_eq!(modulation.values, expected_modulation);
     }
@@ -183,13 +195,48 @@ plugin = "builtin:osc"
             telemetry.bump(slot_of(clips));
         }
         let at = layout.meters.iter().position(|entry| entry == clips).unwrap();
-        assert_eq!(decode(&frame(TelemetryChannel::Meters, &layout, &telemetry)).values[at], 3.0);
+        assert_eq!(decode(&frame(TelemetryChannel::Meters, &layout, &telemetry, &HeldNotes::new())).values[at], 3.0);
+    }
+
+    #[test]
+    fn the_held_notes_are_a_frame_of_a_value_for_each_note_one_for_a_note_that_is_held() {
+        let held = HeldNotes::new();
+        held.note_on(60);
+        held.note_on(127);
+        held.note_on(0);
+        let decoded = decode(&held_frame(&held));
+        assert_eq!((decoded.channel, decoded.flags, decoded.rev), (2, 0, 0), "no layout: the numbers of the notes are the places");
+        assert_eq!(decoded.values.len(), 128);
+        for (note, value) in decoded.values.iter().enumerate() {
+            assert_eq!(*value, if [0, 60, 127].contains(&note) { 1.0 } else { 0.0 }, "note {note}");
+        }
+        held.note_off(60);
+        assert_eq!(decode(&held_frame(&held)).values[60], 0.0, "a note that ended is not held");
+    }
+
+    #[test]
+    fn the_held_notes_go_to_the_clients_that_ask_for_them_and_to_no_others() {
+        let hub = Hub::new(16);
+        let (keys, mut keys_queue) = hub.connect();
+        let (meters, mut meters_queue) = hub.connect();
+        let (_idle, mut idle_queue) = hub.connect();
+        hub.set_channels(keys, &[TelemetryChannel::Held]);
+        hub.set_channels(meters, &[TelemetryChannel::Meters]);
+        let held = HeldNotes::new();
+        held.note_on(64);
+        push_once(&hub, &Shared::new(0, layout()), &Telemetry::new(), &held);
+        let frames = binary(&mut keys_queue);
+        assert_eq!(frames.len(), 1);
+        assert_eq!((frames[0][0], decode(&frames[0]).values[64]), (2, 1.0));
+        let others = binary(&mut meters_queue);
+        assert_eq!((others.len(), others[0][0]), (1, 0), "the meters, and not the notes");
+        assert!(binary(&mut idle_queue).is_empty());
     }
 
     #[test]
     fn a_session_without_entries_for_a_channel_sends_an_empty_frame() {
         let layout = TelemetryLayout { rev: 9, meters: vec![], modulation: vec![] };
-        let decoded = decode(&frame(TelemetryChannel::Modulation, &layout, &Telemetry::new()));
+        let decoded = decode(&frame(TelemetryChannel::Modulation, &layout, &Telemetry::new(), &HeldNotes::new()));
         assert_eq!((decoded.channel, decoded.rev, decoded.values.len()), (1, 9, 0));
     }
 
@@ -207,7 +254,7 @@ plugin = "builtin:osc"
     fn each_channel_goes_to_the_clients_that_asked_for_it_and_to_no_others() {
         let (hub, [mut meters, mut modulation, mut idle]) = hub_with_three_clients();
         let shared = Shared::new(0, layout());
-        push_once(&hub, &shared, &Telemetry::new());
+        push_once(&hub, &shared, &Telemetry::new(), &HeldNotes::new());
         let meter_frames = binary(&mut meters);
         let modulation_frames = binary(&mut modulation);
         assert_eq!((meter_frames.len(), modulation_frames.len()), (1, 1));
@@ -219,7 +266,7 @@ plugin = "builtin:osc"
     fn nothing_is_sent_when_nobody_asks() {
         let hub = Hub::new(16);
         let (_client, mut queue) = hub.connect();
-        push_once(&hub, &Shared::new(0, layout()), &Telemetry::new());
+        push_once(&hub, &Shared::new(0, layout()), &Telemetry::new(), &HeldNotes::new());
         assert!(binary(&mut queue).is_empty());
     }
 
@@ -228,10 +275,10 @@ plugin = "builtin:osc"
         let (hub, [mut meters, ..]) = hub_with_three_clients();
         let shared = Shared::new(0, layout());
         let telemetry = Telemetry::new();
-        push_once(&hub, &shared, &telemetry);
+        push_once(&hub, &shared, &telemetry, &HeldNotes::new());
         let before = decode(&binary(&mut meters)[0]);
         shared.set_layout(TelemetryLayout { rev: 12345, meters: vec![], modulation: vec![] });
-        push_once(&hub, &shared, &telemetry);
+        push_once(&hub, &shared, &telemetry, &HeldNotes::new());
         let after = decode(&binary(&mut meters)[0]);
         assert_ne!(before.rev, after.rev);
         assert_eq!((after.rev, after.values.len()), (12345, 0));
@@ -244,11 +291,11 @@ plugin = "builtin:osc"
         hub.set_channels(client, &[TelemetryChannel::Meters]);
         let shared = Shared::new(0, layout());
         for _ in 0..10 {
-            push_once(&hub, &shared, &Telemetry::new());
+            push_once(&hub, &shared, &Telemetry::new(), &HeldNotes::new());
         }
         assert_eq!(binary(&mut queue).len(), 2, "the queue held two, the rest were skipped");
         assert_eq!(hub.client_count(), 1);
-        push_once(&hub, &shared, &Telemetry::new());
+        push_once(&hub, &shared, &Telemetry::new(), &HeldNotes::new());
         assert_eq!(binary(&mut queue).len(), 1, "and it hears the next one");
     }
 
@@ -263,7 +310,7 @@ plugin = "builtin:osc"
         let shared = Arc::new(Shared::new(0, layout));
         let telemetry = Arc::new(Telemetry::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-        let pusher = tokio::spawn(run(hub.clone(), shared, telemetry.clone(), Duration::from_millis(5), stop_rx));
+        let pusher = tokio::spawn(run(hub.clone(), shared, telemetry.clone(), Arc::new(HeldNotes::new()), Duration::from_millis(5), stop_rx));
 
         async fn next_peak(queue: &mut Receiver<Outgoing>, at: usize) -> f32 {
             match tokio::time::timeout(Duration::from_secs(5), queue.recv()).await.expect("no frame in five seconds") {

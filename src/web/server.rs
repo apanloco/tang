@@ -176,7 +176,7 @@ impl Server {
         let (stop_tx, stop_rx) = watch::channel(false);
         let seat_count = max_clients.clamp(1, u32::MAX as usize) as u32;
         // The pusher is a task of the runtime like the connections, and starts when it runs.
-        runtime.spawn(pusher::run(parts.hub.clone(), parts.shared.clone(), parts.telemetry, telemetry_period, stop_rx.clone()));
+        runtime.spawn(pusher::run(parts.hub.clone(), parts.shared.clone(), parts.telemetry, parts.notes.held(), telemetry_period, stop_rx.clone()));
         let app = Arc::new(App {
             assets: parts.assets,
             policy,

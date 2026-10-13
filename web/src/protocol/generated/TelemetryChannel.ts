@@ -3,4 +3,4 @@
 /**
  * A group of telemetry frames.
  */
-export type TelemetryChannel = "meters" | "modulation";
+export type TelemetryChannel = "meters" | "modulation" | "held";

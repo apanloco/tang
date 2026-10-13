@@ -92,6 +92,10 @@ pub enum TelemetryChannel {
     /// The modulators' outputs and the parameters' effective values
     /// (`TelemetryLayout::modulation`).
     Modulation,
+    /// Which notes are held, by whichever source holds them (a MIDI keyboard, the virtual piano, a
+    /// browser): 128 values, the note numbers being their places, 1 for a note that is held and 0
+    /// for the rest. It follows no layout (its `layout_rev` is 0).
+    Held,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,14 +148,15 @@ pub const FRAME_HEADER_LEN: usize = 8;
 
 /// A telemetry frame, the binary message that carries the current values of one
 /// channel: `u8 channel | u8 flags | u16 n | u32 layout_rev | n × f32`, all little
-/// endian. `channel` is 0 for the meters and 1 for the modulation, `flags` is 0
+/// endian. `channel` is 0 for the meters, 1 for the modulation and 2 for the held notes, `flags` is 0
 /// (reserved), `layout_rev` is the `rev` of the `TelemetryLayout` the values follow:
-/// value *i* is that of entry *i* of the channel's list in it.
+/// value *i* is that of entry *i* of the channel's list in it (the held notes follow none: 0).
 pub fn telemetry_frame(channel: TelemetryChannel, layout_rev: u32, values: &[f32]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + values.len() * 4);
     frame.push(match channel {
         TelemetryChannel::Meters => 0,
         TelemetryChannel::Modulation => 1,
+        TelemetryChannel::Held => 2,
     });
     frame.push(0);
     frame.extend_from_slice(&(values.len().min(u16::MAX as usize) as u16).to_le_bytes());
@@ -317,6 +322,7 @@ mod message_tests {
         let values: Vec<f32> = frame[8..].chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
         assert_eq!(values, [1.0, -2.5, 0.25]);
         assert_eq!(telemetry_frame(TelemetryChannel::Meters, 0, &[])[0], 0, "the meters channel");
+        assert_eq!(telemetry_frame(TelemetryChannel::Held, 0, &[0.0, 1.0])[0], 2, "the held notes' channel");
         assert_eq!(telemetry_frame(TelemetryChannel::Meters, 0, &[]).len(), FRAME_HEADER_LEN);
     }
 

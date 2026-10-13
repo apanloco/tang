@@ -76,6 +76,13 @@ impl NoteInput {
         }
     }
 
+    /// The notes that are held, as every source of notes keeps them: shared, so that a reader of them (the
+    /// browsers' telemetry) sees what any source holds.
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime tells the browsers which notes are held"))]
+    pub fn held(&self) -> Arc<HeldNotes> {
+        self.held.clone()
+    }
+
     /// A note-on on channel 1.
     pub fn note_on(&self, note: u8, velocity: u8) -> Delivery {
         self.send(&[0x90, note, velocity])
@@ -227,6 +234,14 @@ mod tests {
         other.note_on(72, 100);
         assert_eq!(sent(&rig), [(0, [0x90, 72, 100])]);
         assert_eq!(rig.held.held(), [72]);
+    }
+
+    #[test]
+    fn the_held_notes_it_keeps_are_the_ones_the_sources_share() {
+        let rig = rig();
+        assert!(Arc::ptr_eq(&rig.input.held(), &rig.held));
+        rig.input.clone().note_on(64, 100);
+        assert_eq!(rig.input.held().held(), [64]);
     }
 
     #[test]
