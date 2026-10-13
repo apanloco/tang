@@ -75,6 +75,8 @@ export class TelemetryIndex {
 export class TelemetryBuffers {
   #index: TelemetryIndex | null = null;
   readonly #latest = new Map<TelemetryChannel, Float32Array>();
+  /** The channels that have had a frame of the layout that is set. */
+  readonly #heard = new Set<TelemetryChannel>();
   #frames = 0;
 
   /** What the slots mean now; the values are reset (they are of another layout, or none yet). */
@@ -82,7 +84,18 @@ export class TelemetryBuffers {
     if (this.#index?.layout.rev === layout.rev && this.#sameLengths(layout)) return;
     this.#index = new TelemetryIndex(layout);
     this.#latest.clear();
+    this.#heard.clear();
     for (const channel of CHANNELS) this.#latest.set(channel, new Float32Array(layout[channel].length));
+  }
+
+  /** The `rev` of the layout that is set: what a reader that has found a slot goes by to know the slot may have moved. */
+  get layoutRev(): number | undefined {
+    return this.#index?.layout.rev;
+  }
+
+  /** Whether a frame of the layout that is set has come for `channel`: before one has, its values are only zeros. */
+  has(channel: TelemetryChannel): boolean {
+    return this.#heard.has(channel);
   }
 
   /**
@@ -94,6 +107,7 @@ export class TelemetryBuffers {
     const latest = this.#latest.get(frame.channel);
     if (!this.#index || this.#index.layout.rev !== frame.layoutRev || latest?.length !== frame.values.length) return false;
     latest.set(frame.values);
+    this.#heard.add(frame.channel);
     this.#frames += 1;
     return true;
   }

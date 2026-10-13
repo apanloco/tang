@@ -173,6 +173,40 @@ describe("the buffers", () => {
     expect(held?.[0]).toBe(0.5);
   });
 
+  test("say which layout they follow", () => {
+    const buffers = new TelemetryBuffers();
+    expect(buffers.layoutRev).toBeUndefined();
+    buffers.setLayout(layout);
+    expect(buffers.layoutRev).toBe(layout.rev);
+    buffers.setLayout({ ...layout, rev: layout.rev + 7, meters: [] });
+    expect(buffers.layoutRev).toBe(layout.rev + 7);
+  });
+
+  test("say for each channel whether a frame of the layout has come, which a zero cannot", () => {
+    const buffers = new TelemetryBuffers();
+    expect(buffers.has("meters")).toBe(false);
+    buffers.setLayout(layout);
+    expect(buffers.has("meters")).toBe(false);
+    expect(buffers.has("modulation")).toBe(false);
+    buffers.accept(decodeFrame(frame(0, layout.rev, new Array<number>(meters).fill(0))) ?? never());
+    expect(buffers.has("meters")).toBe(true);
+    expect(buffers.has("modulation")).toBe(false);
+    // A frame that was refused is not one that came.
+    buffers.accept(decodeFrame(frame(1, layout.rev + 1, new Array<number>(modulation).fill(0))) ?? never());
+    expect(buffers.has("modulation")).toBe(false);
+    buffers.accept(decodeFrame(frame(1, layout.rev, new Array<number>(modulation).fill(0))) ?? never());
+    expect(buffers.has("modulation")).toBe(true);
+  });
+
+  test("forget what has come when the layout changes, and not when it is told again", () => {
+    const buffers = ready();
+    buffers.accept(decodeFrame(frame(0, layout.rev, new Array<number>(meters).fill(0.5))) ?? never());
+    buffers.setLayout({ ...layout });
+    expect(buffers.has("meters")).toBe(true);
+    buffers.setLayout({ ...layout, rev: layout.rev + 1 });
+    expect(buffers.has("meters")).toBe(false);
+  });
+
   test("look a value up by what it is", () => {
     const buffers = ready();
     const values = layout.meters.map((e) => (e.node === MASTER && e.kind === "peak" ? 0.75 : 0.125));
