@@ -37,6 +37,7 @@ impl Controller {
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
+            Intent::RemoveNode { node } => self.remove_node_intent(node)?,
         };
         self.dirty = true;
         self.rev += 1;
@@ -206,6 +207,14 @@ impl Controller {
             _ => return Err(invalid("a modulator goes in a lane or in a group")),
         };
         self.add_modulator(at, kind.source()).ok_or(IntentError::NotFound(parent))?;
+        Ok(Done::Restructured)
+    }
+
+    fn remove_node_intent(&mut self, node: NodeId) -> Result<Done, IntentError> {
+        let NodePath::Modulator { at, index } = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
+            return Err(invalid("only a modulator can be removed so far"));
+        };
+        self.remove_modulator(at, index);
         Ok(Done::Restructured)
     }
 
@@ -1123,6 +1132,112 @@ rate = 1.0
         );
         assert_eq!(ctl.rev, 3);
         ctl.model.check_ids().unwrap();
+    }
+
+    fn remove(ctl: &mut Controller, node: NodeId) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::RemoveNode { node })
+    }
+
+    #[test]
+    fn remove_node_takes_a_lane_modulator_out_with_its_cables_and_says_the_structure_changed() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let (first, envelope, learn, last) = (lane_mod(&ctl, 0), lane_mod(&ctl, 1), lane_mod(&ctl, 2), lane_mod(&ctl, 3));
+        let applied = remove(&mut ctl, first).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        // (Its own cables, the cutoff's and the other LFO's rate, go with it; the audio thread drops it, and nothing else.)
+        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0"]);
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.iter().map(|m| m.node).collect::<Vec<_>>(), [envelope, learn, last], "the others stay, in their order");
+        assert!(rack.iter().all(|m| m.targets.is_empty()));
+        assert!(ctl.model.locate(first).is_none(), "its node is gone");
+        assert_eq!(ctl.model.locate(last), Some(NodePath::Modulator { at: ModulatorLocation::Lane(0), index: 2 }), "and the later ones are a place up");
+        assert_eq!(ctl.model.groups[0].modulators.len(), 2, "the group's rack is untouched");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_node_first_takes_out_the_cables_of_the_others_that_drive_the_modulator() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        // The first modulator's second cable drives the rate of the fourth.
+        let (first, fourth) = (lane_mod(&ctl, 0), lane_mod(&ctl, 3));
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2);
+        remove(&mut ctl, fourth).unwrap();
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=1", "RemoveModulator inst=0 index=3"]);
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.len(), 3);
+        assert_eq!(rack[0].node, first);
+        assert_eq!(rack[0].targets.len(), 1, "the cable to the cutoff is as it was");
+        assert_eq!(rack[0].targets[0].depth, 0.4);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_node_takes_a_group_modulator_out_by_the_groups_command() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let (lfo, envelope) = (group_mod(&ctl, 0), group_mod(&ctl, 1));
+        remove(&mut ctl, lfo).unwrap();
+        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0"]);
+        assert_eq!(ctl.model.groups[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>(), [envelope]);
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 4, "the lane's rack is untouched");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_node_leaves_the_nodes_it_has_not_been_asked_for_with_the_ids_they_had() {
+        let (_engine, mut ctl) = modulated();
+        let before: Vec<NodeId> = ctl.model.nodes().map(|(id, _)| id).collect();
+        let gone = lane_mod(&ctl, 1);
+        remove(&mut ctl, gone).unwrap();
+        let after: Vec<NodeId> = ctl.model.nodes().map(|(id, _)| id).collect();
+        assert_eq!(after, before.into_iter().filter(|id| *id != gone).collect::<Vec<_>>());
+        // And its id is not handed out again.
+        let parent = lane(&ctl);
+        add(&mut ctl, parent, ModulatorKind::Lfo).unwrap();
+        let added = ctl.model.instruments[0].modulators.last().unwrap().node;
+        assert!(added != gone && ctl.model.nodes().all(|(id, _)| id != gone));
+    }
+
+    #[test]
+    fn remove_node_refuses_what_is_not_a_modulator_and_changes_nothing() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lane_node = lane(&ctl);
+        let effect = ctl.model.instruments[0].effects[0].node;
+        let group = ctl.model.groups[0].node;
+        let bus = ctl.model.groups[0].effects[0].node;
+        let ghost = NodeId(9_999);
+        let cases = [
+            ("a lane", lane_node, invalid("only a modulator can be removed so far")),
+            ("an effect", effect, invalid("only a modulator can be removed so far")),
+            ("a group", group, invalid("only a modulator can be removed so far")),
+            ("a bus effect", bus, invalid("only a modulator can be removed so far")),
+            ("a node that is not there", ghost, IntentError::NotFound(ghost)),
+            ("the master, which the model does not have", NodeId::MASTER, IntentError::NotFound(NodeId::MASTER)),
+        ];
+        for (what, node, error) in cases {
+            assert_eq!(remove(&mut ctl, node), Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 4);
+        assert_eq!(ctl.model.groups[0].modulators.len(), 2);
+        assert_eq!(ctl.model.instruments[0].effects.len(), 1);
+    }
+
+    #[test]
+    fn remove_node_does_not_take_the_modulator_out_twice() {
+        let (engine, mut ctl) = modulated();
+        let node = lane_mod(&ctl, 2);
+        remove(&mut ctl, node).unwrap();
+        sent(&engine);
+        assert_eq!(remove(&mut ctl, node), Err(IntentError::NotFound(node)));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, 1, "a refusal is not a revision");
     }
 
     #[test]

@@ -8,4 +8,4 @@ import type { NodeId } from "./NodeId";
 /**
  * What a front-end asks of the controller, naming the node it concerns.
  */
-export type Intent = { "type": "setParam", node: NodeId, param: number, value: number, } | { "type": "setGain", node: NodeId, gain: Gain, value: number, } | { "type": "loadPreset", node: NodeId, preset: string, } | { "type": "setModulatorField", node: NodeId, field: ModulatorField, value: number, } | { "type": "setEdgeDepth", edge: EdgeId, depth: number, } | { "type": "removeEdge", edge: EdgeId, } | { "type": "addModulator", parent: NodeId, kind: ModulatorKind, };
+export type Intent = { "type": "setParam", node: NodeId, param: number, value: number, } | { "type": "setGain", node: NodeId, gain: Gain, value: number, } | { "type": "loadPreset", node: NodeId, preset: string, } | { "type": "setModulatorField", node: NodeId, field: ModulatorField, value: number, } | { "type": "setEdgeDepth", edge: EdgeId, depth: number, } | { "type": "removeEdge", edge: EdgeId, } | { "type": "addModulator", parent: NodeId, kind: ModulatorKind, } | { "type": "removeNode", node: NodeId, };

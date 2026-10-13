@@ -1156,6 +1156,25 @@ plugin = "builtin:reverb"
     }
 
     #[test]
+    fn a_modulator_taken_out_by_an_intent_is_gone_from_the_snapshot_the_subscribers_are_given() {
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        let edge_count = |snapshot: &Snapshot| snapshot.graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).count();
+        let mirror = Mirror::join(&mut ctl);
+        let node = ctl.model.instruments[0].modulators[0].node;
+        assert!(mirror.copy().graph.nodes.iter().any(|n| n.id == node));
+        assert_eq!(edge_count(&mirror.copy()), 1);
+
+        let applied = ctl.apply(Intent::RemoveNode { node }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert!(!mirror.copy().graph.nodes.iter().any(|n| n.id == node), "the node is gone");
+        assert_eq!(edge_count(&mirror.copy()), 0, "and so is the cable it drove");
+        assert!(!ctl.resync(), "and there is nothing left to tell");
+    }
+
+    #[test]
     fn nobody_is_told_of_a_change_of_structure_while_nobody_listens() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
         ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5));

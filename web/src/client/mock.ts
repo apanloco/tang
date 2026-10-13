@@ -97,14 +97,11 @@ const isModulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } =
 const paramKey = (node: NodeId, port: Port): string | null => (port.type === "param" ? `${String(node)}:${String(port.index)}` : null);
 
 /**
- * A cable taken out of the session, and with it the cables that drive the depth of one that goes (and
- * theirs in turn). The slot of the value a cable drove goes from the layout of the telemetry unless another
- * cable still drives it: the layout names one slot for a parameter, whichever cables are left.
+ * The cables that go when those of `start` do: they, and, in turn, the ones that drive the depth of a cable that
+ * goes (what is left pointing at a cable that is not there would drive whichever one is put there next).
  */
-function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
-  const cables = snapshot.graph.edges;
-  if (!cables.some((e) => isModulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
-  const going = new Set<EdgeId>([edge]);
+function cablesThatGo(cables: readonly Edge[], start: Iterable<EdgeId>): Set<EdgeId> {
+  const going = new Set<EdgeId>(start);
   for (let grown = true; grown; ) {
     grown = false;
     for (const e of cables) {
@@ -114,17 +111,50 @@ function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
       }
     }
   }
+  return going;
+}
+
+/**
+ * The session without the cables `going` and the nodes `nodesGone`. The layout of the telemetry follows: the
+ * outputs of the modulators that go leave it, and so does the slot of the value a cable drove, unless another
+ * cable still drives it (the layout names one slot for a parameter, whichever cables are left).
+ */
+function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: ReadonlySet<NodeId>): Snapshot {
+  const cables = snapshot.graph.edges;
   const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)));
   const aimedBefore = new Set(cables.map((e) => paramKey(e.to.node, e.to.port)));
   const aimedAfter = new Set(edges.map((e) => paramKey(e.to.node, e.to.port)));
-  const orphaned = (entry: LayoutEntry): boolean => {
+  const leaves = (entry: LayoutEntry): boolean => {
+    if (entry.kind === "modOutput") return nodesGone.has(entry.node);
     const key = paramKey(entry.node, entry.port);
     return entry.kind === "effective" && aimedBefore.has(key) && !aimedAfter.has(key);
   };
-  const modulationSlots = snapshot.telemetry.modulation.filter((entry) => !orphaned(entry));
-  const changed = modulationSlots.length !== snapshot.telemetry.modulation.length;
-  const telemetry = changed ? { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation: modulationSlots } : snapshot.telemetry;
-  return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges }, telemetry } };
+  const modulation = snapshot.telemetry.modulation.filter((entry) => !leaves(entry));
+  const changed = modulation.length !== snapshot.telemetry.modulation.length;
+  return {
+    ...snapshot,
+    graph: { nodes: snapshot.graph.nodes.filter((n) => !nodesGone.has(n.id)), edges },
+    telemetry: changed ? { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation } : snapshot.telemetry,
+  };
+}
+
+/** A cable taken out of the session, and with it the cables that drive the depth of one that goes (and theirs in turn). */
+function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
+  if (!snapshot.graph.edges.some((e) => isModulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
+  return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, [edge]), new Set()) };
+}
+
+/**
+ * A modulator taken out of the session: its own cables go with it, and so do those of the others that drove
+ * its settings (a cable that ends at the modulator), and what drove the depth of any of them. Nothing else can be
+ * taken out yet.
+ */
+function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return { error: { code: "notFound", message: `there is no node ${node}` } };
+  if (found.kind !== "modulator") return invalid("only a modulator can be removed so far");
+  const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
+  return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([node])) };
 }
 
 /**
@@ -193,6 +223,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters): Outc
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
+  if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
   if (!node) return { error: { code: "notFound", message: `there is no node ${intent.node}` } };

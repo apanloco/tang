@@ -540,6 +540,100 @@ describe("adding a modulator", () => {
   });
 });
 
+describe("taking a modulator out", () => {
+  const cables = (snapshot: Snapshot | null | undefined) => snapshot?.graph.edges.filter((e) => e.kind === "modulation") ?? [];
+  const names = (snapshot: Snapshot | null | undefined) => snapshot?.graph.nodes.map((n) => `${n.name}#${String(n.id)}`) ?? [];
+
+  test("takes the node out, and its cables, and the slots of what it put out and drove; the client is told by a snapshot, the revision after the intent's", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    expect(await client.request({ type: "removeNode", node: lfo.id })).toBe(1);
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    expect(names(client.state.snapshot)).toEqual(["Oscillator#0", "Filter#1", "Master#4294967295"]);
+    expect(client.state.snapshot?.graph.edges).toEqual(tracerSnapshot.graph.edges.filter((e) => e.kind !== "modulation"));
+    expect(client.state.snapshot?.telemetry.modulation).toEqual([]);
+    expect(client.state.snapshot?.telemetry.rev).not.toBe(tracerSnapshot.telemetry.rev);
+    expect(client.state.snapshot?.telemetry.meters).toEqual(tracerSnapshot.telemetry.meters);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(client.state.snapshot);
+  });
+
+  test("takes the cables of the others that drive its settings, and what drives the depth of any of those", async () => {
+    const server = new MockServer({ snapshot: withCablesThatDriveCables() });
+    const client = await open(server);
+    // The first LFO's depth is driven by the second (5), whose own depth is driven by the third (6).
+    await client.request({ type: "removeNode", node: lfo.id });
+    expect(cables(client.state.snapshot)).toEqual([]);
+    // (The fixture lists its two modulators after the master; what is asked is that they stay, as they were.)
+    expect(names(client.state.snapshot)).toEqual(["Oscillator#0", "Filter#1", "Master#4294967295", "LFO#5", "LFO#6"]);
+  });
+
+  test("takes the cable of another that drives its rate, which ends at it", async () => {
+    // A second LFO (5) whose cable drives the rate of the first (2): the first has no other cable than the cutoff's.
+    const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+    const cable = { kind: "modulation", id: 1, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: lfo.id, port: { type: "rate" } } } as const;
+    const snapshot = { ...tracerSnapshot, graph: { nodes: [...tracerSnapshot.graph.nodes, second], edges: [...tracerSnapshot.graph.edges, cable] } };
+    const server = new MockServer({ snapshot });
+    const client = await open(server);
+    await client.request({ type: "removeNode", node: lfo.id });
+    expect(cables(client.state.snapshot)).toEqual([]);
+    expect(names(client.state.snapshot)).toEqual(["Oscillator#0", "Filter#1", "Master#4294967295", "LFO#5"]);
+
+    // Taking out the one that drives it takes its own cable and leaves the other's.
+    const other = await open(new MockServer({ snapshot }));
+    await other.request({ type: "removeNode", node: 5 });
+    expect(cables(other.state.snapshot).map((e) => e.id)).toEqual([0]);
+  });
+
+  test("takes only what is its own and what drives it: the others' other cables stay", async () => {
+    const server = new MockServer({ snapshot: withCablesThatDriveCables() });
+    const client = await open(server);
+    await client.request({ type: "removeNode", node: 5 });
+    // Its own cable (1) goes, and the one that drove its depth (2): the cutoff's (0) stays.
+    expect(cables(client.state.snapshot).map((e) => e.id)).toEqual([0]);
+    await client.request({ type: "removeNode", node: 6 });
+    expect(cables(client.state.snapshot).map((e) => e.id)).toEqual([0]);
+  });
+
+  test("keeps the slot of a value that another modulator still drives", async () => {
+    const server = new MockServer({ snapshot: withTwoCablesToTheCutoff() });
+    const client = await open(server);
+    const layout = () => client.state.snapshot?.telemetry.modulation ?? [];
+    await client.request({ type: "removeNode", node: lfo.id });
+    expect(layout()).toEqual(withTwoCablesToTheCutoff().telemetry.modulation.filter((entry) => entry.node !== lfo.id));
+    expect(layout().map((entry) => entry.kind)).toEqual(["modOutput", "effective"]);
+    await client.request({ type: "removeNode", node: 5 });
+    expect(layout()).toEqual([]);
+  });
+
+  test("is refused for what is not a modulator, and for what is not there, and changes nothing", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const refusal = async (node: number): Promise<RequestError> => (await client.request({ type: "removeNode", node }).catch((e: unknown) => e)) as RequestError;
+    for (const node of [nodeNamed(tracerSnapshot, "Oscillator").id, filter.id]) {
+      const failure = await refusal(node);
+      expect(failure).toBeInstanceOf(RequestError);
+      expect([failure.code, failure.message]).toEqual(["invalid", "only a modulator can be removed so far"]);
+    }
+    expect((await refusal(99)).code).toBe("notFound");
+    // (The master is a node of the graph and not of the model: the controller does not find it.)
+    expect((await refusal(MASTER)).code).toBe("notFound");
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+    await expect(client.request({ type: "removeNode", node: lfo.id })).resolves.toBe(1);
+    await expect(client.request({ type: "removeNode", node: lfo.id })).rejects.toMatchObject({ code: "notFound" });
+  });
+
+  test("does not give its id to the next node", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const parent = nodeNamed(tracerSnapshot, "Oscillator").id;
+    await client.request({ type: "addModulator", parent, kind: "lfo" });
+    await client.request({ type: "removeNode", node: 3 });
+    await client.request({ type: "addModulator", parent, kind: "lfo" });
+    expect(names(client.state.snapshot)).toEqual(["Oscillator#0", "Filter#1", "LFO#2", "LFO#4", "Master#4294967295"]);
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();

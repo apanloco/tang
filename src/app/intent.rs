@@ -51,6 +51,10 @@ pub enum Intent {
     /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
     /// refused. It drives nothing yet.
     AddModulator { parent: NodeId, kind: ModulatorKind },
+    /// Take a node out of the session. Only a modulator can be so far, with its own cables and
+    /// the cables of the others that drove its settings (and what drove the depth of any of
+    /// those); any other node is refused.
+    RemoveNode { node: NodeId },
 }
 
 /// What a new modulator is.
@@ -260,6 +264,7 @@ mod tests {
                 Intent::AddModulator { parent: NodeId(2), kind: ModulatorKind::MidiLearn },
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
+            (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
         ]
     }
 
