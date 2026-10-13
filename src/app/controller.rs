@@ -328,6 +328,28 @@ impl Controller {
         Some(index)
     }
 
+    /// Put the lanes at `a` and `b` in each other's places, each with everything it has: in the model, and
+    /// on the audio thread, which is told to do the same (`SessionModel::swap_lanes`). False, sending
+    /// nothing, if either is not there or they are one.
+    pub fn swap_lanes(&mut self, a: usize, b: usize) -> bool {
+        if !self.model.swap_lanes(a, b) {
+            return false;
+        }
+        let _ = self.cmd_tx.send(GraphCommand::SwapInstruments { inst_a: a, inst_b: b });
+        true
+    }
+
+    /// Take the instrument plugin out of lane `inst`, which is left with what else it has: its effects, its
+    /// modulators, its volume and range. False, sending nothing, if there is no such lane or it has no plugin.
+    pub fn clear_instrument(&mut self, inst: usize) -> bool {
+        let Some(lane) = self.model.instruments.get_mut(inst) else { return false };
+        if lane.instrument.take().is_none() {
+            return false;
+        }
+        let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
+        true
+    }
+
     /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
     /// thread drops it and the model with it, and its own cables with it. The cables of the
     /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
@@ -2003,6 +2025,85 @@ rate = 2.0
             ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=1", "RemoveModulator inst=0 index=0"]
         );
         assert_eq!(driven(&ctl.model.groups[0].modulators), [vec![K::GroupMemberMod { member: 1, mod_index: 0, field: F::Depth(1) }]]);
+    }
+
+    /// What each lane is as the model has it, in the terms `AudioGraph::lanes` uses.
+    fn model_lanes(model: &SessionModel) -> Vec<crate::plugin::chain::LaneFacts> {
+        model
+            .instruments
+            .iter()
+            .enumerate()
+            .map(|(i, lane)| crate::plugin::chain::LaneFacts {
+                group: lane.group,
+                range: lane.range,
+                transpose: lane.transpose,
+                volume: lane.volume,
+                has_instrument: lane.instrument.is_some(),
+                effects: lane.effects.len(),
+                modulators: lane.modulators.len(),
+                pattern_index: i,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn swap_lanes_swaps_them_in_the_model_and_tells_the_audio_thread_once() {
+        let (engine, mut ctl) = controller_for(testutil::LANES_IN_GROUPS);
+        sent(&engine);
+        let (first, last) = (ctl.model.instruments[0].node, ctl.model.instruments[3].node);
+        assert!(ctl.swap_lanes(0, 3));
+        assert_eq!(sent(&engine), ["SwapInstruments a=0 b=3"]);
+        assert_eq!((ctl.model.instruments[0].node, ctl.model.instruments[3].node), (last, first));
+        // Lanes that are not there, or are one: nothing happens and nothing is sent.
+        assert!(!ctl.swap_lanes(1, 1) && !ctl.swap_lanes(0, 4) && !ctl.swap_lanes(8, 2));
+        assert!(sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn clear_instrument_empties_the_lanes_instrument_and_leaves_it_everything_else() {
+        let (engine, mut ctl) = controller_for(testutil::LANES_IN_GROUPS);
+        sent(&engine);
+        assert!(ctl.clear_instrument(1));
+        assert_eq!(sent(&engine), ["ClearInstrument inst=1"]);
+        let lane = &ctl.model.instruments[1];
+        assert!(lane.instrument.is_none());
+        assert_eq!((lane.effects.len(), lane.modulators.len(), lane.volume, lane.transpose), (1, 2, 0.6, 7));
+        // One that has none, and one that is not there: nothing is sent.
+        assert!(!ctl.clear_instrument(1) && !ctl.clear_instrument(9));
+        assert!(sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn lanes_that_swap_and_instruments_that_are_cleared_leave_the_model_and_the_audio_thread_the_same() {
+        use crate::plugin::chain::AudioGraph;
+        let same = |graph: &AudioGraph, ctl: &Controller, what: &str| {
+            assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+            assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+            ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+        };
+        for session in [testutil::LANES_IN_GROUPS, testutil::GROUPS, testutil::CROSS_MOD] {
+            let lanes = load(session).model.instruments.len();
+            // Every pair of lanes, one swap each, from a fresh start.
+            for a in 0..lanes {
+                for b in 0..lanes {
+                    let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+                    same(&graph, &ctl, "as loaded");
+                    assert_eq!(ctl.swap_lanes(a, b), a != b);
+                    graph.drain_commands();
+                    same(&graph, &ctl, &format!("after swapping {a} and {b}"));
+                }
+            }
+            // Several in a row, each after the one before, with an instrument cleared in between.
+            let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+            for (step, (a, b)) in [(0, lanes - 1), (1, 0), (lanes - 1, 1), (0, 1), (lanes - 1, 0)].into_iter().enumerate() {
+                ctl.swap_lanes(a, b);
+                if step == 2 {
+                    ctl.clear_instrument(0);
+                }
+                graph.drain_commands();
+                same(&graph, &ctl, &format!("after step {step} ({a} and {b}), scene of {lanes} lanes"));
+            }
+        }
     }
 
     #[test]

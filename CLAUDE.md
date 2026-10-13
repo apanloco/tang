@@ -1070,13 +1070,18 @@ Members then read those values when they render; bus effects read them when the
 group's chain runs. A member's own lane modulator, applied later inside the
 lane, wins if it targets the same parameter as a group modulator.
 
-**Known limitation (instrument reorder + groups):** `SwapInstruments` swaps
-only the instrument plugin between two lanes, while the TUI model swaps the
-whole node (including `group`). Reordering *grouped* instruments can therefore
-desync membership between the TUI view and the audio graph. This predates
-group modulators (it already affects the per-lane `group`/effects on reorder);
-a proper fix would make `SwapInstruments` swap the full lane role. Reordering
-ungrouped instruments is unaffected.
+**Reordering instruments** (`Shift+Up` / `Shift+Down` on an instrument, `Controller::
+swap_lanes`) moves the whole lane: its plugins and effects, its modulators, its volume,
+range, transpose and group, and its pattern, in the model and on the audio thread
+(`SwapInstruments` swaps the lanes, and the pattern player is told which lane it is now).
+A group's cables address their members by the lane's place among the group's lanes, so
+when two lanes change places the cables are told the places the members have now
+(`member_moves`, one function for the model and the audio thread), and keep driving the
+same plugins. (Until the review of step 14 found it, `SwapInstruments` swapped only the
+instrument plugin while the model swapped the whole node, so that after any reorder, grouped
+or not, a lane's effects, modulators and volume were on different lanes in the engine and in
+the view.) Taking the instrument plugin out of a lane (`d` on it, `Controller::clear_instrument`)
+leaves the lane what else it has: its effects, modulators and volume.
 
 Effects can be reordered within an instrument (or a group bus) in the Session
 tab. Instrument volume is applied after the instrument's output and before its

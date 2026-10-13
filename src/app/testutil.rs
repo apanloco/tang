@@ -63,6 +63,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::AddInstrument { range } => format!("AddInstrument range={range:?}"),
         C::RemoveInstrument { inst } => format!("RemoveInstrument inst={inst}"),
         C::ClearInstrument { inst } => format!("ClearInstrument inst={inst}"),
+        C::SwapInstruments { inst_a, inst_b } => format!("SwapInstruments a={inst_a} b={inst_b}"),
         C::SetLaneGroup { inst, group } => format!("SetLaneGroup inst={inst} group={group:?}"),
         C::SetInstrumentRange { inst, range } => format!("SetInstrumentRange inst={inst} range={range:?}"),
         C::SwapInstrument { inst, instrument, inst_buf, remapper } => format!(
@@ -583,6 +584,67 @@ rate = 2.0
 [[instrument.modulator.target]]
 mod_depth = [0, 0]
 depth = 0.3
+"#;
+
+/// Four lanes in two groups and none, each told apart by what it has: the first in group 0, the second in no
+/// group, the third in group 1, the fourth in group 0, and the groups' modulators drive the members.
+pub const LANES_IN_GROUPS: &str = r#"
+[[group]]
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.1
+[[group.modulator.target]]
+member = 1
+param = "pan"
+depth = 0.2
+[[group.modulator.target]]
+member = 1
+mod_rate = 0
+depth = 0.3
+
+[[group]]
+[[group.modulator]]
+rate = 2.0
+[[group.modulator.target]]
+member = 0
+param = "volume"
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.5
+range = "C0-B3"
+[[instrument.modulator]]
+rate = 3.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.6
+transpose = 7
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 4.0
+[[instrument.modulator]]
+rate = 5.0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+volume = 0.7
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.8
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 6.0
 "#;
 
 /// Panic, showing where, if two models differ anywhere. They are compared by their

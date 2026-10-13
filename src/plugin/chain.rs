@@ -294,6 +294,21 @@ impl LfoWaveform {
 #[cfg(test)]
 pub type RackCables = Vec<(ModulatorLocation, usize, Vec<(ModTargetKind, f32)>)>;
 
+/// What a lane is, for tests: the group it is in, its key range, transpose and volume, whether it has an
+/// instrument, how many effects and modulators, and which lane its pattern player says it is.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct LaneFacts {
+    pub group: Option<usize>,
+    pub range: Option<(u8, u8)>,
+    pub transpose: i8,
+    pub volume: f32,
+    pub has_instrument: bool,
+    pub effects: usize,
+    pub modulators: usize,
+    pub pattern_index: usize,
+}
+
 /// Identifies what a modulation target points at.
 ///
 /// Modulators are lane-scoped: one modulator can drive parameters anywhere in
@@ -1278,7 +1293,7 @@ fn apply_group_member_mod_writes(
 
 /// The member ordinal a group target lands on (GroupMember or GroupMemberMod),
 /// as a mutable reference for fixups. Other kinds return None.
-fn group_target_member_mut(kind: &mut ModTargetKind) -> Option<&mut usize> {
+pub fn group_target_member_mut(kind: &mut ModTargetKind) -> Option<&mut usize> {
     match kind {
         ModTargetKind::GroupMember { member, .. } => Some(member),
         ModTargetKind::GroupMemberMod { member, .. } => Some(member),
@@ -1354,6 +1369,48 @@ fn fixup_member_depth_cables_after_remove(modulators: &mut [Modulator], member: 
             if let ModTargetKind::GroupMemberMod { member: of, mod_index: at, field: CrossModField::Depth(target) } = &mut t.kind {
                 if *of == member && *at == mod_index && *target > removed {
                     *target -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// How the member ordinals of the groups change when the lanes at `a` and `b` swap places, lane
+/// and all (its plugins, its modulators, the group it is in). `lane_groups` is the group of each
+/// lane by position, before the swap. For each lane in a group whose ordinal in it changes, the
+/// group, the ordinal it had and the one it has: a group's cables address its members by ordinal,
+/// which is the lane's place among the lanes of the group, so they have to be told.
+pub fn member_moves(lane_groups: &[Option<usize>], a: usize, b: usize) -> Vec<(usize, usize, usize)> {
+    let mut after = lane_groups.to_vec();
+    after.swap(a, b);
+    let ordinal = |groups: &[Option<usize>], at: usize, group: usize| groups[..at].iter().filter(|g| **g == Some(group)).count();
+    let mut moves = Vec::new();
+    for (position, group) in lane_groups.iter().enumerate() {
+        let Some(group) = *group else { continue };
+        let now_at = if position == a {
+            b
+        } else if position == b {
+            a
+        } else {
+            position
+        };
+        let (old, new) = (ordinal(lane_groups, position, group), ordinal(&after, now_at, group));
+        if old != new {
+            moves.push((group, old, new));
+        }
+    }
+    moves
+}
+
+/// Tell the cables of a group's modulators that address members by ordinal (`GroupMember`,
+/// `GroupMemberMod`) the new ordinals, as `(old, new)`. They all change at once: two members that
+/// change places must not meet half way.
+fn remap_member_ordinals(modulators: &mut [Modulator], moves: &[(usize, usize)]) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let Some(member) = group_target_member_mut(&mut t.kind) {
+                if let Some(&(_, new)) = moves.iter().find(|(old, _)| old == member) {
+                    *member = new;
                 }
             }
         }
@@ -3038,6 +3095,24 @@ impl AudioGraph {
         self.num_channels
     }
 
+    /// What each lane is, for a test to compare with the model's.
+    #[cfg(test)]
+    pub fn lanes(&self) -> Vec<LaneFacts> {
+        self.instruments
+            .iter()
+            .map(|lane| LaneFacts {
+                group: lane.group,
+                range: lane.range,
+                transpose: lane.transpose,
+                volume: lane.volume,
+                has_instrument: lane.instrument.is_some(),
+                effects: lane.effects.len(),
+                modulators: lane.modulators.len(),
+                pattern_index: lane.pattern.inst_index,
+            })
+            .collect()
+    }
+
     /// Every modulator's cables, for a test to compare with the model's: the lanes' racks
     /// and then the groups', each modulator with its cables' kinds and depths in order.
     #[cfg(test)]
@@ -3245,7 +3320,6 @@ impl AudioGraph {
                         .and_then(|lane| {
                             lane.inst_buf.clear();
                             lane.remapper = None;
-                            lane.modulators.clear();
                             lane.instrument.take()
                         });
                     if let Some(old) = old {
@@ -3257,17 +3331,21 @@ impl AudioGraph {
                     inst_b,
                 } => {
                     if inst_a < self.instruments.len() && inst_b < self.instruments.len() && inst_a != inst_b {
-                        // Swap instrument, inst_buf, and remapper between the two lanes.
-                        let (a, b) = if inst_a < inst_b {
-                            let (left, right) = self.instruments.split_at_mut(inst_b);
-                            (&mut left[inst_a], &mut right[0])
-                        } else {
-                            let (left, right) = self.instruments.split_at_mut(inst_a);
-                            (&mut right[0], &mut left[inst_b])
-                        };
-                        std::mem::swap(&mut a.instrument, &mut b.instrument);
-                        std::mem::swap(&mut a.inst_buf, &mut b.inst_buf);
-                        std::mem::swap(&mut a.remapper, &mut b.remapper);
+                        // The lanes change places, each with everything it has: its plugins and its
+                        // effects, its modulators, its volume, range and group. What is addressed
+                        // by position follows: the pattern player says which lane it is, and the
+                        // cables of a group address its members by their place among the group's lanes.
+                        let groups: Vec<Option<usize>> = self.instruments.iter().map(|lane| lane.group).collect();
+                        let moves = member_moves(&groups, inst_a, inst_b);
+                        self.instruments.swap(inst_a, inst_b);
+                        self.instruments[inst_a].pattern.inst_index = inst_a;
+                        self.instruments[inst_b].pattern.inst_index = inst_b;
+                        for group in moves.iter().map(|(group, ..)| *group).collect::<std::collections::BTreeSet<_>>() {
+                            let of_group: Vec<(usize, usize)> = moves.iter().filter(|(g, ..)| *g == group).map(|&(_, old, new)| (old, new)).collect();
+                            if let Some(g) = self.groups.get_mut(group) {
+                                remap_member_ordinals(&mut g.modulators, &of_group);
+                            }
+                        }
                     }
                 }
                 GraphCommand::AddInstrument { range } => {
@@ -7788,5 +7866,239 @@ mod tests {
         graph.drain_commands();
         assert_eq!((graph.groups[0].modulators[0].targets.len(), graph.groups[0].modulators[1].targets.len()), (2, 3));
         assert_eq!(graph.groups[0].modulators[1].targets[2].kind, depth_of(0, 4), "and nothing moved");
+    }
+
+    // -- Lanes change places --
+    //
+    // A lane moves with everything it has (the model's tree swaps whole nodes): its plugins and
+    // effects, its modulators, its volume, range and group. What is addressed by position follows.
+
+    /// Lane `inst` made recognisable, so that a swap can be seen to have moved all of it.
+    fn shape_lane(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, plugin: bool, effects: usize, modulators: usize, volume: f32, range: Option<(u8, u8)>) {
+        if plugin {
+            swap_instrument_at(cmd_tx, inst, ConstInstrument::new(1.0));
+        }
+        for index in 0..effects {
+            cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: Box::new(PassthroughEffect), mix: 1.0 }).unwrap();
+        }
+        for index in 0..modulators {
+            insert_lane_lfo(cmd_tx, inst, index);
+        }
+        cmd_tx.send(GraphCommand::SetVolume { inst, value: volume }).unwrap();
+        cmd_tx.send(GraphCommand::SetInstrumentRange { inst, range }).unwrap();
+        cmd_tx.send(GraphCommand::SetTranspose { inst, semitones: inst as i8 + 1 }).unwrap();
+    }
+
+    #[test]
+    fn swapping_two_lanes_moves_each_with_everything_it_has() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        shape_lane(&cmd_tx, 0, true, 2, 1, 0.5, Some((36, 60)));
+        shape_lane(&cmd_tx, 1, false, 0, 3, 1.5, None);
+        shape_lane(&cmd_tx, 2, true, 1, 0, 2.5, Some((61, 72)));
+        graph.drain_commands();
+        let before = graph.lanes();
+        cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 0, inst_b: 1 }).unwrap();
+        graph.drain_commands();
+        let after = graph.lanes();
+        // Each lane is the other one: everything but the place its pattern player knows it by.
+        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
+        assert_eq!(after[0], moved(&before[1], 0));
+        assert_eq!(after[1], moved(&before[0], 1));
+        assert_eq!((after[0].volume, after[0].modulators, after[0].has_instrument), (1.5, 3, false));
+        assert_eq!((after[1].volume, after[1].effects, after[1].range, after[1].transpose), (0.5, 2, Some((36, 60)), 1));
+        assert_eq!(after[2], before[2], "the lane that was not named is as it was");
+    }
+
+    #[test]
+    fn swapping_lanes_that_are_not_there_or_a_lane_with_itself_changes_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        shape_lane(&cmd_tx, 0, true, 1, 1, 0.5, None);
+        shape_lane(&cmd_tx, 1, false, 0, 2, 1.5, Some((1, 2)));
+        graph.drain_commands();
+        let before = graph.lanes();
+        for (inst_a, inst_b) in [(0, 0), (1, 1), (0, 2), (5, 1), (3, 4)] {
+            cmd_tx.send(GraphCommand::SwapInstruments { inst_a, inst_b }).unwrap();
+        }
+        graph.drain_commands();
+        assert_eq!(graph.lanes(), before);
+    }
+
+    #[test]
+    fn clearing_an_instrument_keeps_the_rest_of_its_lane() {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        shape_lane(&cmd_tx, 0, true, 1, 2, 0.5, Some((36, 60)));
+        graph.drain_commands();
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0 }).unwrap();
+        graph.drain_commands();
+        // What the model keeps (it only empties the instrument's slot): the effect, the modulators, the rest.
+        assert_eq!(
+            graph.lanes(),
+            [LaneFacts { group: None, range: Some((36, 60)), transpose: 1, volume: 0.5, has_instrument: false, effects: 1, modulators: 2, pattern_index: 0 }]
+        );
+        assert!(return_rx.try_recv().is_ok(), "and the plugin is handed back");
+    }
+
+    /// Four lanes, the first, third and fourth in group 0 (its members 0, 1 and 2). The group's modulator drives
+    /// parameters 0, 1 and 2 of the members' instruments, each told apart by its parameter, and the rate of the
+    /// first member's first modulator; another group's modulator (group 1, which no lane is in) drives member 0's.
+    fn group_of_three_among_four() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>) {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        for _ in 0..3 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        }
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for inst in [0, 2, 3] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+        }
+        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: source.clone() }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 1, index: 0, source }).unwrap();
+        for member in 0..3 {
+            add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member, slot: 0, param_index: member as u32 }, 0.5));
+        }
+        add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMemberMod { member: 0, mod_index: 0, field: CrossModField::Rate }, 0.5));
+        add_group_cable(&cmd_tx, 1, 0, cable(ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 9 }, 0.5));
+        graph.drain_commands();
+        (graph, cmd_tx)
+    }
+
+    /// The member each cable of group 0's modulator drives, in the order the cables were made: the three
+    /// parameters, and then the first modulator's rate.
+    fn members_driven(graph: &AudioGraph) -> Vec<usize> {
+        graph.groups[0]
+            .modulators[0]
+            .targets
+            .iter()
+            .map(|t| match t.kind {
+                ModTargetKind::GroupMember { member, .. } | ModTargetKind::GroupMemberMod { member, .. } => member,
+                ref other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lanes_that_swap_places_take_their_place_among_the_groups_members_and_the_groups_cables_follow_them() {
+        // (the two lanes, and the member each cable drives after: the cables for parameters 0, 1 and 2, and the rate)
+        for ((inst_a, inst_b), expected) in [
+            // Two members of the group: the first and the last change places, and the cables that drove them.
+            ((0, 3), [2, 1, 0, 2]),
+            ((3, 0), [2, 1, 0, 2]),
+            // Neighbours in the group, with a lane that is not in it between them in the tree.
+            ((2, 3), [0, 2, 1, 0]),
+            // A lane that is in no group, and a member: the member keeps its place among the members.
+            ((1, 2), [0, 1, 2, 0]),
+            ((0, 1), [0, 1, 2, 0]),
+            // The lane that is not a member goes past the last: the member it passes is the one before it now.
+            ((1, 3), [0, 2, 1, 0]),
+        ] {
+            let (mut graph, cmd_tx) = group_of_three_among_four();
+            cmd_tx.send(GraphCommand::SwapInstruments { inst_a, inst_b }).unwrap();
+            graph.drain_commands();
+            assert_eq!(members_driven(&graph), expected, "after swapping {inst_a} and {inst_b}");
+            // The other group's cable is its own.
+            assert_eq!(graph.groups[1].modulators[0].targets[0].kind, ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 9 });
+        }
+    }
+
+    #[test]
+    fn swapping_lanes_of_two_groups_tells_each_group_its_own_members_and_no_others() {
+        // Five lanes: the first and third in group 0 (members 0 and 1), the second, fourth and fifth in group 1
+        // (members 0, 1 and 2). Each group's modulator drives each of its members' instruments, told apart by parameter.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        for _ in 0..4 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        }
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for (inst, group) in [(0, 0), (1, 1), (2, 0), (3, 1), (4, 1)] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(group) }).unwrap();
+        }
+        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        for group in 0..2 {
+            cmd_tx.send(GraphCommand::InsertGroupModulator { group, index: 0, source: source.clone() }).unwrap();
+        }
+        for member in 0..2 {
+            add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member, slot: 0, param_index: member as u32 }, 0.5));
+        }
+        for member in 0..3 {
+            add_group_cable(&cmd_tx, 1, 0, cable(ModTargetKind::GroupMember { member, slot: 0, param_index: 10 + member as u32 }, 0.5));
+        }
+        graph.drain_commands();
+        let members = |graph: &AudioGraph, group: usize| -> Vec<(u32, usize)> {
+            graph.groups[group].modulators[0]
+                .targets
+                .iter()
+                .filter_map(|t| match t.kind {
+                    ModTargetKind::GroupMember { member, param_index, .. } => Some((param_index, member)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!((members(&graph, 0), members(&graph, 1)), (vec![(0, 0), (1, 1)], vec![(10, 0), (11, 1), (12, 2)]));
+
+        // The first lane (group 0) and the last (group 1) change places: both groups' members move.
+        cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 0, inst_b: 4 }).unwrap();
+        graph.drain_commands();
+        // Group 0: its first member is at the end now, and the other is the first. Group 1: the last member is
+        // at the front, and the others are one on.
+        assert_eq!(members(&graph, 0), [(0, 1), (1, 0)]);
+        assert_eq!(members(&graph, 1), [(10, 1), (11, 2), (12, 0)]);
+    }
+
+    #[test]
+    fn the_lanes_that_swap_carry_their_group_with_them() {
+        let (mut graph, cmd_tx) = group_of_three_among_four();
+        cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 1, inst_b: 3 }).unwrap();
+        graph.drain_commands();
+        // Lanes 0 and 2 are as they were, lane 1 is the member now and lane 3 is not.
+        assert_eq!(graph.lanes().iter().map(|lane| lane.group).collect::<Vec<_>>(), [Some(0), Some(0), Some(0), None]);
+    }
+
+    #[test]
+    fn the_member_ordinals_that_change_when_two_lanes_swap_are_those_of_the_lanes_that_moved() {
+        // The ordinal of a lane is how many lanes of its group are before it. Worked out here by following each
+        // lane through the swap by name, which `member_moves` does not do.
+        let mut checked = 0;
+        for lanes in 2..=5usize {
+            for assignment in 0..3usize.pow(lanes as u32) {
+                // Each lane is in group 0, group 1 or none: the digits of `assignment` in base 3.
+                let groups: Vec<Option<usize>> = (0..lanes).map(|lane| match (assignment / 3usize.pow(lane as u32)) % 3 { 0 => None, g => Some(g - 1) }).collect();
+                for a in 0..lanes {
+                    for b in 0..lanes {
+                        if a == b {
+                            continue;
+                        }
+                        // The lanes by name, in their order before and after.
+                        let before: Vec<usize> = (0..lanes).collect();
+                        let mut after = before.clone();
+                        after.swap(a, b);
+                        let ordinal_in = |order: &[usize], lane: usize, group: usize| -> usize {
+                            order.iter().take_while(|&&named| named != lane).filter(|&&named| groups[named] == Some(group)).count()
+                        };
+                        let mut expected: Vec<(usize, usize, usize)> = Vec::new();
+                        for (lane, group) in groups.iter().enumerate() {
+                            if let Some(group) = *group {
+                                let (old, new) = (ordinal_in(&before, lane, group), ordinal_in(&after, lane, group));
+                                if old != new {
+                                    expected.push((group, old, new));
+                                }
+                            }
+                        }
+                        // (`groups` above is by name before the swap: after it, the group of each place is that of the lane there.)
+                        let by_place: Vec<Option<usize>> = groups.clone();
+                        let mut moves = member_moves(&by_place, a, b);
+                        moves.sort_unstable();
+                        expected.sort_unstable();
+                        assert_eq!(moves, expected, "groups {groups:?}, swapping {a} and {b}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 3000, "{checked}");
     }
 }

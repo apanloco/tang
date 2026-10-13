@@ -808,6 +808,47 @@ fn the_parameter_filter_goes_when_the_node_under_the_cursor_is_another_one() {
     assert!(!h.s.param_filtering);
 }
 
+const LANE_WITH_FILTER_AND_LFO_AND_A_PLAIN_ONE: &str =
+    "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.modulator]]\nrate = 2.0\n\
+     [[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.5\n";
+
+#[test]
+fn shift_down_and_up_on_an_instrument_move_the_whole_lane_with_its_effects_and_modulators() {
+    let mut h = Harness::new(LANE_WITH_FILTER_AND_LFO_AND_A_PLAIN_ONE);
+    h.goto(TreeAddress::Instrument(0));
+    assert!(h.tree()[1].contains("fx Filter") && h.tree()[2].contains("LFO"), "{:#?}", h.tree());
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["SwapInstruments a=0 b=1"]);
+    // The lane with the filter and the LFO is the second now, and has them under it; the cursor stays on it.
+    assert!(h.tree()[0].starts_with('♪') && h.tree()[1].starts_with('♪'), "{:#?}", h.tree());
+    assert!(h.tree()[2].contains("fx Filter") && h.tree()[3].contains("LFO"), "{:#?}", h.tree());
+    assert_eq!(h.s.selected_address(), Some(&TreeAddress::Instrument(1)));
+    assert_eq!(h.s.ctl.model.instruments[0].volume, 0.5);
+    // And back.
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["SwapInstruments a=1 b=0"]);
+    assert!(h.tree()[1].contains("fx Filter") && h.tree()[2].contains("LFO"), "{:#?}", h.tree());
+    assert_eq!(h.s.selected_address(), Some(&TreeAddress::Instrument(0)));
+    // The first cannot go up and the last cannot go down.
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    h.goto(TreeAddress::Instrument(1)).press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert!(h.commands().is_empty(), "{:?}", h.commands());
+}
+
+#[test]
+fn d_on_an_instrument_empties_it_and_leaves_the_lanes_effects_and_modulators() {
+    let mut h = Harness::new(LANE_WITH_FILTER_AND_LFO_AND_A_PLAIN_ONE);
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["ClearInstrument inst=0"]);
+    assert!(h.s.ctl.model.instruments[0].instrument.is_none());
+    assert!(h.tree().iter().any(|line| line.contains("fx Filter")) && h.tree().iter().any(|line| line.contains("LFO")), "{:#?}", h.tree());
+    // A second `d` removes the lane (that has no plugin now), with what it had.
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["RemoveInstrument inst=0"]);
+    assert_eq!(h.s.ctl.model.instruments.len(), 1);
+}
+
 #[test]
 fn clicking_and_dragging_a_parameter_bar_sets_its_value() {
     use crossterm::event::{MouseEvent, MouseEventKind};

@@ -2697,10 +2697,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         let has_plugin =
                             s.ctl.model.instruments.get(inst).is_some_and(|n| n.instrument.is_some());
                         if has_plugin {
-                            let _ = s.ctl.cmd_tx.send(GraphCommand::ClearInstrument { inst });
-                            if let Some(n) = s.ctl.model.instruments.get_mut(inst) {
-                                n.instrument = None;
-                            }
+                            s.ctl.clear_instrument(inst);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
                         } else if s.ctl.model.instruments.len() > 1 {
@@ -2915,11 +2912,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                     }
                     TreeAddress::Instrument(inst) if inst > 0 => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapInstruments {
-                            inst_a: inst,
-                            inst_b: inst - 1,
-                        });
-                        s.ctl.model.instruments.swap(inst, inst - 1);
+                        s.ctl.swap_lanes(inst, inst - 1);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Instrument(inst - 1);
@@ -2991,11 +2984,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                     }
                     TreeAddress::Instrument(inst) if inst + 1 < s.ctl.model.instruments.len() => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapInstruments {
-                            inst_a: inst,
-                            inst_b: inst + 1,
-                        });
-                        s.ctl.model.instruments.swap(inst, inst + 1);
+                        s.ctl.swap_lanes(inst, inst + 1);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Instrument(inst + 1);

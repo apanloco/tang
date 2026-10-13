@@ -13,7 +13,7 @@
 
 use crate::app::intent::{Intent, ModulatorField};
 use crate::plugin;
-use crate::plugin::chain::{CrossModField, ModTargetKind, ModulatorLocation};
+use crate::plugin::chain::{CrossModField, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 
 /// Names a node of the session (an instrument, an effect, a group, a bus effect
@@ -260,6 +260,35 @@ impl SessionModel {
             removals.push((at, mod_index, target));
         }
         Some(removals)
+    }
+
+    /// Put the lanes at `a` and `b` in each other's places, each with everything it has (its
+    /// plugins and effects, modulators, volume, range, group and pattern: the tree moves whole
+    /// nodes), as the audio thread's `SwapInstruments` does. A group's cables address their members
+    /// by the place of the lane among the group's lanes, so they are told the places the lanes have
+    /// now (`member_moves`). False, and nothing changed, if either is not there or they are one.
+    pub fn swap_lanes(&mut self, a: usize, b: usize) -> bool {
+        let count = self.instruments.len();
+        if a == b || a >= count || b >= count {
+            return false;
+        }
+        let groups: Vec<Option<usize>> = self.instruments.iter().map(|lane| lane.group).collect();
+        let moves = member_moves(&groups, a, b);
+        self.instruments.swap(a, b);
+        for (index, group) in self.groups.iter_mut().enumerate() {
+            let of_group: Vec<(usize, usize)> = moves.iter().filter(|(g, ..)| *g == index).map(|&(_, old, new)| (old, new)).collect();
+            if of_group.is_empty() {
+                continue;
+            }
+            for target in group.modulators.iter_mut().flat_map(|m| &mut m.targets) {
+                if let Some(member) = group_target_member_mut(&mut target.kind) {
+                    if let Some(&(_, new)) = of_group.iter().find(|(old, _)| old == member) {
+                        *member = new;
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// The cables of other modulators that would be left pointing at nothing if modulator `index`
@@ -1689,6 +1718,62 @@ depth = 0.4
         assert!(model.remove_edge(gone).is_some());
         assert_eq!(model.remove_edge(gone), None, "it is not there the second time");
         assert_ne!(cables(&model.instruments[0].modulators), before, "(the first time did change it)");
+    }
+
+    // -- Lanes change places --
+
+    /// The member each cable of the first group's first modulator drives, in order (a plugin's parameter or a
+    /// modulator's rate), and the group of each lane.
+    fn members_and_groups(model: &SessionModel) -> (Vec<usize>, Vec<Option<usize>>) {
+        let members = model.groups[0].modulators[0]
+            .targets
+            .iter()
+            .map(|t| match t.kind {
+                K::GroupMember { member, .. } | K::GroupMemberMod { member, .. } => member,
+                ref other => panic!("{other:?}"),
+            })
+            .collect();
+        (members, model.instruments.iter().map(|lane| lane.group).collect())
+    }
+
+    #[test]
+    fn two_lanes_that_swap_places_each_take_what_it_has_and_the_groups_cables_follow_the_members() {
+        use crate::app::testutil::LANES_IN_GROUPS;
+        let mut model = load(LANES_IN_GROUPS).model;
+        // Group 0's members are lanes 0 and 3 (members 0 and 1); its modulator drives parameters of both, and the
+        // rate of the second's first modulator.
+        assert_eq!(members_and_groups(&model), (vec![0, 1, 1], vec![Some(0), None, Some(1), Some(0)]));
+        let (ids, volumes): (Vec<NodeId>, Vec<f32>) = model.instruments.iter().map(|lane| (lane.node, lane.volume)).unzip();
+
+        // Two members change places: so do the members the cables drive.
+        assert!(model.swap_lanes(0, 3));
+        assert_eq!(members_and_groups(&model), (vec![1, 0, 0], vec![Some(0), None, Some(1), Some(0)]));
+        assert_eq!(model.instruments.iter().map(|lane| lane.node).collect::<Vec<_>>(), [ids[3], ids[1], ids[2], ids[0]], "each lane is its own node, and moved");
+        assert_eq!(model.instruments.iter().map(|lane| lane.volume).collect::<Vec<_>>(), [volumes[3], volumes[1], volumes[2], volumes[0]]);
+        assert_eq!(model.instruments[3].range, Some((12, 59)), "the range of the lane went with it");
+        assert_eq!(model.instruments[0].effects.len(), 1);
+        assert_eq!(model.locate(ids[0]), Some(NodePath::Instrument(3)), "the node is found where the lane is");
+        model.check_ids().unwrap();
+
+        // A member and a lane in no group: the member's place among the members does not change, the lane's group goes with it.
+        assert!(model.swap_lanes(0, 1));
+        assert_eq!(members_and_groups(&model), (vec![1, 0, 0], vec![None, Some(0), Some(1), Some(0)]));
+        // A member goes past the other group's lane and then past the other member: they change places again.
+        assert!(model.swap_lanes(1, 3));
+        assert_eq!(members_and_groups(&model), (vec![0, 1, 1], vec![None, Some(0), Some(1), Some(0)]));
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn lanes_that_are_not_there_or_are_one_do_not_swap_and_nothing_changes() {
+        use crate::app::testutil::LANES_IN_GROUPS;
+        let mut model = load(LANES_IN_GROUPS).model;
+        let before = format!("{:?}", model.instruments.iter().map(|lane| (lane.node, lane.group)).collect::<Vec<_>>());
+        for (a, b) in [(1, 1), (0, 4), (7, 0), (9, 9)] {
+            assert!(!model.swap_lanes(a, b), "{a} {b}");
+        }
+        assert_eq!(format!("{:?}", model.instruments.iter().map(|lane| (lane.node, lane.group)).collect::<Vec<_>>()), before);
+        assert_eq!(members_and_groups(&model).0, [0, 1, 1]);
     }
 
     #[test]
