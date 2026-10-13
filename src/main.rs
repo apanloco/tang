@@ -399,8 +399,7 @@ fn run_session(
     ));
 
     // Create empty audio graph (outputs silence until instruments are added)
-    let num_channels = 2; // stereo — see CLAUDE.md design decision
-    let mut graph = plugin::chain::AudioGraph::new(num_channels, cmd_rx, return_tx);
+    let mut graph = plugin::chain::AudioGraph::new(plugin::chain::CHAIN_CHANNELS, cmd_rx, return_tx);
 
     // Pattern recording completion channel
     let (pattern_tx, pattern_rx) = crossbeam_channel::bounded::<plugin::chain::PatternNotification>(64);

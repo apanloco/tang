@@ -786,6 +786,45 @@ impl Drop for DropProbe {
     }
 }
 
+/// An effect with a single audio output, which the chains (stereo) have no place for.
+pub struct MonoEffect;
+
+impl plugin::Plugin for MonoEffect {
+    fn name(&self) -> &str {
+        "MonoEffect"
+    }
+    fn is_instrument(&self) -> bool {
+        false
+    }
+    fn sample_rate(&self) -> f32 {
+        48_000.0
+    }
+    fn audio_output_count(&self) -> usize {
+        1
+    }
+    fn audio_input_count(&self) -> usize {
+        1
+    }
+    fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], _: &mut [&mut [f32]]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn parameters(&self) -> Vec<plugin::ParameterInfo> {
+        Vec::new()
+    }
+    fn get_parameter(&mut self, _: u32) -> Option<f32> {
+        None
+    }
+    fn set_parameter(&mut self, _: u32, _: f32) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn presets(&self) -> Vec<plugin::Preset> {
+        Vec::new()
+    }
+    fn load_preset(&mut self, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 impl plugin::Plugin for DropProbe {
     fn name(&self) -> &str {
         "DropProbe"

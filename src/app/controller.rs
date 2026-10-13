@@ -36,11 +36,11 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
-use crate::app::intent::{Applied, ModulatorField};
+use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    Driven, EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodePath, ParamTarget, PatternState, PluginSlot,
-    SessionModel, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
+    Driven, EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState, PluginSlot,
+    SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -50,7 +50,7 @@ use crate::midi_monitor::MidiMonitor;
 use crate::note_input::NoteInput;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{
-    GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
+    CHAIN_CHANNELS, GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
 };
 use crate::plugin::{self, Plugin, Runtime};
 use crate::session::{self, PianoConfig};
@@ -164,6 +164,13 @@ impl NewTarget {
             param_max: target.param_max,
         }
     }
+}
+
+/// A chain of effects: a lane's, or a group's bus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChainAt {
+    Lane(usize),
+    Bus(usize),
 }
 
 pub struct Controller {
@@ -388,6 +395,72 @@ impl Controller {
         }
         let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
         true
+    }
+
+    /// Put the plugin `source` at the end of lane `inst`'s chain as an effect: loaded here, in a node of its own,
+    /// at the mix that suits it (`default_effect_mix`), on the audio thread and in the model. It comes after all
+    /// that is there, so no cable that drives a plugin of the chain is moved. Refused, with nothing changed and
+    /// nothing sent, if there is no such lane; if `source` is not a plugin the catalog names (a front-end chooses
+    /// from the catalog, and an id or a path of its own is not loaded); if it is an instrument; if it does not
+    /// load; or if its outputs are not the chain's channels, which the audio thread would turn away (leaving the
+    /// model with an effect that is not there).
+    pub fn add_effect(&mut self, inst: usize, source: &str) -> Result<NodeId, IntentError> {
+        let loaded = self.load_effect(source)?;
+        self.insert_effect(ChainAt::Lane(inst), loaded, source)
+    }
+
+    /// `add_effect`, to the end of group `group`'s bus.
+    pub fn add_bus_effect(&mut self, group: usize, source: &str) -> Result<NodeId, IntentError> {
+        let loaded = self.load_effect(source)?;
+        self.insert_effect(ChainAt::Bus(group), loaded, source)
+    }
+
+    /// The plugin `source` loaded to be an effect. The catalog has to name it and it must not be an instrument.
+    /// (Why it did not load goes to the log: it can name where the plugin is on this machine.)
+    fn load_effect(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
+        let Some(entry) = self.catalog.plugins().iter().find(|p| p.id == source) else {
+            return Err(IntentError::Invalid(format!("{source} is not a plugin that is installed")));
+        };
+        if entry.is_instrument {
+            return Err(IntentError::Invalid(format!("{} is an instrument, not an effect", entry.name)));
+        }
+        let name = entry.name.clone();
+        plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime).map_err(|e| {
+            log::error!("Failed to load plugin '{source}': {e}");
+            IntentError::Invalid(format!("{name} could not be loaded"))
+        })
+    }
+
+    /// Put `loaded`, the plugin `source`, at the end of the chain `at` (`add_effect` says how, and when not).
+    fn insert_effect(&mut self, at: ChainAt, mut loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
+        let index = match at {
+            ChainAt::Lane(inst) => self.model.instruments.get(inst).map(|lane| lane.effects.len()),
+            ChainAt::Bus(group) => self.model.groups.get(group).map(|g| g.effects.len()),
+        };
+        let Some(index) = index else { return Err(IntentError::Invalid("there is no such chain".to_string())) };
+        let outputs = loaded.audio_output_count();
+        if outputs != CHAIN_CHANNELS {
+            return Err(IntentError::Invalid(format!(
+                "{} has {outputs} audio output{}, and an effect here needs {CHAIN_CHANNELS}",
+                loaded.name(),
+                if outputs == 1 { "" } else { "s" }
+            )));
+        }
+        // (The node is made last: a plugin that is turned away leaves no gap in the ids.)
+        let mut slot = fresh_slot(loaded.as_mut(), source, self.model.alloc_node());
+        slot.mix = default_effect_mix(source);
+        let (node, mix) = (slot.node, f64::from(slot.mix));
+        match at {
+            ChainAt::Lane(inst) => {
+                let _ = self.cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: loaded, mix });
+                self.model.instruments[inst].effects.push(slot);
+            }
+            ChainAt::Bus(group) => {
+                let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: loaded, mix });
+                self.model.groups[group].effects.push(slot);
+            }
+        }
+        Ok(node)
     }
 
     /// Take the effect at `index` out of lane `inst`'s chain: the audio thread hands the plugin back, and
@@ -2633,6 +2706,195 @@ rate = 2.0
                 ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
             }
         }
+    }
+
+    /// A controller over the stub engine whose catalog has the built-in plugins, as a scan finds them.
+    fn controller_with_builtins(session: &str) -> (StubEngine, Controller) {
+        let (engine, mut ctl) = controller_for(session);
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        (engine, ctl)
+    }
+
+    #[test]
+    fn an_effect_is_added_at_the_end_of_a_lanes_chain_in_the_model_and_in_the_engine() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        // Lane 1 has no effects. A reverb goes in, half wet, in a node of its own ...
+        let reverb = ctl.add_effect(1, "builtin:reverb").expect("a reverb is added");
+        assert_eq!(sent(&engine), ["InsertEffect inst=1 index=0 plugin=Reverb mix=0.500"]);
+        let slot = &ctl.model.instruments[1].effects[0];
+        assert_eq!((slot.node, slot.name.as_str(), slot.id.as_str(), slot.mix), (reverb, "Reverb", "builtin:reverb", 0.5));
+        assert_eq!(ctl.model.locate(reverb), Some(NodePath::Effect { inst: 1, index: 0 }));
+        // ... and a filter after it, fully wet (a half-wet filter barely filters).
+        let filter = ctl.add_effect(1, "builtin:filter").expect("a filter is added");
+        assert_eq!(sent(&engine), ["InsertEffect inst=1 index=1 plugin=Filter mix=1.000"]);
+        let chain: Vec<_> = ctl.model.instruments[1].effects.iter().map(|e| (e.node, e.name.as_str(), e.mix)).collect();
+        assert_eq!(chain, [(reverb, "Reverb", 0.5), (filter, "Filter", 1.0)]);
+        assert_ne!(reverb, filter);
+        assert_eq!(ctl.model.locate(filter), Some(NodePath::Effect { inst: 1, index: 1 }));
+        // A lane that has effects gets it after them.
+        ctl.add_effect(0, "builtin:filter").unwrap();
+        assert_eq!(sent(&engine), ["InsertEffect inst=0 index=2 plugin=Filter mix=1.000"]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_effect_is_added_at_the_end_of_a_groups_bus_in_the_model_and_in_the_engine() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let reverb = ctl.add_bus_effect(0, "builtin:reverb").expect("a reverb is added");
+        assert_eq!(sent(&engine), ["InsertGroupEffect group=0 index=2 plugin=Reverb mix=0.500"]);
+        let slot = &ctl.model.groups[0].effects[2];
+        assert_eq!((slot.node, slot.name.as_str(), slot.id.as_str(), slot.mix), (reverb, "Reverb", "builtin:reverb", 0.5));
+        assert_eq!(ctl.model.locate(reverb), Some(NodePath::GroupEffect { group: 0, index: 2 }));
+        let filter = ctl.add_bus_effect(0, "builtin:filter").unwrap();
+        assert_eq!(sent(&engine), ["InsertGroupEffect group=0 index=3 plugin=Filter mix=1.000"]);
+        assert_eq!(ctl.model.groups[0].effects[3].mix, 1.0);
+        assert_ne!(reverb, filter);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn adding_an_effect_leaves_the_chains_and_the_cables_that_were_there_as_they_were() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let cables = chains_cables(&ctl.model);
+        let before = model_effect_names(&ctl.model);
+        ctl.add_effect(0, "builtin:reverb").unwrap();
+        ctl.add_bus_effect(0, "builtin:filter").unwrap();
+        // (Only the two insertions: no cable is moved, none taken out, no value is sent.)
+        assert_eq!(sent(&engine), ["InsertEffect inst=0 index=2 plugin=Reverb mix=0.500", "InsertGroupEffect group=0 index=2 plugin=Filter mix=1.000"]);
+        assert_eq!(chains_cables(&ctl.model), cables);
+        assert_eq!(model_effect_names(&ctl.model)[1..], before[1..]);
+        assert_eq!(model_effect_names(&ctl.model)[0], ["Filter", "Reverb", "Reverb"]);
+        assert!(dangling(&ctl.model).is_empty());
+    }
+
+    #[test]
+    fn effects_that_are_added_leave_the_model_and_the_audio_thread_the_same() {
+        use crate::plugin::chain::AudioGraph;
+        let same = |graph: &mut AudioGraph, ctl: &Controller, what: &str| {
+            graph.drain_commands();
+            assert_eq!(graph.effect_names(), model_effect_names(&ctl.model), "the chains {what}");
+            assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+            assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+            assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+            assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
+            ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+        };
+        for session in [testutil::CHAINS, testutil::LANES_IN_GROUPS, testutil::GROUPS] {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+            ctl.catalog.add(plugin::builtin::enumerate_plugins());
+            let (lanes, groups) = (ctl.model.instruments.len(), ctl.model.groups.len());
+            let (chains, buses) = (model_effect_names(&ctl.model), model_groups(&ctl.model));
+            same(&mut graph, &ctl, "as loaded");
+            // A reverb and a filter to the end of every lane and every bus, each checked as it goes in ...
+            for source in ["builtin:reverb", "builtin:filter"] {
+                for inst in 0..lanes {
+                    ctl.add_effect(inst, source).unwrap();
+                    same(&mut graph, &ctl, &format!("after {source} to lane {inst} of a session of {lanes} lanes"));
+                }
+                for group in 0..groups {
+                    ctl.add_bus_effect(group, source).unwrap();
+                    same(&mut graph, &ctl, &format!("after {source} to the bus of group {group} of a session of {groups} groups"));
+                }
+            }
+            // ... and out again from the end, which leaves what the session had.
+            for inst in 0..lanes {
+                for _ in 0..2 {
+                    let last = ctl.model.instruments[inst].effects.len() - 1;
+                    assert!(ctl.remove_effect(inst, last));
+                }
+            }
+            for group in 0..groups {
+                for _ in 0..2 {
+                    let last = ctl.model.groups[group].effects.len() - 1;
+                    assert!(ctl.remove_bus_effect(group, last));
+                }
+            }
+            same(&mut graph, &ctl, "after taking them out again");
+            assert_eq!(model_effect_names(&ctl.model), chains);
+            assert_eq!(model_groups(&ctl.model), buses);
+        }
+    }
+
+    #[test]
+    fn an_effect_the_catalog_does_not_name_is_not_added() {
+        let untouched = load(testutil::CHAINS).model;
+        // No catalog at all, as in a session nobody has scanned for: even a built-in is not one that was named.
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        let error = ctl.add_effect(0, "builtin:filter").expect_err("not in the catalog").to_string();
+        assert!(error.contains("builtin:filter"), "{error}");
+        assert!(ctl.add_bus_effect(0, "builtin:filter").is_err());
+        // A plugin by a path or by an id that is not in the catalog is not loaded, whether or not it is there to load.
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        for source in ["./examples/plugin.clap", "/usr/lib/lv2/some.lv2", "clap:com.example.nothing", "vst3:Nothing", "builtin:no-such-plugin"] {
+            let error = ctl.add_effect(0, source).expect_err(source).to_string();
+            assert!(error.contains(source), "{error}");
+            assert!(ctl.add_bus_effect(0, source).is_err(), "{source}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing was sent to the audio thread");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn an_instrument_is_not_added_as_an_effect() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        let error = ctl.add_effect(0, "builtin:osc").expect_err("an instrument").to_string();
+        assert!(error.contains("Oscillator") && error.contains("instrument"), "{error}");
+        assert!(ctl.add_bus_effect(0, "builtin:osc").is_err());
+        assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn a_plugin_that_the_catalog_names_and_that_does_not_load_is_not_added() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        // (An entry that is named by a path, so that what the loader says about it names that path.)
+        ctl.catalog.add(vec![plugin::PluginInfo {
+            name: "Vanished".into(),
+            id: "./no-such-dir/Vanished.clap".into(),
+            is_instrument: false,
+            param_count: 3,
+            preset_count: 0,
+            path: "./no-such-dir/Vanished.clap".into(),
+            scan_ms: 0,
+        }]);
+        let error = ctl.add_effect(0, "./no-such-dir/Vanished.clap").expect_err("it cannot be loaded").to_string();
+        assert!(error.contains("Vanished") && error.contains("could not be loaded"), "{error}");
+        assert!(!error.contains("no-such-dir"), "what the loader says can name where a plugin is on this machine, which is not for a client: {error}");
+        assert!(ctl.add_bus_effect(0, "./no-such-dir/Vanished.clap").is_err());
+        assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn an_effect_with_other_outputs_than_the_chains_have_is_turned_away_before_the_audio_thread_is_asked() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        let error = ctl.insert_effect(ChainAt::Lane(0), Box::new(testutil::MonoEffect), "test:mono").expect_err("one output").to_string();
+        assert!(error.contains("MonoEffect") && error.contains("1 audio output"), "{error}");
+        assert!(ctl.insert_effect(ChainAt::Bus(0), Box::new(testutil::MonoEffect), "test:mono").is_err());
+        // (The audio thread would turn it away as well, and the model would be left with an effect that is not there.)
+        assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn a_lane_or_a_group_that_is_not_there_gets_no_effect() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        assert!(ctl.add_effect(3, "builtin:filter").is_err() && ctl.add_effect(9, "builtin:filter").is_err());
+        assert!(ctl.add_bus_effect(1, "builtin:filter").is_err() && ctl.add_bus_effect(9, "builtin:filter").is_err());
+        assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
     }
 
     #[test]

@@ -1334,9 +1334,15 @@ How Tang handles common plugin I/O mismatches:
   sequence input ports. Effects without them (e.g. ACE Reverb) get no event
   buffer — avoids livi's AtomSequenceInputsSizeMismatch error.
 
-- **Channel count validation**: all effects in a chain must have the same output
-  channel count. The instrument may have more outputs (they get truncated), but
-  effects cannot exceed the instrument's count.
+- **Channel count validation**: the chains are stereo (`plugin::chain::CHAIN_CHANNELS`,
+  2), and an effect must have as many audio outputs. The audio thread turns away
+  one that has not (it logs why and hands the plugin back), and
+  `Controller::add_effect` / `add_bus_effect` refuse it first, so the model never lists
+  an effect the engine does not have. The instrument may have more outputs (the first
+  two are used, the rest discarded).
+
+  TODO: a session file that names an effect with other outputs still loads, and its
+  model keeps the effect that the audio thread dropped; refuse such a session at load.
 
 ## TUI framework
 
@@ -1366,7 +1372,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `RemoveEdge`,
-  `AddModulator`, `AddModEdge`, `RemoveNode` and `Save` (see "Session state").
+  `AddModulator`, `AddModEdge`, `RemoveNode` and `Save` (see "Session state"). Effects are
+  added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
+  catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
+  them), which the intent `AddEffect` will wrap.
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the

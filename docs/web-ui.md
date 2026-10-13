@@ -1778,6 +1778,33 @@ Each step is a reviewable change; the TUI must not regress at any point.
     entries that pile up if they are not replaced). 26 mutations (12 in the client and the mock, 14 in
     the Rust), 25 caught at once; the one that was not showed that nothing noticed a new scan
     taking the place of one under way, and the test now sends a batch down the old channel.
+  - **19.2 (first part) as built.** `Controller::add_effect(inst, id)` and `add_bus_effect(group, id)`
+    put a plugin at the end of a lane's chain or a group's bus, as the controller's own
+    methods, which the TUI's selector asks now (it did the loading, the command and the model by
+    itself); the intent that wraps them is the next part. The plugin is loaded here, and only from the
+    catalog: an id or a path the catalog does not name is not loaded, however it is spelled, and an
+    instrument is not an effect. It gets a node of its own, and the mix that suits it
+    (`default_effect_mix`: a filter fully wet, the rest half). The chains are stereo, a constant now
+    (`plugin::chain::CHAIN_CHANNELS`), and an effect with other outputs is refused before the audio thread
+    is asked: the audio thread turns it away (it logs why and hands the plugin back) and the TUI's model
+    kept the effect all the same, which is f68 (below) for what is left of it. Why a plugin did not load
+    goes to the log, not to the client: what a loader says can name where a plugin is on this machine. A
+    refusal changes nothing, not even the ids (the node is made last), and the TUI leaves the session
+    unmarked.
+  - **19.2 (first part) tests.** Nine in the controller (the end of a lane's chain and of a bus, in the
+    model and in the commands, with the node it returns; the chains and the cables that were there are as
+    they were, and the engine is told nothing but the insertion; the model and a real audio graph agree
+    after each of an effect of each kind in every lane and bus of three scenes, and again after taking them
+    out from the end; an id or a path the catalog does not name, an instrument, a plugin that the catalog
+    names and that does not load (what the error says names no path), a stub with one output (turned away
+    before anything is sent, with no id used), a lane or a group that is not there), and two in the TUI
+    (a plugin that has gone leaves the tree, the commands and the unsaved mark as they were, for a lane
+    and for a bus). 24 mutations, 20 caught at once; two that were not were equivalent (a check that the
+    next function makes again: removed) and two showed that nothing pinned the TUI's refusal (covered,
+    for a lane and for a bus).
+  - **f68 (open).** A session file that names an effect with other outputs than the chain has loads, and
+    its model keeps the effect that the audio thread dropped (the loader sends the command and pushes the
+    slot without looking). CLAUDE.md has the TODO: the loader should refuse such a session.
   - **Found on the way (f67), fixed first, in its own commit.** The browser test that saves failed
     once `tang serve` scanned the machine's plugins: the file it read had not changed, though the
     program said it had saved. A plugin (a ROLI one, here) changes the working directory of the whole

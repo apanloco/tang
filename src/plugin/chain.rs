@@ -10,6 +10,10 @@ use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
+/// How many audio channels every chain carries: stereo (CLAUDE.md, "Signal chain"). An effect has to have
+/// as many outputs; an instrument may have more, which are cut down to this many.
+pub const CHAIN_CHANNELS: usize = 2;
+
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
 

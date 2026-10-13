@@ -1164,6 +1164,46 @@ fn an_effect_from_the_selector_comes_with_its_presets_and_enum_parameters() {
     assert!(filter.params.iter().all(|p| p.value == p.default));
 }
 
+/// The catalog names a plugin that is not there to load (a scan found it, and it has gone since).
+fn catalog_with_a_plugin_that_has_gone(h: &mut Harness) {
+    h.s.ctl.catalog.add(vec![plugin::PluginInfo {
+        name: "Vanished".into(),
+        id: "./no-such-dir/Vanished.clap".into(),
+        is_instrument: false,
+        param_count: 3,
+        preset_count: 0,
+        path: "./no-such-dir/Vanished.clap".into(),
+        scan_ms: 0,
+    }]);
+}
+
+#[test]
+fn an_effect_that_cannot_be_added_leaves_the_session_as_it_was() {
+    let mut h = Harness::new(scene_split());
+    catalog_with_a_plugin_that_has_gone(&mut h);
+    let tree: Vec<String> = h.tree().iter().map(|label| label.to_string()).collect();
+    h.press(KeyCode::Char('a')).type_chars("vanish").press(KeyCode::Enter);
+    assert!(h.commands().is_empty(), "nothing is sent to the audio thread");
+    assert_eq!(h.tree(), tree, "the tree is as it was");
+    assert!(!h.s.ctl.dirty, "nothing was changed");
+    assert!(h.s.selector.is_none(), "the popup is closed");
+    assert!(h.s.ctl.model.instruments[0].effects.is_empty());
+}
+
+#[test]
+fn a_bus_effect_that_cannot_be_added_leaves_the_session_as_it_was() {
+    let mut h = Harness::new(scene_group());
+    catalog_with_a_plugin_that_has_gone(&mut h);
+    h.goto(TreeAddress::Group(0));
+    let tree: Vec<String> = h.tree().iter().map(|label| label.to_string()).collect();
+    let buses = h.s.ctl.model.groups[0].effects.len();
+    h.press(KeyCode::Char('a')).type_chars("vanish").press(KeyCode::Enter);
+    assert!(h.commands().is_empty(), "nothing is sent to the audio thread");
+    assert_eq!(h.tree(), tree, "the tree is as it was");
+    assert!(!h.s.ctl.dirty, "nothing was changed");
+    assert_eq!(h.s.ctl.model.groups[0].effects.len(), buses);
+}
+
 #[test]
 fn adding_a_group_effect_from_the_selector() {
     let mut h = Harness::new(scene_group());

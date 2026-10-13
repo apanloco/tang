@@ -37,7 +37,7 @@ use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
-    ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
+    ParamKind, ParamSlot, PatternState, PluginSlot, fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
     shift_group_member_after_insert,
 };
@@ -768,46 +768,28 @@ impl State {
         // Determine which instrument to operate on from current selection.
         let inst = self.selected_inst().unwrap_or(0);
 
-        // Load the real plugin.
+        // Load the real plugin, and put it where it goes. (An effect that cannot be added, because it will
+        // not load or its outputs are not the chain's, leaves the session as it was: the controller says why.)
         let source = entry.id.clone();
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
-        let (loaded, slot) = match self.ctl.load_plugin(&source) {
-            Some(x) => x,
-            None => return,
-        };
-
         match sel.mode {
             SelectorMode::Instrument => {
+                let (loaded, slot) = match self.ctl.load_plugin(&source) {
+                    Some(x) => x,
+                    None => return,
+                };
                 self.ctl.set_instrument(inst, loaded, slot);
             }
             SelectorMode::Effect => {
-                let mut slot = slot;
-                let mix = default_effect_mix(&source);
-                slot.mix = mix;
-                if let Some(inst_node) = self.ctl.model.instruments.get_mut(inst) {
-                    let insert_at = inst_node.effects.len();
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::InsertEffect {
-                        inst,
-                        index: insert_at,
-                        effect: loaded,
-                        mix: mix as f64,
-                    });
-                    inst_node.effects.push(slot);
+                if let Err(e) = self.ctl.add_effect(inst, &source) {
+                    log::error!("Cannot add '{source}': {e}");
+                    return;
                 }
             }
             SelectorMode::GroupEffect(group) => {
-                let mut slot = slot;
-                let mix = default_effect_mix(&source);
-                slot.mix = mix;
-                if let Some(g) = self.ctl.model.groups.get_mut(group) {
-                    let insert_at = g.effects.len();
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::InsertGroupEffect {
-                        group,
-                        index: insert_at,
-                        effect: loaded,
-                        mix: mix as f64,
-                    });
-                    g.effects.push(slot);
+                if let Err(e) = self.ctl.add_bus_effect(group, &source) {
+                    log::error!("Cannot add '{source}' to the bus: {e}");
+                    return;
                 }
             }
         }
