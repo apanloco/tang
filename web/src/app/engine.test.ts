@@ -1,6 +1,33 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createConnection, engineFor } from "./engine";
+import { createConnection, engineFor, sceneFor } from "./engine";
+
+describe("which scene a page asks of the mock", () => {
+  test("is the tracer, unless it asks for the stress scene", () => {
+    expect(sceneFor("")).toBe("tracer");
+    expect(sceneFor("?engine=mock")).toBe("tracer");
+    expect(sceneFor("?scene=tracer")).toBe("tracer");
+    expect(sceneFor("?scene=whatever")).toBe("tracer");
+    expect(sceneFor("?engine=mock&scene=stress")).toBe("stress");
+    expect(sceneFor("?scene=stress&engine=mock")).toBe("stress");
+  });
+
+  test("gives the mock the session that was asked for", async () => {
+    const at = { protocol: "http:", host: "localhost:5173", hash: "" };
+    for (const [search, modulators] of [
+      ["?engine=mock", 1],
+      ["?engine=mock&scene=stress", 32],
+    ] as const) {
+      const { client } = createConnection({ ...at, search });
+      client.start();
+      await vi.waitFor(() => {
+        expect(client.state.status).toBe("open");
+      });
+      expect(client.state.snapshot?.graph.nodes.filter((node) => node.kind === "modulator")).toHaveLength(modulators);
+      client.stop();
+    }
+  });
+});
 
 describe("which engine a page asks for", () => {
   test("is the server it came from, unless it says otherwise", () => {
