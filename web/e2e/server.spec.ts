@@ -214,3 +214,36 @@ test("the session is saved from the page, by the button and by the keys, to the 
   await expect(saved).toBeVisible();
   expect(readFileSync(SESSION_FILE, "utf8")).not.toBe(first);
 });
+
+test("an effect is put in the lane from the menu, saved, and taken out again by its button", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const effect = (name: string) => page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: new RegExp(`^${name}$`) }) });
+  const save = page.getByRole("button", { name: /^Save/ });
+  const saved = page.getByText("Saved", { exact: true });
+
+  // The menu has what the program found installed: the built-ins are always there, and whatever else the machine has follows them.
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  const menu = page.getByRole("menu", { name: "Add an effect to Oscillator" });
+  const builtins = menu.getByRole("group", { name: "Built-in" });
+  await expect(builtins.getByRole("menuitem")).toHaveText(["Filter", "Reverb"]);
+  await builtins.getByRole("menuitem", { name: "Reverb" }).click();
+
+  // The node is on the canvas, in the chain after the filter; the server has it, and the session has something to save.
+  await expect(effect("Reverb")).toBeVisible();
+  await expect(page.getByText("Unsaved changes")).toBeVisible();
+  const session = await sessionAccordingToTheServer(page);
+  expect(session.graph.nodes.map((node) => node.name)).toEqual(["Oscillator", "Filter", "Reverb", "LFO", "Master"]);
+  await save.click();
+  await expect(saved).toBeVisible();
+  expect(readFileSync(SESSION_FILE, "utf8")).toContain('plugin = "builtin:reverb"');
+
+  // Its button takes it out, and the focus goes back to the one that adds an effect to its lane.
+  await effect("Reverb").getByRole("button", { name: "Remove Reverb" }).click();
+  await expect(effect("Reverb")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add an effect to Oscillator" })).toBeFocused();
+  expect((await sessionAccordingToTheServer(page)).graph.nodes.map((node) => node.name)).toEqual(["Oscillator", "Filter", "LFO", "Master"]);
+  await save.click();
+  await expect(saved).toBeVisible();
+  expect(readFileSync(SESSION_FILE, "utf8")).not.toContain("builtin:reverb");
+});

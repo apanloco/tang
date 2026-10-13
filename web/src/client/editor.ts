@@ -73,8 +73,8 @@ export class Editor {
     return this.#attempt(`draw a cable from ${words.replace(" → ", " to ")}`, { type: "addModEdge", modulator, to: { node, port: { type: "param", index: param } } });
   }
 
-  /** Take the modulator `node` out, with its cables. True if it went. */
-  removeModulator(node: NodeId): Promise<boolean> {
+  /** Take the modulator or effect `node` out, with the cables that drive it (and, for a modulator, those it drives). True if it went. */
+  removeNode(node: NodeId): Promise<boolean> {
     return this.#attempt(`remove ${this.#name(node)}`, { type: "removeNode", node });
   }
 

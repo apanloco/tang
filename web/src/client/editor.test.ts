@@ -177,20 +177,28 @@ describe("drawing a cable", () => {
   });
 });
 
-describe("taking a modulator out", () => {
-  test("takes it with its cables, and says nothing", async () => {
+describe("taking a node out", () => {
+  test("takes a modulator with its cables, and says nothing", async () => {
     const { client, notices, editor } = await open();
-    expect(await editor.removeModulator(lfo.id)).toBe(true);
+    expect(await editor.removeNode(lfo.id)).toBe(true);
     expect(client.state.snapshot?.graph.nodes.map((n) => n.name)).toEqual(["Oscillator", "Filter", "Master"]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("takes an effect with the cables that drive it, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.removeNode(filter.id)).toBe(true);
+    expect(client.state.snapshot?.graph.nodes.map((n) => n.name)).toEqual(["Oscillator", "LFO", "Master"]);
+    expect(client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation")).toEqual([]);
     expect(said(notices)).toEqual([]);
   });
 
   test("that cannot be taken out says what and why", async () => {
     const { notices, editor } = await open();
-    expect(await editor.removeModulator(oscillator.id)).toBe(false);
-    expect(await editor.removeModulator(999)).toBe(false);
+    expect(await editor.removeNode(oscillator.id)).toBe(false);
+    expect(await editor.removeNode(999)).toBe(false);
     expect(said(notices)).toEqual([
-      "Could not remove Oscillator: only a modulator can be removed so far",
+      "Could not remove Oscillator: only a modulator or an effect can be removed so far",
       "Could not remove that node: there is no node 999",
     ]);
   });

@@ -982,15 +982,20 @@ range), `LoadPreset` (by preset id; the values the preset set are mirrored
 into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
 stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
 waveform rounded to its index: sine, triangle, saw, square) and `SetEdgeDepth` (a
-modulation cable's depth, -1 to 1); and four that change the structure: `RemoveEdge`
+modulation cable's depth, -1 to 1); `Save` (the session's own file); and five that change
+the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
 lane's node, or of a group), `AddModEdge { modulator, to }` (a cable to a plugin parameter at
 depth `NEW_CABLE_DEPTH`, 0.5: where it may end is `SessionModel::param_targets`, a lane's
 modulator reaching its lane's chain and a group's its members' chains and its bus effects;
 refused for a port that is not a parameter, a plugin out of reach, a parameter it drives
-already) and `RemoveNode` (a modulator, with its cables and those of the others that drove
-its settings; anything else is refused until chain editing). An intent that changes the
+already), `AddEffect { parent, plugin }` (a plugin of the catalog, loaded by the controller
+and nothing else, at the end of the chain of a lane, `parent` being the lane's node, or of a
+group's bus: see `Controller::add_effect`) and `RemoveNode` (a modulator, with its cables and
+those of the others that drove its settings; an effect or a bus effect, with the cables that
+drive its parameters and what drove their depths, the audio path closing up; a lane or a
+group is refused for now, since there is no undo). An intent that changes the
 structure has no event for a client to apply: `Applied::restructured` is set, `apply` calls
 `resync` at once, and the subscribers are given a snapshot at the revision after the
 intent's. Every applied intent bumps `Controller::rev`;
@@ -1372,7 +1377,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `RemoveEdge`,
-  `AddModulator`, `AddModEdge`, `RemoveNode` and `Save` (see "Session state"). Effects are
+  `AddModulator`, `AddModEdge`, `AddEffect`, `RemoveNode` (a modulator or an effect) and
+  `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1437,7 +1443,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   envelope's stages on the node (`Knob scale="log"` for a rate and a time, which run over
   decades), and a slider for the depth of each cable at its middle; step 15 added building:
   a "+" menu on every lane and group (`MenuButton`) that adds an LFO, an envelope or a MIDI
-  control, a "×" on every modulator and every cable, a list at the foot of a modulator that draws
+  control, a "×" on every modulator, every effect and every cable, a list at the foot of a modulator that draws
   a cable to any parameter it can drive (for a keyboard: a `MenuButton` with the plugins as
   headings, which finds an item by its first letters), and a cable dragged from a
   modulator's output to a parameter's port, the ports that take it marked while it is

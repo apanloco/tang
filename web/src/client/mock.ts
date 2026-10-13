@@ -196,14 +196,36 @@ function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
 }
 
 /**
- * A modulator taken out of the session: its own cables go with it, and so do those of the others that drove
- * its settings (a cable that ends at the modulator), and what drove the depth of any of them. Nothing else can be
- * taken out yet.
+ * An effect (or a bus effect) taken out of the session, as the controller does it (`remove_effect`): the cables that drive
+ * its parameters go first, a lane's and a group's, with what drove the depth of any of them (what they were driving goes with
+ * the plugin: nothing is given back), and the audio path closes up: the link into it and the link out of it are one, from
+ * where the first came to where the second goes, of the second's kind (the link that ends a member lane's chain goes into
+ * its group).
+ */
+function removeEffectOutcome(snapshot: Snapshot, effect: Node): Outcome {
+  const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === effect.id).map((e) => e.id);
+  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([effect.id]));
+  const { edges } = taken.graph;
+  const into = edges.findIndex((e) => e.kind !== "modulation" && e.to.node === effect.id && e.to.port.type === "audioIn");
+  const out = edges.findIndex((e) => e.kind !== "modulation" && e.from.node === effect.id && e.from.port.type === "audioOut");
+  const incoming = edges[into];
+  const outgoing = edges[out];
+  if (!incoming || incoming.kind === "modulation" || !outgoing || outgoing.kind === "modulation") return invalid("that has no audio path to close up");
+  const joined: Edge = { from: incoming.from, to: outgoing.to, kind: outgoing.kind };
+  const closed = edges.flatMap((e, i) => (i === into ? [joined] : i === out ? [] : [e]));
+  return { restructured: { ...taken, graph: { ...taken.graph, edges: closed } } };
+}
+
+/**
+ * A node taken out of the session. A modulator: its own cables go with it, and so do those of the others that drove
+ * its settings (a cable that ends at the modulator), and what drove the depth of any of them. An effect: see
+ * `removeEffectOutcome`. Nothing else can be taken out yet.
  */
 function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
   const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
   if (!found) return noNode(node);
-  if (found.kind !== "modulator") return invalid("only a modulator can be removed so far");
+  if (found.kind === "effect") return removeEffectOutcome(snapshot, found);
+  if (found.kind !== "modulator") return invalid("only a modulator or an effect can be removed so far");
   const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
   return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([node])) };
 }

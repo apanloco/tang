@@ -606,15 +606,19 @@ describe("taking a modulator out", () => {
     expect(layout()).toEqual([]);
   });
 
-  test("is refused for what is not a modulator, and for what is not there, and changes nothing", async () => {
+  test("is refused for what is neither a modulator nor an effect, and for what is not there, and changes nothing", async () => {
     const server = new MockServer();
     const client = await open(server);
     const refusal = async (node: number): Promise<RequestError> => (await client.request({ type: "removeNode", node }).catch((e: unknown) => e)) as RequestError;
-    for (const node of [nodeNamed(tracerSnapshot, "Oscillator").id, filter.id]) {
+    for (const node of [nodeNamed(tracerSnapshot, "Oscillator").id]) {
       const failure = await refusal(node);
       expect(failure).toBeInstanceOf(RequestError);
-      expect([failure.code, failure.message]).toEqual(["invalid", "only a modulator can be removed so far"]);
+      expect([failure.code, failure.message]).toEqual(["invalid", "only a modulator or an effect can be removed so far"]);
     }
+    // (A group is no more one than a lane is.)
+    const grouped = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    const group = (await grouped.request({ type: "removeNode", node: 0 }).catch((e: unknown) => e)) as RequestError;
+    expect([group.code, group.message]).toEqual(["invalid", "only a modulator or an effect can be removed so far"]);
     expect((await refusal(99)).code).toBe("notFound");
     // (The master is a node of the graph and not of the model: the controller does not find it.)
     expect((await refusal(MASTER)).code).toBe("notFound");
@@ -631,6 +635,109 @@ describe("taking a modulator out", () => {
     await client.request({ type: "removeNode", node: 3 });
     await client.request({ type: "addModulator", parent, kind: "lfo" });
     expect(names(client.state.snapshot)).toEqual(["Oscillator#0", "Filter#1", "LFO#2", "LFO#4", "Master#4294967295"]);
+  });
+});
+
+describe("taking an effect out", () => {
+  const audioPath = (snapshot: Snapshot | null) => (snapshot?.graph.edges ?? []).filter((e) => e.kind !== "modulation").map((e) => `${e.kind} ${String(e.from.node)}→${String(e.to.node)}`);
+  const strip = (snapshot: Snapshot | null) => (snapshot?.graph.nodes ?? []).map((n) => `${String(n.id)} ${n.name}`);
+  const modulation = (snapshot: Snapshot | null) => (snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation");
+  const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+  const reach = reachFixture.snapshot;
+
+  test("takes the tracer's filter out with the cable that drives it, closes the audio path up, and leaves the LFO", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    expect(await client.request({ type: "removeNode", node: filter.id })).toBe(1);
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    const snapshot = client.state.snapshot;
+    expect(strip(snapshot)).toEqual(["0 Oscillator", "2 LFO", `${String(MASTER)} Master`]);
+    expect(audioPath(snapshot)).toEqual([`audio 0→${String(MASTER)}`]);
+    expect(modulation(snapshot)).toEqual([]);
+    // The value the cable drove has no slot in the layout any more; the LFO's output keeps its own, and the meters are as they were.
+    expect(snapshot?.telemetry.modulation.map((entry) => entry.kind)).toEqual(["modOutput"]);
+    expect(snapshot?.telemetry.rev).not.toBe(tracerSnapshot.telemetry.rev);
+    expect(snapshot?.telemetry.meters).toEqual(tracerSnapshot.telemetry.meters);
+    expect(snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(snapshot);
+  });
+
+  test("closes the audio path up round the one in the middle of a chain, and the last one of a member lane's goes into the group", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request({ type: "addEffect", parent: oscillator.id, plugin: "builtin:reverb" }); // 3
+    await client.request({ type: "addEffect", parent: oscillator.id, plugin: "builtin:filter" }); // 4
+    expect(audioPath(client.state.snapshot)).toEqual(["audio 0→1", "audio 1→3", "audio 3→4", `audio 4→${String(MASTER)}`]);
+    await client.request({ type: "removeNode", node: 3 });
+    expect(audioPath(client.state.snapshot)).toEqual(["audio 0→1", "audio 1→4", `audio 4→${String(MASTER)}`]);
+
+    // Lane 4 of the scene with groups is a member of group 0, and has a filter (5): the link into the group leaves the lane now.
+    const grouped = await open(new MockServer({ snapshot: reach }));
+    expect(audioPath(grouped.state.snapshot)).toContain("member 5→0");
+    await grouped.request({ type: "removeNode", node: 5 });
+    expect(audioPath(grouped.state.snapshot)).toContain("member 4→0");
+    expect(audioPath(grouped.state.snapshot).filter((link) => link.includes("→5") || link.includes("5→"))).toEqual([]);
+  });
+
+  test("takes a bus effect out, and the group goes into the master", async () => {
+    const client = await open(new MockServer({ snapshot: reach }));
+    expect(audioPath(client.state.snapshot).slice(0, 2)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`]);
+    await client.request({ type: "removeNode", node: 1 });
+    expect(audioPath(client.state.snapshot).slice(0, 1)).toEqual([`audio 0→${String(MASTER)}`]);
+    expect(strip(client.state.snapshot).slice(0, 3)).toEqual(["0 Group 1", "15 LFO", "2 Group 2"]);
+  });
+
+  test("takes the cables to it out, whoever's they are, and the ones that drive the depths of those", async () => {
+    // The scene's modulators 15 (group 0's), 6 (lane 4's own) reach the filter 5 of lane 4; the cables are the fixture's own.
+    const withCables: Snapshot = {
+      ...reach,
+      graph: {
+        ...reach.graph,
+        edges: [
+          ...reach.graph.edges,
+          { kind: "modulation", id: 100, amount: 0.5, from: { node: 6, port: { type: "modOut" } }, to: { node: 5, port: { type: "param", index: 0 } } },
+          { kind: "modulation", id: 101, amount: 0.4, from: { node: 15, port: { type: "modOut" } }, to: { node: 5, port: { type: "param", index: 1 } } },
+          { kind: "modulation", id: 102, amount: 0.3, from: { node: 15, port: { type: "modOut" } }, to: { node: 4, port: { type: "param", index: 1 } } },
+          { kind: "modulation", id: 103, amount: 0.2, from: { node: 6, port: { type: "modOut" } }, to: { node: 15, port: { type: "depth", edge: 100 } } },
+        ],
+      },
+    };
+    const before = modulation(reach).length;
+    const client = await open(new MockServer({ snapshot: withCables }));
+    await client.request({ type: "removeNode", node: 5 });
+    // The two cables to the filter go, and the one that drove the depth of the first; the group's cable to the lane's detune stays.
+    const left = modulation(client.state.snapshot).map((e) => e.id);
+    expect(left).toHaveLength(before + 1);
+    expect(left).toContain(102);
+    expect(left).not.toContain(100);
+    expect(left).not.toContain(101);
+    expect(left).not.toContain(103);
+  });
+
+  test("leaves the session as it was when an effect that was added is taken out", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request({ type: "addEffect", parent: oscillator.id, plugin: "builtin:reverb" });
+    await client.request({ type: "removeNode", node: 3 });
+    expect(client.state.snapshot?.graph).toEqual(tracerSnapshot.graph);
+    expect(client.state.snapshot?.telemetry).toEqual(tracerSnapshot.telemetry);
+  });
+
+  test("is told to the other clients as a snapshot, like every change of structure", async () => {
+    const server = new MockServer();
+    const first = await open(server);
+    const second = await open(server);
+    await first.request({ type: "removeNode", node: filter.id });
+    await until(() => (second.state.snapshot?.graph.nodes.length ?? 0) === 3, "the second client's snapshot");
+    expect(second.state.snapshot).toEqual(first.state.snapshot);
+  });
+
+  test("does not give its id to the next node", async () => {
+    const client = await open(new MockServer());
+    await client.request({ type: "addEffect", parent: oscillator.id, plugin: "builtin:reverb" }); // 3
+    await client.request({ type: "removeNode", node: 3 });
+    await client.request({ type: "addEffect", parent: oscillator.id, plugin: "builtin:reverb" });
+    expect((client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "effect").map((n) => n.id)).toEqual([1, 4]);
   });
 });
 

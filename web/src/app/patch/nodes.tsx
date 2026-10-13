@@ -60,6 +60,9 @@ function AddModulatorMenu({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
+/** The `id` of the button that adds an effect to the lane or group `node`, which what takes an effect out gives the focus to. */
+const addEffectId = (node: NodeId): string => `add-effect-${String(node)}`;
+
 /** The button of a lane or a group that puts an effect at the end of its chain: a menu of what is installed, under the format of each. */
 function AddEffectMenu({ node, name }: { node: NodeId; name: string }) {
   const editor = useEditor();
@@ -67,6 +70,7 @@ function AddEffectMenu({ node, name }: { node: NodeId; name: string }) {
   const items = useMemo(() => effectItems(catalog?.entries ?? []), [catalog]);
   return (
     <MenuButton
+      id={addEffectId(node)}
       label={`Add an effect to ${name}`}
       className="tang-node__fx"
       items={items}
@@ -80,15 +84,40 @@ function AddEffectMenu({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
+/** The button of a modulator or an effect that takes it out, with the cables that drive it; the focus goes to the button that adds one like it to its lane or group. */
+function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name: string; parent: NodeId | null; focusTo: (parent: NodeId) => string }) {
+  const editor = useEditor();
+  return (
+    <button
+      type="button"
+      className="tang-node__remove nodrag nopan"
+      aria-label={`Remove ${name}`}
+      title={`Remove ${name}`}
+      onClick={() => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        void editor.removeNode(node).then((removed) => {
+          if (removed && parent !== null) focusWhenPossible(focusTo(parent));
+        });
+      }}
+    >
+      ×
+    </button>
+  );
+}
+
 /** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain. */
 export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const effect = type === "effect";
+  // (Where an effect is: the lane or group whose chain it is in, which the focus goes back to when it is taken out.)
+  const parent = useClientState((state) => (effect ? (nodeById(state, data.node)?.parent ?? null) : null));
   return (
     <div className={`tang-node tang-node--${type}`}>
       {effect ? <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" /> : null}
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
       <Header name={data.name} badge={data.format}>
-        {effect ? null : (
+        {effect ? (
+          <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
+        ) : (
           <span className="tang-node__actions">
             <AddEffectMenu node={data.node} name={data.name} />
             <AddModulatorMenu node={data.node} name={data.name} />
@@ -116,27 +145,6 @@ export function sameModulatorShape(a: Node | undefined, b: Node | undefined): bo
   return a.source.type !== "midiLearn" || JSON.stringify(a.source) === JSON.stringify(b.source);
 }
 
-/** The button of a modulator that takes it out, with its cables; the focus goes to the button that adds one to its lane or group. */
-function RemoveModulatorButton({ node, name, parent }: { node: NodeId; name: string; parent: NodeId | null }) {
-  const editor = useEditor();
-  return (
-    <button
-      type="button"
-      className="tang-node__remove nodrag nopan"
-      aria-label={`Remove ${name}`}
-      title={`Remove ${name}`}
-      onClick={() => {
-        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-        void editor.removeModulator(node).then((removed) => {
-          if (removed && parent !== null) focusWhenPossible(addModulatorId(parent));
-        });
-      }}
-    >
-      ×
-    </button>
-  );
-}
-
 /** A modulator: what it is, its settings as controls, and what it puts out as it does so. */
 export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
@@ -151,7 +159,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   return (
     <div className="tang-node tang-node--modulator">
       <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}>
-        <RemoveModulatorButton node={data.node} name={data.name} parent={node?.parent ?? null} />
+        <RemoveNodeButton node={data.node} name={data.name} parent={node?.parent ?? null} focusTo={addModulatorId} />
       </Header>
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">

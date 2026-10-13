@@ -424,8 +424,10 @@ resolves cursor → ids and then calls `apply`.
   (a cable to a plugin parameter, `to` a node and a `param` port, at depth 0.5; the controller
   decides where it may end, D21; the cables that drive a modulator's own rate, stages or depths
   are refused, for now) and `RemoveNode { node }` (a modulator, with its cables and the cables
-  of the others that drove its settings; a lane, an effect or a group is refused until chain
-  editing, phase 1). A refusal changes nothing and is no revision. `LearnMidi` is the
+  of the others that drove its settings; since step 19 also an effect or a bus effect, with the
+  cables that drive its parameters, a lane's and a group's, and what drove their depths, the audio
+  path closing up round it; a lane or a group is refused until the page can take it back, for
+  taking one out loses an instrument and all it has). A refusal changes nothing and is no revision. `LearnMidi` is the
   rest of the list that is not.)
 - Patterns: `RecordPattern`, `ClearPattern`, `SetPatternField`.
 - Globals: `SetBpm`, `SetScale`, `SetPianoMode`, `Save`, `SaveAs`, `Undo`,
@@ -1854,6 +1856,32 @@ Each step is a reviewable change; the TUI must not regress at any point.
     its controls, the focus back on the button; the audio cable through the new node; a group's bus; a button with
     nothing to open; a refusal on the notice board by the catalog's name for the plugin). 16 mutations, all caught
     (one was equivalent as I first wrote it and was written again).
+  - **19.5 as built.** `RemoveNode` takes an effect or a bus effect out, by the controller's `remove_effect` and
+    `remove_bus_effect` (step 17: the cables that drive the plugin go first, one at a time and with what drives
+    their depths; nothing is given back, since what they drove goes with the plugin), and says "only a modulator or
+    an effect can be removed so far" for a lane or a group. The mock engine does what the controller does, the
+    audio path closing up (the link into the effect and the link out of it are one, of the kind of the second:
+    the link that ends a member lane's chain goes into its group). `Editor.removeNode` (it was `removeModulator`),
+    and a "×" in the header of every effect, which the modulators' has become one with (`RemoveNodeButton`): the
+    focus goes to the button that adds one like it to its lane or group ("fx" for an effect, "+" for a
+    modulator). There is **no undo**: a click on a "×" is final, and an effect forgets its settings. Undo is
+    planned for all the operations of this phase together, since each would need its own inverse (§5, "Undo / redo"):
+    an effect would be loaded again from its id, its values and its mix put back, and the cables that were
+    driving it re-drawn by the nodes of the modulators and the names of the parameters, since the ids of a new node
+    and of new cables are new. Lanes and groups have no "×" until then.
+  - **19.5 tests.** Rust: the intent over a lane's chain (the commands, in the order of the controller's own test of
+    the removal: the cable that drives a cable's depth, the cable, the group's cable, the effect), a bus (the
+    group's cable, the bus effect), the audio path closing up (the one in the middle, and the last of a member
+    lane's chain, which ends in its group), an effect added and taken out leaving the graph as it was, taking an
+    effect out twice (not found, no revision), and a lane, a group, a ghost and the master refused; in the TUI the
+    cursor staying on its node when a browser takes an effect out above it, and the popups closing when it takes out
+    the one the cursor was on. Web: seven on the mock (the tracer's filter with its cable, the layout of the
+    telemetry, the audio path in a chain of three and in a member lane, a bus, the cables to it whoever's and
+    what drove their depths, added and taken out, the other clients, the ids) and four of the page's buttons (an
+    effect and a bus effect, the focus, a refusal); and in a real browser on the real program, a reverb put in
+    from the menu, saved, taken out by its button and saved again. 25 mutations (19 in the page and the mock, 6 in
+    the intent), all caught (one was equivalent, an error that could not be reached after the node had been found,
+    and the code was removed).
   - **f68 (open).** A session file that names an effect with other outputs than the chain has loads, and
     its model keeps the effect that the audio thread dropped (the loader sends the command and pushes the
     slot without looking). CLAUDE.md has the TODO: the loader should refuse such a session.

@@ -67,9 +67,11 @@ pub enum Intent {
     /// wet). Refused, with nothing changed, for a parent that is not a lane or a group, a plugin the catalog does
     /// not name, an instrument, one that does not load, and one whose outputs are not the chain's channels.
     AddEffect { parent: NodeId, plugin: String },
-    /// Take a node out of the session. Only a modulator can be so far, with its own cables and
-    /// the cables of the others that drove its settings (and what drove the depth of any of
-    /// those); any other node is refused.
+    /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
+    /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
+    /// effect, with the cables that drive its parameters (and what drove their depths): what they were
+    /// driving goes with it, and the audio path closes up. A lane and a group are refused so far, as is any
+    /// other node.
     RemoveNode { node: NodeId },
     /// Write the session to the file it came from. A client does not name a file: it is the
     /// session's own. Refused (`IntentError::Io`) if the session has no file or it cannot be written,

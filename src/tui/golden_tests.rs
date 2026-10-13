@@ -3487,6 +3487,50 @@ rate = 3.0
     }
 
     #[test]
+    fn the_cursor_stays_on_its_node_when_a_browser_takes_out_an_effect_above_it() {
+        let mut h = Harness::new(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#,
+        );
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        let filter = h.s.ctl.model.instruments[0].effects[0].node;
+        browser(&mut h, Intent::RemoveNode { node: filter });
+        assert!(h.tree().iter().all(|line| !line.contains("fx Filter")), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+        assert!(h.s.ctl.dirty);
+    }
+
+    #[test]
+    fn popups_are_closed_when_a_browser_takes_out_the_effect_the_cursor_was_on() {
+        let mut h = Harness::new(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#,
+        );
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        h.press(KeyCode::Enter); // its parameters
+        h.press(KeyCode::Enter); // the value popup for the first
+        assert!(h.s.editing.is_some());
+        let reverb = cursor_node(&h);
+        browser(&mut h, Intent::RemoveNode { node: reverb });
+        assert!(h.s.editing.is_none(), "what was being typed was for a node that is gone");
+        assert!(h.s.ctl.model.instruments[0].effects.is_empty());
+    }
+
+    #[test]
     fn the_cursor_stays_on_its_node_when_a_browser_takes_out_a_node_above_it() {
         let mut h = Harness::new(THREE_LFOS);
         h.goto(TreeAddress::Modulator { inst: 0, index: 1 });

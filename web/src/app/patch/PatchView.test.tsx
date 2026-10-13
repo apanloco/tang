@@ -656,12 +656,62 @@ describe("the patch", () => {
   });
 
   describe("taking a modulator or a cable out", () => {
-    test("is offered on every modulator, by a button that names it, and on no other node", async () => {
+    test("is offered on every modulator and every effect, by a button that names it, and on no other node", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       const names = (await screen.findAllByRole("button", { name: /^Remove / })).map((button) => button.getAttribute("aria-label")).filter((name) => !name?.startsWith("Remove cable"));
-      // The fixture's modulators: two LFOs of lanes and one of a group (numbered), two envelopes, a control.
-      expect(names.sort()).toEqual(["Remove ADSR 1", "Remove ADSR 2", "Remove LFO 1", "Remove LFO 2", "Remove LFO 3", "Remove MIDI (learning…)"].sort());
-      for (const id of [0, 1, 4, 14, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove / })).toBeNull();
+      // The fixture's modulators: two LFOs of lanes and one of a group (numbered), two envelopes, a control; and its effects: three filters (one on a bus), two reverbs (one on a bus).
+      expect(names.sort()).toEqual(
+        ["Remove ADSR 1", "Remove ADSR 2", "Remove LFO 1", "Remove LFO 2", "Remove LFO 3", "Remove MIDI (learning…)", "Remove Filter 1", "Remove Filter 2", "Remove Filter 3", "Remove Reverb 1", "Remove Reverb 2"].sort(),
+      );
+      // None on a lane, a group or the master: they cannot be taken out from here yet.
+      for (const id of [0, 2, 4, 7, 14, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove / })).toBeNull();
+    });
+
+    test("takes an effect out when its button is pressed, with the cable that drives it, and the focus goes to the button that adds one to its lane", async () => {
+      const { requests, view } = await rig(<PatchView />);
+      fireEvent.click(within(await nodeOf(filter.id)).getByRole("button", { name: "Remove Filter" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "removeNode", node: filter.id }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelector(`[data-id="${String(filter.id)}"]`)).toBeNull();
+      });
+      // The LFO has nothing to drive now; the audio goes from the oscillator to the master.
+      expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(0);
+      expect(view.container.querySelectorAll(".tang-cable--audio")).toHaveLength(1);
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an effect to Oscillator" }));
+      });
+    });
+
+    test("takes a bus effect out, and the focus goes to the button that adds one to its group", async () => {
+      const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      fireEvent.click(within(await nodeOf(3)).getByRole("button", { name: "Remove Reverb 1" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "removeNode", node: 3 }]);
+      });
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an effect to Group 2" }));
+      });
+    });
+
+    test("says why when an effect could not be taken out, and it stays", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      fireEvent.click(within(await nodeOf(filter.id)).getByRole("button", { name: "Remove Filter" }));
+      expect(await screen.findByText("Could not remove Filter: Not connected to the server.")).toBeTruthy();
+      expect(await nodeOf(filter.id)).toBeTruthy();
     });
 
     test("takes a modulator out when its button is pressed, with its cable, and the focus goes to the button that adds one to its lane", async () => {

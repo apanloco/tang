@@ -256,10 +256,19 @@ impl Controller {
     }
 
     fn remove_node_intent(&mut self, node: NodeId) -> Result<Done, IntentError> {
-        let NodePath::Modulator { at, index } = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
-            return Err(invalid("only a modulator can be removed so far"));
-        };
-        self.remove_modulator(at, index);
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            NodePath::Modulator { at, index } => {
+                self.remove_modulator(at, index);
+            }
+            // (The cables that drive the plugin go first, with the ones that drive their depths; the controller does it.)
+            NodePath::Effect { inst, index } => {
+                self.remove_effect(inst, index);
+            }
+            NodePath::GroupEffect { group, index } => {
+                self.remove_bus_effect(group, index);
+            }
+            NodePath::Instrument(_) | NodePath::Group(_) => return Err(invalid("only a modulator or an effect can be removed so far")),
+        }
         Ok(Done::Restructured)
     }
 
@@ -1614,19 +1623,15 @@ type = "midi"
     }
 
     #[test]
-    fn remove_node_refuses_what_is_not_a_modulator_and_changes_nothing() {
+    fn remove_node_refuses_a_lane_and_a_group_and_what_is_not_there_and_changes_nothing() {
         let (engine, mut ctl) = modulated();
         sent(&engine);
         let lane_node = lane(&ctl);
-        let effect = ctl.model.instruments[0].effects[0].node;
         let group = ctl.model.groups[0].node;
-        let bus = ctl.model.groups[0].effects[0].node;
         let ghost = NodeId(9_999);
         let cases = [
-            ("a lane", lane_node, invalid("only a modulator can be removed so far")),
-            ("an effect", effect, invalid("only a modulator can be removed so far")),
-            ("a group", group, invalid("only a modulator can be removed so far")),
-            ("a bus effect", bus, invalid("only a modulator can be removed so far")),
+            ("a lane", lane_node, invalid("only a modulator or an effect can be removed so far")),
+            ("a group", group, invalid("only a modulator or an effect can be removed so far")),
             ("a node that is not there", ghost, IntentError::NotFound(ghost)),
             ("the master, which the model does not have", NodeId::MASTER, IntentError::NotFound(NodeId::MASTER)),
         ];
@@ -1638,6 +1643,100 @@ type = "midi"
         assert_eq!(ctl.model.instruments[0].modulators.len(), 4);
         assert_eq!(ctl.model.groups[0].modulators.len(), 2);
         assert_eq!(ctl.model.instruments[0].effects.len(), 1);
+        assert_eq!(ctl.model.groups[0].effects.len(), 1);
+        assert_eq!((ctl.model.instruments.len(), ctl.model.groups.len()), (1, 1));
+    }
+
+    /// `CHAINS` (cables of every kind to the effects of a lane and of a bus) over the stub engine.
+    fn chains() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(testutil::CHAINS).model, handles, None))
+    }
+
+    #[test]
+    fn remove_node_takes_an_effect_out_of_a_lanes_chain_with_the_cables_to_it_and_says_the_structure_changed() {
+        let (engine, mut ctl) = chains();
+        sent(&engine);
+        // Lane 0's filter, which two modulators drive, one by a cable whose depth another drives, and the group's.
+        let filter = ctl.model.instruments[0].effects[0].node;
+        let applied = remove(&mut ctl, filter).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveModTarget inst=0 mod=1 target=0",
+                "RemoveModTarget inst=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveEffect inst=0 index=0",
+            ]
+        );
+        let chain: Vec<_> = ctl.model.instruments[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(chain, ["Reverb"]);
+        assert!(ctl.dirty);
+        assert_eq!(ctl.model.locate(filter), None, "the node is gone");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_node_takes_a_bus_effect_out_by_the_groups_command() {
+        let (engine, mut ctl) = chains();
+        sent(&engine);
+        let bus = ctl.model.groups[0].effects[0].node;
+        assert_eq!(remove(&mut ctl, bus), Ok(Applied::restructured(1)));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0"]);
+        let buses: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(buses, ["Reverb"]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_audio_path_closes_up_where_an_effect_was_taken_out() {
+        use crate::app::graph::EdgeKind;
+        let (_engine, mut ctl) = chains();
+        let (lane0, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        let (filter, reverb) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[1].node);
+        let path = |ctl: &Controller| -> Vec<(NodeId, NodeId, bool)> {
+            ctl.model
+                .graph()
+                .edges
+                .iter()
+                .filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. }) && [lane0, filter, reverb].contains(&e.from.node))
+                .map(|e| (e.from.node, e.to.node, matches!(e.kind, EdgeKind::Member)))
+                .collect()
+        };
+        assert_eq!(path(&ctl), [(lane0, filter, false), (filter, reverb, false), (reverb, group, true)]);
+        // The one in the middle of the chain: the lane goes into the reverb.
+        remove(&mut ctl, filter).unwrap();
+        assert_eq!(path(&ctl), [(lane0, reverb, false), (reverb, group, true)]);
+        // The last one: the lane goes into its group, by the link that a member's chain ends in.
+        remove(&mut ctl, reverb).unwrap();
+        assert_eq!(path(&ctl), [(lane0, group, true)]);
+    }
+
+    #[test]
+    fn an_effect_that_is_added_and_taken_out_leaves_the_graph_as_it_was() {
+        let (_engine, mut ctl) = chains();
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        let before = ctl.model.graph();
+        let (lane0, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        for parent in [lane0, group] {
+            add_effect(&mut ctl, parent, "builtin:reverb").unwrap();
+            let added = ctl.model.nodes().filter(|(id, _)| !before.nodes.iter().any(|n| n.id == *id)).map(|(id, _)| id).last().unwrap();
+            assert_eq!(remove(&mut ctl, added), Ok(Applied::restructured(ctl.rev)));
+            assert_eq!(ctl.model.graph(), before, "after adding a reverb to {parent:?} and taking it out");
+        }
+    }
+
+    #[test]
+    fn remove_node_does_not_take_an_effect_out_twice() {
+        let (engine, mut ctl) = chains();
+        let filter = ctl.model.instruments[0].effects[0].node;
+        remove(&mut ctl, filter).unwrap();
+        sent(&engine);
+        assert_eq!(remove(&mut ctl, filter), Err(IntentError::NotFound(filter)));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, 1, "a refusal is not a revision");
     }
 
     fn controller_with_file(path: &std::path::Path) -> (StubEngine, Controller) {

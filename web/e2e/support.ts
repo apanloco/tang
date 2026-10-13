@@ -135,7 +135,7 @@ export async function sampleCutoff(page: Page, ms: number): Promise<Sample[]> {
 /** What of the session a test looks at: the parameters of the plugins, the LFO's settings, and the depths of the cables. */
 interface SessionView {
   graph: {
-    nodes: { id: number; name: string; parent?: number | null; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
+    nodes: { id: number; name: string; kind?: string; parent?: number | null; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
     edges: { kind: string; id?: number; amount?: number; from?: { node: number }; to?: { node: number; port: { type: string; index?: number } } }[];
   };
 }
@@ -280,8 +280,9 @@ export async function resetTracer(page: Page): Promise<void> {
             oscillator = nodes.find((node) => node.name === "Oscillator")?.id;
             lfo = nodes.filter((node) => node.name === "LFO").sort((a, b) => a.id - b.id)[0]?.id;
             cable = message.snapshot?.graph.edges.find((edge) => edge.kind === "modulation")?.id;
-            // What a test built is taken out: the modulators but the tracer's own LFO (the first, whose id is the lowest), and
-            // the cables of that one but the first. (A modulator takes its cables with it.)
+            // What a test built is taken out: the effects but the tracer's own filter, the modulators but the tracer's own
+            // LFO (the first, whose id is the lowest), and the cables of that one but the first. (A node takes its cables with it.)
+            const extraEffects = nodes.filter((node) => node.kind === "effect" && node.id !== filter).map((node) => node.id);
             const edges = message.snapshot?.graph.edges ?? [];
             const modulators = nodes.filter((node) => node.source !== undefined).map((node) => node.id);
             const own = lfo === undefined ? undefined : Math.min(...modulators);
@@ -289,6 +290,7 @@ export async function resetTracer(page: Page): Promise<void> {
             const ownCables = edges.filter((edge) => edge.kind === "modulation" && edge.from?.node === own).map((edge) => edge.id ?? -1);
             const extraCables = ownCables.filter((id) => id !== cable);
             const intents = [
+              ...extraEffects.map((node) => ({ type: "removeNode", node })),
               ...extraNodes.map((node) => ({ type: "removeNode", node })),
               ...extraCables.map((edge) => ({ type: "removeEdge", edge })),
               { type: "setModulatorField", node: lfo, field: "rate", value: 0.5 },
