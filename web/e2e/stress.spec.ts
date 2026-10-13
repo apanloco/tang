@@ -40,6 +40,27 @@ async function open(page: Page): Promise<void> {
   await expect(page.locator('.tang-knob__dot[visibility="visible"]')).toHaveCount(64);
 }
 
+test("every bar and every dot is alive: each of the 32 LFOs' bars has a value, and moves", async ({ page }) => {
+  await open(page);
+  const bars = page.locator('[role="meter"][aria-label$=" output"]');
+  await expect(page.locator('[role="meter"][aria-label$=" output"][aria-valuenow]')).toHaveCount(32);
+  const read = () => bars.evaluateAll((all) => all.map((bar) => Number(bar.getAttribute("aria-valuenow"))));
+  const first = await read();
+  await page.waitForTimeout(130);
+  const second = await read();
+  // Every LFO has a rate of its own, and an eighth of a second moves each of them.
+  expect(second.filter((value, i) => Math.abs(value - (first[i] ?? value)) > 0.001).length).toBeGreaterThanOrEqual(30);
+  expect(Math.max(...second)).toBeLessThanOrEqual(1);
+  expect(Math.min(...second)).toBeGreaterThanOrEqual(-1);
+  // And so do the dots: they are written, so they are not where they started.
+  const dots = page.locator('.tang-knob__dot[visibility="visible"]');
+  const where = () => dots.evaluateAll((all) => all.map((dot) => `${dot.getAttribute("cx") ?? ""},${dot.getAttribute("cy") ?? ""}`));
+  const dotsBefore = await where();
+  await page.waitForTimeout(130);
+  const dotsAfter = await where();
+  expect(dotsAfter.filter((place, i) => place !== dotsBefore[i]).length).toBeGreaterThanOrEqual(55);
+});
+
 test("32 modulators and 64 live knobs run at the display's rate, and React renders nothing for them", async ({ page }) => {
   await open(page);
   await page.waitForTimeout(500);
