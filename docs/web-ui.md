@@ -140,6 +140,33 @@ moves loads to a worker whose completions `poll()` picks up.
 - Telemetry frames are produced here, from the lock-free `Telemetry` atomics at
   the runtime's own cadence. The owner thread is not involved.
 
+**As built (step 10).** The runtime is one thread (`tang-web`) running a
+current-thread tokio runtime, started by `web::server::Server::start`; a few
+browsers at 30 Hz are nowhere near what one core does, and one thread keeps every
+future away from the synchronous rest of the program. Its parts, each in
+`src/web/`:
+
+- `security` (pure: the `Host` / `Origin` policy and the token), `hub` (the
+  clients and their bounded queues), `connection` (what one client's messages
+  mean: token, limits, notes), `owner` (what the owner thread does with the
+  requests), `server` (the sockets), `pusher` (the telemetry frames), `runtime`
+  (all of it built in one place and the headless loop), `mod` (`tang serve`).
+- A client's queue holds 256 frames. A broadcast to a client whose queue is full
+  evicts it: the connection task tells it (`Closing`, error `overloaded`, close code
+  1013) and closes the socket, and the client reconnects and starts from a snapshot.
+  A telemetry frame is only skipped for such a client. A write to a client that
+  takes longer than ten seconds gives the client up too (a client that has stopped
+  reading is only noticed when its socket buffers are full, which is megabytes).
+- Requests reach the owner over a bounded crossbeam channel (1024); a request that
+  does not fit is answered "busy" (`rateLimited`), and the owner never waits for a
+  client: every send to a client is a `try_send`.
+- One semaphore permit per connection bounds how many there are (32; the 33rd gets
+  503) and tells a stopping server when they have all gone.
+- Not built: keep-alive pings (a client that vanishes without closing is noticed
+  when something is written to it), and events for what the audio thread reports
+  to the controller (a finished pattern recording, a captured MIDI-learn control):
+  they change the model, and a connected client sees them at its next snapshot.
+
 ### 3.3 Real-time note lane
 
 `app::NoteInput` is one lock-free component that does what the `MidiManager`
@@ -367,6 +394,16 @@ master peak and clip. A scope ring can follow later.
   u32 layout_rev | n × f32`, where value *i* belongs to layout entry *i*. About
   30 Hz per subscribed channel group (`mod`, `meters`); nothing is sent when
   nobody subscribes. Held notes go as a 16-byte bitset, on change.
+  **As built (step 10):** the channels are `meters` (kind 0) and `modulation`
+  (kind 1), little endian, `flags` 0. `web::pusher` makes a frame per wanted
+  channel every `Config::telemetry_period` (33 ms) from `Shared::layout()` and the
+  atomics, and the hub queues it for the clients that asked
+  (`{"type":"telemetry","channels":["meters"]}`, replacing what they asked for
+  before; `[]` stops). A clip count goes as a count in an `f32` (exact up to 2^24
+  buffers). A frame names the `rev` of the layout it follows; the layout is in the
+  snapshot, and a `layout` message tells the subscribed clients when it changes
+  (a frame of a revision the client has not been told of is to be ignored). The
+  held-notes channel is not built.
 - **Visual vocabulary.** Knob = base value; ring = modulation extent (depth ×
   range); dot = effective value.
 
@@ -390,7 +427,7 @@ master peak and clip. A scope ring can follow later.
   the engine and as short as they can be on the wire.
 - **The roots** of the generated types, in `app::protocol`: `Intent`, `Event`,
   `StampedEvent`, `Graph`, `TelemetryLayout`, `Snapshot` (and what they use).
-  `Hello`, `Request` and `Response` come with the server (step 10). Generation is
+  `ClientMessage` and `ServerMessage` (below) come with the server. Generation is
   configured in code (`export_all`, large integers as `number`), not through
   `TS_RS_*` variables and not with `#[ts(export)]`, so the output does not depend
   on who runs it and a plain `cargo test --features web` writes nothing. The
@@ -401,6 +438,30 @@ master peak and clip. A scope ring can follow later.
 - The protocol is versioned (`protocol` integer in `Hello`); the client refuses
   a mismatch with a clear message.
 - HTTP serves only the SPA and `/ws`; there is no REST API.
+- **The messages (step 10)**, `app::protocol`, JSON text frames, tagged by `type`
+  (camel case):
+  - client → server: `auth { token }` (the first message when `Hello.needsToken`),
+    `subscribe`, `telemetry { channels }`, `request { reqId, intent }`,
+    `noteOn { note, velocity }`, `noteOff { note }`.
+  - server → client: `hello { protocol, rev, features, needsToken }` (first),
+    `snapshot { snapshot }` (the answer to `subscribe`), `event { event }` (a
+    `StampedEvent`), `layout { layout }`, `ack { reqId, rev }`,
+    `rejected { reqId, error }`, `closing { error }` (the last thing before the
+    server closes), with `error = { code, message }`, `code` one of `notFound`,
+    `invalid`, `badRequest`, `unauthorized`, `rateLimited`, `overloaded`.
+  - **Order.** The owner makes the cut between a snapshot and the events after it:
+    `subscribe` is answered by marking the client subscribed and queueing the
+    snapshot in one step, and events are only made on the owner's thread, so a client
+    gets the snapshot of revision *n* and then exactly the events of the revisions
+    after *n*. A request is answered after the events it made, so the requester
+    hears `event` and then `ack`; the others hear the event.
+  - **Close codes** of the WebSocket: 1001 the server stops, 1008 the connection
+    broke a rule (the reason is in the `closing` message before it), 1013 the client
+    fell behind.
+  - **Notes** go straight to `NoteInput`, not through the controller: the Piano
+    tab's scale filter (Locked mode), the held-notes bits and the MIDI channel to the
+    audio thread, like a hardware key. The connection remembers which notes it holds and ends them when it
+    ends, however it ends.
 
 ## 8. Security
 
@@ -421,6 +482,36 @@ WebSocket to localhost.
   front-ends.
 - Limits: maximum message size, a per-connection intent rate cap, bounded
   outgoing queues.
+
+**As built (step 10).**
+
+- The guard (`web::server`) applies `Policy::check` to every request, the page
+  included, on loopback as well. On loopback `Host` has to be `localhost`,
+  `127.0.0.1` or `[::1]` on the server's port, and an `Origin`, if there is one, the
+  server's own page (or an origin given with `--web-origin`); a request without an
+  `Origin` does not come from a web page and is let through. Beyond loopback the
+  names cannot be listed, so `Host` is free and an `Origin` has to be the `Host` it
+  came to. A header that is there but not text, or comes twice, is refused rather
+  than read as absent. Refusals are `403`, and do not repeat what they were sent.
+- Every answer carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`; the page has a CSP
+  that allows nothing but its own inline style (to be widened when the real
+  interface is served).
+- The token (`--web-bind` beyond loopback: made at startup, 128 random bits as hex,
+  in the fragment of the printed address) is compared in constant time, and has to
+  be the first message; a connection that has not sent it within 10 s, or sends
+  anything else first, is told (`unauthorized`) and closed.
+- Limits: 64 KiB per message (the socket refuses a longer frame or message before
+  it is read whole, and the connection checks again), a token bucket per connection
+  (burst 300, 200 a second) that every request, note on, `subscribe` and `telemetry`
+  message spends from (a request over the limit is rejected, a note on dropped, a
+  `subscribe` or `telemetry` over it ends the connection, and a note off is never
+  dropped), 32 connections, 256 frames per client queue, 1024 waiting requests, and
+  ten seconds for a write.
+- **Not checked:** the policy against a real browser (the tests use the same
+  headers a browser sends but are not one), and TLS: there is none, so a token sent
+  over a LAN is in the clear. Put a reverse proxy in front for anything but a
+  trusted network.
 
 ## 9. Frontend
 
@@ -863,7 +954,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
   **Not checked:** the null backend on Linux and Windows, and its timing under a
   heavily loaded CI machine (the pace test allows 15 to 60 blocks in half a second
   of 10 ms blocks).
-- [ ] **10. `web` feature and `tang serve`.** The axum / tokio runtime; `/`
+- [x] **10. `web` feature and `tang serve`.** The axum / tokio runtime; `/`
   (embedded placeholder page) and `/ws`; `Hello`, `Origin` / `Host` checks,
   token for non-loopback; hub fan-out with bounded per-client queues; snapshot
   on subscribe; requests into the owner loop (headless loop = `select!` over
@@ -873,6 +964,64 @@ Each step is a reviewable change; the TUI must not regress at any point.
   (WebSocket client ↔ controller ↔ null audio) cover connect → snapshot →
   `SetParam` → event + engine-side effect, `Origin` rejection, slow-client
   eviction and stuck-note release.
+  - **Built, in fourteen commits** (each with its tests first, and each
+    mutation-checked; the sections above describe the result). The parts:
+    1. `NoteInput` (`src/note_input.rs`): the Piano tab's filter, the held-notes
+       bits and the channel to the audio thread in one place, which the
+       `MidiManager`, the `VirtualPiano` and the web runtime share
+       (`Controller::note_input()`). It says what became of a note (`Delivery`:
+       sent, blocked by Locked mode, not a note, channel full).
+    2. `Controller::subscribe` / `unsubscribe` and the `EventSink` trait; `apply`
+       publishes what it did.
+    3. The protocol messages (`app::protocol`: `ClientMessage`, `ServerMessage`,
+       `WireError`, `telemetry_frame`) and their TypeScript.
+    4. `web::security`: the `Host` / `Origin` policy and the token.
+    5. `web::hub`: clients, bounded queues, eviction, telemetry channels.
+    6. `web::connection`: the protocol's side of one connection (token, limits,
+       notes held, validation).
+    7. `web::owner`: requests answered on the controller's thread; the cut between a
+       snapshot and the events after it; layout changes told to the clients.
+    8. `web::server`: axum, the guard, one task per connection with a seat, the token
+       timer, the write timeout, shutdown.
+    9. `web::pusher`: the telemetry frames.
+    10. `web::runtime`: everything built in one place, and the headless loop, with
+        in-process integration tests against a stub engine.
+    11. `tang serve [session.toml] [--web-bind ip:port] [--web-origin origin]...`
+        and `tests/serve.rs`, which runs the real binary on `--audio-device none`.
+    Three more commits: the two bugs found on the way, each test first (`subscribe` and
+    `telemetry` messages were not rate limited, so a client could make the owner build
+    snapshots in a loop; and the session flags only worked before the subcommand,
+    so `tang play x.toml --audio-device none` failed, and they are `global` now), and
+    the move of the tests' WebSocket client into a module of its own.
+  - **`tang serve`.** Loads the session as every mode does, prints
+    `Web interface: http://127.0.0.1:8765/` (the address; with the token in the
+    fragment beyond loopback) on stdout, logs on stderr, and stops on Ctrl+C /
+    SIGTERM / SIGHUP (the `ctrlc` crate; closes the browsers with 1001). Without a
+    MIDI subsystem (a container, CI) it carries on with a warning. A build without
+    the `web` feature knows the subcommand and says how to get it.
+  - **Checked.** 711 tests with `--features web` (597 without), among them 5 that
+    run the real binary on the null backend (`tests/serve.rs`: nothing opens a
+    sound card or a MIDI port, nothing is heard): a note played in the browser
+    sounds and dies away in the master's meter, the oscillator's volume set to 0
+    through `SetParam` silences the same note and set back brings it up (so the
+    request reached the audio thread and the peak came back through the telemetry
+    frames), a second browser hears the first one's change, a browser that vanishes
+    with a key held does not leave the note sounding, foreign pages and hosts are
+    refused and the session is untouched, and Ctrl+C closes the clients (1001) and
+    exits 0. In-process (`web::runtime`, a controller over a stub engine): the
+    command the engine receives, ordering of one client's requests, the late client's
+    snapshot, the loop reaping on the owner's thread. Mutation checks per commit
+    (the few mutants that survive are named in the commit messages).
+  - **Slow-client eviction** is tested at three levels but not as one flow: the hub
+    (a full queue evicts, the others do not notice), the owner (with a real
+    controller) and the socket (a client that stops reading is given up on after the
+    write timeout, and its seat is free again). A flow through a real socket would
+    need megabytes of events: the sockets' buffers absorb everything until then.
+  **Not checked:** the `web` feature on Windows, and the end-to-end tests on Linux
+  CI (the branch has not been pushed, so the new CI steps have not run); the server
+  against a real browser (step 11 brings one); the null backend's pace under a
+  loaded machine; `tang serve` with a plugin that takes seconds to load (the
+  runtime starts after the session is loaded).
 - [ ] **11. `web/` skeleton and CI.** Vite + React + strict TypeScript +
   ESLint; the `client` layer (connection, store, reducers, telemetry buffers)
   and the mock engine; `ui` tokens; Storybook; Vitest; the Playwright harness;
@@ -919,11 +1068,15 @@ mixer, delay, …) are the natural first increment.
 | D7 | Graph-shaped wire model with stable `NodeId`s; layout stored in the session TOML as `ui` tables | Proposed |
 | D8 | Telemetry via lock-free slots, binary frames; undo via inverse intents + recovered plugin instances | Proposed |
 | D9 | Short design + TODOs in `CLAUDE.md`, long form here | Assumed |
+| D10 | `tang serve` listens on `127.0.0.1:8765` by default; beyond loopback `--web-bind` and a token made for the run | Built (step 10) |
+| D11 | One current-thread tokio runtime on its own thread for the server and the pusher; `ctrlc` for stopping a headless process | Built (step 10) |
 
 Open questions
 
 1. Display text for external plugin parameters (§4.3).
-2. Whether the `web` feature joins the Windows CI matrix.
+2. Whether the `web` feature joins the Windows CI matrix. (It does, as of step 10,
+   with `--no-default-features --features vst3,web`; the first run of that will say
+   whether it builds there.)
 3. Worker-thread plugin loading (phase 1): completion messages, cancellation,
    what the TUI shows while a load is pending.
 4. Session browser and runtime session switching (phase 4): tearing down and

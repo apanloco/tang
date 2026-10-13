@@ -56,6 +56,15 @@ jobs:
       - name: Test
         run: cargo test ${{ matrix.features }}
 
+      # The web runtime (the `web` feature, docs/web-ui.md): clippy over the tests too,
+      # and the tests, among them tests/serve.rs, which runs the real binary on
+      # `--audio-device none` (no sound card or MIDI port is needed or opened).
+      - name: Clippy (web)
+        run: cargo clippy ${{ matrix.features }} --features web --all-targets -- -D warnings
+
+      - name: Test (web)
+        run: cargo test ${{ matrix.features }} --features web
+
   # The TypeScript in web/src/protocol/generated/ is generated from the protocol
   # types (docs/web-ui.md section 7) and committed. This fails when what is
   # committed is not what the types generate now; the failure says how to

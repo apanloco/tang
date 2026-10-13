@@ -13,6 +13,7 @@ This is Tang, a terminal-based audio plugin host.
 tang                             # launch TUI with default session
 tang session.toml                # launch TUI with specified session
 tang play session.toml           # play session with virtual piano (no TUI)
+tang serve session.toml          # serve the session to a browser (no TUI; needs --features web)
 tang enumerate plugins           # list installed LV2, CLAP, and VST3 plugins
 tang enumerate builtins          # list built-in plugins
 tang enumerate midi              # list available MIDI input devices
@@ -22,7 +23,9 @@ tang describe <plugin>           # show plugin details
 
 ## Flags
 
-These flags apply to both the TUI and the `play` subcommand:
+These flags apply to the TUI and to the `play` and `serve` subcommands, and
+can be written before or after the subcommand (`tang play x.toml --audio-device
+none`):
 
 | Flag | Default | Effect |
 |------|---------|--------|
@@ -40,8 +43,9 @@ Pressure (learnable) or is routed to a CC. Implemented as a lock-free-ish
 `Arc<MidiMonitor>` (`src/midi_monitor.rs`) written by the MIDI input thread and
 read by the render loop; a no-op when the flag is off.
 
-The `play` subcommand takes the session path as a required positional argument.
-When launched without a session path, the TUI starts an in-memory default
+The `play` and `serve` subcommands take the session path as an optional
+positional argument. When launched without a session path, the TUI (or the
+subcommand) starts an in-memory default
 session (`builtin:osc` as the instrument, no effects) targeting a fresh
 timestamped file `~/.config/tang/sessions/session-<id>.toml`. Nothing is
 written to disk until the first `Ctrl+S`.
@@ -57,6 +61,19 @@ one of `plugins`, `builtins`, `midi`, or `audio`.
 No editing, no TUI. Accepts input from any connected MIDI device, and the
 computer keyboard doubles as a virtual piano (Amiga tracker layout).
 Logs MIDI events and audio info to the screen.
+
+**serve** `[session.toml] [--web-bind <ip:port>] [--web-origin <origin>]...` —
+loads a session like every mode and serves it to browsers, with no terminal
+interface (needs a build with `--features web`; without it the subcommand says
+so). The first line on stdout is the address to open (`Web interface:
+http://127.0.0.1:8765/`), the log is plain text on stderr, and Ctrl+C / SIGTERM /
+SIGHUP closes the browsers and stops the program. `--web-bind` (default
+`127.0.0.1:8765`, an IP and a port) beyond loopback makes a token for the run and
+puts it in the address's fragment (`http://host:port/#token=…`); `--web-origin`
+(repeatable) lets another page connect, a dev server's, say. Works with
+`--audio-device none`, which is how CI and the end-to-end tests run it. Without a
+MIDI subsystem (a container) it warns and carries on. At the moment the page at `/`
+is a placeholder: the interface itself is step 11 onwards of `docs/web-ui.md`.
 
 ## Config file
 
@@ -1019,7 +1036,8 @@ first bus effect.
 
 ## Architecture
 
-N+2 threads, no async:
+N+2 threads, no async (the web server, behind the `web` feature, is the one
+island of async, on a thread of its own):
 
 - **Audio thread** (cpal, JACK or ALSA on Linux) — processes the instrument
   chains, fills output buffers. Promoted to SCHED_FIFO real-time scheduling on
@@ -1027,8 +1045,8 @@ N+2 threads, no async:
   closure — no mutex needed. A plugin swap mechanism exists via bounded crossbeam
   channels (send new plugin in, receive old plugin back for main-thread drop).
   The loader uses it to put the session's plugins into the audio thread, and
-  `app::controller::Controller::poll` reaps the plugins handed back, in the TUI
-  and in `play`.
+  `app::controller::Controller::poll` reaps the plugins handed back, in the TUI,
+  in `play` and in the headless loop of `serve`.
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
 - **Main thread** — runs the crossterm event loop, handles keyboard input. The virtual
   piano lives here and pushes into the same MIDI channel as hardware devices.
@@ -1039,6 +1057,13 @@ N+2 threads, no async:
 - **Splash render thread** (TUI only, transient) — owns the terminal during
   session plugin loading, animating the startup splash while the main thread
   loads plugins. Exits before `tui::run` takes over the terminal.
+- **Web server thread** (`web` feature, `tang serve`) — `tang-web`, a
+  current-thread tokio runtime that runs the HTTP server, one task per WebSocket
+  and the telemetry pusher (`src/web/server.rs`, `pusher.rs`). It never touches
+  the controller: requests go to the main thread over a channel (`web::owner`),
+  what the controller applies and the telemetry come back through the hub to
+  each client's bounded queue, and notes go straight to `NoteInput`. In `tang serve`
+  the main thread runs the headless loop (`web::runtime`).
 
 The shared LV2 world (`plugin::Runtime`) is created lazily on the first LV2
 plugin load, not at startup — building the world scans every installed LV2
@@ -1052,8 +1077,9 @@ default log levels.
 
 TODO: Mirror audio output into a lock-free ring buffer for the oscilloscope display.
 
-MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop and
-the `play` loop) looks for new devices about once a second.
+MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop, the
+`play` loop and the headless loop of `serve`) looks for new devices about once a
+second (not in `serve` when there was no MIDI subsystem at startup).
 
 ## Audio host selection
 
@@ -1240,10 +1266,21 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   result. `examples/tracer.toml` has a golden JSON snapshot
   (`src/app/snapshots/`); review the diff when it changes
   (`INSTA_UPDATE=always cargo test the_tracer`).
-- **Server**: `axum` on its own thread behind the `web` Cargo feature
-  (`tang serve`, or `--web` alongside the TUI). One WebSocket per client,
-  loopback by default, `Origin`/`Host` checked, token for non-loopback binds.
-  The audio, MIDI and controller threads stay synchronous.
+- **Server** (`src/web/`, built; step 10): `axum` on its own thread behind the
+  `web` Cargo feature, started by `tang serve` (`--web` alongside the TUI is step
+  13). Routes `/` (a placeholder page) and `/ws`; one WebSocket per client with a
+  bounded outgoing queue (a client that falls behind is told and closed, and
+  reconnects from a snapshot); loopback by default, `Origin`/`Host` checked on every
+  request, a token for non-loopback binds, limits on message size, request rate,
+  connections and write time. The audio, MIDI and controller threads stay
+  synchronous. Messages: `app::protocol` (`ClientMessage`, `ServerMessage`); the
+  telemetry frames are made by `web::pusher` at 30 Hz for the channels a client
+  asked for. `NoteInput` (`src/note_input.rs`) is the one note path of hardware
+  MIDI, the virtual piano and the browser: the Piano tab's filter, the held-notes
+  bits and the channel to the audio thread, with the notes a WebSocket holds ended
+  when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
+  `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
+  §3.2, §7 and §8 for the as-built notes.
 - **Frontend** (`web/`): TypeScript + React + Vite, React Flow for the patch
   canvas, a framework-agnostic client layer, generated protocol types.
 - **Scope**: track A first — a "rack-as-patch" canvas over the existing engine
@@ -1251,12 +1288,14 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
 TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md`.
-TODO: `tang serve <session.toml>` and `--web[=addr]`.
-TODO: `NoteInput` — one lock-free note path shared by hardware MIDI, the
-virtual piano and the browser.
+TODO: `--web[=addr]` (the web runtime alongside the TUI; step 13).
 TODO: `ui` layout fields in the session format.
-TODO: `Hello`, `Request` and `Response` protocol messages (with the server).
 TODO: patterns as graph nodes (they have no `NodeId` yet).
+TODO: events for what the audio thread reports to the controller (a finished
+pattern recording, a captured MIDI-learn control): connected browsers only see
+them at their next snapshot.
+TODO: the held-notes telemetry channel (a 16-byte bitset, on change) and keep-alive
+pings for WebSockets.
 
 ## Platform
 
@@ -1279,15 +1318,22 @@ behind upstream develop). Drop the `[patch.crates-io]` entry once #117 lands.
 VST3 support is behind the `vst3` Cargo feature (enabled by default). It uses
 pre-generated bindings (no build-time SDK dependency) and works on all platforms.
 
-The `web` Cargo feature (off by default) is the browser front-end. Today it
-only adds `ts-rs`, which generates the TypeScript of the protocol types; the
-server (`axum`) joins it in step 10. See "Web UI (planned)".
+The `web` Cargo feature (off by default) is the browser front-end: `ts-rs`
+(which generates the TypeScript of the protocol types), the server (`axum`,
+`tokio`) and `ctrlc` for stopping `tang serve`. `tokio-tungstenite` and
+`futures-util` are in it for the tests' WebSocket client (axum's `ws` is built on
+the same crate). See "Web UI (planned)".
 
 CI runs clippy + tests on all three platforms:
 
 - **Linux** — full default features (LV2 + VST3 + CLAP), `apt install liblilv-dev libasound2-dev libjack-dev`
 - **macOS** — full default features (LV2 + VST3 + CLAP), `brew install lilv`
 - **Windows** — `--no-default-features --features vst3` (CLAP is not feature-gated, so it's always built; LV2 is unsupported)
+
+Each of them then also runs clippy (`--all-targets`) and the tests with `--features
+web` added, which includes `tests/serve.rs`, the real binary on `--audio-device
+none` (the Ctrl+C test is Unix only). The job `typescript` checks that the
+generated TypeScript is current.
 
 ## Future ideas
 

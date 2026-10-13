@@ -37,7 +37,7 @@ cargo build --release
 ./target/release/tang play examples/basic.toml
 ```
 
-`examples/basic.toml` loads the built-in sine instrument. Try `examples/split.toml` for a multi-instrument session, or run `tang` with no arguments to start with the default session at `~/.config/tang/default.toml`.
+`examples/basic.toml` loads the built-in sine instrument. Try `examples/split.toml` for a multi-instrument session, or run `tang` with no arguments to start with a new default session (saved under `~/.config/tang/sessions/` on the first `Ctrl+S`).
 
 ## Status
 
