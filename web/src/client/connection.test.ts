@@ -395,6 +395,126 @@ describe("taking a cable out", () => {
   });
 });
 
+describe("adding a modulator", () => {
+  const lane = nodeNamed(tracerSnapshot, "Oscillator");
+  const nodesOf = (client: Client): Node[] => client.state.snapshot?.graph.nodes ?? [];
+  const names = (client: Client): string[] => nodesOf(client).map((n) => n.name);
+
+  /** The tracer with its lane in a group (a node of the group first, as the controller lists them). */
+  function inAGroup(): Snapshot {
+    const group: Node = { id: 10, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0 };
+    const nodes = tracerSnapshot.graph.nodes.map((n) => (n.id === lane.id ? { ...n, parent: 10 } : n));
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [group, ...nodes] } };
+  }
+
+  test("puts a node of that kind after what the lane has, and the client is told by a snapshot, the revision after the intent's", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    expect(await client.request({ type: "addModulator", parent: lane.id, kind: "envelope" })).toBe(1);
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    expect(names(client)).toEqual(["Oscillator", "Filter", "LFO", "ADSR", "Master"]);
+    expect(nodesOf(client)[3]).toEqual({
+      id: 3,
+      parent: lane.id,
+      name: "ADSR",
+      kind: "modulator",
+      source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
+    });
+    // It drives nothing yet.
+    expect(client.state.snapshot?.graph.edges).toEqual(tracerSnapshot.graph.edges);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(client.state.snapshot);
+  });
+
+  test("makes each kind what the controller makes it", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    for (const kind of ["lfo", "envelope", "midiLearn"] as const) await client.request({ type: "addModulator", parent: lane.id, kind });
+    const added = nodesOf(client).slice(3, 6);
+    expect(added.map((n) => n.name)).toEqual(["LFO", "ADSR", "MIDI (learning…)"]);
+    expect(added.map((n) => (n.kind === "modulator" ? n.source : null))).toEqual([
+      { type: "lfo", waveform: "sine", rate: 1 },
+      { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
+      { type: "midiLearn", control: null, learning: true },
+    ]);
+    expect(added.map((n) => n.id)).toEqual([3, 4, 5]);
+    expect(names(client).at(-1)).toBe("Master");
+  });
+
+  test("hands out ids that nobody had, whichever front-end asks", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    server.apply({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    const ids = nodesOf(client).filter((n) => n.id !== MASTER).map((n) => n.id);
+    expect(ids).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  test("gives the modulator's output a slot of its own in the layout, among the outputs and with a new fingerprint", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    const layout = client.state.snapshot?.telemetry;
+    expect(layout?.modulation).toEqual([
+      ...tracerSnapshot.telemetry.modulation.slice(0, 1),
+      { kind: "modOutput", node: 3, port: { type: "modOut" }, slot: 6 },
+      ...tracerSnapshot.telemetry.modulation.slice(1),
+    ]);
+    expect(layout?.rev).not.toBe(tracerSnapshot.telemetry.rev);
+    expect(layout?.meters).toEqual(tracerSnapshot.telemetry.meters);
+    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    const slots = client.state.snapshot?.telemetry.modulation.filter((e) => e.kind === "modOutput").map((e) => e.slot);
+    expect(slots).toEqual([4, 6, 7]);
+  });
+
+  test("in a group goes in the group's strip: after the group, not after the lanes that are its members", async () => {
+    const server = new MockServer({ snapshot: inAGroup() });
+    const client = await open(server);
+    await client.request({ type: "addModulator", parent: 10, kind: "lfo" });
+    expect(names(client)).toEqual(["Group 1", "LFO", "Oscillator", "Filter", "LFO", "Master"]);
+    expect(nodesOf(client)[1]).toMatchObject({ parent: 10, kind: "modulator" });
+    // (A second goes after the first, still in the group's strip.)
+    await client.request({ type: "addModulator", parent: 10, kind: "envelope" });
+    expect(names(client)).toEqual(["Group 1", "LFO", "ADSR", "Oscillator", "Filter", "LFO", "Master"]);
+    // (The lane is in the group, and so are the two modulators: the lane's own is in the lane.)
+    expect(nodesOf(client).map((n) => n.parent)).toEqual([null, 10, 10, 10, 0, 0, null]);
+    // The output of the group's modulator is listed before the lane's, as the controller lists them.
+    expect(client.state.snapshot?.telemetry.modulation.filter((e) => e.kind === "modOutput").map((e) => e.node)).toEqual([11, 12, 2]);
+  });
+
+  test("goes after the lane's effects when it has no modulator yet", async () => {
+    const bare: Snapshot = {
+      ...tracerSnapshot,
+      graph: { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.filter((n) => n.kind !== "modulator") },
+      telemetry: { ...tracerSnapshot.telemetry, modulation: [] },
+    };
+    const server = new MockServer({ snapshot: bare });
+    const client = await open(server);
+    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    expect(names(client)).toEqual(["Oscillator", "Filter", "LFO", "Master"]);
+    // (Ids go on from what the session has, and slots from what the layout has: the meters', here, which end at 3.)
+    expect(client.state.snapshot?.telemetry.modulation).toEqual([{ kind: "modOutput", node: 2, port: { type: "modOut" }, slot: 4 }]);
+  });
+
+  test("to something that is not a lane or a group is refused, and changes nothing", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const refusal = async (parent: number): Promise<RequestError> => (await client.request({ type: "addModulator", parent, kind: "lfo" }).catch((e: unknown) => e)) as RequestError;
+    for (const parent of [filter.id, lfo.id]) {
+      const failure = await refusal(parent);
+      expect(failure).toBeInstanceOf(RequestError);
+      expect([failure.code, failure.message]).toEqual(["invalid", "a modulator goes in a lane or in a group"]);
+    }
+    expect((await refusal(99)).code).toBe("notFound");
+    // (The master is a node of the graph and not of the model: the controller does not find it.)
+    expect((await refusal(MASTER)).code).toBe("notFound");
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+    // And what was refused used up no id.
+    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    expect(nodesOf(client)[3]?.id).toBe(3);
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();

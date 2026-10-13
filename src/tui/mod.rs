@@ -1306,8 +1306,7 @@ impl State {
             };
 
         // Create an armed MidiLearn modulator in the right rack.
-        let armed = ModSourceSlot::MidiLearn { source: None, learning: true };
-        let Some(mod_index) = self.ctl.add_modulator(scope, armed) else { return };
+        let Some(mod_index) = self.ctl.add_modulator(scope, ModSourceSlot::new_midi_learn()) else { return };
 
         // Bind the target (depth 1.0 = full-range absolute control).
         self.ctl.add_target(

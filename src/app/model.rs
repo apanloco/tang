@@ -599,6 +599,11 @@ impl ModSourceSlot {
         ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }
     }
 
+    /// A control that is waiting for the next one that comes in to bind to.
+    pub fn new_midi_learn() -> Self {
+        ModSourceSlot::MidiLearn { source: None, learning: true }
+    }
+
     /// What the modulator's node is called for a client: its kind, or what a control
     /// is bound to. Not its settings, which a client is told when they change and
     /// which a name would have to follow (`label` has them, for the TUI).

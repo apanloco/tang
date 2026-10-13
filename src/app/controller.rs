@@ -778,7 +778,7 @@ mod tests {
 
     // -- Subscribers: who hears what `apply` did --
 
-    use crate::app::intent::{Applied, Event, Gain, Intent, IntentError};
+    use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorKind};
 
     /// A sink that keeps everything it hears, and a handle on what it has heard.
     fn recorder() -> (Box<dyn EventSink>, Arc<Mutex<Vec<Applied>>>) {
@@ -1130,6 +1130,29 @@ plugin = "builtin:reverb"
         assert_eq!(cables(&ctl), 0);
         assert!(mirror.copy().meta.dirty);
         assert!(!ctl.resync(), "and there is nothing left to tell");
+    }
+
+    #[test]
+    fn a_modulator_added_by_an_intent_is_in_the_snapshot_the_subscribers_are_given() {
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        let modulators = |snapshot: &Snapshot| {
+            snapshot.graph.nodes.iter().filter(|n| matches!(n.kind, crate::app::graph::NodeKind::Modulator { .. })).map(|n| n.id).collect::<Vec<_>>()
+        };
+        let mirror = Mirror::join(&mut ctl);
+        let before = modulators(&mirror.copy());
+        let lane = ctl.model.instruments[0].node;
+
+        let applied = ctl.apply(Intent::AddModulator { parent: lane, kind: ModulatorKind::Envelope }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        let after = modulators(&mirror.copy());
+        assert_eq!(after.len(), before.len() + 1);
+        let added = ctl.model.instruments[0].modulators.last().unwrap().node;
+        assert!(after.contains(&added) && !before.contains(&added), "the one that was added, and a node of its own");
+        let node = mirror.copy().graph.nodes.into_iter().find(|n| n.id == added).unwrap();
+        assert_eq!(node.parent, Some(lane), "in the lane it was added to");
+        assert!(matches!(node.kind, crate::app::graph::NodeKind::Modulator { source: crate::app::graph::ModulatorSource::Envelope { .. } }));
     }
 
     #[test]

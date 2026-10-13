@@ -12,6 +12,7 @@ export type { Intent } from "./generated/Intent";
 export type { LayoutEntry } from "./generated/LayoutEntry";
 export type { MidiControl } from "./generated/MidiControl";
 export type { ModulatorField } from "./generated/ModulatorField";
+export type { ModulatorKind } from "./generated/ModulatorKind";
 export type { ModulatorSource } from "./generated/ModulatorSource";
 export type { Node } from "./generated/Node";
 export type { NodeId } from "./generated/NodeId";

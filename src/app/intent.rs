@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::{EdgeId, NodeId};
+use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
 
 /// What a front-end asks of the controller, naming the node it concerns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,6 +47,35 @@ pub enum Intent {
     /// to. The cables that drive the depth of this one go with it (and theirs, in turn), since
     /// what they drove is gone.
     RemoveEdge { edge: EdgeId },
+    /// Add a modulator to a lane or to a group, after the ones it has: `parent` is the node of the
+    /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
+    /// refused. It drives nothing yet.
+    AddModulator { parent: NodeId, kind: ModulatorKind },
+}
+
+/// What a new modulator is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ModulatorKind {
+    /// A sine at 1 Hz.
+    Lfo,
+    /// An envelope of 10 ms attack, 0.3 s decay, 0.7 sustain and 0.5 s release, opened by the notes
+    /// its lane (or its group's members) plays.
+    Envelope,
+    /// A hardware control, waiting for the next one that comes in to bind to.
+    MidiLearn,
+}
+
+impl ModulatorKind {
+    /// What the modulator is to begin with.
+    pub fn source(self) -> ModSourceSlot {
+        match self {
+            ModulatorKind::Lfo => ModSourceSlot::new_lfo(),
+            ModulatorKind::Envelope => ModSourceSlot::new_envelope(),
+            ModulatorKind::MidiLearn => ModSourceSlot::new_midi_learn(),
+        }
+    }
 }
 
 /// A setting of a modulator, by name.
@@ -227,6 +256,10 @@ mod tests {
                 json!({"type": "loadPreset", "node": 5, "preset": "cathedral"}),
             ),
             (Intent::RemoveEdge { edge: EdgeId(6) }, json!({"type": "removeEdge", "edge": 6})),
+            (
+                Intent::AddModulator { parent: NodeId(2), kind: ModulatorKind::MidiLearn },
+                json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
+            ),
         ]
     }
 
@@ -280,6 +313,15 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_of_modulator_has_its_own_name() {
+        let names: Vec<Value> = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn].iter().map(wire).collect();
+        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn")]);
+        for name in names {
+            assert!(serde_json::from_value::<ModulatorKind>(name).is_ok());
+        }
+    }
+
+    #[test]
     fn what_a_client_sends_that_is_not_an_intent_is_an_error() {
         let bad = [
             ("no type", json!({"node": 3, "param": 2, "value": 0.5})),
@@ -290,6 +332,9 @@ mod tests {
             ("a negative node", json!({"type": "setParam", "node": -1, "param": 2, "value": 0.5})),
             ("a gain that does not exist", json!({"type": "setGain", "node": 3, "gain": "loud", "value": 1.0})),
             ("a node that is a string", json!({"type": "loadPreset", "node": "3", "preset": "x"})),
+            ("a kind of modulator that does not exist", json!({"type": "addModulator", "parent": 3, "kind": "noise"})),
+            ("a kind spelled the Rust way", json!({"type": "addModulator", "parent": 3, "kind": "MidiLearn"})),
+            ("no kind", json!({"type": "addModulator", "parent": 3})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<Intent>(json).is_err(), "{what}");

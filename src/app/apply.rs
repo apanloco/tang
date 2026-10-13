@@ -6,7 +6,7 @@
 //! nothing, and does not count as a revision.
 
 use crate::app::controller::Controller;
-use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ParamValue};
+use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::{plugin, session};
@@ -36,6 +36,7 @@ impl Controller {
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
+            Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
         };
         self.dirty = true;
         self.rev += 1;
@@ -196,6 +197,16 @@ impl Controller {
         } else {
             Err(IntentError::EdgeNotFound(edge))
         }
+    }
+
+    fn add_modulator_intent(&mut self, parent: NodeId, kind: ModulatorKind) -> Result<Done, IntentError> {
+        let at = match self.model.locate(parent).ok_or(IntentError::NotFound(parent))? {
+            NodePath::Instrument(inst) => ModulatorLocation::Lane(inst),
+            NodePath::Group(group) => ModulatorLocation::Group(group),
+            _ => return Err(invalid("a modulator goes in a lane or in a group")),
+        };
+        self.add_modulator(at, kind.source()).ok_or(IntentError::NotFound(parent))?;
+        Ok(Done::Restructured)
     }
 
     fn load_preset(&mut self, node: NodeId, preset_id: &str) -> Result<Event, IntentError> {
@@ -1022,5 +1033,121 @@ rate = 1.0
         assert_eq!(ctl.apply(Intent::RemoveEdge { edge }).unwrap_err(), IntentError::EdgeNotFound(edge));
         assert!(sent(&engine).is_empty());
         assert_eq!(ctl.rev, 1, "a refusal is not a revision");
+    }
+
+    fn add(ctl: &mut Controller, parent: NodeId, kind: ModulatorKind) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::AddModulator { parent, kind })
+    }
+
+    #[test]
+    fn add_modulator_puts_an_lfo_at_the_end_of_a_lanes_rack_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let parent = lane(&ctl);
+        let applied = add(&mut ctl, parent, ModulatorKind::Lfo).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]);
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.len(), 1);
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
+        assert!(rack[0].targets.is_empty(), "it drives nothing yet");
+        assert_eq!(ctl.model.locate(rack[0].node), Some(NodePath::Modulator { at: ModulatorLocation::Lane(0), index: 0 }));
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_modulator_adds_after_the_modulators_a_rack_has_and_leaves_them_as_they_were() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let before: Vec<(NodeId, String, usize)> =
+            ctl.model.instruments[0].modulators.iter().map(|m| (m.node, format!("{:?}", m.source), m.targets.len())).collect();
+        let parent = lane(&ctl);
+        add(&mut ctl, parent, ModulatorKind::Envelope).unwrap();
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.len(), before.len() + 1);
+        let still: Vec<(NodeId, String, usize)> = rack.iter().take(before.len()).map(|m| (m.node, format!("{:?}", m.source), m.targets.len())).collect();
+        assert_eq!(still, before);
+        assert!(!before.iter().any(|(node, ..)| *node == rack[before.len()].node), "a node of its own");
+        assert_eq!(
+            sent(&engine),
+            [format!(
+                "InsertModulator inst=0 index={} source=Envelope {{ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }}",
+                before.len()
+            )]
+        );
+        assert_eq!(ctl.model.groups[0].modulators.len(), 2, "the group's rack is untouched");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_modulator_to_a_group_goes_in_the_groups_rack_by_the_groups_command() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let group = node(&ctl, NodePath::Group(0));
+        add(&mut ctl, group, ModulatorKind::Envelope).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["InsertGroupModulator group=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }"]
+        );
+        let rack = &ctl.model.groups[0].modulators;
+        assert_eq!(rack.len(), 2);
+        assert_eq!(ctl.model.locate(rack[1].node), Some(NodePath::Modulator { at: ModulatorLocation::Group(0), index: 1 }));
+        assert!(ctl.model.instruments[0].modulators.is_empty(), "the member's rack is untouched");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_modulator_makes_each_kind_what_it_says_and_an_empty_lane_takes_one_too() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        for kind in [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn] {
+            add(&mut ctl, empty, kind).unwrap();
+        }
+        let rack = &ctl.model.instruments[1].modulators;
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
+        assert!(matches!(
+            rack[1].source,
+            ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)
+        ));
+        assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
+        assert_eq!(
+            sent(&engine),
+            [
+                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }".to_string(),
+                "InsertModulator inst=1 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }".to_string(),
+                "InsertModulator inst=1 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
+            ]
+        );
+        assert_eq!(ctl.rev, 3);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_modulator_refuses_a_parent_that_has_no_rack_and_changes_nothing() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let slots = ctl.model.slots.high_water();
+        let effect = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let modulator = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let ghost = NodeId(9_999);
+        let cases = [
+            ("an effect", effect, invalid("a modulator goes in a lane or in a group")),
+            ("a bus effect", bus, invalid("a modulator goes in a lane or in a group")),
+            ("a modulator", modulator, invalid("a modulator goes in a lane or in a group")),
+            ("a node that is not there", ghost, IntentError::NotFound(ghost)),
+            ("the master, which the model does not have", NodeId::MASTER, IntentError::NotFound(NodeId::MASTER)),
+        ];
+        for (what, parent, error) in cases {
+            assert_eq!(add(&mut ctl, parent, ModulatorKind::Lfo), Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.model.slots.high_water(), slots, "no telemetry slot is used up for nothing");
+        assert!(ctl.model.instruments[0].modulators.is_empty());
+        assert_eq!(ctl.model.groups[0].modulators.len(), 1);
     }
 }

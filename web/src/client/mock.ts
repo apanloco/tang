@@ -14,6 +14,8 @@ import type {
   Intent,
   LayoutEntry,
   ModulatorField,
+  ModulatorKind,
+  ModulatorSource,
   Node,
   NodeId,
   Plugin,
@@ -125,10 +127,72 @@ function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
   return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges }, telemetry } };
 }
 
+/**
+ * What the controller hands out and does not hand out again, however much is taken out after: the ids of
+ * nodes and the telemetry slots. They go on from what the session has.
+ */
+class Counters {
+  #node: number;
+  #slot: number;
+
+  constructor(snapshot: Snapshot) {
+    const { graph, telemetry } = snapshot;
+    // (The master is a node of the graph and not of the model: its id is not one the model has handed out.)
+    this.#node = 1 + Math.max(-1, ...graph.nodes.filter((n) => n.kind !== "master").map((n) => n.id));
+    this.#slot = 1 + Math.max(-1, ...[...telemetry.meters, ...telemetry.modulation].map((entry) => entry.slot));
+  }
+
+  node(): NodeId {
+    this.#node += 1;
+    return this.#node - 1;
+  }
+
+  slot(): number {
+    this.#slot += 1;
+    return this.#slot - 1;
+  }
+}
+
+/** What a node of each kind of modulator is called (`ModSourceSlot::node_name`), and what it is to begin with. */
+const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSource }> = {
+  lfo: { name: "LFO", source: { type: "lfo", waveform: "sine", rate: 1 } },
+  envelope: { name: "ADSR", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } },
+  midiLearn: { name: "MIDI (learning…)", source: { type: "midiLearn", control: null, learning: true } },
+};
+
+/**
+ * A modulator added to a lane or a group. The graph lists a lane's nodes together (the lane, its effects, its
+ * modulators), so the new one goes after the last of them; and the layout of the telemetry lists the modulators'
+ * outputs in the order of the graph, ahead of the parameters' values.
+ */
+function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: ModulatorKind, counters: Counters): Outcome {
+  const owner = snapshot.graph.nodes.find((n) => n.id === parent && n.kind !== "master");
+  if (!owner) return { error: { code: "notFound", message: `there is no node ${parent}` } };
+  if (owner.kind !== "instrument" && owner.kind !== "group") return invalid("a modulator goes in a lane or in a group");
+  const { nodes } = snapshot.graph;
+  const strip = (n: Node): boolean => n.id === parent || (n.parent === parent && (n.kind === "effect" || n.kind === "modulator"));
+  const at = nodes.findLastIndex(strip) + 1;
+  const { name, source } = NEW_MODULATORS[kind];
+  const added: Node = { id: counters.node(), parent, name, kind: "modulator", source };
+  const before = new Set(nodes.slice(0, at).filter((n) => n.kind === "modulator").map((n) => n.id));
+  const outputs = snapshot.telemetry.modulation;
+  const place = outputs.findLastIndex((entry) => entry.kind === "modOutput" && before.has(entry.node)) + 1;
+  const entry: LayoutEntry = { slot: counters.slot(), node: added.id, port: { type: "modOut" }, kind: "modOutput" };
+  const modulation = [...outputs.slice(0, place), entry, ...outputs.slice(place)];
+  return {
+    restructured: {
+      ...snapshot,
+      graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] },
+      telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation },
+    },
+  };
+}
+
 /** Do what the controller does with an intent, to a snapshot. */
-function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
+function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters): Outcome {
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
+  if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
   if (!node) return { error: { code: "notFound", message: `there is no node ${intent.node}` } };
@@ -201,11 +265,13 @@ export class MockServer {
 
   readonly #options: MockOptions;
   #snapshot: Snapshot;
+  readonly #counters: Counters;
   readonly #connections = new Set<MockConnection>();
 
   constructor(options: MockOptions = {}) {
     this.#options = options;
     this.#snapshot = options.snapshot ?? tracerSnapshot;
+    this.#counters = new Counters(this.#snapshot);
   }
 
   /** The session as the server has it now. */
@@ -225,14 +291,14 @@ export class MockServer {
 
   /** Another front-end's intent (the TUI's, or another browser's): applied, and every subscribed client is told. */
   apply(intent: Intent): void {
-    const outcome = outcomeOf(this.#snapshot, intent);
+    const outcome = outcomeOf(this.#snapshot, intent, this.#counters);
     if ("error" in outcome) throw new Error(outcome.error.message);
     this.#commit(outcome, true);
   }
 
   /** Change the session without telling anybody: the clients will see a revision missing at the next change. */
   applyQuietly(intent: Intent): void {
-    const outcome = outcomeOf(this.#snapshot, intent);
+    const outcome = outcomeOf(this.#snapshot, intent, this.#counters);
     if ("error" in outcome) throw new Error(outcome.error.message);
     this.#commit(outcome, false);
   }
@@ -303,7 +369,7 @@ export class MockServer {
         connection.wantTelemetry(message.channels);
         break;
       case "request": {
-        const outcome = outcomeOf(this.#snapshot, message.intent);
+        const outcome = outcomeOf(this.#snapshot, message.intent, this.#counters);
         if ("error" in outcome) {
           connection.tell({ type: "rejected", reqId: message.reqId, error: outcome.error });
         } else {
