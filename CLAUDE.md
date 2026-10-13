@@ -1438,6 +1438,16 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   is on the TUI's screen with the next frame, and a step the TUI takes starts from
   it); what the TUI changes through intents reaches the browsers as events, and the
   rest of what it does by a snapshot (`Controller::resync`, see "Session state").
+  The tree is addressed by position and a browser can add or take out a node above
+  the cursor, so the TUI keeps track of nodes and not of places: its cursor stays on
+  the node it was on (found by its id, with the kind of entry: a lane's pattern is
+  an entry of the lane's node, as its instrument is), and a popup that holds a place
+  in the tree (a lane's range, a group's name, a selector of plugins, of targets or
+  of presets, the modulate popup, the group popup) is closed when the entries of the
+  tree have changed, as it would act on whatever is at its place now. A value being
+  typed goes to the node under the cursor, which follows its node, and is closed
+  only if that node is gone; a cable that is added or taken out moves no place and
+  closes nothing.
   Tested by running the real loop with a real server and a WebSocket client that
   presses keys by sending them to the loop (`tui::golden_tests::with_web`), and by
   hand with the real program in a pty and a real browser (18 checks, both ways).

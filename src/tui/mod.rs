@@ -110,6 +110,14 @@ struct TreeEntry {
     indent: usize,
 }
 
+/// What an entry of the tree is made of, whatever place it has: the kind of entry (a lane's pattern is an entry of
+/// the lane's node, as its instrument is) and the id of the node.
+type EntryKey = (std::mem::Discriminant<TreeAddress>, NodeId);
+
+fn entry_key(entry: &TreeEntry) -> EntryKey {
+    (std::mem::discriminant(&entry.address), entry.node)
+}
+
 // ---------------------------------------------------------------------------
 // Action bar
 // ---------------------------------------------------------------------------
@@ -467,20 +475,49 @@ impl State {
     /// node the cursor is on is the same one (a value changed under it, by a browser, say), and goes
     /// if it is not.
     fn rebuild_tree(&mut self) {
-        let was_on = self.selection_key();
+        let was_on = self.node_under_cursor();
         self.tree_entries = build_tree_entries(&self.ctl.model.instruments, &self.ctl.model.groups);
         self.chain_state.set_len(self.tree_entries.len());
-        if self.selection_key() == was_on {
+        // The cursor stays on the node it was on, wherever the tree has put it now: what came or went above it
+        // (a browser added a modulator to an earlier lane, say) has moved its place, and what the person does
+        // next (`d`, a value typed in) would be for whatever is at the old one.
+        if let Some(on) = was_on {
+            if let Some(position) = self.tree_entries.iter().position(|entry| entry_key(entry) == on) {
+                self.chain_state.selected = position;
+            }
+        }
+        if self.node_under_cursor() == was_on {
             self.sync_param_len();
         } else {
             self.sync_param_state();
         }
     }
 
-    /// What the cursor is on, as the tree shows it: its address, and the id of the node it is of (an address is a
-    /// position, and what is at it changes as nodes come and go).
-    fn selection_key(&self) -> Option<(TreeAddress, NodeId)> {
-        self.tree_entries.get(self.chain_state.selected).map(|entry| (entry.address, entry.node))
+    /// What the cursor is on. It does not change as the nodes around it come and go, as its address does.
+    fn node_under_cursor(&self) -> Option<EntryKey> {
+        self.tree_entries.get(self.chain_state.selected).map(entry_key)
+    }
+
+    /// Every entry of the tree, in the order they are shown.
+    fn tree_places(&self) -> Vec<EntryKey> {
+        self.tree_entries.iter().map(entry_key).collect()
+    }
+
+    /// Close what is open and holds a place in the tree (a lane's, a modulator's, a group's) that has moved, or is
+    /// not there any more: it would act on what is at the place now. What is typed in as the value of a parameter
+    /// goes to the node under the cursor, which follows its node (`rebuild_tree`), so it stays unless that node is
+    /// gone; a host-side gain has the id of its node.
+    fn close_popups_that_hold_places(&mut self, cursor_node_is_there: bool) {
+        self.range_edit = None;
+        self.rename_group = None;
+        self.selector = None;
+        self.target_selector = None;
+        self.modulate = None;
+        self.group_assign = None;
+        self.preset_selector = None;
+        if !cursor_node_is_there {
+            self.editing = None;
+        }
     }
 
     /// The cursor is on another node: what was typed into the parameter filter was for the other one.
@@ -1585,9 +1622,16 @@ impl State {
 
     /// Bring what the view derives from the model up to date with what `applied` did.
     fn react_to(&mut self, applied: &Applied) {
-        // Nodes or cables came or went: the tree is built from the model again.
+        // Nodes or cables came or went: the tree is built from the model again, and what is open that is for a
+        // place in it is closed if the places have moved.
         if applied.restructured {
+            let places = self.tree_places();
+            let on = self.node_under_cursor();
             self.rebuild_tree();
+            if self.tree_places() != places {
+                let cursor_node_is_there = self.node_under_cursor() == on;
+                self.close_popups_that_hold_places(cursor_node_is_there);
+            }
         }
         for event in &applied.events {
             match event {
@@ -2905,10 +2949,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         });
                         s.ctl.model.move_effect(inst, index, index - 1);
                         s.ctl.dirty = true;
+                        // (The cursor follows the effect it was on.)
                         s.rebuild_tree();
-                        if s.chain_state.selected > 0 {
-                            s.chain_state.selected -= 1;
-                        }
                     }
                     TreeAddress::Instrument(inst) if inst > 0 => {
                         s.ctl.swap_lanes(inst, inst - 1);
@@ -2951,9 +2993,6 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                         s.ctl.dirty = true;
                         s.rebuild_tree();
-                        if s.chain_state.selected > 0 {
-                            s.chain_state.selected -= 1;
-                        }
                     }
                     _ => {}
                 }
@@ -2979,7 +3018,6 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             s.ctl.model.move_effect(inst, index, index + 1);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
-                            s.chain_state.selected += 1;
                         }
                     }
                     TreeAddress::Instrument(inst) if inst + 1 < s.ctl.model.instruments.len() => {
@@ -3023,7 +3061,6 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             }
                             s.ctl.dirty = true;
                             s.rebuild_tree();
-                            s.chain_state.selected += 1;
                         }
                     }
                     _ => {}

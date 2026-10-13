@@ -888,7 +888,7 @@ fn the_parameter_filter_goes_when_the_node_under_the_cursor_is_another_one() {
     assert_eq!(h.s.param_filter_input.value, "res");
     h.s.ctl.model.remove_effect(0, 0);
     h.s.rebuild_tree();
-    assert_eq!(h.s.selection_key().map(|(addr, _)| addr), Some(TreeAddress::Effect { inst: 0, index: 0 }));
+    assert_eq!(h.s.tree_entries.get(h.s.chain_state.selected).map(|e| e.address), Some(TreeAddress::Effect { inst: 0, index: 0 }));
     assert_eq!(h.s.ctl.model.instruments[0].effects[0].name, "Reverb");
     assert_eq!(h.s.param_filter_input.value, "", "the reverb is shown whole");
     assert!(!h.s.param_filtering);
@@ -3327,3 +3327,238 @@ mod with_web {
         assert!(!bar.contains("web 127.0.0.1:0"), "the address it listens on, not the one it was asked for: {bar}");
     }
 }
+
+// -- A browser changes the structure under the TUI's cursor and popups --
+//
+// The tree is addressed by position, and a browser can add or take out a node above what the TUI is on:
+// the cursor has to stay on the node it was on (or `d` takes out what it was never on), and a popup that
+// holds a place in the tree (a modulator's, a lane's, a group's) is not for what is there now.
+
+mod browser_changes_structure {
+    use super::*;
+    use crate::app::graph::{Endpoint, Port};
+    use crate::app::intent::{Intent, ModulatorKind};
+    use crate::app::model::ModSourceSlot;
+
+    const TWO_LANES: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#;
+
+    const THREE_LFOS: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator]]
+rate = 3.0
+"#;
+
+    /// What a browser does: the intent is applied by the controller, and the loop of the TUI reacts to it.
+    fn browser(h: &mut Harness, intent: Intent) {
+        let applied = h.s.ctl.apply(intent).unwrap();
+        h.s.react_to(&applied);
+    }
+
+    fn cursor_node(h: &Harness) -> NodeId {
+        h.s.tree_entries[h.s.chain_state.selected].node
+    }
+
+    fn rates(h: &Harness) -> Vec<f32> {
+        h.s.ctl.model.instruments[0].modulators.iter().map(|m| if let ModSourceSlot::Lfo { rate, .. } = m.source { rate } else { -1.0 }).collect()
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_node_when_a_browser_adds_a_node_above_it() {
+        let mut h = Harness::new(TWO_LANES);
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        let lane0 = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo });
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+        // And what `d` takes out is the reverb, which the person was on, and not what has come to its place.
+        h.press(KeyCode::Char('d'));
+        let lane = &h.s.ctl.model.instruments[1];
+        assert!(lane.instrument.is_some() && lane.effects.is_empty(), "the reverb went: {:#?}", h.tree());
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_node_when_a_browser_takes_out_a_node_above_it() {
+        let mut h = Harness::new(THREE_LFOS);
+        h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+        let second = cursor_node(&h);
+        let first = h.s.ctl.model.instruments[0].modulators[0].node;
+        browser(&mut h, Intent::RemoveNode { node: first });
+        assert_eq!(cursor_node(&h), second, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Modulator { inst: 0, index: 0 });
+    }
+
+    #[test]
+    fn a_value_typed_in_the_tui_goes_to_the_node_it_was_typed_for_when_a_browser_adds_a_node_above() {
+        let mut h = Harness::new(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+"#,
+        );
+        h.goto(TreeAddress::Instrument(1));
+        h.press(KeyCode::Enter); // into the parameters of the second oscillator
+        h.press(KeyCode::Down).press(KeyCode::Down); // the third row
+        let before = h.s.ctl.model.instruments[1].instrument.as_ref().unwrap().params[2].value;
+        h.press(KeyCode::Enter); // the value popup
+        assert!(h.s.editing.is_some());
+        for _ in 0..8 {
+            h.press(KeyCode::Backspace);
+        }
+        h.type_chars("0.25");
+        let lane0 = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo });
+        h.press(KeyCode::Enter);
+        let after = h.s.ctl.model.instruments[1].instrument.as_ref().unwrap().params[2].value;
+        assert_eq!(after, 0.25, "it was {before}: the value reached the parameter it was typed for");
+        assert_eq!(rates(&h), [1.0], "and the first lane has the one LFO the browser gave it, at the rate every new one has: not what was typed");
+    }
+
+    #[test]
+    fn a_selector_of_targets_is_closed_when_a_browser_takes_out_a_modulator_it_counts_by() {
+        let mut h = Harness::new(THREE_LFOS);
+        h.goto(TreeAddress::Modulator { inst: 0, index: 1 }); // the 2 Hz LFO
+        h.press(KeyCode::Char('t'));
+        assert!(h.s.target_selector.is_some());
+        let first = h.s.ctl.model.instruments[0].modulators[0].node;
+        browser(&mut h, Intent::RemoveNode { node: first });
+        assert!(h.s.target_selector.is_none(), "it holds the place of a modulator that has moved");
+        h.press(KeyCode::Enter);
+        assert_eq!(rates(&h), [2.0, 3.0]);
+        assert!(h.s.ctl.model.instruments[0].modulators.iter().all(|m| m.targets.is_empty()), "no cable went to the one that was not chosen");
+    }
+
+    #[test]
+    fn popups_are_closed_when_a_browser_takes_out_the_node_the_cursor_was_on() {
+        let mut h = Harness::new(THREE_LFOS);
+        h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+        h.press(KeyCode::Enter); // its parameters: the type, the waveform, then the rate
+        h.press(KeyCode::Down).press(KeyCode::Down);
+        h.press(KeyCode::Enter); // the value popup for the rate
+        assert!(h.s.editing.is_some());
+        let second = cursor_node(&h);
+        browser(&mut h, Intent::RemoveNode { node: second });
+        assert!(h.s.editing.is_none(), "what was being typed was for a node that is gone");
+        assert_eq!(rates(&h), [1.0, 3.0]);
+    }
+
+    #[test]
+    fn a_popup_is_left_alone_by_a_change_that_is_not_one_of_structure() {
+        let mut h = Harness::new(THREE_LFOS);
+        h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+        h.press(KeyCode::Char('t'));
+        assert!(h.s.target_selector.is_some());
+        let third = h.s.ctl.model.instruments[0].modulators[2].node;
+        browser(&mut h, Intent::SetModulatorField { node: third, field: crate::app::intent::ModulatorField::Rate, value: 9.0 });
+        assert!(h.s.target_selector.is_some(), "the third LFO's rate changed: nothing moved");
+    }
+
+    #[test]
+    fn a_popup_is_left_alone_by_a_cable_that_moves_no_place() {
+        let mut h = Harness::new(THREE_LFOS);
+        h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+        h.press(KeyCode::Char('t'));
+        assert!(h.s.target_selector.is_some());
+        let lane = &h.s.ctl.model.instruments[0];
+        let volume = lane.instrument.as_ref().unwrap().params.iter().find(|p| p.name == "volume").unwrap().index;
+        let to = Endpoint { node: lane.node, port: Port::Param { index: volume } };
+        let applied = h.s.ctl.apply(Intent::AddModEdge { modulator: lane.modulators[0].node, to }).unwrap();
+        assert!(applied.restructured, "a cable is a change of structure");
+        let places = h.s.tree_places();
+        h.s.react_to(&applied);
+        assert_eq!(h.s.tree_places(), places, "but the tree has the same nodes in the same places");
+        assert!(h.tree()[1].contains('→'), "and shows the cable: {:#?}", h.tree());
+        assert!(h.s.target_selector.is_some(), "nothing it counts by has moved");
+    }
+
+    /// A group with a lane in it, then a lane that is in none, which has a reverb (it has presets) and an LFO.
+    const GROUP_AND_LANE: &str = r#"
+[[group]]
+name = "Pad"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 2.0
+"#;
+
+    #[test]
+    fn every_popup_that_holds_a_place_is_closed_when_a_browser_moves_the_places() {
+        type IsOpen = fn(&State) -> bool;
+        let cases: [(&str, TreeAddress, &[KeyCode], IsOpen); 7] = [
+            ("the range of a lane", TreeAddress::Instrument(1), &[KeyCode::Char('R')], |s| s.range_edit.is_some()),
+            ("the name of a group", TreeAddress::Group(0), &[KeyCode::Char('R')], |s| s.rename_group.is_some()),
+            ("the selector of a plugin", TreeAddress::Instrument(1), &[KeyCode::Char('a')], |s| s.selector.is_some()),
+            ("the selector of targets", TreeAddress::Modulator { inst: 1, index: 0 }, &[KeyCode::Char('t')], |s| s.target_selector.is_some()),
+            ("the choice of a modulator", TreeAddress::Effect { inst: 1, index: 0 }, &[KeyCode::Enter, KeyCode::Char('m')], |s| s.modulate.is_some()),
+            ("the group of a lane", TreeAddress::Instrument(1), &[KeyCode::Char('g')], |s| s.group_assign.is_some()),
+            ("the presets of a plugin", TreeAddress::Effect { inst: 1, index: 0 }, &[KeyCode::Char('p')], |s| s.preset_selector.is_some()),
+        ];
+        for (what, at, keys, is_open) in cases {
+            let mut h = Harness::new(GROUP_AND_LANE);
+            h.goto(at);
+            for key in keys {
+                h.press(*key);
+            }
+            assert!(is_open(&h.s), "{what} is open to begin with");
+            let in_the_group = h.s.ctl.model.instruments[0].node;
+            browser(&mut h, Intent::AddModulator { parent: in_the_group, kind: ModulatorKind::Lfo });
+            assert!(!is_open(&h.s), "{what} is for a place that has moved");
+        }
+    }
+
+    #[test]
+    fn the_cursor_stays_on_a_lanes_pattern_and_does_not_go_up_to_its_instrument() {
+        // The pattern and the instrument of a lane are two entries of one node.
+        let mut h = Harness::new(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 120.0
+length_beats = 4.0
+base_note = "C4"
+enabled = true
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 24000
+status = "off"
+note = "C4"
+velocity = 0
+"#,
+        );
+        h.goto(TreeAddress::Pattern(1));
+        let lane0 = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo });
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Pattern(1), "{:#?}", h.tree());
+    }
+}
+
