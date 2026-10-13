@@ -11,7 +11,7 @@
 //! Nothing here knows about the terminal: the TUI imports it today, and the
 //! controller and the web projection planned in `docs/web-ui.md` build on it.
 
-use crate::app::intent::ModulatorField;
+use crate::app::intent::{Intent, ModulatorField};
 use crate::plugin;
 use crate::plugin::chain::ModulatorLocation;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
@@ -619,6 +619,22 @@ pub fn modulator_param_range(m: &ModulatorSlot, pa: usize) -> Option<(f32, f32)>
 /// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform).
 pub fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
     matches!(modulator_row(m, pa), Some(ModulatorRow::Type | ModulatorRow::Waveform))
+}
+
+impl ModulatorSlot {
+    /// The intent that makes row `row` what `f` makes of what it is now: a setting of the
+    /// source (an LFO's rate, a stage of an envelope) or the depth of a target. `None` for
+    /// a row that is not a number (the type, the waveform, a separator, a control's source).
+    pub fn row_intent(&self, row: usize, f: impl FnOnce(f32) -> f32) -> Option<Intent> {
+        match modulator_row(self, row)? {
+            ModulatorRow::Setting(field) => Some(Intent::SetModulatorField { node: self.node, field, value: f(self.source.setting(field)?) }),
+            ModulatorRow::Depth(target) => {
+                let target = self.targets.get(target)?;
+                Some(Intent::SetEdgeDepth { edge: target.edge, depth: f(target.depth) })
+            }
+            ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
+        }
+    }
 }
 
 /// Map a modulator's param-pane row `pa` to a cross-mod target on that
@@ -1891,6 +1907,43 @@ depth = 0.5
         assert_eq!(of(&triangle), [Some(2.5), Some(1.0), None, None, None, None]);
         assert_eq!(of(&envelope), [None, None, Some(0.1), Some(0.2), Some(0.3), Some(0.4)]);
         assert_eq!(of(&control), [None; 6]);
+    }
+
+    #[test]
+    fn the_intent_of_a_row_sets_the_setting_or_the_depth_it_stands_for() {
+        use ModulatorField as F;
+        let with_edges = |m: ModulatorSlot, node: u32| ModulatorSlot {
+            node: NodeId(node),
+            targets: m.targets.into_iter().enumerate().map(|(i, t)| ModTargetSlot { edge: EdgeId(50 + i as u32), ..t }).collect(),
+            ..m
+        };
+        let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
+        let intents = |m: &ModulatorSlot| (0..=modulator_param_len(m)).map(|r| m.row_intent(r, |v| v + 1.0)).collect::<Vec<_>>();
+        let set = |node: u32, field, value| Some(Intent::SetModulatorField { node: NodeId(node), field, value });
+        let depth = |edge: u32, depth| Some(Intent::SetEdgeDepth { edge: EdgeId(edge), depth });
+
+        // A value is what the closure makes of the one the row has now (the controller clamps it).
+        assert_eq!(
+            intents(&with_edges(lfo(two()), 7)),
+            [None, None, set(7, F::Rate, 3.0), None, depth(50, 1.5), depth(51, 1.5), None]
+        );
+        assert_eq!(
+            intents(&with_edges(adsr(two()), 8)),
+            [
+                None,
+                set(8, F::Attack, 1.01),
+                set(8, F::Decay, 1.3),
+                set(8, F::Sustain, 1.7),
+                set(8, F::Release, 1.5),
+                None,
+                depth(50, 1.5),
+                depth(51, 1.5),
+                None
+            ]
+        );
+        assert_eq!(intents(&with_edges(midi(two()), 9)), [None, None, depth(50, 1.5), depth(51, 1.5), None]);
+        // And the closure may ignore what the row has: a value that was typed.
+        assert_eq!(with_edges(lfo(two()), 7).row_intent(2, |_| 12.5), set(7, F::Rate, 12.5));
     }
 
     #[test]

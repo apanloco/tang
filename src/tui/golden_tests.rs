@@ -1943,6 +1943,39 @@ fn the_tree_shows_the_depth_of_a_target_as_soon_as_it_is_edited() {
 }
 
 #[test]
+fn a_modulator_edited_in_the_tui_is_told_to_the_subscribers_as_events_and_not_again_as_a_snapshot() {
+    use crate::app::intent::{Event, ModulatorField};
+    let mut h = Harness::new(scene_split());
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::<crate::app::intent::Applied>::new()));
+    let sink = heard.clone();
+    h.s.ctl.subscribe(Box::new(move |applied: &crate::app::intent::Applied| sink.lock().unwrap().push(applied.clone())));
+    let (osc_lfo, edge) = (h.s.ctl.model.instruments[0].modulators[0].node, h.s.ctl.model.instruments[0].modulators[0].targets[0].edge);
+
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+    h.press(KeyCode::Right);
+    enter_value(&mut h, "99");
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 1);
+    h.press(KeyCode::Right);
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+    enter_value(&mut h, "-0.5");
+
+    let events: Vec<(u64, Vec<Event>)> = heard.lock().unwrap().iter().map(|a| (a.rev, a.events.clone())).collect();
+    assert_eq!(
+        events,
+        [
+            (1, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Rate, value: 4.05 }]),
+            (2, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Rate, value: 50.0 }]),
+            (3, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Waveform, value: 1.0 }]),
+            (4, vec![Event::EdgeDepthSet { edge, depth: -0.5 }]),
+        ]
+    );
+    assert!(!h.s.ctl.resync(), "what the subscribers heard is all there is to tell: no snapshot follows");
+    assert_eq!(h.s.ctl.rev, 4);
+}
+
+#[test]
 fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each() {
     let mut h = Harness::new(scene_split());
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);

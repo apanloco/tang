@@ -34,13 +34,13 @@ use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
 use crate::app::controller::{Controller, NewTarget};
 use crate::cli::WebArgs;
-use crate::app::intent::{self, Applied, Gain, Intent};
+use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
-    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId,
+    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_cross_mod_after_remove,
     fixup_group_bus_after_remove, fixup_group_member_after_remove, fixup_group_member_mod_after_remove,
     format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
-    modulator_param_len, modulator_param_range, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
+    modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
     shift_group_member_after_insert,
 };
 use crate::piano_filter::PianoMode;
@@ -1543,11 +1543,9 @@ impl State {
             return;
         }
 
-        // Group modulator params (no instrument) take dedicated group commands.
-        if let TreeAddress::GroupModulator { group, index } = addr {
-            let pa = self.param_state.selected;
-            self.adjust_group_modulator_param(group, index, pa, delta);
-            self.rebuild_tree(); // (the tree says how deep each target goes)
+        // The rows of a modulator, a lane's or a group's.
+        if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } = addr {
+            self.step_modulator_row(addr, self.param_state.selected, delta);
             return;
         }
 
@@ -1567,14 +1565,6 @@ impl State {
         if let TreeAddress::Pattern(_) = addr {
             let pa = self.param_state.selected;
             self.adjust_pattern_param(inst, pa, delta);
-            return;
-        }
-
-        // Handle modulator params separately.
-        if let TreeAddress::Modulator { index, .. } = addr {
-            let pa = self.param_state.selected;
-            self.adjust_modulator_param(inst, index, pa, delta);
-            self.rebuild_tree(); // (the tree says how deep each target goes)
             return;
         }
 
@@ -1624,6 +1614,68 @@ impl State {
         }
     }
 
+    /// The modulator at `addr`, if the address is one: a lane's or a group's.
+    fn modulator_at(&self, addr: TreeAddress) -> Option<&ModulatorSlot> {
+        match addr {
+            TreeAddress::Modulator { inst, index } => self.modulator(inst, index),
+            TreeAddress::GroupModulator { group, index } => self.group_modulator(group, index),
+            _ => None,
+        }
+    }
+
+    /// Left or Right on row `row` of the modulator at `addr`: a step of `delta` in the
+    /// number or the depth the row is, one waveform along, or, on the Type row, the other
+    /// kind of source. What a row is, its range and the commands the engine gets are the
+    /// intents'; a row that is none of these does nothing.
+    fn step_modulator_row(&mut self, addr: TreeAddress, row: usize, delta: f32) {
+        let Some(m) = self.modulator_at(addr) else { return };
+        let intent = match modulator_row(m, row) {
+            Some(ModulatorRow::Type) => return self.switch_modulator_source(addr),
+            Some(ModulatorRow::Waveform) => {
+                let ModSourceSlot::Lfo { waveform, .. } = m.source else { return };
+                let next = if delta > 0.0 { waveform.next() } else { waveform.prev() };
+                Intent::SetModulatorField { node: m.node, field: ModulatorField::Waveform, value: next.to_index() as f32 }
+            }
+            _ => match m.row_intent(row, |value| value + delta) {
+                Some(intent) => intent,
+                None => return,
+            },
+        };
+        self.apply(intent);
+    }
+
+    /// A number typed for row `row` of the modulator at `addr`.
+    fn set_modulator_row(&mut self, addr: TreeAddress, row: usize, value: f32) {
+        let Some(intent) = self.modulator_at(addr).and_then(|m| m.row_intent(row, |_| value)) else { return };
+        self.apply(intent);
+    }
+
+    /// The Type row: an LFO becomes an envelope with the defaults of one, and an envelope
+    /// an LFO. A change of what kind of node it is, which no intent makes yet (a browser
+    /// is told by the next `resync`).
+    fn switch_modulator_source(&mut self, addr: TreeAddress) {
+        let (at, index) = match addr {
+            TreeAddress::Modulator { inst, index } => (ModulatorLocation::Lane(inst), index),
+            TreeAddress::GroupModulator { group, index } => (ModulatorLocation::Group(group), index),
+            _ => return,
+        };
+        let Some(m) = self.ctl.model.modulators_mut(at).and_then(|rack| rack.get_mut(index)) else { return };
+        let new_source = match m.source {
+            ModSourceSlot::Lfo { .. } => ModSourceSlot::new_envelope(),
+            _ => ModSourceSlot::new_lfo(),
+        };
+        let source = mod_source_slot_to_graph(&new_source);
+        m.source = new_source;
+        let command = match at {
+            ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorSource { inst, mod_index: index, source },
+            ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorSource { group, mod_index: index, source },
+        };
+        let _ = self.ctl.cmd_tx.send(command);
+        self.ctl.dirty = true;
+        self.param_state.selected = 0;
+        self.rebuild_tree();
+    }
+
     fn adjust_pattern_param(&mut self, inst: usize, pa: usize, delta: f32) {
         let pat = match self.ctl.model.instruments.get_mut(inst)
             .and_then(|n| n.pattern.as_mut())
@@ -1670,118 +1722,6 @@ impl State {
         }
     }
 
-    fn adjust_modulator_param(&mut self, inst: usize, mod_index: usize, pa: usize, delta: f32) {
-        // Direct field access (not the modulator_mut helper) so the modulator
-        // borrow stays disjoint from self.ctl.cmd_tx for the command sends below.
-        let m = match self.ctl.model.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        // Type row (0) switches LFO/Envelope — but MidiLearn's row 0 is a
-        // read-only source-info row, so it doesn't switch.
-        let is_midi = matches!(m.source, ModSourceSlot::MidiLearn { .. });
-        if pa == 0 && !is_midi {
-            let new_source = match &m.source {
-                ModSourceSlot::Lfo { .. } => ModSourceSlot::Envelope {
-                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                },
-                _ => ModSourceSlot::Lfo {
-                    waveform: crate::plugin::chain::LfoWaveform::Sine,
-                    rate: 1.0,
-                },
-            };
-            let graph_source = mod_source_slot_to_graph(&new_source);
-            m.source = new_source;
-            let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorSource {
-                inst, mod_index,
-                source: graph_source,
-            });
-            self.param_state.selected = 0;
-            self.rebuild_tree();
-        } else {
-            match &mut m.source {
-                ModSourceSlot::Lfo { waveform, rate } => {
-                    if pa == 1 {
-                        // Waveform (enum).
-                        *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorWaveform {
-                            inst, mod_index,
-                            waveform: *waveform,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 2 {
-                        // Rate.
-                        *rate = (*rate + delta).clamp(0.01, 50.0);
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorRate {
-                            inst, mod_index,
-                            rate: *rate,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 3 {
-                        // Separator row — no-op.
-                    } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                        t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                            inst, mod_index,
-                            target_index: pa - 4,
-                            depth: t.depth,
-                        });
-                    }
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    match pa {
-                        1 => {
-                            *attack = (*attack + delta).clamp(0.001, 10.0);
-                        }
-                        2 => {
-                            *decay = (*decay + delta).clamp(0.001, 10.0);
-                        }
-                        3 => {
-                            *sustain = (*sustain + delta).clamp(0.0, 1.0);
-                        }
-                        4 => {
-                            *release = (*release + delta).clamp(0.001, 10.0);
-                        }
-                        5 => {
-                            // Separator row — no-op.
-                        }
-                        _ => {
-                            let target_idx = pa - 6;
-                            if let Some(t) = m.targets.get_mut(target_idx) {
-                                t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                                let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                    inst, mod_index,
-                                    target_index: target_idx,
-                                    depth: t.depth,
-                                });
-                            }
-                        }
-                    }
-                    if (1..=4).contains(&pa) {
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
-                            inst, mod_index,
-                            attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                        });
-                    }
-                }
-                ModSourceSlot::MidiLearn { .. } => {
-                    // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                    if pa >= 2 {
-                        if let Some(t) = m.targets.get_mut(pa - 2) {
-                            t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                inst, mod_index,
-                                target_index: pa - 2,
-                                depth: t.depth,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        self.ctl.dirty = true;
-    }
-
     fn set_param_value(&mut self, value: f32) {
         let sel = self.chain_state.selected;
         if sel >= self.tree_entries.len() {
@@ -1799,11 +1739,9 @@ impl State {
             return;
         }
 
-        // Group modulator params (no instrument) take dedicated group commands.
-        if let TreeAddress::GroupModulator { group, index } = addr {
-            let pa = self.param_state.selected;
-            self.set_group_modulator_param_value(group, index, pa, value);
-            self.rebuild_tree(); // (the tree says how deep each target goes)
+        // The rows of a modulator, a lane's or a group's.
+        if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } = addr {
+            self.set_modulator_row(addr, self.param_state.selected, value);
             return;
         }
 
@@ -1839,272 +1777,11 @@ impl State {
             return;
         }
 
-        // Handle modulator params.
-        if let TreeAddress::Modulator { index, .. } = addr {
-            let pa = self.param_state.selected;
-            self.set_modulator_param_value(inst, index, pa, value);
-            self.rebuild_tree(); // (the tree says how deep each target goes)
-            return;
-        }
-
         let pa = match self.real_param_index() {
             Some(i) => i,
             None => return,
         };
         self.set_plugin_param(&addr, pa, |_| value);
-    }
-
-    fn set_modulator_param_value(&mut self, inst: usize, mod_index: usize, pa: usize, value: f32) {
-        // Direct field access (not the modulator_mut helper) so the modulator
-        // borrow stays disjoint from self.ctl.cmd_tx for the command sends below.
-        let m = match self.ctl.model.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        if pa == 0 {
-            // Type enum — not settable via numeric value entry, skip.
-            return;
-        }
-        match &mut m.source {
-            ModSourceSlot::Lfo { waveform: _, rate } => {
-                if pa == 1 {
-                    // Waveform enum — not settable via numeric value entry.
-                    return;
-                } else if pa == 2 {
-                    *rate = value.clamp(0.01, 50.0);
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorRate {
-                        inst, mod_index, rate: *rate,
-                    });
-                    self.rebuild_tree();
-                } else if pa == 3 {
-                    // Separator — not settable.
-                    return;
-                } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                    t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                        inst, mod_index,
-                        target_index: pa - 4,
-                        depth: t.depth,
-                    });
-                }
-            }
-            ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                match pa {
-                    1 => *attack = value.clamp(0.001, 10.0),
-                    2 => *decay = value.clamp(0.001, 10.0),
-                    3 => *sustain = value.clamp(0.0, 1.0),
-                    4 => *release = value.clamp(0.001, 10.0),
-                    5 => return, // Separator — not settable.
-                    _ => {
-                        let target_idx = pa - 6;
-                        if let Some(t) = m.targets.get_mut(target_idx) {
-                            t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                inst, mod_index,
-                                target_index: target_idx,
-                                depth: t.depth,
-                            });
-                        }
-                        self.ctl.dirty = true;
-                        return;
-                    }
-                }
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
-                    inst, mod_index,
-                    attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                });
-            }
-            ModSourceSlot::MidiLearn { .. } => {
-                // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                if pa >= 2 {
-                    if let Some(t) = m.targets.get_mut(pa - 2) {
-                        t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                            inst, mod_index,
-                            target_index: pa - 2,
-                            depth: t.depth,
-                        });
-                    }
-                } else {
-                    return; // source info / separator — not settable
-                }
-            }
-        }
-        self.ctl.dirty = true;
-    }
-
-    /// Group-rack mirror of `adjust_modulator_param`: edits the group modulator
-    /// at `group`/`mod_index` and emits the corresponding `SetGroupModulator*`.
-    fn adjust_group_modulator_param(&mut self, group: usize, mod_index: usize, pa: usize, delta: f32) {
-        let m = match self.ctl.model.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        let is_midi = matches!(m.source, ModSourceSlot::MidiLearn { .. });
-        if pa == 0 && !is_midi {
-            // Type (enum) — switch between LFO and Envelope.
-            let new_source = match &m.source {
-                ModSourceSlot::Lfo { .. } => ModSourceSlot::Envelope {
-                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                },
-                _ => ModSourceSlot::Lfo {
-                    waveform: crate::plugin::chain::LfoWaveform::Sine,
-                    rate: 1.0,
-                },
-            };
-            let graph_source = mod_source_slot_to_graph(&new_source);
-            m.source = new_source;
-            let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorSource {
-                group, mod_index,
-                source: graph_source,
-            });
-            self.param_state.selected = 0;
-            self.rebuild_tree();
-        } else {
-            match &mut m.source {
-                ModSourceSlot::Lfo { waveform, rate } => {
-                    if pa == 1 {
-                        *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorWaveform {
-                            group, mod_index,
-                            waveform: *waveform,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 2 {
-                        *rate = (*rate + delta).clamp(0.01, 50.0);
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
-                            group, mod_index,
-                            rate: *rate,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 3 {
-                        // Separator row — no-op.
-                    } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                        t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                            group, mod_index,
-                            target_index: pa - 4,
-                            depth: t.depth,
-                        });
-                    }
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    match pa {
-                        1 => *attack = (*attack + delta).clamp(0.001, 10.0),
-                        2 => *decay = (*decay + delta).clamp(0.001, 10.0),
-                        3 => *sustain = (*sustain + delta).clamp(0.0, 1.0),
-                        4 => *release = (*release + delta).clamp(0.001, 10.0),
-                        5 => {} // Separator row — no-op.
-                        _ => {
-                            let target_idx = pa - 6;
-                            if let Some(t) = m.targets.get_mut(target_idx) {
-                                t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                                    group, mod_index,
-                                    target_index: target_idx,
-                                    depth: t.depth,
-                                });
-                            }
-                        }
-                    }
-                    if (1..=4).contains(&pa) {
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
-                            group, mod_index,
-                            attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                        });
-                    }
-                }
-                ModSourceSlot::MidiLearn { .. } => {
-                    // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                    if pa >= 2 {
-                        if let Some(t) = m.targets.get_mut(pa - 2) {
-                            t.depth = (t.depth + delta).clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                                group, mod_index,
-                                target_index: pa - 2,
-                                depth: t.depth,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        self.ctl.dirty = true;
-    }
-
-    /// Group-rack mirror of `set_modulator_param_value`.
-    fn set_group_modulator_param_value(&mut self, group: usize, mod_index: usize, pa: usize, value: f32) {
-        let m = match self.ctl.model.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        if pa == 0 {
-            return; // Type enum — not settable via numeric entry.
-        }
-        match &mut m.source {
-            ModSourceSlot::Lfo { waveform: _, rate } => {
-                if pa == 1 {
-                    return; // Waveform enum.
-                } else if pa == 2 {
-                    *rate = value.clamp(0.01, 50.0);
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
-                        group, mod_index, rate: *rate,
-                    });
-                    self.rebuild_tree();
-                } else if pa == 3 {
-                    return; // Separator.
-                } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                    t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                        group, mod_index,
-                        target_index: pa - 4,
-                        depth: t.depth,
-                    });
-                }
-            }
-            ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                match pa {
-                    1 => *attack = value.clamp(0.001, 10.0),
-                    2 => *decay = value.clamp(0.001, 10.0),
-                    3 => *sustain = value.clamp(0.0, 1.0),
-                    4 => *release = value.clamp(0.001, 10.0),
-                    5 => return, // Separator.
-                    _ => {
-                        let target_idx = pa - 6;
-                        if let Some(t) = m.targets.get_mut(target_idx) {
-                            t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                            let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                                group, mod_index,
-                                target_index: target_idx,
-                                depth: t.depth,
-                            });
-                        }
-                        self.ctl.dirty = true;
-                        return;
-                    }
-                }
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
-                    group, mod_index,
-                    attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                });
-            }
-            ModSourceSlot::MidiLearn { .. } => {
-                // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                if pa >= 2 {
-                    if let Some(t) = m.targets.get_mut(pa - 2) {
-                        t.depth = value.clamp(DEPTH_MIN, DEPTH_MAX);
-                        let _ = self.ctl.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                            group, mod_index,
-                            target_index: pa - 2,
-                            depth: t.depth,
-                        });
-                    }
-                } else {
-                    return;
-                }
-            }
-        }
-        self.ctl.dirty = true;
     }
 }
 
