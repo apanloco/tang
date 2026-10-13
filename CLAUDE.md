@@ -428,13 +428,20 @@ drives is left to that cable, and one that went with the modulator is given
 nothing. What drives what is named by node and edge ids (`Driven`), which survive
 the removals around it, not by places in a rack.
 
-**Taking an effect out of a chain** (TUI `d` on an effect or a bus effect, through
-`Controller::remove_effect` / `remove_bus_effect`) takes the cables that drive its
-parameters out first, each by the same path as above (a lane's own, and a group's to a
-member's effect or to a bus effect, with the cables that drive their depths), and then
-the plugin, which the audio thread hands back. What the cables drove goes with the plugin,
-so nothing is given back; the cables to the effects after it are told their new slots (a
-group's, their new bus indices).
+**Taking an effect, a lane or a group out** (TUI `d`, through `Controller::remove_effect` /
+`remove_bus_effect` / `remove_lane` / `remove_group`) takes the cables that point at what
+goes out first, each by the same path as above (with the cables that drive their depths),
+and then the plugins, which the audio thread hands back. For an effect or a bus effect that
+is the cables that drive its parameters, a lane's own and a group's; for a lane, its group's
+cables to it (its own modulators' cables go with it: a lane's modulator reaches only its
+own chain), and the group's cables to the members after it are told their new ordinals; for
+a group, all of its cables. What they drove goes with the plugin or the lane, so nothing is
+given back — except what a group's cables drove in the lanes that stay (a member's
+parameters, its modulators' rates and stages, the depths of their cables), which has the
+value the user set again, unless a cable of the lane's own still drives it. The cables to the
+effects after a removed one are told their new slots (a group's, their new bus indices). A
+session keeps at least one lane: the last one is not taken out. `d` on an instrument that has
+a plugin empties it (`clear_instrument`) and a second `d` takes the lane out.
 
 **Limitation:** a modulator envelope shapes *parameters*, not voices — it
 cannot make a note ring past the instrument's own release. Once the plugin
@@ -1473,10 +1480,10 @@ TODO: `ui` layout fields in the session format (the canvas lays itself out until
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
 the browser (`AddModEdge` takes a parameter port only; `RemoveEdge` takes any cable out).
-TODO: the TUI's removal of a lane or a group still drops the modulator targets that pointed at it
-with `retain`, which leaves cables that drive the depth of a cable that is gone pointing at
-nothing, and leaves what a removed group's cables drove at its last value (effects and bus effects,
-`remove_modulator` and `remove_edge` take them out through the controller).
+TODO: `clear_instrument` (the first `d` on an instrument) leaves the cables to the parameters of
+the plugin it empties on the lane, pointing at nothing (a lane with no instrument has no slot 0);
+what to do with them when an instrument is replaced is open (f51: re-find a cable by its parameter's
+name, or take it out).
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
 TODO: the canvas does not move to show a node that was added.

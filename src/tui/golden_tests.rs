@@ -1295,7 +1295,8 @@ fn deleting_a_group_member_drops_its_modulator_targets() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('d')).press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["ClearInstrument inst=0", "RemoveInstrument inst=0"]);
+    // (The group's cable to the member goes first, then the lane.)
+    assert_eq!(h.commands(), ["ClearInstrument inst=0", "RemoveGroupModTarget group=0 mod=0 target=0", "RemoveInstrument inst=0"]);
     let lfo = &h.s.ctl.model.groups[0].modulators[0];
     assert_eq!(lfo.targets.len(), 1);
     assert_eq!(lfo.targets[0].param_name, "damping");
@@ -1333,7 +1334,18 @@ fn deleting_a_group_ungroups_its_members() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveGroup group=0"]);
+    // The group's three cables go (the LFO's to the first member's detune and to the bus, the ADSR's to the LFO's rate),
+    // then the group; and the member that the LFO drove has the detune the user set.
+    assert_eq!(
+        h.commands(),
+        [
+            "RemoveGroupModTarget group=0 mod=0 target=0",
+            "RemoveGroupModTarget group=0 mod=0 target=0",
+            "RemoveGroupModTarget group=0 mod=1 target=0",
+            "RemoveGroup group=0",
+            "SetParameter inst=0 slot=0 param=1 value=0.000",
+        ]
+    );
     assert!(h.s.ctl.model.groups.is_empty());
     assert!(h.s.ctl.model.instruments.iter().all(|n| n.group.is_none()));
     assert_eq!(h.tree().iter().filter(|l| l.starts_with("♪")).count(), 3);

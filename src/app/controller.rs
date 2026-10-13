@@ -420,6 +420,46 @@ impl Controller {
         true
     }
 
+    /// Take lane `inst` out, with everything it has: its instrument, effects, modulators and pattern. The audio
+    /// thread hands its plugins back. The cables of the lane's own modulators go with it, and nothing they drive is
+    /// left behind: a lane's modulator reaches only its own chain. The cables of its group (if it is a member) to
+    /// its plugins and its modulators go first, each by `take_out` with the cables that drive their depths, and
+    /// the group's cables to the members after it are told their new ordinals. False, sending nothing, if there
+    /// is no such lane, or it is the only one: a session keeps a lane.
+    pub fn remove_lane(&mut self, inst: usize) -> bool {
+        if inst >= self.model.instruments.len() || self.model.instruments.len() < 2 {
+            return false;
+        }
+        for edge in self.model.group_cables_into_lane(inst) {
+            // (One that an earlier one took with it is not there any more.)
+            self.take_out(edge);
+        }
+        let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
+        self.model.remove_lane(inst);
+        true
+    }
+
+    /// Take group `group` out, with its bus effects and its modulators: the audio thread hands the effects back
+    /// and lets its members go (they are in no group, and the lanes of later groups have a group index one less).
+    /// Every cable of the group goes first, each by `take_out` with the cables that drive their depths, so that
+    /// nothing is left pointing at a cable that is gone. What they drove in the member lanes, which stay (their
+    /// plugins' parameters, their modulators' rates and stages, the depths of their cables), has the value the
+    /// user set again once the group has gone, unless a cable of the lane's own still drives it; what they drove
+    /// on the bus goes with the bus. False, sending nothing, if there is no such group.
+    pub fn remove_group(&mut self, group: usize) -> bool {
+        let Some(bus) = self.model.groups.get(group) else { return false };
+        let edges: Vec<EdgeId> = bus.modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge)).collect();
+        let mut driven: Vec<Driven> = Vec::new();
+        for edge in edges {
+            // (One that an earlier one took with it is not there any more.)
+            driven.extend(self.take_out(edge).into_iter().flatten());
+        }
+        let _ = self.cmd_tx.send(GraphCommand::RemoveGroup { group });
+        self.model.remove_group(group);
+        self.give_back(driven);
+        true
+    }
+
     /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
     /// thread drops it and the model with it, and its own cables with it. The cables of the
     /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
@@ -2552,6 +2592,234 @@ rate = 2.0
                 assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
                 assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
                 ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_lane_that_is_taken_out_takes_the_cables_of_its_group_to_it_out_first_and_gives_nothing_back() {
+        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        let second = ctl.model.instruments[1].node;
+        // The first member of the group: the group's cables to its filter, to its reverb (with the cable that drives the
+        // depth of that one) and to its modulator's rate go, in the order of the group's rack, and then the lane,
+        // with its own modulators and their cables, which need no taking out.
+        assert!(ctl.remove_lane(0));
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=1 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=3",
+                "RemoveInstrument inst=0",
+            ],
+            "what the cables were driving is gone with the lane: nothing is given back"
+        );
+        assert_eq!(ctl.model.instruments.len(), 2);
+        assert_eq!(ctl.model.instruments[0].node, second, "the second lane is the first now");
+        let group = ModulatorLocation::Group(0);
+        // The second member is the first of the group's lanes now, and its detune cable says so; the bus cables are as
+        // they were, and what drives the depth of the reverb's cable knows its new place.
+        assert_eq!(
+            rack_kinds(&ctl.model, group, 0),
+            [K::GroupMember { member: 0, slot: 0, param_index: 1 }, K::GroupBus { effect_index: 0, param_index: 0 }, K::GroupBus { effect_index: 1, param_index: 2 }]
+        );
+        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 2 }]);
+        let _ = F::Rate; // (the cable to the member's modulator's rate is among those that went)
+        assert!(dangling(&ctl.model).is_empty());
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_in_no_group_is_taken_out_with_nothing_but_itself() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(ctl.remove_lane(2));
+        assert_eq!(sent(&engine), ["RemoveInstrument inst=2"]);
+        assert_eq!(ctl.model.instruments.len(), 2);
+        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 6, "the group's cables are as they were");
+    }
+
+    #[test]
+    fn a_lane_that_is_not_there_or_is_the_last_is_not_taken_out() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(!ctl.remove_lane(3) && !ctl.remove_lane(9));
+        assert!(sent(&engine).is_empty());
+        let (engine, mut ctl) = controller_for("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        sent(&engine);
+        assert!(!ctl.remove_lane(0), "a session keeps a lane");
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.instruments.len(), 1);
+    }
+
+    #[test]
+    fn lanes_that_are_taken_out_leave_the_model_and_the_audio_thread_the_same() {
+        for session in [testutil::CHAINS, testutil::LANES_IN_GROUPS, testutil::GROUPS] {
+            let lanes = load(session).model.instruments.len();
+            // Each lane on its own, and then lanes one after another from the front and from the back.
+            let mut sequences: Vec<Vec<usize>> = (0..lanes).map(|lane| vec![lane]).collect();
+            sequences.push(vec![0; lanes.saturating_sub(1)]);
+            sequences.push((1..lanes).rev().collect());
+            for sequence in sequences {
+                let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+                for inst in sequence.iter().copied() {
+                    assert!(ctl.remove_lane(inst), "{sequence:?}: {inst} of {} lanes", ctl.model.instruments.len());
+                    graph.drain_commands();
+                    let what = format!("after {inst} of {sequence:?} in a session of {lanes} lanes");
+                    assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                    assert_eq!(graph.effect_names(), model_effect_names(&ctl.model), "the chains {what}");
+                    assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                    assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                    assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}: {:?}", dangling(&ctl.model));
+                    ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_group_that_is_taken_out_takes_its_cables_out_one_by_one_and_gives_its_members_what_they_drove_back() {
+        let (engine, mut ctl) = controller_for(testutil::LANES_IN_GROUPS);
+        sent(&engine);
+        let (first, third) = (ctl.model.groups[0].node, ctl.model.groups[1].node);
+        // Group 0: a cable to the first member's detune, one to the second's pan and one to its modulator's rate.
+        // They go in the order of the group's rack, and then the group, which has the audio thread let its members go.
+        // Then what the cables drove, in the members, which stay, has the value the user set (the detune of the
+        // first, the pan of the fourth, the rate of the fourth's modulator).
+        assert!(ctl.remove_group(0));
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroup group=0",
+                "SetParameter inst=0 slot=0 param=1 value=0.000",
+                "SetParameter inst=3 slot=0 param=7 value=0.000",
+                "SetModulatorRate inst=3 mod=0 rate=6.000",
+            ]
+        );
+        assert_eq!(ctl.model.groups.len(), 1);
+        assert_eq!(ctl.model.groups[0].node, third, "the second group is the first now");
+        let groups: Vec<_> = ctl.model.instruments.iter().map(|lane| lane.group).collect();
+        assert_eq!(groups, [None, None, Some(0), None]);
+        assert!(dangling(&ctl.model).is_empty());
+        ctl.model.check_ids().unwrap();
+        let _ = first;
+    }
+
+    #[test]
+    fn a_group_that_is_taken_out_leaves_what_its_members_own_cables_still_drive_to_them() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(ctl.remove_group(0));
+        let commands = sent(&engine);
+        // The group's cables go (and the ones that drive the depth of its own), the group goes, and of what the
+        // cables drove only what nothing else drives is given back: the second member's detune and the rate of the
+        // first member's modulator. The first member's cutoff and damping are driven by its own modulator still, and
+        // the bus is gone with the group.
+        assert_eq!(
+            commands,
+            [
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=1 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=1 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroup group=0",
+                "SetParameter inst=1 slot=0 param=1 value=0.000",
+                "SetModulatorRate inst=0 mod=0 rate=2.000",
+            ]
+        );
+        assert!(ctl.model.groups.is_empty());
+        assert!(ctl.model.instruments.iter().all(|lane| lane.group.is_none()));
+        assert!(dangling(&ctl.model).is_empty());
+    }
+
+    /// A real audio graph's values.
+    const GROUP_AND_ITS_MEMBER: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[group.effect.params]
+cutoff = 0.5
+[[group.modulator]]
+waveform = "square"
+rate = 0.0
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.1
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.2
+[[group.modulator.target]]
+member = 0
+mod_rate = 0
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+waveform = "sine"
+rate = 2.0
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    #[test]
+    fn a_group_that_is_taken_out_leaves_its_member_with_what_the_user_set_in_the_audio_thread_too() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(GROUP_AND_ITS_MEMBER);
+        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
+        run(&mut graph);
+        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0, "detune is driven by the group");
+        assert!(graph.lane_lfo(0, 0).unwrap().0 > 20.0, "and so is the rate of the member's LFO");
+        assert!(ctl.remove_group(0));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "the detune the user set, and not the last one the group wrote");
+        assert_eq!(graph.lane_lfo(0, 0).map(|(rate, _)| rate), Some(2.0), "the rate the user set");
+        assert_eq!(graph.lanes()[0].group, None);
+        assert!(graph.groups().is_empty());
+    }
+
+    #[test]
+    fn a_group_that_is_not_there_is_not_taken_out() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(!ctl.remove_group(1) && !ctl.remove_group(9));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.groups.len(), 1);
+    }
+
+    #[test]
+    fn groups_that_are_taken_out_leave_the_model_and_the_audio_thread_the_same() {
+        for session in [testutil::CHAINS, testutil::LANES_IN_GROUPS, testutil::GROUPS, testutil::CROSS_MOD] {
+            let groups = load(session).model.groups.len();
+            let mut sequences: Vec<Vec<usize>> = (0..groups).map(|group| vec![group]).collect();
+            sequences.push(vec![0; groups]);
+            sequences.push((0..groups).rev().collect());
+            for sequence in sequences {
+                let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+                for group in sequence.iter().copied() {
+                    assert!(ctl.remove_group(group), "{sequence:?}: {group}");
+                    graph.drain_commands();
+                    let what = format!("after {group} of {sequence:?} in a session of {groups} groups");
+                    assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                    assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                    assert_eq!(graph.effect_names(), model_effect_names(&ctl.model), "the chains {what}");
+                    assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                    assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}: {:?}", dangling(&ctl.model));
+                    ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+                }
             }
         }
     }

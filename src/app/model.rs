@@ -525,6 +525,54 @@ impl SessionModel {
         Some(removed)
     }
 
+    /// The cables of the group that lane `inst` is a member of that go to the lane: to its plugins, and to
+    /// its modulators' settings and the depths of their cables. (The lane's own modulators' cables, which go
+    /// with it, are not these.) None if the lane is in no group.
+    pub fn group_cables_into_lane(&self, inst: usize) -> Vec<EdgeId> {
+        let Some((group, member)) = lane_member_ordinal(&self.instruments, inst) else { return Vec::new() };
+        let cables = self.groups.get(group).into_iter().flat_map(|g| &g.modulators).flat_map(|m| &m.targets);
+        cables
+            .filter(|t| matches!(t.kind, ModTargetKind::GroupMember { member: of, .. } | ModTargetKind::GroupMemberMod { member: of, .. } if of == member))
+            .map(|t| t.edge)
+            .collect()
+    }
+
+    /// Take lane `inst` out, the way the audio thread's `RemoveInstrument` does, with everything it has: its
+    /// plugins, modulators and pattern. If it was a member of a group, the group's cables to it go with it, and
+    /// the ones to the members after it are told their new ordinals. `None` (and no change) if there is no
+    /// such lane.
+    pub fn remove_lane(&mut self, inst: usize) -> Option<InstrumentNode> {
+        let member_of = lane_member_ordinal(&self.instruments, inst);
+        if inst >= self.instruments.len() {
+            return None;
+        }
+        let lane = self.instruments.remove(inst);
+        if let Some((group, ordinal)) = member_of {
+            if let Some(g) = self.groups.get_mut(group) {
+                fixup_group_member_after_remove(&mut g.modulators, ordinal);
+            }
+        }
+        Some(lane)
+    }
+
+    /// Take group `group` out, with its bus effects and its modulators, the way the audio thread's `RemoveGroup`
+    /// does: its member lanes are in no group, and the lanes of the groups after it have the index that is one
+    /// less. `None` (and no change) if there is no such group.
+    pub fn remove_group(&mut self, group: usize) -> Option<GroupNode> {
+        if group >= self.groups.len() {
+            return None;
+        }
+        let removed = self.groups.remove(group);
+        for lane in &mut self.instruments {
+            match lane.group {
+                Some(of) if of == group => lane.group = None,
+                Some(of) if of > group => lane.group = Some(of - 1),
+                _ => {}
+            }
+        }
+        Some(removed)
+    }
+
     /// Take the bus effect at `index` out of group `group`, the way the audio thread's `RemoveGroupEffect`
     /// does: the group's modulator targets on it go with it, and the ones on later bus effects move down an
     /// index so that they keep pointing at the same plugins. `None` (and no change) if the group has no such
@@ -2429,6 +2477,64 @@ depth = 0.5
         assert_eq!(model.instruments[1].effects.len(), 2);
         assert_eq!(model.instruments[0].effects.len(), 2);
         assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn the_cables_into_a_lane_are_those_of_its_group_to_the_lane_and_its_modulators() {
+        use crate::app::testutil::{CHAINS, CROSS_MOD, LANES_IN_GROUPS};
+        let model = load(CHAINS).model;
+        let group = |m: usize, t: usize| model.groups[0].modulators[m].targets[t].edge;
+        // The first member: the group's cables to its filter, its reverb and its first modulator's rate (not to the
+        // bus effects, nor the second member's detune, nor the cables that drive the depth of the group's own).
+        assert_eq!(model.group_cables_into_lane(0), [group(0, 0), group(0, 1), group(0, 5)]);
+        assert_eq!(model.group_cables_into_lane(1), [group(0, 2)]);
+        assert!(model.group_cables_into_lane(2).is_empty(), "a lane in no group has none");
+        assert!(model.group_cables_into_lane(9).is_empty());
+        // A cable to the depth of a cable of a member's modulator is one into the member.
+        let model = load(CROSS_MOD).model;
+        assert_eq!(model.group_cables_into_lane(0).len(), 3, "the rate, the attack and the depth of the first modulator");
+        // The members are counted in their group, whatever lanes are between them.
+        let model = load(LANES_IN_GROUPS).model;
+        assert_eq!(model.group_cables_into_lane(0).len(), 1); // group 0's member 0: its detune
+        assert_eq!(model.group_cables_into_lane(3).len(), 2); // group 0's member 1: its pan and the rate of its modulator
+        assert_eq!(model.group_cables_into_lane(2).len(), 1); // group 1's only member: its volume (not group 0's cables to member 0)
+    }
+
+    #[test]
+    fn removing_a_lane_takes_it_with_everything_it_has_and_moves_the_members_after_it_down() {
+        use crate::app::testutil::CHAINS;
+        let mut model = load(CHAINS).model;
+        let first = model.instruments[0].node;
+        let removed = model.remove_lane(0).expect("the first lane is there");
+        assert_eq!((removed.node, removed.effects.len(), removed.modulators.len()), (first, 2, 2));
+        assert_eq!(model.instruments.len(), 2);
+        // The second member is the first now: the group's cable to its detune says member 0. (The cables to the
+        // removed member went with it, which `Controller::remove_lane` makes sure of before: here they are dropped
+        // the way the audio thread drops them.)
+        let kinds: Vec<K> = model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).collect();
+        assert!(kinds.contains(&K::GroupMember { member: 0, slot: 0, param_index: 1 }), "{kinds:?}");
+        assert!(!kinds.iter().any(|k| matches!(k, K::GroupMember { member: 1, .. })), "{kinds:?}");
+        assert!(model.remove_lane(2).is_none() && model.remove_lane(9).is_none(), "no lane 2 now");
+        assert_eq!(model.instruments.len(), 2);
+    }
+
+    #[test]
+    fn removing_a_group_leaves_its_members_in_no_group_and_numbers_the_later_groups_again() {
+        use crate::app::testutil::LANES_IN_GROUPS;
+        let mut model = load(LANES_IN_GROUPS).model;
+        let groups: Vec<_> = model.instruments.iter().map(|lane| lane.group).collect();
+        assert_eq!(groups, [Some(0), None, Some(1), Some(0)]);
+        let first = model.groups[0].node;
+        let removed = model.remove_group(0).expect("the first group is there");
+        assert_eq!((removed.node, removed.modulators.len()), (first, 1));
+        assert_eq!(model.groups.len(), 1);
+        let groups: Vec<_> = model.instruments.iter().map(|lane| lane.group).collect();
+        assert_eq!(groups, [None, None, Some(0), None], "its members are in none, and the second group is the first now");
+        assert!(model.remove_group(1).is_none() && model.remove_group(9).is_none());
+        assert_eq!(model.groups.len(), 1);
+        // The last one: nothing is left.
+        assert!(model.remove_group(0).is_some());
+        assert!(model.groups.is_empty() && model.instruments.iter().all(|lane| lane.group.is_none()));
     }
 
     #[test]

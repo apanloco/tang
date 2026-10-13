@@ -2740,17 +2740,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             s.ctl.clear_instrument(inst);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
-                        } else if s.ctl.model.instruments.len() > 1 {
-                            // If this lane was a group member, fix up that group's
-                            // modulator member ordinals (mirrors the audio thread).
-                            let member_of = lane_member_ordinal(&s.ctl.model.instruments, inst);
-                            let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
-                            s.ctl.model.instruments.remove(inst);
-                            if let Some((group, ordinal)) = member_of {
-                                if let Some(g) = s.ctl.model.groups.get_mut(group) {
-                                    fixup_group_member_after_remove(&mut g.modulators, ordinal);
-                                }
-                            }
+                        } else if s.ctl.remove_lane(inst) {
+                            // (A session keeps a lane: the last one is not taken out.)
                             s.ctl.dirty = true;
                             s.rebuild_tree();
                         }
@@ -2781,17 +2772,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                     TreeAddress::Group(group) => {
                         // Delete the group: members become ungrouped, higher
                         // group indices shift down.
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveGroup { group });
-                        if group < s.ctl.model.groups.len() {
-                            s.ctl.model.groups.remove(group);
-                            for inst_node in s.ctl.model.instruments.iter_mut() {
-                                match inst_node.group {
-                                    Some(g) if g == group => inst_node.group = None,
-                                    Some(g) if g > group => inst_node.group = Some(g - 1),
-                                    _ => {}
-                                }
-                            }
-                        }
+                        s.ctl.remove_group(group);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
