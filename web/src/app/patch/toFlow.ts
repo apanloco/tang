@@ -134,24 +134,32 @@ interface Strip {
   /** The nodes in the row, the head first. */
   row: Node[];
   modulators: Node[];
+  /** The column of each modulator, from the strip's first. */
+  columns: Map<Node, number>;
 }
 
 /** A strip of the instrument or group `head`: its nodes, and the modulators that belong to it. */
 function stripOf(graph: Graph, head: Node): Strip {
   const children = graph.nodes.filter((node) => node.parent === head.id);
-  return {
-    head,
-    row: [head, ...children.filter((node) => node.kind === "effect")],
-    modulators: children.filter((node) => node.kind === "modulator"),
-  };
+  const row = [head, ...children.filter((node) => node.kind === "effect")];
+  const modulators = children.filter((node) => node.kind === "modulator");
+  return { head, row, modulators, columns: modulatorColumns(graph, row, modulators) };
+}
+
+/**
+ * How many columns a strip takes: its row, or as far as its modulators go if they go past the row (a
+ * lane with more modulators than nodes). What comes after it, groups and the master, starts after that.
+ */
+function widthOf(strip: Strip): number {
+  return Math.max(strip.row.length, ...[...strip.columns.values()].map((column) => column + 1));
 }
 
 /** Where the modulators of a strip go, as columns from its first: above the node each drives, or the first column that is free. */
-function modulatorColumns(graph: Graph, strip: Strip): Map<Node, number> {
-  const columnOf = new Map(strip.row.map((node, column) => [node.id, column]));
+function modulatorColumns(graph: Graph, row: readonly Node[], modulators: readonly Node[]): Map<Node, number> {
+  const columnOf = new Map(row.map((node, column) => [node.id, column]));
   const taken = new Set<number>();
   const placed = new Map<Node, number>();
-  for (const modulator of strip.modulators) {
+  for (const modulator of modulators) {
     const aimed = graph.edges
       .filter((edge) => edge.from.node === modulator.id)
       .map((edge) => columnOf.get(edge.to.node))
@@ -180,7 +188,7 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
     strip.row.forEach((node, offset) => {
       place(node, column + offset, rowTop);
     });
-    for (const [modulator, offset] of modulatorColumns(graph, strip)) place(modulator, column + offset, rowTop - aboveOf(strip));
+    for (const [modulator, offset] of strip.columns) place(modulator, column + offset, rowTop - aboveOf(strip));
     return rowTop + Math.max(...strip.row.map(heightOfNode)) + ROW_GAP;
   };
 
@@ -196,7 +204,7 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
 
   // A strip for each group, to the right of the longest lane, its row level with the middle of its members'.
   const groups = graph.nodes.filter((node) => node.kind === "group").map((group) => stripOf(graph, group));
-  const lanesWidth = Math.max(0, ...lanes.map((lane) => lane.row.length));
+  const lanesWidth = Math.max(0, ...lanes.map(widthOf));
   const wanted = groups.map((group) => {
     const tops = lanes.filter((lane) => lane.head.parent === group.head.id).map((lane) => rowTops.get(lane.head.id) ?? 0);
     return { group, rowTop: tops.length > 0 ? tops.reduce((sum, top) => sum + top, 0) / tops.length : y + aboveOf(group) };
@@ -208,7 +216,7 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
   }
 
   // The master at the end, in the middle of everything.
-  const groupsWidth = Math.max(0, ...groups.map((group) => group.row.length));
+  const groupsWidth = Math.max(0, ...groups.map(widthOf));
   const middle = (Math.max(y, groupsBottom) - ROW_GAP) / 2;
   for (const node of graph.nodes) {
     if (node.kind === "master") place(node, lanesWidth + groupsWidth, Math.max(0, middle - heightOfNode(node) / 2));

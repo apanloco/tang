@@ -353,6 +353,100 @@ describe("the nodes on the canvas", () => {
     }
   });
 
+  /** Whether no two of the rectangles overlap; the pair that does, if two do. */
+  function overlapping(graph: Graph): string | null {
+    const rects = rectangles(graph);
+    for (const [i, a] of rects.entries()) {
+      for (const b of rects.slice(i + 1)) {
+        const apart = a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+        if (!apart) return `${String(a.id)} [${String(a.left)}, ${String(a.top)}] and ${String(b.id)} [${String(b.left)}, ${String(b.top)}]`;
+      }
+    }
+    return null;
+  }
+
+  const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
+  const control = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } });
+
+  test("do not overlap when a lane has more modulators than nodes in its row, over the groups and the master that come after it", () => {
+    const cases: [string, Graph][] = [
+      [
+        "a lane in a group, with two modulators and no effect, and a group modulator",
+        {
+          nodes: [group(10), modulator(11, 10), instrument(1, 3, 10), modulator(2, 1), envelope(3, 1), master],
+          edges: [member(1, 10), audio(10, MASTER), cable(0, 11, 1, 1), cable(1, 2, 1, 3), cable(2, 3, 1, 5)],
+        },
+      ],
+      [
+        "two lanes outside a group, the second with two modulators",
+        {
+          nodes: [instrument(1), instrument(2), modulator(3, 2), envelope(4, 2), master],
+          edges: [audio(1, MASTER), audio(2, MASTER), cable(0, 3, 2, 1), cable(1, 4, 2, 3)],
+        },
+      ],
+      [
+        "four modulators on a lane of one node, a group of three above its row, and a bus effect",
+        {
+          nodes: [group(10), effect(11, 10), modulator(12, 10), envelope(13, 10), control(14, 10), instrument(1, 3, 10), modulator(2, 1), envelope(3, 1), control(4, 1), modulator(5, 1), master],
+          edges: [member(1, 10), audio(10, 11), audio(11, MASTER)],
+        },
+      ],
+      [
+        "a group with more modulators than it has nodes, and the master after it",
+        {
+          nodes: [group(10), modulator(11, 10), envelope(12, 10), control(13, 10), instrument(1, 3, 10), master],
+          edges: [member(1, 10), audio(10, MASTER)],
+        },
+      ],
+    ];
+    for (const [name, graph] of cases) {
+      expect(overlapping(graph), name).toBeNull();
+    }
+  });
+
+  test("do not overlap, whatever the session is made of (graphs of every shape, made up)", () => {
+    // A small generator with a seed, so that a graph that overlaps can be made again.
+    let state = 20260101;
+    const next = (below: number): number => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return Math.floor((state / 2147483648) * below);
+    };
+    for (let round = 0; round < 400; round += 1) {
+      const nodes: Node[] = [];
+      const edges: Edge[] = [];
+      let id = 1;
+      const groups = Array.from({ length: next(3) }, () => id++);
+      const modulatorsFor = (parent: NodeId) => {
+        for (let i = next(5); i > 0; i -= 1) {
+          const make = [modulator, envelope, control][next(3)];
+          nodes.push((make ?? modulator)(id++, parent));
+        }
+      };
+      for (const g of groups) {
+        nodes.push(group(g));
+        for (let i = next(3); i > 0; i -= 1) nodes.push(effect(id++, g));
+        modulatorsFor(g);
+      }
+      for (let lane = next(4) + 1; lane > 0; lane -= 1) {
+        const parent = groups.length > 0 && next(2) === 0 ? (groups[next(groups.length)] ?? null) : null;
+        const head = id++;
+        nodes.push(instrument(head, 1 + next(12), parent));
+        for (let i = next(3); i > 0; i -= 1) nodes.push(effect(id++, head, 1 + next(12)));
+        modulatorsFor(head);
+      }
+      nodes.push(master);
+      // A cable from a modulator to the node that is first in its scope, for some of them: where they go is part of the layout.
+      for (const node of nodes) {
+        if (node.kind !== "modulator" || next(2) === 0) continue;
+        const aimed = nodes.filter((other) => (other.kind === "effect" || other.kind === "instrument") && (other.parent === node.parent || other.id === node.parent));
+        const target = aimed[next(aimed.length)];
+        if (target) edges.push(cable(edges.length, node.id, target.id, 1));
+      }
+      const graph: Graph = { nodes, edges };
+      expect(overlapping(graph), `round ${String(round)}: ${JSON.stringify(nodes.map((n) => [n.id, n.kind, n.parent]))}`).toBeNull();
+    }
+  });
+
   test("put a node whose parent is not there in a row below everything else, rather than lose it", () => {
     const graph: Graph = { nodes: [...twoLanes.nodes, effect(99, 12345), effect(98, 12345)], edges: twoLanes.edges };
     const flow = toFlow(graph);
