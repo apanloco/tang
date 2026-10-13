@@ -12,7 +12,7 @@ lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
 # The browser front-end (docs/web-ui.md). Off by default: the TypeScript
 # generated from the protocol types (`app::protocol`) and the web runtime (`web`).
-web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json", "dep:axum", "dep:futures-util", "dep:tokio-tungstenite", "dep:ctrlc"]
+web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json", "dep:axum", "dep:futures-util", "dep:tokio-tungstenite", "dep:ctrlc", "dep:rust-embed"]
 
 [dependencies]
 view = { path = "view" }
@@ -45,6 +45,9 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 # `tang serve` has no terminal to read Ctrl+C from: it stops on SIGINT / SIGTERM / SIGHUP
 # (the console's Ctrl+C and Ctrl+Break on Windows).
 ctrlc = { version = "3", optional = true, features = ["termination"] }
+# The interface the server serves: web/dist, as it was when the program was built (in a
+# debug build, as it is: no rebuild after `npm run build`). See docs/web-ui.md §9.2.
+rust-embed = { version = "8", optional = true }
 # One thread runs the server (a current-thread runtime), so no `rt-multi-thread`.
 tokio = { version = "1", optional = true, features = ["sync", "rt", "net", "time", "macros"] }
 

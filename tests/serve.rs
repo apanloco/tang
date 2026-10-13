@@ -294,7 +294,8 @@ async fn pages_and_hosts_that_are_not_this_servers_are_refused() {
 
     let (status, page) = http(&tang, &own, "");
     assert_eq!(status, 200);
-    assert!(page.contains("<h1>Tang</h1>"));
+    // (The interface if it has been built, and what says how to build it if not: both are called Tang.)
+    assert!(page.contains("<title>Tang</title>"), "{page}");
 
     // DNS rebinding: a name of somebody else's that points here.
     assert_eq!(http(&tang, &format!("evil.example:{}", tang.addr.port()), "").0, 403);

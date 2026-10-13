@@ -3,9 +3,10 @@
 //! The server runs on a thread of its own, on a single-threaded `tokio` runtime: a
 //! few browsers that send a few messages and are sent a few kilobytes thirty times a
 //! second are nowhere near what one core can do, and one thread keeps the rest of the
-//! program, which is synchronous, from ever seeing a future. There are two routes,
-//! `GET /` (the page) and `GET /ws` (the protocol), and a guard in front of both
-//! that applies the `Host` / `Origin` policy to every request, loopback included.
+//! program, which is synchronous, from ever seeing a future. `GET /ws` is the protocol,
+//! and every other GET is the interface (`web::assets`: the page at `/`, its files, or a
+//! 404); a guard in front of all of it applies the `Host` / `Origin` policy to every
+//! request, loopback included.
 //!
 //! Each WebSocket is a task that does three things for its `Connection`: it feeds it
 //! the frames that arrive, it writes out what the hub has queued for the client, and
@@ -27,9 +28,9 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
@@ -37,6 +38,7 @@ use crate::app::protocol::{ErrorCode, ServerMessage, WireError};
 use crate::note_input::NoteInput;
 use crate::telemetry::Telemetry;
 use crate::web::Shared;
+use crate::web::assets::{self, Assets};
 use crate::web::connection::{Connection, Context, Flow, Limits, MAX_MESSAGE_BYTES, OwnerRequest};
 use crate::web::hub::{Hub, Outgoing};
 use crate::web::pusher;
@@ -56,19 +58,6 @@ mod close_code {
     pub const POLICY: u16 = 1008;
     pub const TRY_AGAIN_LATER: u16 = 1013;
 }
-
-/// What a person sees at `/` until the interface itself is served.
-const PAGE: &str = "<!doctype html>\n\
-<meta charset=\"utf-8\">\n\
-<title>Tang</title>\n\
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style>\n\
-<h1>Tang</h1>\n\
-<p>The server is running. The web interface is not built yet; the protocol it will \
-speak is on <code>/ws</code> (see <code>docs/web-ui.md</code>).</p>\n";
-
-/// What the page may do: nothing but look like this, and never be framed.
-const PAGE_POLICY: &str =
-    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// How the server listens, and how it treats its clients.
 #[derive(Clone, Debug)]
@@ -107,6 +96,8 @@ impl Config {
 
 /// What the server works with from the rest of the program.
 pub struct Parts {
+    /// The files of the interface it serves.
+    pub assets: Arc<dyn Assets>,
     pub hub: Arc<Hub>,
     pub shared: Arc<Shared>,
     /// Where requests for the owner of the controller go.
@@ -118,6 +109,7 @@ pub struct Parts {
 
 /// What every request and connection reads.
 struct App {
+    assets: Arc<dyn Assets>,
     policy: Arc<Policy>,
     hub: Arc<Hub>,
     shared: Arc<Shared>,
@@ -169,6 +161,7 @@ impl Server {
         // The pusher is a task of the runtime like the connections, and starts when it runs.
         runtime.spawn(pusher::run(parts.hub.clone(), parts.shared.clone(), parts.telemetry, telemetry_period, stop_rx.clone()));
         let app = Arc::new(App {
+            assets: parts.assets,
             policy,
             hub: parts.hub,
             shared: parts.shared,
@@ -224,8 +217,8 @@ fn run(runtime: tokio::runtime::Runtime, listener: tokio::net::TcpListener, app:
         let seats = app.seats.clone();
         let seat_count = app.seat_count;
         let router = Router::new()
-            .route("/", get(page))
             .route("/ws", get(upgrade))
+            .fallback(get(file))
             .layer(middleware::from_fn_with_state(app.clone(), guard))
             .with_state(app);
         let shutdown = async move {
@@ -255,7 +248,8 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // (A file that is kept says so itself.)
+    headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
     response
 }
 
@@ -274,8 +268,10 @@ fn single(headers: &HeaderMap, name: HeaderName, refusal: Refusal) -> Result<Opt
     }
 }
 
-async fn page() -> Response {
-    ([(header::CONTENT_SECURITY_POLICY, PAGE_POLICY)], Html(PAGE)).into_response()
+/// `GET` of anything but `/ws`: `/` is the page of the interface (or what says how to
+/// build it), and the rest a file of the interface or nothing.
+async fn file(State(app): State<Arc<App>>, uri: Uri) -> Response {
+    assets::serve(&*app.assets, uri.path())
 }
 
 /// `GET /ws`: take a seat, if there is one, and upgrade.
@@ -423,6 +419,7 @@ mod tests {
     use crate::audio::MidiEvent;
     use crate::held_notes::HeldNotes;
     use crate::piano_filter::{PianoMode, PianoFilter};
+    use crate::web::assets::Files;
     use crate::scale::ScaleSetting;
     use crate::web::testclient::{self, Client, header, recv, said, tell, until_closed, wait_until};
 
@@ -440,6 +437,10 @@ mod tests {
     }
 
     fn rig_with(tune: impl FnOnce(&mut Config)) -> Rig {
+        rig_serving(tune, Files::interface())
+    }
+
+    fn rig_serving(tune: impl FnOnce(&mut Config), files: Files) -> Rig {
         let hub = Arc::new(Hub::new(16));
         let (owner_tx, owner) = crossbeam_channel::bounded(64);
         let (midi_tx, midi) = crossbeam_channel::bounded(256);
@@ -450,7 +451,8 @@ mod tests {
         let telemetry = Arc::new(Telemetry::new());
         let mut config = Config::new("127.0.0.1:0".parse().unwrap());
         tune(&mut config);
-        let server = Server::start(config, Parts { hub: hub.clone(), shared, owner: owner_tx, notes, telemetry: telemetry.clone() }).unwrap();
+        let assets = Arc::new(files);
+        let server = Server::start(config, Parts { assets, hub: hub.clone(), shared, owner: owner_tx, notes, telemetry: telemetry.clone() }).unwrap();
         Rig { server, hub, owner, midi, held, telemetry }
     }
 
@@ -497,13 +499,39 @@ mod tests {
         let (status, headers, body) = get(&rig, Some(&own_host(&rig)), "GET", "/", &[]);
         assert_eq!(status, 200);
         assert!(header(&headers, "content-type").unwrap().starts_with("text/html"));
-        assert!(body.contains("<h1>Tang</h1>"));
+        assert_eq!(body, "<!doctype html><title>Tang</title>");
         assert_eq!(header(&headers, "x-content-type-options"), Some("nosniff"));
         assert_eq!(header(&headers, "x-frame-options"), Some("DENY"));
         assert_eq!(header(&headers, "referrer-policy"), Some("no-referrer"));
-        assert_eq!(header(&headers, "cache-control"), Some("no-store"));
+        assert_eq!(header(&headers, "cache-control"), Some("no-cache"), "the page says how it is kept, and the guard leaves it");
         let policy = header(&headers, "content-security-policy").unwrap();
-        assert!(policy.contains("default-src 'none'") && policy.contains("frame-ancestors 'none'"), "{policy}");
+        assert!(policy.contains("default-src 'self'") && policy.contains("frame-ancestors 'none'"), "{policy}");
+    }
+
+    #[test]
+    fn the_files_of_the_interface_are_served_with_the_guards_headers_and_keep_their_own_caching() {
+        let rig = rig();
+        let host = own_host(&rig);
+        let (status, headers, body) = get(&rig, Some(&host), "GET", "/assets/index-abc123.js", &[]);
+        assert_eq!((status, body.as_str()), (200, "console.log(1)"));
+        assert_eq!(header(&headers, "content-type"), Some("text/javascript; charset=utf-8"));
+        assert_eq!(header(&headers, "cache-control"), Some("public, max-age=31536000, immutable"));
+        assert_eq!(header(&headers, "x-content-type-options"), Some("nosniff"));
+        assert_eq!(header(&headers, "x-frame-options"), Some("DENY"));
+        // What is not a file gets the guard's own: not kept.
+        let (status, headers, _) = get(&rig, Some(&host), "GET", "/assets/missing.js", &[]);
+        assert_eq!(status, 404);
+        assert_eq!(header(&headers, "cache-control"), Some("no-store"));
+    }
+
+    #[test]
+    fn a_program_without_the_interface_says_how_to_build_it() {
+        let rig = rig_serving(|_| {}, Files::unbuilt());
+        let (status, headers, body) = get(&rig, Some(&own_host(&rig)), "GET", "/", &[]);
+        assert_eq!(status, 200);
+        assert!(body.contains("npm run build"), "{body}");
+        assert!(header(&headers, "content-security-policy").unwrap().contains("default-src 'none'"));
+        assert_eq!(header(&headers, "x-frame-options"), Some("DENY"));
     }
 
     #[test]
@@ -511,8 +539,13 @@ mod tests {
         let rig = rig();
         let host = own_host(&rig);
         assert_eq!(get(&rig, Some(&host), "GET", "/api/session", &[]).0, 404);
-        assert_eq!(get(&rig, Some(&host), "GET", "/index.html", &[]).0, 404);
+        assert_eq!(get(&rig, Some(&host), "GET", "/missing.js", &[]).0, 404);
+        // Not what the folder keeps hidden, nor what is outside it.
+        for path in ["/.gitkeep", "/.hidden/secret.txt", "/../Cargo.toml", "/assets/../../Cargo.toml"] {
+            assert_eq!(get(&rig, Some(&host), "GET", path, &[]).0, 404, "{path}");
+        }
         assert_eq!(get(&rig, Some(&host), "POST", "/", &[]).0, 405);
+        assert_eq!(get(&rig, Some(&host), "POST", "/assets/index-abc123.js", &[]).0, 405);
         assert_eq!(get(&rig, Some(&host), "GET", "/ws", &[]).0 / 100, 4, "/ws without an upgrade is not served either");
     }
 
@@ -976,6 +1009,7 @@ mod tests {
             Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight)),
         );
         Parts {
+            assets: Arc::new(Files::interface()),
             hub: Arc::new(Hub::new(4)),
             shared: Arc::new(Shared::new(0, SessionModel::default().telemetry_layout())),
             owner,

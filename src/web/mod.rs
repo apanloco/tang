@@ -21,6 +21,7 @@ use crate::web::runtime::Runtime;
 use crate::web::security::Token;
 use crate::web::server::Config;
 
+pub mod assets;
 pub mod connection;
 pub mod hub;
 pub mod owner;

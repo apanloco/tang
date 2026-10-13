@@ -16,6 +16,7 @@ use crossbeam_channel::Receiver;
 
 use crate::app::controller::Controller;
 use crate::web::Shared;
+use crate::web::assets::Embedded;
 use crate::web::hub::Hub;
 use crate::web::owner::Owner;
 use crate::web::server::{Config, Parts, Server};
@@ -49,7 +50,8 @@ impl Runtime {
         let shared = Arc::new(Shared::new(ctl.rev, ctl.model.telemetry_layout()));
         let (owner_tx, owner_rx) = crossbeam_channel::bounded(OWNER_QUEUE);
         let owner = Owner::new(ctl, hub.clone(), shared.clone(), owner_rx);
-        let parts = Parts { hub, shared, owner: owner_tx, notes: ctl.note_input(), telemetry: ctl.telemetry.clone() };
+        let parts =
+            Parts { assets: Arc::new(Embedded), hub, shared, owner: owner_tx, notes: ctl.note_input(), telemetry: ctl.telemetry.clone() };
         let server = Server::start(config, parts)?;
         Ok(Runtime { server, owner })
     }
