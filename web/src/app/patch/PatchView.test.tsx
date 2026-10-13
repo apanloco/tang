@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
+import { builtinCatalog, builtinEffects, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import { decodeFrame } from "../../client/telemetry";
 import type { Snapshot } from "../../protocol";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
@@ -412,6 +412,130 @@ describe("the patch", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "LFO" }));
       expect(await screen.findByText("Could not add an LFO to Oscillator: Not connected to the server.")).toBeTruthy();
+      expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
+    });
+  });
+
+  describe("adding an effect", () => {
+    const addButtons = async () => (await screen.findAllByRole("button", { name: /^Add an effect to / })).map((button) => button.getAttribute("aria-label"));
+    const opened = async (name: string): Promise<HTMLElement> => {
+      fireEvent.click(await screen.findByRole("button", { name: `Add an effect to ${name}` }));
+      return screen.getByRole("menu", { name: `Add an effect to ${name}` });
+    };
+
+    test("is offered on every lane and group, by a button that names whose it is, and on nothing else", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      expect((await addButtons()).sort()).toEqual(
+        [
+          "Add an effect to (empty)",
+          "Add an effect to Group 1",
+          "Add an effect to Group 2",
+          "Add an effect to Oscillator 1",
+          "Add an effect to Oscillator 2",
+          "Add an effect to Oscillator 3",
+          "Add an effect to Oscillator 4",
+        ].sort(),
+      );
+      for (const id of [5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Add an effect/ })).toBeNull();
+    });
+
+    test("opens a menu of the effects that are installed, under the format each is of, and not of the instruments", async () => {
+      await rig(<PatchView />);
+      const menu = await opened("Oscillator");
+      const groups = within(menu).getAllByRole("group").map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
+      expect(groups).toEqual([["Built-in", ["Filter", "Reverb"]]]);
+    });
+
+    test("has what the scan finds as it finds it, while it is open", async () => {
+      const { server } = await rig(<PatchView />, { catalog: { entries: builtinCatalog, scanning: true } });
+      const menu = await opened("Oscillator");
+      expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
+      act(() => {
+        server.announceCatalog(
+          [
+            ...builtinCatalog,
+            { id: "vst3:Acme Verb", name: "Acme Verb", format: "VST3", isInstrument: false, params: 4, presets: 0 },
+            { id: "clap:com.acme.chorus", name: "Chorus", format: "CLAP", isInstrument: false, params: 3, presets: 0 },
+            { id: "vst3:Acme Synth", name: "Acme Synth", format: "VST3", isInstrument: true, params: 40, presets: 0 },
+          ],
+          false,
+        );
+      });
+      await waitFor(() => {
+        expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Filter", "Reverb", "Chorus", "Acme Verb"]);
+      });
+      expect(within(screen.getByRole("menu")).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Built-in", "CLAP", "VST3"]);
+    });
+
+    test("asks the server to put the one that was chosen in that lane's chain, and the node is on the canvas with its controls when it has", async () => {
+      const { requests } = await rig(<PatchView />);
+      expect(screen.queryByRole("group", { name: "Reverb" })).toBeNull();
+      await opened("Oscillator");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Reverb" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addEffect", parent: oscillator.id, plugin: "builtin:reverb" }]);
+      });
+      const added = await screen.findByRole("group", { name: "Reverb" });
+      const names = (builtinEffects["builtin:reverb"]?.plugin.params ?? []).slice(0, 8).map((param) => param.name);
+      expect(controlsIn(added)).toEqual([...names, "Mix"]);
+      // The menu has gone, and the focus is back on the button that opened it.
+      expect(screen.queryByRole("menu")).toBeNull();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an effect to Oscillator" }));
+      });
+    });
+
+    test("takes an audio cable to the master from the new node, and the lane's own goes into it", async () => {
+      const { view } = await rig(<PatchView />);
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".react-flow__edge")).toHaveLength(3);
+      });
+      await opened("Oscillator");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Reverb" }));
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".react-flow__edge")).toHaveLength(4);
+      });
+      const audio = Array.from(view.container.querySelectorAll(".react-flow__edge")).filter((edge) => edge.querySelector(".tang-cable--audio"));
+      expect(audio).toHaveLength(3);
+    });
+
+    test("to a group asks for one on its bus", async () => {
+      const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      await opened("Group 2");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Filter" }));
+      await waitFor(() => {
+        expect(requests().at(-1)?.intent).toEqual({ type: "addEffect", parent: 2, plugin: "builtin:filter" });
+      });
+    });
+
+    test("has nothing to open when nothing that is installed can be an effect, or the server has not said what is", async () => {
+      const instrument = { id: "builtin:osc", name: "Oscillator", format: "Built-in", isInstrument: true, params: 8, presets: 0 };
+      for (const catalog of [{ entries: [], scanning: true }, { entries: [instrument], scanning: false }]) {
+        await rig(<PatchView />, { catalog });
+        const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Add an effect to Oscillator" });
+        expect(button.disabled).toBe(true);
+        cleanup();
+      }
+    });
+
+    test("says why when it is refused, on the page's notices, by the name the catalog gives it", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client, view } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      const before = view.container.querySelectorAll(".react-flow__node").length;
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      await opened("Oscillator");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Reverb" }));
+      expect(await screen.findByText("Could not add Reverb to Oscillator: Not connected to the server.")).toBeTruthy();
       expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
     });
   });

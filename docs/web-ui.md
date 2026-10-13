@@ -824,6 +824,15 @@ without 128 (the list is 29 px, measured in a browser). A new node goes where th
 (a modulator with no cable above the first free column of its strip, and over the node it drives
 once it has one); the canvas does not move to show it, and nodes still cannot be moved.
 
+**As built (step 19, part 4).** Beside the "+" the header of every lane and group has an "fx" that opens a
+menu of the effects that are installed (`AddEffectMenu` in `nodes.tsx`, over the same `MenuButton`): the
+catalog the server told (`ClientState.catalog`) without the instruments, under a heading for each format,
+the built-ins first and then CLAP, LV2 and VST3, in the order the server gave within each (`effectItems`,
+`client/catalog.ts`). Choosing one asks for `AddEffect` (`Editor.addEffect`); the node is at the end of the
+strip when the snapshot comes, and the focus is back on the button. The list follows the catalog while it is
+open, as the scan finds more; with nothing to choose from (no catalog yet, or nothing but instruments) the
+button is disabled. There is no sign yet that the scan is still going on.
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -1834,6 +1843,17 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the master's meter, that the note is hardly there (the meter falls 40 dB a second, so two seconds on it shows
     what is there), and the file it saves has both filters and the cutoff. 31 mutations (22 in the mock and
     the editor, 6 in the intent, 3 in the engine's side of it), all caught.
+  - **19.4 as built.** The "fx" menu on every lane and group (§9.3): `effectItems` (the catalog's effects, by
+    format) and `AddEffectMenu`; a style for the button (`.tang-node__fx`) and a wrapper for the two buttons of a
+    header (`.tang-node__actions`). Checked in a browser on the mock engine: the buttons, the menu with its
+    heading, and the new node at the end of the chain with the audio cable through it.
+  - **19.4 tests.** Four of `effectItems` (instruments left out, the formats in order and the server's order within
+    them, a format this page does not know of last, the list given left alone) and eight of the patch (the button on
+    every lane and group, named for whose it is, and on nothing else; the menu, by format, without the
+    instruments; the menu following the scan while it is open; the request that is sent, the node that comes with
+    its controls, the focus back on the button; the audio cable through the new node; a group's bus; a button with
+    nothing to open; a refusal on the notice board by the catalog's name for the plugin). 16 mutations, all caught
+    (one was equivalent as I first wrote it and was written again).
   - **f68 (open).** A session file that names an effect with other outputs than the chain has loads, and
     its model keeps the effect that the audio thread dropped (the loader sends the command and pushes the
     slot without looking). CLAUDE.md has the TODO: the loader should refuse such a session.

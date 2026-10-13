@@ -6,6 +6,7 @@ import type { NodeProps } from "@xyflow/react";
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 
+import { effectItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
 import { nodeById } from "../../client/selectors";
 import type { ModulatorKind, Node, NodeId } from "../../protocol";
@@ -13,7 +14,7 @@ import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
-import { useClient, useClientSelection, useEditor, useFrames } from "../ClientProvider";
+import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell } from "./controls";
 import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
@@ -59,6 +60,26 @@ function AddModulatorMenu({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
+/** The button of a lane or a group that puts an effect at the end of its chain: a menu of what is installed, under the format of each. */
+function AddEffectMenu({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const catalog = useClientState((state) => state.catalog);
+  const items = useMemo(() => effectItems(catalog?.entries ?? []), [catalog]);
+  return (
+    <MenuButton
+      label={`Add an effect to ${name}`}
+      className="tang-node__fx"
+      items={items}
+      onChoose={(plugin) => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        void editor.addEffect(node, plugin);
+      }}
+    >
+      fx
+    </MenuButton>
+  );
+}
+
 /** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain. */
 export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const effect = type === "effect";
@@ -67,7 +88,12 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
       {effect ? <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" /> : null}
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
       <Header name={data.name} badge={data.format}>
-        {effect ? null : <AddModulatorMenu node={data.node} name={data.name} />}
+        {effect ? null : (
+          <span className="tang-node__actions">
+            <AddEffectMenu node={data.node} name={data.name} />
+            <AddModulatorMenu node={data.node} name={data.name} />
+          </span>
+        )}
       </Header>
       <div className="tang-node__controls nodrag nopan nowheel">
         {data.pinned.map((index) => (
@@ -153,7 +179,10 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
       <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
       <Header name={data.name} badge="Group">
-        <AddModulatorMenu node={data.node} name={data.name} />
+        <span className="tang-node__actions">
+          <AddEffectMenu node={data.node} name={data.name} />
+          <AddModulatorMenu node={data.node} name={data.name} />
+        </span>
       </Header>
       <div className="tang-node__controls nodrag nopan nowheel">
         <GainCell node={data.node} gain="groupVolume" />

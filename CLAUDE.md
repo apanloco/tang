@@ -1422,7 +1422,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16 and 18): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16, 18 and 19): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1448,7 +1448,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   piano (`client/keyboard.ts`, `app/useKeyboardPiano.ts`; see "Virtual piano"). Step 18 made the
   page save the session (`app/SessionBar.tsx`: the file's name, "Saved" or "Unsaved changes", a Save
   button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`).
-  The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19). What the controller
+  The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19), and
+  every lane and group has an "fx" menu that puts an installed effect in its chain (`client/catalog.ts`,
+  `AddEffectMenu`; `Editor.addEffect`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON

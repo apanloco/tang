@@ -63,6 +63,21 @@
   font-weight: 600;
 }
 
+/* The buttons that add to a lane or a group, side by side at the end of its header. */
+.tang-node__actions {
+  display: flex;
+  flex: none;
+  gap: var(--tang-space-1);
+}
+
+/* (The one that puts an effect in the chain: wider than a glyph.) */
+.tang-menu-button.tang-node__fx {
+  min-width: 30px;
+  font-family: var(--tang-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
 .tang-node__badge {
   flex: none;
   padding: 0 var(--tang-space-1);
