@@ -40,7 +40,7 @@ use crate::app::intent::Applied;
 use crate::app::load::fresh_slot;
 use crate::app::model::{
     GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel,
-    mod_source_slot_to_graph,
+    fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -326,6 +326,41 @@ impl Controller {
         let node = self.model.alloc_node();
         self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output });
         Some(index)
+    }
+
+    /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
+    /// thread drops it and the model with it, and the cables of the other modulators that
+    /// drove it go too, as the audio thread does it: a sibling's, and a group's when the
+    /// lane is one of its members. The cables that drove later modulators of the rack move
+    /// down an index with them. False, sending nothing, if there is no such modulator.
+    pub fn remove_modulator(&mut self, at: ModulatorLocation, index: usize) -> bool {
+        if self.model.modulators_mut(at).is_none_or(|rack| index >= rack.len()) {
+            return false;
+        }
+        match at {
+            ModulatorLocation::Lane(inst) => {
+                let member_of = lane_member_ordinal(&self.model.instruments, inst);
+                let _ = self.cmd_tx.send(GraphCommand::RemoveModulator { inst, index });
+                if let Some(lane) = self.model.instruments.get_mut(inst) {
+                    lane.modulators.remove(index);
+                    fixup_cross_mod_after_remove(&mut lane.modulators, index);
+                }
+                // The group's modulators may have driven this lane's.
+                if let Some((group, member)) = member_of {
+                    if let Some(group) = self.model.groups.get_mut(group) {
+                        fixup_group_member_mod_after_remove(&mut group.modulators, member, index);
+                    }
+                }
+            }
+            ModulatorLocation::Group(group) => {
+                let _ = self.cmd_tx.send(GraphCommand::RemoveGroupModulator { group, index });
+                if let Some(group) = self.model.groups.get_mut(group) {
+                    group.modulators.remove(index);
+                    fixup_cross_mod_after_remove(&mut group.modulators, index);
+                }
+            }
+        }
+        true
     }
 
     /// Bind `new` as a target of modulator `index` in the rack at `at`, on the audio
@@ -1592,6 +1627,125 @@ plugin = "builtin:osc"
         ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
         ctl.add_target(ModulatorLocation::Lane(0), 1, cutoff_target(0.5));
         assert!(!ctl.dirty);
+    }
+
+    /// What each modulator of a rack drives, as kinds.
+    fn driven(rack: &[ModulatorSlot]) -> Vec<Vec<ModTargetKind>> {
+        rack.iter().map(|m| m.targets.iter().map(|t| t.kind.clone()).collect()).collect()
+    }
+
+    #[test]
+    fn remove_modulator_takes_one_out_of_a_lanes_rack_and_tells_the_audio_thread() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
+        let (first, second) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[1].node);
+        sent(&engine);
+
+        // The first goes, and then the one that was second is the first and goes in its turn: the
+        // audio thread is told the place each had at the time.
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0"]);
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.iter().map(|m| m.node).collect::<Vec<_>>(), [second], "the other one stays, as it was");
+        assert_ne!(first, second);
+        assert_eq!(ctl.model.groups[0].modulators.len(), 1, "the group's rack is untouched");
+        ctl.model.check_ids().unwrap();
+        assert!(ctl.model.locate(first).is_none(), "its node is gone");
+
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
+        let third = ctl.model.instruments[0].modulators[1].node;
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 1));
+        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=1"]);
+        assert_eq!(ctl.model.instruments[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>(), [second]);
+        assert!(ctl.model.locate(third).is_none());
+    }
+
+    #[test]
+    fn remove_modulator_takes_one_out_of_a_groups_rack() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
+        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0"]);
+        assert!(ctl.model.groups[0].modulators.is_empty());
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is untouched");
+        ctl.model.check_ids().unwrap();
+
+        // (And the audio thread is told the place it has, not the first.)
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), lfo_source()), Some(0));
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), lfo_source()), Some(1));
+        let kept = ctl.model.groups[0].modulators[0].node;
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 1));
+        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=1"]);
+        assert_eq!(ctl.model.groups[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>(), [kept]);
+    }
+
+    #[test]
+    fn remove_modulator_leaves_no_cable_pointing_at_it_and_moves_the_others_down() {
+        use crate::plugin::chain::CrossModField as F;
+        use crate::plugin::chain::ModTargetKind as K;
+        let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0"]);
+        // The lane's third modulator drove the first's rate and depth (gone with it) and the second's stages
+        // (which are now the first's).
+        assert_eq!(
+            driven(&ctl.model.instruments[0].modulators),
+            [
+                vec![],
+                vec![K::ModulatorAttack { mod_index: 0 }, K::ModulatorDecay { mod_index: 0 }, K::ModulatorSustain { mod_index: 0 }, K::ModulatorRelease { mod_index: 0 }],
+            ]
+        );
+        // The group's modulator drove the member's first modulator's rate and depth (gone) and its second's attack.
+        let group = driven(&ctl.model.groups[0].modulators);
+        assert_eq!(group[0], []);
+        assert_eq!(
+            group[1],
+            [
+                K::ModulatorAttack { mod_index: 0 },
+                K::ModulatorDecay { mod_index: 0 },
+                K::ModulatorSustain { mod_index: 0 },
+                K::ModulatorRelease { mod_index: 0 },
+                K::ModulatorDepth { mod_index: 0, target_index: 0 },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Attack },
+            ]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_modulator_in_a_group_drops_what_its_siblings_drove_in_it() {
+        use crate::plugin::chain::CrossModField as F;
+        use crate::plugin::chain::ModTargetKind as K;
+        let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
+        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0"]);
+        // The group's LFO drove its envelope's four stages and depth (gone) and the member's modulators (not).
+        assert_eq!(
+            driven(&ctl.model.groups[0].modulators),
+            [vec![
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
+                K::GroupMemberMod { member: 0, mod_index: 1, field: F::Attack },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Depth(0) },
+            ]]
+        );
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 3, "the lane's rack is untouched");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_modulator_that_is_not_there_does_nothing() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert!(!ctl.remove_modulator(ModulatorLocation::Lane(0), 1));
+        assert!(!ctl.remove_modulator(ModulatorLocation::Lane(9), 0));
+        assert!(!ctl.remove_modulator(ModulatorLocation::Group(0), 4));
+        assert!(!ctl.remove_modulator(ModulatorLocation::Group(3), 0));
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.model.instruments[0].modulators.len(), ctl.model.groups[0].modulators.len()), (1, 1));
     }
 
     #[test]
