@@ -369,6 +369,11 @@ impl Controller {
     /// Tell `sink` about every intent applied from now on (see `EventSink`).
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime subscribes"))]
     pub fn subscribe(&mut self, sink: Box<dyn EventSink>) -> SubscriberId {
+        // The first to subscribe starts from the session as it is now.
+        #[cfg(any(test, feature = "web"))]
+        if self.subscribers.is_empty() {
+            self.subscribers.start_from(self.snapshot());
+        }
         self.subscribers.add(sink)
     }
 
@@ -381,6 +386,28 @@ impl Controller {
     /// Tell the subscribers about an intent that has been applied.
     pub(super) fn publish(&mut self, applied: &Applied) {
         self.subscribers.publish(applied);
+    }
+
+    /// Tell the subscribers about changes that no intent made, if there are any. A
+    /// front-end that edits the model directly (the TUI, for most of what it does)
+    /// calls this when it is done, and `poll` does when the audio thread has changed
+    /// the model. What the subscribers have been told is compared with the session as
+    /// it is now, and if it differs they are given a snapshot to start again from, at
+    /// a revision of its own: a change that a snapshot does not show is no change.
+    /// True if they were told.
+    #[cfg(any(test, feature = "web"))]
+    pub fn resync(&mut self) -> bool {
+        if self.subscribers.is_empty() {
+            return false;
+        }
+        let mut now = self.snapshot();
+        if !self.subscribers.differ_from(&now) {
+            return false;
+        }
+        self.rev += 1;
+        now.rev = self.rev;
+        self.subscribers.resync(now);
+        true
     }
 
     /// A handle on the note path (the Locked mode, the held notes, the channel to
@@ -450,10 +477,14 @@ impl Controller {
                 devices.poll_new_devices();
             }
         }
-        Polled {
-            catalog_changed: self.catalog.poll(),
-            model_changed: self.fold_in_notifications(),
+        let catalog_changed = self.catalog.poll();
+        let model_changed = self.fold_in_notifications();
+        // What the audio thread reported is a change no intent made.
+        #[cfg(any(test, feature = "web"))]
+        if model_changed {
+            self.resync();
         }
+        Polled { catalog_changed, model_changed }
     }
 
     /// Fold what the audio thread has reported into the model. True if the
@@ -757,6 +788,245 @@ mod tests {
     }
 
     const TWO_LANES: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\n";
+
+    // -- Subscribers: what they have been told --
+
+    use crate::app::snapshot::Snapshot;
+
+    /// What a mirror was told.
+    #[derive(Clone, Debug, PartialEq)]
+    enum Heard {
+        /// An intent, by the revision it made.
+        Applied(u64),
+        /// A snapshot, by its revision.
+        Resynced(u64),
+    }
+
+    #[derive(Default)]
+    struct MirrorState {
+        /// What the mirror knows of the session; None once an event did not fit it.
+        copy: Option<Snapshot>,
+        heard: Vec<Heard>,
+    }
+
+    /// A subscriber that keeps a copy of the session the way a client does: it starts
+    /// from a snapshot, applies the events it hears, and takes a snapshot it is told
+    /// of as its new copy.
+    #[derive(Clone, Default)]
+    struct Mirror(Arc<Mutex<MirrorState>>);
+
+    impl Mirror {
+        /// Subscribe to `ctl`, from the snapshot it has now.
+        fn join(ctl: &mut Controller) -> Mirror {
+            let mirror = Mirror::default();
+            mirror.0.lock().unwrap().copy = Some(ctl.snapshot());
+            ctl.subscribe(Box::new(mirror.clone()));
+            mirror
+        }
+
+        fn copy(&self) -> Snapshot {
+            self.0.lock().unwrap().copy.clone().expect("the copy fits what it has been told")
+        }
+
+        fn heard(&self) -> Vec<Heard> {
+            self.0.lock().unwrap().heard.clone()
+        }
+    }
+
+    impl EventSink for Mirror {
+        fn applied(&mut self, applied: &Applied) {
+            let mut state = self.0.lock().unwrap();
+            state.heard.push(Heard::Applied(applied.rev));
+            if let Some(copy) = &mut state.copy {
+                if copy.apply(applied).is_err() {
+                    state.copy = None;
+                }
+            }
+        }
+
+        fn resync(&mut self, snapshot: &Snapshot) {
+            let mut state = self.0.lock().unwrap();
+            state.heard.push(Heard::Resynced(snapshot.rev));
+            state.copy = Some(snapshot.clone());
+        }
+    }
+
+    /// A lane with an oscillator and a reverb (which has presets), and a lane without an instrument.
+    const WITH_REVERB: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+"#;
+
+    #[test]
+    fn a_change_no_intent_made_is_told_to_every_subscriber_as_a_snapshot_of_the_next_revision() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let first = Mirror::join(&mut ctl);
+        let second = Mirror::join(&mut ctl);
+        let (follower, followed) = recorder();
+        ctl.subscribe(follower);
+
+        // What the TUI's `b` does: the model is edited, and no intent is applied.
+        ctl.global_bpm = 90.0;
+        assert!(ctl.resync());
+
+        assert_eq!(ctl.rev, 1, "a revision of its own");
+        for mirror in [&first, &second] {
+            assert_eq!(mirror.heard(), [Heard::Resynced(1)]);
+            assert_eq!((mirror.copy().rev, mirror.copy().meta.bpm), (1, 90.0));
+            assert_eq!(mirror.copy(), ctl.snapshot());
+        }
+        assert!(followed.lock().unwrap().is_empty(), "a sink that follows intents hears of no intent, and need not know of snapshots");
+    }
+
+    #[test]
+    fn what_an_intent_changed_is_not_told_again_as_a_snapshot() {
+        let (_engine, mut ctl) = controller_for(WITH_REVERB);
+        let mirror = Mirror::join(&mut ctl);
+        let osc = ctl.model.instruments[0].node;
+        let reverb = ctl.model.instruments[0].effects[0].node;
+        let detune = ctl.model.instruments[0].instrument.as_ref().unwrap().params.iter().find(|p| p.name == "detune").unwrap().index;
+        for intent in [
+            Intent::SetParam { node: osc, param: detune, value: 3.0 },
+            Intent::SetGain { node: osc, gain: Gain::Volume, value: 2.0 },
+            Intent::SetGain { node: reverb, gain: Gain::Mix, value: 0.25 },
+            Intent::LoadPreset { node: reverb, preset: "cathedral".to_string() },
+        ] {
+            ctl.apply(intent).unwrap();
+            assert!(!ctl.resync(), "the subscribers heard it");
+        }
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Applied(2), Heard::Applied(3), Heard::Applied(4)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert_eq!(ctl.rev, 4, "no revision was spent on telling them again");
+    }
+
+    #[test]
+    fn a_change_made_after_an_intent_is_told_with_the_revision_after_it() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let mirror = Mirror::join(&mut ctl);
+        ctl.apply(volume(&ctl, 0.5)).unwrap();
+        ctl.global_bpm = 90.0;
+        assert!(ctl.resync());
+        ctl.apply(volume(&ctl, 0.25)).unwrap();
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2), Heard::Applied(3)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert_eq!((mirror.copy().rev, mirror.copy().meta.bpm), (3, 90.0));
+    }
+
+    #[test]
+    fn nobody_is_told_while_nobody_listens_and_a_subscriber_starts_from_the_session_as_it_is() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        ctl.global_bpm = 80.0;
+        assert!(!ctl.resync(), "there is nobody to tell");
+        assert_eq!(ctl.rev, 0, "and no revision is spent on it");
+
+        let mirror = Mirror::join(&mut ctl);
+        assert_eq!(mirror.copy().meta.bpm, 80.0);
+        assert!(!ctl.resync(), "it has what the session has");
+        ctl.global_bpm = 100.0;
+        assert!(ctl.resync());
+        assert_eq!(mirror.copy().meta.bpm, 100.0);
+    }
+
+    #[test]
+    fn the_last_subscriber_to_leave_takes_what_was_told_with_it() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (sink, _heard) = recorder();
+        let id = ctl.subscribe(sink);
+        assert!(ctl.unsubscribe(id));
+        ctl.global_bpm = 70.0;
+        assert!(!ctl.resync(), "nobody is left");
+
+        let mirror = Mirror::join(&mut ctl);
+        assert!(!ctl.resync(), "the new one starts from the session as it is, not as it was when the old one left");
+        assert_eq!(mirror.copy().meta.bpm, 70.0);
+    }
+
+    #[test]
+    fn subscribers_share_what_they_have_been_told_so_a_late_one_may_be_told_again() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let early = Mirror::join(&mut ctl);
+        ctl.global_bpm = 90.0; // not told yet
+        let late = Mirror::join(&mut ctl);
+        assert_eq!(late.copy().meta.bpm, 90.0, "it started from the session as it is");
+        assert_eq!(early.copy().meta.bpm, 120.0);
+        assert!(ctl.resync(), "the early one is behind");
+        assert_eq!(early.copy(), ctl.snapshot());
+        assert_eq!(late.copy(), ctl.snapshot());
+    }
+
+    #[test]
+    fn an_intent_about_what_the_subscribers_have_not_heard_of_is_followed_by_a_snapshot_for_them_to_take() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let mirror = Mirror::join(&mut ctl);
+        let lane = ctl.add_lane(); // behind the subscribers' backs
+        let node = ctl.model.instruments[lane].node;
+        ctl.apply(Intent::SetGain { node, gain: Gain::Volume, value: 0.5 }).unwrap();
+        // The event names a node the copy has not got, so the copy is lost.
+        assert!(mirror.0.lock().unwrap().copy.is_none());
+
+        assert!(ctl.resync(), "they are told again, from the start");
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert!(!ctl.resync(), "and that is the end of it");
+    }
+
+    #[test]
+    fn the_subscribers_end_up_where_the_session_is_whatever_was_done_to_it() {
+        let (_engine, mut ctl) = controller_for(WITH_REVERB);
+        let mirror = Mirror::join(&mut ctl);
+        let osc = ctl.model.instruments[0].node;
+        let reverb = ctl.model.instruments[0].effects[0].node;
+
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.5 }).unwrap();
+        assert_eq!(mirror.copy(), ctl.snapshot());
+
+        // A lane is added, and the volume of another edited, without intents.
+        ctl.add_lane();
+        ctl.model.instruments[1].volume = 3.0;
+        ctl.apply(Intent::SetGain { node: reverb, gain: Gain::Mix, value: 0.75 }).unwrap();
+        assert_ne!(mirror.copy(), ctl.snapshot(), "until they are told, they have the old structure");
+        assert!(ctl.resync());
+        assert_eq!(mirror.copy(), ctl.snapshot());
+
+        // The new lane takes an intent, and the piano's scale changes under the TUI's hands.
+        let added = ctl.model.instruments[2].node;
+        ctl.apply(Intent::SetGain { node: added, gain: Gain::Volume, value: 1.5 }).unwrap();
+        ctl.piano_filter.set_scale(crate::scale::ScaleSetting::parse("F# dorian").unwrap());
+        assert!(ctl.resync());
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert_eq!(mirror.copy().meta.piano.scale, "F# dorian");
+
+        // Saved: the flag that says so changes with no intent.
+        ctl.dirty = false;
+        assert!(ctl.resync());
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert!(!mirror.copy().meta.dirty);
+        assert!(!ctl.resync());
+    }
+
+    #[test]
+    fn poll_tells_the_subscribers_what_the_audio_thread_reported() {
+        let (engine, mut ctl) = controller_for(TWO_LANES);
+        let mirror = Mirror::join(&mut ctl);
+        engine.pattern_tx.send(recording(1)).unwrap();
+        assert_eq!(ctl.poll(), CHANGED_MODEL);
+        assert_eq!(mirror.heard(), [Heard::Resynced(1)]);
+        assert!(mirror.copy().meta.dirty, "the recording is part of the session");
+        assert_eq!(mirror.copy(), ctl.snapshot());
+    }
+
+    #[test]
+    fn poll_with_nothing_to_report_tells_nobody_anything() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let mirror = Mirror::join(&mut ctl);
+        ctl.global_bpm = 90.0; // a change nobody has told them of: `poll` is not what finds it
+        assert_eq!(ctl.poll(), Polled::default());
+        assert!(mirror.heard().is_empty());
+    }
 
     const CHANGED_MODEL: Polled = Polled { model_changed: true, catalog_changed: false };
 

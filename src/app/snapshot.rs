@@ -57,7 +57,6 @@ pub struct PianoMeta {
 /// An event that does not fit the snapshot it was applied to. The copy is not the
 /// session's any more: whoever holds it starts again from a fresh snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller applies events to what it has told its subscribers, from the next commit on"))]
 pub struct DoesNotFit(String);
 
 impl fmt::Display for DoesNotFit {
@@ -68,7 +67,6 @@ impl fmt::Display for DoesNotFit {
 
 impl std::error::Error for DoesNotFit {}
 
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller applies events to what it has told its subscribers, from the next commit on"))]
 impl Snapshot {
     /// The snapshot after the intent that `applied` describes: what a client does
     /// with the events that follow the snapshot it started from. The rules are those
