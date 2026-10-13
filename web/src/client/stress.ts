@@ -76,7 +76,7 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
     for (let k = 0; k < size.lfosPerLane; k += 1) {
       const lfo: NodeId = id++;
       const rate = 0.25 + 0.15 * (lane * size.lfosPerLane + k);
-      nodes.push({ id: lfo, parent: instrument, name: `LFO ${rate.toFixed(2)}Hz sine`, kind: "modulator", source: { type: "lfo", waveform: "sine", rate } });
+      nodes.push({ id: lfo, parent: instrument, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate } });
       outputs.push({ slot: slot++, node: lfo, port: { type: "modOut" }, kind: "modOutput" });
       for (let t = 0; t < size.targetsPerLfo; t += 1) {
         const target = driveable[next % driveable.length];

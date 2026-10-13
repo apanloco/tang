@@ -428,6 +428,16 @@ impl ModSourceSlot {
         ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }
     }
 
+    /// What the modulator's node is called for a client: its kind, or what a control
+    /// is bound to. Not its settings, which a client is told when they change and
+    /// which a name would have to follow (`label` has them, for the TUI).
+    pub fn node_name(&self) -> String {
+        match self {
+            ModSourceSlot::Lfo { .. } => "LFO".to_string(),
+            other => other.label(),
+        }
+    }
+
     /// A short label for the source (used in the tree and param pane).
     pub fn label(&self) -> String {
         use crate::plugin::chain::MidiBindSource;

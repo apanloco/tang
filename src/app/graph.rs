@@ -43,7 +43,8 @@ pub struct Node {
     pub id: NodeId,
     /// The node this one sits in, if any.
     pub parent: Option<NodeId>,
-    /// What to call it: the plugin's name, the group's name, the modulator's label.
+    /// What to call it: the plugin's name, the group's name, what kind a modulator is (not its
+    /// settings, which change under a client: they are in `kind`).
     pub name: String,
     #[serde(flatten)]
     pub kind: NodeKind,
@@ -390,7 +391,7 @@ fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
             ModulatorSource::MidiLearn { control: source.map(MidiControl::from), learning: *learning }
         }
     };
-    Node { id: modulator.node, parent: Some(parent), name: modulator.source.label(), kind: NodeKind::Modulator { source } }
+    Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), kind: NodeKind::Modulator { source } }
 }
 
 fn plugin(slot: &PluginSlot) -> Plugin {
@@ -693,6 +694,33 @@ depth = 0.1
 "#;
 
     #[test]
+    fn a_modulators_name_does_not_carry_its_settings_which_change_under_a_client() {
+        // A client that is told a rate has changed would otherwise be left with a name that
+        // says the old one (and could not make the new one the way the controller does).
+        let mut model = load(MODULATED).model;
+        let lfo = model.instruments[0].modulators[0].node;
+        let name = |model: &SessionModel| node(&model.graph(), lfo).name.clone();
+        assert_eq!(name(&model), "LFO");
+        model.instruments[0].modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5 };
+        assert_eq!(name(&model), "LFO");
+
+        let envelope = model.instruments[0].modulators[1].node;
+        model.instruments[0].modulators[1].source = ModSourceSlot::Envelope { attack: 1.0, decay: 2.0, sustain: 0.1, release: 3.0 };
+        assert_eq!(node(&model.graph(), envelope).name, "ADSR");
+
+        // What a control is bound to is not a setting, and is in its name.
+        let learn = |source, learning| ModSourceSlot::MidiLearn { source, learning };
+        for (slot, expected) in [
+            (learn(Some(MidiBindSource::Cc(74)), false), "CC 74"),
+            (learn(Some(MidiBindSource::PitchBend), false), "Pitch Bend"),
+            (learn(None, true), "MIDI (learning…)"),
+        ] {
+            model.instruments[0].modulators[1].source = slot;
+            assert_eq!(node(&model.graph(), envelope).name, expected);
+        }
+    }
+
+    #[test]
     fn a_modulator_is_a_node_in_its_lane_with_an_edge_for_each_target() {
         let model = load(MODULATED).model;
         let lane = &model.instruments[0];
@@ -705,7 +733,7 @@ depth = 0.1
         let ids: Vec<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
         assert_eq!(ids, [osc, filter, lfo, env, NodeId::MASTER]);
         assert_eq!((node(&graph, lfo).parent, node(&graph, env).parent), (Some(osc), Some(osc)));
-        assert_eq!(node(&graph, lfo).name, "LFO 2.0Hz saw");
+        assert_eq!(node(&graph, lfo).name, "LFO");
         assert_eq!(node(&graph, env).name, "ADSR");
         assert_eq!(
             node(&graph, lfo).kind,

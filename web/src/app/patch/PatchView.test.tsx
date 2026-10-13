@@ -41,7 +41,7 @@ describe("the patch", () => {
       const placed = await nodeOf(node.id);
       expect(placed.classList.contains(`react-flow__node-${kind}`)).toBe(true);
       expect(placed.querySelector(".tang-node")?.classList.contains(`tang-node--${kind}`)).toBe(true);
-      expect(within(placed).getByText(node.name)).toBeTruthy();
+      expect(within(placed).getByText(node.name, { selector: ".tang-node__name" })).toBeTruthy();
     }
     expect(within(await nodeOf(oscillator.id)).getByText("Built-in")).toBeTruthy();
     expect(within(await nodeOf(4294967295)).getByText("Master")).toBeTruthy();
@@ -88,12 +88,27 @@ describe("the patch", () => {
   test("shows the modulator for what it is, with a bar for what it puts out", async () => {
     await rig(<PatchView />);
     const mod = await nodeOf(lfo.id);
-    expect(within(mod).getByText("LFO", { selector: ".tang-node__badge" })).toBeTruthy();
+    // (An LFO is called what it is, so its kind is not said twice.)
+    expect(within(mod).getByText("LFO", { selector: ".tang-node__name" })).toBeTruthy();
+    expect(mod.querySelector(".tang-node__badge")).toBeNull();
     expect(within(mod).getByText("sine, 0.5 Hz")).toBeTruthy();
     const bar = within(mod).getByRole("meter", { name: `${lfo.name} output` });
     expect(bar.getAttribute("aria-valuemin")).toBe("-1");
     expect(bar.getAttribute("aria-valuemax")).toBe("1");
     expect(bar.hasAttribute("data-centred")).toBe(true);
+  });
+
+  test("says what kind of modulator an envelope and a MIDI control are, which their names do not", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    snapshot.graph.nodes.push(
+      { id: 90, parent: 1, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } },
+      { id: 91, parent: 1, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } },
+    );
+    await rig(<PatchView />, { snapshot });
+    expect(within(await nodeOf(90)).getByText("Envelope", { selector: ".tang-node__badge" })).toBeTruthy();
+    expect(within(await nodeOf(90)).getByText("ADSR", { selector: ".tang-node__name" })).toBeTruthy();
+    expect(within(await nodeOf(91)).getByText("MIDI", { selector: ".tang-node__badge" })).toBeTruthy();
+    expect(within(await nodeOf(91)).getByText("CC 74", { selector: ".tang-node__name" })).toBeTruthy();
   });
 
   test("gives each node the ports it has: an effect takes audio in and puts it out, an instrument only puts it out, a modulator puts out modulation, the master takes audio in", async () => {

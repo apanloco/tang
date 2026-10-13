@@ -107,7 +107,7 @@ describe("the page", () => {
     expect(Array.from(patch.querySelectorAll(".tang-node__name")).map((name) => name.textContent)).toEqual([
       "Oscillator",
       "Filter",
-      "LFO 0.5Hz sine",
+      "LFO",
       "Master",
     ]);
     await waitFor(() => {

@@ -155,7 +155,7 @@ describe("the nodes on the canvas", () => {
     expect(flow.nodes.map((node) => [node.data.name, node.data.format])).toEqual([
       ["Oscillator", "Built-in"],
       ["Filter", "Built-in"],
-      ["LFO 0.5Hz sine", null],
+      ["LFO", null],
       ["Master", null],
     ]);
     const empty: Graph = { nodes: [instrumentOf(1, null)], edges: [] };

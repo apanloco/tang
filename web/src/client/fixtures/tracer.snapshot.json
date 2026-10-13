@@ -253,7 +253,7 @@
       {
         "id": 2,
         "kind": "modulator",
-        "name": "LFO 0.5Hz sine",
+        "name": "LFO",
         "parent": 0,
         "source": {
           "rate": 0.5,

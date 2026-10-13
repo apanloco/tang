@@ -51,9 +51,11 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const read = useMemo(() => slotReader(client.telemetry, "modulation", data.node, { type: "modOut" }, "modOutput"), [client, data.node]);
   const source = node?.kind === "modulator" ? node.source : null;
   const scale = source ? outputScale(source) : { min: 0, max: 1, centred: false };
+  // (An LFO is called what it is: its kind is not said twice.)
+  const kind = source ? kindOf(source) : null;
   return (
     <div className="tang-node tang-node--modulator">
-      <Header name={data.name} badge={source ? kindOf(source) : null} />
+      <Header name={data.name} badge={kind === data.name ? null : kind} />
       <div className="tang-node__body">
         <p className="tang-node__detail">{source ? detailOf(source) : ""}</p>
         <LiveBar label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />

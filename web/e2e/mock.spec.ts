@@ -10,7 +10,7 @@ test("with the mock engine the page shows the session as a patch, without any se
   await expect(page.getByText("mock engine")).toBeVisible();
   // The tracer: an oscillator through a filter, an LFO on its cutoff, and the master.
   await expect(page.getByRole("slider", { name: "cutoff" })).toBeVisible();
-  await expect(page.locator(".tang-node__name")).toHaveText(["Oscillator", "Filter", "LFO 0.5Hz sine", "Master"]);
+  await expect(page.locator(".tang-node__name")).toHaveText(["Oscillator", "Filter", "LFO", "Master"]);
   await expect(page.locator(".react-flow__edge")).toHaveCount(3);
 });
 
