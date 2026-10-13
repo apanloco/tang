@@ -3,7 +3,8 @@
 // what changed replaced (so an unchanged node is the same object, which is what a
 // store's subscribers compare). The rules are the controller's (`src/app/apply.rs`),
 // read from the other side.
-import type { Gain, Graph, ModulatorField, Node, ParamValue, Plugin, Snapshot, StampedEvent, Waveform } from "../protocol";
+import { WAVEFORMS } from "../protocol";
+import type { Gain, Graph, ModulatorField, Node, ParamValue, Plugin, Snapshot, StampedEvent } from "../protocol";
 
 /** The snapshot after an event, or why the event does not fit the one it was applied to. */
 export type Applied = { ok: true; snapshot: Snapshot } | { ok: false; reason: string };
@@ -89,9 +90,6 @@ function withGain(node: Node, gain: Gain, value: number): Node | null {
   if (gain === "groupPan" && node.kind === "group") return { ...node, pan: value };
   return null;
 }
-
-/** The waveforms by the index that is the value of a modulator's `waveform` setting (`ModulatorField::Waveform`). */
-const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square"];
 
 /** The node with a setting of its modulator set; a reason if it is not a modulator, or not one that has that setting. */
 function withSetting(node: Node, field: ModulatorField, value: number): Node | string {

@@ -3,6 +3,7 @@
 // rewritten as a whole, so the list of what this app uses is kept here.
 export type { ClientMessage } from "./generated/ClientMessage";
 export type { Edge } from "./generated/Edge";
+export type { EdgeId } from "./generated/EdgeId";
 export type { ErrorCode } from "./generated/ErrorCode";
 export type { Event } from "./generated/Event";
 export type { Gain } from "./generated/Gain";
@@ -26,4 +27,4 @@ export type { TelemetryChannel } from "./generated/TelemetryChannel";
 export type { TelemetryLayout } from "./generated/TelemetryLayout";
 export type { Waveform } from "./generated/Waveform";
 export type { WireError } from "./generated/WireError";
-export { DEPTH_RANGE, FRAME_HEADER_LEN, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL } from "./generated/constants";
+export { DEPTH_RANGE, FRAME_HEADER_LEN, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL, WAVEFORMS } from "./generated/constants";
