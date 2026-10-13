@@ -983,7 +983,7 @@ range), `LoadPreset` (by preset id; the values the preset set are mirrored
 into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
 stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
 waveform rounded to its index: sine, triangle, saw, square) and `SetEdgeDepth` (a
-modulation cable's depth, -1 to 1); `Save` (the session's own file); and five that change
+modulation cable's depth, -1 to 1); `Save` (the session's own file); and seven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -993,7 +993,12 @@ modulator reaching its lane's chain and a group's its members' chains and its bu
 refused for a port that is not a parameter, a plugin out of reach, a parameter it drives
 already), `AddEffect { parent, plugin }` (a plugin of the catalog, loaded by the controller
 and nothing else, at the end of the chain of a lane, `parent` being the lane's node, or of a
-group's bus: see `Controller::add_effect`) and `RemoveNode` (a modulator, with its cables and
+group's bus: see `Controller::add_effect`), `AddInstrument { plugin }` (a lane at the end of
+the session, full range and in no group, with an instrument of the catalog in it: see
+`Controller::add_instrument_lane`), `ReplaceInstrument { node, plugin }` (the instrument of
+the lane `node`, or an empty lane's, replaced by one of the catalog; the cables that drove
+the old plugin's parameters are taken out: see `Controller::put_instrument`) and
+`RemoveNode` (a modulator, with its cables and
 those of the others that drove its settings; an effect or a bus effect, with the cables that
 drive its parameters and what drove their depths, the audio path closing up; a lane or a
 group is refused for now, since there is no undo). An intent that changes the
@@ -1384,13 +1389,16 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `RemoveEdge`,
-  `AddModulator`, `AddModEdge`, `AddEffect`, `RemoveNode` (a modulator or an effect) and
-  `Save` (see "Session state"). Effects are
+  `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
+  `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
   tells them; the mock engine's nodes for the built-in effects are a fixture Rust writes,
-  `web/src/client/fixtures/builtins.effects.json`).
+  `web/src/client/fixtures/builtins.effects.json`). Instruments are put in by
+  `Controller::put_instrument` (a lane's, which the TUI's `i` asks) and `add_instrument_lane`
+  (a new lane), from the catalog only, which `ReplaceInstrument` and `AddInstrument` wrap
+  (`builtins.instruments.json` is the mock engine's node for each built-in instrument).
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the
@@ -1465,7 +1473,11 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`).
   The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19), and
   every lane and group has an "fx" menu that puts an installed effect in its chain (`client/catalog.ts`,
-  `AddEffectMenu`; `Editor.addEffect`). What the controller
+  `AddEffectMenu`; `Editor.addEffect`). Step 20 added the instruments: every lane has a "♪" menu that
+  puts another instrument in it (`ChangeInstrumentMenu`; `Editor.replaceInstrument`) and the bar a
+  "+ Instrument" menu that adds a lane with one (`app/AddInstrument.tsx`; `Editor.addInstrument`); the
+  canvas moves to a node the page has added when it is not all in the view (`client/reveals.ts`,
+  `app/patch/view.ts`), and not for a node another front-end adds. What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1524,7 +1536,8 @@ parameter the new plugin has under the same name (a vibrato on `detune` could su
 oscillator): a cable would have to be drawn again with the new plugin's index.
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
-TODO: the canvas does not move to show a node that was added.
+TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at
+its own defaults: ranges, groups, presets and taking a lane out (waits for an undo) are not in the page yet.
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
 edge, and two cables with the same middle put theirs over each other; user-placed nodes and
 sliders that move along the cable would settle it.

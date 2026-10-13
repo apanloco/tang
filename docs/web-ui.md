@@ -407,7 +407,12 @@ resolves cursor → ids and then calls `apply`.
   (`Editor.addEffect`). Refused, with nothing changed and no revision, for a parent that is neither a
   lane nor a group, a plugin the catalog does not name (a path of the client's own is not loaded, however
   it is spelled), an instrument, a plugin that does not load, and one whose outputs are not the chain's
-  channels.)
+  channels.) (`AddInstrument { plugin }` and `ReplaceInstrument { node, plugin }` are built, step 20: a lane at the
+  end of the session with an instrument of the catalog in it, and the instrument of the lane `node` (an empty lane
+  is filled) replaced; the cables that drove the old plugin's parameters are taken out. Refused, with nothing
+  changed, for a node that is no lane (checked first), a plugin the catalog does not name, an effect, one that does
+  not load, and one with no audio output; told by a snapshot like the others; `Editor.addInstrument` resolves with
+  the node of the lane.)
 - Modulation: `AddModulator`, `SetModulatorField`, `AddModEdge`, `RemoveEdge`,
   `SetEdgeDepth`, `LearnMidi`. (`SetModulatorField` and `SetEdgeDepth` are built, step
   14: an LFO's rate and waveform and an envelope's four stages, in a lane's modulator or
@@ -834,6 +839,13 @@ the built-ins first and then CLAP, LV2 and VST3, in the order the server gave wi
 strip when the snapshot comes, and the focus is back on the button. The list follows the catalog while it is
 open, as the scan finds more; with nothing to choose from (no catalog yet, or nothing but instruments) the
 button is disabled. There is no sign yet that the scan is still going on.
+
+**As built (step 20, parts 3 and 5).** Beside "fx" and "+" the header of every lane has a "♪" that opens a menu of
+the instruments that are installed (`ChangeInstrumentMenu`: `instrumentItems`, the same order and headings as the
+effects'), which asks for `ReplaceInstrument`; and the bar of the page has a "+ Instrument" that asks for
+`AddInstrument`. The canvas moves to a node the page has just added when it is not all in the view (`Reveals`,
+`app/patch/view.ts`, `ShowWhatWasAdded`): the node in the middle, at the zoom the person has or lower if it does not
+fit, animated over 250 ms; a node that another front-end adds is not shown this way.
 
 ### 9.4 Performance rules
 
@@ -1899,14 +1911,15 @@ Each step is a reviewable change; the TUI must not regress at any point.
     a relative name and reads which file it says it saved. Four mutations, all caught. (The directory
     the test runs had made in the ROLI folder was taken away.)
 
-- [ ] **20. Instruments from the browser (phase 1).** The page could put effects in a chain, but the
+- [x] **20. Instruments from the browser (phase 1).** The page could put effects in a chain, but the
   instrument of a lane it could neither choose nor change. *Done when:* on the real program, a browser puts
   an instrument that is installed in a lane (replacing the one it has) and in a lane of its own, hears the
   difference, and the file the session is saved to has what it did. In parts, each its own commit: **20.1**
   the controller's `put_instrument`, which the TUI's selector asks (and the two findings it settles, f51 and
   f66); **20.2** `AddInstrument` and `ReplaceInstrument` as intents, with the client's `Editor` and the mock
-  engine; **20.3** the menus on a lane and in the header; **20.4** a browser test on the real program.
-  *Not done (later steps):* presets, ranges, groups, taking a lane out, undo.
+  engine; **20.3** the menus on a lane and in the bar; **20.4** a browser test on the real program (in the
+  commit of 20.3); **20.5** the canvas moving to what the page added, which the first look at 20.3 showed it
+  needed. *Not done (later steps):* presets, ranges, groups, taking a lane out, undo.
   - **20.1 as built.** `Controller::put_instrument(inst, id)` puts an instrument in a lane, replacing the one
     it has (a lane that the TUI emptied with `d` is filled), as `add_effect` does an effect: loaded here, and
     only from the catalog (an id or a path the catalog does not name is not loaded, an effect is not an
@@ -1939,6 +1952,70 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the code written, 16 caught at once; the three that were not showed a remap that `clear_instrument` kept, an
     instrument with exactly one output that nothing said was accepted, and an id used up for a plugin that has
     the lane's: covered. Rust: 861 tests (848 before), 1008 and 10 on the real program with the `web` feature.
+  - **20.2 as built.** `Intent::AddInstrument { plugin }` (a lane at the end of the session, full range, in no
+    group, with a meter of its own, by `Controller::add_instrument_lane`) and `Intent::ReplaceInstrument { node,
+    plugin }` (by `put_instrument`; `node` is the lane's, which an empty lane has too), both changes of structure,
+    so the answer is a snapshot (D20), and both refused with nothing changed (no lane made, no cable taken out, no
+    revision) for a node that is no lane (`an instrument goes in a lane`: the node is looked for first), a plugin the
+    catalog does not name, an effect (`Filter is an effect, not an instrument`), a plugin that does not load, and
+    one with no audio output. The page's side: the generated types (and `NoteRange` exported), `Editor.addInstrument`
+    (resolves with the node of the lane) and `Editor.replaceInstrument`, and the mock engine does what the
+    controller does: the lane goes before the master in the graph, its link to the master after the links of the
+    others and before the modulation cables, its peak and clip count at the end of the meters on slots that nothing
+    has used and a layout of a new revision; a replace keeps the node, the range, the transposition and the volume,
+    and takes out the cables that end at the lane with those that drive their depths and the slot of the value each
+    drove (the same `without` as the removals). The node it makes for each built-in instrument is
+    `web/src/client/fixtures/builtins.instruments.json`, which Rust writes
+    (`the_web_clients_fixture_of_the_builtin_instruments_is_current`).
+  - **20.2 tests.** Rust: seven on the intents over the stub engine (the engine's commands in order, the graph with its
+    node, its link and its meters, a modulator and a cable on a lane that was just added, a replace that takes a
+    group's cable out first, an empty lane filled, every refusal with the model compared whole), the wire (both
+    names), four on the TUI with a browser (a lane at the end of the tree and the cursor staying on its node, the
+    vibrato's cable gone from the tree, the selected row of a pane whose cable went, and a browser on the real loop that
+    adds and replaces and is refused in the controller's words), and two on the real program: a lane added is heard in
+    the master's meter (far louder than the tracer's quiet lane) and the file saved has both lanes; an instrument
+    replaced after its volume was turned to nothing and a cable drawn on it, so that the same note is heard again,
+    the cable is gone, and the file has no trace of the saw. 13 mutations of the Rust, all caught at once; six on the
+    real program, five caught (the sixth changed what only the model has, which the unit tests pin). Web: 14 on the mock
+    (every case above, the fixture's agreement with the catalog's included), 7 on the editor; 35 mutations of the client and the menus, all caught (one only by the type checker: a test now pins
+    that the links of the audio path come before the cables).
+  - **20.3 as built.** The catalog's instruments as the items of a menu (`instrumentItems`, in the order of
+    `effectItems`: the built-ins first, then CLAP, LV2 and VST3, a heading for each), a "♪" button beside "fx" and "+"
+    in the header of every lane (`ChangeInstrumentMenu`: "Change the instrument of Oscillator", and for an empty
+    lane "Choose an instrument for (empty)"), which asks for `ReplaceInstrument`, and a "+ Instrument" button in the
+    bar of the page (`app/AddInstrument.tsx`), which asks for `AddInstrument`. A refusal is among the notices, in the
+    catalog's names for the plugins ("Could not change the instrument of Oscillator to Reverb: ..."); with nothing
+    to choose from the button is disabled; the menu follows the scan while it is open.
+  - **20.3 and 20.4 tests.** On the page: the button on every lane and on nothing else, the menu without the
+    effects and following the scan, the request that is sent, the new instrument's controls on the lane that kept
+    its node (the saw becomes a sine), an empty lane filled and renamed, the cables to the old instrument off the
+    canvas, nothing to open, a refusal; the same for the bar. In a browser on the real program: the first lane's saw
+    changed to a sine from its menu with its filter and its LFO still there, a lane added from the bar and heard,
+    and the file with both lanes and without the saw. A lane cannot be taken out from the page, so this test starts a
+    program of its own (`e2e/own.ts`: a copy of the tracer in a directory that is thrown away, and its log kept with a
+    test that fails) instead of the shared one.
+  - **20.5 as built.** A lane added from the bar went below the one there was, out of the view: nothing seemed to have
+    happened (the old "the canvas does not move to show a node that was added"). The editor now says which node it
+    added through `Reveals` (`client/reveals.ts`; the provider hands it to the editor and to the canvas), and the canvas
+    (`ShowWhatWasAdded` in `PatchView`) takes the node's rectangle from the layout (`rectOf`) and, if it is not all
+    in the view with a margin of 32 px, moves the view so that the node is in the middle of the screen, at the zoom the
+    person has, or lower if it does not fit (`viewToShow`: never higher). It waits (three seconds at the most) for the
+    layout that has the node, moves once, and only for what this page added: a node another front-end adds is left
+    where it is, since the canvas moving under a person who is turning a knob is worse than a node out of sight. All
+    three kinds of node the page adds are shown this way: a lane, an effect, a modulator.
+  - **20.5 tests.** The arithmetic (thirteen: every edge and its margin to the pixel, the middle, the zoom out and its floor,
+    never in, no size), the layout's rectangle, the editor's side, the provider's, the canvas's glue over a made-up size
+    (seven: it moves, it does not when all is in the view, it waits for the layout, once, not for another front-end's, it
+    gives up, no size) and the browser test above, which was red first (the new lane was 17% in the view). 29 mutations,
+    all caught in the end (two were not: a screen with no width, and a canvas stand-in whose object changed every
+    render, which hid that a new layout is looked at).
+  - **Found on the way.** `examples/tracer.toml`, which the tests took for the known scene, was written over by a Save
+    from the page of a person who ran the program on it (f69: fixed, the tests have a copy of their own,
+    `web/src/client/fixtures/tracer.toml`, and the saved scene is kept as `examples/cool-sound.toml`); and a bug I
+    thought I had found, that a letter typed in a menu plays a note, was not one (the menu keeps its letters from the
+    page: the test I wrote for it only failed when two defences were both taken away, so I took mine out).
+  - **Numbers at the end of the step.** Rust 872 tests (848 before the step), 1020 with the `web` feature and 12 on the
+    real program; web 818 (752 before); 38 in browsers (37).
 
 ## 13. Later: track B (`builtin:patch`)
 
@@ -1978,6 +2055,8 @@ mixer, delay, …) are the natural first increment.
 | D19 | What the client has to know about what the controller clamps to (the ranges of the gains, of a modulator's settings and of a cable's depth, what a new modulator starts as, the order of the waveforms) is generated into `web/src/protocol/generated/constants.ts` from the Rust that clamps, and checked by the test that checks the generated types; the client's mock engine and its controls read it and keep no copy | Built (step 14) |
 | D20 | An intent that adds or takes out nodes or cables has no event a client could apply: `Applied.restructured` is set and the subscribers are given a snapshot at once, at the revision after the intent's, so that the controller's projection of the graph (the order of the nodes, the audio path, the layout of the telemetry) is the only one; the structural events of §5 are not built | Built (step 15) |
 | D21 | Where a cable may end is the model's rule (`SessionModel::param_targets`: a lane's modulator reaches its lane's chain, a group's its members' chains and its bus effects); `AddModEdge` refuses the rest. A client that marks the valid ports of a cable being dragged reads the rule from the graph by the `parent` of each node (`reachFrom`), and a fixture the controller writes (`reach.json`) pins the two together, so that they cannot drift | Built (step 15) |
+| D22 | Replacing a lane's instrument takes out every cable that drove the old plugin's parameters (a cable names its parameter by the plugin's own index, so one kept would drive whatever the new plugin has at that index); keeping the cables whose parameter the new plugin has under the same name is a later refinement, a TODO in `CLAUDE.md` | Built (step 20) |
+| D23 | The tests own the scene they take for the known one (`web/src/client/fixtures/tracer.toml`), and the examples are for people: a Save in the page writes to the file the program serves, and the way to try the program is to serve an example | Built (step 20) |
 
 Open questions
 
