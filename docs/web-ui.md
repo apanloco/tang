@@ -877,7 +877,10 @@ implementations. The TUI golden tests are the regression net.
    CLAP / VST3 / LV2 backends. *Exit:* build a session in the browser and load
    it in the TUI unchanged.
 2. **Piano parity:** scale / lock, held notes, chords, BPM. *Exit:* play from
-   the browser keyboard; held notes and chords match the TUI.
+   the browser keyboard; held notes and chords match the TUI. (The computer keyboard
+   plays notes in the page since step 16, ahead of this phase, so that what is built
+   can be tried by ear without a MIDI keyboard; still to do: showing the scale and the
+   held notes, chords, BPM, an on-screen keyboard.)
 3. **Modulation, groups, patterns, MIDI-learn on the canvas.** *Exit:*
    everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
    a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
@@ -1574,6 +1577,48 @@ Each step is a reviewable change; the TUI must not regress at any point.
     plugin it drives whatever has that index there, until it is drawn again (the TUI's `i` does this
     today). Phase 1's replace-instrument intent has to decide: re-resolve a cable by the parameter's
     name, or take the cable out.
+
+- [x] **16. The keys of the computer play in the browser (a first piece of phase 2, ahead of
+  phase 1, D18).** The page could build modulation but not make a sound: a note came only from a
+  MIDI keyboard, so a person without one could not try what they drew by ear. The page now plays
+  the TUI's tracker layout with the keys of the computer. *Done when:* in a browser on the real
+  program, holding a key raises the master's meter and letting go lowers it, and the octave keys
+  change what a key plays.
+  - **As built.** `web/src/client/keyboard.ts` (framework-agnostic, like the rest of the client
+    layer): `noteOf(code, octave)` is the layout of `src/piano.rs` by the *physical* key
+    (`KeyboardEvent.code`: Z S X D C V G B H N J M , L . ; / from the octave's C and Q 2 W 3 E R 5 T
+    6 Y 7 U I 9 O 0 P an octave above), `[` and `]` change the octave from 0 to 8, and
+    `KeyboardPiano` turns key events into `noteOn` (velocity 100, as the TUI's) and `noteOff`. It
+    remembers the note each key began and ends *that* one (the octave can change while a key is held),
+    counts the keys that hold a note (two keys can come to the same one), plays a key that repeats
+    once, leaves keys with Control, Command or Alt to the browser, and leaves every key to a place
+    that takes text (a field, a text area, a list, anything editable). `app/useKeyboardPiano.ts`
+    listens on the window (a key pressed with the focus on a knob or a button is the piano's too),
+    lets go of what is held when the window loses the focus or the page is hidden, and when it is
+    taken off; the header says `Keys: octave 4`.
+  - **Tests.** 27 Vitest tests (the layout key by key against CLAUDE.md's table; the octave range
+    and the notes MIDI can hold; every case above; the page's four; the hook's five over a client that
+    writes down what it is asked, which includes that every listener put on the window and the
+    document is taken away again) and a browser test on the real program (the null backend: the
+    master's meter is below -50 dB, rises while `z` is down, falls when it is up, and the same at the
+    next octave after `]`). 35 mutations of the module, the hook and the page: 31 caught at once, four
+    that were not and showed a real gap (a key that repeats counted twice would leave its note on
+    for ever, and the test looked only at the first `noteOn`; a `contenteditable="false"` element
+    was taken for a place that takes text; and two listeners that were not taken away again), each
+    now tested and caught. One mutation of the browser test survived and is not a gap: the
+    oscillator does not scale its level with the velocity, so the meter cannot tell it (the
+    velocity is checked in the unit tests).
+  - **Found on the way.** The TUI's virtual piano (`src/piano.rs`) has the bug the page's piano was
+    written not to have: a key is released as the note it *now* maps to, so a key held while `[` or
+    `]` is pressed ends a different note than it began and leaves the first one on (found by
+    reading; not fixed in this step). The TUI cannot play from the computer keyboard outside
+    `play` at all (CLAUDE.md's TODO of the Piano tab), so in `tang --web` the browser is the way
+    to play with the keys.
+  - **Not done.** An on-screen keyboard (a touch screen); showing the notes that are held and the
+    piano's scale in the page; chords; BPM; Web MIDI. The keys are named by position, as a US
+    keyboard has them, not by what is printed on them: on another layout `;` is the key right
+    of `L` and `/` the key right of `.`, whatever they print there. By ear, on a real device,
+    nothing was checked beyond the meter.
 
 ## 13. Later: track B (`builtin:patch`)
 

@@ -6,6 +6,7 @@ import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PatchView } from "./patch/PatchView";
+import { useKeyboardPiano } from "./useKeyboardPiano";
 import "./App.css";
 
 /** The session as JSON, for whoever wants to see what the server sent. Made only while it is shown: it is a lot to write on every change. */
@@ -31,17 +32,24 @@ function RawSession() {
   );
 }
 
+/** What the keys of the computer do: they play, from this octave. */
+const KEYS_HINT = "The keys Z S X D C V G B H N J M , L . ; / and Q 2 W 3 E R 5 T 6 Y 7 U I 9 O 0 P play notes; [ and ] change the octave";
+
 /** The whole page: the state of the connection, the session as a patch, and the session as the server sent it. */
 export function App({ engine }: { engine: EngineKind }) {
   const status = useClientState((state) => state.status);
   const problem = useClientState((state) => state.problem);
   const notices = useNotices();
+  const octave = useKeyboardPiano();
 
   return (
     <div className="tang-app">
       <header className="tang-app__bar">
         <h1 className="tang-app__title">Tang</h1>
         <ConnectionStatus status={status} />
+        <span className="tang-app__keys" title={KEYS_HINT}>
+          Keys: octave {octave}
+        </span>
         <span className="tang-app__engine">{engine === "mock" ? "mock engine" : "server"}</span>
       </header>
       <main className="tang-app__main">

@@ -1052,6 +1052,16 @@ Note: C  C# D  D# E  F  F# G  G# A  A# B  C  C# D  D# E
 
 Notes sound on key press and stop on key release.
 
+The browser page plays the same layout (`tang serve`, `tang --web`): `web/src/client/keyboard.ts`,
+which `web/src/app/useKeyboardPiano.ts` feeds with the window's keys, so a key pressed with the
+focus anywhere but in a field that takes text is the piano's. Keys are told by where they are
+(`KeyboardEvent.code`), so a layout that is not QWERTY keeps the shape of the piano; `[` and `]`
+change the octave (0 to 8) and the page's header says `Keys: octave 4`; a key with Control,
+Command or Alt is the browser's. A note ends with the key that began it, at the octave it began
+in, and what is held is let go when the window loses the focus or the page is hidden (the server
+ends a closed connection's notes too). The notes go to the server as `noteOn` and `noteOff`: the
+one note path, so the Piano tab's Locked mode applies to them.
+
 ## Signal chain
 
 ```
@@ -1388,7 +1398,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   dragged; `client/editor.ts` is where the page asks for them and `Notices` /
   `NoticeBoard` is where it says what the server refused; where a cable may end is the
   controller's rule, read from the graph by `client/reach.ts` and pinned to the controller's by
-  a fixture it writes, `web/src/client/fixtures/reach.json`). What the controller
+  a fixture it writes, `web/src/client/fixtures/reach.json`). Step 16 made the page's keys a
+  piano (`client/keyboard.ts`, `app/useKeyboardPiano.ts`; see "Virtual piano"). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON

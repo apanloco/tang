@@ -21,8 +21,13 @@
   color: var(--tang-root);
 }
 
-.tang-app__engine {
+.tang-app__keys {
   margin-left: auto;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-app__engine {
   font-size: var(--tang-text-small);
   color: var(--tang-text-muted);
 }

@@ -177,3 +177,92 @@ describe("the page", () => {
     expect(server.connections).toBe(0);
   });
 });
+
+describe("the computer keyboard", () => {
+  /** The notes the page has told the server, in order. */
+  const notes = (server: MockServer): string[] =>
+    server.received.flatMap((message) => {
+      if (message.type === "noteOn") return [`on ${String(message.note)} ${String(message.velocity)}`];
+      if (message.type === "noteOff") return [`off ${String(message.note)}`];
+      return [];
+    });
+
+  /** Wait until the server has been told exactly these notes (what the page sends arrives a moment after the key). */
+  const toHaveHeard = (server: MockServer, expected: string[]) =>
+    waitFor(() => {
+      expect(notes(server)).toEqual(expected);
+    });
+
+  /**
+   * Prove that what came before a probe was not sent: the probe is a key of the piano, and messages arrive in the
+   * order they were sent, so when it has come, so has everything before it that would have.
+   */
+  async function probe(server: MockServer, before: string[]): Promise<void> {
+    fireEvent.keyDown(document.body, { code: "KeyV" });
+    fireEvent.keyUp(document.body, { code: "KeyV" });
+    await toHaveHeard(server, [...before, "on 53 100", "off 53"]);
+  }
+
+  test("plays a note while a key is down, and keeps that key from the browser", async () => {
+    const { server } = page();
+    await screen.findByText("Connected");
+    // (`fireEvent` says whether the event was left alone: false is a key the page took.)
+    expect(fireEvent.keyDown(document.body, { code: "KeyZ" })).toBe(false);
+    await toHaveHeard(server, ["on 48 100"]);
+    expect(fireEvent.keyUp(document.body, { code: "KeyZ" })).toBe(false);
+    await toHaveHeard(server, ["on 48 100", "off 48"]);
+    // A key that is not on the piano is the browser's, and so is one with Control or Command held.
+    expect(fireEvent.keyDown(document.body, { code: "KeyA" })).toBe(true);
+    expect(fireEvent.keyDown(document.body, { code: "KeyZ", metaKey: true })).toBe(true);
+    expect(fireEvent.keyDown(document.body, { code: "KeyZ", ctrlKey: true })).toBe(true);
+    await probe(server, ["on 48 100", "off 48"]);
+  });
+
+  test("says which octave it plays at, and the bracket keys change it", async () => {
+    const { server } = page();
+    await screen.findByText("Connected");
+    expect(screen.getByText("Keys: octave 4")).toBeTruthy();
+    fireEvent.keyDown(document.body, { code: "BracketRight" });
+    expect(screen.getByText("Keys: octave 5")).toBeTruthy();
+    fireEvent.keyDown(document.body, { code: "KeyZ" });
+    await toHaveHeard(server, ["on 60 100"]);
+    fireEvent.keyDown(document.body, { code: "BracketLeft" });
+    fireEvent.keyDown(document.body, { code: "BracketLeft" });
+    expect(screen.getByText("Keys: octave 3")).toBeTruthy();
+    // The note that is held ends as it began, at the octave it was played in.
+    fireEvent.keyUp(document.body, { code: "KeyZ" });
+    await toHaveHeard(server, ["on 60 100", "off 60"]);
+  });
+
+  test("leaves the keys to a place that takes text", async () => {
+    const { server } = page();
+    await screen.findByText("Connected");
+    const field = document.createElement("input");
+    document.body.append(field);
+    expect(fireEvent.keyDown(field, { code: "KeyZ" })).toBe(true);
+    expect(fireEvent.keyDown(field, { code: "BracketRight" })).toBe(true);
+    expect(screen.getByText("Keys: octave 4")).toBeTruthy();
+    field.remove();
+    await probe(server, []);
+  });
+
+  test("lets go of what it plays when the window loses the focus, and when the page is hidden", async () => {
+    const { server } = page();
+    await screen.findByText("Connected");
+    fireEvent.keyDown(document.body, { code: "KeyZ" });
+    fireEvent.blur(window);
+    await toHaveHeard(server, ["on 48 100", "off 48"]);
+    // (The key coming up afterwards has nothing left to end.)
+    fireEvent.keyUp(document.body, { code: "KeyZ" });
+
+    fireEvent.keyDown(document.body, { code: "KeyC" });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    fireEvent(document, new Event("visibilitychange"));
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    await toHaveHeard(server, ["on 48 100", "off 48", "on 52 100", "off 52"]);
+    // A page that is shown again is not made to let go of what is held then.
+    fireEvent.keyDown(document.body, { code: "KeyB" });
+    fireEvent(document, new Event("visibilitychange"));
+    await toHaveHeard(server, ["on 48 100", "off 48", "on 52 100", "off 52", "on 55 100"]);
+  });
+});

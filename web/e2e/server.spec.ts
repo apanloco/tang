@@ -75,6 +75,31 @@ test("a change another front-end makes appears on the page", async ({ page }) =>
   await expect(page.getByRole("slider", { name: "resonance" })).toHaveAttribute("aria-valuenow", "3.14159");
 });
 
+// -- The keys of the computer --
+
+test("a key of the computer plays a note on the real server: the master's meter rises while it is down and falls when it is up", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const meter = page.getByRole("meter", { name: "Master level" });
+  const level = async (): Promise<number> => Number(await meter.getAttribute("aria-valuenow"));
+  // Quiet to begin with: nothing is playing (the meter's floor is -60 dB).
+  await expect.poll(level, { message: "the master is quiet before a key" }).toBeLessThan(-50);
+
+  await page.keyboard.down("z");
+  await expect.poll(level, { message: "the master has a level while a key is down" }).toBeGreaterThan(-50);
+  await page.keyboard.up("z");
+  await expect.poll(level, { message: "the master is quiet again when the key is up" }).toBeLessThan(-50);
+
+  // The octave keys change what a key plays, and the page says which octave it is at.
+  await expect(page.getByText("Keys: octave 4")).toBeVisible();
+  await page.keyboard.press("]");
+  await expect(page.getByText("Keys: octave 5")).toBeVisible();
+  await page.keyboard.down("z");
+  await expect.poll(level, { message: "a key plays at the new octave" }).toBeGreaterThan(-50);
+  await page.keyboard.up("z");
+  await expect.poll(level).toBeLessThan(-50);
+});
+
 // -- Building modulation on the real session --
 
 /** Where the dot of the knob called `name` is on its sweep right now, 0 to 1; null if it is not shown (nothing drives it). */
