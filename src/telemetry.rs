@@ -25,7 +25,7 @@ pub struct Slot(u32);
 
 impl Slot {
     /// The cell's number, for describing it to a client.
-    #[cfg_attr(not(test), expect(dead_code, reason = "clients are told the slots in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the layout a client gets (`app::layout`) names the slots; the web runtime sends it in step 10"))]
     pub fn index(self) -> u32 {
         self.0
     }
@@ -67,7 +67,7 @@ impl Telemetry {
     }
 
     /// The float last published in `slot` (0.0 before anything was).
-    #[cfg_attr(not(test), expect(dead_code, reason = "no front-end shows a peak or a value yet"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) reads the values for its telemetry frames"))]
     pub fn load(&self, slot: Slot) -> f32 {
         self.cells.get(slot.0 as usize).map_or(0.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed)))
     }

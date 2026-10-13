@@ -315,15 +315,15 @@ pub struct ParamSlot {
     pub value: f32,
     pub kind: ParamKind,
     /// What the value is measured in, for showing it (`ParameterInfo::unit`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the graph a client gets (`app::graph`), which the web runtime sends in step 10"))]
     pub unit: Option<String>,
     /// The sections the plugin files the parameter under, outermost first
     /// (`ParameterInfo::group`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the graph a client gets (`app::graph`), which the web runtime sends in step 10"))]
     pub group: Vec<String>,
     /// How many steps there are between `min` and `max`; 0 for a continuous
     /// parameter (`ParameterInfo::step_count`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the graph a client gets (`app::graph`), which the web runtime sends in step 10"))]
     pub step_count: u32,
 }
 
@@ -365,7 +365,7 @@ pub struct InstrumentNode {
     pub group: Option<usize>,
     /// Where the audio thread publishes the lane's output level (telemetry);
     /// `None` if the slots had run out.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which the web runtime sends in step 10"))]
     pub meter: Option<MeterSlots>,
 }
 
@@ -384,7 +384,7 @@ pub struct GroupNode {
     pub modulators: Vec<ModulatorSlot>,
     /// Where the audio thread publishes the bus's output level (telemetry);
     /// `None` if the slots had run out.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which the web runtime sends in step 10"))]
     pub meter: Option<MeterSlots>,
 }
 
@@ -452,14 +452,14 @@ pub struct ModulatorSlot {
     pub targets: Vec<ModTargetSlot>,
     /// Where the audio thread publishes the modulator's output (telemetry);
     /// `None` if the slots had run out.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which the web runtime sends in step 10"))]
     pub output: Option<Slot>,
 }
 
 #[derive(Debug)]
 pub struct ModTargetSlot {
     /// The edge this target is, for as long as it exists.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the graph a client gets (`app::graph`), which the web runtime sends in step 10"))]
     pub edge: EdgeId,
     /// Slot the target lives on: 0 = instrument, 1..N = effects. Used to label
     /// the target with its plugin and to resolve cross-mod vs plugin params.
@@ -474,7 +474,7 @@ pub struct ModTargetSlot {
     /// Where the audio thread publishes the effective value of the parameter the
     /// target drives (telemetry); `None` for a target that drives a modulator's
     /// own field, or if the slots had run out.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the layout sent to clients reads it in step 8"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which the web runtime sends in step 10"))]
     pub effective: Option<Slot>,
 }
 

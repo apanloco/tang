@@ -173,7 +173,7 @@ pub enum EdgeKind {
     Modulation { id: EdgeId, amount: f32 },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 pub struct Endpoint {
     pub node: NodeId,
@@ -181,7 +181,7 @@ pub struct Endpoint {
 }
 
 /// Where on a node an edge attaches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Port {
@@ -300,7 +300,7 @@ impl SessionModel {
     /// Where a target of a modulator in the rack `rack` at `at` points, as a port;
     /// `None` if what it points at is not there (or is not something that rack can
     /// drive).
-    fn aim(&self, at: ModulatorLocation, rack: &[ModulatorSlot], kind: &ModTargetKind) -> Option<Endpoint> {
+    pub(super) fn aim(&self, at: ModulatorLocation, rack: &[ModulatorSlot], kind: &ModTargetKind) -> Option<Endpoint> {
         use ModTargetKind as K;
         let param = |node: NodeId, index: u32| Endpoint { node, port: Port::Param { index } };
         let sibling = |mod_index: usize, port: Port| rack.get(mod_index).map(|m| Endpoint { node: m.node, port });

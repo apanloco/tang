@@ -9,9 +9,11 @@ pub mod catalog;
 pub mod controller;
 pub mod graph;
 pub mod intent;
+pub mod layout;
 pub mod load;
 pub mod model;
 pub mod protocol;
 pub mod save;
+pub mod snapshot;
 #[cfg(test)]
 pub mod testutil;

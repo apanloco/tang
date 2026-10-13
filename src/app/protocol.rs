@@ -34,6 +34,8 @@ mod typescript {
 
     use crate::app::graph::Graph;
     use crate::app::intent::{Event, Intent, StampedEvent};
+    use crate::app::layout::TelemetryLayout;
+    use crate::app::snapshot::Snapshot;
 
     /// Where the generated TypeScript is committed.
     fn generated_dir() -> PathBuf {
@@ -51,6 +53,8 @@ mod typescript {
         Event::export_all(&cfg)?;
         StampedEvent::export_all(&cfg)?;
         Graph::export_all(&cfg)?;
+        TelemetryLayout::export_all(&cfg)?;
+        Snapshot::export_all(&cfg)?;
         Ok(())
     }
 
