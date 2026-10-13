@@ -18,7 +18,7 @@ test("the page connects to the real server and shows its session", async ({ page
   await page.goto("/");
   await expect(page.getByRole("status")).toHaveText("Connected");
   await expect(page.getByText("server", { exact: true })).toBeVisible();
-  await expect(page.getByRole("slider", { name: "cutoff" })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "cutoff", exact: true })).toBeVisible();
   await page.getByText("Session as JSON").click();
   const session = JSON.parse((await page.locator(".tang-session").textContent()) ?? "") as Session;
   expect(session.meta.file).toBe("tracer.toml");

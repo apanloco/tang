@@ -97,6 +97,72 @@ describe("the patch", () => {
     expect(cableWidth(-1)).not.toBe(cableWidth(0.4));
   });
 
+  test("puts a slider for its depth on each modulation cable, named for what the cable joins", async () => {
+    await rig(<PatchView />);
+    const depth = await screen.findByRole<HTMLInputElement>("slider", { name: "Depth of LFO → Filter: cutoff" });
+    expect([depth.min, depth.max, depth.step, depth.value]).toEqual(["-1", "1", "0.01", "0.4"]);
+    expect(depth.getAttribute("aria-valuetext")).toBe("40%");
+    expect(screen.getAllByRole("slider", { name: /^Depth of / })).toHaveLength(1); // none on the audio cables
+  });
+
+  test("turns the depth of a cable on the cable: shown at once, sent on the frame as a setting of the cable, and the cable follows", async () => {
+    const { clock, requests, view } = await rig(<PatchView />);
+    const depth = await screen.findByRole<HTMLInputElement>("slider", { name: "Depth of LFO → Filter: cutoff" });
+    fireEvent.change(depth, { target: { value: "-0.75" } });
+    expect(depth.value).toBe("-0.75");
+    expect(depth.getAttribute("aria-valuetext")).toBe("-75%");
+    expect(requests()).toEqual([]); // not before the frame
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setEdgeDepth", edge: 0, depth: -0.75 } }]);
+    });
+    await waitFor(() => {
+      expect(view.container.querySelector<SVGPathElement>(".tang-cable--modulation")?.style.strokeWidth).toBe(String(cableWidth(-0.75)));
+    });
+  });
+
+  test("sends a depth when the gesture that set it ends: the key let go, the pointer let go, the focus gone (one intent a frame)", async () => {
+    const { requests, clock } = await rig(<PatchView />);
+    const depth = await screen.findByRole<HTMLInputElement>("slider", { name: "Depth of LFO → Filter: cutoff" });
+    const ends: [string, () => void][] = [
+      ["0.5", () => fireEvent.keyUp(depth, { key: "ArrowUp" })],
+      ["0.6", () => fireEvent.pointerUp(depth)],
+      ["0.7", () => fireEvent.blur(depth)],
+    ];
+    for (const [value, end] of ends) {
+      fireEvent.change(depth, { target: { value } });
+      end(); // (not waiting for the frame)
+      await waitFor(() => {
+        expect(requests().at(-1)).toEqual({ intent: { type: "setEdgeDepth", edge: 0, depth: Number(value) } });
+      });
+      act(() => {
+        clock.tick(16 * (requests().length + 1)); // the next frame, which is the one that is allowed the next intent
+      });
+    }
+    expect(requests()).toHaveLength(3);
+  });
+
+  test("follows a depth that somebody else sets", async () => {
+    const { server } = await rig(<PatchView />);
+    const depth = await screen.findByRole<HTMLInputElement>("slider", { name: "Depth of LFO → Filter: cutoff" });
+    act(() => {
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: -0.2 });
+    });
+    await waitFor(() => {
+      expect(depth.value).toBe("-0.2");
+    });
+    expect(depth.getAttribute("aria-valuetext")).toBe("-20%");
+    // (A whole percent, though 0.29 times 100 is not quite 29.)
+    act(() => {
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: 0.29 });
+    });
+    await waitFor(() => {
+      expect(depth.getAttribute("aria-valuetext")).toBe("29%");
+    });
+  });
+
   test("marks the port of the control that a cable ends at, and no other", async () => {
     await rig(<PatchView />);
     const fil = await nodeOf(filter.id);

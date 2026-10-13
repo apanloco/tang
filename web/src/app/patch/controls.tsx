@@ -8,9 +8,9 @@ import { memo, useMemo, useSyncExternalStore } from "react";
 import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
 import { slotReader } from "../../client/readers";
-import { gainOf, modulatorFieldOf, paramOf } from "../../client/selectors";
-import { GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
-import type { Gain, ModulatorField, NodeId, Param } from "../../protocol";
+import { cableDepthOf, gainOf, modulatorFieldOf, paramOf } from "../../client/selectors";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
+import type { EdgeId, Gain, ModulatorField, NodeId, Param } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import type { Scale } from "../../ui/knob-geometry";
@@ -225,4 +225,49 @@ export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; g
 /** A setting of a modulator, in a cell of the node's grid: a choice for the waveform, a knob for the rest. */
 export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, field }: { node: NodeId; field: ModulatorField }) {
   return <div className="tang-cell">{field === "waveform" ? <WaveformControl node={node} /> : <ModulatorFieldControl node={node} field={field} />}</div>;
+});
+
+/** A depth as a person says it: a percentage, which goes below nothing when the cable pulls the other way. */
+export const percent = (depth: number): string => `${String(Math.round(depth * 100))}%`;
+
+/**
+ * How deep a modulation cable pulls, as a slider on the cable (a depth is read in a glance
+ * and set in a stroke: a knob is more than the cable has room for). `label` says what the
+ * cable joins. It is turned like any control: what the user has set is shown until the engine
+ * has answered, at most one intent goes in a frame, and one that ends a gesture goes at once.
+ */
+export const CableDepthControl = memo(function CableDepthControl({ edge, label }: { edge: EdgeId; label: string }) {
+  const control = useDrive().cableDepth(edge);
+  const stored = useClientState((state) => cableDepthOf(state, edge));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  const [min, max] = DEPTH_RANGE;
+  const commit = (): void => {
+    control.commit();
+  };
+  return (
+    <label className="tang-depth">
+      <input
+        type="range"
+        className="tang-depth__slider"
+        aria-label={`Depth of ${label}`}
+        aria-valuetext={percent(shown)}
+        min={min}
+        max={max}
+        step={0.01}
+        value={shown}
+        onChange={(event) => {
+          control.set(event.target.valueAsNumber);
+        }}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+      {/* (Not an `<output>`, which is a status to a screen reader: the slider has said it.) */}
+      <span className="tang-depth__value" aria-hidden="true">
+        {percent(shown)}
+      </span>
+    </label>
+  );
 });

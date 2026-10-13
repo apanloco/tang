@@ -142,3 +142,35 @@
   stroke: var(--tang-modulation);
   stroke-dasharray: 7 5;
 }
+
+/* The depth of a modulation cable, as a slider at the middle of it: in the layer React Flow keeps
+   for what labels a cable, which is over the nodes and has to be told to take the pointer. */
+.tang-depth-anchor {
+  position: absolute;
+  z-index: 20;
+  pointer-events: all;
+}
+
+.tang-depth {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+  padding: 2px var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: 999px;
+  background: var(--tang-surface);
+  color: var(--tang-text-muted);
+  font: var(--tang-text-small) / 1 var(--tang-mono);
+}
+
+.tang-depth__slider {
+  width: 72px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--tang-modulation);
+}
+
+.tang-depth__value {
+  min-width: 4ch;
+  text-align: right;
+}

@@ -24,7 +24,7 @@ test("the page the program serves connects to the program and shows its session"
   expect(await page.content(), "web/dist is not built: run `npm run build`").toContain('id="root"');
   await expect(page.getByRole("status")).toHaveText("Connected");
   await expect(page.getByText("server", { exact: true })).toBeVisible();
-  await expect(page.getByRole("slider", { name: "cutoff" })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "cutoff", exact: true })).toBeVisible();
   await page.getByText("Session as JSON").click();
   const session = JSON.parse((await page.locator(".tang-session").textContent()) ?? "") as Session;
   expect(session.meta.file).toBe("tracer.toml");
