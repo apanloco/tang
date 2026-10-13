@@ -8,7 +8,8 @@ import { TANG } from "../playwright.config";
 
 /** What the spy in the page has seen. Times are the page's `performance.now()`, in milliseconds. */
 export interface Wire {
-  sends: { reqId: number; at: number; intent: { type: string; value: number } }[];
+  /** `frame` is how many animation frames the page had started when the request left (see `spyOnTheWire`). */
+  sends: { reqId: number; at: number; frame: number; intent: { type: string; value: number } }[];
   acks: { reqId: number; at: number }[];
   /** Pointer moves seen by the page, when each was. */
   moves: number[];
@@ -31,6 +32,21 @@ export async function spyOnTheWire(page: Page): Promise<void> {
     window.__RealWebSocket = Original;
     const wire: NonNullable<Window["__wire"]> = { sends: [], acks: [], moves: [], binary: 0 };
     window.__wire = wire;
+    // Count the animation frames the page has started: every callback of a frame is given the
+    // same time, so the count goes up at the first of them, before any of the page's runs. Two
+    // requests with the same count left in one frame, however far apart in milliseconds (a
+    // browser that stalls runs two frames a few milliseconds apart, which is not the same frame).
+    let frames = 0;
+    let lastFrameTime = Number.NaN;
+    const request = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) =>
+      request((time) => {
+        if (time !== lastFrameTime) {
+          lastFrameTime = time;
+          frames += 1;
+        }
+        callback(time);
+      });
     class Spy extends Original {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
@@ -47,7 +63,7 @@ export async function spyOnTheWire(page: Page): Promise<void> {
       override send(data: string | BufferSource | Blob): void {
         if (typeof data === "string" && data.includes('"request"')) {
           const message = JSON.parse(data) as { type: string; reqId: number; intent: { type: string; value: number } };
-          if (message.type === "request") wire.sends.push({ reqId: message.reqId, at: performance.now(), intent: message.intent });
+          if (message.type === "request") wire.sends.push({ reqId: message.reqId, at: performance.now(), frame: frames, intent: message.intent });
         }
         super.send(data);
       }

@@ -173,8 +173,9 @@ test.describe("the performance of the tracer scene (docs/web-ui.md §9.4)", () =
     // One intent a frame at most: a drag of 120 moves is a lot fewer intents than moves.
     expect(sends.length).toBeGreaterThan(3);
     expect(sends.length).toBeLessThanOrEqual(wire.moves.length);
-    const gaps = sends.slice(1).map((send, i) => send.at - (sends[i]?.at ?? send.at));
-    expect(Math.min(...gaps), "two intents in one frame").toBeGreaterThan(4);
+    // (Counted in frames, not milliseconds: a browser that stalls runs two frames a few milliseconds apart.)
+    const frames = sends.map((send) => send.frame);
+    expect(new Set(frames).size, "two intents in one frame").toBe(frames.length);
 
     // Soon after the pointer: within a frame or two of the latest move.
     const delays = sends.map((send) => {
