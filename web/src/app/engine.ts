@@ -2,22 +2,39 @@
 // the page (`?engine=mock`), which needs nothing but the page itself.
 import { Client } from "../client/connection";
 import { MockServer } from "../client/mock";
+import type { MockOptions } from "../client/mock";
 import { stressSnapshot } from "../client/stress";
 import { serverUrl, tokenFromHash, webSocketTransport } from "../client/websocket";
 
 export type EngineKind = "server" | "mock";
 
-/** The session the mock engine serves: the tracer, or the big one that the performance test runs on. */
-export type SceneKind = "tracer" | "stress";
+/**
+ * The session the mock engine serves: the tracer, the big one that the performance test runs on, or two lanes with an
+ * LFO each (where a cable can be drawn out of reach, which the tracer's one lane has no room for).
+ */
+export type SceneKind = "tracer" | "stress" | "lanes";
 
 /** The engine a page address asks for: `?engine=mock` for the mock, the server otherwise. */
 export function engineFor(search: string): EngineKind {
   return new URLSearchParams(search).get("engine") === "mock" ? "mock" : "server";
 }
 
-/** The scene an address asks of the mock engine: `?scene=stress` for the big one, the tracer otherwise. */
+/** The scene an address asks of the mock engine: `?scene=stress` for the big one, `?scene=lanes` for the two lanes, the tracer otherwise. */
 export function sceneFor(search: string): SceneKind {
-  return new URLSearchParams(search).get("scene") === "stress" ? "stress" : "tracer";
+  const scene = new URLSearchParams(search).get("scene");
+  return scene === "stress" || scene === "lanes" ? scene : "tracer";
+}
+
+/** The snapshot of a scene, or nothing for the tracer, which the mock serves by default. */
+function snapshotOf(scene: SceneKind): MockOptions {
+  switch (scene) {
+    case "stress":
+      return { snapshot: stressSnapshot() };
+    case "lanes":
+      return { snapshot: stressSnapshot({ lanes: 2, lfosPerLane: 1, targetsPerLfo: 1 }) };
+    case "tracer":
+      return {};
+  }
 }
 
 export interface Connection {
@@ -28,7 +45,7 @@ export interface Connection {
 /** A client for the page at `location`, not yet started. */
 export function createConnection(location: Pick<Location, "protocol" | "host" | "search" | "hash">): Connection {
   const engine = engineFor(location.search);
-  const mock = (): MockServer => new MockServer(sceneFor(location.search) === "stress" ? { snapshot: stressSnapshot() } : {});
+  const mock = (): MockServer => new MockServer(snapshotOf(sceneFor(location.search)));
   const transport = engine === "mock" ? mock().transport : webSocketTransport(serverUrl(location));
   // The views draw the levels and what the modulators do, which the server only makes for those who ask.
   return { client: new Client({ transport, token: tokenFromHash(location.hash), telemetry: ["meters", "modulation"] }), engine };

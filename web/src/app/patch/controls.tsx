@@ -3,7 +3,7 @@
 // has set it to until the server has answered (`Drive`), and draws the modulation on it:
 // the ring from the cables that end at it and the dot from the telemetry.
 import { Handle, Position } from "@xyflow/react";
-import { memo, useMemo, useSyncExternalStore } from "react";
+import { memo, useContext, useMemo, useSyncExternalStore } from "react";
 
 import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
@@ -16,6 +16,7 @@ import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import type { Scale } from "../../ui/knob-geometry";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
+import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
@@ -207,20 +208,17 @@ export const WaveformControl = memo(function WaveformControl({ node }: { node: N
 });
 
 /**
- * A parameter in a node with a place on its top edge where a cable from a modulator ends.
- * (That the control is there when a cable ends at it is for `toFlow` to see to: a
- * parameter that is driven is always among those a node shows.)
+ * A parameter in a node with a place on its top edge where a cable from a modulator ends, drawn by dragging
+ * one to it (a port does not start a cable). (That the control is there when a cable ends at it is for
+ * `toFlow` to see to: a parameter that is driven is always among those a node shows.)
  */
 export const ParamCell = memo(function ParamCell({ node, index, driven }: { node: NodeId; index: number; driven: boolean }) {
+  // While a cable is dragged, the ports that take it say so.
+  const takes = useContext(ConnectingContext)?.has(keyOf(node, index)) ?? false;
+  const classes = ["tang-port", "tang-port--param", ...(driven ? ["tang-port--driven"] : []), ...(takes ? ["tang-port--takes"] : [])];
   return (
     <div className="tang-cell">
-      <Handle
-        isConnectable={false}
-        type="target"
-        position={Position.Top}
-        id={`param-${String(index)}`}
-        className={driven ? "tang-port tang-port--param tang-port--driven" : "tang-port tang-port--param"}
-      />
+      <Handle isConnectableStart={false} type="target" position={Position.Top} id={`param-${String(index)}`} className={classes.join(" ")} />
       <ParamControl node={node} index={index} />
     </div>
   );

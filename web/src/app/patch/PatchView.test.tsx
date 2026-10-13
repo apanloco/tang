@@ -313,14 +313,25 @@ describe("the patch", () => {
     expect(new Set(ports)).toEqual(new Set(["top"]));
   });
 
-  test("cannot be rearranged, selected or cabled by hand yet", async () => {
+  test("cannot be rearranged or selected, and takes a cable only at a modulator's output (to start one) and at a parameter's port (to end one)", async () => {
     const { view } = await rig(<PatchView />);
     await nodeOf(filter.id);
     for (const node of Array.from(view.container.querySelectorAll(".react-flow__node"))) {
       expect(node.classList.contains("draggable")).toBe(false);
       expect(node.classList.contains("selectable")).toBe(false);
     }
-    expect(view.container.querySelectorAll(".react-flow__handle.connectable")).toHaveLength(0);
+    const connectable = Array.from(view.container.querySelectorAll(".react-flow__handle.connectable"));
+    const ports = connectable.map((handle) => handle.getAttribute("data-handleid") ?? "?");
+    expect(ports.filter((port) => port === "modOut")).toHaveLength(1);
+    expect(ports.filter((port) => port.startsWith("param-"))).toHaveLength(12); // the oscillator's eight and the filter's four
+    expect(ports).toHaveLength(13); // and no audio port: the audio path is derived, there is nothing to draw
+    // A cable is started at a modulator's output and ends at a parameter, never the other way.
+    const output = view.container.querySelector(".react-flow__handle[data-handleid='modOut']");
+    expect(output?.classList.contains("connectablestart")).toBe(true);
+    for (const handle of connectable.filter((h) => h.getAttribute("data-handleid")?.startsWith("param-"))) {
+      expect(handle.classList.contains("connectablestart")).toBe(false);
+      expect(handle.classList.contains("connectableend")).toBe(true);
+    }
   });
 
   describe("adding a modulator", () => {

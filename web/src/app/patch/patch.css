@@ -250,3 +250,22 @@
 .tang-drives:disabled {
   opacity: 0.7;
 }
+
+/* While a cable is dragged: the ports that take it, and the one it is over. */
+.tang-port--takes {
+  width: 12px;
+  height: 12px;
+  opacity: 1;
+  box-shadow: 0 0 0 4px rgb(208 112 208 / 0.4);
+}
+
+.tang-port--param.valid {
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 0 0 5px rgb(208 112 208 / 0.7);
+}
+
+/* A modulator's output is where a cable is started: it says so to the pointer. */
+.tang-port--mod {
+  cursor: crosshair;
+}

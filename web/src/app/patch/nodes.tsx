@@ -14,6 +14,7 @@ import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useEditor, useFrames } from "../ClientProvider";
+import { focusWhenPossible } from "../focus";
 import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell } from "./controls";
 import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
 import type { PatchNode } from "./toFlow";
@@ -101,7 +102,7 @@ function RemoveModulatorButton({ node, name, parent }: { node: NodeId; name: str
       onClick={() => {
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
         void editor.removeModulator(node).then((removed) => {
-          if (removed && parent !== null) document.getElementById(addModulatorId(parent))?.focus();
+          if (removed && parent !== null) focusWhenPossible(addModulatorId(parent));
         });
       }}
     >
@@ -140,7 +141,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
           <DrivePicker modulator={data.node} name={data.name} targets={data.targets} />
         </div>
       </div>
-      <Handle isConnectable={false} type="source" position={Position.Bottom} id="modOut" className="tang-port tang-port--mod" />
+      <Handle type="source" position={Position.Bottom} id="modOut" className="tang-port tang-port--mod" />
     </div>
   );
 }

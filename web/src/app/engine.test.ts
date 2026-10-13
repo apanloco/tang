@@ -3,13 +3,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createConnection, engineFor, sceneFor } from "./engine";
 
 describe("which scene a page asks of the mock", () => {
-  test("is the tracer, unless it asks for the stress scene", () => {
+  test("is the tracer, unless it asks for the stress scene or the two lanes", () => {
     expect(sceneFor("")).toBe("tracer");
     expect(sceneFor("?engine=mock")).toBe("tracer");
     expect(sceneFor("?scene=tracer")).toBe("tracer");
     expect(sceneFor("?scene=whatever")).toBe("tracer");
     expect(sceneFor("?engine=mock&scene=stress")).toBe("stress");
     expect(sceneFor("?scene=stress&engine=mock")).toBe("stress");
+    expect(sceneFor("?engine=mock&scene=lanes")).toBe("lanes");
   });
 
   test("gives the mock the session that was asked for", async () => {
@@ -17,6 +18,7 @@ describe("which scene a page asks of the mock", () => {
     for (const [search, modulators] of [
       ["?engine=mock", 1],
       ["?engine=mock&scene=stress", 32],
+      ["?engine=mock&scene=lanes", 2],
     ] as const) {
       const { client } = createConnection({ ...at, search });
       client.start();
