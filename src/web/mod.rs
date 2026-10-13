@@ -17,6 +17,7 @@ pub mod connection;
 pub mod hub;
 pub mod owner;
 pub mod security;
+pub mod server;
 
 /// What the owner of the controller shares with every connection and the telemetry
 /// pusher: things they only read.

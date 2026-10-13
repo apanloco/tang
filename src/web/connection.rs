@@ -121,6 +121,12 @@ impl Connection {
         Connection { id, hub, policy, shared, owner, notes, state, held: 0, limiter: RateLimiter::new(limits, now) }
     }
 
+    /// Whether the connection may go on without the token: it has none to give, or it
+    /// has given it.
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, State::Open)
+    }
+
     /// Say hello: the first message of the connection.
     pub fn open(&self) {
         self.reply(&ServerMessage::Hello {
@@ -234,6 +240,14 @@ impl Connection {
     }
 }
 
+/// However the task that owns a connection ends (it returns, it is cancelled with its
+/// runtime, it panics), the notes the client holds are ended.
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -337,6 +351,18 @@ mod tests {
         let mut rig = rig_with(guarded_policy(), Limits::default(), 16);
         rig.conn.open();
         assert_eq!(rig.said()[0]["needsToken"], json!(true));
+    }
+
+    #[test]
+    fn a_connection_is_open_when_it_needs_no_token_or_has_given_it() {
+        assert!(rig().conn.is_open());
+        let mut guarded = rig_with(guarded_policy(), Limits::default(), 16);
+        assert!(!guarded.conn.is_open());
+        guarded.send(json!({"type": "auth", "token": "wrong"}));
+        assert!(!guarded.conn.is_open());
+        let mut guarded = rig_with(guarded_policy(), Limits::default(), 16);
+        guarded.send(json!({"type": "auth", "token": "secret"}));
+        assert!(guarded.conn.is_open());
     }
 
     #[test]
@@ -494,6 +520,22 @@ mod tests {
         assert_eq!(rig.hub.client_count(), 0);
         rig.conn.close();
         assert!(rig.played().is_empty(), "closing twice ends nothing twice");
+    }
+
+    #[test]
+    fn a_connection_that_is_dropped_is_closed() {
+        let Rig { conn, hub, midi, held, .. } = {
+            let mut rig = rig();
+            rig.send(json!({"type": "noteOn", "note": 72, "velocity": 100}));
+            rig
+        };
+        assert_eq!(held.held(), [72]);
+        assert_eq!(hub.client_count(), 1);
+        drop(conn);
+        let played: Vec<MidiEvent> = midi.try_iter().collect();
+        assert_eq!(played, [(0, [0x90, 72, 100]), (0, [0x80, 72, 0])]);
+        assert!(held.held().is_empty());
+        assert_eq!(hub.client_count(), 0);
     }
 
     #[test]

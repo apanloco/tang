@@ -12,7 +12,7 @@ lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
 # The browser front-end (docs/web-ui.md). Off by default: the TypeScript
 # generated from the protocol types (`app::protocol`) and the web runtime (`web`).
-web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json"]
+web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json", "dep:axum", "dep:futures-util", "dep:tokio-tungstenite"]
 
 [dependencies]
 view = { path = "view" }
@@ -37,7 +37,13 @@ libloading = { version = "0.8", optional = true }
 ts-rs = { version = "12", optional = true }
 getrandom = { version = "0.4", optional = true }
 serde_json = { version = "1", optional = true }
-tokio = { version = "1", optional = true, features = ["sync", "rt-multi-thread", "net", "time", "macros"] }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio", "ws"] }
+# The WebSocket client of the server's tests (`web::server`); axum's `ws` is built on
+# the same `tokio-tungstenite`, and these two are what its client needs.
+tokio-tungstenite = { version = "0.29", optional = true, default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
+# One thread runs the server (a current-thread runtime), so no `rt-multi-thread`.
+tokio = { version = "1", optional = true, features = ["sync", "rt", "net", "time", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
