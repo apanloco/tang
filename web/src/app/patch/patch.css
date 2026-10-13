@@ -11,6 +11,12 @@
   --xy-background-pattern-dots-color-default: var(--tang-border);
 }
 
+/* React Flow gives a node that can be neither dragged nor selected `pointer-events: none`, which
+   would put the pane over its controls: the nodes are for turning knobs. */
+.tang-patch .react-flow__node {
+  pointer-events: all !important;
+}
+
 .tang-node {
   position: relative;
   width: 304px;

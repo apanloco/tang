@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { TANG } from "../playwright.config";
+import { resetTracer } from "./support";
 
 interface Session {
   meta: { file: string | null };
@@ -44,6 +45,10 @@ function inbox(socket: WebSocket): { next: () => Promise<Message> } {
       }),
   };
 }
+
+test.afterEach(async ({ page }) => {
+  await resetTracer(page);
+});
 
 test("a change another front-end makes appears on the page", async ({ page }) => {
   await page.goto("/");

@@ -7,7 +7,10 @@ export const VITE = 15173;
 
 export default defineConfig({
   testDir: "e2e",
-  fullyParallel: true,
+  // One at a time: the tests of the real program share its one session, which a test that turns a
+  // knob changes for every page that is open, so they must not overlap (and each puts it back).
+  fullyParallel: false,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
