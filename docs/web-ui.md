@@ -1650,7 +1650,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     cable on slot 0 keeps the old plugin's parameter *index*, range and label: with a different
     plugin it drives whatever has that index there, until it is drawn again (the TUI's `i` does this
     today). Phase 1's replace-instrument intent has to decide: re-resolve a cable by the parameter's
-    name, or take the cable out.
+    name, or take the cable out. (Step 20.1 took them out: fixed.)
 
 - [x] **16. The keys of the computer play in the browser (a first piece of phase 2, ahead of
   phase 1, D18).** The page could build modulation but not make a sound: a note came only from a
@@ -1732,7 +1732,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     browser has no button for one and no undo (a click on a "×" there would be final), and the mock
     engine would have to derive the audio path to do the same. `clear_instrument` (the first `d` on an
     instrument) leaves the cables to the plugin's parameters pointing at nothing (f66, with f51: what
-    to do with them when an instrument is replaced).
+    to do with them when an instrument is replaced). (Both are settled in step 20.1: the cables are taken out.)
 
 - [x] **18. Saving from the browser (phase 1).** The page could build modulation and play it, but
   nothing it did was kept unless the TUI was there to press `Ctrl+S`. *Done when:* on the real
@@ -1898,6 +1898,47 @@ Each step is a reviewable change; the TUI must not regress at any point.
     its own directory are found by it too), and a test on the real program starts it in a directory with
     a relative name and reads which file it says it saved. Four mutations, all caught. (The directory
     the test runs had made in the ROLI folder was taken away.)
+
+- [ ] **20. Instruments from the browser (phase 1).** The page could put effects in a chain, but the
+  instrument of a lane it could neither choose nor change. *Done when:* on the real program, a browser puts
+  an instrument that is installed in a lane (replacing the one it has) and in a lane of its own, hears the
+  difference, and the file the session is saved to has what it did. In parts, each its own commit: **20.1**
+  the controller's `put_instrument`, which the TUI's selector asks (and the two findings it settles, f51 and
+  f66); **20.2** `AddInstrument` and `ReplaceInstrument` as intents, with the client's `Editor` and the mock
+  engine; **20.3** the menus on a lane and in the header; **20.4** a browser test on the real program.
+  *Not done (later steps):* presets, ranges, groups, taking a lane out, undo.
+  - **20.1 as built.** `Controller::put_instrument(inst, id)` puts an instrument in a lane, replacing the one
+    it has (a lane that the TUI emptied with `d` is filled), as `add_effect` does an effect: loaded here, and
+    only from the catalog (an id or a path the catalog does not name is not loaded, an effect is not an
+    instrument), refused with nothing changed and nothing sent if the lane is not there, if the plugin does not
+    load, or if it has no audio output (one is enough: the audio thread plays a mono instrument on the left).
+    The plugin has the lane's own node, as the lane's instrument always had. **The cables that drove the old
+    plugin's parameters, a lane's and a group's, go first**, each by `take_out` with what drives their depths:
+    a cable names its parameter by the plugin's own *index*, so one left in place would drive whatever the new
+    plugin has at that index (f51, found in step 15: the TUI's `i` did this). `clear_instrument` (the first `d`)
+    takes them out too (f66: it left them pointing at a slot 0 that was not there). A **note remap** goes with
+    the plugin: the audio thread drops the remapper when the plugin it was for goes, and the model said the lane
+    still had one (the file saved would have had a remap the audio thread no longer had), so `set_instrument`
+    and `clear_instrument` forget it (`InstrumentNode::forget_remap`: no notes, the usual pitch bend range). The
+    TUI's `i` asks `put_instrument` now; its `n` (a new lane with an oscillator in it) still loads without the
+    catalog, which may not have been scanned when the key is pressed. What a person of the TUI sees: a
+    vibrato LFO on a lane's `detune` loses its cable when the instrument is replaced (it would have driven
+    whichever parameter has that index in the new plugin); the modulator stays, ready to be drawn again.
+    Not done: keeping the cable of a parameter the new plugin has under the same name (CLAUDE.md, a TODO).
+  - **20.1 tests.** Twelve in the controller: an instrument put in a lane in the model and in the commands,
+    the cables of the lane's own modulator and of the group's going first (`RemoveModTarget …` and
+    `RemoveGroupModTarget …`, then `SwapInstrument`), the parameters the new plugin's own and the lane as it
+    was; an empty lane filled, keeping its filter and volume; the remap (and the pitch bend range) forgotten, in the model and in
+    the file; the model and a real audio graph agreeing after an instrument in each lane of four scenes; what
+    is refused (no catalog at all, a path, an id and a name that the catalog does not have, an effect), a
+    plugin the catalog names and that does not load (what the error says names no path), one with no audio
+    output (before a cable is taken out), one with a single output (accepted), a lane that is not there; that
+    no id is used up for the plugin; and `clear_instrument` taking the cables out first and the remap with it.
+    In the TUI, one new golden test (the vibrato's cable goes, the other lane's stays) and three that pinned
+    command lists (two of a replace, one of the two `d`s), which have the cable's removal in them now. 19 mutations of
+    the code written, 16 caught at once; the three that were not showed a remap that `clear_instrument` kept, an
+    instrument with exactly one output that nothing said was accepted, and an id used up for a plugin that has
+    the lane's: covered. Rust: 861 tests (848 before), 1008 and 10 on the real program with the `web` feature.
 
 ## 13. Later: track B (`builtin:patch`)
 

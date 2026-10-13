@@ -173,6 +173,14 @@ enum ChainAt {
     Bus(usize),
 }
 
+/// An instrument has to have an audio output, or there is nothing of it to hear (the first two are what is).
+fn has_audio_output(instrument: &dyn Plugin) -> Result<(), IntentError> {
+    if instrument.audio_output_count() == 0 {
+        return Err(IntentError::Invalid(format!("{} has no audio outputs", instrument.name())));
+    }
+    Ok(())
+}
+
 pub struct Controller {
     /// The instrument lanes and the submix groups.
     pub model: SessionModel,
@@ -299,6 +307,7 @@ impl Controller {
         if let Some(lane) = self.model.instruments.get_mut(inst) {
             slot.node = lane.node;
             lane.instrument = Some(slot);
+            lane.forget_remap();
         }
     }
 
@@ -389,12 +398,48 @@ impl Controller {
     /// Take the instrument plugin out of lane `inst`, which is left with what else it has: its effects, its
     /// modulators, its volume and range. False, sending nothing, if there is no such lane or it has no plugin.
     pub fn clear_instrument(&mut self, inst: usize) -> bool {
-        let Some(lane) = self.model.instruments.get_mut(inst) else { return false };
-        if lane.instrument.take().is_none() {
+        let Some(lane) = self.model.instruments.get(inst) else { return false };
+        if lane.instrument.is_none() {
             return false;
+        }
+        // The cables that drive the plugin's parameters go first: there is nothing for them to drive.
+        for edge in self.model.cables_into_plugin(lane.node) {
+            // (One that an earlier one took with it is not there any more.)
+            self.take_out(edge);
+        }
+        if let Some(lane) = self.model.instruments.get_mut(inst) {
+            lane.instrument = None;
+            lane.forget_remap();
         }
         let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
         true
+    }
+
+    /// Put the instrument `source` in lane `inst`, replacing the one it has (an empty lane is filled): loaded here, from the
+    /// catalog only, with the lane's node. The cables that drove the old plugin's parameters go first, since the new one has
+    /// parameters of its own; the lane keeps what else it has (effects, modulators, range, volume, group), but not a note
+    /// remap, which was for the old plugin (the audio thread drops it with the plugin). Refused, with nothing changed and
+    /// nothing sent, if there is no such lane; if `source` is not a plugin the catalog names, or is not an instrument, or does
+    /// not load, or has no audio outputs.
+    pub fn put_instrument(&mut self, inst: usize, source: &str) -> Result<(), IntentError> {
+        let loaded = self.load_from_catalog(source, true)?;
+        self.place_instrument(inst, loaded, source)
+    }
+
+    /// Put `loaded`, the plugin `source`, in lane `inst` (`put_instrument` says how, and when not).
+    fn place_instrument(&mut self, inst: usize, mut loaded: Box<dyn Plugin>, source: &str) -> Result<(), IntentError> {
+        let Some(lane) = self.model.instruments.get(inst) else { return Err(IntentError::Invalid(format!("there is no lane {inst}"))) };
+        has_audio_output(loaded.as_ref())?;
+        let node = lane.node;
+        if lane.instrument.is_some() {
+            for edge in self.model.cables_into_plugin(node) {
+                // (One that an earlier one took with it is not there any more.)
+                self.take_out(edge);
+            }
+        }
+        let slot = fresh_slot(loaded.as_mut(), source, node);
+        self.set_instrument(inst, loaded, slot);
+        Ok(())
     }
 
     /// Put the plugin `source` at the end of lane `inst`'s chain as an effect: loaded here, in a node of its own,
@@ -416,13 +461,19 @@ impl Controller {
     }
 
     /// The plugin `source` loaded to be an effect. The catalog has to name it and it must not be an instrument.
-    /// (Why it did not load goes to the log: it can name where the plugin is on this machine.)
     fn load_effect(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
+        self.load_from_catalog(source, false)
+    }
+
+    /// The plugin `source`, loaded, if the catalog names it and it is an instrument or not as `instrument` says. (Why it did
+    /// not load goes to the log: it can name where the plugin is on this machine.)
+    fn load_from_catalog(&mut self, source: &str, instrument: bool) -> Result<Box<dyn Plugin>, IntentError> {
         let Some(entry) = self.catalog.plugins().iter().find(|p| p.id == source) else {
             return Err(IntentError::Invalid(format!("{source} is not a plugin that is installed")));
         };
-        if entry.is_instrument {
-            return Err(IntentError::Invalid(format!("{} is an instrument, not an effect", entry.name)));
+        if entry.is_instrument != instrument {
+            let (is, isnt) = if instrument { ("an effect", "an instrument") } else { ("an instrument", "an effect") };
+            return Err(IntentError::Invalid(format!("{} is {is}, not {isnt}", entry.name)));
         }
         let name = entry.name.clone();
         plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime).map_err(|e| {
@@ -2895,6 +2946,183 @@ rate = 2.0
         assert!(ctl.add_bus_effect(1, "builtin:filter").is_err() && ctl.add_bus_effect(9, "builtin:filter").is_err());
         assert!(sent(&engine).is_empty());
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    // -- instruments --
+
+    #[test]
+    fn an_instrument_is_put_in_a_lane_in_the_model_and_in_the_engine_and_the_cables_to_the_old_one_go_first() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        // Lane 0's oscillator has a cable of its own lane's modulator to its detune (the third of that modulator's three)...
+        ctl.put_instrument(0, "builtin:osc").expect("an oscillator is put in");
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+        // ... and lane 1's has the group's (the third of its modulator's six).
+        ctl.put_instrument(1, "builtin:osc").unwrap();
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=2", "SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false"]);
+        let lane = &ctl.model.instruments[0];
+        let slot = lane.instrument.as_ref().expect("an instrument");
+        assert_eq!((slot.node, slot.name.as_str(), slot.id.as_str()), (lane.node, "Oscillator", "builtin:osc"), "the plugin sits in the lane's node");
+        assert!(slot.params.iter().all(|p| p.value == p.default), "the parameters are the new plugin's own");
+        // The lane is what it was, but for the plugin; so are the others.
+        assert_eq!((lane.volume, lane.group, lane.effects.len(), lane.modulators.len()), (1.0, Some(0), 2, 2));
+        assert!(dangling(&ctl.model).is_empty(), "no cable points at the plugin that went");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_instrument_is_put_in_a_lane_that_has_none_and_keeps_what_else_the_lane_has() {
+        // A lane that was emptied (by the TUI's `d`), with a filter and a volume of its own.
+        let (engine, mut ctl) = controller_with_builtins("[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.6\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n");
+        assert!(ctl.clear_instrument(0));
+        sent(&engine);
+        ctl.put_instrument(0, "builtin:osc").unwrap();
+        assert_eq!(sent(&engine), ["SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"], "no cable to take out");
+        let lane = &ctl.model.instruments[0];
+        assert_eq!(lane.instrument.as_ref().map(|p| (p.node, p.name.as_str())), Some((lane.node, "Oscillator")));
+        assert_eq!((lane.volume, lane.effects.len()), (0.6, 1), "the lane keeps what else it has");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lanes_note_remap_goes_with_the_instrument_it_was_for() {
+        // The audio thread drops the remapper with the plugin, and the model has to say the same.
+        let (engine, mut ctl) = controller_with_builtins(testutil::SETTINGS);
+        assert_eq!(ctl.model.instruments[0].remap.len(), 1);
+        assert_eq!(ctl.model.instruments[0].pitch_bend_range, 4.0);
+        sent(&engine);
+        ctl.put_instrument(0, "builtin:osc").unwrap();
+        assert!(ctl.model.instruments[0].remap.is_empty());
+        assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0, "a plugin of its own has the usual range until it is told otherwise");
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model.instruments, &ctl.model.groups).0, &[], None).unwrap();
+        assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
+    }
+
+    #[test]
+    fn clearing_a_lanes_instrument_takes_its_note_remap_with_it() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::SETTINGS);
+        assert_eq!((ctl.model.instruments[0].remap.len(), ctl.model.instruments[0].pitch_bend_range), (1, 4.0));
+        sent(&engine);
+        assert!(ctl.clear_instrument(0));
+        assert!(ctl.model.instruments[0].remap.is_empty(), "the audio thread drops the remapper with the plugin");
+        assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0);
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model.instruments, &ctl.model.groups).0, &[], None).unwrap();
+        assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
+    }
+
+    #[test]
+    fn instruments_that_are_put_in_leave_the_model_and_the_audio_thread_the_same() {
+        use crate::plugin::chain::AudioGraph;
+        for session in [testutil::CHAINS, testutil::LANES_IN_GROUPS, testutil::CABLES_THAT_DRIVE_CABLES, testutil::GROUPS] {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+            ctl.catalog.add(plugin::builtin::enumerate_plugins());
+            let same = |graph: &mut AudioGraph, ctl: &Controller, what: &str| {
+                graph.drain_commands();
+                assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
+                ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+            };
+            for inst in 0..ctl.model.instruments.len() {
+                ctl.put_instrument(inst, "builtin:osc").unwrap();
+                same(&mut graph, &ctl, &format!("after an instrument in lane {inst} of {session:.40}"));
+            }
+        }
+    }
+
+    #[test]
+    fn an_instrument_the_catalog_does_not_name_is_not_put_in() {
+        let untouched = load(testutil::CHAINS).model;
+        // No catalog at all: even a built-in is not one that was named.
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        let error = ctl.put_instrument(0, "builtin:osc").expect_err("not in the catalog").to_string();
+        assert!(error.contains("builtin:osc"), "{error}");
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        for source in ["./examples/plugin.clap", "/usr/lib/lv2/some.lv2", "clap:com.example.nothing", "vst3:Nothing", "builtin:no-such-plugin"] {
+            let error = ctl.put_instrument(0, source).expect_err(source).to_string();
+            assert!(error.contains(source), "{error}");
+        }
+        // An effect is not an instrument.
+        let error = ctl.put_instrument(0, "builtin:filter").expect_err("an effect").to_string();
+        assert_eq!(error, "Filter is an effect, not an instrument");
+        assert!(sent(&engine).is_empty(), "nothing was sent to the audio thread: no cable was taken out");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn a_plugin_that_the_catalog_names_and_that_does_not_load_is_not_put_in_as_an_instrument() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        ctl.catalog.add(vec![plugin::PluginInfo {
+            name: "Vanished".into(),
+            id: "./no-such-dir/Vanished.clap".into(),
+            is_instrument: true,
+            param_count: 3,
+            preset_count: 0,
+            path: "./no-such-dir/Vanished.clap".into(),
+            scan_ms: 0,
+        }]);
+        let error = ctl.put_instrument(0, "./no-such-dir/Vanished.clap").expect_err("it cannot be loaded").to_string();
+        assert!(error.contains("Vanished") && error.contains("could not be loaded"), "{error}");
+        assert!(!error.contains("no-such-dir"), "what the loader says can name where a plugin is on this machine: {error}");
+        assert!(sent(&engine).is_empty(), "the cables of the instrument that was there were not taken out for nothing");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn an_instrument_with_no_audio_output_is_turned_away_before_a_cable_is_taken_out() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        // Lane 0 has cables into its instrument, which are not taken out for a plugin that is then turned away.
+        let error = ctl.place_instrument(0, Box::new(testutil::FakeInstrument(0)), "test:none").expect_err("no output").to_string();
+        assert!(error.contains("FakeInstrument") && error.contains("no audio outputs"), "{error}");
+        assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn an_instrument_with_one_audio_output_is_put_in_and_the_audio_thread_plays_it_on_the_left() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        ctl.place_instrument(0, Box::new(testutil::FakeInstrument(1)), "test:mono").expect("a mono instrument is put in");
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2", "SwapInstrument inst=0 plugin=FakeInstrument bufs=1 remap=false"]);
+    }
+
+    #[test]
+    fn the_instrument_has_the_lanes_node_and_no_id_is_used_up_for_it() {
+        let (_engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        let before = ctl.model.alloc_node();
+        ctl.put_instrument(0, "builtin:osc").unwrap();
+        assert_eq!(ctl.model.alloc_node().0, before.0 + 1, "a plugin put in a lane has the lane's node: none is made for it");
+    }
+
+    #[test]
+    fn a_lane_that_is_not_there_gets_no_instrument() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        assert!(ctl.put_instrument(3, "builtin:osc").is_err() && ctl.put_instrument(9, "builtin:osc").is_err());
+        assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn clearing_a_lanes_instrument_takes_the_cables_to_it_out_first() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(ctl.clear_instrument(0));
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2", "ClearInstrument inst=0"]);
+        assert!(ctl.clear_instrument(1));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=2", "ClearInstrument inst=1"]);
+        assert!(dangling(&ctl.model).is_empty(), "no cable points at a plugin that is not there");
+        ctl.model.check_ids().unwrap();
+        // (A lane that has none has no cable to take out, and nothing to clear.)
+        assert!(!ctl.clear_instrument(1));
+        assert!(sent(&engine).is_empty());
     }
 
     #[test]

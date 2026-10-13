@@ -825,6 +825,46 @@ impl plugin::Plugin for MonoEffect {
     }
 }
 
+/// An instrument with this many audio outputs, no parameters and no sound: none is a MIDI utility, which has nothing to
+/// put in a lane to be heard; one is a mono instrument, which the lanes (stereo) play on the left.
+pub struct FakeInstrument(pub usize);
+
+impl plugin::Plugin for FakeInstrument {
+    fn name(&self) -> &str {
+        "FakeInstrument"
+    }
+    fn is_instrument(&self) -> bool {
+        true
+    }
+    fn sample_rate(&self) -> f32 {
+        48_000.0
+    }
+    fn audio_output_count(&self) -> usize {
+        self.0
+    }
+    fn audio_input_count(&self) -> usize {
+        0
+    }
+    fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], _: &mut [&mut [f32]]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn parameters(&self) -> Vec<plugin::ParameterInfo> {
+        Vec::new()
+    }
+    fn get_parameter(&mut self, _: u32) -> Option<f32> {
+        None
+    }
+    fn set_parameter(&mut self, _: u32, _: f32) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn presets(&self) -> Vec<plugin::Preset> {
+        Vec::new()
+    }
+    fn load_preset(&mut self, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 impl plugin::Plugin for DropProbe {
     fn name(&self) -> &str {
         "DropProbe"

@@ -725,6 +725,13 @@ pub struct InstrumentNode {
 }
 
 impl InstrumentNode {
+    /// The lane has no note remap any more, nor the pitch bend range that went with it: the audio thread drops the remapper
+    /// when the instrument it was for goes (a swap, a clear), and the model says what the audio thread has.
+    pub fn forget_remap(&mut self) {
+        self.remap.clear();
+        self.pitch_bend_range = 2.0;
+    }
+
     /// The node of the plugin in `slot` of the lane's chain (0 is the instrument, 1.. the effects), if there is one.
     pub fn plugin_node(&self, slot: usize) -> Option<NodeId> {
         match slot {

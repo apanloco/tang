@@ -774,11 +774,10 @@ impl State {
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
         match sel.mode {
             SelectorMode::Instrument => {
-                let (loaded, slot) = match self.ctl.load_plugin(&source) {
-                    Some(x) => x,
-                    None => return,
-                };
-                self.ctl.set_instrument(inst, loaded, slot);
+                if let Err(e) = self.ctl.put_instrument(inst, &source) {
+                    log::error!("Cannot put '{source}' in the lane: {e}");
+                    return;
+                }
             }
             SelectorMode::Effect => {
                 if let Err(e) = self.ctl.add_effect(inst, &source) {

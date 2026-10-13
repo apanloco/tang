@@ -444,7 +444,8 @@ parameters, its modulators' rates and stages, the depths of their cables), which
 value the user set again, unless a cable of the lane's own still drives it. The cables to the
 effects after a removed one are told their new slots (a group's, their new bus indices). A
 session keeps at least one lane: the last one is not taken out. `d` on an instrument that has
-a plugin empties it (`clear_instrument`) and a second `d` takes the lane out.
+a plugin empties it (`clear_instrument`: the cables that drove the plugin's parameters go first, and so does the
+lane's note remap, which the audio thread drops with the plugin) and a second `d` takes the lane out.
 
 **Limitation:** a modulator envelope shapes *parameters*, not voices — it
 cannot make a note ring past the instrument's own release. Once the plugin
@@ -735,7 +736,7 @@ numeric `params` values (the index into the label list).
 | `PageDown` / `PageUp` | Jump selection by a page |
 | `Shift+Down` / `Shift+Up` | Move selected effect down/up (reorder, focus follows) |
 | `n` | Add a new instrument (defaults to `builtin:osc`, opens the plugin selector to replace it; full range until set with `R`) |
-| `i` | Replace instrument (opens instrument selector popup) |
+| `i` | Replace instrument (opens instrument selector popup). The lane keeps its effects, modulators, range, volume and group; the cables that drove the old plugin's parameters are taken out (the new plugin has parameters of its own), and a note remap goes with the old plugin |
 | `R` | Set the selected instrument's key range (opens range popup, prefilled) — or, on a group header, rename the group (opens rename popup, prefilled) |
 | `v` | Set the output volume of the selected instrument or group (host-side gain, opens value popup) |
 | `a` | Add effect to the selected instrument, or — on a group/group-effect node — to the group's bus chain (opens effect selector popup). New effects default to 0.5 mix (half-wet); `builtin:filter` defaults to 1.0 (fully wet, since a half-wet filter barely filters) |
@@ -1149,7 +1150,13 @@ same plugins. (Until the review of step 14 found it, `SwapInstruments` swapped o
 instrument plugin while the model swapped the whole node, so that after any reorder, grouped
 or not, a lane's effects, modulators and volume were on different lanes in the engine and in
 the view.) Taking the instrument plugin out of a lane (`d` on it, `Controller::clear_instrument`)
-leaves the lane what else it has: its effects, modulators and volume.
+leaves the lane what else it has: its effects, modulators and volume. Putting an instrument in a lane
+(`i`, `Controller::put_instrument`: from the catalog only, one with an audio output, like an effect)
+replaces the one it has or fills an empty lane, under the lane's own node. Either way the cables that
+drove the old plugin's parameters, a lane's and a group's, are taken out first (`take_out`, with what
+drives their depths): a cable keeps its parameter's *index*, so left in place it would drive whatever the
+new plugin has there. A note remap goes with the plugin too, since the audio thread drops the remapper
+with it (`InstrumentNode::forget_remap`).
 
 Effects can be reordered within an instrument (or a group bus) in the Session
 tab. Instrument volume is applied after the instrument's output and before its
@@ -1510,10 +1517,9 @@ TODO: `ui` layout fields in the session format (the canvas lays itself out until
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
 the browser (`AddModEdge` takes a parameter port only; `RemoveEdge` takes any cable out).
-TODO: `clear_instrument` (the first `d` on an instrument) leaves the cables to the parameters of
-the plugin it empties on the lane, pointing at nothing (a lane with no instrument has no slot 0);
-what to do with them when an instrument is replaced is open (f51: re-find a cable by its parameter's
-name, or take it out).
+TODO: replacing an instrument takes out every cable that drove the old one; keep the ones whose
+parameter the new plugin has under the same name (a vibrato on `detune` could survive a change of
+oscillator): a cable would have to be drawn again with the new plugin's index.
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
 TODO: the canvas does not move to show a node that was added.

@@ -1270,9 +1270,30 @@ fn replacing_the_instrument_loads_a_fresh_plugin() {
     h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
     h.press(KeyCode::Char('i')).press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+    // (The lane's vibrato cable into the old plugin goes first: see the next test.)
+    assert_eq!(
+        h.commands(),
+        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]
+    );
     let volume = &h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().params[2];
     assert_eq!((volume.name.as_str(), volume.value), ("volume", 1.0), "edits don't survive a swap");
+}
+
+#[test]
+fn replacing_the_instrument_takes_out_the_cables_into_the_old_one() {
+    // The lane's LFO drives the old instrument's `detune` by that parameter's place in the
+    // old plugin: left in place it would drive whatever sits there in the new one (f51).
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]
+    );
+    let lfo = &h.s.ctl.model.instruments[0].modulators[0];
+    assert!(lfo.targets.is_empty(), "the cable into the old plugin is gone from the model too");
+    assert_eq!(h.s.ctl.model.instruments[1].modulators[0].targets.len(), 1, "the other lane's cable stays");
 }
 
 #[test]
@@ -1330,13 +1351,14 @@ fn deleting_a_group_modulator_drops_cross_mod_targets_pointing_at_it() {
 #[test]
 fn deleting_a_group_member_drops_its_modulator_targets() {
     // Lane 0 is group member 0, targeted by the group LFO's `detune` target. The
-    // first `d` clears its plugin, the second removes the (now empty) lane; the
-    // member-0 target goes with it and the bus target stays.
+    // first `d` takes the cable into its plugin out and clears the plugin, the second
+    // removes the (now empty) lane; the member-0 target goes with the plugin and the
+    // bus target stays.
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('d')).press(KeyCode::Char('d'));
-    // (The group's cable to the member goes first, then the lane.)
-    assert_eq!(h.commands(), ["ClearInstrument inst=0", "RemoveGroupModTarget group=0 mod=0 target=0", "RemoveInstrument inst=0"]);
+    // (The group's cable to the member goes first, then the plugin, then the lane.)
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0", "RemoveInstrument inst=0"]);
     let lfo = &h.s.ctl.model.groups[0].modulators[0];
     assert_eq!(lfo.targets.len(), 1);
     assert_eq!(lfo.targets[0].param_name, "damping");
@@ -2664,7 +2686,10 @@ fn replacing_the_instrument_keeps_the_lanes_id() {
     let lane = node_at(&h, NodePath::Instrument(0));
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('i')).press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+    assert_eq!(
+        h.commands(),
+        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]
+    );
     assert_eq!(node_at(&h, NodePath::Instrument(0)), lane);
     assert_eq!(h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().node, lane);
 }
