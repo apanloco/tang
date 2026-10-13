@@ -926,7 +926,7 @@ mod tests {
     fn a_group_is_called_by_its_name_or_else_by_its_number_counting_from_one() {
         let mut model = load("[[group]]\nname = \"Pad\"\n[[group]]\n[[group]]\nname = \"\"\n").model;
         let names: Vec<String> = model.groups.iter().enumerate().map(|(g, group)| group.display_name(g)).collect();
-        assert_eq!(names, ["Pad", "Group 2", ""], "an empty name is a name, the loader never makes one");
+        assert_eq!(names, ["Pad", "Group 2", "Group 3"]);
         model.groups[0].name = None;
         assert_eq!(model.groups[0].display_name(0), "Group 1");
         assert_eq!(model.groups[0].display_name(6), "Group 7", "it is the index it is asked about");

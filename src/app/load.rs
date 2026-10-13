@@ -254,7 +254,8 @@ pub fn load_session(
         bus_params.push(group_bus_params);
         groups.push(GroupNode {
             node: group_node,
-            name: group_config.name.clone(),
+            // As the rename popup stores it: trimmed, and nothing is no name.
+            name: group_config.name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(String::from),
             volume: group_config.volume,
             pan: group_config.pan,
             effects: group_effects,
@@ -1053,6 +1054,18 @@ mod tests {
         assert!(matches!(&slot.params[1].kind, ParamKind::Enum(l) if l == &["low", "high"]));
         // The loader still resolves modulator targets against the full list.
         assert_eq!(params.all.len(), 3);
+    }
+
+    #[test]
+    fn a_group_named_with_nothing_or_with_spaces_has_no_name() {
+        // As in the rename popup: the name is trimmed, and nothing is no name, so the
+        // header reads "Group N" rather than blank.
+        let model = load(
+            "[[group]]\nname = \"\"\n[[group]]\nname = \"   \"\n[[group]]\nname = \" Pad \"\n[[group]]\nname = \"Lead\"\n[[group]]\n",
+        )
+        .model;
+        let names: Vec<Option<&str>> = model.groups.iter().map(|g| g.name.as_deref()).collect();
+        assert_eq!(names, [None, None, Some("Pad"), Some("Lead"), None]);
     }
 
     #[test]
