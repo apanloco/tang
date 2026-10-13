@@ -57,18 +57,24 @@ impl Tang {
 
     /// `tang serve` on the session in `session`.
     fn start_on(session: impl AsRef<std::ffi::OsStr>) -> Tang {
-        let mut child = Process(
-            Command::new(env!("CARGO_BIN_EXE_tang"))
-            // No sound card and no MIDI input is opened: nothing is heard, nothing is listened to.
-                .args(["--audio-device", "none", "--midi-device", "no such device", "serve"])
-                .arg(session)
-                .args(["--web-bind", "127.0.0.1:0"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("tang starts"),
-        );
+        Tang::start_in(None, session)
+    }
+
+    /// `tang serve` on the session in `session`, started in the directory `dir` (where the test is, if none).
+    fn start_in(dir: Option<&std::path::Path>, session: impl AsRef<std::ffi::OsStr>) -> Tang {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
+        // No sound card and no MIDI input is opened: nothing is heard, nothing is listened to.
+        command
+            .args(["--audio-device", "none", "--midi-device", "no such device", "serve"])
+            .arg(session)
+            .args(["--web-bind", "127.0.0.1:0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        let mut child = Process(command.spawn().expect("tang starts"));
 
         let log = Arc::new(Mutex::new(String::new()));
         let stderr = child.0.stderr.take().unwrap();
@@ -286,6 +292,27 @@ async fn a_browser_saves_the_session_to_its_own_file_and_the_file_has_what_it_ch
     // A client that arrives now is given a session with nothing unsaved.
     let (_, _, again) = listening(&tang).await;
     assert_eq!(again["snapshot"]["meta"]["dirty"], false);
+}
+
+#[tokio::test]
+async fn a_session_named_by_a_relative_path_is_saved_to_that_file_wherever_the_program_is_by_then() {
+    // Plugins that are scanned or loaded can change the working directory of the whole program (some
+    // do), and a path that is relative to it then leads somewhere else: a save would write the
+    // session into a plugin's directory. The program here stays where it is started, and says which file it writes.
+    let dir = tempfile::tempdir().unwrap();
+    let here = dir.path().canonicalize().unwrap();
+    std::fs::copy(TRACER, here.join("jam.toml")).unwrap();
+    let tang = Tang::start_in(Some(&here), "jam.toml");
+    let (mut client, _, _) = listening(&tang).await;
+
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 1).await["type"], "ack");
+    let wanted = format!("Session saved to {}", here.join("jam.toml").display());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !tang.log().contains(&wanted) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(tang.log().contains(&wanted), "the file is named by where it is, not by how it was asked for:\n{}", tang.log());
 }
 
 #[tokio::test]

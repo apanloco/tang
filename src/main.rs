@@ -332,7 +332,12 @@ fn run_session(
         }
     };
 
-    let session_dir = Path::new(&source).parent().unwrap_or_else(|| Path::new("."));
+    // From here on the session's file is known by a path that does not depend on where the process is:
+    // plugins that are loaded or scanned can change its working directory (some do), and a relative
+    // path would then lead somewhere else, for the save and for the plugins the session names relative
+    // to its own directory.
+    let source = session::absolute_path(&source);
+    let session_dir = source.parent().unwrap_or_else(|| Path::new("."));
 
     // Splash screen while plugins load (TUI mode only). Plugin loads can take
     // seconds for heavyweight instruments; the splash thread owns the terminal
@@ -489,7 +494,7 @@ fn run_session(
             midi_monitor,
             telemetry,
         },
-        Some(std::path::PathBuf::from(&source)),
+        Some(source.clone()),
     );
     if midi_available {
         ctl.watch_devices(Box::new(midi_mgr));

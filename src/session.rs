@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -1093,6 +1093,13 @@ pub fn to_toml(
     inline_remap_entries(&content)
 }
 
+/// Where the session given as `given` on the command line is, as a path that keeps pointing there. A
+/// relative one would not: plugins that are loaded or scanned can change the working directory of the
+/// whole process (some do), and the session would be saved to wherever that led.
+pub fn absolute_path(given: &str) -> PathBuf {
+    std::path::absolute(given).unwrap_or_else(|_| PathBuf::from(given))
+}
+
 /// Write the session to `path`, creating its directory first (a new session's
 /// default home is `~/.config/tang/sessions/`).
 pub fn save(
@@ -1151,6 +1158,21 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_given_by_a_relative_path_is_known_by_an_absolute_one() {
+        let here = std::env::current_dir().unwrap();
+        for given in ["jam.toml", "./jam.toml", "sub/jam.toml", "../jam.toml"] {
+            let path = absolute_path(given);
+            assert!(path.is_absolute(), "{given}: {path:?}");
+            assert_eq!(path.file_name(), Path::new(given).file_name(), "{given}: it is the same file");
+            assert!(path.starts_with(&here), "{given}: relative to where the program was started: {path:?}");
+        }
+        assert_eq!(absolute_path("sub/jam.toml"), here.join("sub/jam.toml"));
+        // One that is absolute already is left as it is.
+        let given = here.join("jam.toml");
+        assert_eq!(absolute_path(given.to_str().unwrap()), given);
+    }
 
     #[test]
     fn a_number_that_is_not_a_number_is_refused_wherever_it_is_and_the_error_says_where() {

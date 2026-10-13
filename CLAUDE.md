@@ -121,7 +121,10 @@ read the extra paths directly.
 Sessions are TOML files. Without a session argument the TUI creates a new
 in-memory session saved to `~/.config/tang/sessions/session-<id>.toml` on
 first save. Sessions are saved explicitly only (no auto-save on parameter
-change).
+change). The session's file is known by its absolute path from the start
+(`session::absolute_path`): some plugins change the working directory of the
+whole process while they are scanned or loaded (a ROLI one does), and a path
+relative to it would then lead somewhere else.
 A plugin can be specified using:
 - `./path/to/Plugin.lv2`: LV2 bundle by path
 - `./path/to/Plugin.clap`: CLAP bundle by path
