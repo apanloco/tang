@@ -75,6 +75,8 @@ pub struct Config {
     pub write_timeout: Duration,
     /// How often telemetry frames go out to the clients that want them.
     pub telemetry_period: Duration,
+    /// How long a stopping server waits for its connections to end before it drops them.
+    pub stop_grace: Duration,
     pub limits: Limits,
 }
 
@@ -89,6 +91,7 @@ impl Config {
             write_timeout: Duration::from_secs(10),
             // About thirty frames a second.
             telemetry_period: Duration::from_millis(33),
+            stop_grace: STOP_GRACE,
             limits: Limits::default(),
         }
     }
@@ -139,7 +142,7 @@ impl Server {
     /// does not allow the address (beyond loopback a token is needed), and if the
     /// address cannot be listened on.
     pub fn start(config: Config, parts: Parts) -> anyhow::Result<Server> {
-        let Config { bind, token, extra_origins, max_clients, auth_timeout, write_timeout, telemetry_period, limits } = config;
+        let Config { bind, token, extra_origins, max_clients, auth_timeout, write_timeout, telemetry_period, stop_grace, limits } = config;
         Policy::new(bind, token.clone(), extra_origins.clone()).map_err(anyhow::Error::msg)?;
         let listener = std::net::TcpListener::bind(bind).with_context(|| format!("cannot listen on {bind}"))?;
         listener.set_nonblocking(true).context("cannot make the listener non-blocking")?;
@@ -176,7 +179,7 @@ impl Server {
         });
         let thread = std::thread::Builder::new()
             .name("tang-web".into())
-            .spawn(move || run(runtime, listener, app, stop_rx))
+            .spawn(move || run(runtime, listener, app, stop_rx, stop_grace))
             .context("cannot start the web server's thread")?;
         log::info!("Web server listening on http://{addr}/");
         Ok(Server { addr, token, stop: stop_tx, thread: Some(thread) })
@@ -218,8 +221,9 @@ impl Drop for Server {
 }
 
 /// The server thread: serve until told to stop, then give the connections a moment to
-/// say goodbye.
-fn run(runtime: tokio::runtime::Runtime, listener: tokio::net::TcpListener, app: Arc<App>, mut stop: watch::Receiver<bool>) {
+/// say goodbye, and drop the ones that have not (a client that began a request and never
+/// finishes it would keep the server from ending for ever).
+fn run(runtime: tokio::runtime::Runtime, listener: tokio::net::TcpListener, app: Arc<App>, mut stop: watch::Receiver<bool>, stop_grace: Duration) {
     runtime.block_on(async move {
         let seats = app.seats.clone();
         let seat_count = app.seat_count;
@@ -228,16 +232,29 @@ fn run(runtime: tokio::runtime::Runtime, listener: tokio::net::TcpListener, app:
             .fallback(get(file))
             .layer(middleware::from_fn_with_state(app.clone(), guard))
             .with_state(app);
+        let mut told = stop.clone();
         let shutdown = async move {
             // (A sender that is gone is a stop too.)
             let _ = stop.wait_for(|stopped| *stopped).await;
         };
-        if let Err(e) = axum::serve(listener, router).with_graceful_shutdown(shutdown).await {
-            log::warn!("Web server: {e}");
+        let served = async {
+            // Ends when the connections of HTTP have.
+            if let Err(e) = axum::serve(listener, router).with_graceful_shutdown(shutdown).await {
+                log::warn!("Web server: {e}");
+            }
+            // The WebSockets are tasks of their own, and each ends when the stop reaches it. All
+            // the seats back means all of them have.
+            let _ = seats.acquire_many(seat_count).await;
+        };
+        let out_of_time = async move {
+            let _ = told.wait_for(|stopped| *stopped).await;
+            tokio::time::sleep(stop_grace).await;
+        };
+        tokio::select! {
+            () = served => {}
+            // (The connections that are left are dropped with the runtime.)
+            () = out_of_time => log::warn!("Web server: a connection did not end within {stop_grace:?} of the stop; dropping it"),
         }
-        // The WebSockets are tasks of their own, and each ends when the stop reaches it. All
-        // the seats back means all of them have.
-        let _ = tokio::time::timeout(STOP_GRACE, seats.acquire_many(seat_count)).await;
     });
 }
 
@@ -973,6 +990,34 @@ mod tests {
         stopping.await.unwrap();
         assert_eq!(midi.recv_timeout(Duration::from_secs(5)).unwrap(), (0, [0x80, 67, 0]), "the note ended with the server");
         assert!(std::net::TcpStream::connect(client_addr_of(&client)).is_err(), "nobody listens any more");
+    }
+
+    #[test]
+    fn a_connection_that_never_finishes_its_request_does_not_keep_the_server_from_stopping() {
+        let rig = rig_with(|config| config.stop_grace = Duration::from_millis(200));
+        // The head of a request, without its end: the server waits for the rest for ever.
+        let mut stuck = std::net::TcpStream::connect(rig.server.addr()).unwrap();
+        stuck.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let Rig { server, .. } = rig;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(server);
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the server was still stopping two seconds after it was told to, with a grace of 200 ms"
+        );
+        drop(stuck);
+    }
+
+    #[test]
+    fn the_grace_of_a_stopping_server_counts_from_the_stop_not_from_the_start() {
+        let rig = rig_with(|config| config.stop_grace = Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(400));
+        let (status, ..) = get(&rig, Some(&own_host(&rig)), "GET", "/", &[]);
+        assert_eq!(status, 200, "a server that has run for longer than its grace is still serving");
     }
 
     fn client_addr_of(client: &Client) -> SocketAddr {
