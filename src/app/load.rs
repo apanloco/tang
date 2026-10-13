@@ -43,7 +43,7 @@ struct Params {
 
 impl Params {
     /// Read the values of a freshly loaded, preset-applied plugin.
-    fn snapshot(plugin: &mut Box<dyn plugin::Plugin>) -> Self {
+    fn snapshot(plugin: &mut dyn plugin::Plugin) -> Self {
         let all = plugin.parameters();
         let baselines: Vec<f32> = all
             .iter()
@@ -97,13 +97,12 @@ fn names(params: &[plugin::ParameterInfo]) -> String {
 }
 
 /// The model's slot for a plugin that has just been loaded and left alone: every
-/// parameter at its declared default, no preset, fully wet. `node` is the node
-/// the plugin sits in. (A session's plugins get theirs from `plugin_slot` with
-/// the values the loader read back.)
-pub fn fresh_slot(plugin: &dyn plugin::Plugin, id: &str, node: NodeId) -> PluginSlot {
-    let all = plugin.parameters();
-    let defaults: Vec<f32> = all.iter().map(|p| p.default).collect();
-    let params = Params { all, values: defaults.clone(), baselines: defaults };
+/// parameter at the value the plugin reports (its declared default if it reports
+/// none), no preset, fully wet. `node` is the node the plugin sits in. (A session's
+/// plugins get theirs from `plugin_slot`, with the values the loader read back in
+/// the same way.)
+pub fn fresh_slot(plugin: &mut dyn plugin::Plugin, id: &str, node: NodeId) -> PluginSlot {
+    let params = Params::snapshot(plugin);
     plugin_slot(
         node,
         plugin.name().to_string(),
@@ -219,7 +218,7 @@ pub fn load_session(
                 session::apply_preset(&mut effect, preset_name);
             }
             let presets = effect.presets();
-            let mut params = Params::snapshot(&mut effect);
+            let mut params = Params::snapshot(effect.as_mut());
             let name = effect.name().to_string();
             send(
                 cmd_tx,
@@ -306,7 +305,7 @@ pub fn load_session(
             // Snapshot post-preset parameter values; these become the baseline the
             // model compares against to decide which params are user-edited and
             // need to be saved.
-            let mut params = Params::snapshot(&mut instrument);
+            let mut params = Params::snapshot(instrument.as_mut());
 
             // Build note remapper if configured
             let remapper = if plug_config.remap.is_empty() {
@@ -401,7 +400,7 @@ pub fn load_session(
             let presets = effect.presets();
 
             // Snapshot post-preset values as the save-filter baseline.
-            let mut params = Params::snapshot(&mut effect);
+            let mut params = Params::snapshot(effect.as_mut());
             let name = effect.name().to_string();
 
             send(
@@ -1110,7 +1109,8 @@ mod tests {
         let load = |id: &str| plugin::load(id, 48_000.0, 256, &Default::default()).unwrap();
 
         let reverb = load("builtin:reverb");
-        let slot = fresh_slot(reverb.as_ref(), "builtin:reverb", NodeId(3));
+        let mut reverb = reverb;
+        let slot = fresh_slot(reverb.as_mut(), "builtin:reverb", NodeId(3));
         assert_eq!(slot.node, NodeId(3));
         assert_eq!((slot.name.as_str(), slot.id.as_str(), slot.format.as_str()), ("Reverb", "builtin:reverb", "Built-in"));
         assert!(!slot.is_instrument);
@@ -1123,10 +1123,65 @@ mod tests {
         }
 
         let osc = load("builtin:osc");
-        let slot = fresh_slot(osc.as_ref(), "builtin:osc", NodeId(4));
+        let mut osc = osc;
+        let slot = fresh_slot(osc.as_mut(), "builtin:osc", NodeId(4));
         assert!(slot.is_instrument);
         let waveform = slot.params.iter().find(|p| p.name == "waveform").unwrap();
         assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");
+    }
+
+    /// A plugin whose parameters are not at their declared defaults when it is loaded
+    /// (as a VST3 may be, with the state it starts in): `live` is what it reports.
+    struct Live {
+        live: Vec<Option<f32>>,
+    }
+
+    impl plugin::Plugin for Live {
+        fn name(&self) -> &str {
+            "Live"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn sample_rate(&self) -> f32 {
+            48_000.0
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+        fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], _: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn parameters(&self) -> Vec<plugin::ParameterInfo> {
+            (0..self.live.len() as u32)
+                .map(|index| plugin::ParameterInfo { index, name: format!("p{index}"), min: 0.0, max: 1.0, default: 0.25, ..Default::default() })
+                .collect()
+        }
+        fn get_parameter(&mut self, index: u32) -> Option<f32> {
+            self.live[index as usize]
+        }
+        fn set_parameter(&mut self, _: u32, _: f32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<plugin::Preset> {
+            Vec::new()
+        }
+        fn load_preset(&mut self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_fresh_slot_shows_what_the_plugin_is_set_to_not_what_it_declares() {
+        // (Finding f14.) The session's plugins are read back by the loader; so is a
+        // plugin added from the selector, and the value is also what is not saved as an edit.
+        let mut live = Live { live: vec![Some(0.75), None, Some(0.0)] };
+        let slot = fresh_slot(&mut live, "clap:live", NodeId(5));
+        let rows: Vec<(f32, f32)> = slot.params.iter().map(|p| (p.value, p.default)).collect();
+        assert_eq!(rows, [(0.75, 0.75), (0.25, 0.25), (0.0, 0.0)], "the live value, and the declared default where it reports none");
     }
 
     #[test]
