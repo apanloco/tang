@@ -257,6 +257,108 @@ describe("a request", () => {
   });
 });
 
+describe("taking a cable out", () => {
+  const cables = (snapshot: Snapshot | null | undefined) => snapshot?.graph.edges.filter((e) => e.kind === "modulation") ?? [];
+
+  test("takes it out of the session, and the client is told by a snapshot, the revision after the intent's", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    // The answer is the intent's revision; the snapshot that tells the change is the next (as the controller has it).
+    expect(await client.request({ type: "removeEdge", edge: 0 })).toBe(1);
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    expect(cables(client.state.snapshot)).toEqual([]);
+    expect(client.state.snapshot?.graph.edges).toEqual(tracerSnapshot.graph.edges.filter((e) => e.kind !== "modulation"));
+    expect(client.state.snapshot?.graph.nodes).toEqual(tracerSnapshot.graph.nodes);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(client.state.snapshot);
+  });
+
+  test("takes the slot of the value it drove from the layout of the telemetry, which has a new fingerprint", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const effective = (layout: TelemetryLayout) => layout.modulation.filter((entry) => entry.kind === "effective");
+    expect(effective(tracerSnapshot.telemetry)).toHaveLength(1);
+    await client.request({ type: "removeEdge", edge: 0 });
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    const layout = client.state.snapshot?.telemetry;
+    expect(layout && effective(layout)).toEqual([]);
+    expect(layout?.modulation.filter((entry) => entry.kind === "modOutput")).toHaveLength(1);
+    expect(layout?.rev).not.toBe(tracerSnapshot.telemetry.rev);
+    expect(layout?.meters).toEqual(tracerSnapshot.telemetry.meters);
+  });
+
+  /** The tracer with two more modulators: one drives the depth of the cutoff's cable, the other the depth of that. */
+  function withCablesThatDriveCables(): Snapshot {
+    const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
+    const drives = (from: number, edge: number, id: number) =>
+      ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: from === 5 ? 2 : 5, port: { type: "depth", edge } } }) as const;
+    return {
+      ...tracerSnapshot,
+      graph: {
+        nodes: [...tracerSnapshot.graph.nodes, modulator(5, "LFO"), modulator(6, "LFO")],
+        edges: [...tracerSnapshot.graph.edges, drives(5, 0, 1), { ...drives(6, 1, 2), to: { node: 5, port: { type: "depth", edge: 1 } } }],
+      },
+    };
+  }
+
+  test("takes the cables that drive the depth of a cable that goes, and theirs in turn", async () => {
+    const server = new MockServer({ snapshot: withCablesThatDriveCables() });
+    const client = await open(server);
+    expect(cables(client.state.snapshot)).toHaveLength(3);
+    await client.request({ type: "removeEdge", edge: 0 });
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    expect(cables(client.state.snapshot)).toEqual([]);
+    // The modulators stay: what goes is what they drove.
+    expect(client.state.snapshot?.graph.nodes).toHaveLength(tracerSnapshot.graph.nodes.length + 2);
+  });
+
+  test("takes only a cable that nothing drives, when it is the one that is asked for", async () => {
+    const server = new MockServer({ snapshot: withCablesThatDriveCables() });
+    const client = await open(server);
+    await client.request({ type: "removeEdge", edge: 2 });
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    expect(cables(client.state.snapshot).map((e) => e.id)).toEqual([0, 1]);
+  });
+
+  test("that is not there is refused, and changes nothing", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const failure = await client.request({ type: "removeEdge", edge: 99 }).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(RequestError);
+    expect([(failure as RequestError).code, (failure as RequestError).message]).toEqual(["notFound", "there is no cable 99"]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+    // Nor is one there the second time.
+    await client.request({ type: "removeEdge", edge: 0 });
+    await expect(client.request({ type: "removeEdge", edge: 0 })).rejects.toMatchObject({ code: "notFound" });
+  });
+
+  test("is told to every client, and to the one that asked once, before the answer", async () => {
+    const server = new MockServer();
+    const [asker, other] = [await open(server), await open(server)];
+    const heard: string[] = [];
+    asker.store.subscribe((state, before) => {
+      if (state.snapshot !== before.snapshot) heard.push(`snapshot ${String(state.snapshot?.rev)}`);
+    });
+    const rev = await asker.request({ type: "removeEdge", edge: 0 });
+    heard.push(`answer ${String(rev)}`);
+    await until(() => other.state.snapshot?.rev === 2, "the other client's snapshot");
+    expect(cables(other.state.snapshot)).toEqual([]);
+    expect(heard).toEqual(["snapshot 2", "answer 1"]);
+  });
+
+  test("by another front-end reaches the client as a snapshot", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    server.apply({ type: "removeEdge", edge: 0 });
+    await until(() => client.state.snapshot?.rev === 2, "the snapshot");
+    expect(cables(client.state.snapshot)).toEqual([]);
+    expect(server.received.filter((m) => m.type === "subscribe")).toHaveLength(1);
+    expect(() => {
+      server.apply({ type: "removeEdge", edge: 0 });
+    }).toThrow("there is no cable 0");
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();

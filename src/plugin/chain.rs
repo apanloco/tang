@@ -290,6 +290,10 @@ impl LfoWaveform {
     }
 }
 
+/// Every modulator's cables, for tests: the rack, the modulator's place in it, and its cables' kinds and depths.
+#[cfg(test)]
+pub type RackCables = Vec<(ModulatorLocation, usize, Vec<(ModTargetKind, f32)>)>;
+
 /// Identifies what a modulation target points at.
 ///
 /// Modulators are lane-scoped: one modulator can drive parameters anywhere in
@@ -1307,6 +1311,38 @@ fn fixup_group_member_mod_after_remove(
     }
 }
 
+/// After the cable at `removed` is taken out of the modulator at `mod_index`, the cables of the
+/// modulators in the same rack that drive the depth of a later cable of it (`ModulatorDepth`) are
+/// told its new place. A cable is addressed by its place in its modulator, so they would drive the
+/// next one's depth otherwise. The cables that drove the depth of the removed cable itself are
+/// not touched: the controller takes them out first (`SessionModel::remove_edge`).
+fn fixup_depth_cables_after_remove(modulators: &mut [Modulator], mod_index: usize, removed: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::ModulatorDepth { mod_index: of, target_index } = &mut t.kind {
+                if *of == mod_index && *target_index > removed {
+                    *target_index -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// The same for a group's cables to the depth of a cable of a member lane's modulator
+/// (`GroupMemberMod` with a `Depth`): after member `member`'s modulator `mod_index` loses the
+/// cable at `removed`.
+fn fixup_member_depth_cables_after_remove(modulators: &mut [Modulator], member: usize, mod_index: usize, removed: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMemberMod { member: of, mod_index: at, field: CrossModField::Depth(target) } = &mut t.kind {
+                if *of == member && *at == mod_index && *target > removed {
+                    *target -= 1;
+                }
+            }
+        }
+    }
+}
+
 /// After a member joins a group at ordinal `inserted`, bump group-target member
 /// ordinals at/after it so existing targets keep pointing at their members.
 fn shift_group_member_after_insert(modulators: &mut [Modulator], inserted: usize) {
@@ -1687,8 +1723,7 @@ pub enum GraphCommand {
         mod_index: usize,
         target: ModTarget,
     },
-    /// Remove a modulation target from a modulator.
-    #[expect(dead_code)]
+    /// Remove a modulation target (a cable) from a modulator.
     RemoveModTarget {
         inst: usize,
         mod_index: usize,
@@ -1745,8 +1780,7 @@ pub enum GraphCommand {
         mod_index: usize,
         target: ModTarget,
     },
-    /// Remove a modulation target from a group modulator.
-    #[expect(dead_code)]
+    /// Remove a modulation target (a cable) from a group modulator.
     RemoveGroupModTarget {
         group: usize,
         mod_index: usize,
@@ -2987,6 +3021,18 @@ impl AudioGraph {
         self.num_channels
     }
 
+    /// Every modulator's cables, for a test to compare with the model's: the lanes' racks
+    /// and then the groups', each modulator with its cables' kinds and depths in order.
+    #[cfg(test)]
+    pub fn cables(&self) -> RackCables {
+        let rack = |at: fn(usize) -> ModulatorLocation, i: usize, modulators: &[Modulator]| -> Vec<_> {
+            modulators.iter().enumerate().map(|(m, modulator)| (at(i), m, modulator.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect())).collect()
+        };
+        let lanes = self.instruments.iter().enumerate().flat_map(|(i, lane)| rack(ModulatorLocation::Lane, i, &lane.modulators));
+        let groups = self.groups.iter().enumerate().flat_map(|(i, group)| rack(ModulatorLocation::Group, i, &group.modulators));
+        lanes.chain(groups).collect()
+    }
+
     /// Drain all pending commands from the command channel (lock-free).
     pub fn drain_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
@@ -3509,10 +3555,24 @@ impl AudioGraph {
                     mod_index,
                     target_index,
                 } => {
+                    let mut removed = false;
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators.get_mut(mod_index) {
                             if target_index < m.targets.len() {
                                 m.targets.remove(target_index);
+                                removed = true;
+                            }
+                        }
+                        if removed {
+                            fixup_depth_cables_after_remove(&mut lane.modulators, mod_index, target_index);
+                        }
+                    }
+                    // If this lane is a group member, the group's cables to the depths of its
+                    // modulators' cables follow them.
+                    if removed {
+                        if let Some((group, member)) = lane_member_ordinal(&self.instruments, inst) {
+                            if let Some(g) = self.groups.get_mut(group) {
+                                fixup_member_depth_cables_after_remove(&mut g.modulators, member, mod_index, target_index);
                             }
                         }
                     }
@@ -3652,6 +3712,7 @@ impl AudioGraph {
                         if let Some(m) = g.modulators.get_mut(mod_index) {
                             if target_index < m.targets.len() {
                                 m.targets.remove(target_index);
+                                fixup_depth_cables_after_remove(&mut g.modulators, mod_index, target_index);
                             }
                         }
                     }
@@ -7455,5 +7516,260 @@ mod tests {
         rig.graph.drain_commands();
         let allocations = allocations_while_processing(&mut rig.graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    // -- Taking a cable (a modulation target) out of a modulator --
+    //
+    // A cable is addressed by its place in its modulator, so when one is taken out the cables that
+    // drive the depth of a later one of the same modulator (`ModulatorDepth`, and a group's
+    // `GroupMemberMod` with a `Depth`) are told its new place. The cables that drive the depth of the
+    // one taken out are the controller's to take out first: removing one is one thing.
+
+    /// A cable of `kind`, told apart from the others by its depth.
+    fn cable(kind: ModTargetKind, depth: f32) -> ModTarget {
+        ModTarget { kind, depth, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None }
+    }
+
+    fn insert_lane_lfo(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, index: usize) {
+        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        cmd_tx.send(GraphCommand::InsertModulator { inst, index, source }).unwrap();
+    }
+
+    fn add_lane_cable(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, mod_index: usize, target: ModTarget) {
+        cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target }).unwrap();
+    }
+
+    fn add_group_cable(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, group: usize, mod_index: usize, target: ModTarget) {
+        cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target }).unwrap();
+    }
+
+    /// What a modulator drives, in order: each cable's kind and depth.
+    fn drives(modulator: &Modulator) -> Vec<(ModTargetKind, f32)> {
+        modulator.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect()
+    }
+
+    fn param(slot: usize, param_index: u32) -> ModTargetKind {
+        ModTargetKind::PluginParam { slot, param_index }
+    }
+
+    fn depth_of(mod_index: usize, target_index: usize) -> ModTargetKind {
+        ModTargetKind::ModulatorDepth { mod_index, target_index }
+    }
+
+    /// A lane with three modulators: the first drives three parameters (depths 0.1, 0.2, 0.3), the second the depth
+    /// of the first's first and third cable, its rate, and a parameter, and the third the depth of the second's third.
+    fn lane_with_cables_that_drive_cables() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>) {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        for index in 0..3 {
+            insert_lane_lfo(&cmd_tx, 0, index);
+        }
+        for (i, depth) in [0.1, 0.2, 0.3].into_iter().enumerate() {
+            add_lane_cable(&cmd_tx, 0, 0, cable(param(0, i as u32), depth));
+        }
+        add_lane_cable(&cmd_tx, 0, 1, cable(depth_of(0, 0), 0.4));
+        add_lane_cable(&cmd_tx, 0, 1, cable(depth_of(0, 2), 0.5));
+        add_lane_cable(&cmd_tx, 0, 1, cable(ModTargetKind::ModulatorRate { mod_index: 0 }, 0.6));
+        add_lane_cable(&cmd_tx, 0, 1, cable(param(0, 7), 0.7));
+        add_lane_cable(&cmd_tx, 0, 2, cable(depth_of(1, 3), 0.8));
+        // (And one that drives a cable the second modulator does not have, so that a removal that removed nothing
+        // can be seen to have moved nothing.)
+        add_lane_cable(&cmd_tx, 0, 2, cable(depth_of(1, 9), 0.9));
+        graph.drain_commands();
+        (graph, cmd_tx)
+    }
+
+    #[test]
+    fn removing_a_cable_takes_it_out_of_its_modulator_and_moves_the_depth_cables_of_the_later_ones() {
+        let (mut graph, cmd_tx) = lane_with_cables_that_drive_cables();
+        // The second cable of the first modulator.
+        cmd_tx.send(GraphCommand::RemoveModTarget { inst: 0, mod_index: 0, target_index: 1 }).unwrap();
+        graph.drain_commands();
+        let rack = &graph.instruments[0].modulators;
+        assert_eq!(drives(&rack[0]), [(param(0, 0), 0.1), (param(0, 2), 0.3)]);
+        // What drove the third (the second's second) is told it is the second now; the first's is as it was; and
+        // what drove something else (the rate, a parameter, another modulator's cable) is not touched.
+        assert_eq!(
+            drives(&rack[1]),
+            [(depth_of(0, 0), 0.4), (depth_of(0, 1), 0.5), (ModTargetKind::ModulatorRate { mod_index: 0 }, 0.6), (param(0, 7), 0.7)]
+        );
+        assert_eq!(drives(&rack[2]), [(depth_of(1, 3), 0.8), (depth_of(1, 9), 0.9)]);
+    }
+
+    #[test]
+    fn removing_the_last_cable_of_a_modulator_moves_nothing() {
+        let (mut graph, cmd_tx) = lane_with_cables_that_drive_cables();
+        cmd_tx.send(GraphCommand::RemoveModTarget { inst: 0, mod_index: 0, target_index: 2 }).unwrap();
+        graph.drain_commands();
+        let rack = &graph.instruments[0].modulators;
+        assert_eq!(drives(&rack[0]), [(param(0, 0), 0.1), (param(0, 1), 0.2)]);
+        assert_eq!(rack[1].targets[1].kind, depth_of(0, 2), "(it is the controller that took out what drove it)");
+        assert_eq!(rack[1].targets.len(), 4);
+    }
+
+    #[test]
+    fn removing_a_cable_of_a_modulator_that_drives_the_depth_of_others_moves_theirs_by_its_own_index() {
+        let (mut graph, cmd_tx) = lane_with_cables_that_drive_cables();
+        // The second modulator's first cable: only what drove the depths of the second modulator's cables moves.
+        cmd_tx.send(GraphCommand::RemoveModTarget { inst: 0, mod_index: 1, target_index: 0 }).unwrap();
+        graph.drain_commands();
+        let rack = &graph.instruments[0].modulators;
+        assert_eq!(rack[1].targets.len(), 3);
+        assert_eq!(drives(&rack[2]), [(depth_of(1, 2), 0.8), (depth_of(1, 8), 0.9)]);
+        assert_eq!(rack[0].targets.len(), 3, "the first modulator's cables are not touched");
+    }
+
+    #[test]
+    fn a_cable_that_is_not_there_is_not_removed_and_nothing_moves() {
+        let (mut graph, cmd_tx) = lane_with_cables_that_drive_cables();
+        let before: Vec<_> = graph.instruments[0].modulators.iter().map(drives).collect();
+        for (inst, mod_index, target_index) in [(0, 0, 3), (0, 0, 9), (0, 1, 4), (0, 3, 0), (4, 0, 0)] {
+            cmd_tx.send(GraphCommand::RemoveModTarget { inst, mod_index, target_index }).unwrap();
+        }
+        graph.drain_commands();
+        let after: Vec<_> = graph.instruments[0].modulators.iter().map(drives).collect();
+        assert_eq!(before, after);
+    }
+
+    /// Lane 0 outside the group, lane 1 its member 0, lane 2 its member 1; lane 1 and lane 0 each have a modulator with
+    /// three parameters to drive (depths 0.1 to 0.3); group modulator 0 drives the depth of member 0's modulator's
+    /// first and third cable, its rate, the same cables of member 1's, and a bus parameter.
+    fn group_with_cables_that_drive_a_members_cables() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>) {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for inst in [1, 2] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+        }
+        for inst in [0, 1] {
+            insert_lane_lfo(&cmd_tx, inst, 0);
+            for (i, depth) in [0.1, 0.2, 0.3].into_iter().enumerate() {
+                add_lane_cable(&cmd_tx, inst, 0, cable(param(0, i as u32), depth));
+            }
+        }
+        // Member 0 has a second modulator with cables, which the group drives the depth of as well.
+        insert_lane_lfo(&cmd_tx, 1, 1);
+        for (i, depth) in [0.4, 0.5, 0.6].into_iter().enumerate() {
+            add_lane_cable(&cmd_tx, 1, 1, cable(param(0, i as u32), depth));
+        }
+        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
+        let member_mod = |member, field| ModTargetKind::GroupMemberMod { member, mod_index: 0, field };
+        add_group_cable(&cmd_tx, 0, 0, cable(member_mod(0, CrossModField::Depth(0)), 0.4));
+        add_group_cable(&cmd_tx, 0, 0, cable(member_mod(0, CrossModField::Depth(2)), 0.5));
+        add_group_cable(&cmd_tx, 0, 0, cable(member_mod(0, CrossModField::Rate), 0.6));
+        add_group_cable(&cmd_tx, 0, 0, cable(member_mod(1, CrossModField::Depth(2)), 0.7));
+        add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }, 0.8));
+        // (And one that drives a cable member 0's modulator does not have: a removal that removed nothing must not move it.)
+        add_group_cable(&cmd_tx, 0, 0, cable(member_mod(0, CrossModField::Depth(7)), 0.9));
+        // And the depth of the third cable of member 0's second modulator.
+        add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMemberMod { member: 0, mod_index: 1, field: CrossModField::Depth(2) }, 1.0));
+        graph.drain_commands();
+        (graph, cmd_tx)
+    }
+
+    #[test]
+    fn removing_a_members_cable_moves_the_groups_cables_to_the_depths_of_its_later_ones() {
+        let (mut graph, cmd_tx) = group_with_cables_that_drive_a_members_cables();
+        let member_mod = |member, field| ModTargetKind::GroupMemberMod { member, mod_index: 0, field };
+        // Lane 1 is member 0.
+        cmd_tx.send(GraphCommand::RemoveModTarget { inst: 1, mod_index: 0, target_index: 1 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.instruments[1].modulators[0].targets.len(), 2);
+        assert_eq!(
+            drives(&graph.groups[0].modulators[0]),
+            [
+                (member_mod(0, CrossModField::Depth(0)), 0.4),
+                (member_mod(0, CrossModField::Depth(1)), 0.5),
+                (member_mod(0, CrossModField::Rate), 0.6),
+                // Member 1's own modulator is another's: its cables are not moved.
+                (member_mod(1, CrossModField::Depth(2)), 0.7),
+                (ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }, 0.8),
+                (member_mod(0, CrossModField::Depth(6)), 0.9),
+                // The member's other modulator lost nothing: this one is where it was.
+                (ModTargetKind::GroupMemberMod { member: 0, mod_index: 1, field: CrossModField::Depth(2) }, 1.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn removing_a_members_last_cable_moves_nothing_of_the_groups() {
+        let (mut graph, cmd_tx) = group_with_cables_that_drive_a_members_cables();
+        let member_mod = |member, field| ModTargetKind::GroupMemberMod { member, mod_index: 0, field };
+        cmd_tx.send(GraphCommand::RemoveModTarget { inst: 1, mod_index: 0, target_index: 2 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.instruments[1].modulators[0].targets.len(), 2);
+        let after: Vec<_> = graph.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).collect();
+        // The cable that drove the depth of the one that went is left as it is (it is for the controller to have taken it
+        // out first), and so are the first one's and the other modulator's; the far one, past it, moved.
+        assert_eq!(after[..5], [
+            member_mod(0, CrossModField::Depth(0)),
+            member_mod(0, CrossModField::Depth(2)),
+            member_mod(0, CrossModField::Rate),
+            member_mod(1, CrossModField::Depth(2)),
+            ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
+        ]);
+        assert_eq!(after[5], member_mod(0, CrossModField::Depth(6)));
+        assert_eq!(after[6], ModTargetKind::GroupMemberMod { member: 0, mod_index: 1, field: CrossModField::Depth(2) });
+    }
+
+    #[test]
+    fn a_members_cable_that_is_not_there_is_not_removed_and_the_groups_cables_stay() {
+        let (mut graph, cmd_tx) = group_with_cables_that_drive_a_members_cables();
+        let before = drives(&graph.groups[0].modulators[0]);
+        // Lane 1 is member 0; its first modulator has three cables and it has no third; lane 2 is member 1 and has none.
+        for (inst, mod_index, target_index) in [(1, 0, 3), (1, 0, 9), (1, 2, 0), (2, 0, 0)] {
+            cmd_tx.send(GraphCommand::RemoveModTarget { inst, mod_index, target_index }).unwrap();
+        }
+        graph.drain_commands();
+        assert_eq!(graph.instruments[1].modulators[0].targets.len(), 3);
+        assert_eq!(drives(&graph.groups[0].modulators[0]), before);
+    }
+
+    #[test]
+    fn removing_a_cable_of_a_lane_outside_the_group_leaves_the_groups_cables_alone() {
+        let (mut graph, cmd_tx) = group_with_cables_that_drive_a_members_cables();
+        let before = drives(&graph.groups[0].modulators[0]);
+        cmd_tx.send(GraphCommand::RemoveModTarget { inst: 0, mod_index: 0, target_index: 0 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.instruments[0].modulators[0].targets.len(), 2);
+        assert_eq!(drives(&graph.groups[0].modulators[0]), before);
+    }
+
+    #[test]
+    fn removing_a_group_modulators_cable_moves_its_siblings_cables_to_the_depths_of_its_later_ones() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        let source = || ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        for index in 0..2 {
+            cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source() }).unwrap();
+        }
+        for (i, depth) in [0.1, 0.2, 0.3].into_iter().enumerate() {
+            add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupBus { effect_index: 0, param_index: i as u32 }, depth));
+        }
+        add_group_cable(&cmd_tx, 0, 1, cable(depth_of(0, 1), 0.4));
+        add_group_cable(&cmd_tx, 0, 1, cable(depth_of(0, 2), 0.5));
+        // (And one that drives a cable the first does not have: a removal that removed nothing must not move it.)
+        add_group_cable(&cmd_tx, 0, 1, cable(depth_of(0, 5), 0.6));
+        // Nothing of a lane's rack is in step with this one's cables.
+        insert_lane_lfo(&cmd_tx, 0, 0);
+        add_lane_cable(&cmd_tx, 0, 0, cable(depth_of(0, 2), 0.9));
+        graph.drain_commands();
+
+        cmd_tx.send(GraphCommand::RemoveGroupModTarget { group: 0, mod_index: 0, target_index: 0 }).unwrap();
+        graph.drain_commands();
+        let rack = &graph.groups[0].modulators;
+        assert_eq!(rack[0].targets.len(), 2);
+        // (What drove the first cable is the controller's to have taken out first, so there is none here.)
+        assert_eq!(rack[1].targets.iter().map(|t| t.kind.clone()).collect::<Vec<_>>(), [depth_of(0, 0), depth_of(0, 1), depth_of(0, 4)]);
+        assert_eq!(graph.instruments[0].modulators[0].targets[0].kind, depth_of(0, 2), "a lane's rack is its own");
+
+        // A cable that is not there: nothing happens.
+        for (group, mod_index, target_index) in [(0, 0, 2), (0, 5, 0), (3, 0, 0)] {
+            cmd_tx.send(GraphCommand::RemoveGroupModTarget { group, mod_index, target_index }).unwrap();
+        }
+        graph.drain_commands();
+        assert_eq!((graph.groups[0].modulators[0].targets.len(), graph.groups[0].modulators[1].targets.len()), (2, 3));
+        assert_eq!(graph.groups[0].modulators[1].targets[2].kind, depth_of(0, 4), "and nothing moved");
     }
 }

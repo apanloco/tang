@@ -8,6 +8,8 @@
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
+  Edge,
+  EdgeId,
   Event,
   Intent,
   LayoutEntry,
@@ -39,8 +41,12 @@ export interface MockOptions {
   clock?: () => number;
 }
 
-/** What an intent comes to: the event it makes, or why it cannot be done. */
-type Outcome = { event: Event } | { error: WireError };
+/**
+ * What an intent comes to: the event it makes; or, if it changed the structure of the session, the session
+ * as it is then, which the clients are given whole (the controller leaves that to its one projection of the
+ * graph, `Applied::restructured`); or why it cannot be done.
+ */
+type Outcome = { event: Event } | { restructured: Snapshot } | { error: WireError };
 
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), high);
 
@@ -73,9 +79,47 @@ function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome 
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
 }
 
+/** The parameter a port is, if it is one. */
+function paramIndexOf(port: Edge["to"]["port"]): number | null {
+  return port.type === "param" ? port.index : null;
+}
+
+/**
+ * A cable taken out of the session, and with it the cables that drive the depth of one that goes (and
+ * theirs in turn). The slots the cables published their parameters' values in go from the layout.
+ */
+function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
+  const cables = snapshot.graph.edges;
+  const modulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } => e.kind === "modulation";
+  if (!cables.some((e) => modulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
+  const going = new Set<EdgeId>([edge]);
+  for (let grown = true; grown; ) {
+    grown = false;
+    for (const e of cables) {
+      if (modulation(e) && !going.has(e.id) && e.to.port.type === "depth" && going.has(e.to.port.edge)) {
+        going.add(e.id);
+        grown = true;
+      }
+    }
+  }
+  const gone = cables.filter((e) => modulation(e) && going.has(e.id));
+  const modulationSlots = [...snapshot.telemetry.modulation];
+  for (const cable of gone) {
+    const index = paramIndexOf(cable.to.port);
+    if (index === null) continue;
+    const at = modulationSlots.findIndex((entry) => entry.kind === "effective" && entry.node === cable.to.node && paramIndexOf(entry.port) === index);
+    if (at >= 0) modulationSlots.splice(at, 1);
+  }
+  const changed = modulationSlots.length !== snapshot.telemetry.modulation.length;
+  const telemetry = changed ? { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation: modulationSlots } : snapshot.telemetry;
+  const edges = cables.filter((e) => !gone.includes(e));
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges }, telemetry } };
+}
+
 /** Do what the controller does with an intent, to a snapshot. */
 function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
+  if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node);
   if (!node) return { error: { code: "notFound", message: `there is no node ${intent.node}` } };
   switch (intent.type) {
@@ -173,14 +217,14 @@ export class MockServer {
   apply(intent: Intent): void {
     const outcome = outcomeOf(this.#snapshot, intent);
     if ("error" in outcome) throw new Error(outcome.error.message);
-    this.#commit(outcome.event, true);
+    this.#commit(outcome, true);
   }
 
   /** Change the session without telling anybody: the clients will see a revision missing at the next change. */
   applyQuietly(intent: Intent): void {
     const outcome = outcomeOf(this.#snapshot, intent);
     if ("error" in outcome) throw new Error(outcome.error.message);
-    this.#commit(outcome.event, false);
+    this.#commit(outcome, false);
   }
 
   /** The server's idea of what the telemetry slots mean changes (a node came or went): the subscribed clients are told. */
@@ -253,8 +297,9 @@ export class MockServer {
         if ("error" in outcome) {
           connection.tell({ type: "rejected", reqId: message.reqId, error: outcome.error });
         } else {
-          this.#commit(outcome.event, true);
-          connection.tell({ type: "ack", reqId: message.reqId, rev: this.#snapshot.rev });
+          // (The events are told before the answer, and so is the snapshot that tells a change of structure.)
+          const rev = this.#commit(outcome, true);
+          connection.tell({ type: "ack", reqId: message.reqId, rev });
         }
         break;
       }
@@ -267,16 +312,32 @@ export class MockServer {
     }
   }
 
-  /** The next revision: apply the event to the model and, if `tell`, to the subscribed clients. */
-  #commit(event: Event, tell: boolean): void {
-    const stamped: StampedEvent = { ...event, rev: this.#snapshot.rev + 1 };
+  /**
+   * The next revision: apply what the intent did to the model and, if `tell`, tell the subscribed clients. The
+   * revision of the intent. (A change of structure is that, and the snapshot that tells it is the revision after,
+   * as `Controller::apply` has it.)
+   */
+  #commit(outcome: Exclude<Outcome, { error: WireError }>, tell: boolean): number {
+    const rev = this.#snapshot.rev + 1;
+    if ("restructured" in outcome) {
+      this.#snapshot = { ...outcome.restructured, rev: rev + 1, meta: { ...outcome.restructured.meta, dirty: true } };
+      if (tell) {
+        for (const connection of this.#connections) {
+          if (connection.subscribed) connection.tell({ type: "snapshot", snapshot: this.#snapshot });
+        }
+      }
+      return rev;
+    }
+    const stamped: StampedEvent = { ...outcome.event, rev };
     const applied = applyEvent(this.#snapshot, stamped);
     if (!applied.ok) throw new Error(applied.reason);
     this.#snapshot = applied.snapshot;
-    if (!tell) return;
-    for (const connection of this.#connections) {
-      if (connection.subscribed) connection.tell({ type: "event", event: stamped });
+    if (tell) {
+      for (const connection of this.#connections) {
+        if (connection.subscribed) connection.tell({ type: "event", event: stamped });
+      }
     }
+    return rev;
   }
 
   // -- Telemetry made up --

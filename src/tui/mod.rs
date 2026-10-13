@@ -1553,7 +1553,7 @@ impl State {
     fn apply(&mut self, intent: Intent) -> Option<Applied> {
         match self.ctl.apply(intent) {
             Ok(applied) => {
-                self.react_to(&applied.events);
+                self.react_to(&applied);
                 Some(applied)
             }
             Err(e) => {
@@ -1563,9 +1563,13 @@ impl State {
         }
     }
 
-    /// Bring what the view derives from the model up to date with `events`.
-    fn react_to(&mut self, events: &[intent::Event]) {
-        for event in events {
+    /// Bring what the view derives from the model up to date with what `applied` did.
+    fn react_to(&mut self, applied: &Applied) {
+        // Nodes or cables came or went: the tree is built from the model again.
+        if applied.restructured {
+            self.rebuild_tree();
+        }
+        for event in &applied.events {
             match event {
                 // The group header shows the volume.
                 intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
@@ -1911,7 +1915,7 @@ where
             recv(requests) -> request => match (request, web.as_deref_mut()) {
                 (Ok(request), Some(web)) => {
                     for applied in web.serve(&mut s.ctl, request) {
-                        s.react_to(&applied.events);
+                        s.react_to(&applied);
                     }
                 }
                 // The server is gone: there is nothing more to wait for from it.

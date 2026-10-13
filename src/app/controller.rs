@@ -39,7 +39,7 @@ use crate::app::catalog::Catalog;
 use crate::app::intent::Applied;
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel,
+    EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel,
     fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
@@ -359,6 +359,21 @@ impl Controller {
                     fixup_cross_mod_after_remove(&mut group.modulators, index);
                 }
             }
+        }
+        true
+    }
+
+    /// Take the cable `edge` out: of the model, and of the audio thread, which is sent the same
+    /// removals in the same order. The cables that drive the depth of a cable that goes are
+    /// taken out first and go with it (`SessionModel::remove_edge`). False, sending nothing,
+    /// if there is no such cable.
+    pub fn remove_edge(&mut self, edge: EdgeId) -> bool {
+        let Some(removals) = self.model.remove_edge(edge) else { return false };
+        for (at, mod_index, target_index) in removals {
+            let _ = self.cmd_tx.send(match at {
+                ModulatorLocation::Lane(inst) => GraphCommand::RemoveModTarget { inst, mod_index, target_index },
+                ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModTarget { group, mod_index, target_index },
+            });
         }
         true
     }
@@ -1070,6 +1085,35 @@ plugin = "builtin:reverb"
     }
 
     #[test]
+    fn a_change_of_structure_is_told_to_the_subscribers_as_a_snapshot_right_after_the_intent() {
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        let cables = |ctl: &Controller| ctl.snapshot().graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).count();
+        assert_eq!(cables(&ctl), 1);
+        let mirror = Mirror::join(&mut ctl);
+        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+
+        let applied = ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        // The intent is told (there is nothing in it for a client to apply), and the snapshot follows, a revision on.
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(ctl.rev, 2, "the snapshot has a revision of its own");
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert_eq!(cables(&ctl), 0);
+        assert!(mirror.copy().meta.dirty);
+        assert!(!ctl.resync(), "and there is nothing left to tell");
+    }
+
+    #[test]
+    fn nobody_is_told_of_a_change_of_structure_while_nobody_listens() {
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5));
+        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        assert_eq!(ctl.rev, 1, "no snapshot is made for nobody");
+    }
+
+    #[test]
     fn poll_tells_the_subscribers_what_the_audio_thread_reported() {
         let (engine, mut ctl) = controller_for(TWO_LANES);
         let mirror = Mirror::join(&mut ctl);
@@ -1734,6 +1778,71 @@ plugin = "builtin:osc"
         );
         assert_eq!(ctl.model.instruments[0].modulators.len(), 3, "the lane's rack is untouched");
         ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_edge_sends_the_audio_thread_each_removal_in_order_the_depth_cables_first() {
+        let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
+        sent(&engine);
+        // The member's first modulator's one cable: the member's third modulator's cable and the group's drive its depth.
+        let detune = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        assert!(ctl.remove_edge(detune));
+        assert_eq!(
+            sent(&engine),
+            ["RemoveGroupModTarget group=0 mod=1 target=7", "RemoveModTarget inst=0 mod=2 target=1", "RemoveModTarget inst=0 mod=0 target=0"]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_edge_for_a_cable_that_is_not_there_does_nothing() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        sent(&engine);
+        assert!(!ctl.remove_edge(EdgeId(77)));
+        assert!(sent(&engine).is_empty());
+    }
+
+    /// Every modulator's cables as the model has them, in the order `AudioGraph::cables` has them.
+    fn model_cables(model: &SessionModel) -> crate::plugin::chain::RackCables {
+        let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[ModulatorSlot]| -> Vec<_> {
+            rack.iter().enumerate().map(|(m, modulator)| (at(i), m, modulator.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect())).collect()
+        };
+        let lanes = model.instruments.iter().enumerate().flat_map(|(i, lane)| racks(ModulatorLocation::Lane, i, &lane.modulators));
+        let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
+        lanes.chain(groups).collect()
+    }
+
+    #[test]
+    fn taking_cables_out_leaves_the_model_and_the_audio_thread_with_the_same_cables() {
+        for session in [testutil::CROSS_MOD, testutil::CABLES_THAT_DRIVE_CABLES, testutil::CABLES_THAT_DRIVE_EACH_OTHER] {
+            // From the front each time, and from the back each time: the later cables move or do not.
+            for from_the_back in [false, true] {
+                let (handles, engine) = testutil::stub_engine_of(4096);
+                let model = testutil::load_onto(session, &handles.cmd_tx);
+                let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+                let mut ctl = Controller::new(model, handles, None);
+                graph.drain_commands();
+                assert_eq!(graph.cables(), model_cables(&ctl.model), "as loaded");
+                let mut removed = 0;
+                loop {
+                    let edges: Vec<EdgeId> = ctl
+                        .model
+                        .groups
+                        .iter()
+                        .flat_map(|g| &g.modulators)
+                        .chain(ctl.model.instruments.iter().flat_map(|lane| &lane.modulators))
+                        .flat_map(|m| m.targets.iter().map(|t| t.edge))
+                        .collect();
+                    let Some(&edge) = (if from_the_back { edges.last() } else { edges.first() }) else { break };
+                    assert!(ctl.remove_edge(edge));
+                    graph.drain_commands();
+                    removed += 1;
+                    assert_eq!(graph.cables(), model_cables(&ctl.model), "after the {removed}th removal ({edge:?}, from the back: {from_the_back})");
+                    ctl.model.check_ids().unwrap();
+                }
+                assert!(removed > 0);
+            }
+        }
     }
 
     #[test]

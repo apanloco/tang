@@ -85,6 +85,11 @@ impl Snapshot {
         if applied.rev != self.rev + 1 {
             return Err(DoesNotFit(format!("the session is at revision {} and the next event is {}", self.rev, applied.rev)));
         }
+        if applied.restructured {
+            // A change of structure is told as a snapshot (`Controller::apply`), which is the only
+            // thing that shows it: the copy has to be replaced, not changed.
+            return Err(DoesNotFit("the structure changed: start again from a snapshot".to_string()));
+        }
         for event in &applied.events {
             self.change(event)?;
         }
@@ -419,7 +424,7 @@ type = "envelope"
     }
 
     fn applied(rev: u64, event: Event) -> Applied {
-        Applied { rev, events: vec![event] }
+        Applied::of(rev, vec![event])
     }
 
     #[test]
@@ -509,6 +514,17 @@ type = "envelope"
         let once = told.clone();
         told.apply(&real).unwrap();
         assert_eq!(told, once, "the second time is a repeat");
+    }
+
+    #[test]
+    fn an_intent_that_changed_the_structure_does_not_fit_what_it_changed() {
+        let mut snapshot = controller("[[instrument]]\nplugin = \"builtin:osc\"\n", None).snapshot();
+        let before = snapshot.clone();
+        let error = snapshot.apply(&Applied::restructured(1)).unwrap_err();
+        assert!(error.to_string().contains("snapshot"), "{error}");
+        assert_eq!(snapshot, before, "nothing is applied");
+        // (An intent the snapshot has already is nothing to do, whatever it was.)
+        assert!(snapshot.apply(&Applied::restructured(0)).is_ok());
     }
 
     #[test]

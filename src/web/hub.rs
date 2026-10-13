@@ -352,13 +352,13 @@ mod tests {
         let (_b, mut rb) = hub.connect();
         hub.subscribe(a);
         let mut sink = HubSink { hub: hub.clone(), shared: shared() };
-        sink.applied(&Applied {
-            rev: 4,
-            events: vec![
+        sink.applied(&Applied::of(
+            4,
+            vec![
                 Event::ParamSet { node: NodeId(3), param: 1, value: 0.5 },
                 Event::GainSet { node: NodeId(3), gain: Gain::Mix, value: 1.0 },
             ],
-        });
+        ));
         let got = drain(&mut ra);
         let json: Vec<serde_json::Value> = got
             .iter()

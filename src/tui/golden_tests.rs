@@ -3088,6 +3088,31 @@ mod with_web {
     }
 
     #[test]
+    fn a_cable_a_browser_takes_out_is_gone_from_the_tui_at_once_and_the_browser_is_given_the_new_structure() {
+        let mut h = Harness::new(TRACER);
+        assert!(h.tree().iter().any(|line| line.contains('→')), "the LFO drives the cutoff: {:#?}", h.tree());
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let edges = snapshot["snapshot"]["graph"]["edges"].as_array().unwrap();
+                let cable = edges.iter().find(|e| e["kind"] == "modulation").unwrap()["id"].as_u64().unwrap();
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "removeEdge", "edge": cable}})).await;
+                // The structure is told as a snapshot, at the revision after the intent's, and the answer follows it.
+                let told = said(&mut client).await;
+                assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(2)), "{told}");
+                assert!(told["snapshot"]["graph"]["edges"].as_array().unwrap().iter().all(|e| e["kind"] != "modulation"));
+                assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
+                browser.quit().await;
+            },
+            |h, _| {
+                assert!(h.s.ctl.model.instruments[0].modulators[0].targets.is_empty());
+                assert!(h.tree().iter().all(|line| !line.contains('→')), "the tree is built again: {:#?}", h.tree());
+            },
+        );
+    }
+
+    #[test]
     fn a_server_that_has_stopped_does_not_make_the_loop_spin() {
         let mut h = Harness::new(TRACER);
         let mut web = start(&mut h);

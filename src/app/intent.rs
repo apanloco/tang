@@ -43,6 +43,10 @@ pub enum Intent {
     /// Set how deep a modulation cable pulls, -1 to 1 (a negative depth pulls the
     /// other way). The controller clamps it.
     SetEdgeDepth { edge: EdgeId, depth: f32 },
+    /// Take a modulation cable out: the modulator stays, no longer driving what the cable led
+    /// to. The cables that drive the depth of this one go with it (and theirs, in turn), since
+    /// what they drove is gone.
+    RemoveEdge { edge: EdgeId },
 }
 
 /// A setting of a modulator, by name.
@@ -148,9 +152,25 @@ pub struct Applied {
     /// The session's revision after the intent: one more than before, every time.
     pub rev: u64,
     pub events: Vec<Event>,
+    /// The intent added or took out a node or a cable, which no event describes: a front-end
+    /// that draws the structure has to draw it again, and a client is given a snapshot (the one
+    /// projection of the graph is the controller's: a client that derived the audio path, the
+    /// order of the nodes, from events would be a second one). It follows at once, at the revision
+    /// after this one.
+    pub restructured: bool,
 }
 
 impl Applied {
+    /// An intent that changed values, as the `events` tell.
+    pub fn of(rev: u64, events: Vec<Event>) -> Applied {
+        Applied { rev, events, restructured: false }
+    }
+
+    /// An intent that changed the structure of the session.
+    pub fn restructured(rev: u64) -> Applied {
+        Applied { rev, events: Vec::new(), restructured: true }
+    }
+
     /// The events, each stamped with the revision this intent brought about.
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends events"))]
     pub fn stamped(&self) -> Vec<StampedEvent> {
@@ -206,6 +226,7 @@ mod tests {
                 Intent::LoadPreset { node: NodeId(5), preset: "cathedral".to_string() },
                 json!({"type": "loadPreset", "node": 5, "preset": "cathedral"}),
             ),
+            (Intent::RemoveEdge { edge: EdgeId(6) }, json!({"type": "removeEdge", "edge": 6})),
         ]
     }
 
@@ -285,13 +306,13 @@ mod tests {
 
     #[test]
     fn the_events_of_an_applied_intent_go_out_stamped_with_its_revision() {
-        let applied = Applied {
-            rev: 9,
-            events: vec![
+        let applied = Applied::of(
+            9,
+            vec![
                 Event::ParamSet { node: NodeId(3), param: 2, value: 0.5 },
                 Event::GainSet { node: NodeId(4), gain: Gain::Mix, value: 1.0 },
             ],
-        };
+        );
         let stamped = applied.stamped();
         assert_eq!(
             wire(&stamped),
@@ -307,6 +328,8 @@ mod tests {
 
     #[test]
     fn an_applied_intent_without_events_goes_out_as_nothing() {
-        assert_eq!(wire(&Applied { rev: 1, events: vec![] }.stamped()), json!([]));
+        assert_eq!(wire(&Applied::of(1, vec![]).stamped()), json!([]));
+        // (A change of structure is told as a snapshot, not as events.)
+        assert_eq!(wire(&Applied::restructured(2).stamped()), json!([]));
     }
 }

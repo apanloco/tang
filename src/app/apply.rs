@@ -11,6 +11,14 @@ use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NodeId, Nod
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::{plugin, session};
 
+/// What an intent did, for `apply` to tell.
+enum Done {
+    /// It changed a value: the event says which.
+    Event(Event),
+    /// It added or took out nodes or cables.
+    Restructured,
+}
+
 /// Where the audio thread finds the plugin an intent concerns.
 enum PluginAt {
     /// A lane's instrument (slot 0) or one of its effects (slot 1..).
@@ -21,17 +29,26 @@ enum PluginAt {
 
 impl Controller {
     pub fn apply(&mut self, intent: Intent) -> Result<Applied, IntentError> {
-        let event = match intent {
-            Intent::SetParam { node, param, value } => self.set_param(node, param, value)?,
-            Intent::SetGain { node, gain, value } => self.set_gain(node, gain, value)?,
-            Intent::LoadPreset { node, preset } => self.load_preset(node, &preset)?,
-            Intent::SetModulatorField { node, field, value } => self.set_modulator_field(node, field, value)?,
-            Intent::SetEdgeDepth { edge, depth } => self.set_edge_depth(edge, depth)?,
+        let done = match intent {
+            Intent::SetParam { node, param, value } => Done::Event(self.set_param(node, param, value)?),
+            Intent::SetGain { node, gain, value } => Done::Event(self.set_gain(node, gain, value)?),
+            Intent::LoadPreset { node, preset } => Done::Event(self.load_preset(node, &preset)?),
+            Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
+            Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
+            Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
         };
         self.dirty = true;
         self.rev += 1;
-        let applied = Applied { rev: self.rev, events: vec![event] };
+        let applied = match done {
+            Done::Event(event) => Applied::of(self.rev, vec![event]),
+            Done::Restructured => Applied::restructured(self.rev),
+        };
         self.publish(&applied);
+        // The subscribers are told the new structure as a snapshot, at once, whole.
+        #[cfg(any(test, feature = "web"))]
+        if applied.restructured {
+            self.resync();
+        }
         Ok(applied)
     }
 
@@ -171,6 +188,14 @@ impl Controller {
             ModulatorLocation::Group(group) => GraphCommand::SetGroupModTargetDepth { group, mod_index, target_index, depth },
         });
         Ok(Event::EdgeDepthSet { edge, depth })
+    }
+
+    fn remove_edge_intent(&mut self, edge: EdgeId) -> Result<Done, IntentError> {
+        if self.remove_edge(edge) {
+            Ok(Done::Restructured)
+        } else {
+            Err(IntentError::EdgeNotFound(edge))
+        }
     }
 
     fn load_preset(&mut self, node: NodeId, preset_id: &str) -> Result<Event, IntentError> {
@@ -319,7 +344,7 @@ plugin = "builtin:reverb"
         assert_eq!(before, 0.0);
         let applied = ctl.apply(Intent::SetParam { node: lane(&ctl), param: detune, value: 3.0 }).unwrap();
 
-        assert_eq!(applied, Applied { rev: 1, events: vec![Event::ParamSet { node: lane(&ctl), param: detune, value: 3.0 }] });
+        assert_eq!(applied, Applied::of(1, vec![Event::ParamSet { node: lane(&ctl), param: detune, value: 3.0 }]));
         assert_eq!(param(&ctl, NodePath::Instrument(0), "detune").1, 3.0);
         assert_eq!(sent(&engine), [format!("SetParameter inst=0 slot=0 param={detune} value=3.000")]);
         assert!(ctl.dirty);
@@ -459,7 +484,7 @@ plugin = "builtin:reverb"
 
         let instrument = lane(&ctl);
         let applied = gain(&mut ctl, instrument, Gain::Volume, 0.5).unwrap();
-        assert_eq!(applied, Applied { rev: 1, events: vec![Event::GainSet { node: instrument, gain: Gain::Volume, value: 0.5 }] });
+        assert_eq!(applied, Applied::of(1, vec![Event::GainSet { node: instrument, gain: Gain::Volume, value: 0.5 }]));
         gain(&mut ctl, reverb, Gain::Mix, 0.25).unwrap();
         gain(&mut ctl, bus, Gain::Mix, 0.75).unwrap();
         gain(&mut ctl, group, Gain::GroupVolume, 2.0).unwrap();
@@ -574,7 +599,7 @@ plugin = "builtin:reverb"
         let expected = reverb_values_after("Cathedral");
         assert_eq!(
             applied,
-            Applied { rev: 1, events: vec![Event::PresetLoaded { node: reverb, preset: "Cathedral".to_string(), values: expected.clone() }] }
+            Applied::of(1, vec![Event::PresetLoaded { node: reverb, preset: "Cathedral".to_string(), values: expected.clone() }])
         );
         assert_eq!(sent(&engine), ["LoadPreset inst=0 slot=1 id=cathedral"]);
         assert!(ctl.dirty);
@@ -743,7 +768,7 @@ rate = 1.0
         sent(&engine);
         let lfo = lane_mod(&ctl, 0);
         let applied = field(&mut ctl, lfo, ModulatorField::Rate, 5.0).unwrap();
-        assert_eq!(applied, Applied { rev: 1, events: vec![Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Rate, value: 5.0 }] });
+        assert_eq!(applied, Applied::of(1, vec![Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Rate, value: 5.0 }]));
         let applied = field(&mut ctl, lfo, ModulatorField::Waveform, 1.0).unwrap();
         assert_eq!(applied.events, [Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Waveform, value: 1.0 }]);
         assert_eq!(lane_lfo(&ctl, 0), (LfoWaveform::Triangle, 5.0));
@@ -885,7 +910,7 @@ rate = 1.0
         let cutoff = lane_edge(&ctl, 0, 0);
         let rate = lane_edge(&ctl, 0, 1);
         let applied = ctl.apply(Intent::SetEdgeDepth { edge: cutoff, depth: 0.75 }).unwrap();
-        assert_eq!(applied, Applied { rev: 1, events: vec![Event::EdgeDepthSet { edge: cutoff, depth: 0.75 }] });
+        assert_eq!(applied, Applied::of(1, vec![Event::EdgeDepthSet { edge: cutoff, depth: 0.75 }]));
         // The second one drives a modulator's own rate, and a cable can pull the other way.
         ctl.apply(Intent::SetEdgeDepth { edge: rate, depth: -0.5 }).unwrap();
         assert_eq!((depth(&ctl, 0, 0), depth(&ctl, 0, 1)), (0.75, -0.5));
@@ -935,5 +960,67 @@ rate = 1.0
         let edge = lane_edge(&ctl, 0, 0);
         ctl.apply(Intent::SetEdgeDepth { edge, depth: 0.9 }).unwrap();
         assert_eq!((depth(&ctl, 0, 1), ctl.model.groups[0].modulators[0].targets[0].depth), before);
+    }
+
+    #[test]
+    fn remove_edge_takes_a_cable_out_of_the_model_and_the_engine_and_says_the_structure_changed() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let (cutoff, rate) = (lane_edge(&ctl, 0, 0), lane_edge(&ctl, 0, 1));
+        let applied = ctl.apply(Intent::RemoveEdge { edge: cutoff }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0"]);
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack[0].targets.iter().map(|t| t.edge).collect::<Vec<_>>(), [rate], "the other cable is as it was");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_edge_takes_out_a_cable_that_drives_a_modulators_own_rate_and_one_of_a_group() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        // The lane's first modulator's second cable drives the rate of the lane's fourth modulator.
+        let rate = lane_edge(&ctl, 0, 1);
+        ctl.apply(Intent::RemoveEdge { edge: rate }).unwrap();
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=1"]);
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1);
+        // The group modulator's cable to its bus filter's cutoff: by the group's command.
+        let bus = ctl.model.groups[0].modulators[0].targets[0].edge;
+        ctl.apply(Intent::RemoveEdge { edge: bus }).unwrap();
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0"]);
+        assert!(ctl.model.groups[0].modulators[0].targets.is_empty());
+        assert_eq!(ctl.model.groups[0].modulators.len(), 2, "its modulator stays");
+        assert_eq!(ctl.rev, 2);
+    }
+
+    #[test]
+    fn remove_edge_leaves_the_modulator_when_its_last_cable_goes() {
+        let (_engine, mut ctl) = modulated();
+        let (first, second) = (lane_edge(&ctl, 0, 0), lane_edge(&ctl, 0, 1));
+        let modulator = lane_mod(&ctl, 0);
+        ctl.apply(Intent::RemoveEdge { edge: first }).unwrap();
+        ctl.apply(Intent::RemoveEdge { edge: second }).unwrap();
+        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
+        assert_eq!(lane_mod(&ctl, 0), modulator, "and is the same one");
+    }
+
+    #[test]
+    fn remove_edge_refuses_a_cable_that_is_not_there_and_changes_nothing() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let edge = lane_edge(&ctl, 0, 0);
+        let error = ctl.apply(Intent::RemoveEdge { edge: EdgeId(9_999) }).unwrap_err();
+        assert_eq!(error, IntentError::EdgeNotFound(EdgeId(9_999)));
+        assert!(error.to_string().contains("no cable 9999"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        // A cable that was removed is not there the second time.
+        sent(&engine);
+        assert_eq!(ctl.apply(Intent::RemoveEdge { edge }).unwrap_err(), IntentError::EdgeNotFound(edge));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, 1, "a refusal is not a revision");
     }
 }

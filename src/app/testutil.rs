@@ -56,6 +56,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupModTargetDepth { group, mod_index, target_index, depth } => {
             format!("SetGroupModTargetDepth group={group} mod={mod_index} target={target_index} depth={depth:.3}")
         }
+        C::RemoveGroupModTarget { group, mod_index, target_index } => {
+            format!("RemoveGroupModTarget group={group} mod={mod_index} target={target_index}")
+        }
 
         C::AddInstrument { range } => format!("AddInstrument range={range:?}"),
         C::RemoveInstrument { inst } => format!("RemoveInstrument inst={inst}"),
@@ -88,6 +91,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
             "AddModTarget inst={inst} mod={mod_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
             target.kind, target.depth, target.base_value, target.param_min, target.param_max
         ),
+        C::RemoveModTarget { inst, mod_index, target_index } => {
+            format!("RemoveModTarget inst={inst} mod={mod_index} target={target_index}")
+        }
         C::SetModulatorOutput { location, index, slot } => {
             format!("SetModulatorOutput {location:?} index={index} slot={}", slot.index())
         }
@@ -241,7 +247,13 @@ pub fn recording(inst: usize) -> PatternNotification {
 /// Handles for a `Controller` over stub channels (48 kHz, 256-frame blocks, the
 /// default scale), and the other ends of those channels.
 pub fn stub_engine() -> (EngineHandles, StubEngine) {
-    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+    stub_engine_of(64)
+}
+
+/// `stub_engine`, with room for `capacity` commands that nobody has taken yet (a session
+/// loaded onto a real graph from one thread needs room for all of its commands).
+pub fn stub_engine_of(capacity: usize) -> (EngineHandles, StubEngine) {
+    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(capacity);
     let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
     let (return_tx, return_rx) = crossbeam_channel::bounded(16);
     let (pattern_tx, pattern_rx) = crossbeam_channel::unbounded();
@@ -521,6 +533,56 @@ depth = 0.5
 [[instrument.modulator.target]]
 mod_release = 1
 depth = 0.6
+"#;
+
+/// A lane with three modulators: the first drives three parameters, the second the depth of the
+/// first's first and third cable, the third the depth of the second's first.
+pub const CABLES_THAT_DRIVE_CABLES: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.1
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.2
+[[instrument.modulator.target]]
+param = "pan"
+depth = 0.3
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+mod_depth = [0, 0]
+depth = 0.4
+[[instrument.modulator.target]]
+mod_depth = [0, 2]
+depth = 0.5
+[[instrument.modulator]]
+rate = 3.0
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+depth = 0.6
+"#;
+
+/// Two modulators whose first cables drive each other's depth.
+pub const CABLES_THAT_DRIVE_EACH_OTHER: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+depth = 0.1
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.2
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+mod_depth = [0, 0]
+depth = 0.3
 "#;
 
 /// Panic, showing where, if two models differ anywhere. They are compared by their
