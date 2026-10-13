@@ -31,9 +31,20 @@ const MASTER: u64 = u32::MAX as u64;
 
 type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// A child process that is killed when this goes, however the test ends: one that panics
+/// while the program is starting (it never says where it serves, say) must not leave it running.
+struct Process(Child);
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A running `tang serve`.
 struct Tang {
-    child: Child,
+    child: Process,
     addr: SocketAddr,
     /// What it has logged (its stderr), for the message of a test that fails.
     log: Arc<Mutex<String>>,
@@ -41,17 +52,19 @@ struct Tang {
 
 impl Tang {
     fn start() -> Tang {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tang"))
+        let mut child = Process(
+            Command::new(env!("CARGO_BIN_EXE_tang"))
             // No sound card and no MIDI input is opened: nothing is heard, nothing is listened to.
-            .args(["--audio-device", "none", "--midi-device", "no such device", "serve", TRACER, "--web-bind", "127.0.0.1:0"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("tang starts");
+                .args(["--audio-device", "none", "--midi-device", "no such device", "serve", TRACER, "--web-bind", "127.0.0.1:0"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("tang starts"),
+        );
 
         let log = Arc::new(Mutex::new(String::new()));
-        let stderr = child.stderr.take().unwrap();
+        let stderr = child.0.stderr.take().unwrap();
         let sink = log.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -62,7 +75,7 @@ impl Tang {
         });
 
         // Where it serves is the first line on stdout.
-        let stdout = child.stdout.take().unwrap();
+        let stdout = child.0.stdout.take().unwrap();
         let (lines, first) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -84,26 +97,19 @@ impl Tang {
     /// Ask it to stop the way Ctrl+C does.
     #[cfg(unix)]
     fn interrupt(&self) {
-        let status = Command::new("kill").args(["-INT", &self.child.id().to_string()]).status().expect("kill runs");
+        let status = Command::new("kill").args(["-INT", &self.child.0.id().to_string()]).status().expect("kill runs");
         assert!(status.success());
     }
 
     fn exit_within(&mut self, within: Duration) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + within;
         while Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait().unwrap() {
+            if let Some(status) = self.child.0.try_wait().unwrap() {
                 return Some(status);
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         None
-    }
-}
-
-impl Drop for Tang {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
