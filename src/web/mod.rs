@@ -19,6 +19,8 @@ pub mod owner;
 pub mod pusher;
 pub mod security;
 pub mod server;
+#[cfg(test)]
+mod testclient;
 
 /// What the owner of the controller shares with every connection and the telemetry
 /// pusher: things they only read.
