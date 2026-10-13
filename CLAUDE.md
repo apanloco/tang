@@ -166,7 +166,7 @@ group = 0               # ...and so does this one
 ```
 
 - `name` — display name (optional; editable in the TUI with `R` on the group
-  header, default "Group N")
+  header, default "Group N"; an empty or blank name is no name)
 - `volume` — group bus output gain, applied to the member sum before the group
   effects (default: 1.0)
 - `pan` — group bus stereo balance, −1 left … 0 center … +1 right (default:
@@ -1203,15 +1203,32 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain` and `LoadPreset` (see "Session state").
-- **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s;
-  today's lane/group/modulator structure is projected into it. Node layout is
-  stored in the session TOML as optional `ui = { x, y, pinned }` tables that
-  the engine and the TUI ignore.
+- **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
+  (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
+  is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the
+  nodes (instrument, effect, modulator, group, the master as `NodeId::MASTER`),
+  their `parent`s and the edges between ports (`audio`, `member`, `modulation`
+  with the target's depth as `amount`), and `Controller::snapshot()`
+  (`src/app/snapshot.rs`) is that plus the revision, the telemetry layout and
+  what belongs to the session as a whole (dirty, file name, tempo, piano). Node
+  layout is to be stored in the session TOML as optional `ui = { x, y, pinned }`
+  tables that the engine and the TUI ignore.
 - **Telemetry**: the audio thread publishes modulator outputs, effective
   (modulated) parameter values and meters through lock-free slots; the web
-  runtime streams them to the browser as binary frames. The slots and the
-  engine side are built (see "Session state"); the layout event, the binary
-  frames and the web runtime are not.
+  runtime streams them to the browser as binary frames. The slots, the engine
+  side and the layout that says what each slot means
+  (`SessionModel::telemetry_layout()`, `src/app/layout.rs`) are built (see
+  "Session state"); the binary frames and the web runtime are not.
+- **Protocol**: the types that cross the socket (`Intent`, `Event`,
+  `StampedEvent`, `Graph`, `TelemetryLayout`, `Snapshot`) derive serde — camel
+  case, enums as objects tagged by `type` or `kind` — and, under the `web`
+  feature, ts-rs. The TypeScript in `web/src/protocol/generated/` is committed;
+  a test (`app::protocol::typescript`, run by the CI job `typescript`) fails
+  when it is not what the types generate. After changing a wire type:
+  `TANG_UPDATE_TYPES=1 cargo test --features web typescript`, and commit the
+  result. `examples/tracer.toml` has a golden JSON snapshot
+  (`src/app/snapshots/`); review the diff when it changes
+  (`INSTA_UPDATE=always cargo test the_tracer`).
 - **Server**: `axum` on its own thread behind the `web` Cargo feature
   (`tang serve`, or `--web` alongside the TUI). One WebSocket per client,
   loopback by default, `Origin`/`Host` checked, token for non-loopback binds.
@@ -1228,6 +1245,8 @@ TODO: `tang serve <session.toml>`, `--web[=addr]` and `--audio-device none`
 TODO: `NoteInput` — one lock-free note path shared by hardware MIDI, the
 virtual piano and the browser.
 TODO: `ui` layout fields in the session format.
+TODO: `Hello`, `Request` and `Response` protocol messages (with the server).
+TODO: patterns as graph nodes (they have no `NodeId` yet).
 
 ## Platform
 
@@ -1249,6 +1268,10 @@ behind upstream develop). Drop the `[patch.crates-io]` entry once #117 lands.
 
 VST3 support is behind the `vst3` Cargo feature (enabled by default). It uses
 pre-generated bindings (no build-time SDK dependency) and works on all platforms.
+
+The `web` Cargo feature (off by default) is the browser front-end. Today it
+only adds `ts-rs`, which generates the TypeScript of the protocol types; the
+server (`axum`) joins it in step 10. See "Web UI (planned)".
 
 CI runs clippy + tests on all three platforms:
 

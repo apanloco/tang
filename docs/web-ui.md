@@ -166,8 +166,11 @@ run in one place.
 allocator; the BPM and the piano mirror still sit on the controller), the ids
 exist for every node and `locate` turns one into a position, and the index
 fix-ups already live in `app::model` (the `fixup_*` / `remap_*` functions and
-`SessionModel::{remove_effect, move_effect}`). Edges have no ids yet: a
-modulation target is still a row of its modulator.
+`SessionModel::{remove_effect, move_effect}`). Modulation edges have ids too
+(step 8): every `ModTargetSlot` has an `EdgeId`, a series of its own so that no
+node id moved, allocated by the loader and by `Controller::add_target`, and
+checked with the node ids after every key press of the golden tests. A target is
+still a row of its modulator in the model; the id is what a client names it by.
 
 ### 4.2 Graph projection
 
@@ -194,6 +197,34 @@ structure into it on demand and translates edge edits back into intents.
   `AddModTarget`; deleting one = `RemoveEdge` → `RemoveModTarget`; moving an
   end = remove + add.
 
+*As built (step 8, `src/app/graph.rs`):* `SessionModel::graph()` gives a `Graph
+{ nodes, edges }`.
+- **Nodes** are in the order groups (each followed by its bus effects and
+  modulators), lanes (each followed by its effects and modulators), the master.
+  A `Node` is `{ id, parent, name }` plus a `kind`: `instrument` (plugin or null
+  for an empty lane, range, transpose, volume), `effect` (plugin, mix; a lane
+  effect and a bus effect are the same kind, the `parent` says which), `modulator`
+  (its source: LFO waveform and rate, ADSR, or a MIDI control, bound or learning),
+  `group` (volume, pan) and `master`. The master mix is a node of the graph with
+  the reserved id `NodeId::MASTER` (`u32::MAX`) that the model does not have. A
+  plugin carries its id, format, parameters (the value the user set, default, range,
+  enum labels, unit, section, step count) and presets. **Patterns are not nodes:**
+  they have no id in the model; the canvas gets them in phase 3.
+- **Ports** are a flat enum: `audioIn`, `audioOut`, `modOut`, `param { index }`
+  (the plugin's own index), `rate`, `attack`, `decay`, `sustain`, `release` (the
+  fields of a modulator that another can drive) and `depth { edge }` (the depth
+  of one of its edges). A node's ports follow from its kind and its plugin's
+  parameters; they are not listed per node.
+- **Edges** are `{ from, to }` endpoints (node and port) plus a `kind`: `audio` (a
+  link of the audio path), `member` (a lane feeding its group) and `modulation {
+  id, amount }`. Only modulation edges have ids: the others are derived and there
+  is nothing to name them for. A group modulator's edges reach its members' chains
+  and modulators and its own bus effects; one whose aim is gone (an effect, member
+  or sibling that is not there) has no edge instead of a crash.
+- **Differs from the sketch above:** the `Param(u32)` / `ModField(...)` ports are
+  one flat enum, and the edge ids are only for modulation edges. `parent` for a
+  lane is the group it is a member of, as the outline needs.
+
 ### 4.3 Parameter metadata
 
 `ParameterInfo` is `index, name, min, max, default, labels`. Add, all optional:
@@ -202,6 +233,14 @@ Builtins fill them in phase 0; the CLAP, VST3 and LV2 backends in phase 1 (VST3
 units and step counts, CLAP module paths and flags, LV2 port groups and scale
 points). Without them knobs read "0.37" instead of "1.2 kHz" and a big plugin's
 parameters are one flat list.
+
+*As built (step 8):* `ParameterInfo` has `unit`, `group` and `step_count` (0 for a
+continuous parameter, n for n steps, an enum of n+1 labels has n); the built-ins
+fill them in, and `ParamSlot` carries them from the loader. **`hidden` and
+`read-only` flags are not there yet:** nothing produces them until the CLAP,
+VST3 and LV2 backends fill the metadata in (phase 1). The filter's cutoff has no
+unit on purpose: its value is a position on an exponential scale, not a
+frequency, so "0.37 Hz" would lie.
 
 **Open:** value → display text needs the plugin instance, which the audio thread
 owns. Options: a main-thread shadow instance (which also replaces the
@@ -254,9 +293,9 @@ resolves cursor → ids and then calls `apply`.
 `NotFound` and `Invalid`. Every request carries a client `req_id` for the
 ack/err reply. Note on/off bypasses the controller (§3.3).
 
-Events carry a monotonically increasing `rev` (today it sits on `Applied`, one
-per intent, and the events themselves do not carry it; the protocol of step 8
-puts it on each): `ParamSet`, `NodeAdded`,
+Events carry a monotonically increasing `rev` (in the code it sits on `Applied`,
+one per intent; on the wire (step 8) `StampedEvent` is the revision and the event
+in one object, `Applied::stamped()` makes them): `ParamSet`, `NodeAdded`,
 `NodeUpdated`, `NodeRemoved`, `EdgeAdded`, `EdgeUpdated`, `EdgeRemoved`,
 `OrderChanged`, `Meta` (dirty, path, BPM, piano), `PluginLoading`,
 `PluginLoaded`, `PluginFailed`, `CatalogBatch`, `PatternRecorded`,
@@ -310,12 +349,20 @@ master peak and clip. A scope ring can follow later.
     for each buffer with a sample beyond full scale (|s| > 1.0) and is never
     reset, so any number of readers can watch it. The TUI's `CLIP` light is the
     first reader (`src/tui/clip.rs`).
-- **Layout.** A `TelemetryLayout { rev, entries: [{ slot, node, port, kind }] }`
-  event tells clients what each slot means. It changes only when the structure
-  does. The model already holds every slot (`InstrumentNode.meter`,
-  `GroupNode.meter`, `ModulatorSlot.output`, `ModTargetSlot.effective`) and
-  `SessionModel::check_ids` verifies them (present, unique, allocated here, not
-  the master's), so the layout of step 8 is a projection of the model.
+- **Layout.** A `TelemetryLayout { rev, meters, modulation }` tells clients what
+  each slot means: two lists, one per channel group, of `{ slot, node, port, kind
+  }` with `kind` one of `peak`, `clips`, `modOutput`, `effective`. A frame carries
+  the values of one list in its order. `rev` is a fingerprint of the entries, so it
+  changes exactly when they do, whoever changed them (the TUI edits the model
+  without telling anyone, so a counter would need every edit to bump it).
+  `SessionModel::telemetry_layout()` builds it from the slots the model holds
+  (`InstrumentNode.meter`, `GroupNode.meter`, `ModulatorSlot.output`,
+  `ModTargetSlot.effective`; `check_ids` verifies them). The meters are at the
+  master (its `audioIn`), each group's and each lane's `audioOut`; a modulator's
+  output is at its `modOut`; a parameter's effective value is at the plugin node's
+  `param` port, named once per parameter, by the lane's slot rather than the
+  group's (the lane's modulator is applied after the group's and wins). An item
+  without a slot or without an aim has no entry.
 - **Wire.** WebSocket binary frames: `u8 kind | u8 flags | u16 n |
   u32 layout_rev | n × f32`, where value *i* belongs to layout entry *i*. About
   30 Hz per subscribed channel group (`mod`, `meters`); nothing is sent when
@@ -333,6 +380,24 @@ master peak and clip. A scope ring can follow later.
 - The Rust types in `app` (`Intent`, `Event`, `Snapshot`, …) derive `serde`
   and, under `web`, `ts-rs`. The TypeScript types are generated into
   `web/src/protocol/generated/` and committed; CI fails if they are stale.
+- **JSON conventions (step 8).** Names are camel case. An enum is an object tagged
+  by `type` (intents, events, ports, modulator sources, MIDI controls) or `kind`
+  (a node's, an edge's), the other fields beside the tag; an enum without
+  payloads is a string (`"groupPan"`, `"saw"`). A `NodeId` / `EdgeId` is a bare
+  number. A struct that wraps an enum flattens it, so a node is `{ "id", "parent",
+  "name", "kind": "effect", "plugin", "mix" }` and an event is `{ "rev", "type":
+  "paramSet", ... }`. Absent values are `null`, not left out. Floats are `f32` in
+  the engine and as short as they can be on the wire.
+- **The roots** of the generated types, in `app::protocol`: `Intent`, `Event`,
+  `StampedEvent`, `Graph`, `TelemetryLayout`, `Snapshot` (and what they use).
+  `Hello`, `Request` and `Response` come with the server (step 10). Generation is
+  configured in code (`export_all`, large integers as `number`), not through
+  `TS_RS_*` variables and not with `#[ts(export)]`, so the output does not depend
+  on who runs it and a plain `cargo test --features web` writes nothing. The
+  test `app::protocol::typescript` compares a fresh generation with the committed
+  directory (a changed, a missing and an extra file each fail it);
+  `TANG_UPDATE_TYPES=1 cargo test --features web typescript` rewrites it. The CI
+  job `typescript` runs it without the plugin formats.
 - The protocol is versioned (`protocol` integer in `Hello`); the client refuses
   a mismatch with a clear message.
 - HTTP serves only the SPA and `/ws`; there is no REST API.
@@ -724,11 +789,53 @@ Each step is a reviewable change; the TUI must not regress at any point.
   real binary. The audio callback does not run in the sandboxed pseudo-terminal
   sessions used for the manual runs, so that check waits for the null audio
   backend (step 9).
-- [ ] **8. Graph projection and protocol types.** `Session::graph()`; serde
-  types for `Snapshot`, `Event`, `Intent`, `TelemetryLayout`; the
-  `ParameterInfo` v2 fields filled in for builtins; `ts-rs` export (feature
-  `web`) into `web/src/protocol/generated/`. *Done when:* a golden-JSON test for
-  a known session passes and the TS freshness check is wired up.
+- [x] **8. Graph projection and protocol types.** `SessionModel::graph()`;
+  serde types for `Snapshot`, `Event`, `Intent`, `TelemetryLayout`; the
+  `ParameterInfo` v2 fields filled in for built-ins; `ts-rs` export (feature `web`)
+  into `web/src/protocol/generated/`. Done in nine commits (§4.2, §4.3, §6 and §7
+  say what came out); no TUI snapshot changed:
+  - **The `web` feature and the TypeScript check.** `web` is off by default and
+    only adds `ts-rs` 12 for now (`serde_json` joins the dev-dependencies).
+    `app::protocol` has the freshness test and the one command that rewrites the
+    directory; mutation-checked by hand (an edited, an extra and a missing file
+    each fail it). CI has a `typescript` job.
+  - **A wire format for intents and events.** Camel-case JSON, tagged objects, a
+    `StampedEvent` that carries the revision; `PresetLoaded` reports `{param,
+    value}` objects instead of tuples. Tests pin the JSON of every variant and what
+    a client may not send (no type, a Rust-cased type, a missing field, null for
+    NaN, a negative node, an unknown gain). 10 injected bugs, all caught.
+  - **Parameter metadata v2** (`unit`, `group`, `step_count`) for the built-ins and
+    in `ParamSlot`. 13 injected bugs, all caught.
+  - **Edge ids** for modulation targets (`EdgeId`, a series of its own).
+    9 injected bugs, all caught.
+  - **The graph** (`app::graph`): nodes, ports, edges, containment, the master
+    node; a refactor on the way gave groups one name (`GroupNode::display_name`,
+    three copies in the TUI). 59 injected bugs, all caught; every scene and the
+    examples project into a closed graph.
+  - **The telemetry layout and the snapshot** (`app::layout`, `app::snapshot`):
+    `Controller::snapshot()` is the revision, the graph, the layout and what
+    belongs to the session as a whole (dirty, the file *name*, the tempo, the
+    piano's scale and mode). 26 injected bugs, all caught.
+  - **The golden JSON** of the snapshot of `examples/tracer.toml` (a saw
+    oscillator through a filter with an LFO on its cutoff, volume 0.1: step 12's
+    scene, added here), through the text the wire carries.
+  - Found on the way and fixed with the test first: f21 (a group named `""` in a
+    session file showed a blank header, the rename popup stores no name for an
+    empty one).
+  - **Differs from the sketch.** `Session::graph()` is `SessionModel::graph()`.
+    `hidden` / `read-only` flags are not in `ParameterInfo` (nothing produces them
+    before phase 1) and `stepped` is `step_count > 0`. Ports are one flat enum and
+    only modulation edges have ids (§4.2). `TelemetryLayout` is two lists and its
+    `rev` a fingerprint (§6). Patterns are not nodes, `ui` layout fields are not
+    in the session format, and `Hello` / `Request` / `Response` wait for step 10;
+    the types, the events for structural edits and `Applied.undo` follow the
+    intents of phase 1. Everything not yet read by the web runtime carries a
+    `dead_code` expectation that names step 10.
+  *Done:* `cargo test` (541 tests, 545 with `--features web`) and clippy green on
+  all three feature sets; the golden JSON test passes and the TypeScript is
+  checked in the test suite and in CI. **Not checked:** the TypeScript compiles
+  and means the same in a browser (there is no `web/` toolchain until step 11);
+  the CI job has not run (it runs once the branch is pushed).
 - [ ] **9. Null audio backend.** `--audio-device none` starts a timer-driven
   thread that calls `AudioGraph::process` at the buffer cadence; shared by
   `serve`, tests and CI. *Done when:* the engine runs on a machine without an
