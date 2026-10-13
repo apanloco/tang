@@ -778,8 +778,11 @@ canvas); a modulator's header ends in a "×" that takes it out (the focus goes t
 asked for a frame at a time, since a node that has not been measured again is not visible and
 takes no focus), and each cable has a "×" beside its depth. A cable is drawn by dragging it from the
 output at the foot of a modulator to the port of a parameter: while it is dragged the ports that
-take it are marked and no others, and a drop anywhere else asks for nothing (a connection radius
-of 40 px makes the knob's cell the place to let go). The ports are the controller's rule read from
+take it are marked and no others, and a drop anywhere else asks for nothing. The port of a parameter
+that takes the cable grows from its dot to the whole cell of the control while the cable is dragged
+(CSS, `.tang-port--takes`), so a drop anywhere over the knob is a drop on that parameter: the review of
+step 15 measured that the radius of 40 px, which this said was enough, reached only the top half of a
+knob, and at the foot of its cell took the port of the knob below it. The ports are the controller's rule read from
 the graph (`reachFrom`, `drivablesOf` in `client/reach.ts`, in the data of each modulator's
 node: D21). For a keyboard, and for the parameters a node does not show, a modulator has a list at
 its foot ("Cable from LFO 2 to"), grouped by plugin, of everything it can still drive; a cable to

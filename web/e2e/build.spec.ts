@@ -64,6 +64,37 @@ test("the parameters that take the cable are marked while it is dragged, and not
   await expect(page.locator(".tang-port--takes")).toHaveCount(0);
 });
 
+/** A point `down` of the way (0 to 1) down the cell of the control called `name`, a third of the way across. */
+async function over(plugin: Locator, name: string, down: number): Promise<{ x: number; y: number }> {
+  const box = await plugin.locator(".tang-cell").filter({ has: plugin.page().locator(`[aria-label="${name}"]`) }).boundingBox();
+  if (!box) throw new Error(`no control called ${name}`);
+  return { x: box.x + box.width / 3, y: box.y + box.height * down };
+}
+
+test("a cable let go anywhere over a parameter's control is drawn to that parameter, and not to the one above or below it", async ({ page }) => {
+  await open(page);
+  const oscillator = node(page, "Oscillator");
+  // Near the top of the cell of one, in the middle of another, near the foot of a third (they are in a column, so
+  // the foot of one is a few pixels from the port of the next), and in the gap beside the knob.
+  const drops: [string, number][] = [
+    ["decay", 0.04],
+    ["pan", 0.15],
+    ["volume", 0.5],
+    ["attack", 0.88],
+    ["release", 0.97],
+  ];
+  let drawn = 1;
+  for (const [name, down] of drops) {
+    await drag(page, output(node(page, "LFO")), await over(oscillator, name, down));
+    drawn += 1;
+    await expect(cables(page), `a cable let go over ${name}`).toHaveCount(drawn);
+    await expect(page.getByRole("slider", { name: `Depth of LFO → Oscillator: ${name}` }), name).toBeVisible();
+  }
+  // (Five cables, each to the parameter it was let go over: not one to a neighbour.)
+  await expect(page.locator(".tang-cable--modulation")).toHaveCount(6);
+  await expect(page.locator(".tang-notice")).toHaveCount(0);
+});
+
 test("a cable dropped where it does not belong is not drawn: on the empty canvas, or on a parameter that is driven already", async ({ page }) => {
   await open(page);
   await drag(page, output(node(page, "LFO")), { x: 1500, y: 900 });
