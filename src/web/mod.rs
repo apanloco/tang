@@ -16,6 +16,7 @@ use crate::app::layout::TelemetryLayout;
 pub mod connection;
 pub mod hub;
 pub mod owner;
+pub mod pusher;
 pub mod security;
 pub mod server;
 

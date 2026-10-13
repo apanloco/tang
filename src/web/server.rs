@@ -37,9 +37,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::app::protocol::{ErrorCode, ServerMessage, WireError};
 use crate::note_input::NoteInput;
+use crate::telemetry::Telemetry;
 use crate::web::Shared;
 use crate::web::connection::{Connection, Context, Flow, Limits, MAX_MESSAGE_BYTES, OwnerRequest};
 use crate::web::hub::{Hub, Outgoing};
+use crate::web::pusher;
 use crate::web::security::{Policy, Refusal, Token};
 
 /// How long to wait for a client to answer the server's close frame before the socket is
@@ -84,6 +86,8 @@ pub struct Config {
     pub auth_timeout: Duration,
     /// How long one write to a client may take before the client is given up on.
     pub write_timeout: Duration,
+    /// How often telemetry frames go out to the clients that want them.
+    pub telemetry_period: Duration,
     pub limits: Limits,
 }
 
@@ -96,6 +100,8 @@ impl Config {
             max_clients: 32,
             auth_timeout: Duration::from_secs(10),
             write_timeout: Duration::from_secs(10),
+            // About thirty frames a second.
+            telemetry_period: Duration::from_millis(33),
             limits: Limits::default(),
         }
     }
@@ -108,6 +114,8 @@ pub struct Parts {
     /// Where requests for the owner of the controller go.
     pub owner: crossbeam_channel::Sender<OwnerRequest>,
     pub notes: NoteInput,
+    /// What the audio thread publishes, for the telemetry frames.
+    pub telemetry: Arc<Telemetry>,
 }
 
 /// What every request and connection reads.
@@ -141,7 +149,7 @@ impl Server {
     /// does not allow the address (beyond loopback a token is needed), and if the
     /// address cannot be listened on.
     pub fn start(config: Config, parts: Parts) -> anyhow::Result<Server> {
-        let Config { bind, token, extra_origins, max_clients, auth_timeout, write_timeout, limits } = config;
+        let Config { bind, token, extra_origins, max_clients, auth_timeout, write_timeout, telemetry_period, limits } = config;
         Policy::new(bind, token.clone(), extra_origins.clone()).map_err(anyhow::Error::msg)?;
         let listener = std::net::TcpListener::bind(bind).with_context(|| format!("cannot listen on {bind}"))?;
         listener.set_nonblocking(true).context("cannot make the listener non-blocking")?;
@@ -160,6 +168,8 @@ impl Server {
 
         let (stop_tx, stop_rx) = watch::channel(false);
         let seat_count = max_clients.clamp(1, u32::MAX as usize) as u32;
+        // The pusher is a task of the runtime like the connections, and starts when it runs.
+        runtime.spawn(pusher::run(parts.hub.clone(), parts.shared.clone(), parts.telemetry, telemetry_period, stop_rx.clone()));
         let app = Arc::new(App {
             policy,
             hub: parts.hub,
@@ -426,6 +436,7 @@ mod tests {
         owner: crossbeam_channel::Receiver<OwnerRequest>,
         midi: crossbeam_channel::Receiver<MidiEvent>,
         held: Arc<HeldNotes>,
+        telemetry: Arc<Telemetry>,
     }
 
     fn rig() -> Rig {
@@ -440,10 +451,11 @@ mod tests {
         let filter = Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight));
         let notes = NoteInput::new(midi_tx, held.clone(), filter);
         let shared = Arc::new(Shared::new(3, SessionModel::default().telemetry_layout()));
+        let telemetry = Arc::new(Telemetry::new());
         let mut config = Config::new("127.0.0.1:0".parse().unwrap());
         tune(&mut config);
-        let server = Server::start(config, Parts { hub: hub.clone(), shared, owner: owner_tx, notes }).unwrap();
-        Rig { server, hub, owner, midi, held }
+        let server = Server::start(config, Parts { hub: hub.clone(), shared, owner: owner_tx, notes, telemetry: telemetry.clone() }).unwrap();
+        Rig { server, hub, owner, midi, held, telemetry }
     }
 
     fn secret(config: &mut Config) {
@@ -718,22 +730,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_arrives_as_binary_frames_for_the_clients_that_asked() {
-        use crate::app::protocol::TelemetryChannel::Meters;
-        let rig = rig();
+    async fn telemetry_arrives_as_binary_frames_for_as_long_as_the_client_asks() {
+        use crate::telemetry::MASTER;
+        let rig = rig_with(|config| config.telemetry_period = Duration::from_millis(10));
         let mut client = connect(&rig).await;
         said(&mut client).await;
-        tell(&mut client, json!({"type": "telemetry", "channels": ["meters"]})).await;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !rig.hub.wanted(Meters) {
-            assert!(Instant::now() < deadline, "the hub was not told");
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        rig.telemetry.store(MASTER.peak, 0.5);
+        for _ in 0..3 {
+            rig.telemetry.bump(MASTER.clips);
         }
-        rig.hub.send_telemetry(Meters, &Outgoing::Binary(vec![1, 2, 3].into()));
+        tell(&mut client, json!({"type": "telemetry", "channels": ["meters"]})).await;
+        // The master's meter: its peak, then the number of buffers that clipped.
         match recv(&mut client).await {
-            Some(ClientMessage::Binary(bytes)) => assert_eq!(&bytes[..], [1, 2, 3]),
+            Some(ClientMessage::Binary(bytes)) => {
+                assert_eq!(&bytes[..4], [0, 0, 2, 0], "the meters, no flags, two values");
+                assert_eq!(f32::from_le_bytes(bytes[8..12].try_into().unwrap()), 0.5);
+                assert_eq!(f32::from_le_bytes(bytes[12..16].try_into().unwrap()), 3.0);
+            }
             other => panic!("{other:?}"),
         }
+
+        // None any more once it asks for none: what is already on its way may still come.
+        tell(&mut client, json!({"type": "telemetry", "channels": []})).await;
+        wait_until("the hub was not told", || !rig.hub.wanted(crate::app::protocol::TelemetryChannel::Meters)).await;
+        while tokio::time::timeout(Duration::from_millis(100), client.next()).await.is_ok() {}
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(tokio::time::timeout(Duration::from_millis(60), client.next()).await.is_err(), "silence");
     }
 
     #[tokio::test]
@@ -1004,8 +1026,7 @@ mod tests {
     #[test]
     fn the_server_does_not_start_on_an_address_that_is_taken() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let (hub, shared, owner, notes) = parts();
-        let error = Server::start(Config::new(taken.local_addr().unwrap()), Parts { hub, shared, owner, notes }).err().expect("a refusal");
+        let error = Server::start(Config::new(taken.local_addr().unwrap()), parts()).err().expect("a refusal");
         assert!(error.to_string().contains("cannot listen"), "{error}");
     }
 
@@ -1013,8 +1034,7 @@ mod tests {
     fn the_server_does_not_listen_beyond_loopback_without_a_token() {
         // On an address that is taken, so that the policy is what speaks first, not the bind.
         let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-        let (hub, shared, owner, notes) = parts();
-        let error = Server::start(Config::new(taken.local_addr().unwrap()), Parts { hub, shared, owner, notes }).err().expect("a refusal");
+        let error = Server::start(Config::new(taken.local_addr().unwrap()), parts()).err().expect("a refusal");
         assert!(error.to_string().contains("needs a token"), "{error}");
     }
 
@@ -1026,7 +1046,7 @@ mod tests {
         assert_eq!(open.server.url(), format!("http://127.0.0.1:{}/", open.port()));
     }
 
-    fn parts() -> (Arc<Hub>, Arc<Shared>, crossbeam_channel::Sender<OwnerRequest>, NoteInput) {
+    fn parts() -> Parts {
         let (owner, _) = crossbeam_channel::bounded(1);
         let (midi, _) = crossbeam_channel::bounded(1);
         let notes = NoteInput::new(
@@ -1034,6 +1054,12 @@ mod tests {
             Arc::new(HeldNotes::new()),
             Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight)),
         );
-        (Arc::new(Hub::new(4)), Arc::new(Shared::new(0, SessionModel::default().telemetry_layout())), owner, notes)
+        Parts {
+            hub: Arc::new(Hub::new(4)),
+            shared: Arc::new(Shared::new(0, SessionModel::default().telemetry_layout())),
+            owner,
+            notes,
+            telemetry: Arc::new(Telemetry::new()),
+        }
     }
 }

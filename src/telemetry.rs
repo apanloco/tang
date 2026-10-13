@@ -24,6 +24,13 @@ pub const CAPACITY: u32 = 4096;
 pub struct Slot(u32);
 
 impl Slot {
+    /// The slot numbered `index`, for tests that publish into the slots a layout names
+    /// (the web runtime's, which is what reads layouts).
+    #[cfg(all(test, feature = "web"))]
+    pub fn for_test(index: u32) -> Slot {
+        Slot(index)
+    }
+
     /// The cell's number, for describing it to a client.
     #[cfg_attr(not(test), expect(dead_code, reason = "the layout a client gets (`app::layout`) names the slots; the web runtime sends it in step 10"))]
     pub fn index(self) -> u32 {
