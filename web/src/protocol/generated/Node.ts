@@ -13,6 +13,8 @@ export type Node = { id: NodeId,
  */
 parent: NodeId | null, 
 /**
- * What to call it: the plugin's name, the group's name, the modulator's label.
+ * What to call it: the plugin's name, the group's name, what kind a modulator is. A
+ * modulator's settings are not in its name (they change while the node stays the same):
+ * they are in `kind`.
  */
 name: string, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, } | { "kind": "effect", plugin: Plugin, mix: number, } | { "kind": "modulator", source: ModulatorSource, } | { "kind": "group", volume: number, pan: number, } | { "kind": "master" });

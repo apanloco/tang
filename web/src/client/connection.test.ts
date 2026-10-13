@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import type { Intent, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
+import type { Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
 import { MASTER, nodeNamed, tracerSnapshot } from "./fixtures";
@@ -139,6 +139,62 @@ describe("a request", () => {
     expect(valueOf(client, filter, param?.index ?? -1)).toBe(1);
   });
 
+  test("sets a modulator's settings and a cable's depth, clamped and rounded as the controller does", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const source = () => {
+      const node = client.state.snapshot?.graph.nodes.find((n) => n.id === lfo.id);
+      return node?.kind === "modulator" ? node.source : undefined;
+    };
+    const depth = () => {
+      const cable = client.state.snapshot?.graph.edges.find((e) => e.kind === "modulation");
+      return cable?.kind === "modulation" ? cable.amount : undefined;
+    };
+    const field = (name: "rate" | "waveform", value: number) => client.request({ type: "setModulatorField", node: lfo.id, field: name, value });
+    await field("rate", 4);
+    expect(source()).toMatchObject({ type: "lfo", rate: 4 });
+    await field("rate", 900);
+    expect(source()).toMatchObject({ rate: 50 });
+    await field("rate", -3);
+    expect(source()).toMatchObject({ rate: 0.01 });
+    // a waveform is an index, rounded: 2.4 is the saw, and there is no waveform after the square
+    await field("waveform", 2.4);
+    expect(source()).toMatchObject({ waveform: "saw" });
+    await field("waveform", 9);
+    expect(source()).toMatchObject({ waveform: "square" });
+    await field("waveform", -2);
+    expect(source()).toMatchObject({ waveform: "sine" });
+    // a cable's depth goes from -1 to 1
+    await client.request({ type: "setEdgeDepth", edge: 0, depth: -0.5 });
+    expect(depth()).toBe(-0.5);
+    await client.request({ type: "setEdgeDepth", edge: 0, depth: 7 });
+    expect(depth()).toBe(1);
+    await client.request({ type: "setEdgeDepth", edge: 0, depth: -7 });
+    expect(depth()).toBe(-1);
+  });
+
+  test("sets the stages of an envelope, clamped to their ranges", async () => {
+    const envelope: Node = {
+      id: 41,
+      parent: 0,
+      name: "ADSR",
+      kind: "modulator",
+      source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
+    };
+    const snapshot = { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, envelope] } };
+    const server = new MockServer({ snapshot });
+    const client = await open(server);
+    for (const [field, value] of [["attack", 99], ["decay", 0], ["sustain", 4], ["release", 2.5]] as const) {
+      await client.request({ type: "setModulatorField", node: envelope.id, field, value });
+    }
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === envelope.id);
+    expect(node?.kind === "modulator" && node.source).toEqual({ type: "envelope", attack: 10, decay: 0.001, sustain: 1, release: 2.5 });
+    // (an envelope has no rate and no waveform)
+    for (const field of ["rate", "waveform"] as const) {
+      await expect(client.request({ type: "setModulatorField", node: envelope.id, field, value: 1 })).rejects.toMatchObject({ code: "invalid" });
+    }
+  });
+
   test("that the server rejects fails with its code, and changes nothing", async () => {
     const server = new MockServer();
     const client = await open(server);
@@ -148,6 +204,35 @@ describe("a request", () => {
     expect(client.state.snapshot).toEqual(tracerSnapshot);
     const nonsense = await client.request({ type: "setGain", node: filter.id, gain: "volume", value: 1 }).catch((e: unknown) => e);
     expect((nonsense as RequestError).code).toBe("invalid");
+  });
+
+  test("for a modulator's setting or a cable's depth that does not fit fails, and changes nothing", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const fails = async (intent: Intent) => (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    const refused = [
+      [{ type: "setModulatorField", node: 424242, field: "rate", value: 1 }, "notFound", "there is no node 424242"],
+      [{ type: "setModulatorField", node: oscillator.id, field: "rate", value: 1 }, "invalid", "that node is not a modulator"],
+      [{ type: "setModulatorField", node: lfo.id, field: "attack", value: 1 }, "invalid", "attack does not apply to that modulator"],
+      [{ type: "setEdgeDepth", edge: 99, depth: 0.5 }, "notFound", "there is no cable 99"],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = await fails(intent);
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("for a value that is not a number is refused in the server's own process (JSON has no such number to send)", () => {
+    const server = new MockServer();
+    expect(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: Number.NaN });
+    }).toThrow("NaN is not a value for rate");
+    expect(() => {
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: Number.POSITIVE_INFINITY });
+    }).toThrow("Infinity is not a value for the depth of a cable");
+    expect(server.snapshot).toEqual(tracerSnapshot);
   });
 
   test("answers each of several at once", async () => {

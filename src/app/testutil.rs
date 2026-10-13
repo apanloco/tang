@@ -103,6 +103,21 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModTargetDepth { inst, mod_index, target_index, depth } => {
             format!("SetModTargetDepth inst={inst} mod={mod_index} target={target_index} depth={depth:.3}")
         }
+        C::SetModulatorWaveform { inst, mod_index, waveform } => {
+            format!("SetModulatorWaveform inst={inst} mod={mod_index} waveform={waveform:?}")
+        }
+        C::SetModulatorEnvelopeParam { inst, mod_index, attack, decay, sustain, release } => format!(
+            "SetModulatorEnvelopeParam inst={inst} mod={mod_index} attack={attack:.3} decay={decay:.3} sustain={sustain:.3} release={release:.3}"
+        ),
+        C::SetGroupModulatorRate { group, mod_index, rate } => {
+            format!("SetGroupModulatorRate group={group} mod={mod_index} rate={rate:.3}")
+        }
+        C::SetGroupModulatorWaveform { group, mod_index, waveform } => {
+            format!("SetGroupModulatorWaveform group={group} mod={mod_index} waveform={waveform:?}")
+        }
+        C::SetGroupModulatorEnvelopeParam { group, mod_index, attack, decay, sustain, release } => format!(
+            "SetGroupModulatorEnvelopeParam group={group} mod={mod_index} attack={attack:.3} decay={decay:.3} sustain={sustain:.3} release={release:.3}"
+        ),
 
         C::SetPattern { inst, pattern, base_note, in_key } => format!(
             "SetPattern inst={inst} events={} length_samples={} base_note={base_note:?} in_key={in_key}",

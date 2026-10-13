@@ -5,13 +5,14 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { PROTOCOL } from "../protocol";
+import { DEPTH_RANGE, MODULATOR_FIELD_RANGES, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
   Event,
   Gain,
   Intent,
   LayoutEntry,
+  ModulatorField,
   Node,
   NodeId,
   Plugin,
@@ -59,8 +60,30 @@ function invalid(message: string): Outcome {
   return { error: { code: "invalid", message } };
 }
 
+/** A setting of a modulator: clamped to its range, rounded if it is an index, and only if the modulator has it. */
+function fieldOutcome(node: Node, field: ModulatorField, value: number): Outcome {
+  if (node.kind !== "modulator") return invalid("that node is not a modulator");
+  if (!Number.isFinite(value)) return invalid(`${value} is not a value for ${field}`);
+  const [low, high] = MODULATOR_FIELD_RANGES[field];
+  const clamped = clamp(value, low, high);
+  const { type } = node.source;
+  const fits = type === "lfo" ? field === "rate" || field === "waveform" : type === "envelope" && field !== "rate" && field !== "waveform";
+  if (!fits) return invalid(`${field} does not apply to that modulator`);
+  return { event: { type: "modulatorFieldSet", node: node.id, field, value: field === "waveform" ? Math.round(clamped) : clamped } };
+}
+
+/** The depth of a cable: clamped, and only of a cable that is there. */
+function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome {
+  if (!snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge)) {
+    return { error: { code: "notFound", message: `there is no cable ${edge}` } };
+  }
+  if (!Number.isFinite(depth)) return invalid(`${depth} is not a value for the depth of a cable`);
+  return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
+}
+
 /** Do what the controller does with an intent, to a snapshot. */
 function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
+  if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node);
   if (!node) return { error: { code: "notFound", message: `there is no node ${intent.node}` } };
   switch (intent.type) {
@@ -88,6 +111,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
       // (The values a preset sets are the plugin's business; a mock has none to report.)
       return { event: { type: "presetLoaded", node: node.id, preset: preset.name, values: [] } };
     }
+    case "setModulatorField":
+      return fieldOutcome(node, intent.field, intent.value);
   }
 }
 

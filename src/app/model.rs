@@ -124,6 +124,23 @@ impl SessionModel {
         self.nodes().find(|(node, _)| *node == id).map(|(_, path)| path)
     }
 
+    /// Where the modulation cable `id` is: the modulator's rack, the modulator's
+    /// position in it and the target's in the modulator. None if there is no such
+    /// cable (any more).
+    pub fn locate_edge(&self, id: EdgeId) -> Option<(ModulatorLocation, usize, usize)> {
+        let groups = self.groups.iter().enumerate().flat_map(|(group, g)| {
+            g.modulators.iter().enumerate().flat_map(move |(index, m)| {
+                m.targets.iter().enumerate().map(move |(target, t)| (t.edge, ModulatorLocation::Group(group), index, target))
+            })
+        });
+        let lanes = self.instruments.iter().enumerate().flat_map(|(inst, lane)| {
+            lane.modulators.iter().enumerate().flat_map(move |(index, m)| {
+                m.targets.iter().enumerate().map(move |(target, t)| (t.edge, ModulatorLocation::Lane(inst), index, target))
+            })
+        });
+        groups.chain(lanes).find(|(edge, ..)| *edge == id).map(|(_, at, index, target)| (at, index, target))
+    }
+
     /// Check that every node has an id of its own, that ids were allocated here,
     /// that a lane's instrument plugin carries the lane's id, and that the
     /// telemetry slots are in order: every lane and group has a meter (two slots),
@@ -469,7 +486,6 @@ pub struct ModulatorSlot {
 #[derive(Debug)]
 pub struct ModTargetSlot {
     /// The edge this target is, for as long as it exists.
-    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by the graph a client gets (`app::graph`), which only the web runtime sends"))]
     pub edge: EdgeId,
     /// Slot the target lives on: 0 = instrument, 1..N = effects. Used to label
     /// the target with its plugin and to resolve cross-mod vs plugin params.

@@ -1613,6 +1613,8 @@ impl State {
             match event {
                 // The group header shows the volume.
                 intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
+                // The tree shows a modulator's rate and waveform, and its cables' depths.
+                intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 intent::Event::ParamSet { .. }
                 | intent::Event::GainSet { .. }
                 | intent::Event::PresetLoaded { .. } => {}

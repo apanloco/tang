@@ -6,9 +6,9 @@
 //! nothing, and does not count as a revision.
 
 use crate::app::controller::Controller;
-use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ParamValue};
-use crate::app::model::{NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
-use crate::plugin::chain::GraphCommand;
+use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ParamValue};
+use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::{plugin, session};
 
 /// Where the audio thread finds the plugin an intent concerns.
@@ -25,6 +25,8 @@ impl Controller {
             Intent::SetParam { node, param, value } => self.set_param(node, param, value)?,
             Intent::SetGain { node, gain, value } => self.set_gain(node, gain, value)?,
             Intent::LoadPreset { node, preset } => self.load_preset(node, &preset)?,
+            Intent::SetModulatorField { node, field, value } => self.set_modulator_field(node, field, value)?,
+            Intent::SetEdgeDepth { edge, depth } => self.set_edge_depth(edge, depth)?,
         };
         self.dirty = true;
         self.rev += 1;
@@ -89,6 +91,86 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::GainSet { node, gain, value })
+    }
+
+    fn set_modulator_field(&mut self, node: NodeId, field: ModulatorField, value: f32) -> Result<Event, IntentError> {
+        let path = self.model.locate(node).ok_or(IntentError::NotFound(node))?;
+        let NodePath::Modulator { at, index } = path else {
+            return Err(invalid("that node is not a modulator"));
+        };
+        if !value.is_finite() {
+            return Err(invalid(format!("{value} is not a value for {field:?}")));
+        }
+        let (min, max) = field.range();
+        let mut value = value.max(min).min(max);
+        if field == ModulatorField::Waveform {
+            value = value.round();
+        }
+        let modulator = self
+            .model
+            .modulators_mut(at)
+            .and_then(|rack| rack.get_mut(index))
+            .ok_or(IntentError::NotFound(node))?;
+        let command = match (&mut modulator.source, field) {
+            (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => {
+                *rate = value;
+                match at {
+                    ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorRate { inst, mod_index: index, rate: value },
+                    ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorRate { group, mod_index: index, rate: value },
+                }
+            }
+            (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => {
+                *waveform = LfoWaveform::ALL[value as usize];
+                let waveform = *waveform;
+                match at {
+                    ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorWaveform { inst, mod_index: index, waveform },
+                    ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorWaveform { group, mod_index: index, waveform },
+                }
+            }
+            (
+                ModSourceSlot::Envelope { attack, decay, sustain, release },
+                ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Sustain | ModulatorField::Release,
+            ) => {
+                match field {
+                    ModulatorField::Attack => *attack = value,
+                    ModulatorField::Decay => *decay = value,
+                    ModulatorField::Sustain => *sustain = value,
+                    _ => *release = value,
+                }
+                let (attack, decay, sustain, release) = (*attack, *decay, *sustain, *release);
+                match at {
+                    ModulatorLocation::Lane(inst) => {
+                        GraphCommand::SetModulatorEnvelopeParam { inst, mod_index: index, attack, decay, sustain, release }
+                    }
+                    ModulatorLocation::Group(group) => {
+                        GraphCommand::SetGroupModulatorEnvelopeParam { group, mod_index: index, attack, decay, sustain, release }
+                    }
+                }
+            }
+            _ => return Err(invalid(format!("{field:?} does not apply to that modulator"))),
+        };
+        let _ = self.cmd_tx.send(command);
+        Ok(Event::ModulatorFieldSet { node, field, value })
+    }
+
+    fn set_edge_depth(&mut self, edge: EdgeId, depth: f32) -> Result<Event, IntentError> {
+        let (at, mod_index, target_index) = self.model.locate_edge(edge).ok_or(IntentError::EdgeNotFound(edge))?;
+        if !depth.is_finite() {
+            return Err(invalid(format!("{depth} is not a value for the depth of a cable")));
+        }
+        let depth = depth.clamp(DEPTH_MIN, DEPTH_MAX);
+        let target = self
+            .model
+            .modulators_mut(at)
+            .and_then(|rack| rack.get_mut(mod_index))
+            .and_then(|modulator| modulator.targets.get_mut(target_index))
+            .ok_or(IntentError::EdgeNotFound(edge))?;
+        target.depth = depth;
+        let _ = self.cmd_tx.send(match at {
+            ModulatorLocation::Lane(inst) => GraphCommand::SetModTargetDepth { inst, mod_index, target_index, depth },
+            ModulatorLocation::Group(group) => GraphCommand::SetGroupModTargetDepth { group, mod_index, target_index, depth },
+        });
+        Ok(Event::EdgeDepthSet { edge, depth })
     }
 
     fn load_preset(&mut self, node: NodeId, preset_id: &str) -> Result<Event, IntentError> {
@@ -567,5 +649,291 @@ plugin = "builtin:reverb"
     fn errors_read_as_sentences() {
         assert_eq!(IntentError::NotFound(NodeId(7)).to_string(), "there is no node 7");
         assert_eq!(IntentError::Invalid("no good".to_string()).to_string(), "no good");
+    }
+
+    // -- Modulator settings and the depths of cables --
+
+    use crate::app::intent::ModulatorField;
+    use crate::app::model::EdgeId;
+
+    /// A group with a bus filter and two modulators (an LFO that drives the filter, an
+    /// envelope); a lane with an LFO (a cutoff target and a cross-mod target on the
+    /// second LFO's rate), an envelope, a second LFO and a MIDI-learn control.
+    const MODULATORS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.modulator]]
+type = "lfo"
+rate = 2.0
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.5
+[[group.modulator]]
+type = "envelope"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "lfo"
+waveform = "saw"
+rate = 3.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[instrument.modulator.target]]
+mod_rate = 3
+depth = -0.25
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.02
+decay = 0.3
+sustain = 0.6
+release = 0.5
+[[instrument.modulator]]
+type = "midi"
+midi_cc = 74
+[[instrument.modulator]]
+type = "lfo"
+rate = 1.0
+"#;
+
+    fn modulated() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(MODULATORS).model, handles, None))
+    }
+
+    fn lane_mod(ctl: &Controller, index: usize) -> NodeId {
+        ctl.model.instruments[0].modulators[index].node
+    }
+
+    fn group_mod(ctl: &Controller, index: usize) -> NodeId {
+        ctl.model.groups[0].modulators[index].node
+    }
+
+    fn field(ctl: &mut Controller, node: NodeId, field: ModulatorField, value: f32) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SetModulatorField { node, field, value })
+    }
+
+    use crate::app::model::ModSourceSlot;
+    use crate::plugin::chain::LfoWaveform;
+
+    fn lane_lfo(ctl: &Controller, index: usize) -> (LfoWaveform, f32) {
+        match &ctl.model.instruments[0].modulators[index].source {
+            ModSourceSlot::Lfo { waveform, rate } => (*waveform, *rate),
+            other => panic!("{other:?} is not an LFO"),
+        }
+    }
+
+    fn lane_envelope(ctl: &Controller, index: usize) -> [f32; 4] {
+        match &ctl.model.instruments[0].modulators[index].source {
+            ModSourceSlot::Envelope { attack, decay, sustain, release } => [*attack, *decay, *sustain, *release],
+            other => panic!("{other:?} is not an envelope"),
+        }
+    }
+
+    #[test]
+    fn set_modulator_field_sets_a_lane_lfos_rate_and_waveform_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lfo = lane_mod(&ctl, 0);
+        let applied = field(&mut ctl, lfo, ModulatorField::Rate, 5.0).unwrap();
+        assert_eq!(applied, Applied { rev: 1, events: vec![Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Rate, value: 5.0 }] });
+        let applied = field(&mut ctl, lfo, ModulatorField::Waveform, 1.0).unwrap();
+        assert_eq!(applied.events, [Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Waveform, value: 1.0 }]);
+        assert_eq!(lane_lfo(&ctl, 0), (LfoWaveform::Triangle, 5.0));
+        assert_eq!(sent(&engine), ["SetModulatorRate inst=0 mod=0 rate=5.000", "SetModulatorWaveform inst=0 mod=0 waveform=Triangle"]);
+        assert!(ctl.dirty);
+        assert_eq!(ctl.rev, 2);
+    }
+
+    #[test]
+    fn set_modulator_field_sets_an_envelope_stage_and_sends_all_four() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let envelope = lane_mod(&ctl, 1);
+        field(&mut ctl, envelope, ModulatorField::Attack, 0.5).unwrap();
+        field(&mut ctl, envelope, ModulatorField::Decay, 1.5).unwrap();
+        field(&mut ctl, envelope, ModulatorField::Sustain, 0.25).unwrap();
+        field(&mut ctl, envelope, ModulatorField::Release, 2.0).unwrap();
+        assert_eq!(lane_envelope(&ctl, 1), [0.5, 1.5, 0.25, 2.0]);
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetModulatorEnvelopeParam inst=0 mod=1 attack=0.500 decay=0.300 sustain=0.600 release=0.500",
+                "SetModulatorEnvelopeParam inst=0 mod=1 attack=0.500 decay=1.500 sustain=0.600 release=0.500",
+                "SetModulatorEnvelopeParam inst=0 mod=1 attack=0.500 decay=1.500 sustain=0.250 release=0.500",
+                "SetModulatorEnvelopeParam inst=0 mod=1 attack=0.500 decay=1.500 sustain=0.250 release=2.000",
+            ]
+        );
+    }
+
+    #[test]
+    fn set_modulator_field_reaches_a_groups_modulators_by_the_groups_commands() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lfo = group_mod(&ctl, 0);
+        let envelope = group_mod(&ctl, 1);
+        field(&mut ctl, lfo, ModulatorField::Rate, 7.5).unwrap();
+        field(&mut ctl, lfo, ModulatorField::Waveform, 3.0).unwrap();
+        field(&mut ctl, envelope, ModulatorField::Sustain, 0.1).unwrap();
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetGroupModulatorRate group=0 mod=0 rate=7.500",
+                "SetGroupModulatorWaveform group=0 mod=0 waveform=Square",
+                "SetGroupModulatorEnvelopeParam group=0 mod=1 attack=0.010 decay=0.300 sustain=0.100 release=0.500",
+            ]
+        );
+        assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate } if rate == 7.5));
+    }
+
+    #[test]
+    fn set_modulator_field_clamps_to_each_fields_range_and_rounds_the_waveform() {
+        let (_engine, mut ctl) = modulated();
+        let lfo = lane_mod(&ctl, 0);
+        let envelope = lane_mod(&ctl, 1);
+        let value_of = |applied: Applied| match applied.events[0] {
+            Event::ModulatorFieldSet { value, .. } => value,
+            ref other => panic!("{other:?}"),
+        };
+        let cases = [
+            (lfo, ModulatorField::Rate, 1.0e9, 50.0),
+            (lfo, ModulatorField::Rate, -3.0, 0.01),
+            (envelope, ModulatorField::Attack, 0.0, 0.001),
+            (envelope, ModulatorField::Decay, 99.0, 10.0),
+            (envelope, ModulatorField::Sustain, 2.0, 1.0),
+            (envelope, ModulatorField::Sustain, -2.0, 0.0),
+            (envelope, ModulatorField::Release, 0.0, 0.001),
+            (lfo, ModulatorField::Waveform, 2.6, 3.0),
+            (lfo, ModulatorField::Waveform, 1.4, 1.0),
+            (lfo, ModulatorField::Waveform, 9.0, 3.0),
+            (lfo, ModulatorField::Waveform, -4.0, 0.0),
+        ];
+        for (node, which, asked, expected) in cases {
+            assert_eq!(value_of(field(&mut ctl, node, which, asked).unwrap()), expected, "{which:?} {asked}");
+        }
+        assert_eq!(lane_lfo(&ctl, 0).1, 0.01);
+        assert_eq!(lane_lfo(&ctl, 0).0, LfoWaveform::Sine);
+    }
+
+    #[test]
+    fn set_modulator_field_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lfo = lane_mod(&ctl, 0);
+        let envelope = lane_mod(&ctl, 1);
+        let learn = lane_mod(&ctl, 2);
+        let instrument = ctl.model.instruments[0].node;
+        let effect = ctl.model.instruments[0].effects[0].node;
+        let group = ctl.model.groups[0].node;
+        let ghost = NodeId(9_999);
+        let refused = [
+            (lfo, ModulatorField::Attack, 0.1, "does not apply"),
+            (lfo, ModulatorField::Sustain, 0.1, "does not apply"),
+            (envelope, ModulatorField::Rate, 1.0, "does not apply"),
+            (envelope, ModulatorField::Waveform, 1.0, "does not apply"),
+            (learn, ModulatorField::Rate, 1.0, "does not apply"),
+            (learn, ModulatorField::Attack, 1.0, "does not apply"),
+            (instrument, ModulatorField::Rate, 1.0, "not a modulator"),
+            (effect, ModulatorField::Rate, 1.0, "not a modulator"),
+            (group, ModulatorField::Rate, 1.0, "not a modulator"),
+            (lfo, ModulatorField::Rate, f32::NAN, "not a value"),
+            (lfo, ModulatorField::Rate, f32::INFINITY, "not a value"),
+        ];
+        for (node, which, value, why) in refused {
+            let error = field(&mut ctl, node, which, value).unwrap_err().to_string();
+            assert!(error.contains(why), "{which:?} {value}: {error}");
+        }
+        assert_eq!(field(&mut ctl, ghost, ModulatorField::Rate, 1.0), Err(IntentError::NotFound(ghost)));
+        assert!(sent(&engine).is_empty(), "nothing was sent");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert_eq!(lane_lfo(&ctl, 0), (LfoWaveform::Saw, 3.0));
+        assert_eq!(lane_envelope(&ctl, 1), [0.02, 0.3, 0.6, 0.5]);
+    }
+
+    #[test]
+    fn set_modulator_field_changes_only_the_modulator_it_names() {
+        let (_engine, mut ctl) = modulated();
+        let before_other_lfo = lane_lfo(&ctl, 3);
+        let before_group = ctl.model.groups[0].modulators.iter().map(|m| format!("{:?}", m.source)).collect::<Vec<_>>();
+        let lfo = lane_mod(&ctl, 0);
+        field(&mut ctl, lfo, ModulatorField::Rate, 9.0).unwrap();
+        assert_eq!(lane_lfo(&ctl, 3), before_other_lfo, "another lane modulator");
+        assert_eq!(ctl.model.groups[0].modulators.iter().map(|m| format!("{:?}", m.source)).collect::<Vec<_>>(), before_group, "the group's");
+        assert_eq!(lane_envelope(&ctl, 1), [0.02, 0.3, 0.6, 0.5]);
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2, "its targets");
+    }
+
+    fn lane_edge(ctl: &Controller, modulator: usize, target: usize) -> EdgeId {
+        ctl.model.instruments[0].modulators[modulator].targets[target].edge
+    }
+
+    fn depth(ctl: &Controller, modulator: usize, target: usize) -> f32 {
+        ctl.model.instruments[0].modulators[modulator].targets[target].depth
+    }
+
+    #[test]
+    fn set_edge_depth_sets_the_depth_of_a_cable_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let cutoff = lane_edge(&ctl, 0, 0);
+        let rate = lane_edge(&ctl, 0, 1);
+        let applied = ctl.apply(Intent::SetEdgeDepth { edge: cutoff, depth: 0.75 }).unwrap();
+        assert_eq!(applied, Applied { rev: 1, events: vec![Event::EdgeDepthSet { edge: cutoff, depth: 0.75 }] });
+        // The second one drives a modulator's own rate, and a cable can pull the other way.
+        ctl.apply(Intent::SetEdgeDepth { edge: rate, depth: -0.5 }).unwrap();
+        assert_eq!((depth(&ctl, 0, 0), depth(&ctl, 0, 1)), (0.75, -0.5));
+        assert_eq!(
+            sent(&engine),
+            ["SetModTargetDepth inst=0 mod=0 target=0 depth=0.750", "SetModTargetDepth inst=0 mod=0 target=1 depth=-0.500"]
+        );
+        assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn set_edge_depth_reaches_a_group_modulators_cable_by_the_groups_command() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let edge = ctl.model.groups[0].modulators[0].targets[0].edge;
+        ctl.apply(Intent::SetEdgeDepth { edge, depth: 0.1 }).unwrap();
+        assert_eq!(sent(&engine), ["SetGroupModTargetDepth group=0 mod=0 target=0 depth=0.100"]);
+        assert_eq!(ctl.model.groups[0].modulators[0].targets[0].depth, 0.1);
+    }
+
+    #[test]
+    fn set_edge_depth_clamps_to_minus_one_and_one_and_refuses_what_is_not_a_cable_or_a_number() {
+        let (engine, mut ctl) = modulated();
+        let edge = lane_edge(&ctl, 0, 0);
+        let depth_of = |applied: Applied| match applied.events[0] {
+            Event::EdgeDepthSet { depth, .. } => depth,
+            ref other => panic!("{other:?}"),
+        };
+        assert_eq!(depth_of(ctl.apply(Intent::SetEdgeDepth { edge, depth: 5.0 }).unwrap()), 1.0);
+        assert_eq!(depth_of(ctl.apply(Intent::SetEdgeDepth { edge, depth: -5.0 }).unwrap()), -1.0);
+        sent(&engine);
+        let rev = ctl.rev;
+        let ghost = EdgeId(9_999);
+        let error = ctl.apply(Intent::SetEdgeDepth { edge: ghost, depth: 0.5 }).unwrap_err();
+        assert!(error.to_string().contains("no cable 9999"), "{error}");
+        let error = ctl.apply(Intent::SetEdgeDepth { edge, depth: f32::NAN }).unwrap_err();
+        assert!(error.to_string().contains("not a value"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, rev);
+        assert_eq!(depth(&ctl, 0, 0), -1.0);
+    }
+
+    #[test]
+    fn set_edge_depth_changes_only_the_cable_it_names() {
+        let (_engine, mut ctl) = modulated();
+        let before = (depth(&ctl, 0, 1), ctl.model.groups[0].modulators[0].targets[0].depth);
+        let edge = lane_edge(&ctl, 0, 0);
+        ctl.apply(Intent::SetEdgeDepth { edge, depth: 0.9 }).unwrap();
+        assert_eq!((depth(&ctl, 0, 1), ctl.model.groups[0].modulators[0].targets[0].depth), before);
     }
 }

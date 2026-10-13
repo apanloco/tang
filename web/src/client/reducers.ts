@@ -3,7 +3,7 @@
 // what changed replaced (so an unchanged node is the same object, which is what a
 // store's subscribers compare). The rules are the controller's (`src/app/apply.rs`),
 // read from the other side.
-import type { Gain, Node, ParamValue, Plugin, Snapshot, StampedEvent } from "../protocol";
+import type { Gain, Graph, ModulatorField, Node, ParamValue, Plugin, Snapshot, StampedEvent, Waveform } from "../protocol";
 
 /** The snapshot after an event, or why the event does not fit the one it was applied to. */
 export type Applied = { ok: true; snapshot: Snapshot } | { ok: false; reason: string };
@@ -19,18 +19,25 @@ export function applyEvent(snapshot: Snapshot, event: StampedEvent): Applied {
   if (event.rev !== snapshot.rev + 1) {
     return { ok: false, reason: `the session is at revision ${snapshot.rev} and the next event is ${event.rev}` };
   }
-  const changed = changeNode(snapshot, event);
-  if (typeof changed === "string") return { ok: false, reason: changed };
-  const nodes = snapshot.graph.nodes.map((node) => (node.id === changed.id ? changed : node));
+  const graph = changeGraph(snapshot.graph, event);
+  if (typeof graph === "string") return { ok: false, reason: graph };
   // An intent, from whichever front-end, is a change the session has not saved (`Controller::apply` marks it so).
   const meta = snapshot.meta.dirty ? snapshot.meta : { ...snapshot.meta, dirty: true };
-  return { ok: true, snapshot: { ...snapshot, rev: event.rev, meta, graph: { ...snapshot.graph, nodes } } };
+  return { ok: true, snapshot: { ...snapshot, rev: event.rev, meta, graph } };
+}
+
+/** The graph after the event, with only what it changed replaced; or the reason it cannot be. */
+function changeGraph(graph: Graph, event: StampedEvent): Graph | string {
+  if (event.type === "edgeDepthSet") return withDepth(graph, event.edge, event.depth);
+  const node = graph.nodes.find((n) => n.id === event.node);
+  if (!node) return `there is no node ${event.node}`;
+  const changed = changeNode(node, event);
+  if (typeof changed === "string") return changed;
+  return { ...graph, nodes: graph.nodes.map((n) => (n === node ? changed : n)) };
 }
 
 /** The node the event is about, as it is after it; or the reason it cannot be. */
-function changeNode(snapshot: Snapshot, event: StampedEvent): Node | string {
-  const node = snapshot.graph.nodes.find((n) => n.id === event.node);
-  if (!node) return `there is no node ${event.node}`;
+function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" }>): Node | string {
   switch (event.type) {
     case "paramSet": {
       const plugin = pluginOf(node);
@@ -47,6 +54,8 @@ function changeNode(snapshot: Snapshot, event: StampedEvent): Node | string {
       const changed = withValues({ ...plugin, currentPreset: event.preset }, event.values, true);
       return changed ? withPlugin(node, changed) : `the preset names a parameter node ${node.id} does not have`;
     }
+    case "modulatorFieldSet":
+      return withSetting(node, event.field, event.value);
   }
 }
 
@@ -79,4 +88,31 @@ function withGain(node: Node, gain: Gain, value: number): Node | null {
   if (gain === "groupVolume" && node.kind === "group") return { ...node, volume: value };
   if (gain === "groupPan" && node.kind === "group") return { ...node, pan: value };
   return null;
+}
+
+/** The waveforms by the index that is the value of a modulator's `waveform` setting (`ModulatorField::Waveform`). */
+const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square"];
+
+/** The node with a setting of its modulator set; a reason if it is not a modulator, or not one that has that setting. */
+function withSetting(node: Node, field: ModulatorField, value: number): Node | string {
+  if (node.kind !== "modulator") return `node ${node.id} is not a modulator`;
+  const { source } = node;
+  if (source.type === "lfo") {
+    if (field === "rate") return { ...node, source: { ...source, rate: value } };
+    if (field === "waveform") {
+      // (Only a whole number, 0 to 3, is an index: the rest, a half or a minus one or NaN, finds nothing.)
+      const waveform = WAVEFORMS[value];
+      return waveform === undefined ? `${value} is not a waveform` : { ...node, source: { ...source, waveform } };
+    }
+  }
+  if (source.type === "envelope" && field !== "rate" && field !== "waveform") {
+    return { ...node, source: { ...source, [field]: value } };
+  }
+  return `${field} does not apply to node ${node.id}`;
+}
+
+/** The graph with the cable `edge` pulling `depth`; a reason if there is no such cable. */
+function withDepth(graph: Graph, edge: number, depth: number): Graph | string {
+  if (!graph.edges.some((e) => e.kind === "modulation" && e.id === edge)) return `there is no cable ${edge}`;
+  return { ...graph, edges: graph.edges.map((e) => (e.kind === "modulation" && e.id === edge ? { ...e, amount: depth } : e)) };
 }

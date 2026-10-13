@@ -43,8 +43,9 @@ pub struct Node {
     pub id: NodeId,
     /// The node this one sits in, if any.
     pub parent: Option<NodeId>,
-    /// What to call it: the plugin's name, the group's name, what kind a modulator is (not its
-    /// settings, which change under a client: they are in `kind`).
+    /// What to call it: the plugin's name, the group's name, what kind a modulator is. A
+    /// modulator's settings are not in its name (they change while the node stays the same):
+    /// they are in `kind`.
     pub name: String,
     #[serde(flatten)]
     pub kind: NodeKind,

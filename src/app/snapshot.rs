@@ -13,10 +13,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::app::controller::Controller;
-use crate::app::graph::{Graph, Node, NodeKind, Plugin};
-use crate::app::intent::{Applied, Event, Gain};
+use crate::app::graph::{EdgeKind, Graph, ModulatorSource, Node, NodeKind, Plugin, Waveform};
+use crate::app::intent::{Applied, Event, Gain, ModulatorField};
 use crate::app::layout::TelemetryLayout;
 use crate::app::model::NodeId;
+use crate::plugin::chain::LfoWaveform;
 use crate::piano_filter::PianoMode;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,6 +131,36 @@ impl Snapshot {
                     }
                 }
             }
+            Event::ModulatorFieldSet { node, field, value } => {
+                let NodeKind::Modulator { source } = &mut self.node_mut(*node)?.kind else {
+                    return Err(DoesNotFit(format!("node {} is not a modulator", node.0)));
+                };
+                match (source, field) {
+                    (ModulatorSource::Lfo { rate, .. }, ModulatorField::Rate) => *rate = *value,
+                    (ModulatorSource::Lfo { waveform, .. }, ModulatorField::Waveform) => {
+                        let index = *value as usize;
+                        let known = (*value >= 0.0 && value.fract() == 0.0).then(|| LfoWaveform::ALL.get(index)).flatten();
+                        *waveform = Waveform::from(*known.ok_or_else(|| DoesNotFit(format!("{value} is not a waveform")))?);
+                    }
+                    (ModulatorSource::Envelope { attack, .. }, ModulatorField::Attack) => *attack = *value,
+                    (ModulatorSource::Envelope { decay, .. }, ModulatorField::Decay) => *decay = *value,
+                    (ModulatorSource::Envelope { sustain, .. }, ModulatorField::Sustain) => *sustain = *value,
+                    (ModulatorSource::Envelope { release, .. }, ModulatorField::Release) => *release = *value,
+                    _ => return Err(DoesNotFit(format!("{field:?} does not apply to node {}", node.0))),
+                }
+            }
+            Event::EdgeDepthSet { edge, depth } => {
+                let amount = self
+                    .graph
+                    .edges
+                    .iter_mut()
+                    .find_map(|e| match &mut e.kind {
+                        EdgeKind::Modulation { id, amount } if id == edge => Some(amount),
+                        _ => None,
+                    })
+                    .ok_or_else(|| DoesNotFit(format!("there is no cable {}", edge.0)))?;
+                *amount = *depth;
+            }
         }
         Ok(())
     }
@@ -174,9 +205,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::app::graph::{Node, NodeKind, Plugin};
-    use crate::app::intent::{Applied, Event, Gain, Intent, ParamValue};
-    use crate::app::model::NodeId;
+    use crate::app::graph::{EdgeKind, ModulatorSource, Node, NodeKind, Plugin};
+    use crate::app::intent::{Applied, Event, Gain, Intent, ModulatorField, ParamValue};
+    use crate::app::model::{EdgeId, NodeId};
     use crate::app::testutil::{GROUPS, load, stub_engine};
     use crate::scale::ScaleSetting;
 
@@ -293,18 +324,34 @@ mod tests {
         assert_eq!(json["telemetry"]["meters"].as_array().unwrap().len(), 4);
         assert_eq!(serde_json::from_value::<Snapshot>(json).unwrap(), snapshot);
     }
-    /// A group with a bus filter, a member with a reverb (which has presets), and a
-    /// lane with no instrument plugin.
+    /// A group with a bus filter and an LFO that drives it, a member with a reverb (which
+    /// has presets) and an LFO and an envelope, and a lane with no instrument plugin.
     const APPLY: &str = r#"
 [[group]]
 [[group.effect]]
 plugin = "builtin:filter"
+[[group.modulator]]
+type = "lfo"
+rate = 2.0
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.2
 
 [[instrument]]
 plugin = "builtin:osc"
 group = 0
 [[instrument.effect]]
 plugin = "builtin:reverb"
+[[instrument.modulator]]
+type = "lfo"
+rate = 1.0
+[[instrument.modulator.target]]
+slot = 1
+param = "size"
+depth = 0.3
+[[instrument.modulator]]
+type = "envelope"
 
 [[instrument]]
 "#;
@@ -331,9 +378,33 @@ plugin = "builtin:reverb"
         bus: NodeId,
         group: NodeId,
         empty: NodeId,
+        lane_lfo: NodeId,
+        envelope: NodeId,
+        group_lfo: NodeId,
+    }
+
+    /// The modulation cables, in the snapshot's order: the group's, then the lane's.
+    fn cables(snapshot: &Snapshot) -> Vec<EdgeId> {
+        snapshot
+            .graph
+            .edges
+            .iter()
+            .filter_map(|e| match e.kind {
+                EdgeKind::Modulation { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect()
     }
 
     fn nodes(snapshot: &Snapshot) -> Nodes {
+        let modulator = |parent_is_group: bool, envelope: bool| {
+            find(snapshot, |n| {
+                let parent = n.parent.and_then(|p| snapshot.graph.nodes.iter().find(|q| q.id == p));
+                let in_group = parent.is_some_and(|p| matches!(p.kind, NodeKind::Group { .. }));
+                matches!(&n.kind, NodeKind::Modulator { source } if matches!(source, ModulatorSource::Envelope { .. }) == envelope)
+                    && in_group == parent_is_group
+            })
+        };
         let by_plugin = |id: &'static str| move |n: &Node| matches!(&n.kind, NodeKind::Instrument { plugin: Some(p), .. } | NodeKind::Effect { plugin: p, .. } if p.id == id);
         Nodes {
             osc: find(snapshot, by_plugin("builtin:osc")),
@@ -341,6 +412,9 @@ plugin = "builtin:reverb"
             bus: find(snapshot, by_plugin("builtin:filter")),
             group: find(snapshot, |n| matches!(n.kind, NodeKind::Group { .. })),
             empty: find(snapshot, |n| matches!(n.kind, NodeKind::Instrument { plugin: None, .. })),
+            lane_lfo: modulator(false, false),
+            envelope: modulator(false, true),
+            group_lfo: modulator(true, false),
         }
     }
 
@@ -372,6 +446,15 @@ plugin = "builtin:reverb"
             Intent::SetGain { node: n.group, gain: Gain::GroupPan, value: -0.5 },
             Intent::LoadPreset { node: n.reverb, preset: "cathedral".to_string() },
             Intent::SetParam { node: n.reverb, param: size, value: 0.5 },
+            Intent::SetModulatorField { node: n.lane_lfo, field: ModulatorField::Rate, value: 4.0 },
+            Intent::SetModulatorField { node: n.lane_lfo, field: ModulatorField::Waveform, value: 2.4 },
+            Intent::SetModulatorField { node: n.group_lfo, field: ModulatorField::Rate, value: 1.0e9 },
+            Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Attack, value: 0.5 },
+            Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Decay, value: 1.5 },
+            Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Sustain, value: 0.25 },
+            Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Release, value: 2.0 },
+            Intent::SetEdgeDepth { edge: cables(&told)[0], depth: -0.5 },
+            Intent::SetEdgeDepth { edge: cables(&told)[1], depth: 9.0 },
         ];
         for intent in intents {
             let before = told.clone();
@@ -380,7 +463,7 @@ plugin = "builtin:reverb"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 12);
+        assert_eq!(told.rev, 21);
     }
 
     #[test]
@@ -457,6 +540,16 @@ plugin = "builtin:reverb"
             (Event::GainSet { node: n.osc, gain: Gain::GroupPan, value: 0.5 }, "does not apply"),
             (Event::GainSet { node: n.group, gain: Gain::Mix, value: 0.5 }, "does not apply"),
             (Event::PresetLoaded { node: n.empty, preset: "x".to_string(), values: vec![] }, "has no plugin"),
+            (Event::ModulatorFieldSet { node: ghost, field: ModulatorField::Rate, value: 1.0 }, "there is no node 9999"),
+            (Event::ModulatorFieldSet { node: n.osc, field: ModulatorField::Rate, value: 1.0 }, "is not a modulator"),
+            (Event::ModulatorFieldSet { node: n.group, field: ModulatorField::Rate, value: 1.0 }, "is not a modulator"),
+            (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Attack, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Rate, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Waveform, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 7.0 }, "7 is not a waveform"),
+            (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 1.5 }, "1.5 is not a waveform"),
+            (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: -1.0 }, "-1 is not a waveform"),
+            (Event::EdgeDepthSet { edge: EdgeId(9_999), depth: 0.5 }, "there is no cable 9999"),
         ];
         for (event, why) in refused {
             let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();

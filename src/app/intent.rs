@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::NodeId;
+use crate::app::model::{EdgeId, NodeId};
 
 /// What a front-end asks of the controller, naming the node it concerns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -35,6 +35,45 @@ pub enum Intent {
     /// Load one of the plugin's presets, by its id, into an instrument or an
     /// effect node. The parameters take the preset's values.
     LoadPreset { node: NodeId, preset: String },
+    /// Set one setting of a modulator (lane or group): an LFO's rate or waveform, an
+    /// envelope's stage. `value` is clamped to the setting's range, and a waveform is
+    /// rounded to a whole value, an index (see `ModulatorField`). A modulator has no
+    /// setting that is not its kind's: an LFO has no attack.
+    SetModulatorField { node: NodeId, field: ModulatorField, value: f32 },
+    /// Set how deep a modulation cable pulls, -1 to 1 (a negative depth pulls the
+    /// other way). The controller clamps it.
+    SetEdgeDepth { edge: EdgeId, depth: f32 },
+}
+
+/// A setting of a modulator, by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ModulatorField {
+    /// An LFO's rate, in Hz: 0.01 to 50.
+    Rate,
+    /// An LFO's waveform, as an index: 0 sine, 1 triangle, 2 saw, 3 square.
+    Waveform,
+    /// An envelope's attack time, in seconds: 0.001 to 10.
+    Attack,
+    /// An envelope's decay time, in seconds: 0.001 to 10.
+    Decay,
+    /// An envelope's sustain level: 0 to 1.
+    Sustain,
+    /// An envelope's release time, in seconds: 0.001 to 10.
+    Release,
+}
+
+impl ModulatorField {
+    /// The lowest and the highest value.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            ModulatorField::Rate => (0.01, 50.0),
+            ModulatorField::Waveform => (0.0, 3.0),
+            ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => (0.001, 10.0),
+            ModulatorField::Sustain => (0.0, 1.0),
+        }
+    }
 }
 
 /// A host-side gain, outside the plugin's own parameter list.
@@ -76,6 +115,10 @@ pub enum Event {
     /// A preset is loaded, by name; these are the parameters it set, by the
     /// plugin's own index, with their new values.
     PresetLoaded { node: NodeId, preset: String, values: Vec<ParamValue> },
+    /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
+    ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
+    /// A cable now pulls `depth` (after clamping).
+    EdgeDepthSet { edge: EdgeId, depth: f32 },
 }
 
 /// A parameter, by the plugin's own index, and the value it has.
@@ -120,6 +163,8 @@ impl Applied {
 pub enum IntentError {
     /// No node has that id: it was removed, or never existed.
     NotFound(NodeId),
+    /// No modulation cable has that id: it was removed, or never existed.
+    EdgeNotFound(EdgeId),
     /// The intent does not make sense for what it names.
     Invalid(String),
 }
@@ -128,6 +173,7 @@ impl fmt::Display for IntentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             IntentError::NotFound(node) => write!(f, "there is no node {}", node.0),
+            IntentError::EdgeNotFound(edge) => write!(f, "there is no cable {}", edge.0),
             IntentError::Invalid(why) => f.write_str(why),
         }
     }
