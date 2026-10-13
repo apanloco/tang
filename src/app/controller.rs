@@ -932,6 +932,32 @@ plugin = "builtin:reverb"
     }
 
     #[test]
+    fn a_number_that_is_not_a_number_is_told_once_and_not_by_every_resync() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let mirror = Mirror::join(&mut ctl);
+        // (No popup or file should let one in, but a plugin may report one, and NaN is not
+        // equal to itself: a snapshot that holds one differs from every other, itself too.)
+        ctl.global_bpm = f32::NAN;
+        assert!(ctl.resync(), "it is a change");
+        for _ in 0..5 {
+            assert!(!ctl.resync(), "and it has been told");
+        }
+        assert_eq!(ctl.rev, 1, "no revision is spent on telling it again");
+        assert_eq!(mirror.heard(), [Heard::Resynced(1)]);
+
+        // The rest of the session is still watched while it is there.
+        ctl.model.instruments[1].volume = 3.0;
+        assert!(ctl.resync());
+        assert_eq!(mirror.heard(), [Heard::Resynced(1), Heard::Resynced(2)]);
+        assert!(!ctl.resync());
+        // And a number that is one again is a change.
+        ctl.global_bpm = 100.0;
+        assert!(ctl.resync());
+        assert_eq!(mirror.copy().meta.bpm, 100.0);
+        assert!(!ctl.resync());
+    }
+
+    #[test]
     fn the_last_subscriber_to_leave_takes_what_was_told_with_it() {
         let (_engine, mut ctl) = controller_for(TWO_LANES);
         let (sink, _heard) = recorder();

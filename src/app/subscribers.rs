@@ -106,7 +106,17 @@ impl Subscribers {
     /// Whether the subscribers need a snapshot to be where `now` is.
     #[cfg(any(test, feature = "web"))]
     pub fn differ_from(&self, now: &Snapshot) -> bool {
-        self.told.as_ref() != Some(now)
+        let Some(told) = &self.told else { return true };
+        if told == now {
+            return false;
+        }
+        // Not equal as values. But a number that is not a number is not equal to itself, so
+        // a session that holds one would differ from what was told of it for ever. What the
+        // subscribers are told is JSON, in which each of them is a `null`: compare that.
+        match (serde_json::to_vec(told), serde_json::to_vec(now)) {
+            (Ok(told), Ok(now)) => told != now,
+            _ => true,
+        }
     }
 
     /// Give every sink `snapshot` to start again from.
