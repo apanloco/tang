@@ -133,6 +133,26 @@ mod tests {
         assert_eq!(meta.piano, PianoMeta { scale: "F# dorian".to_string(), locked: true });
     }
 
+    /// The snapshot of `examples/tracer.toml` as JSON text, with the layout's
+    /// fingerprint blanked: it comes from the hasher, which the standard library
+    /// does not promise to keep the same from one release to the next.
+    fn tracer_json() -> String {
+        let ctl = controller(include_str!("../../examples/tracer.toml"), Some("/home/someone/tracer.toml"));
+        // Through the text the wire carries, so that the numbers read as they do there
+        // (an f32 as its shortest text, not widened to an f64).
+        let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        json["telemetry"]["rev"] = json!("(fingerprint)");
+        serde_json::to_string_pretty(&json).unwrap()
+    }
+
+    #[test]
+    fn the_tracer_sessions_snapshot_is_what_it_was() {
+        // The contract with the browser: if this changes, the TypeScript and the
+        // web client have to change with it.
+        insta::assert_snapshot!("snapshot_tracer", tracer_json());
+    }
+
     #[test]
     fn a_snapshot_is_camel_case_json() {
         let ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n", Some("a.toml"));

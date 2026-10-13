@@ -1218,6 +1218,7 @@ depth = 0.2
             ("SETTINGS", SETTINGS),
             ("DISABLED_PATTERN", DISABLED_PATTERN),
             ("split", include_str!("../../examples/split.toml")),
+            ("tracer", include_str!("../../examples/tracer.toml")),
         ] {
             let model = load(scene).model;
             assert_closed(&model.graph(), what);
