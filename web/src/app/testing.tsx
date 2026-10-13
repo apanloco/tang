@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { expect } from "vitest";
 
 import { Client } from "../client/connection";
+import type { TransportFactory } from "../client/connection";
 import { FrameLoop } from "../client/frameloop";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
@@ -54,5 +55,43 @@ export async function rig(ui: ReactNode, options: MockOptions = {}): Promise<Rig
     view,
     time,
     requests: () => server.received.flatMap((message) => (message.type === "request" ? [{ intent: message.intent }] : [])),
+  };
+}
+
+/** A connection to a mock engine whose messages to the client can be held back, and let through a few at a time. */
+export function holdable(server: MockServer) {
+  const held: (() => void)[] = [];
+  let holding = false;
+  const transport: TransportFactory = () => {
+    const inner = server.transport();
+    return {
+      connect: (events) => {
+        inner.connect({
+          ...events,
+          text: (text) => {
+            if (holding) held.push(() => {
+              events.text(text);
+            });
+            else events.text(text);
+          },
+        });
+      },
+      send: (text) => {
+        inner.send(text);
+      },
+      close: () => {
+        inner.close();
+      },
+    };
+  };
+  return {
+    transport,
+    hold: () => {
+      holding = true;
+    },
+    waiting: () => held.length,
+    release: (count: number) => {
+      for (let i = 0; i < count; i += 1) held.shift()?.();
+    },
   };
 }

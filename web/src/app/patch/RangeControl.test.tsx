@@ -3,14 +3,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, test } from "vitest";
 
 import { Client } from "../../client/connection";
-import type { TransportFactory } from "../../client/connection";
 import { MockServer } from "../../client/mock";
 import { NOTE_NAMES } from "../../client/notes";
 import { nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import type { NoteRange, Snapshot } from "../../protocol";
 import { NoticeBoard } from "../../ui/NoticeBoard";
 import { ClientProvider, useNotices } from "../ClientProvider";
-import { rig } from "../testing";
+import { holdable, rig } from "../testing";
 import { PatchView } from "./PatchView";
 
 afterEach(cleanup);
@@ -212,44 +211,6 @@ describe("the keys of a lane", () => {
     });
   });
 });
-
-/** A connection to a mock engine whose messages to the client can be held back, and let through a few at a time. */
-function holdable(server: MockServer) {
-  const held: (() => void)[] = [];
-  let holding = false;
-  const transport: TransportFactory = () => {
-    const inner = server.transport();
-    return {
-      connect: (events) => {
-        inner.connect({
-          ...events,
-          text: (text) => {
-            if (holding) held.push(() => {
-              events.text(text);
-            });
-            else events.text(text);
-          },
-        });
-      },
-      send: (text) => {
-        inner.send(text);
-      },
-      close: () => {
-        inner.close();
-      },
-    };
-  };
-  return {
-    transport,
-    hold: () => {
-      holding = true;
-    },
-    waiting: () => held.length,
-    release: (count: number) => {
-      for (let i = 0; i < count; i += 1) held.shift()?.();
-    },
-  };
-}
 
 describe("the keys of a lane, chosen again before the first choice is answered", () => {
   test("go on showing the last choice while the earlier ones are answered, and then what the session has", async () => {
