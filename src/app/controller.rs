@@ -2303,6 +2303,110 @@ plugin = "builtin:osc"
 
     const SCENES_OF_CABLES: [&str; 3] = [testutil::CROSS_MOD, testutil::CABLES_THAT_DRIVE_CABLES, testutil::CABLES_THAT_DRIVE_EACH_OTHER];
 
+    /// The value the cables that drive parameter `param` of the plugin in `slot` of lane 0 (the lane's own, and its group's, which
+    /// reaches the lane as its first member) are centred on, on the audio thread.
+    fn bases_of_the_cables_on(graph: &crate::plugin::chain::AudioGraph, slot: usize, param: u32) -> Vec<f32> {
+        use crate::plugin::chain::ModTargetKind as K;
+        graph
+            .cable_bases()
+            .into_iter()
+            .filter(|(_, _, kind, _)| matches!(kind, K::PluginParam { slot: s, param_index: p } | K::GroupMember { member: 0, slot: s, param_index: p } if *s == slot && *p == param))
+            .map(|(.., base)| base)
+            .collect()
+    }
+
+    #[test]
+    fn a_preset_that_is_loaded_is_what_the_cables_that_drive_its_plugin_are_centred_on_on_the_audio_thread() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(testutil::CHAINS);
+        // Lane 0's reverb (slot 2) has a cable of the lane's own LFO on its damping, and one of the group's.
+        let reverb = ctl.model.instruments[0].effects[1].node;
+        let damping = ctl.model.instruments[0].effects[1].params.iter().find(|p| p.name == "damping").expect("a damping").index;
+        let cutoff = ctl.model.instruments[0].effects[0].params.iter().find(|p| p.name == "cutoff").expect("a cutoff").index;
+        let before = graph.plugin_parameter(0, 2, damping).expect("the reverb has it");
+        assert_eq!(bases_of_the_cables_on(&graph, 2, damping), [before, before], "centred on what it is, as loaded");
+        let filter_before = bases_of_the_cables_on(&graph, 1, cutoff);
+        assert!(!filter_before.is_empty());
+
+        // A preset that has another damping than the reverb has (some of them do).
+        let presets: Vec<String> = ctl.model.instruments[0].effects[1].presets.iter().map(|p| p.id.clone()).collect();
+        let mut changed = None;
+        for preset in &presets {
+            ctl.apply(crate::app::intent::Intent::LoadPreset { node: reverb, preset: preset.clone() }).unwrap();
+            graph.drain_commands();
+            let after = graph.plugin_parameter(0, 2, damping).unwrap();
+            if (after - before).abs() > 1e-6 {
+                changed = Some(after);
+                // The cables that drive the parameter are centred on the value the plugin has now (modulation is applied around it, and
+                // would otherwise put the old one back at the next buffer, undoing the preset for what is driven).
+                assert_eq!(bases_of_the_cables_on(&graph, 2, damping), [after, after], "preset {preset}");
+                break;
+            }
+        }
+        assert!(changed.is_some(), "one of the reverb's presets has a damping of its own");
+        // What belongs to another plugin of the lane is as it was.
+        assert_eq!(bases_of_the_cables_on(&graph, 1, cutoff), filter_before);
+    }
+
+    #[test]
+    fn a_preset_that_is_loaded_leaves_the_cables_of_another_member_of_the_group_where_they_are_centred() {
+        use crate::plugin::chain::ModTargetKind as K;
+        // Two members of a group, each with a reverb, and a cable of the group's LFO on the damping of each.
+        let (mut graph, mut ctl) = controller_on_a_real_graph(
+            r#"
+[[group]]
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "damping"
+depth = 0.2
+[[group.modulator.target]]
+member = 1
+slot = 1
+param = "damping"
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#,
+        );
+        let damping = ctl.model.instruments[0].effects[0].params.iter().find(|p| p.name == "damping").expect("a damping").index;
+        let bases = |graph: &crate::plugin::chain::AudioGraph| -> Vec<(usize, f32)> {
+            graph
+                .cable_bases()
+                .into_iter()
+                .filter_map(|(_, _, kind, base)| match kind {
+                    K::GroupMember { member, slot: 1, param_index } if param_index == damping => Some((member, base)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = graph.plugin_parameter(0, 1, damping).unwrap();
+        assert_eq!(bases(&graph), [(0, before), (1, before)]);
+        let reverb = ctl.model.instruments[0].effects[0].node;
+        for preset in ctl.model.instruments[0].effects[0].presets.iter().map(|p| p.id.clone()).collect::<Vec<_>>() {
+            ctl.apply(crate::app::intent::Intent::LoadPreset { node: reverb, preset }).unwrap();
+            graph.drain_commands();
+            let after = graph.plugin_parameter(0, 1, damping).unwrap();
+            if (after - before).abs() > 1e-6 {
+                // The first member's cable follows its plugin; the second member's reverb was not touched, and its cable is as it was.
+                assert_eq!(bases(&graph), [(0, after), (1, before)]);
+                assert_eq!(graph.plugin_parameter(1, 1, damping), Some(before));
+                return;
+            }
+        }
+        panic!("none of the reverb's presets has a damping of its own");
+    }
+
     #[test]
     fn taking_cables_out_leaves_the_model_and_the_audio_thread_with_the_same_cables() {
         for session in SCENES_OF_CABLES {

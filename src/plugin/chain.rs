@@ -3193,6 +3193,22 @@ impl AudioGraph {
         lanes.chain(groups).collect()
     }
 
+    /// The value each cable is centred on (its `base_value`), for a test: the lanes' racks and then the groups', each
+    /// modulator's cables in order, with their kinds.
+    #[cfg(test)]
+    pub fn cable_bases(&self) -> Vec<(ModulatorLocation, usize, ModTargetKind, f32)> {
+        let rack = |at: fn(usize) -> ModulatorLocation, i: usize, modulators: &[Modulator]| -> Vec<_> {
+            modulators
+                .iter()
+                .enumerate()
+                .flat_map(|(m, modulator)| modulator.targets.iter().map(move |t| (at(i), m, t.kind.clone(), t.base_value)).collect::<Vec<_>>())
+                .collect()
+        };
+        let lanes = self.instruments.iter().enumerate().flat_map(|(i, lane)| rack(ModulatorLocation::Lane, i, &lane.modulators));
+        let groups = self.groups.iter().enumerate().flat_map(|(i, group)| rack(ModulatorLocation::Group, i, &group.modulators));
+        lanes.chain(groups).collect()
+    }
+
     /// Drain all pending commands from the command channel (lock-free).
     pub fn drain_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
@@ -3340,6 +3356,25 @@ impl AudioGraph {
                     slot,
                     preset_id,
                 } => {
+                    // The parameters that the lane's group drives on its members (this plugin's are among them): the
+                    // bases of the cables are refreshed below, after the plugin has said what the preset made of them,
+                    // and `update_group_member_base` keeps to the cables of this member's plugin in this slot.
+                    let member = lane_member_ordinal(&self.instruments, inst);
+                    let driven_by_the_group: Vec<u32> = member
+                        .and_then(|(group, _)| self.groups.get(group))
+                        .map(|group| {
+                            group
+                                .modulators
+                                .iter()
+                                .flat_map(|m| m.targets.iter())
+                                .filter_map(|t| match t.kind {
+                                    ModTargetKind::GroupMember { param_index, .. } => Some(param_index),
+                                    _ => None,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut from_the_group = Vec::new();
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         let plugin: Option<&mut Box<dyn Plugin>> = if slot == 0 {
                             lane.instrument.as_mut()
@@ -3347,10 +3382,32 @@ impl AudioGraph {
                             lane.effects.get_mut(slot - 1)
                         };
                         if let Some(p) = plugin {
-                            if let Err(e) = p.load_preset(&preset_id) {
-                                log::warn!(
-                                    "LoadPreset inst={inst} slot={slot} id={preset_id:?}: {e}"
-                                );
+                            match p.load_preset(&preset_id) {
+                                Ok(()) => {
+                                    // A cable modulates around the base value it was given, and puts it on the parameter at
+                                    // every buffer: left at what the parameter was, it would put that back, and the preset
+                                    // would be heard for everything but what is driven. (As `SetParameter` does for a knob.)
+                                    for modulator in &mut lane.modulators {
+                                        for target in &mut modulator.targets {
+                                            if let ModTargetKind::PluginParam { slot: tslot, param_index } = target.kind {
+                                                if tslot == slot {
+                                                    if let Some(value) = p.get_parameter(param_index) {
+                                                        target.base_value = value;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    from_the_group = driven_by_the_group.iter().filter_map(|&param| p.get_parameter(param).map(|value| (param, value))).collect();
+                                }
+                                Err(e) => log::warn!("LoadPreset inst={inst} slot={slot} id={preset_id:?}: {e}"),
+                            }
+                        }
+                    }
+                    if let Some((group, ordinal)) = member {
+                        if let Some(g) = self.groups.get_mut(group) {
+                            for (param, value) in from_the_group {
+                                update_group_member_base(&mut g.modulators, ordinal, slot, param, value);
                             }
                         }
                     }
