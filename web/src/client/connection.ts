@@ -307,6 +307,8 @@ export class Client {
 
   #onClose(): void {
     this.#transport = null;
+    // (The notes that were held, as far as this page knew, are held no more as far as it knows.)
+    this.telemetry.forgetHeld();
     this.#rejectPending("The connection was lost before the server answered.");
     const closing = this.#closing;
     this.#closing = null;

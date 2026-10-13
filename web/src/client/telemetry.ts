@@ -144,6 +144,14 @@ export class TelemetryBuffers {
     return (this.#latest.get("held")?.[note] ?? 0) > 0;
   }
 
+  /**
+   * Forget which notes are held, in the array a reader already has: the connection that told is gone, and which notes the
+   * server holds is not known until a frame says (a note that is held when the page comes back is told then).
+   */
+  forgetHeld(): void {
+    this.#latest.get("held")?.fill(0);
+  }
+
   /** How many frames have been taken: a loop can tell whether there is anything new. */
   get frames(): number {
     return this.#frames;

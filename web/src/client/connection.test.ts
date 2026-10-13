@@ -1556,6 +1556,29 @@ describe("the held notes", () => {
     expect(decoded?.values).toHaveLength(128);
   });
 
+  test("are forgotten when the connection is lost: a client that cannot hear the server does not know what is held", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const watcher = await open(server, { telemetry: ["held"], reconnectDelay: () => 60_000 });
+    player.noteOn(60);
+    await until(() => watcher.telemetry.isHeld(60), "the note");
+    server.drop();
+    await until(() => watcher.state.status === "reconnecting", "the loss");
+    expect(watcher.telemetry.isHeld(60)).toBe(false);
+  });
+
+  test("are known again when the client is back, as they are then", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const watcher = await open(server, { telemetry: ["held"], reconnectDelay: () => 5 });
+    player.noteOn(60);
+    await until(() => watcher.telemetry.isHeld(60), "the note");
+    server.drop();
+    await until(() => watcher.state.reconnects === 1 && watcher.state.status === "open", "the reconnection");
+    // (The server ends the notes of a connection that is gone: the one who played is not holding it any more.)
+    await until(() => watcher.telemetry.has("held") && !watcher.telemetry.isHeld(60), "the notes after it");
+  });
+
   test("are not told to a client that did not ask for them", async () => {
     const server = new MockServer({ telemetryPeriod: 5 });
     const player = await open(server, { telemetry: ["meters"] });

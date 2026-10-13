@@ -162,6 +162,29 @@ describe("the held notes in the buffers", () => {
     buffers.accept(noteFrame(0, 127));
     expect([buffers.isHeld(0), buffers.isHeld(127), buffers.isHeld(128), buffers.isHeld(-1)]).toEqual([true, true, false, false]);
   });
+
+  test("can be forgotten, in the array a reader already holds, and are known again by the next frame", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(noteFrame(60, 64));
+    const mine = buffers.values("held");
+    buffers.forgetHeld();
+    expect(buffers.values("held")).toBe(mine);
+    expect(Array.from(mine ?? []).every((value) => value === 0)).toBe(true);
+    expect([buffers.isHeld(60), buffers.isHeld(64)]).toEqual([false, false]);
+    expect(buffers.has("held")).toBe(true);
+    buffers.accept(noteFrame(67));
+    expect([buffers.isHeld(60), buffers.isHeld(67)]).toEqual([false, true]);
+  });
+
+  test("being forgotten leaves the other channels as they are", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.setLayout(layout);
+    const values = layout.meters.map((_, i) => i + 1);
+    expect(buffers.accept(decodeFrame(frame(0, layout.rev, values)) ?? never())).toBe(true);
+    buffers.accept(noteFrame(60));
+    buffers.forgetHeld();
+    expect(Array.from(buffers.values("meters") ?? [])).toEqual(values);
+  });
 });
 
 describe("the buffers", () => {
