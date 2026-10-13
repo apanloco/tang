@@ -5,11 +5,10 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, MODULATOR_FIELD_RANGES, PROTOCOL } from "../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
   Event,
-  Gain,
   Intent,
   LayoutEntry,
   ModulatorField,
@@ -42,13 +41,6 @@ export interface MockOptions {
 
 /** What an intent comes to: the event it makes, or why it cannot be done. */
 type Outcome = { event: Event } | { error: WireError };
-
-const GAIN_RANGE: Record<Gain, readonly [number, number]> = {
-  volume: [0, 4],
-  groupVolume: [0, 4],
-  mix: [0, 1],
-  groupPan: [-1, 1],
-};
 
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), high);
 
@@ -102,7 +94,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
         ((intent.gain === "groupVolume" || intent.gain === "groupPan") && node.kind === "group");
       if (!fits) return invalid(`${intent.gain} does not apply to that node`);
       if (!Number.isFinite(intent.value)) return invalid(`${intent.value} is not a value for ${intent.gain}`);
-      const [low, high] = GAIN_RANGE[intent.gain];
+      const [low, high] = GAIN_RANGES[intent.gain];
       return { event: { type: "gainSet", node: node.id, gain: intent.gain, value: clamp(intent.value, low, high) } };
     }
     case "loadPreset": {

@@ -9,6 +9,7 @@ import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
 import { slotReader } from "../../client/readers";
 import { gainOf, paramOf } from "../../client/selectors";
+import { GAIN_RANGES } from "../../protocol";
 import type { Gain, NodeId, Param } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
@@ -92,15 +93,12 @@ export const ParamControl = memo(function ParamControl({ node, index }: { node: 
   );
 });
 
-/**
- * What a host-side gain is called, how far it goes and where a double click puts it: the
- * ranges are the controller's (`Gain::range` in src/app/intent.rs).
- */
-const GAINS: Record<Gain, { label: string; min: number; max: number; reset: number }> = {
-  volume: { label: "Volume", min: 0, max: 4, reset: 1 },
-  mix: { label: "Mix", min: 0, max: 1, reset: 1 },
-  groupVolume: { label: "Volume", min: 0, max: 4, reset: 1 },
-  groupPan: { label: "Pan", min: -1, max: 1, reset: 0 },
+/** What a host-side gain is called, and where a double click puts it; how far it goes is the controller's (`GAIN_RANGES`). */
+const GAINS: Record<Gain, { label: string; reset: number }> = {
+  volume: { label: "Volume", reset: 1 },
+  mix: { label: "Mix", reset: 1 },
+  groupVolume: { label: "Volume", reset: 1 },
+  groupPan: { label: "Pan", reset: 0 },
 };
 
 /** A host-side gain of a node: an instrument's volume, an effect's mix, a group's volume or pan. */
@@ -111,7 +109,8 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
   const shown = pending ?? stored;
   if (shown === undefined) return null;
-  const { label, min, max, reset } = GAINS[gain];
+  const { label, reset } = GAINS[gain];
+  const [min, max] = GAIN_RANGES[gain];
   return (
     <Knob
       label={label}
