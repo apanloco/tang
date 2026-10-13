@@ -224,3 +224,29 @@
   line-height: 1;
   cursor: pointer;
 }
+
+/* The list at the foot of a modulator that draws a cable to a parameter. */
+.tang-node__drives {
+  display: flex;
+}
+
+.tang-drives {
+  flex: 1;
+  min-width: 0;
+  padding: 2px;
+  text-overflow: ellipsis;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-font);
+}
+
+.tang-drives:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-drives:disabled {
+  opacity: 0.7;
+}

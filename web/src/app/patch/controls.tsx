@@ -7,6 +7,7 @@ import { memo, useMemo, useSyncExternalStore } from "react";
 
 import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
+import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { cableDepthOf, gainOf, modulatorFieldOf, paramOf } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
@@ -14,7 +15,7 @@ import type { EdgeId, Gain, ModulatorField, NodeId, Param } from "../../protocol
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import type { Scale } from "../../ui/knob-geometry";
-import { useClient, useClientSelection, useClientState, useDrive, useFrames } from "../ClientProvider";
+import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { seconds } from "./describe";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
@@ -280,5 +281,39 @@ export const CableDepthControl = memo(function CableDepthControl({ edge, label }
         {percent(shown)}
       </span>
     </label>
+  );
+});
+
+/**
+ * The list that draws a cable from a modulator to any parameter it can still drive, plugin by plugin: for a
+ * keyboard (which cannot drag a cable), and for the parameters a node does not show as controls. Choosing
+ * one is the cable; the list goes back to its first line (the cable's parameter is not on it any more).
+ */
+export const DrivePicker = memo(function DrivePicker({ modulator, name, targets }: { modulator: NodeId; name: string; targets: readonly Drivable[] }) {
+  const editor = useEditor();
+  const nothing = targets.length === 0;
+  return (
+    <select
+      className="tang-drives"
+      aria-label={`Cable from ${name} to`}
+      value=""
+      disabled={nothing}
+      onChange={(event) => {
+        const [node, param] = event.target.value.split(":").map(Number);
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        if (node !== undefined && param !== undefined) void editor.addCable(modulator, node, param);
+      }}
+    >
+      <option value="">{nothing ? "Nothing to drive" : "Add a cable to…"}</option>
+      {targets.map((group) => (
+        <optgroup key={group.node} label={group.name}>
+          {group.params.map((param) => (
+            <option key={param.index} value={`${String(group.node)}:${String(param.index)}`}>
+              {param.name}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
   );
 });

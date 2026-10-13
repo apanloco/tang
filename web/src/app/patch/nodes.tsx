@@ -14,7 +14,7 @@ import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useEditor, useFrames } from "../ClientProvider";
-import { GainCell, ModulatorSettingCell, ParamCell } from "./controls";
+import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell } from "./controls";
 import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
 import type { PatchNode } from "./toFlow";
 
@@ -136,6 +136,9 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       <div className="tang-node__body">
         {source?.type === "midiLearn" ? <p className="tang-node__detail">{controlDetail(source)}</p> : null}
         <LiveBar label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />
+        <div className="tang-node__drives nodrag nopan nowheel">
+          <DrivePicker modulator={data.node} name={data.name} targets={data.targets} />
+        </div>
       </div>
       <Handle isConnectable={false} type="source" position={Position.Bottom} id="modOut" className="tang-port tang-port--mod" />
     </div>

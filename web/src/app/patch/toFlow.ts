@@ -7,6 +7,8 @@
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { cableLabel, displayNames } from "../../client/names";
+import { drivablesOf } from "../../client/reach";
+import type { Drivable } from "../../client/reach";
 import type { Edge, EdgeId, Graph, Node, NodeId, Plugin, Port } from "../../protocol";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
@@ -25,10 +27,12 @@ const HEADER_HEIGHT = 44;
 const CONTROL_ROW_HEIGHT = 108;
 const CONTROLS_PER_ROW = 4;
 const NODE_PADDING = 16;
-/** A modulator that has no settings (a MIDI control) is this tall... */
-export const MODULATOR_HEIGHT = 140;
-/** ...and one that has them has a row of controls more (measured in a browser: 184). */
-export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20;
+/** The list at the foot of a modulator, with which it draws a cable (measured in a browser: 29). */
+const DRIVES_HEIGHT = 30;
+/** A modulator that has no settings (a MIDI control) is this tall (measured in a browser: 119)... */
+export const MODULATOR_HEIGHT = 128;
+/** ...and one that has them has a row of controls more (measured in a browser: 213). */
+export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20 + DRIVES_HEIGHT;
 export const MASTER_HEIGHT = 164;
 
 export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master";
@@ -44,6 +48,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   pinned: readonly number[];
   /** Those of them that a modulator drives (a cable ends at them). */
   modulated: readonly number[];
+  /** For a modulator: what it can still be drawn to, plugin by plugin (`drivablesOf`); nothing for the other nodes. */
+  targets: readonly Drivable[];
 }
 
 export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
@@ -257,6 +263,7 @@ export function toFlow(graph: Graph): Flow {
       format: node.kind === "instrument" || node.kind === "effect" ? (node.plugin?.format ?? null) : null,
       pinned: pinned.get(node.id) ?? [],
       modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
+      targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
     },
     draggable: false,
     deletable: false,

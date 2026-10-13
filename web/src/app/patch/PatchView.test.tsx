@@ -33,9 +33,9 @@ const nodeOf = async (id: number): Promise<HTMLElement> => {
   return found;
 };
 
-/** The names of the controls in a node, sliders and choices, in the order they are in. */
+/** The names of the controls in a node, sliders and choices (not the list that draws a cable), in the order they are in. */
 const controlsIn = (node: HTMLElement): string[] =>
-  Array.from(node.querySelectorAll('[role="slider"], select')).map(
+  Array.from(node.querySelectorAll('[role="slider"], select:not(.tang-drives)')).map(
     (control) => control.getAttribute("aria-label") ?? control.closest("label")?.querySelector(".tang-choice__label")?.textContent ?? "?",
   );
 
@@ -401,6 +401,90 @@ describe("the patch", () => {
       fireEvent.click(screen.getByRole("menuitem", { name: "LFO" }));
       expect(await screen.findByText("Could not add an LFO to Oscillator: Not connected to the server.")).toBeTruthy();
       expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
+    });
+  });
+
+  describe("drawing a cable to a parameter, from a list", () => {
+    const pickerOf = async (id: number): Promise<HTMLSelectElement> => {
+      const node = await nodeOf(id);
+      return within(node).getByRole<HTMLSelectElement>("combobox", { name: /^Cable from .* to$/ });
+    };
+
+    test("every modulator has a list of what it can be drawn to: its plugins' parameters, by plugin, but what it drives already", async () => {
+      await rig(<PatchView />);
+      const picker = await pickerOf(lfo.id);
+      expect(picker.getAttribute("aria-label")).toBe("Cable from LFO to");
+      expect(picker.value).toBe("");
+      const groups = Array.from(picker.querySelectorAll("optgroup")).map((group) => [group.label, Array.from(group.querySelectorAll("option")).map((option) => option.textContent)]);
+      expect(groups).toEqual([
+        ["Oscillator", ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan"]],
+        ["Filter", ["resonance", "type", "drive"]],
+      ]);
+      expect(picker.querySelector("option")?.textContent).toBe("Add a cable to…");
+    });
+
+    test("asks the server for the cable that was picked, and it is drawn, and the parameter is off the list", async () => {
+      const { requests, view } = await rig(<PatchView />);
+      const detune = oscillator.kind === "instrument" ? oscillator.plugin?.params.find((param) => param.name === "detune")?.index : undefined;
+      const picker = await pickerOf(lfo.id);
+      fireEvent.change(picker, { target: { value: `${String(oscillator.id)}:${String(detune)}` } });
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModEdge", modulator: lfo.id, to: { node: oscillator.id, port: { type: "param", index: detune } } }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(2);
+      });
+      // The cable has its depth to turn and its button to remove; the parameter is not offered again, and the list is back at its start.
+      expect(screen.getByRole("slider", { name: "Depth of LFO → Oscillator: detune" })).toBeTruthy();
+      await waitFor(() => {
+        expect(Array.from(picker.querySelectorAll("option")).map((option) => option.textContent)).not.toContain("detune");
+      });
+      expect(picker.value).toBe("");
+      // And the oscillator's detune knob has its port driven now.
+      const knob = within(await nodeOf(oscillator.id)).getByRole("slider", { name: "detune" });
+      expect(knob.closest(".tang-cell")?.querySelector(".tang-port--driven")).toBeTruthy();
+    });
+
+    test("says why when the cable was not drawn, and the list is as it was", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      const picker = await pickerOf(lfo.id);
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      fireEvent.change(picker, { target: { value: `${String(oscillator.id)}:1` } });
+      expect(await screen.findByText("Could not draw a cable from LFO to Oscillator: detune: Not connected to the server.")).toBeTruthy();
+      expect(picker.value).toBe("");
+    });
+
+    test("is for a group's modulator the parameters of its members' plugins and of its own bus effects", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      const picker = await pickerOf(15);
+      const groups = Array.from(picker.querySelectorAll("optgroup")).map((group) => group.label);
+      // (In the order of the graph: the group's own bus effect, then the lanes that are its members.)
+      expect(groups).toEqual(["Filter 1", "Oscillator 1", "Filter 2", "Oscillator 2"]);
+    });
+
+    test("is disabled for a modulator with nothing to be drawn to, and says so", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      const picker = await pickerOf(17); // the lane with nothing in it
+      expect(picker.disabled).toBe(true);
+      expect(picker.querySelector("option")?.textContent).toBe("Nothing to drive");
+    });
+
+    test("tells two modulators of one name apart", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      // (The group's comes first in the graph, so it is the first.)
+      expect((await pickerOf(15)).getAttribute("aria-label")).toBe("Cable from LFO 1 to");
+      expect((await pickerOf(6)).getAttribute("aria-label")).toBe("Cable from LFO 2 to");
     });
   });
 

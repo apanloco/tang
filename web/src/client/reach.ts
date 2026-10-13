@@ -30,3 +30,31 @@ export function reachFrom(graph: Graph, modulator: NodeId): Set<NodeId> {
   }
   return new Set(reached.filter(hasPlugin).map((node) => node.id));
 }
+
+/** A plugin node a modulator can still draw a cable to, and the parameters of it that it can still drive. */
+export interface Drivable {
+  node: NodeId;
+  /** What the plugin's node is called on the canvas. */
+  name: string;
+  params: readonly { index: number; name: string }[];
+}
+
+/**
+ * Everything `modulator` can still be drawn to, plugin by plugin in the order of the graph: the parameters of the
+ * plugins it reaches (`reachFrom`) that it does not drive already (another modulator may drive the same one: the
+ * two add up). `names` is what each node is called (`displayNames`). A plugin with nothing left is not listed.
+ */
+export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<NodeId, string>): Drivable[] {
+  const reached = reachFrom(graph, modulator);
+  const driven = new Set(
+    graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type === "param" ? [`${String(edge.to.node)}:${String(edge.to.port.index)}`] : [])),
+  );
+  const groups: Drivable[] = [];
+  for (const node of graph.nodes) {
+    if (!reached.has(node.id)) continue;
+    const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
+    const params = (plugin?.params ?? []).filter((param) => !driven.has(`${String(node.id)}:${String(param.index)}`)).map(({ index, name }) => ({ index, name }));
+    if (params.length > 0) groups.push({ node: node.id, name: names.get(node.id) ?? node.name, params });
+  }
+  return groups;
+}

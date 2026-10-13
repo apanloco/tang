@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import type { Graph, Node } from "../protocol";
 import { reachFixture, tracerSnapshot } from "./fixtures";
-import { reachFrom } from "./reach";
+import { displayNames } from "./names";
+import { drivablesOf, reachFrom } from "./reach";
 
 const sorted = (nodes: Iterable<number>): number[] => [...nodes].sort((a, b) => a - b);
 
@@ -45,5 +46,60 @@ describe("where a cable from a modulator may end", () => {
     expect(reachFrom(graph, 50).size).toBe(0);
     const homeless: Node = { ...orphan, id: 51, parent: null };
     expect(reachFrom({ ...graph, nodes: [...graph.nodes, homeless] }, 51).size).toBe(0);
+  });
+});
+
+describe("what a modulator can still be drawn to", () => {
+  const tracer = tracerSnapshot.graph;
+  const names = displayNames(tracer);
+  const paramNames = (graph: Graph, id: number): string[] => {
+    const node = graph.nodes.find((n) => n.id === id);
+    return (node?.kind === "instrument" || node?.kind === "effect" ? node.plugin?.params : undefined)?.map((p) => p.name) ?? [];
+  };
+
+  test("is every parameter of every plugin it reaches, grouped by plugin and named as the canvas names it, except what it drives already", () => {
+    const groups = drivablesOf(tracer, 2, names);
+    expect(groups.map((group) => [group.node, group.name])).toEqual([[0, "Oscillator"], [1, "Filter"]]);
+    expect(groups[0]?.params.map((p) => p.name)).toEqual(paramNames(tracer, 0));
+    // The cutoff is driven by this LFO already.
+    expect(groups[1]?.params.map((p) => p.name)).toEqual(["resonance", "type", "drive"]);
+    // A parameter is told by the plugin's own index.
+    expect(groups[1]?.params.map((p) => p.index)).toEqual([1, 2, 3]);
+  });
+
+  test("keeps a parameter that another modulator drives: two can drive one", () => {
+    const second: Node = { id: 7, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+    const graph: Graph = { ...tracer, nodes: [...tracer.nodes, second] };
+    const groups = drivablesOf(graph, 7, displayNames(graph));
+    expect(groups.find((group) => group.node === 1)?.params.map((p) => p.name)).toEqual(["cutoff", "resonance", "type", "drive"]);
+  });
+
+  test("leaves out a plugin with nothing left to drive, and says nothing for a modulator that reaches nothing", () => {
+    const filter = tracer.nodes.find((n) => n.id === 1);
+    if (filter?.kind !== "effect") throw new Error("the tracer's filter is not an effect");
+    const cables = filter.plugin.params.map((param, i) => ({
+      kind: "modulation" as const,
+      id: 10 + i,
+      amount: 0.5,
+      from: { node: 2, port: { type: "modOut" as const } },
+      to: { node: 1, port: { type: "param" as const, index: param.index } },
+    }));
+    const driven: Graph = { ...tracer, edges: [...tracer.edges.filter((e) => e.kind !== "modulation"), ...cables] };
+    expect(drivablesOf(driven, 2, displayNames(driven)).map((group) => group.node)).toEqual([0]);
+    // The reach fixture's lane with nothing in it: its LFO reaches nothing.
+    const fixture = reachFixture.snapshot.graph;
+    expect(drivablesOf(fixture, 17, displayNames(fixture))).toEqual([]);
+    // And what is no modulator reaches nothing.
+    expect(drivablesOf(tracer, 0, names)).toEqual([]);
+  });
+
+  test("is what the controller lets be drawn to, whole plugin by whole plugin (the fixture says which plugins)", () => {
+    const { graph } = reachFixture.snapshot;
+    const all = displayNames(graph);
+    for (const [id, plugins] of Object.entries(reachFixture.reach)) {
+      expect(drivablesOf(graph, Number(id), all).map((group) => group.node), `modulator ${id}`).toEqual(
+        graph.nodes.filter((node) => plugins.includes(node.id)).map((node) => node.id),
+      );
+    }
   });
 });

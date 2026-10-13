@@ -472,6 +472,27 @@ describe("the nodes on the canvas", () => {
   });
 });
 
+describe("what a modulator's node can be drawn to", () => {
+  test("is what it can still drive: the plugins it reaches and their parameters, but for those it drives already", () => {
+    const flow = toFlow(tracerSnapshot.graph);
+    const lfo = flow.nodes.find((node) => node.data.node === 2);
+    expect(lfo?.data.targets.map((group) => [group.name, group.params.length])).toEqual([["Oscillator", 8], ["Filter", 3]]);
+    expect(lfo?.data.targets[1]?.params.map((param) => param.name)).toEqual(["resonance", "type", "drive"]);
+  });
+
+  test("is nothing for a node that is no modulator", () => {
+    const flow = toFlow(tracerSnapshot.graph);
+    for (const node of flow.nodes.filter((n) => n.data.node !== 2)) expect(node.data.targets, node.data.name).toEqual([]);
+  });
+
+  test("follows the cables: one drawn takes its parameter off the list, one taken out puts it back", () => {
+    const without: Graph = { ...tracerSnapshot.graph, edges: tracerSnapshot.graph.edges.filter((edge) => edge.kind !== "modulation") };
+    const names = (graph: Graph) => toFlow(graph).nodes.find((node) => node.data.node === 2)?.data.targets.find((group) => group.name === "Filter")?.params.map((param) => param.name);
+    expect(names(tracerSnapshot.graph)).toEqual(["resonance", "type", "drive"]);
+    expect(names(without)).toEqual(["cutoff", "resonance", "type", "drive"]);
+  });
+});
+
 describe("what the nodes are called", () => {
   const named = (node: Node, name: string): Node => ({ ...node, name });
   const lfo = (id: NodeId, parent: NodeId): Node => named(modulator(id, parent), "LFO");
