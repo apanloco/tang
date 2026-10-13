@@ -1763,15 +1763,17 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Not done.** Save As (a validated file name for both front-ends, §8); the page does not warn
     before it is closed with changes that are not saved.
 
-- [ ] **19. Adding plugins from the browser (phase 1).** The page can build modulation, and take
-  things out, but the chains themselves it cannot touch: it does not even know what is installed.
+- [x] **19. Effects from the browser (phase 1).** The page could build modulation, and take
+  things out, but the chains themselves it could not touch: it did not even know what is installed.
   *Done when:* on the real program, a browser puts an effect that is installed into a lane and into a
-  group, hears the difference, and the file the session is saved to has it. In parts, each its own
-  commit: **19.1** the catalog on the wire; **19.2** `AddEffect` in the controller, which the TUI's
-  selector uses too; **19.3** the client's `Editor` and the mock engine; **19.4** the menu on a lane
-  and a group that picks an effect; **19.5** `RemoveNode` for the nodes that hold a plugin, and a "×"
-  on them (with an undo, since a click there is final); **19.6** the browser test and the docs. Then
-  instruments (`AddLane`, replacing the plugin of a lane), presets, ranges and groups.
+  group, hears the difference, takes it out again, and the file the session is saved to has what it did.
+  In parts, each its own commit: **19.1** the catalog on the wire (and f67, fixed first); **19.2** `AddEffect`:
+  in the controller, which the TUI's selector uses too (2a), and as an intent with the client's `Editor`
+  and the mock engine (2b); **19.4** the "fx" menu on a lane and a group; **19.5** `RemoveNode` for effects and
+  bus effects, the mock's version of it and a "×" on every effect. (There was no 19.3: the client and the
+  mock came with the intent.) The browser test on the real program is in 2b (a filter put in the chain and
+  heard in the meter) and 19.5 (a reverb put in from the menu, saved, taken out, saved). *Not done:* an
+  undo, and instruments, presets, ranges and groups, which the following steps are.
   - **19.1 as built.** `ServerMessage::Catalog { rev, scanning, entries }` (§7) and the
     `CatalogEntry` type, generated for the client like the others; `Catalog::rev` (goes up with each
     batch of plugins), `entries` and `ensure_scan` (`tang serve` starts the scan, since there is no TUI
