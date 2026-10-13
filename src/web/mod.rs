@@ -67,6 +67,13 @@ pub(crate) fn config_for(bind: SocketAddr, origins: &[String]) -> Config {
     config
 }
 
+/// Whether the web interface could listen as `args` ask, found out before the session is
+/// loaded (which can take seconds) rather than after: a port that is taken, or an address
+/// the policy does not allow. The port is not kept.
+pub fn preflight(args: &WebArgs) -> anyhow::Result<()> {
+    server::can_listen(&config_for(args.web_bind, &args.web_origins))
+}
+
 /// `tang serve`: serve the session of `ctl` to browsers until the process is told to
 /// stop (Ctrl+C, SIGTERM).
 pub fn serve(ctl: &mut Controller, args: &WebArgs) -> anyhow::Result<()> {

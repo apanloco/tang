@@ -137,14 +137,28 @@ pub struct Server {
     thread: Option<JoinHandle<()>>,
 }
 
+/// The listener `config` asks for. Fails, without having listened, if the policy does not
+/// allow the address (beyond loopback a token is needed), and if the address cannot be
+/// listened on.
+fn listen(config: &Config) -> anyhow::Result<std::net::TcpListener> {
+    Policy::new(config.bind, config.token.clone(), config.extra_origins.clone()).map_err(anyhow::Error::msg)?;
+    std::net::TcpListener::bind(config.bind).with_context(|| format!("cannot listen on {}", config.bind))
+}
+
+/// Whether `Server::start` can listen on `config` now, without keeping the port: for a program
+/// that would rather say so before it has loaded a session, which can take seconds, than after.
+/// (The port can be taken in between, and `start` says so then.)
+pub fn can_listen(config: &Config) -> anyhow::Result<()> {
+    listen(config).map(drop)
+}
+
 impl Server {
     /// Listen on `config.bind` and serve. Fails, without having listened, if the policy
     /// does not allow the address (beyond loopback a token is needed), and if the
     /// address cannot be listened on.
     pub fn start(config: Config, parts: Parts) -> anyhow::Result<Server> {
-        let Config { bind, token, extra_origins, max_clients, auth_timeout, write_timeout, telemetry_period, stop_grace, limits } = config;
-        Policy::new(bind, token.clone(), extra_origins.clone()).map_err(anyhow::Error::msg)?;
-        let listener = std::net::TcpListener::bind(bind).with_context(|| format!("cannot listen on {bind}"))?;
+        let listener = listen(&config)?;
+        let Config { token, extra_origins, max_clients, auth_timeout, write_timeout, telemetry_period, stop_grace, limits, .. } = config;
         listener.set_nonblocking(true).context("cannot make the listener non-blocking")?;
         let addr = listener.local_addr().context("cannot tell where the server listens")?;
         // The port may have been left to the system, and the policy has to know it.
@@ -1041,6 +1055,29 @@ mod tests {
         // On an address that is taken, so that the policy is what speaks first, not the bind.
         let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let error = Server::start(Config::new(taken.local_addr().unwrap()), parts()).err().expect("a refusal");
+        assert!(error.to_string().contains("needs a token"), "{error}");
+    }
+
+    // -- Asking before starting --
+
+    #[test]
+    fn an_address_that_is_free_can_be_listened_on_and_is_still_free_afterwards() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        can_listen(&Config::new(free)).expect("a free address");
+        std::net::TcpListener::bind(free).expect("asking does not keep the port");
+    }
+
+    #[test]
+    fn asking_refuses_what_start_refuses_in_the_same_words() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = Config::new(taken.local_addr().unwrap());
+        let asked = can_listen(&config).expect_err("a refusal");
+        let by_start = Server::start(config, parts()).err().expect("a refusal");
+        assert_eq!(asked.to_string(), by_start.to_string());
+        assert!(asked.to_string().contains("cannot listen"), "{asked}");
+        // The policy as well, on an address that is taken, so that it is what speaks first.
+        let loose = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let error = can_listen(&Config::new(loose.local_addr().unwrap())).expect_err("a refusal");
         assert!(error.to_string().contains("needs a token"), "{error}");
     }
 

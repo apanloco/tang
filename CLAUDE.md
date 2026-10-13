@@ -55,7 +55,8 @@ address's fragment. The address (with the same warnings `serve` logs, for an add
 beyond this machine) is printed on stdout before the TUI takes the screen, and shown
 while it runs: in the tab bar (`web 127.0.0.1:8765 (2)`, where it listens and how
 many browsers are on it, shortened or left out on a narrow terminal) and on the Help
-tab. A port that is taken is an error before the terminal is taken over. `play` and
+tab. A port that is taken is an error at once, before the session is loaded and the
+terminal is taken over (the address is tried, and let go again). `play` and
 `serve` do not take it (`serve` has `--web-bind`). See "Web UI" and
 `docs/web-ui.md` §3.4.
 
@@ -86,8 +87,10 @@ http://127.0.0.1:8765/`), the log is plain text on stderr, and Ctrl+C / SIGTERM 
 SIGHUP closes the browsers and stops the program. `--web-bind` (default
 `127.0.0.1:8765`, an IP and a port) beyond loopback makes a token for the run and
 puts it in the address's fragment (`http://host:port/#token=…`); `--web-origin`
-(repeatable) lets another page connect, a dev server's, say. Works with
-`--audio-device none`, which is how CI and the end-to-end tests run it. Without a
+(repeatable) lets another page connect, a dev server's, say; an address that is
+taken, or beyond loopback without a token that can be made, is an error before the
+session is loaded. Works with `--audio-device none`, which is how CI and the
+end-to-end tests run it. Without a
 MIDI subsystem (a container) it warns and carries on. The page at `/` is the web
 interface (`web/`, read from the disk in a debug build and embedded in a release
 build; a placeholder if it was not built).

@@ -312,6 +312,31 @@ async fn pages_and_hosts_that_are_not_this_servers_are_refused() {
 }
 
 #[cfg(unix)]
+/// A port that is taken is found out at once, not after the session has loaded (which takes
+/// seconds with a heavy instrument): the session here is one that cannot be loaded, so what the
+/// program says first is what it found out first. `tang serve` and `tang --web` alike.
+#[test]
+fn a_port_that_is_taken_is_reported_before_the_session_is_loaded() {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = taken.local_addr().unwrap();
+    let web_bind = addr.to_string();
+    let web = format!("--web={addr}");
+    for args in [
+        vec!["serve", "/no/such/session.toml", "--web-bind", web_bind.as_str()],
+        vec![web.as_str(), "/no/such/session.toml"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tang"))
+            .args(["--audio-device", "none", "--midi-device", "no such device"])
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("tang runs");
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}: {said}");
+        assert!(said.contains(&format!("cannot listen on {addr}")), "{args:?}: the program said: {said}");
+    }
+}
+
 #[tokio::test]
 async fn ctrl_c_closes_the_browsers_and_stops_the_program() {
     let mut tang = Tang::start();

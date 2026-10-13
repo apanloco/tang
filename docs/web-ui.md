@@ -262,8 +262,10 @@ and a tick together.
 - **Costs and limits.** One thread runs the TUI and answers the browsers: a plugin load
   a browser asks for blocks the TUI and the other way (§3.1's known cost), and a browser
   dragging a knob makes the TUI draw once for each frame's request, up to 60 a second. A
-  port that is taken is found only after the session has loaded, because the server needs
-  the controller to start (f29). The events of one intent share its revision, and a
+  port that is taken was found only after the session had loaded, because the server needs
+  the controller to start (f29); it is found at once now, by trying the address and letting
+  it go (`web::preflight`, before the session is loaded; the server's own bind, later, says
+  so too if the port is taken in between). The events of one intent share its revision, and a
   client takes the second of two for a repeat (f30; every intent makes one event today).
   The terminal reader was run on macOS only (crossterm's reader is used from a thread).
 
@@ -1429,7 +1431,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     several browsers at once in the TUI (one was); a session with plugins that take
     seconds to load, whose load a browser asks for; a terminal that is not a pty.
   - **Open, noted on the way:** f29 (a taken port is found after the session has
-    loaded) and f30 (the events of one intent share its revision). `tui/mod.rs` is 5,100
+    loaded; fixed since, after step 15) and f30 (the events of one intent share its revision). `tui/mod.rs` is 5,100
     lines and `golden_tests.rs` 2,650: the TUI wants splitting (the loop and the web
     glue, the status bar, the popups) before it takes more.
 
@@ -1518,12 +1520,12 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the controller's. Found by me on the way: f40 (a cable driving the depth of a cable that was gone
     after its modulator was removed), f50 (the mock dropped the slot of a value another cable still
     drove).
-  - **Numbers.** 764 Rust tests in the default build (679 before the step), 906 with the web feature
+  - **Numbers.** 764 Rust tests in the default build (679 before the step), 908 with the web feature
     (820), 635 Vitest tests (502), 31 browser tests (22); about 220 mutations of the code written
     in the second half of the step (the survivors are named in the commit messages: two equivalent
     ones in the client's reach rule and its list, an id that is the same function at both ends, a
     refused add that reads the session) and some 70 of the groundwork before it. `tui/mod.rs` is
-    4,644 lines (4,788). 173 local commits since `feat/midi-learn-mpe-expression`, none pushed.
+    4,644 lines (4,788). 174 local commits since `feat/midi-learn-mpe-expression`, none pushed.
   - **Both paths and both front-ends.** The browser tests: seven on the mock engine (a drag, the
     ports marked while dragging and only the ones that take the cable, a drop where it does not belong
     and a drop out of reach, a modulator added and dragged from at once, the list, the buttons), two on
@@ -1549,7 +1551,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     Type row; undo (a removal is final, as the TUI's `d`); the canvas does not move to show a node it
     has added; **telemetry slots are never reused (4,096 of them): each modulator and each driven
     parameter uses one, so a very long session of building runs out and later cables have no live
-    dot**; f29, f30, f38 and f39 as before; the TUI's removal of an effect, a bus effect
+    dot**; f30, f38 and f39 as before; the TUI's removal of an effect, a bus effect
     or a member still drops the cables that pointed at it with `retain`, which leaves the depth cables
     of f40 pointing at nothing (phase 1: they are the controller's then).
   - **Found by me on the way, and fixed: f49.** A lane with no instrument plugin lost its modulators
@@ -1560,6 +1562,12 @@ Each step is a reviewable change; the TUI must not regress at any point.
     (`InstrumentSlotConfig.modulators`) and not on the plugin, with a test of the loader and one of
     a save and a reload, each seen to fail first. A cable of such a lane that was on the cleared
     instrument's own parameters (slot 0) has no parameter to land on, and the load skips it.
+  - **Fixed after the step: f29.** A port that is taken (or an address beyond loopback that
+    the policy refuses) is found out before the session is loaded, in `tang serve` and in
+    `tang --web`: `web::preflight` tries the address and lets it go. Tests: the check and
+    the server's own refusal say the same words, and the check does not keep the port; the
+    real program, given a taken port and a session that is not there, says the port first
+    (it said the session before); six mutations, all caught.
   - **Found by me on the way, open: replacing a lane's instrument keeps the cables on the old one.**
     `Controller::set_instrument` swaps the plugin and leaves the lane's modulators as they were, so a
     cable on slot 0 keeps the old plugin's parameter *index*, range and label: with a different

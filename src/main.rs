@@ -103,6 +103,11 @@ fn main() -> anyhow::Result<()> {
             if tui_web.is_some() {
                 anyhow::bail!("this build of tang has no web interface: build it with `--features web`");
             }
+            // A port that is taken is better found out now than after the session has loaded.
+            #[cfg(feature = "web")]
+            if let Some(args) = &tui_web {
+                web::preflight(args)?;
+            }
             run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Tui(tui_web))
         }
         Some(Command::Enumerate(target)) => {
@@ -164,6 +169,7 @@ fn main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "web")]
         Some(Command::Serve { session: serve_session, web }) => {
+            web::preflight(&web)?;
             run_session(serve_session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Serve(web))
         }
         #[cfg(not(feature = "web"))]
