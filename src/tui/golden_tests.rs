@@ -2278,21 +2278,28 @@ fn the_loop_wakes_by_itself_to_fold_in_what_the_audio_thread_reports() {
     let mut h = Harness::new(scene_split());
     let (tx, rx) = unbounded();
     assert!(h.s.ctl.model.instruments[0].pattern.is_none());
-    h.pattern_tx.send(recording(0)).unwrap();
-    // No key is pressed; the loop is told to quit well after it has had time to wake up.
-    let quitter = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
+    // The audio thread reports a recording while the loop waits for a key that does not
+    // come. The loop is told to quit once it has taken the report, or if it has not within
+    // three seconds: the last pass of a loop that is quitting would take it too, so only
+    // that it was taken *before* the quit shows that the loop wakes by itself.
+    let reported = h.pattern_tx.clone();
+    let reporter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        reported.send(recording(0)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !reported.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let taken = reported.is_empty();
         tx.send(terminal_quit()).unwrap();
+        taken
     });
 
     event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap();
-    quitter.join().unwrap();
+    assert!(reporter.join().unwrap(), "the loop did not take the report while it waited, with no key pressed");
 
     assert!(h.s.ctl.model.instruments[0].pattern.is_some(), "the recording was folded in");
     assert!(h.tree().iter().any(|l| l.contains('▶')), "and the view caught up: {:?}", h.tree());
-    // It woke up on its own, which is what drew frames with no key pressed (a few ticks in half a second).
-    let frames = h.terminal.get_frame().count();
-    assert!(frames >= 3, "{frames} frames");
 }
 
 #[test]
