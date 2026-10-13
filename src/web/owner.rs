@@ -52,7 +52,14 @@ impl Owner {
         handled
     }
 
-    fn handle(&mut self, ctl: &mut Controller, request: OwnerRequest) {
+    /// The requests the connections make, for a loop that waits for them along with
+    /// other things (a clone of the receiver can be selected on).
+    pub fn requests(&self) -> &Receiver<OwnerRequest> {
+        &self.requests
+    }
+
+    /// Answer one request.
+    pub fn handle(&mut self, ctl: &mut Controller, request: OwnerRequest) {
         match request {
             OwnerRequest::Subscribe { client } => {
                 // Subscribed and sent the snapshot in one step: no event can come between.
