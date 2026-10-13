@@ -22,7 +22,9 @@ export function applyEvent(snapshot: Snapshot, event: StampedEvent): Applied {
   const changed = changeNode(snapshot, event);
   if (typeof changed === "string") return { ok: false, reason: changed };
   const nodes = snapshot.graph.nodes.map((node) => (node.id === changed.id ? changed : node));
-  return { ok: true, snapshot: { ...snapshot, rev: event.rev, graph: { ...snapshot.graph, nodes } } };
+  // An intent, from whichever front-end, is a change the session has not saved (`Controller::apply` marks it so).
+  const meta = snapshot.meta.dirty ? snapshot.meta : { ...snapshot.meta, dirty: true };
+  return { ok: true, snapshot: { ...snapshot, rev: event.rev, meta, graph: { ...snapshot.graph, nodes } } };
 }
 
 /** The node the event is about, as it is after it; or the reason it cannot be. */

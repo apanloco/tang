@@ -43,7 +43,6 @@ describe("a parameter set", () => {
     expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
     expect(after.graph.edges).toBe(tracerSnapshot.graph.edges);
     expect(after.telemetry).toBe(tracerSnapshot.telemetry);
-    expect(after.meta).toBe(tracerSnapshot.meta);
   });
 
   test("leaves the snapshot it was applied to as it was", () => {
@@ -58,6 +57,25 @@ describe("a parameter set", () => {
     const second = applied(first, { rev: 2, type: "paramSet", node: filter.id, param: 0, value: 0.3 });
     expect(second.rev).toBe(2);
     expect(paramOf(second, filter, 0).value).toBe(0.3);
+  });
+});
+
+describe("any event", () => {
+  const events: [string, StampedEvent][] = [
+    ["a parameter set", { rev: 1, type: "paramSet", node: filter.id, param: 0, value: 0.9 }],
+    ["a gain set", { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 }],
+    ["a preset loaded", { rev: 1, type: "presetLoaded", node: filter.id, preset: "Dark", values: [{ param: 0, value: 0.2 }] }],
+  ];
+
+  test.each(events)("%s leaves the session with changes that are not saved, and nothing else of its meta changed", (_, event) => {
+    expect(tracerSnapshot.meta.dirty).toBe(false);
+    const after = applied(tracerSnapshot, event);
+    expect(after.meta).toEqual({ ...tracerSnapshot.meta, dirty: true });
+  });
+
+  test.each(events)("%s shares the meta of a session that was not saved already", (_, event) => {
+    const dirty = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, dirty: true } };
+    expect(applied(dirty, event).meta).toBe(dirty.meta);
   });
 });
 
