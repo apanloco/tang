@@ -4992,6 +4992,7 @@ mod tests {
                 rate: 1.0,
             },
             targets: vec![ModTargetSlot {
+                edge: crate::app::model::EdgeId(0),
                 slot: 0,
                 param_name: "cutoff".into(),
                 kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },

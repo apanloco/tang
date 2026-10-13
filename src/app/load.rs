@@ -706,6 +706,7 @@ fn load_lane_modulators(
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
             loaded_targets.push(ModTargetSlot {
+                edge: alloc.ids.alloc_edge(),
                 slot,
                 param_name: label.clone(),
                 kind,
@@ -986,6 +987,7 @@ fn load_group_modulators(
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
 
             loaded_targets.push(ModTargetSlot {
+                edge: alloc.ids.alloc_edge(),
                 slot,
                 param_name: label,
                 kind,
@@ -1051,6 +1053,22 @@ mod tests {
         assert!(matches!(&slot.params[1].kind, ParamKind::Enum(l) if l == &["low", "high"]));
         // The loader still resolves modulator targets against the full list.
         assert_eq!(params.all.len(), 3);
+    }
+
+    #[test]
+    fn every_modulation_target_gets_an_edge_id_of_its_own() {
+        let model = load(GROUPS).model;
+        let edges: Vec<_> = model
+            .groups
+            .iter()
+            .flat_map(|g| &g.modulators)
+            .chain(model.instruments.iter().flat_map(|lane| &lane.modulators))
+            .flat_map(|m| &m.targets)
+            .map(|t| t.edge)
+            .collect();
+        assert!(edges.len() >= 6, "the scene has targets in lanes and in groups: {}", edges.len());
+        let distinct: std::collections::HashSet<_> = edges.iter().collect();
+        assert_eq!(distinct.len(), edges.len());
     }
 
     #[test]

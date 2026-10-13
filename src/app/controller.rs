@@ -331,6 +331,7 @@ impl Controller {
         }
         // A target on a plugin's parameter publishes the value that parameter is set to.
         let effective = if new.kind.has_effective_value() { self.model.slots.alloc() } else { None };
+        let edge = self.model.alloc_edge();
         let target = ModTarget {
             kind: new.kind.clone(),
             depth: new.depth,
@@ -343,6 +344,7 @@ impl Controller {
             return false;
         };
         modulator.targets.push(ModTargetSlot {
+            edge,
             slot: new.slot,
             param_name: new.param_name,
             kind: new.kind,
@@ -1124,6 +1126,19 @@ plugin = "builtin:osc"
         assert!(matches!(target.kind, crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 }));
         assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(-0.25)));
         assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2, "after the first");
+    }
+
+    #[test]
+    fn each_target_the_controller_binds_gets_an_edge_id_of_its_own() {
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        let before: Vec<_> = ctl.model.instruments[0].modulators.iter().flat_map(|m| &m.targets).map(|t| t.edge).collect();
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.25)));
+        let targets = &ctl.model.instruments[0].modulators[0].targets;
+        let (a, b) = (targets[targets.len() - 2].edge, targets[targets.len() - 1].edge);
+        assert_ne!(a, b);
+        assert!(!before.contains(&a) && !before.contains(&b), "and not one a target already has");
+        ctl.model.check_ids().unwrap();
     }
 
     #[test]

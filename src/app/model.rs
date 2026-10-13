@@ -23,16 +23,33 @@ use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 pub struct NodeId(pub u32);
 
-/// Hands out `NodeId`s, each one once.
+/// Names a modulation edge, one target of one modulator, for as long as it
+/// exists: the cable a client draws from the modulator to what it drives. Edges
+/// come and go as targets are bound and removed, and a target is addressed by its
+/// position in its modulator, which shifts; an `EdgeId` does not. Allocated by the
+/// model, never reused during a run, not saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+pub struct EdgeId(pub u32);
+
+/// Hands out `NodeId`s and `EdgeId`s, each one once. The two are series of their
+/// own.
 #[derive(Debug, Default)]
 pub struct NodeIds {
     next: u32,
+    next_edge: u32,
 }
 
 impl NodeIds {
     pub fn alloc(&mut self) -> NodeId {
         let id = NodeId(self.next);
         self.next += 1;
+        id
+    }
+
+    pub fn alloc_edge(&mut self) -> EdgeId {
+        let id = EdgeId(self.next_edge);
+        self.next_edge += 1;
         id
     }
 }
@@ -63,6 +80,11 @@ impl SessionModel {
     /// A `NodeId` no other node has had.
     pub fn alloc_node(&mut self) -> NodeId {
         self.ids.alloc()
+    }
+
+    /// An `EdgeId` no other modulation edge has had.
+    pub fn alloc_edge(&mut self) -> EdgeId {
+        self.ids.alloc_edge()
     }
 
     /// Every node and where it sits: the groups with their bus effects and
@@ -126,6 +148,7 @@ impl SessionModel {
             .enumerate()
             .map(|(g, group)| (format!("group {g}"), &group.modulators))
             .chain(self.instruments.iter().enumerate().map(|(i, lane)| (format!("lane {i}"), &lane.modulators)));
+        let mut edges = std::collections::HashSet::new();
         let mut taken = std::collections::HashSet::new();
         let mut claim = |slot: Option<Slot>, whose: String| -> Result<(), String> {
             let Some(slot) = slot else { return Err(format!("{whose} has no telemetry slot")) };
@@ -155,6 +178,12 @@ impl SessionModel {
                 claim(modulator.output, format!("modulator {m} of {rack}"))?;
                 for (t, target) in modulator.targets.iter().enumerate() {
                     let whose = format!("target {t} of modulator {m} of {rack}");
+                    if target.edge.0 >= self.ids.next_edge {
+                        return Err(format!("{whose} has {:?}, which was never allocated", target.edge));
+                    }
+                    if !edges.insert(target.edge) {
+                        return Err(format!("{whose} has {:?}, which another edge has too", target.edge));
+                    }
                     if target.kind.has_effective_value() {
                         claim(target.effective, whose)?;
                     } else if target.effective.is_some() {
@@ -414,6 +443,9 @@ pub struct ModulatorSlot {
 
 #[derive(Debug)]
 pub struct ModTargetSlot {
+    /// The edge this target is, for as long as it exists.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    pub edge: EdgeId,
     /// Slot the target lives on: 0 = instrument, 1..N = effects. Used to label
     /// the target with its plugin and to resolve cross-mod vs plugin params.
     pub slot: usize,
@@ -876,6 +908,53 @@ mod tests {
     }
 
     #[test]
+    fn edge_ids_are_a_series_of_their_own() {
+        let mut model = SessionModel::default();
+        let (n0, e0, n1, e1) = (model.alloc_node(), model.alloc_edge(), model.alloc_node(), model.alloc_edge());
+        assert_eq!((n0, n1), (NodeId(0), NodeId(1)), "edges do not use up node ids");
+        assert_eq!((e0, e1), (EdgeId(0), EdgeId(1)));
+    }
+
+    #[test]
+    fn check_ids_notices_edge_ids_that_are_shared_or_strangers() {
+        use crate::app::testutil::GROUPS;
+        let fresh = || load(GROUPS).model;
+
+        let mut model = fresh();
+        let first = model.groups[0].modulators[0].targets[0].edge;
+        model.groups[0].modulators[0].targets[1].edge = first;
+        let error = model.check_ids().unwrap_err();
+        assert!(error.contains("another edge has too"), "two targets with one edge: {error}");
+
+        // A lane's target and a group's.
+        let mut model = load(
+            r#"
+[[group]]
+[[group.modulator]]
+[[group.modulator.target]]
+member = 0
+param = "detune"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+param = "detune"
+"#,
+        )
+        .model;
+        assert!(model.check_ids().is_ok());
+        model.instruments[0].modulators[0].targets[0].edge = model.groups[0].modulators[0].targets[0].edge;
+        let error = model.check_ids().unwrap_err();
+        assert!(error.contains("another edge has too"), "a lane's target and a group's: {error}");
+
+        let mut model = fresh();
+        model.groups[0].modulators[0].targets[0].edge = EdgeId(9_999);
+        let error = model.check_ids().unwrap_err();
+        assert!(error.contains("never allocated"), "an edge nothing handed out: {error}");
+    }
+
+    #[test]
     fn check_ids_notices_duplicates_strangers_and_a_mismatched_instrument() {
         let fresh = || load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").model;
 
@@ -1003,6 +1082,7 @@ type = "envelope"
 
     fn target(kind: K) -> ModTargetSlot {
         ModTargetSlot {
+            edge: EdgeId(0),
             slot: 0,
             param_name: "p".to_string(),
             kind,
