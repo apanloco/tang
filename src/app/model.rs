@@ -11,6 +11,7 @@
 //! Nothing here knows about the terminal: the TUI imports it today, and the
 //! controller and the web projection planned in `docs/web-ui.md` build on it.
 
+use crate::app::intent::ModulatorField;
 use crate::plugin;
 use crate::plugin::chain::ModulatorLocation;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
@@ -540,53 +541,84 @@ pub fn format_from_id(id: &str) -> String {
 pub const DEPTH_MIN: f32 = -1.0;
 pub const DEPTH_MAX: f32 = 1.0;
 
-/// Number of param-pane rows for a modulator: source params + "Targets"
-/// separator + one row per target. Scope-independent (lane or group).
+/// What a row of a modulator's parameter pane is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModulatorRow {
+    /// The kind of source, which an LFO and an envelope switch between.
+    Type,
+    /// A MIDI control's source: shown, not edited.
+    Info,
+    /// An LFO's waveform, stepped through the four.
+    Waveform,
+    /// A number of the source: an LFO's rate, a stage of an envelope.
+    Setting(ModulatorField),
+    /// The "Targets" separator.
+    Separator,
+    /// The depth of the target with this index.
+    Depth(usize),
+}
+
+impl ModSourceSlot {
+    /// The rows of the pane before the targets' (which follow the separator).
+    fn rows(&self) -> &'static [ModulatorRow] {
+        use ModulatorField as F;
+        use ModulatorRow as R;
+        match self {
+            ModSourceSlot::Lfo { .. } => &[R::Type, R::Waveform, R::Setting(F::Rate), R::Separator],
+            ModSourceSlot::Envelope { .. } => {
+                &[R::Type, R::Setting(F::Attack), R::Setting(F::Decay), R::Setting(F::Sustain), R::Setting(F::Release), R::Separator]
+            }
+            ModSourceSlot::MidiLearn { .. } => &[R::Info, R::Separator],
+        }
+    }
+
+    /// The value of a setting, if the source has it (a waveform is its index).
+    pub fn setting(&self, field: ModulatorField) -> Option<f32> {
+        match (self, field) {
+            (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => Some(*rate),
+            (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => Some(waveform.to_index() as f32),
+            (ModSourceSlot::Envelope { attack, .. }, ModulatorField::Attack) => Some(*attack),
+            (ModSourceSlot::Envelope { decay, .. }, ModulatorField::Decay) => Some(*decay),
+            (ModSourceSlot::Envelope { sustain, .. }, ModulatorField::Sustain) => Some(*sustain),
+            (ModSourceSlot::Envelope { release, .. }, ModulatorField::Release) => Some(*release),
+            _ => None,
+        }
+    }
+}
+
+/// Number of param-pane rows for a modulator: the rows of its source, the "Targets"
+/// separator among them, and one row a target. Scope-independent (lane or group).
 pub fn modulator_param_len(m: &ModulatorSlot) -> usize {
-    let fixed = match &m.source {
-        ModSourceSlot::Lfo { .. } => 3,      // Type + Waveform + Rate
-        ModSourceSlot::Envelope { .. } => 5, // Type + A + D + S + R
-        ModSourceSlot::MidiLearn { .. } => 1, // Source-info row only
-    };
-    fixed + 1 + m.targets.len()
+    m.source.rows().len() + m.targets.len()
+}
+
+/// What row `row` of the pane of `m` is; `None` past the last. Every other question
+/// about a row (its range, whether it is an enum, what it is bound to by MIDI learn,
+/// which intent it makes) is answered from this.
+pub fn modulator_row(m: &ModulatorSlot, row: usize) -> Option<ModulatorRow> {
+    let fixed = m.source.rows();
+    match fixed.get(row) {
+        Some(&found) => Some(found),
+        None => {
+            let target = row - fixed.len();
+            (target < m.targets.len()).then_some(ModulatorRow::Depth(target))
+        }
+    }
 }
 
 /// (min, max) for a modulator pseudo-param at row `pa`, or None for enum /
 /// separator rows. Scope-independent.
 pub fn modulator_param_range(m: &ModulatorSlot, pa: usize) -> Option<(f32, f32)> {
-    if pa == 0 {
-        return None; // Type enum
-    }
-    match &m.source {
-        ModSourceSlot::Lfo { .. } => match pa {
-            1 => None, // Waveform enum
-            2 => Some((0.01, 50.0)),
-            3 => None, // Separator
-            _ => m.targets.get(pa - 4).map(|_| (DEPTH_MIN, DEPTH_MAX)),
-        },
-        ModSourceSlot::Envelope { .. } => match pa {
-            1 => Some((0.001, 10.0)),
-            2 => Some((0.001, 10.0)),
-            3 => Some((0.0, 1.0)),
-            4 => Some((0.001, 10.0)),
-            5 => None, // Separator
-            _ => m.targets.get(pa - 6).map(|_| (DEPTH_MIN, DEPTH_MAX)),
-        },
-        // Row 0 = source info (handled above), 1 = Targets separator, 2+ = depths.
-        ModSourceSlot::MidiLearn { .. } => match pa {
-            1 => None,
-            _ => m.targets.get(pa - 2).map(|_| (DEPTH_MIN, DEPTH_MAX)),
-        },
+    match modulator_row(m, pa)? {
+        ModulatorRow::Setting(field) => Some(field.range()),
+        ModulatorRow::Depth(_) => Some((DEPTH_MIN, DEPTH_MAX)),
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
     }
 }
 
 /// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform).
 pub fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
-    match &m.source {
-        ModSourceSlot::Lfo { .. } => pa == 0 || pa == 1, // Type, Waveform
-        ModSourceSlot::Envelope { .. } => pa == 0,       // Type
-        ModSourceSlot::MidiLearn { .. } => false,        // source row is read-only info
-    }
+    matches!(modulator_row(m, pa), Some(ModulatorRow::Type | ModulatorRow::Waveform))
 }
 
 /// Map a modulator's param-pane row `pa` to a cross-mod target on that
@@ -599,28 +631,25 @@ pub fn modulator_row_to_cross_mod(
     pa: usize,
 ) -> Option<(crate::plugin::chain::ModTargetKind, f32, f32, f32, String)> {
     use crate::plugin::chain::ModTargetKind as K;
-    let depth_at = |off: usize| {
-        let ti = pa - off;
-        m.targets
-            .get(ti)
-            .map(|t| (K::ModulatorDepth { mod_index, target_index: ti }, DEPTH_MIN, DEPTH_MAX, t.depth, format!("Mod {mod_index} depth {ti}")))
-    };
-    match &m.source {
-        ModSourceSlot::Lfo { rate, .. } => match pa {
-            2 => Some((K::ModulatorRate { mod_index }, 0.01, 50.0, *rate, format!("Mod {mod_index} rate"))),
-            _ if pa >= 4 => depth_at(4),
-            _ => None,
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => match pa {
-            1 => Some((K::ModulatorAttack { mod_index }, 0.001, 10.0, *attack, format!("Mod {mod_index} attack"))),
-            2 => Some((K::ModulatorDecay { mod_index }, 0.001, 10.0, *decay, format!("Mod {mod_index} decay"))),
-            3 => Some((K::ModulatorSustain { mod_index }, 0.0, 1.0, *sustain, format!("Mod {mod_index} sustain"))),
-            4 => Some((K::ModulatorRelease { mod_index }, 0.001, 10.0, *release, format!("Mod {mod_index} release"))),
-            _ if pa >= 6 => depth_at(6),
-            _ => None,
-        },
-        ModSourceSlot::MidiLearn { .. } if pa >= 2 => depth_at(2),
-        ModSourceSlot::MidiLearn { .. } => None,
+    match modulator_row(m, pa)? {
+        ModulatorRow::Setting(field) => {
+            let (kind, name) = match field {
+                ModulatorField::Rate => (K::ModulatorRate { mod_index }, "rate"),
+                ModulatorField::Attack => (K::ModulatorAttack { mod_index }, "attack"),
+                ModulatorField::Decay => (K::ModulatorDecay { mod_index }, "decay"),
+                ModulatorField::Sustain => (K::ModulatorSustain { mod_index }, "sustain"),
+                ModulatorField::Release => (K::ModulatorRelease { mod_index }, "release"),
+                // (It has a row of its own, `ModulatorRow::Waveform`, which is not a number for a control to move.)
+                ModulatorField::Waveform => return None,
+            };
+            let (min, max) = field.range();
+            Some((kind, min, max, m.source.setting(field)?, format!("Mod {mod_index} {name}")))
+        }
+        ModulatorRow::Depth(target) => {
+            let depth = m.targets.get(target)?.depth;
+            Some((K::ModulatorDepth { mod_index, target_index: target }, DEPTH_MIN, DEPTH_MAX, depth, format!("Mod {mod_index} depth {target}")))
+        }
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
     }
 }
 
@@ -1805,6 +1834,63 @@ depth = 0.5
 
         // Past the last row there is nothing to edit.
         assert_eq!(modulator_param_range(&m, modulator_param_len(&m)), None);
+    }
+
+    #[test]
+    fn a_row_of_the_pane_is_what_the_layout_of_its_source_says() {
+        use ModulatorField as F;
+        use ModulatorRow::*;
+        let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
+        // (One row past the end too: there is nothing there.)
+        let rows = |m: &ModulatorSlot| (0..=modulator_param_len(m)).map(|r| modulator_row(m, r)).collect::<Vec<_>>();
+        assert_eq!(
+            rows(&lfo(two())),
+            [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]
+        );
+        assert_eq!(
+            rows(&adsr(two())),
+            [
+                Some(Type),
+                Some(Setting(F::Attack)),
+                Some(Setting(F::Decay)),
+                Some(Setting(F::Sustain)),
+                Some(Setting(F::Release)),
+                Some(Separator),
+                Some(Depth(0)),
+                Some(Depth(1)),
+                None
+            ]
+        );
+        assert_eq!(rows(&midi(two())), [Some(Info), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]);
+        assert_eq!(rows(&lfo(vec![])), [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Separator), None]);
+    }
+
+    #[test]
+    fn the_rows_that_are_numbers_have_the_range_the_controller_clamps_to() {
+        use ModulatorField as F;
+        let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 })];
+        for (m, field, row) in [
+            (lfo(two()), F::Rate, 2),
+            (adsr(two()), F::Attack, 1),
+            (adsr(two()), F::Decay, 2),
+            (adsr(two()), F::Sustain, 3),
+            (adsr(two()), F::Release, 4),
+        ] {
+            assert_eq!(modulator_param_range(&m, row), Some(field.range()), "{field:?}");
+        }
+    }
+
+    #[test]
+    fn a_source_says_the_value_of_a_setting_it_has_and_nothing_of_one_it_has_not() {
+        use ModulatorField as F;
+        let triangle = ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 2.5 };
+        let envelope = ModSourceSlot::Envelope { attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 };
+        let control = ModSourceSlot::MidiLearn { source: None, learning: true };
+        let all = [F::Rate, F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release];
+        let of = |source: &ModSourceSlot| all.map(|field| source.setting(field));
+        assert_eq!(of(&triangle), [Some(2.5), Some(1.0), None, None, None, None]);
+        assert_eq!(of(&envelope), [None, None, Some(0.1), Some(0.2), Some(0.3), Some(0.4)]);
+        assert_eq!(of(&control), [None; 6]);
     }
 
     #[test]
