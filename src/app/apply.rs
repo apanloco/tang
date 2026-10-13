@@ -28,7 +28,9 @@ impl Controller {
         };
         self.dirty = true;
         self.rev += 1;
-        Ok(Applied { rev: self.rev, events: vec![event] })
+        let applied = Applied { rev: self.rev, events: vec![event] };
+        self.publish(&applied);
+        Ok(applied)
     }
 
     fn set_param(&mut self, node: NodeId, param: u32, value: f32) -> Result<Event, IntentError> {

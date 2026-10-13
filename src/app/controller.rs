@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
+use crate::app::intent::Applied;
 use crate::app::load::fresh_slot;
 use crate::app::model::{
     GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel,
@@ -109,6 +110,29 @@ pub struct EngineHandles {
     pub telemetry: Arc<Telemetry>,
 }
 
+/// Someone who wants to hear about every intent the controller applies, whichever
+/// front-end asked for it (`Controller::subscribe`): the web runtime, to tell its
+/// clients. It is called on the owner thread, inside `apply`, after the model and
+/// the audio thread have been changed, so it must not block.
+pub trait EventSink: Send {
+    fn applied(&mut self, applied: &Applied);
+}
+
+impl<F: FnMut(&Applied) + Send> EventSink for F {
+    fn applied(&mut self, applied: &Applied) {
+        self(applied)
+    }
+}
+
+/// Names a subscription, to end it with `Controller::unsubscribe`. Never reused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SubscriberId(u64);
+
+struct Subscriber {
+    id: SubscriberId,
+    sink: Box<dyn EventSink>,
+}
+
 /// A modulation target to bind (`Controller::add_target`): the parameter it
 /// drives, or the modulator field, and how strongly.
 pub struct NewTarget {
@@ -156,6 +180,9 @@ pub struct Controller {
     return_rx: Receiver<Box<dyn Plugin>>,
     devices: Option<Box<dyn DeviceWatcher>>,
     last_device_poll: Instant,
+    /// Who hears what `apply` does, in the order they subscribed.
+    subscribers: Vec<Subscriber>,
+    next_subscriber: u64,
 }
 
 /// The tempo a session starts at: that of the first lane with a recorded
@@ -215,6 +242,8 @@ impl Controller {
             return_rx,
             devices: None,
             last_device_poll: now,
+            subscribers: Vec::new(),
+            next_subscriber: 0,
         }
     }
 
@@ -359,6 +388,30 @@ impl Controller {
             ModulatorLocation::Group(group) => GraphCommand::AddGroupModTarget { group, mod_index: index, target },
         });
         true
+    }
+
+    /// Tell `sink` about every intent applied from now on (see `EventSink`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime subscribes, later in step 10"))]
+    pub fn subscribe(&mut self, sink: Box<dyn EventSink>) -> SubscriberId {
+        let id = SubscriberId(self.next_subscriber);
+        self.next_subscriber += 1;
+        self.subscribers.push(Subscriber { id, sink });
+        id
+    }
+
+    /// End a subscription. False if there is none by that id (any more).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime subscribes, later in step 10"))]
+    pub fn unsubscribe(&mut self, id: SubscriberId) -> bool {
+        let before = self.subscribers.len();
+        self.subscribers.retain(|s| s.id != id);
+        self.subscribers.len() != before
+    }
+
+    /// Tell the subscribers about an intent that has been applied.
+    pub(super) fn publish(&mut self, applied: &Applied) {
+        for subscriber in &mut self.subscribers {
+            subscriber.sink.applied(applied);
+        }
     }
 
     /// A handle on the note path (the Locked mode, the held notes, the channel to
@@ -643,6 +696,95 @@ mod tests {
     fn controller_for(session: &str) -> (StubEngine, Controller) {
         let (handles, engine) = testutil::stub_engine();
         (engine, Controller::new(load(session).model, handles, None))
+    }
+
+    // -- Subscribers: who hears what `apply` did --
+
+    use crate::app::intent::{Applied, Event, Gain, Intent, IntentError};
+
+    /// A sink that keeps everything it hears, and a handle on what it has heard.
+    fn recorder() -> (Box<dyn EventSink>, Arc<Mutex<Vec<Applied>>>) {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        (Box::new(move |applied: &Applied| sink.lock().unwrap().push(applied.clone())), heard)
+    }
+
+    fn volume(ctl: &Controller, value: f32) -> Intent {
+        Intent::SetGain { node: ctl.model.instruments[0].node, gain: Gain::Volume, value }
+    }
+
+    #[test]
+    fn a_subscriber_hears_each_applied_intent_with_its_revision_and_events() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (sink, heard) = recorder();
+        ctl.subscribe(sink);
+        let lane = ctl.model.instruments[0].node;
+        let first = ctl.apply(volume(&ctl, 0.5)).unwrap();
+        let second = ctl.apply(volume(&ctl, 0.25)).unwrap();
+        assert_eq!(*heard.lock().unwrap(), [first.clone(), second]);
+        assert_eq!(first.events, [Event::GainSet { node: lane, gain: Gain::Volume, value: 0.5 }]);
+        assert_eq!(first.rev, 1);
+    }
+
+    #[test]
+    fn an_intent_that_fails_is_not_published() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (sink, heard) = recorder();
+        ctl.subscribe(sink);
+        let ghost = crate::app::model::NodeId(9_999);
+        let result = ctl.apply(Intent::SetGain { node: ghost, gain: Gain::Volume, value: 0.5 });
+        assert_eq!(result, Err(IntentError::NotFound(ghost)));
+        assert!(heard.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn every_subscriber_hears_it_in_the_order_they_subscribed() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        for name in ["first", "second", "third"] {
+            let order = order.clone();
+            ctl.subscribe(Box::new(move |applied: &Applied| order.lock().unwrap().push((name, applied.rev))));
+        }
+        ctl.apply(volume(&ctl, 0.5)).unwrap();
+        assert_eq!(*order.lock().unwrap(), [("first", 1), ("second", 1), ("third", 1)]);
+    }
+
+    #[test]
+    fn a_subscriber_hears_only_what_comes_after_it_subscribed_and_before_it_leaves() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        ctl.apply(volume(&ctl, 0.9)).unwrap();
+        let (sink, heard) = recorder();
+        let id = ctl.subscribe(sink);
+        ctl.apply(volume(&ctl, 0.5)).unwrap();
+        assert!(ctl.unsubscribe(id));
+        ctl.apply(volume(&ctl, 0.25)).unwrap();
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.iter().map(|a| a.rev).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn unsubscribing_twice_or_an_id_nobody_has_does_nothing() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (sink, _heard) = recorder();
+        let (other, other_heard) = recorder();
+        let id = ctl.subscribe(sink);
+        ctl.subscribe(other);
+        assert!(ctl.unsubscribe(id));
+        assert!(!ctl.unsubscribe(id), "already gone");
+        ctl.apply(volume(&ctl, 0.5)).unwrap();
+        assert_eq!(other_heard.lock().unwrap().len(), 1, "the other one is still there");
+    }
+
+    #[test]
+    fn subscriber_ids_are_not_reused() {
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        let (a, _ha) = recorder();
+        let (b, _hb) = recorder();
+        let first = ctl.subscribe(a);
+        ctl.unsubscribe(first);
+        let second = ctl.subscribe(b);
+        assert_ne!(first, second);
+        assert!(!ctl.unsubscribe(first), "the old id does not reach the new subscriber");
     }
 
     const TWO_LANES: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\n";
