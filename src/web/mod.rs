@@ -83,6 +83,9 @@ pub fn serve(ctl: &mut Controller, args: &WebArgs) -> anyhow::Result<()> {
     })
     .context("cannot listen for Ctrl+C")?;
 
+    // The browsers pick plugins from the catalog, and it is not scanned until someone asks (the TUI
+    // asks when it starts; this has no TUI): in the background, so that serving does not wait for it.
+    ctl.catalog.ensure_scan();
     let mut runtime = Runtime::start(ctl, config_for(args.web_bind, &args.web_origins))?;
     // On stdout, where a script can find it; the log is on stderr.
     println!("Web interface: {}", runtime.url());

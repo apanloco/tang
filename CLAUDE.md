@@ -1401,6 +1401,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   request, a token for non-loopback binds, limits on message size, request rate,
   connections and write time. The audio, MIDI and controller threads stay
   synchronous. Messages: `app::protocol` (`ClientMessage`, `ServerMessage`); the
+  plugin catalog (what can be added; step 19) follows a client's snapshot and is told again
+  as the scan finds more (`catalog { rev, scanning, entries }`: ids and names, never where a
+  plugin is installed; `tang serve` starts the scan, the TUI its own); the
   telemetry frames are made by `web::pusher` at 30 Hz for the channels a client
   asked for. `NoteInput` (`src/note_input.rs`) is the one note path of hardware
   MIDI, the virtual piano and the browser: the Piano tab's filter, the held-notes
@@ -1433,7 +1436,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   a fixture it writes, `web/src/client/fixtures/reach.json`). Step 16 made the page's keys a
   piano (`client/keyboard.ts`, `app/useKeyboardPiano.ts`; see "Virtual piano"). Step 18 made the
   page save the session (`app/SessionBar.tsx`: the file's name, "Saved" or "Unsaved changes", a Save
-  button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`). What the controller
+  button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`).
+  The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1453,7 +1457,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   that says so). `web/dist/` keeps a `.gitkeep` so that the program builds without
   Node. The tracer's snapshot in `web/src/client/fixtures/` is generated:
   `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types (and
-  `reach.json`, next to it, which says where the controller let a cable be drawn).
+  `reach.json`, next to it, which says where the controller let a cable be drawn, and
+  `builtins.catalog.json`, the built-in plugins as the catalog lists them, which the mock serves).
 - **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
   runs the TUI and the web interface on one controller, on the main thread. The loop
   applies a browser's requests and reacts to what they changed (a value a browser set

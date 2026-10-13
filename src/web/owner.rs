@@ -28,6 +28,8 @@ pub struct Owner {
     hub: Arc<Hub>,
     shared: Arc<Shared>,
     requests: Receiver<OwnerRequest>,
+    /// What the clients were last told of the plugin catalog: its revision, and whether the scan was still going.
+    catalog_told: (u64, bool),
 }
 
 impl Owner {
@@ -36,7 +38,8 @@ impl Owner {
     /// snapshot when the session changes in a way no intent describes.
     pub fn new(ctl: &mut Controller, hub: Arc<Hub>, shared: Arc<Shared>, requests: Receiver<OwnerRequest>) -> Owner {
         ctl.subscribe(Box::new(HubSink { hub: hub.clone(), shared: shared.clone() }));
-        Owner { hub, shared, requests }
+        let catalog_told = (ctl.catalog.rev(), ctl.catalog.is_scanning());
+        Owner { hub, shared, requests, catalog_told }
     }
 
     /// Answer every request that is waiting, in the order they came. How many.
@@ -72,9 +75,11 @@ impl Owner {
     pub fn handle(&mut self, ctl: &mut Controller, request: OwnerRequest) -> Option<Applied> {
         let applied = match request {
             OwnerRequest::Subscribe { client } => {
-                // Subscribed and sent the snapshot in one step: no event can come between.
+                // Subscribed and sent the snapshot in one step: no event can come between. The
+                // catalog is not part of the session, and follows it.
                 if self.hub.subscribe(client) {
                     self.send(client, &ServerMessage::Snapshot { snapshot: ctl.snapshot() });
+                    self.send(client, &Self::catalog(ctl));
                 }
                 None
             }
@@ -93,12 +98,22 @@ impl Owner {
         applied
     }
 
+    /// The plugins that can be added, as a client is told of them.
+    fn catalog(ctl: &Controller) -> ServerMessage {
+        ServerMessage::Catalog { rev: ctl.catalog.rev(), scanning: ctl.catalog.is_scanning(), entries: ctl.catalog.entries() }
+    }
+
     /// Keep what the connections read current: the session's revision, and the
-    /// meaning of the telemetry slots, which the clients are told when it changes. Call
-    /// it regularly (a few times a second): the model can change without an intent,
-    /// under the TUI's hands.
+    /// meaning of the telemetry slots, which the clients are told when it changes, and
+    /// the plugin catalog, as the scan finds more. Call it regularly (a few times a
+    /// second): the model can change without an intent, under the TUI's hands.
     pub fn refresh(&mut self, ctl: &Controller) {
         self.shared.rev.store(ctl.rev, Ordering::Relaxed);
+        let catalog = (ctl.catalog.rev(), ctl.catalog.is_scanning());
+        if catalog != self.catalog_told {
+            self.catalog_told = catalog;
+            self.hub.broadcast(&Self::text(&Self::catalog(ctl)));
+        }
         let layout = ctl.model.telemetry_layout();
         // (A snapshot carries the layout, and sets it in `shared` when it is sent: then
         // there is nothing to tell here.)
@@ -178,7 +193,8 @@ mod tests {
         rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
         assert_eq!(rig.owner.serve(&mut rig.ctl), 1);
         let first = said(&mut queue);
-        assert_eq!(types(&first), ["snapshot"]);
+        assert_eq!(types(&first), ["snapshot", "catalog"], "the snapshot, and what can be added to it");
+        assert_eq!(first[1], json!({"type": "catalog", "rev": 0, "scanning": false, "entries": []}));
         assert_eq!(first[0]["snapshot"]["rev"], 0);
         assert_eq!(first[0]["snapshot"]["graph"]["nodes"].as_array().unwrap().len(), 3, "two lanes and the master");
 
@@ -211,9 +227,9 @@ mod tests {
         rig.tx.send(OwnerRequest::Apply { client: early, req_id: 9, intent }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let heard = said(&mut late_queue);
-        assert_eq!(types(&heard), ["snapshot", "event"]);
+        assert_eq!(types(&heard), ["snapshot", "catalog", "event"]);
         assert_eq!(heard[0]["snapshot"]["rev"], 3);
-        assert_eq!(heard[1]["event"]["rev"], 4);
+        assert_eq!(heard[2]["event"]["rev"], 4);
     }
 
     #[test]
@@ -383,6 +399,67 @@ mod tests {
         assert_eq!(told[0]["snapshot"]["telemetry"]["rev"], json!(rig.shared.layout().rev));
         rig.owner.refresh(&rig.ctl);
         assert!(said(&mut queue).is_empty(), "the layout was told in the snapshot");
+    }
+
+    fn plugin(name: &str, id: &str, instrument: bool) -> crate::plugin::PluginInfo {
+        crate::plugin::PluginInfo { name: name.to_string(), id: id.to_string(), is_instrument: instrument, param_count: 4, preset_count: 2, path: "/where".to_string(), scan_ms: 0 }
+    }
+
+    #[test]
+    fn a_client_is_told_the_catalog_as_it_is_with_the_snapshot_and_it_keeps_up_with_the_scan() {
+        let mut rig = rig();
+        // A scan is under way, and has found the built-ins.
+        let (batches, scan) = crossbeam_channel::unbounded();
+        rig.ctl.catalog.follow(scan);
+        batches.send(vec![plugin("Oscillator", "builtin:osc", true)]).unwrap();
+        rig.ctl.poll();
+        rig.owner.refresh(&rig.ctl);
+
+        let (client, mut queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        let first = said(&mut queue);
+        assert_eq!(types(&first), ["snapshot", "catalog"]);
+        assert_eq!(first[1]["rev"], 1);
+        assert_eq!(first[1]["scanning"], true, "the scan is not over");
+        assert_eq!(first[1]["entries"], json!([{"id": "builtin:osc", "name": "Oscillator", "format": "Built-in", "isInstrument": true, "params": 4, "presets": 2}]));
+        assert!(!first[1].to_string().contains("where"), "where it is installed is nobody's business");
+
+        // Nothing changed: nothing is said.
+        rig.ctl.poll();
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty());
+
+        // The scan finds more: the catalog is told again, whole, with the revision after.
+        batches.send(vec![plugin("Reverb", "builtin:reverb", false)]).unwrap();
+        rig.ctl.poll();
+        rig.owner.refresh(&rig.ctl);
+        let told = said(&mut queue);
+        assert_eq!(types(&told), ["catalog"]);
+        assert_eq!((told[0]["rev"].clone(), told[0]["scanning"].clone()), (json!(2), json!(true)));
+        assert_eq!(told[0]["entries"].as_array().unwrap().len(), 2);
+
+        // The scan ends: the same plugins, and no more scanning, which a picker shows.
+        drop(batches);
+        rig.ctl.poll();
+        rig.owner.refresh(&rig.ctl);
+        let told = said(&mut queue);
+        assert_eq!(types(&told), ["catalog"]);
+        assert_eq!((told[0]["rev"].clone(), told[0]["scanning"].clone()), (json!(2), json!(false)));
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty(), "once");
+    }
+
+    #[test]
+    fn the_catalog_is_not_told_to_a_client_that_has_not_subscribed() {
+        let mut rig = rig();
+        let (_plain, mut plain_queue) = rig.hub.connect();
+        let (batches, scan) = crossbeam_channel::unbounded();
+        rig.ctl.catalog.follow(scan);
+        batches.send(vec![plugin("Oscillator", "builtin:osc", true)]).unwrap();
+        rig.ctl.poll();
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut plain_queue).is_empty());
     }
 
     #[test]

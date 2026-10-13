@@ -295,6 +295,42 @@ async fn a_browser_saves_the_session_to_its_own_file_and_the_file_has_what_it_ch
 }
 
 #[tokio::test]
+async fn a_browser_is_told_what_plugins_can_be_added_and_never_where_they_are_installed() {
+    let tang = Tang::start();
+    let mut client = connect(&tang).await;
+    assert_eq!(next_json(&mut client).await["type"], "hello");
+    tell(&mut client, json!({"type": "subscribe"})).await;
+    assert_eq!(next_json(&mut client).await["type"], "snapshot");
+
+    // The catalog comes after the snapshot, as far as the scan has got, and again while it finds more: the
+    // built-ins are the first batch (what else is installed depends on the machine).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut told = Vec::new();
+    let osc = loop {
+        let message = next_json(&mut client).await;
+        assert_eq!(message["type"], "catalog", "nothing else is told to a client that only listens: {message}");
+        let found = message["entries"].as_array().unwrap().iter().find(|entry| entry["id"] == "builtin:osc").cloned();
+        told.push(message);
+        if let Some(found) = found {
+            break found;
+        }
+        assert!(Instant::now() < deadline, "the built-ins did not come in 30 s; told {told:?}\n{}", tang.log());
+    };
+    assert_eq!((osc["name"].clone(), osc["format"].clone(), osc["isInstrument"].clone()), (json!("Oscillator"), json!("Built-in"), json!(true)), "{osc}");
+    assert!(osc["params"].as_u64().unwrap() > 0, "{osc}");
+
+    // Which plugins are installed is the machine's business: where, nobody's but the program's.
+    let last = told.last().unwrap();
+    assert!(last["rev"].as_u64().unwrap() > 0, "{last}");
+    for entry in last["entries"].as_array().unwrap() {
+        let mut keys: Vec<_> = entry.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["format", "id", "isInstrument", "name", "params", "presets"], "{entry}");
+    }
+    assert!(!last.to_string().contains(env!("CARGO_MANIFEST_DIR")), "no path of the machine in the catalog");
+}
+
+#[tokio::test]
 async fn a_session_named_by_a_relative_path_is_saved_to_that_file_wherever_the_program_is_by_then() {
     // Plugins that are scanned or loaded can change the working directory of the whole program (some
     // do), and a path that is relative to it then leads somewhere else: a save would write the

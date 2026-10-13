@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import type { Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
-import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 
@@ -808,6 +808,81 @@ describe("drawing a cable", () => {
   });
 });
 
+describe("the catalog of plugins", () => {
+  const oscillator: CatalogEntry = { id: "builtin:osc", name: "Oscillator", format: "Built-in", isInstrument: true, params: 8, presets: 0 };
+  const pianoteq: CatalogEntry = { id: "vst3:Pianoteq 8", name: "Pianoteq 8", format: "VST3", isInstrument: true, params: 300, presets: 12 };
+
+  test("is not known until the server says, and the built-ins are what the mock says by default", async () => {
+    const client = connect(new MockServer());
+    expect(client.state.catalog).toBeNull();
+    await until(() => client.state.catalog !== null, "the catalog");
+    expect(client.state.catalog).toEqual({ entries: builtinCatalog, scanning: false });
+    expect(builtinCatalog.map((entry) => entry.id)).toContain("builtin:osc");
+  });
+
+  test("is what the server has found so far, and whether it is still looking", async () => {
+    const server = new MockServer({ catalog: { entries: [oscillator], scanning: true } });
+    const client = await open(server);
+    await until(() => client.state.catalog !== null, "the catalog");
+    expect(client.state.catalog).toEqual({ entries: [oscillator], scanning: true });
+  });
+
+  test("follows the scan as it finds more, each telling replacing the last", async () => {
+    const server = new MockServer({ catalog: { entries: [oscillator], scanning: true } });
+    const client = await open(server);
+    await until(() => client.state.catalog !== null, "the catalog");
+    server.announceCatalog([oscillator, pianoteq], true);
+    await until(() => client.state.catalog?.entries.length === 2, "the second batch");
+    expect(client.state.catalog).toEqual({ entries: [oscillator, pianoteq], scanning: true });
+    // (The scan ends with nothing more to add: that is told as well, with the same plugins.)
+    server.announceCatalog([oscillator, pianoteq], false);
+    await until(() => client.state.catalog?.scanning === false, "the end of the scan");
+    expect(client.state.catalog?.entries).toEqual([oscillator, pianoteq]);
+  });
+
+  test("does not change the session, which it is no part of", async () => {
+    const server = new MockServer({ catalog: { entries: [oscillator], scanning: true } });
+    const client = await open(server);
+    const before = client.state.snapshot;
+    server.announceCatalog([oscillator, pianoteq], false);
+    await until(() => client.state.catalog?.entries.length === 2, "the catalog");
+    expect(client.state.snapshot).toBe(before);
+    expect(client.state.snapshot?.meta.dirty).toBe(false);
+    expect(client.state.snapshot?.rev).toBe(0);
+  });
+
+  test("is kept while the connection is made good, and told again by the server it comes back to", async () => {
+    const server = new MockServer({ catalog: { entries: [oscillator], scanning: true } });
+    const client = await open(server);
+    await until(() => client.state.catalog !== null, "the catalog");
+    server.drop();
+    await until(() => client.state.status === "reconnecting", "the loss");
+    expect(client.state.catalog).toEqual({ entries: [oscillator], scanning: true }); // what it knew is still there
+    server.announceCatalog([oscillator, pianoteq], false); // while it was away: nobody hears of it
+    await until(() => client.state.status === "open" && client.state.catalog?.scanning === false, "the catalog after the reconnection");
+    expect(client.state.catalog?.entries).toEqual([oscillator, pianoteq]);
+  });
+
+  test("is not told to a connection that has not subscribed", async () => {
+    const server = new MockServer({ token: "secret" });
+    const heard: ServerMessage[] = [];
+    const transport = server.transport();
+    transport.connect({
+      open: () => undefined,
+      text: (data) => {
+        heard.push(JSON.parse(data) as ServerMessage);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
+    await quiet();
+    server.announceCatalog([oscillator], false);
+    await quiet();
+    expect(heard.map((message) => message.type)).toEqual(["hello"]);
+    transport.close();
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();
@@ -1075,6 +1150,19 @@ describe("what the server says", () => {
     client.start();
     return client;
   }
+
+  test("a catalog replaces the one before it, whole", async () => {
+    const server = new MockServer();
+    const entry = (id: string): CatalogEntry => ({ id, name: id, format: "CLAP", isInstrument: false, params: 1, presets: 0 });
+    const client = scripted([
+      server.hello(),
+      { type: "snapshot", snapshot: tracerSnapshot },
+      { type: "catalog", rev: 1, scanning: true, entries: [entry("a"), entry("b")] },
+      { type: "catalog", rev: 2, scanning: false, entries: [entry("c")] },
+    ]);
+    await until(() => client.state.catalog?.scanning === false, "the second catalog");
+    expect(client.state.catalog).toEqual({ scanning: false, entries: [entry("c")] });
+  });
 
   test("through a transport the client has left is not listened to", async () => {
     // This transport goes on talking after it has been closed, as a socket may for a moment.

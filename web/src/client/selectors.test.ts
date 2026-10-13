@@ -5,7 +5,7 @@ import { MASTER, nodeNamed, tracerSnapshot } from "./fixtures";
 import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
-const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, reconnects: 0 });
+const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
 
 const state = stateOf(tracerSnapshot);
 const oscillator = nodeNamed(tracerSnapshot, "Oscillator");

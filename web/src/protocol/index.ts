@@ -1,6 +1,7 @@
 // What crosses the socket, as the rest of the app names it. The types themselves are
 // generated from the Rust ones (docs/web-ui.md §7) into `generated/`, which is
 // rewritten as a whole, so the list of what this app uses is kept here.
+export type { CatalogEntry } from "./generated/CatalogEntry";
 export type { ClientMessage } from "./generated/ClientMessage";
 export type { Edge } from "./generated/Edge";
 export type { EdgeId } from "./generated/EdgeId";

@@ -3,7 +3,8 @@
 // sweeps) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { Node, NodeId, Snapshot } from "../protocol";
+import type { CatalogEntry, Node, NodeId, Snapshot } from "../protocol";
+import builtins from "./fixtures/builtins.catalog.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
@@ -15,6 +16,9 @@ export const tracerSnapshot = tracer as unknown as Snapshot;
  * the controller (`the_web_clients_fixture_of_what_a_modulator_reaches_is_current`).
  */
 export const reachFixture = reach as unknown as { snapshot: Snapshot; reach: Record<string, number[]> };
+
+/** The built-in plugins as the server lists them in its catalog, which the mock engine serves: written by Rust (`the_web_clients_fixture_of_the_builtins_is_current`). */
+export const builtinCatalog = builtins as CatalogEntry[];
 
 /** The master's node id, as the server numbers it (`NodeId::MASTER`). */
 export const MASTER: NodeId = 4294967295;

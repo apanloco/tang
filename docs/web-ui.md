@@ -569,10 +569,21 @@ master peak and clip. A scope ring can follow later.
     `snapshot { snapshot }` (the answer to `subscribe`, and, since step 13, also sent
     unasked to the subscribed when the session changed in a way no event describes: the
     client replaces its copy, the layout included, and carries on from the revision in
-    it), `event { event }` (a `StampedEvent`), `layout { layout }`, `ack { reqId, rev }`,
-    `rejected { reqId, error }`, `closing { error }` (the last thing before the
-    server closes), with `error = { code, message }`, `code` one of `notFound`,
-    `invalid`, `badRequest`, `unauthorized`, `rateLimited`, `overloaded`.
+    it), `event { event }` (a `StampedEvent`), `layout { layout }`, `catalog { rev,
+    scanning, entries }` (step 19: the plugins that can be added; see below),
+    `ack { reqId, rev }`, `rejected { reqId, error }`, `closing { error }` (the last thing
+    before the server closes), with `error = { code, message }`, `code` one of `notFound`,
+    `invalid`, `io`, `badRequest`, `unauthorized`, `rateLimited`, `overloaded`.
+  - **The catalog (step 19).** The plugins installed on this machine are scanned on a
+    background thread (the TUI starts it when it starts; `tang serve` does, since it has no TUI)
+    and arrive by format: the built-ins at once, VST3, which loads each plugin, last. A
+    subscribed client is sent `catalog` right after its snapshot, as far as the scan has got, and
+    again whenever the scan finds more or ends: each message is the whole catalog, so a client
+    replaces what it has (`rev` goes up with each batch found, `scanning` says whether more may
+    come). `entries` are `{ id, name, format, isInstrument, params, presets }`: what a person
+    chooses by, and never where the plugin is installed (`PluginInfo::path`, §8): a client names a
+    plugin by its `id` and the program loads only what is in its own catalog. The catalog is not
+    part of the session: it is no revision and leaves the session as it was.
   - **Order.** The owner makes the cut between a snapshot and the events after it:
     `subscribe` is answered by marking the client subscribed and queueing the
     snapshot in one step, and events are only made on the owner's thread, so a client
@@ -1732,6 +1743,52 @@ Each step is a reviewable change; the TUI must not regress at any point.
     does not write the example).
   - **Not done.** Save As (a validated file name for both front-ends, §8); the page does not warn
     before it is closed with changes that are not saved.
+
+- [ ] **19. Adding plugins from the browser (phase 1).** The page can build modulation, and take
+  things out, but the chains themselves it cannot touch: it does not even know what is installed.
+  *Done when:* on the real program, a browser puts an effect that is installed into a lane and into a
+  group, hears the difference, and the file the session is saved to has it. In parts, each its own
+  commit: **19.1** the catalog on the wire; **19.2** `AddEffect` in the controller, which the TUI's
+  selector uses too; **19.3** the client's `Editor` and the mock engine; **19.4** the menu on a lane
+  and a group that picks an effect; **19.5** `RemoveNode` for the nodes that hold a plugin, and a "×"
+  on them (with an undo, since a click there is final); **19.6** the browser test and the docs. Then
+  instruments (`AddLane`, replacing the plugin of a lane), presets, ranges and groups.
+  - **19.1 as built.** `ServerMessage::Catalog { rev, scanning, entries }` (§7) and the
+    `CatalogEntry` type, generated for the client like the others; `Catalog::rev` (goes up with each
+    batch of plugins), `entries` and `ensure_scan` (`tang serve` starts the scan, since there is no TUI
+    to; the TUI starts its own, and a second one would load every plugin twice). The owner tells a
+    subscribed client the catalog right after its snapshot and tells all of them again when
+    `(rev, scanning)` has changed since it last did (`Owner::refresh`, which the headless loop and the
+    TUI's loop call every turn). The client keeps it in its store (`ClientState.catalog`, null until
+    the server says; the one of the connection before is kept while a new one is made good, and the new
+    server says it again) and the mock engine serves the built-ins (`web/src/client/fixtures/
+    builtins.catalog.json`, written by Rust: `the_web_clients_fixture_of_the_builtins_is_current`) and
+    can announce more (`MockServer.announceCatalog`).
+  - **19.1 tests.** Rust: the entry's JSON, with a plugin whose path is a secret and a test that
+    the secret does not come out; the revision (a batch is one, an empty batch none); `ensure_scan`
+    leaves a scan that is under way, or done, alone (what arrives from the scan that was under way
+    still arrives); the owner's tell-with-the-snapshot, tell-again-as-it-grows (including the end of the
+    scan, which adds nothing), tell-nothing-more-when-nothing-changed and not-to-a-client-that-has-not-
+    subscribed; the real program (`tests/serve.rs`: the built-ins come, with no key but the six, and
+    none of the machine's paths). Eight tests of the web runtime and the TUI that took the snapshot
+    and then expected an event now take the catalog in between, through one helper
+    (`testclient::subscribe`). Web: seven Vitest tests (nothing until the server says; the server's
+    own catalog and whether it is scanning; each telling replaces the one before; the session is left
+    alone; kept over a reconnection and told again; not told to a connection that has not subscribed;
+    entries that pile up if they are not replaced). 26 mutations (12 in the client and the mock, 14 in
+    the Rust), 25 caught at once; the one that was not showed that nothing noticed a new scan
+    taking the place of one under way, and the test now sends a batch down the old channel.
+  - **Found on the way (f67), fixed first, in its own commit.** The browser test that saves failed
+    once `tang serve` scanned the machine's plugins: the file it read had not changed, though the
+    program said it had saved. A plugin (a ROLI one, here) changes the working directory of the whole
+    process while it is scanned, and the session's file was kept as it was given on the command line,
+    relative, so the save went to `~/Library/Application Support/ROLI/ROLI Connect/.e2e-session/`,
+    creating the directory. The TUI has always scanned in the background, so `tang session.toml` and
+    `Ctrl+S` were exposed to the same thing. The session's file is an absolute path from the start now
+    (`session::absolute_path`, taken before anything is loaded: the plugins a session names relative to
+    its own directory are found by it too), and a test on the real program starts it in a directory with
+    a relative name and reads which file it says it saved. Four mutations, all caught. (The directory
+    the test runs had made in the ROLI folder was taken away.)
 
 ## 13. Later: track B (`builtin:patch`)
 

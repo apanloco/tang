@@ -221,9 +221,7 @@ depth = 0.5
     async fn subscribed(live: &Live) -> (testclient::Client, Value) {
         let mut client = testclient::connect(live.addr).await;
         assert_eq!(said(&mut client).await["type"], "hello");
-        tell(&mut client, json!({"type": "subscribe"})).await;
-        let snapshot = said(&mut client).await;
-        assert_eq!(snapshot["type"], "snapshot");
+        let snapshot = testclient::subscribe(&mut client).await;
         (client, snapshot)
     }
 
@@ -250,8 +248,7 @@ depth = 0.5
         // A client that comes late is told where the session is, and starts from there.
         let mut late = testclient::connect(live.addr).await;
         assert_eq!(said(&mut late).await["rev"], 1, "Hello");
-        tell(&mut late, json!({"type": "subscribe"})).await;
-        let snapshot = said(&mut late).await;
+        let snapshot = testclient::subscribe(&mut late).await;
         assert_eq!(snapshot["snapshot"]["rev"], 1);
         assert_eq!(find_param(&snapshot, "Filter", "cutoff").2, 0.9);
     }

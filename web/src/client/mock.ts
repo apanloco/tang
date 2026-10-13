@@ -8,6 +8,7 @@
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
+  CatalogEntry,
   Edge,
   EdgeId,
   Event,
@@ -28,13 +29,15 @@ import type {
   WireError,
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
-import { tracerSnapshot } from "./fixtures";
+import { builtinCatalog, tracerSnapshot } from "./fixtures";
 import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
   snapshot?: Snapshot;
+  /** The plugins it says can be added, and whether it is still looking for more; the built-ins, found, by default. */
+  catalog?: { entries: readonly CatalogEntry[]; scanning: boolean };
   /** A token the server wants first, as one that listens beyond loopback does. */
   token?: string;
   /** What `hello` says the protocol is, for testing a client against a server that is not its own. */
@@ -359,12 +362,16 @@ export class MockServer {
 
   readonly #options: MockOptions;
   #snapshot: Snapshot;
+  #catalog: { entries: readonly CatalogEntry[]; scanning: boolean };
+  /** How many times the catalog has been told (it is the `rev` of the message). */
+  #catalogRev = 0;
   readonly #counters: Counters;
   readonly #connections = new Set<MockConnection>();
 
   constructor(options: MockOptions = {}) {
     this.#options = options;
     this.#snapshot = options.snapshot ?? tracerSnapshot;
+    this.#catalog = options.catalog ?? { entries: builtinCatalog, scanning: false };
     this.#counters = new Counters(this.#snapshot);
   }
 
@@ -403,6 +410,18 @@ export class MockServer {
     for (const connection of this.#connections) {
       if (connection.subscribed) connection.tell({ type: "layout", layout });
     }
+  }
+
+  /** The scan finds more plugins, or ends: the subscribed clients are told the catalog as it is now. */
+  announceCatalog(entries: readonly CatalogEntry[], scanning: boolean): void {
+    this.#catalog = { entries, scanning };
+    for (const connection of this.#connections) {
+      if (connection.subscribed) connection.tell(this.#catalogMessage());
+    }
+  }
+
+  #catalogMessage(): ServerMessage {
+    return { type: "catalog", rev: ++this.#catalogRev, scanning: this.#catalog.scanning, entries: [...this.#catalog.entries] };
   }
 
   /** The network goes: every connection ends without a goodbye. */
@@ -458,6 +477,7 @@ export class MockServer {
       case "subscribe":
         connection.subscribed = true;
         connection.tell({ type: "snapshot", snapshot: this.#snapshot });
+        connection.tell(this.#catalogMessage());
         break;
       case "telemetry":
         connection.wantTelemetry(message.channels);

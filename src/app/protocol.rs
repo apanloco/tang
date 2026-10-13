@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::catalog::CatalogEntry;
 use crate::app::intent::{Intent, IntentError, StampedEvent};
 use crate::app::layout::TelemetryLayout;
 use crate::app::snapshot::Snapshot;
@@ -69,6 +70,10 @@ pub enum ServerMessage {
     /// What the telemetry slots mean now: sent when it changes, so that frames and
     /// layout stay in step (a frame names the `rev` of the layout it follows).
     Layout { layout: TelemetryLayout },
+    /// The plugins installed on this machine, which a client can add to the session by `id`: sent
+    /// after the snapshot, and again whenever the scan finds more or ends (`scanning` goes false).
+    /// It replaces what the client had; `rev` goes up with it.
+    Catalog { rev: u64, scanning: bool, entries: Vec<CatalogEntry> },
     /// The intent of the request `req_id` was applied; the session is at `rev`.
     Ack { req_id: u32, rev: u64 },
     /// The intent of the request `req_id` was not applied.
@@ -241,6 +246,19 @@ mod message_tests {
             (
                 ServerMessage::Closing { error: WireError::new(ErrorCode::Overloaded, "too slow") },
                 json!({"type": "closing", "error": {"code": "overloaded", "message": "too slow"}}),
+            ),
+            (
+                ServerMessage::Catalog {
+                    rev: 3,
+                    scanning: true,
+                    entries: vec![CatalogEntry { id: "builtin:osc".to_string(), name: "Oscillator".to_string(), format: "Built-in".to_string(), is_instrument: true, params: 8, presets: 0 }],
+                },
+                json!({
+                    "type": "catalog",
+                    "rev": 3,
+                    "scanning": true,
+                    "entries": [{"id": "builtin:osc", "name": "Oscillator", "format": "Built-in", "isInstrument": true, "params": 8, "presets": 0}],
+                }),
             ),
         ];
         for (message, json) in cases {

@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
@@ -62,6 +62,17 @@ pub async fn until_closed(client: &mut Client) -> (Vec<Value>, Option<u16>) {
 
 pub async fn tell(client: &mut Client, message: Value) {
     client.send(Message::text(message.to_string())).await.unwrap();
+}
+
+/// Subscribe, and take what the server says to a client that has: the snapshot, and the plugin
+/// catalog after it. The snapshot.
+pub async fn subscribe(client: &mut Client) -> Value {
+    tell(client, json!({"type": "subscribe"})).await;
+    let snapshot = said(client).await;
+    assert_eq!(snapshot["type"], "snapshot");
+    let catalog = said(client).await;
+    assert_eq!(catalog["type"], "catalog", "the catalog follows the snapshot: {catalog}");
+    snapshot
 }
 
 /// Wait (a few seconds at most) for something another thread does.

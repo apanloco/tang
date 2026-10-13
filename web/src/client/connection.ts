@@ -8,7 +8,7 @@ import { createStore } from "zustand/vanilla";
 import type { StoreApi } from "zustand/vanilla";
 
 import { PROTOCOL } from "../protocol";
-import type { ClientMessage, ErrorCode, Intent, ServerMessage, Snapshot, TelemetryChannel, WireError } from "../protocol";
+import type { CatalogEntry, ClientMessage, ErrorCode, Intent, ServerMessage, Snapshot, TelemetryChannel, WireError } from "../protocol";
 import { applyEvent } from "./reducers";
 import { decodeFrame, TelemetryBuffers } from "./telemetry";
 
@@ -52,12 +52,21 @@ export interface Hello {
   needsToken: boolean;
 }
 
+/** The plugins that can be added to the session, as far as the server has found them. */
+export interface Catalog {
+  entries: readonly CatalogEntry[];
+  /** The server is still looking, and will say again when it has more. */
+  scanning: boolean;
+}
+
 export interface ClientState {
   status: Status;
   /** Why the client is not going on, in words for a person; null while it is, or is trying to. */
   problem: string | null;
   hello: Hello | null;
   snapshot: Snapshot | null;
+  /** What the server can add, as it last said (the one of the connection before, while this one is made good); null until it has. It is no part of the session: telling it changes nothing in `snapshot`. */
+  catalog: Catalog | null;
   /** How many times the connection has been lost and made again. */
   reconnects: number;
 }
@@ -101,6 +110,7 @@ export class Client {
     problem: null,
     hello: null,
     snapshot: null,
+    catalog: null,
     reconnects: 0,
   }));
   /** The latest telemetry, for a loop that draws it. */
@@ -249,6 +259,10 @@ export class Client {
         if (snapshot) this.#set({ snapshot: { ...snapshot, telemetry: message.layout } });
         break;
       }
+      case "catalog":
+        // The whole of it each time: what the scan has found so far replaces what it had found.
+        this.#set({ catalog: { entries: message.entries, scanning: message.scanning } });
+        break;
       case "ack":
         this.#settle(message.reqId, (pending) => {
           pending.resolve(message.rev);

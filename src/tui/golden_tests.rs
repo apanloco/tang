@@ -3112,13 +3112,11 @@ mod with_web {
     }
 
     impl Browser {
-        /// Connect, subscribe, and take the snapshot.
+        /// Connect, subscribe, and take the snapshot (and the catalog that comes after it).
         async fn join(&self) -> (testclient::Client, Value) {
             let mut client = testclient::connect(self.addr).await;
             assert_eq!(said(&mut client).await["type"], "hello");
-            tell(&mut client, json!({"type": "subscribe"})).await;
-            let snapshot = said(&mut client).await;
-            assert_eq!(snapshot["type"], "snapshot");
+            let snapshot = testclient::subscribe(&mut client).await;
             (client, snapshot)
         }
 
