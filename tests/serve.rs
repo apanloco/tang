@@ -531,6 +531,84 @@ async fn a_browser_replaces_the_instrument_of_a_lane_and_what_was_set_on_the_old
     assert!(saved.contains("volume = 0.1"), "and its own volume: {saved}");
 }
 
+/// The next value, in a frame of the modulation channel of the layout `rev`, at place `at` of it (frames of another layout, and of other channels, are skipped).
+async fn modulation_value(client: &mut Client, rev: u32, at: usize) -> f32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Ok(Some(Ok(Message::Binary(frame)))) = tokio::time::timeout(Duration::from_millis(500), client.next()).await
+            && frame[0] == 1
+            && u32::from_le_bytes(frame[4..8].try_into().unwrap()) == rev
+        {
+            return f32::from_le_bytes(frame[8 + 4 * at..12 + 4 * at].try_into().unwrap());
+        }
+    }
+    panic!("no frame of the modulation channel of the layout {rev} in ten seconds");
+}
+
+/// Throw away what the connection has already received and not been read: the frames that came while a test was waiting say what was, not what is.
+async fn drain(client: &mut Client) {
+    while let Ok(Some(Ok(_))) = tokio::time::timeout(Duration::from_millis(10), client.next()).await {}
+}
+
+#[tokio::test]
+async fn a_preset_loaded_into_a_plugin_that_a_cable_drives_is_what_the_cable_is_centred_on_in_the_audio_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, _, snapshot) = listening(&tang).await;
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+    let lfo = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "LFO").unwrap()["id"].as_u64().unwrap();
+    // (The catalog follows the snapshot, as far as the scan has got: the built-ins are its first batch. A plugin is only added once it is told.)
+    loop {
+        let message = next_json(&mut client).await;
+        if message["type"] == "catalog" && message["entries"].as_array().unwrap().iter().any(|e| e["id"] == "builtin:reverb") {
+            break;
+        }
+    }
+
+    // A reverb in the lane's chain, and the lane's LFO on its decay at a small depth: the decay is 0.88 as the reverb is made, and the
+    // cable moves it by a tenth of its range (0.89) either way.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addEffect", "parent": osc, "plugin": "builtin:reverb"}})).await;
+    let (acked, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(acked["type"], "ack", "{acked}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("a snapshot");
+    let (reverb, decay) = param_of(told, "Reverb", "decay");
+    let cable = json!({"type": "addModEdge", "modulator": lfo, "to": {"node": reverb, "port": {"type": "param", "index": decay}}});
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": cable})).await;
+    let (acked, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(acked["type"], "ack", "{acked}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("a snapshot");
+    let edge = told["snapshot"]["graph"]["edges"].as_array().unwrap().iter().find(|e| e["kind"] == "modulation" && e["to"]["node"] == json!(reverb)).expect("the cable")["id"].clone();
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "setEdgeDepth", "edge": edge, "depth": 0.1}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+
+    // Where the value the cable puts on the decay is in the frames of the modulation channel.
+    let layout = &told["snapshot"]["telemetry"];
+    let at = layout["modulation"].as_array().unwrap().iter().position(|e| e["kind"] == "effective" && e["node"] == json!(reverb) && e["port"]["index"] == json!(decay)).expect("a slot for the decay");
+    let rev = layout["rev"].as_u64().unwrap() as u32;
+    tell(&mut client, json!({"type": "telemetry", "channels": ["modulation"]})).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drain(&mut client).await;
+    for _ in 0..10 {
+        let value = modulation_value(&mut client, rev, at).await;
+        assert!((0.78..=0.99).contains(&value), "the decay is modulated around the reverb's own: {value}");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+
+    // The room has a decay of 0.55. The cable is centred on that now, and the decay moves around it (the old base, put back at the next buffer, would
+    // have the decay at 0.79 or more for the preset that was loaded).
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "loadPreset", "node": reverb, "preset": "room"}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drain(&mut client).await;
+    for _ in 0..20 {
+        let value = modulation_value(&mut client, rev, at).await;
+        assert!((0.4..=0.7).contains(&value), "the decay is modulated around the preset's: {value}\n{}", tang.log());
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
 #[tokio::test]
 async fn a_second_browser_hears_what_the_first_one_changes() {
     let tang = Tang::start();
