@@ -137,6 +137,30 @@ test.describe("the performance of the tracer scene (docs/web-ui.md §9.4)", () =
     expect(after.commits - before.commits).toBe(0);
   });
 
+  test("sends one intent for a burst of pointer moves in a frame, and it is the last", async ({ page }) => {
+    await open(page);
+    await page.waitForTimeout(300);
+    const slider = page.getByRole("slider", { name: "cutoff", exact: true });
+    const before = (await wireOf(page)).sends.length;
+    // Fifty pointer moves in one task, which no hand makes, and which a fast mouse comes near.
+    await slider.evaluate((dial) => {
+      const box = dial.getBoundingClientRect();
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      const at = (clientY: number, type: string) => new PointerEvent(type, { bubbles: true, pointerId: 7, button: 0, clientX: x, clientY });
+      dial.dispatchEvent(at(y, "pointerdown"));
+      for (let step = 1; step <= 50; step += 1) dial.dispatchEvent(at(y - step, "pointermove"));
+    });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const during = (await wireOf(page)).sends.slice(before);
+    expect(during.map((send) => send.intent.type)).toEqual(["setParam"]);
+    // 50 pixels of a range of 200: a quarter of 0 to 1, from the 0.5 it was at.
+    expect(during[0]?.intent.value).toBeCloseTo(0.75, 3);
+    await slider.evaluate((dial) => {
+      dial.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 7, button: 0 }));
+    });
+  });
+
   test("sends at most one intent a frame while a knob is dragged, soon after the pointer and answered at once", async ({ page }) => {
     await open(page);
     await page.waitForTimeout(300);
