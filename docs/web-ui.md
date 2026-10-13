@@ -568,6 +568,22 @@ scripts and styles, images and fonts, a connection to its own server; no inline 
 or style, no eval, no framing) and is looked at again each time; the files in `assets/`,
 which Vite names by their content, are kept for ever.
 
+**As built (step 12).** `client/` gained `frameloop.ts` (the page's one
+`requestAnimationFrame`), `drive.ts` (the controls that are turned), `readers.ts`
+(a reader of one telemetry slot), `modulation.ts` (what the engine's laws make of the
+cables that end at a parameter), `selectors.ts` (a node, a parameter or a gain of the
+session by id) and `stress.ts` (the big session of the performance test). `ui/` has
+`Knob`, `Choice` (a native select: it stands where this section said `EnumStepper`),
+`LiveBar`, `Meter` and `ClipLight`, each a function of its props that draws what changes
+every frame by writing to the DOM; what was listed here as `Slider`, `Node`, `Port` and
+`Cable` is in `app/patch/` (`nodes.tsx`, `edges.tsx`), since it is made of React Flow;
+`PianoKey` is not built. `app/` has `PatchView`, `controls.tsx` (the controls of a node,
+bound to the session) and `toFlow.ts`, which is pure; the outline, the inspector, the piano
+and the toolbar of §9.3 are not built. `ClientProvider` hands the views the client, the frame
+loop and a `Drive`; `useClientSelection(select, equal)` is for a part of the state that is
+an object made anew. `src/test-setup.ts` makes up what jsdom lacks for React Flow (sizes
+and a resize observer), so that the canvas renders in the ordinary tests.
+
 ### 9.3 Patch view (track A)
 
 Layout: outline (the TUI's chain tree) | canvas | inspector (the TUI's parameter
@@ -594,6 +610,24 @@ pane), with the piano along the bottom.
 - The limits are the engine's (§2): serial audio path, block-rate lane-global
   modulation.
 
+**As built (step 12).** `PatchView` draws `toFlow(graph)` with React Flow: a pure
+function of the graph that gives each instrument a strip (the instrument, then its
+effects, in columns of 376 px), its modulators above the strip over the node each drives
+(side by side when they drive the same), each group to the right of the longest lane level
+with the middle of its members, and the master at the end in the middle of it all. Nodes are
+304 px wide, a header is 44 px and a row of four controls 108 px; the layout assumes those and
+`patch.css` keeps to them. A node shows its plugin's first eight parameters and every one a
+cable ends at ("pinned" until the session keeps pinning), then its own gain; each control
+has a port on its top edge, quiet until a cable ends at it. An audio cable is grey, a
+modulation cable magenta, dashed and thicker the deeper it is; a cable that would end at a
+modulator's rate, stage or depth has no handle yet and is not drawn. The canvas is laid out
+again when the structure of the session changes (`sameStructure`: nodes, their places in the
+tree, names, the parameters of their plugins, cables) and not for a value. Nodes cannot be
+moved, selected or cabled by hand: that is for the steps that persist layout and edit the
+graph. React Flow gives a node that can be neither dragged nor selected
+`pointer-events: none`, which put its pane over every knob; `patch.css` takes the pointer
+back for the nodes (a browser found that; jsdom has no CSS).
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -607,6 +641,36 @@ pane), with the piano along the bottom.
 - Budgets, to be validated and enforced by a Playwright perf test from phase 0:
   60 fps with 32 modulators and 64 live knobs; drag → engine intent within one
   frame plus a loopback round trip; zero React renders caused by telemetry.
+
+**As built (step 12).** One `FrameLoop` (`client/frameloop.ts`) serves everything that
+draws a live value: a knob's dot, a modulator's bar, the master's meter and CLIP light
+subscribe a callback, which reads its slot (`slotReader` finds the slot once for each
+layout, not for each frame) and writes SVG attributes or CSS variables; it writes only when
+the value moved, and no React state is involved (tests count React's commits over a
+hundred frames and find none). The loop runs only while somebody listens. A control that is
+turned is a `Control` of the `Drive`: `set` shows the value at once and sends the latest
+value on the next frame, `commit` (a gesture is over: a key, a double click, a choice) sends
+at once unless this control has already sent in this frame, and what the control shows goes
+back to the session's value only when everything it sent has been answered, so that the
+server's echoes of a drag never pull the knob back under the pointer. Knobs are controlled
+components: whoever holds the value decides what they show. Each control reads its own value
+from the store (`paramOf`, `gainOf`), so a change renders that control and no other; the
+ring is `modulationExtent`, the engine's own laws (LFO ± depth × range, an envelope from
+depth × (base − min) up to the base, a CC up from it, the pitch bend both ways) summed and
+clamped, and the dot is the telemetry's effective value.
+
+Measured by the browser tests (`web/e2e/tracer.spec.ts` against the real program on the
+null backend, `stress.spec.ts` against the mock engine serving eight lanes, 32 LFOs and 64
+driven parameters), headless Chromium on the development machine: with 242 telemetry frames
+in four seconds the tracer page ran at 60.0 fps (95th percentile frame 16.7 ms) and React
+committed 0 times; a drag of 121 pointer moves sent 100 intents, never two in a frame, the
+latest 1.5 ms after a pointer move, the slowest answered in 1.4 ms on the loopback; fifty
+moves in one task sent one intent, the last; the big scene ran at 60.0 fps (16.8 ms) with 0
+commits, and at 60.0 fps while a knob was dragged. The tests enforce 55 fps and a 34 ms
+95th percentile (50 fps and 40 ms during a drag), which leaves room for a slow runner and
+still fails for a frame that takes 25 ms. The commit count is React's Profiler, which only
+a development build has, so the browser tests run on the Vite dev server (`Instrumented`,
+`window.tangCommits`).
 
 ## 10. Testing and CI
 
@@ -1107,13 +1171,62 @@ Each step is a reviewable change; the TUI must not regress at any point.
   than Chromium (and so the policy's `connect-src 'self'` for a WebSocket in Safari and
   Firefox), and a release build made before the interface was (it serves the
   placeholder: nothing warns at build time).
-- [ ] **12. Tracer UI.** `examples/tracer.toml` (saw oscillator → filter, LFO →
+- [x] **12. Tracer UI.** `examples/tracer.toml` (saw oscillator → filter, LFO →
   cutoff); a canvas with the lane strip, a modulator node and a cable; a `Knob`
   with value / ring / dot; telemetry-driven animation outside React's render
   path; parameter drag → `SetParam`; Playwright perf test v0. *Done when:*
   dragging the cutoff knob changes the sound, the LFO visibly drives the knob in
   sync with what you hear, and the perf test enforces the §9.4 budgets for that
   scene.
+  - **Built, in 28 commits** (§9.2–9.4 describe the result):
+    1. The pieces that draw: the frame loop, the `Knob` (the arithmetic of a sweep, an
+       arc and a drag; value arc, modulation ring, and a dot written to the DOM on the
+       frame), `LiveBar`, `Meter` with its CLIP light, and `Choice`.
+    2. The pieces that hold state: `Drive` (a control shows what it was set to and sends the
+       latest value once a frame, until the server has answered), slot readers over the
+       telemetry buffers, `modulationExtent` (the ring, from the engine's laws), and
+       selectors for a node, a parameter or a gain by id.
+    3. The canvas: `toFlow` (the layout and the cables, pure), the node components, the
+       cables, `PatchView` on React Flow, `ClientProvider` handing out a drive and the
+       frame loop, and the page showing the patch with the session as JSON closed below it.
+    4. Support: jsdom stubs for React Flow, a rig for testing a view over the mock engine,
+       a development-build count of React's commits, and `stressSnapshot` (eight lanes, 32
+       LFOs, 64 driven parameters), which the mock serves at `?engine=mock&scene=stress`.
+    5. The browser: the tracer scene against the real program, the performance tests of
+       the tracer and of the big scene (numbers in §9.4), a burst of pointer moves.
+    Two fixes came out of the browser tests (below).
+  - **Checked.** 428 Vitest tests (the layout against several session shapes with a
+    no-overlap check; the controls over the mock engine, which count React's commits across
+    frames of telemetry and across a sibling's change; the canvas in jsdom, including a
+    group, the ports and the clip light; every story is rendered), and 16 browser tests.
+    Every commit that has logic in it was mutation-checked with the small runner (about 600 mutants in all;
+    the survivors, real and equivalent, are named in the commit messages), and the browser
+    tests against the program: no dots, a bar that reads nothing, a drag that does nothing,
+    intents sent as they are set, a knob that renders on a timer, nodes without the pointer,
+    no telemetry asked for, and a frame that takes 25 ms were all caught.
+  - **Found by the browser tests, and fixed.** React Flow gives a node that can be neither
+    dragged nor selected `pointer-events: none`, which put the pane over every knob: the
+    drag did nothing, and the 19 jsdom tests of the canvas passed because jsdom has no CSS
+    (f25). And a gesture's end could send a second intent in a frame that had sent one (f26,
+    §9.4): `commit` now waits for the next frame when this control has already sent in this
+    one.
+  - **Not checked:** by ear (the dot is the engine's own value as the audio thread sets it
+    on the plugin, read from the telemetry, and the null backend was used, so nothing was
+    heard); the CI job `web` with the new specs (the branch has not been pushed), and
+    whether a shared runner keeps the thresholds; browsers other than Chromium (React Flow
+    under the content security policy was checked in Chromium only); a touch screen; a
+    session whose canvas is bigger than what is on screen (`onlyRenderVisibleElements` is
+    off, so every node is drawn: the big scene is that, at 60 fps); a screen reader beyond
+    the roles and labels (sliders, a meter, a native select).
+  - **Not done, on purpose.** Moving nodes and cabling by hand, the outline, the inspector, the
+    piano and the toolbar (§9.3), persisted pinning and layout (§4.4); a modulator's
+    settings are shown but not editable (there is no intent for them yet). The modulation
+    cable crosses the header of the node it drives, because its port is on the knob below
+    the header.
+  - **Dev loop additions.** `?engine=mock&scene=stress` serves the big session from the mock.
+    `npm run e2e` runs the browser tests one at a time (they share the real program's one
+    session, and each puts the filter back as the example has it); the commit count needs the
+    Vite dev server, which is what Playwright starts.
 - [ ] **13. TUI and web together.** `tang --web[=addr]`: the TUI loop reads
   terminal events on a reader thread and `select!`s over them, web requests,
   controller notifications and a tick. Changes in either front-end show up in
@@ -1150,6 +1263,8 @@ mixer, delay, …) are the natural first increment.
 | D11 | One current-thread tokio runtime on its own thread for the server and the pusher; `ctrlc` for stopping a headless process | Built (step 10) |
 | D12 | The client's store is vanilla zustand (no React in `client/`), the mock engine speaks the protocol through the same `Transport` as a socket, and the fixture the mock serves is generated from the Rust types and kept current by a Rust test | Built (step 11) |
 | D13 | `web/dist` is embedded with `rust-embed`, with a committed `.gitkeep` so that the program builds without Node; the interface's content security policy has no `unsafe-*` | Built (step 11) |
+| D14 | Telemetry never passes through React: one frame loop, readers that find their slot once for each layout, DOM writes only when a value moved; controls are controlled components, and what a control shows while the server catches up, and the one intent a frame, are the `Drive`'s | Built (step 12) |
+| D15 | React Flow draws the canvas; `toFlow` is a pure function of the graph, nodes are functions of their data with controls that read their own values, and the canvas is laid out again only when the structure of the session changes | Built (step 12) |
 
 Open questions
 

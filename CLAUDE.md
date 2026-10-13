@@ -1281,17 +1281,27 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, step 11 built the skeleton): TypeScript (strictest settings) +
+- **Frontend** (`web/`, steps 11 and 12 built): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
-  telemetry buffers, the connection with its reconnection and token, a vanilla zustand
-  store, and the mock engine, which speaks the protocol in the page), generated protocol
-  types, design tokens as CSS variables (`web/src/ui/tokens.css`), and for now one view:
-  the connection state and the session as JSON. React Flow for the patch canvas comes
-  with step 12. `cd web && npm ci`, then `npm run dev` (Vite on 5173, forwarding `/ws`
+  telemetry buffers and slot readers, the connection with its reconnection and token, a
+  vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
+  catches up, one intent a frame), the engine's modulation laws for the knobs' rings, and
+  the mock engine, which speaks the protocol in the page), generated protocol types,
+  design tokens as CSS variables (`web/src/ui/tokens.css`), the controls
+  (`web/src/ui/`: `Knob`, `Choice`, `LiveBar`, `Meter`, which draw live values by
+  writing to the DOM, never through React state) and the patch canvas
+  (`web/src/app/patch/`: `toFlow`, a pure layout of the graph, drawn with React Flow:
+  a strip for each instrument, its modulators above it, cables, a node's knobs bound to
+  the session). The page is the connection state, the canvas and the session as JSON
+  (closed). `cd web && npm ci`, then `npm run dev` (Vite on 5173, forwarding `/ws`
   to `tang serve --web-origin http://localhost:5173`; `?engine=mock` in the address
-  needs no server), `npm test` (Vitest), `npm run lint`, `npm run typecheck`,
-  `npm run storybook`, `npm run build` (→ `web/dist`), `npm run e2e` (Playwright, needs
-  `cargo build --features web`; `npm run e2e:install` once). The program serves
+  needs no server, `&scene=stress` serves eight lanes with 32 LFOs and 64 driven
+  parameters), `npm test` (Vitest), `npm run lint`, `npm run typecheck`,
+  `npm run storybook`, `npm run build` (→ `web/dist`), `npm run e2e` (Playwright,
+  one test at a time, since they share the real program's session; needs
+  `cargo build --features web`; `npm run e2e:install` once; they include the
+  performance tests of docs/web-ui.md §9.4, which need the Vite dev server for the
+  count of React's commits). The program serves
   `web/dist` itself (`src/web/assets.rs`, `rust-embed`: read from the disk in a debug
   build, inside the binary in a release build, so **run `npm run build` before
   `cargo build --release --features web`**; without it the program serves a placeholder
@@ -1302,9 +1312,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (serial audio chain, block-rate lane-global modulation, cables = modulation
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
-TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md` (steps 12 and 13 are left).
+TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md` (step 13 is left).
 TODO: `--web[=addr]` (the web runtime alongside the TUI; step 13).
-TODO: `ui` layout fields in the session format.
+TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
 TODO: patterns as graph nodes (they have no `NodeId` yet).
 TODO: events for what the audio thread reports to the controller (a finished
 pattern recording, a captured MIDI-learn control): connected browsers only see
