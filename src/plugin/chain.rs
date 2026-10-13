@@ -296,7 +296,7 @@ impl LfoWaveform {
 /// its instrument's chain. `PluginParam.slot` selects the plugin — 0 is the
 /// instrument, 1..N are the effects in order. Cross-mod kinds reference a
 /// sibling modulator by its lane-global index.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModTargetKind {
     /// Target a plugin parameter: `slot` (0 = instrument, 1.. = effect) + index.
     /// Used by lane-scoped modulators.

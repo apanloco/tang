@@ -776,32 +776,19 @@ impl State {
 
         // Plugin parameters across the whole chain (instrument + effects),
         // labelled by plugin and routed by slot.
-        let chain: Vec<(usize, &PluginSlot)> = std::iter::once(inst_node.instrument.as_ref())
-            .chain(inst_node.effects.iter().map(Some))
-            .enumerate()
-            .filter_map(|(slot, p)| p.map(|p| (slot, p)))
-            .collect();
-        for (slot, plugin) in &chain {
-            for p in &plugin.params {
-                let idx = entries.len();
-                // `label` is the bare param name (stored on the target and
-                // serialized); the selector list shows plugin + param columns.
-                entries.push(TargetEntry {
-                    label: p.name.clone(),
-                    slot: *slot,
-                    kind: crate::plugin::chain::ModTargetKind::PluginParam {
-                        slot: *slot,
-                        param_index: p.index,
-                    },
-                    param_min: p.min,
-                    param_max: p.max,
-                    base_value: p.value,
-                });
-                items.push(FilterListItem {
-                    cells: vec![plugin.name.clone(), p.name.clone()],
-                    index: idx,
-                });
-            }
+        for t in self.ctl.model.param_targets(ModulatorLocation::Lane(inst)) {
+            let idx = entries.len();
+            // `label` is the bare param name (stored on the target and
+            // serialized); the selector list shows plugin + param columns.
+            items.push(FilterListItem { cells: vec![t.plugin_name, t.param_name.clone()], index: idx });
+            entries.push(TargetEntry {
+                label: t.param_name,
+                slot: t.slot,
+                kind: t.kind,
+                param_min: t.param_min,
+                param_max: t.param_max,
+                base_value: t.base_value,
+            });
         }
 
         // Sibling lane modulators (cross-mod).
@@ -1059,36 +1046,22 @@ impl State {
 
         // Member instruments' params (instrument slot 0 + effects 1..N), labelled
         // by member ordinal and plugin.
+        let params = self.ctl.model.param_targets(ModulatorLocation::Group(group));
+        for t in &params {
+            let ModTargetKind::GroupMember { member, .. } = t.kind else { continue };
+            let idx = entries.len();
+            entries.push(TargetEntry {
+                label: t.param_name.clone(),
+                slot: t.slot,
+                kind: t.kind.clone(),
+                param_min: t.param_min,
+                param_max: t.param_max,
+                base_value: t.base_value,
+            });
+            items.push(FilterListItem { cells: vec![format!("M{member} {}", t.plugin_name), t.param_name.clone()], index: idx });
+        }
         let members: Vec<&InstrumentNode> =
             self.ctl.model.instruments.iter().filter(|n| n.group == Some(group)).collect();
-        for (ord, member) in members.iter().enumerate() {
-            let chain: Vec<(usize, &PluginSlot)> = std::iter::once(member.instrument.as_ref())
-                .chain(member.effects.iter().map(Some))
-                .enumerate()
-                .filter_map(|(slot, p)| p.map(|p| (slot, p)))
-                .collect();
-            for (slot, plugin) in &chain {
-                for p in &plugin.params {
-                    let idx = entries.len();
-                    entries.push(TargetEntry {
-                        label: p.name.clone(),
-                        slot: *slot,
-                        kind: ModTargetKind::GroupMember {
-                            member: ord,
-                            slot: *slot,
-                            param_index: p.index,
-                        },
-                        param_min: p.min,
-                        param_max: p.max,
-                        base_value: p.value,
-                    });
-                    items.push(FilterListItem {
-                        cells: vec![format!("M{ord} {}", plugin.name), p.name.clone()],
-                        index: idx,
-                    });
-                }
-            }
-        }
 
         // Member instruments' modulators (cross-mod a member's LFO/envelope).
         for (ord, member) in members.iter().enumerate() {
@@ -1133,25 +1106,17 @@ impl State {
         }
 
         // The group's own bus effects.
-        for (eff_idx, plugin) in group_node.effects.iter().enumerate() {
-            for p in &plugin.params {
-                let idx = entries.len();
-                entries.push(TargetEntry {
-                    label: p.name.clone(),
-                    slot: 0,
-                    kind: ModTargetKind::GroupBus {
-                        effect_index: eff_idx,
-                        param_index: p.index,
-                    },
-                    param_min: p.min,
-                    param_max: p.max,
-                    base_value: p.value,
-                });
-                items.push(FilterListItem {
-                    cells: vec![format!("Bus {}", plugin.name), p.name.clone()],
-                    index: idx,
-                });
-            }
+        for t in params.iter().filter(|t| matches!(t.kind, ModTargetKind::GroupBus { .. })) {
+            let idx = entries.len();
+            entries.push(TargetEntry {
+                label: t.param_name.clone(),
+                slot: t.slot,
+                kind: t.kind.clone(),
+                param_min: t.param_min,
+                param_max: t.param_max,
+                base_value: t.base_value,
+            });
+            items.push(FilterListItem { cells: vec![format!("Bus {}", t.plugin_name), t.param_name.clone()], index: idx });
         }
 
         // Sibling group modulators (cross-mod).

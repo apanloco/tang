@@ -13,7 +13,7 @@
 
 use crate::app::intent::{Intent, ModulatorField};
 use crate::plugin;
-use crate::plugin::chain::ModulatorLocation;
+use crate::plugin::chain::{ModTargetKind, ModulatorLocation};
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 
 /// Names a node of the session (an instrument, an effect, a group, a bus effect
@@ -226,6 +226,33 @@ impl SessionModel {
             ModulatorLocation::Lane(inst) => self.instruments.get_mut(inst).map(|n| &mut n.modulators),
             ModulatorLocation::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
         }
+    }
+
+    /// The plugin parameters a modulator in the rack at `at` can drive, in the order a
+    /// person is offered them. A lane's modulator drives its lane's chain: the instrument,
+    /// then each effect. A group's drives its members' chains, member by member in lane
+    /// order, and then its own bus effects. Nothing else is a parameter a modulator can
+    /// drive (the fields of other modulators are another kind of target), and a rack that
+    /// is not there drives nothing.
+    pub fn param_targets(&self, at: ModulatorLocation) -> Vec<ParamTarget> {
+        let mut targets = Vec::new();
+        match at {
+            ModulatorLocation::Lane(inst) => {
+                if let Some(lane) = self.instruments.get(inst) {
+                    push_chain(&mut targets, lane, |slot, param_index| ModTargetKind::PluginParam { slot, param_index });
+                }
+            }
+            ModulatorLocation::Group(group) => {
+                let Some(bus) = self.groups.get(group) else { return targets };
+                for (member, lane) in self.instruments.iter().filter(|lane| lane.group == Some(group)).enumerate() {
+                    push_chain(&mut targets, lane, |slot, param_index| ModTargetKind::GroupMember { member, slot, param_index });
+                }
+                for (effect_index, effect) in bus.effects.iter().enumerate() {
+                    push_params(&mut targets, effect, 0, |param_index| ModTargetKind::GroupBus { effect_index, param_index });
+                }
+            }
+        }
+        targets
     }
 
     /// Take the effect at `index` out of lane `inst`'s chain, the way the audio
@@ -503,6 +530,55 @@ pub struct ModTargetSlot {
     /// own field, or if the slots had run out.
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which only the web runtime sends"))]
     pub effective: Option<Slot>,
+}
+
+/// A plugin parameter a modulator can drive (`SessionModel::param_targets`), with what it
+/// takes to bind it (`Controller::add_target`) and to say what it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamTarget {
+    /// The node of the plugin the parameter is on (a lane's own, for its instrument).
+    pub node: NodeId,
+    /// The plugin's own index for the parameter.
+    pub param: u32,
+    /// How the modulator's rack addresses it.
+    pub kind: ModTargetKind,
+    /// The plugin's slot in its chain: 0 for an instrument (and for a bus effect), 1.. for
+    /// the effects of a lane. A target is labelled with its plugin by it.
+    pub slot: usize,
+    pub plugin_name: String,
+    pub param_name: String,
+    /// What the user has set the parameter to, where its modulation is centred.
+    pub base_value: f32,
+    pub param_min: f32,
+    pub param_max: f32,
+}
+
+/// The parameters of every plugin in `lane`'s chain, the instrument first. `kind` makes the
+/// kind of target of a parameter from its plugin's slot and its own index.
+fn push_chain(targets: &mut Vec<ParamTarget>, lane: &InstrumentNode, kind: impl Fn(usize, u32) -> ModTargetKind) {
+    for (slot, plugin) in std::iter::once(lane.instrument.as_ref()).chain(lane.effects.iter().map(Some)).enumerate() {
+        if let Some(plugin) = plugin {
+            push_params(targets, plugin, slot, |param_index| kind(slot, param_index));
+        }
+    }
+}
+
+/// The parameters of `plugin`, which is in chain slot `slot` (a separator is a row of a pane,
+/// not a parameter, and is left out).
+fn push_params(targets: &mut Vec<ParamTarget>, plugin: &PluginSlot, slot: usize, kind: impl Fn(u32) -> ModTargetKind) {
+    for row in plugin.params.iter().filter(|row| !matches!(row.kind, ParamKind::Separator)) {
+        targets.push(ParamTarget {
+            node: plugin.node,
+            param: row.index,
+            kind: kind(row.index),
+            slot,
+            plugin_name: plugin.name.clone(),
+            param_name: row.name.clone(),
+            base_value: row.value,
+            param_min: row.min,
+            param_max: row.max,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1250,143 @@ type = "envelope"
         // It is the rack itself, not a copy.
         model.modulators_mut(ModulatorLocation::Group(0)).unwrap().pop();
         assert_eq!((model.instruments[0].modulators.len(), model.groups[0].modulators.len()), (2, 0));
+    }
+
+    /// What a rack's modulators can drive, one run per plugin: its node and the kind of target, with the
+    /// parameter's own index left out.
+    fn plugins_driven(model: &SessionModel, at: ModulatorLocation) -> Vec<(NodeId, K)> {
+        let mut runs: Vec<(NodeId, K)> = Vec::new();
+        for target in model.param_targets(at) {
+            let shape = match target.kind {
+                K::PluginParam { slot, .. } => K::PluginParam { slot, param_index: 0 },
+                K::GroupMember { member, slot, .. } => K::GroupMember { member, slot, param_index: 0 },
+                K::GroupBus { effect_index, .. } => K::GroupBus { effect_index, param_index: 0 },
+                other => panic!("{other:?} is not a parameter"),
+            };
+            if runs.last() != Some(&(target.node, shape.clone())) {
+                runs.push((target.node, shape));
+            }
+        }
+        runs
+    }
+
+    #[test]
+    fn a_lane_modulator_can_drive_every_parameter_of_its_lanes_chain_as_the_plugins_have_them() {
+        use crate::app::testutil::GROUPS;
+        let mut model = load(GROUPS).model;
+        // (A value the user has set is not the parameter's default.)
+        model.instruments[1].instrument.as_mut().unwrap().params[1].value = 0.77;
+        let lane = &model.instruments[1];
+        let (osc, filter) = (lane.instrument.as_ref().unwrap(), &lane.effects[0]);
+        let targets = model.param_targets(ModulatorLocation::Lane(1));
+
+        let expected: Vec<_> =
+            osc.params.iter().map(|row| (osc, 0, row)).chain(filter.params.iter().map(|row| (filter, 1, row))).collect();
+        assert_eq!(targets.len(), expected.len());
+        for (target, (plugin, slot, row)) in targets.iter().zip(expected) {
+            assert_eq!((target.node, target.slot, target.param), (plugin.node, slot, row.index));
+            assert_eq!(target.kind, K::PluginParam { slot, param_index: row.index });
+            assert_eq!((target.plugin_name.as_str(), target.param_name.as_str()), (plugin.name.as_str(), row.name.as_str()));
+            assert_eq!((target.base_value, target.param_min, target.param_max), (row.value, row.min, row.max));
+        }
+        assert_eq!(plugins_driven(&model, ModulatorLocation::Lane(1)), [(lane.node, K::PluginParam { slot: 0, param_index: 0 }), (filter.node, K::PluginParam { slot: 1, param_index: 0 })]);
+    }
+
+    #[test]
+    fn a_group_modulator_can_drive_its_members_chains_in_lane_order_and_then_its_bus_effects() {
+        use crate::app::testutil::GROUPS;
+        let model = load(GROUPS).model;
+        let (first, second) = (&model.instruments[0], &model.instruments[1]);
+        // (Lane 2 is in no group: none of it is the group's to drive.)
+        assert_eq!(
+            plugins_driven(&model, ModulatorLocation::Group(0)),
+            [
+                (first.node, K::GroupMember { member: 0, slot: 0, param_index: 0 }),
+                (second.node, K::GroupMember { member: 1, slot: 0, param_index: 0 }),
+                (second.effects[0].node, K::GroupMember { member: 1, slot: 1, param_index: 0 }),
+                (model.groups[0].effects[0].node, K::GroupBus { effect_index: 0, param_index: 0 }),
+            ]
+        );
+        // Each parameter of the bus reverb, by its own index, with the plugin's name.
+        let reverb = &model.groups[0].effects[0];
+        let bus: Vec<_> = model.param_targets(ModulatorLocation::Group(0)).into_iter().filter(|t| matches!(t.kind, K::GroupBus { .. })).collect();
+        assert_eq!(bus.iter().map(|t| t.param).collect::<Vec<_>>(), reverb.params.iter().map(|row| row.index).collect::<Vec<_>>());
+        assert!(bus.iter().all(|t| t.slot == 0 && t.plugin_name == reverb.name));
+    }
+
+    #[test]
+    fn a_group_modulator_counts_members_among_its_own_lanes_and_bus_effects_by_their_place() {
+        let mut model = load(
+            r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.effect]]
+plugin = "builtin:filter"
+[[group]]
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+"#,
+        )
+        .model;
+        let lane = |i: usize| model.instruments[i].node;
+        let bus = |i: usize| model.groups[0].effects[i].node;
+        // The first group: the one lane in it (the third, but its first member) and its two bus effects.
+        assert_eq!(
+            plugins_driven(&model, ModulatorLocation::Group(0)),
+            [
+                (lane(2), K::GroupMember { member: 0, slot: 0, param_index: 0 }),
+                (bus(0), K::GroupBus { effect_index: 0, param_index: 0 }),
+                (bus(1), K::GroupBus { effect_index: 1, param_index: 0 }),
+            ]
+        );
+        // The second: its two lanes, and none of the first group's.
+        assert_eq!(
+            plugins_driven(&model, ModulatorLocation::Group(1)),
+            [(lane(1), K::GroupMember { member: 0, slot: 0, param_index: 0 }), (lane(3), K::GroupMember { member: 1, slot: 0, param_index: 0 })]
+        );
+        // A lane that says it is in a group that is not there makes no members of one.
+        model.instruments[0].group = Some(7);
+        assert!(model.param_targets(ModulatorLocation::Group(7)).is_empty());
+    }
+
+    #[test]
+    fn a_member_with_no_plugin_is_still_a_member_and_keeps_its_place() {
+        let mut model = load("[[group]]\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n").model;
+        model.instruments[0].instrument = None;
+        let second = model.instruments[1].node;
+        assert_eq!(plugins_driven(&model, ModulatorLocation::Group(0)), [(second, K::GroupMember { member: 1, slot: 0, param_index: 0 })]);
+    }
+
+    #[test]
+    fn what_is_not_there_drives_nothing() {
+        let mut model = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        assert!(model.param_targets(ModulatorLocation::Lane(1)).is_empty(), "no such lane");
+        assert!(model.param_targets(ModulatorLocation::Group(0)).is_empty(), "no such group");
+        model.instruments[0].instrument = None;
+        assert!(model.param_targets(ModulatorLocation::Lane(0)).is_empty(), "an empty lane has no chain");
+        // A lane that says it is in a group that is not there does not make one.
+        model.instruments[0].instrument = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model.instruments.remove(0).instrument;
+        model.instruments[0].group = Some(3);
+        assert!(model.param_targets(ModulatorLocation::Group(3)).is_empty(), "no such group, whatever the lanes say");
+    }
+
+    #[test]
+    fn a_separator_is_not_a_parameter_to_drive() {
+        let mut model = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let plugin = model.instruments[0].instrument.as_mut().unwrap();
+        let all = plugin.params.len();
+        plugin.params[0].kind = ParamKind::Separator;
+        assert_eq!(model.param_targets(ModulatorLocation::Lane(0)).len(), all - 1);
     }
 
     fn target(kind: K) -> ModTargetSlot {
