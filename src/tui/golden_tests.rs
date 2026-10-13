@@ -3482,6 +3482,25 @@ plugin = "builtin:osc"
     }
 
     #[test]
+    fn a_save_that_a_browser_asks_for_takes_the_mark_off_the_session_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = Harness::new(TWO_LANES);
+        h.s.ctl.session_path = Some(dir.path().join("song.toml"));
+        let lane = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::SetGain { node: lane, gain: crate::app::intent::Gain::Volume, value: 0.5 });
+        assert!(tab_bar(&mut h).contains("(1) Session *"), "{}", tab_bar(&mut h));
+        browser(&mut h, Intent::Save);
+        let bar = tab_bar(&mut h);
+        assert!(bar.contains("(1) Session") && !bar.contains("Session *"), "{bar}");
+        assert!(dir.path().join("song.toml").exists(), "and the file is there");
+        // A save that fails says nothing to the TUI and keeps the mark.
+        h.s.ctl.session_path = Some(dir.path().join("song.toml").join("not-a-directory.toml"));
+        browser(&mut h, Intent::SetGain { node: lane, gain: crate::app::intent::Gain::Volume, value: 0.75 });
+        assert!(h.s.ctl.apply(Intent::Save).is_err());
+        assert!(tab_bar(&mut h).contains("Session *"));
+    }
+
+    #[test]
     fn a_popup_is_left_alone_by_a_cable_that_moves_no_place() {
         let mut h = Harness::new(THREE_LFOS);
         h.goto(TreeAddress::Modulator { inst: 0, index: 1 });

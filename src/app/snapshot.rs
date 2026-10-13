@@ -94,8 +94,8 @@ impl Snapshot {
             self.change(event)?;
         }
         self.rev = applied.rev;
-        // An intent, from whichever front-end, is a change the session has not saved.
-        self.meta.dirty = true;
+        // An intent, from whichever front-end, is a change the session has not saved, unless it is a save.
+        self.meta.dirty = !applied.events.iter().any(|event| matches!(event, Event::Saved { .. }));
         Ok(())
     }
 
@@ -166,6 +166,7 @@ impl Snapshot {
                     .ok_or_else(|| DoesNotFit(format!("there is no cable {}", edge.0)))?;
                 *amount = *depth;
             }
+            Event::Saved { file } => self.meta.file.clone_from(file),
         }
         Ok(())
     }
@@ -190,7 +191,7 @@ impl Controller {
             rev: self.rev,
             meta: Meta {
                 dirty: self.dirty,
-                file: self.session_path.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned()),
+                file: self.session_file_name(),
                 bpm: self.global_bpm,
                 piano: PianoMeta {
                     scale: self.piano_filter.scale().short(),
@@ -481,6 +482,40 @@ type = "envelope"
         told.apply(&applied).unwrap();
         assert!(told.meta.dirty, "an intent was applied");
         assert_eq!(told.meta, ctl.snapshot().meta);
+    }
+
+    #[test]
+    fn a_save_leaves_the_session_with_nothing_unsaved_and_the_snapshot_that_is_told_so_is_the_one_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let mut ctl = controller(APPLY, Some(path.to_str().unwrap()));
+        let mut told = ctl.snapshot();
+        let osc = nodes(&told).osc;
+        let applied = ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.5 }).unwrap();
+        told.apply(&applied).unwrap();
+        assert!(told.meta.dirty);
+        let saved = ctl.apply(Intent::Save).unwrap();
+        told.apply(&saved).unwrap();
+        assert!(!told.meta.dirty, "it is saved now");
+        assert_eq!(told.meta.file.as_deref(), Some("song.toml"));
+        assert_eq!(told, ctl.snapshot());
+        // And an edit after it is unsaved again.
+        let applied = ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 1.5 }).unwrap();
+        told.apply(&applied).unwrap();
+        assert!(told.meta.dirty);
+        assert_eq!(told, ctl.snapshot());
+    }
+
+    #[test]
+    fn a_saved_event_names_the_file_the_session_is_saved_to() {
+        // (Save As will make it another one: the event is the whole of what the client is told.)
+        let ctl = controller(APPLY, Some("/somewhere/song.toml"));
+        let mut told = ctl.snapshot();
+        assert_eq!(told.meta.file.as_deref(), Some("song.toml"));
+        told.apply(&applied(1, Event::Saved { file: Some("other.toml".to_string()) })).unwrap();
+        assert_eq!((told.meta.file.as_deref(), told.meta.dirty, told.rev), (Some("other.toml"), false, 1));
+        told.apply(&applied(2, Event::Saved { file: None })).unwrap();
+        assert_eq!(told.meta.file, None, "a session with no file, saved: it says so");
     }
 
     #[test]

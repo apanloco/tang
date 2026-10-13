@@ -20,6 +20,8 @@ export function applyEvent(snapshot: Snapshot, event: StampedEvent): Applied {
   if (event.rev !== snapshot.rev + 1) {
     return { ok: false, reason: `the session is at revision ${snapshot.rev} and the next event is ${event.rev}` };
   }
+  // A save changes no node: the session is as it was, and nothing in it is unsaved now.
+  if (event.type === "saved") return { ok: true, snapshot: { ...snapshot, rev: event.rev, meta: { ...snapshot.meta, dirty: false, file: event.file } } };
   const graph = changeGraph(snapshot.graph, event);
   if (typeof graph === "string") return { ok: false, reason: graph };
   // An intent, from whichever front-end, is a change the session has not saved (`Controller::apply` marks it so).
@@ -28,7 +30,7 @@ export function applyEvent(snapshot: Snapshot, event: StampedEvent): Applied {
 }
 
 /** The graph after the event, with only what it changed replaced; or the reason it cannot be. */
-function changeGraph(graph: Graph, event: StampedEvent): Graph | string {
+function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" }>): Graph | string {
   if (event.type === "edgeDepthSet") return withDepth(graph, event.edge, event.depth);
   const node = graph.nodes.find((n) => n.id === event.node);
   if (!node) return `there is no node ${event.node}`;
@@ -38,7 +40,7 @@ function changeGraph(graph: Graph, event: StampedEvent): Graph | string {
 }
 
 /** The node the event is about, as it is after it; or the reason it cannot be. */
-function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" }>): Node | string {
+function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "saved" }>): Node | string {
   switch (event.type) {
     case "paramSet": {
       const plugin = pluginOf(node);

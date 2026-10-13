@@ -22,6 +22,7 @@ const DOING: Record<Intent["type"], string> = {
   addModulator: "add a modulator",
   addModEdge: "draw a cable",
   removeNode: "remove a node",
+  save: "save the session",
 };
 
 const whyNot = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -67,6 +68,11 @@ export class Editor {
   /** Take the cable `edge` out. True if it went. */
   removeCable(edge: EdgeId): Promise<boolean> {
     return this.#attempt(`take out ${this.#cable(edge)}`, { type: "removeEdge", edge });
+  }
+
+  /** Write the session to its own file. True if it was written (the page says why if it was not). */
+  save(): Promise<boolean> {
+    return this.#attempt(DOING.save, { type: "save" });
   }
 
   get #graph(): Graph | undefined {

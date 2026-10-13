@@ -11,4 +11,4 @@ import type { ParamValue } from "./ParamValue";
  * (`{"rev":9,"type":"paramSet","node":3,...}`). A client that sees a gap in the
  * revisions has missed something and asks for a snapshot.
  */
-export type StampedEvent = { rev: number, } & ({ "type": "paramSet", node: NodeId, param: number, value: number, } | { "type": "gainSet", node: NodeId, gain: Gain, value: number, } | { "type": "presetLoaded", node: NodeId, preset: string, values: Array<ParamValue>, } | { "type": "modulatorFieldSet", node: NodeId, field: ModulatorField, value: number, } | { "type": "edgeDepthSet", edge: EdgeId, depth: number, });
+export type StampedEvent = { rev: number, } & ({ "type": "paramSet", node: NodeId, param: number, value: number, } | { "type": "gainSet", node: NodeId, gain: Gain, value: number, } | { "type": "presetLoaded", node: NodeId, preset: string, values: Array<ParamValue>, } | { "type": "modulatorFieldSet", node: NodeId, field: ModulatorField, value: number, } | { "type": "edgeDepthSet", edge: EdgeId, depth: number, } | { "type": "saved", file: string | null, });

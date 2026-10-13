@@ -105,6 +105,8 @@ pub enum ErrorCode {
     NotFound,
     /// The intent does not make sense for what it names.
     Invalid,
+    /// A file could not be written.
+    Io,
     /// The message was not one the server understands.
     BadRequest,
     /// The token is wrong or missing.
@@ -126,6 +128,7 @@ impl From<&IntentError> for WireError {
         let code = match error {
             IntentError::NotFound(_) | IntentError::EdgeNotFound(_) => ErrorCode::NotFound,
             IntentError::Invalid(_) => ErrorCode::Invalid,
+            IntentError::Io(_) => ErrorCode::Io,
         };
         WireError::new(code, error.to_string())
     }
@@ -263,6 +266,7 @@ mod message_tests {
         let names: Vec<Value> = [
             ErrorCode::NotFound,
             ErrorCode::Invalid,
+            ErrorCode::Io,
             ErrorCode::BadRequest,
             ErrorCode::Unauthorized,
             ErrorCode::RateLimited,
@@ -271,7 +275,7 @@ mod message_tests {
         .iter()
         .map(wire)
         .collect();
-        assert_eq!(names, ["notFound", "invalid", "badRequest", "unauthorized", "rateLimited", "overloaded"].map(Value::from));
+        assert_eq!(names, ["notFound", "invalid", "io", "badRequest", "unauthorized", "rateLimited", "overloaded"].map(Value::from));
     }
 
     #[test]
@@ -280,6 +284,8 @@ mod message_tests {
         assert_eq!((missing.code, missing.message.as_str()), (ErrorCode::NotFound, "there is no node 9"));
         let invalid = WireError::from(&IntentError::Invalid("no good".to_string()));
         assert_eq!((invalid.code, invalid.message.as_str()), (ErrorCode::Invalid, "no good"));
+        let io = WireError::from(&IntentError::Io("Permission denied".to_string()));
+        assert_eq!((io.code, io.message.as_str()), (ErrorCode::Io, "Permission denied"));
     }
 
     #[test]

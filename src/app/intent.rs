@@ -64,6 +64,10 @@ pub enum Intent {
     /// the cables of the others that drove its settings (and what drove the depth of any of
     /// those); any other node is refused.
     RemoveNode { node: NodeId },
+    /// Write the session to the file it came from. A client does not name a file: it is the
+    /// session's own. Refused (`IntentError::Io`) if the session has no file or it cannot be written,
+    /// and then nothing changes.
+    Save,
 }
 
 /// What a new modulator is.
@@ -165,6 +169,9 @@ pub enum Event {
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
     EdgeDepthSet { edge: EdgeId, depth: f32 },
+    /// The session is written: it has nothing unsaved now. `file` is the name of the file it was
+    /// written to (not its path), if the session has one.
+    Saved { file: Option<String> },
 }
 
 /// A parameter, by the plugin's own index, and the value it has.
@@ -229,6 +236,8 @@ pub enum IntentError {
     EdgeNotFound(EdgeId),
     /// The intent does not make sense for what it names.
     Invalid(String),
+    /// A file could not be written: the reason is in the words.
+    Io(String),
 }
 
 impl fmt::Display for IntentError {
@@ -236,7 +245,7 @@ impl fmt::Display for IntentError {
         match self {
             IntentError::NotFound(node) => write!(f, "there is no node {}", node.0),
             IntentError::EdgeNotFound(edge) => write!(f, "there is no cable {}", edge.0),
-            IntentError::Invalid(why) => f.write_str(why),
+            IntentError::Invalid(why) | IntentError::Io(why) => f.write_str(why),
         }
     }
 }
@@ -275,6 +284,7 @@ mod tests {
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
+            (Intent::Save, json!({"type": "save"})),
             (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
@@ -305,6 +315,8 @@ mod tests {
                     "values": [{"param": 0, "value": 0.5}, {"param": 3, "value": 0.25}],
                 }),
             ),
+            (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
+            (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]
     }
 

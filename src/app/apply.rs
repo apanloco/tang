@@ -30,6 +30,10 @@ enum PluginAt {
 
 impl Controller {
     pub fn apply(&mut self, intent: Intent) -> Result<Applied, IntentError> {
+        // (Saving is the one intent that leaves the session with nothing unsaved.)
+        if matches!(intent, Intent::Save) {
+            return self.save_intent();
+        }
         let done = match intent {
             Intent::SetParam { node, param, value } => Done::Event(self.set_param(node, param, value)?),
             Intent::SetGain { node, gain, value } => Done::Event(self.set_gain(node, gain, value)?),
@@ -40,6 +44,7 @@ impl Controller {
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
+            Intent::Save => unreachable!("saving is done above"),
         };
         self.dirty = true;
         self.rev += 1;
@@ -53,6 +58,16 @@ impl Controller {
         if applied.restructured {
             self.resync();
         }
+        Ok(applied)
+    }
+
+    /// Write the session to its own file. Refused, with nothing changed (and so no revision), if it has none or
+    /// it cannot be written.
+    fn save_intent(&mut self) -> Result<Applied, IntentError> {
+        self.save().map_err(|e| IntentError::Io(e.to_string()))?;
+        self.rev += 1;
+        let applied = Applied::of(self.rev, vec![Event::Saved { file: self.session_file_name() }]);
+        self.publish(&applied);
         Ok(applied)
     }
 
@@ -1613,6 +1628,55 @@ type = "midi"
         assert_eq!(ctl.model.instruments[0].modulators.len(), 4);
         assert_eq!(ctl.model.groups[0].modulators.len(), 2);
         assert_eq!(ctl.model.instruments[0].effects.len(), 1);
+    }
+
+    fn controller_with_file(path: &std::path::Path) -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(SESSION).model, handles, Some(path.to_path_buf())))
+    }
+
+    #[test]
+    fn save_writes_the_sessions_own_file_and_says_so_as_a_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (engine, mut ctl) = controller_with_file(&path);
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        assert!(ctl.dirty);
+        sent(&engine);
+        let applied = ctl.apply(Intent::Save).unwrap();
+        assert_eq!(applied, Applied::of(2, vec![Event::Saved { file: Some("song.toml".to_string()) }]));
+        assert_eq!(ctl.rev, 2);
+        assert!(!ctl.dirty, "nothing is unsaved now");
+        assert!(sent(&engine).is_empty(), "the audio thread has nothing to do with it");
+        // The file is the session as it is, volume and all.
+        let text = std::fs::read_to_string(&path).unwrap();
+        testutil::assert_same_model("the saved file", &ctl.model, &load(&text).model);
+        assert!(text.contains("volume = 0.25"), "{text}");
+    }
+
+    #[test]
+    fn save_that_cannot_be_done_says_why_and_is_no_revision_and_leaves_the_session_unsaved() {
+        // No file to write to.
+        let (engine, mut ctl) = controller();
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        sent(&engine);
+        match ctl.apply(Intent::Save) {
+            Err(IntentError::Io(why)) => assert!(why.contains("path"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!((ctl.rev, ctl.dirty), (1, true), "a refusal is not a revision, and it saved nothing");
+
+        // A file where the directory should be: the write fails.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blocker"), "").unwrap();
+        let (engine, mut ctl) = controller_with_file(&dir.path().join("blocker").join("song.toml"));
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        sent(&engine);
+        assert!(matches!(ctl.apply(Intent::Save), Err(IntentError::Io(_))));
+        assert_eq!((ctl.rev, ctl.dirty), (1, true));
     }
 
     #[test]

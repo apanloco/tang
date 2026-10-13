@@ -1640,7 +1640,9 @@ impl State {
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 intent::Event::ParamSet { .. }
                 | intent::Event::GainSet { .. }
-                | intent::Event::PresetLoaded { .. } => {}
+                | intent::Event::PresetLoaded { .. }
+                // (The tab shows what the controller says is unsaved, which is not the case now.)
+                | intent::Event::Saved { .. } => {}
             }
         }
     }

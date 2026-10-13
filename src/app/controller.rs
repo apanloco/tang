@@ -681,6 +681,11 @@ impl Controller {
         NoteInput::new(self.midi_tx.clone(), self.held.clone(), self.piano_filter.clone())
     }
 
+    /// The name of the file the session is saved to (not its path), if it has one.
+    pub fn session_file_name(&self) -> Option<String> {
+        self.session_path.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned())
+    }
+
     /// Save the session to the file it came from.
     pub fn save(&mut self) -> anyhow::Result<()> {
         let Some(path) = self.session_path.clone() else {
@@ -992,6 +997,22 @@ mod tests {
     }
 
     #[test]
+    fn a_save_is_published_as_the_event_that_says_so_and_one_that_fails_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        ctl.session_path = Some(dir.path().join("song.toml"));
+        let (sink, heard) = recorder();
+        ctl.subscribe(sink);
+        ctl.apply(volume(&ctl, 0.5)).unwrap();
+        let saved = ctl.apply(Intent::Save).unwrap();
+        assert_eq!(saved.events, [Event::Saved { file: Some("song.toml".to_string()) }]);
+        assert_eq!(heard.lock().unwrap().last(), Some(&saved), "a subscriber is told");
+        ctl.session_path = None;
+        assert!(ctl.apply(Intent::Save).is_err());
+        assert_eq!(heard.lock().unwrap().len(), 2, "a save that failed is told to nobody");
+    }
+
+    #[test]
     fn an_intent_that_fails_is_not_published() {
         let (_engine, mut ctl) = controller_for(TWO_LANES);
         let (sink, heard) = recorder();
@@ -1145,6 +1166,24 @@ plugin = "builtin:reverb"
             assert_eq!(mirror.copy(), ctl.snapshot());
         }
         assert!(followed.lock().unwrap().is_empty(), "a sink that follows intents hears of no intent, and need not know of snapshots");
+    }
+
+    #[test]
+    fn a_save_that_a_front_end_makes_without_an_intent_is_told_as_a_snapshot_that_says_nothing_is_unsaved() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_for(WITH_REVERB);
+        ctl.session_path = Some(dir.path().join("song.toml"));
+        let mirror = Mirror::join(&mut ctl);
+        let osc = ctl.model.instruments[0].node;
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 2.0 }).unwrap();
+        assert!(mirror.copy().meta.dirty);
+
+        // What the TUI's Ctrl+S does: the file is written, and no intent is applied.
+        ctl.save().unwrap();
+        assert!(ctl.resync(), "the subscribers are told, as a snapshot");
+        assert_eq!(mirror.heard().last(), Some(&Heard::Resynced(2)));
+        assert!(!mirror.copy().meta.dirty);
+        assert_eq!(mirror.copy(), ctl.snapshot());
     }
 
     #[test]

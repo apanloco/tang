@@ -167,3 +167,31 @@ describe("taking a cable out", () => {
     expect(said(notices)).toEqual(["Could not take out the cable LFO → Filter: cutoff: Not connected to the server."]);
   });
 });
+
+describe("saving", () => {
+  const noFile = (): MockOptions => ({ snapshot: { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, file: null } } });
+
+  test("writes the session, which has nothing unsaved after it, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    await client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 0.5 });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(await editor.save()).toBe(true);
+    expect(client.state.snapshot?.meta.dirty).toBe(false);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("that is refused says so in a notice, and the session is as unsaved as it was", async () => {
+    const { client, notices, editor } = await open(noFile());
+    await client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 0.5 });
+    expect(await editor.save()).toBe(false);
+    expect(said(notices)).toEqual(["Could not save the session: No session path — cannot save"]);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+  });
+
+  test("when the connection is gone says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.save()).toBe(false);
+    expect(said(notices)).toEqual(["Could not save the session: Not connected to the server."]);
+  });
+});

@@ -634,6 +634,33 @@ describe("taking a modulator out", () => {
   });
 });
 
+describe("saving the session", () => {
+  const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+
+  test("is acknowledged as a revision, and the client is told that nothing is unsaved, by an event", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 0.5 });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(await client.request({ type: "save" })).toBe(2);
+    expect(client.state.snapshot?.meta).toEqual({ ...tracerSnapshot.meta, dirty: false });
+    expect(client.state.snapshot?.rev).toBe(2);
+    expect(server.snapshot).toEqual(client.state.snapshot);
+    // The next change is unsaved again.
+    await client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 0.25 });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+  });
+
+  test("of a session that has no file is refused as an io error, and is no revision", async () => {
+    const server = new MockServer({ snapshot: { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, file: null } } });
+    const client = await open(server);
+    const failure = (await client.request({ type: "save" }).catch((e: unknown) => e)) as RequestError;
+    expect(failure).toBeInstanceOf(RequestError);
+    expect([failure.code, failure.message]).toEqual(["io", "No session path — cannot save"]);
+    expect(client.state.snapshot?.rev).toBe(0);
+  });
+});
+
 describe("drawing a cable", () => {
   const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
   /** The plugin's own index of a parameter of a node of a snapshot. */

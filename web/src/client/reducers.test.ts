@@ -121,6 +121,32 @@ describe("any event", () => {
   });
 });
 
+describe("a saved event", () => {
+  const unsaved = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, dirty: true } };
+
+  test("leaves the session with nothing unsaved, names its file, and changes nothing of the graph", () => {
+    const after = applied(unsaved, { rev: 1, type: "saved", file: "song.toml" });
+    expect(after.meta).toEqual({ ...tracerSnapshot.meta, dirty: false, file: "song.toml" });
+    expect(after.rev).toBe(1);
+    expect(after.graph).toBe(unsaved.graph);
+    expect(after.telemetry).toBe(unsaved.telemetry);
+  });
+
+  test("says when the session has no file", () => {
+    expect(applied(unsaved, { rev: 1, type: "saved", file: null }).meta.file).toBeNull();
+  });
+
+  test("is an event like the others: one that skips a revision means events were missed, and the next change is unsaved again", () => {
+    expect(applyEvent(unsaved, { rev: 2, type: "saved", file: "song.toml" }).ok).toBe(false);
+    const saved = applied(unsaved, { rev: 1, type: "saved", file: "song.toml" });
+    expect(applied(saved, { rev: 2, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 }).meta.dirty).toBe(true);
+  });
+
+  test("is nothing to do for a snapshot that has it already", () => {
+    expect(applyEvent(unsaved, { rev: 0, type: "saved", file: "song.toml" })).toEqual({ ok: true, snapshot: unsaved });
+  });
+});
+
 describe("a gain set", () => {
   test("sets the volume of an instrument", () => {
     const after = applied(tracerSnapshot, { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 });

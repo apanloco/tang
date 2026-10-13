@@ -52,10 +52,17 @@ struct Tang {
 
 impl Tang {
     fn start() -> Tang {
+        Tang::start_on(TRACER)
+    }
+
+    /// `tang serve` on the session in `session`.
+    fn start_on(session: impl AsRef<std::ffi::OsStr>) -> Tang {
         let mut child = Process(
             Command::new(env!("CARGO_BIN_EXE_tang"))
             // No sound card and no MIDI input is opened: nothing is heard, nothing is listened to.
-                .args(["--audio-device", "none", "--midi-device", "no such device", "serve", TRACER, "--web-bind", "127.0.0.1:0"])
+                .args(["--audio-device", "none", "--midi-device", "no such device", "serve"])
+                .arg(session)
+                .args(["--web-bind", "127.0.0.1:0"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -239,6 +246,46 @@ async fn a_browser_plays_a_note_and_moves_a_parameter_and_hears_it_in_the_meters
     tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setParam", "node": osc, "param": volume, "value": 1.0}})).await;
     assert_eq!(answer(&mut client, 2).await["type"], "ack");
     peak_until(&mut client, &tang, at, SOON, "the note with the volume back", |peak| peak > 0.01).await;
+}
+
+#[tokio::test]
+async fn a_browser_saves_the_session_to_its_own_file_and_the_file_has_what_it_changed() {
+    // A copy of the tracer, not the example: the program writes where the session came from.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, _, snapshot) = listening(&tang).await;
+    assert_eq!(snapshot["snapshot"]["meta"]["file"], "jam.toml", "the session is known by its file's name, not its path");
+    let (filter, resonance) = param_of(&snapshot, "Filter", "resonance");
+
+    // A change is in the session and not in the file.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setParam", "node": filter, "param": resonance, "value": 7.5}})).await;
+    assert_eq!(answer(&mut client, 1).await["type"], "ack");
+    let before = std::fs::read_to_string(&file).unwrap();
+    assert!(!before.contains("resonance = 7.5"), "{before}");
+
+    // Saving is a request like the others, and answered by the revision it made, and the event that says so.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    let mut said = Vec::new();
+    let saved = loop {
+        let message = next_json(&mut client).await;
+        if message["reqId"] == 2 {
+            break message;
+        }
+        said.push(message);
+    };
+    assert_eq!((saved["type"].clone(), saved["rev"].clone()), (json!("ack"), json!(2)), "{saved}");
+    assert!(
+        said.iter().any(|m| m["type"] == "event" && m["event"]["type"] == "saved" && m["event"]["file"] == "jam.toml" && m["event"]["rev"] == 2),
+        "the client is told of the save: {said:?}"
+    );
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(after.contains("resonance = 7.5"), "the file has the change:\n{after}");
+
+    // A client that arrives now is given a session with nothing unsaved.
+    let (_, _, again) = listening(&tang).await;
+    assert_eq!(again["snapshot"]["meta"]["dirty"], false);
 }
 
 #[tokio::test]

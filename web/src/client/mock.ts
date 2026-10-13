@@ -273,8 +273,15 @@ function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: Modulator
   };
 }
 
+/** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
+function saveOutcome(snapshot: Snapshot): Outcome {
+  if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
+  return { event: { type: "saved", file: snapshot.meta.file } };
+}
+
 /** Do what the controller does with an intent, to a snapshot. */
 function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters): Outcome {
+  if (intent.type === "save") return saveOutcome(snapshot);
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
