@@ -262,6 +262,32 @@ impl SessionModel {
         Some(removals)
     }
 
+    /// The cables of other modulators that would be left pointing at nothing if modulator `index`
+    /// of the rack at `at` were taken out: those of its siblings (and, for a lane's, of the group
+    /// the lane is a member of) that drive its rate, its stages or the depth of its cables. (Its
+    /// own cables go with it. The cables that drive the depth of any of these go with *them*:
+    /// `remove_edge`.)
+    pub fn cables_into(&self, at: ModulatorLocation, index: usize) -> Vec<EdgeId> {
+        let rack = match at {
+            ModulatorLocation::Lane(inst) => self.instruments.get(inst).map(|lane| &lane.modulators),
+            ModulatorLocation::Group(group) => self.groups.get(group).map(|g| &g.modulators),
+        };
+        let Some(rack) = rack else { return Vec::new() };
+        let siblings = rack.iter().enumerate().filter(|(i, _)| *i != index).flat_map(|(_, m)| &m.targets);
+        let mut found: Vec<EdgeId> = siblings.filter(|t| t.kind.sibling_modulator() == Some(index)).map(|t| t.edge).collect();
+        if let ModulatorLocation::Lane(inst) = at {
+            if let Some((group, member)) = lane_member_ordinal(&self.instruments, inst) {
+                let group_cables = self.groups.get(group).into_iter().flat_map(|g| &g.modulators).flat_map(|m| &m.targets);
+                found.extend(
+                    group_cables
+                        .filter(|t| matches!(t.kind, ModTargetKind::GroupMemberMod { member: of, mod_index, .. } if of == member && mod_index == index))
+                        .map(|t| t.edge),
+                );
+            }
+        }
+        found
+    }
+
     /// The cables that drive the depth of cable `edge`: in the rack of its modulator, and, if
     /// the modulator is a lane's and the lane is a member of a group, in the group's.
     fn depth_cables_of(&self, edge: EdgeId) -> Vec<EdgeId> {

@@ -338,6 +338,23 @@ pub enum ModTargetKind {
 }
 
 impl ModTargetKind {
+    /// The sibling modulator, in the same rack, whose rate, stage or cable depth the target drives;
+    /// `None` for a target that drives anything else.
+    pub fn sibling_modulator(&self) -> Option<usize> {
+        match self {
+            ModTargetKind::ModulatorRate { mod_index }
+            | ModTargetKind::ModulatorAttack { mod_index }
+            | ModTargetKind::ModulatorDecay { mod_index }
+            | ModTargetKind::ModulatorSustain { mod_index }
+            | ModTargetKind::ModulatorRelease { mod_index }
+            | ModTargetKind::ModulatorDepth { mod_index, .. } => Some(*mod_index),
+            ModTargetKind::PluginParam { .. }
+            | ModTargetKind::GroupMember { .. }
+            | ModTargetKind::GroupBus { .. }
+            | ModTargetKind::GroupMemberMod { .. } => None,
+        }
+    }
+
     /// Whether the target sets a parameter of a plugin, which has an effective
     /// value to publish (`ModTarget::effective`); the targets that drive a
     /// modulator's own fields have none.

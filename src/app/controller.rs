@@ -329,13 +329,19 @@ impl Controller {
     }
 
     /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
-    /// thread drops it and the model with it, and the cables of the other modulators that
-    /// drove it go too, as the audio thread does it: a sibling's, and a group's when the
-    /// lane is one of its members. The cables that drove later modulators of the rack move
-    /// down an index with them. False, sending nothing, if there is no such modulator.
+    /// thread drops it and the model with it, and its own cables with it. The cables of the
+    /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
+    /// and a group's when the lane is one of its members) go first, each by `remove_edge`, so
+    /// that what drove the depth of any of these goes as well and nothing is left pointing at a
+    /// cable that is not there. The cables that drove later modulators of the rack move down an
+    /// index with them. False, sending nothing, if there is no such modulator.
     pub fn remove_modulator(&mut self, at: ModulatorLocation, index: usize) -> bool {
         if self.model.modulators_mut(at).is_none_or(|rack| index >= rack.len()) {
             return false;
+        }
+        for edge in self.model.cables_into(at, index) {
+            // (One that an earlier one took with it is not there any more.)
+            self.remove_edge(edge);
         }
         match at {
             ModulatorLocation::Lane(inst) => {
@@ -1732,7 +1738,8 @@ plugin = "builtin:osc"
         let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
         sent(&engine);
         assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
-        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0"]);
+        // (The cables that went with it first: `remove_modulator_takes_out_the_cables_that_drive_its_own...`.)
+        assert_eq!(sent(&engine).last().map(String::as_str), Some("RemoveModulator inst=0 index=0"));
         // The lane's third modulator drove the first's rate and depth (gone with it) and the second's stages
         // (which are now the first's).
         assert_eq!(
@@ -1766,7 +1773,11 @@ plugin = "builtin:osc"
         let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
         sent(&engine);
         assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
-        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0"]);
+        // The group's LFO's five cables to the envelope's stages and depth go first, one after the other (each is the
+        // first one left), and then the envelope.
+        let mut expected = vec!["RemoveGroupModTarget group=0 mod=1 target=0"; 5];
+        expected.push("RemoveGroupModulator group=0 index=0");
+        assert_eq!(sent(&engine), expected);
         // The group's LFO drove its envelope's four stages and depth (gone) and the member's modulators (not).
         assert_eq!(
             driven(&ctl.model.groups[0].modulators),
@@ -1812,16 +1823,24 @@ plugin = "builtin:osc"
         lanes.chain(groups).collect()
     }
 
+    /// A controller over `session`, and a real audio graph that has been sent what loading it takes.
+    fn controller_on_a_real_graph(session: &str) -> (crate::plugin::chain::AudioGraph, Controller) {
+        let (handles, engine) = testutil::stub_engine_of(4096);
+        let model = testutil::load_onto(session, &handles.cmd_tx);
+        let mut graph = crate::plugin::chain::AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let ctl = Controller::new(model, handles, None);
+        graph.drain_commands();
+        (graph, ctl)
+    }
+
+    const SCENES_OF_CABLES: [&str; 3] = [testutil::CROSS_MOD, testutil::CABLES_THAT_DRIVE_CABLES, testutil::CABLES_THAT_DRIVE_EACH_OTHER];
+
     #[test]
     fn taking_cables_out_leaves_the_model_and_the_audio_thread_with_the_same_cables() {
-        for session in [testutil::CROSS_MOD, testutil::CABLES_THAT_DRIVE_CABLES, testutil::CABLES_THAT_DRIVE_EACH_OTHER] {
+        for session in SCENES_OF_CABLES {
             // From the front each time, and from the back each time: the later cables move or do not.
             for from_the_back in [false, true] {
-                let (handles, engine) = testutil::stub_engine_of(4096);
-                let model = testutil::load_onto(session, &handles.cmd_tx);
-                let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
-                let mut ctl = Controller::new(model, handles, None);
-                graph.drain_commands();
+                let (mut graph, mut ctl) = controller_on_a_real_graph(session);
                 assert_eq!(graph.cables(), model_cables(&ctl.model), "as loaded");
                 let mut removed = 0;
                 loop {
@@ -1843,6 +1862,147 @@ plugin = "builtin:osc"
                 assert!(removed > 0);
             }
         }
+    }
+
+    /// The cables of a rack that drive the depth of a cable that is not there.
+    fn cables_driving_nothing(rack: &[ModulatorSlot]) -> Vec<(usize, usize)> {
+        let mut found = Vec::new();
+        for (m, modulator) in rack.iter().enumerate() {
+            for (t, target) in modulator.targets.iter().enumerate() {
+                if let ModTargetKind::ModulatorDepth { mod_index, target_index } = target.kind {
+                    if rack.get(mod_index).and_then(|driven| driven.targets.get(target_index)).is_none() {
+                        found.push((m, t));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn taking_modulators_out_leaves_the_model_and_the_audio_thread_with_the_same_cables_and_none_driving_nothing() {
+        for (scene, session) in SCENES_OF_CABLES.into_iter().enumerate() {
+            for from_the_back in [false, true] {
+                let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+                let mut removed = 0;
+                loop {
+                    let racks: Vec<(ModulatorLocation, usize)> = (ctl.model.groups.iter().enumerate())
+                        .flat_map(|(g, group)| (0..group.modulators.len()).map(move |m| (ModulatorLocation::Group(g), m)))
+                        .chain(ctl.model.instruments.iter().enumerate().flat_map(|(i, lane)| (0..lane.modulators.len()).map(move |m| (ModulatorLocation::Lane(i), m))))
+                        .collect();
+                    let Some(&(at, index)) = (if from_the_back { racks.last() } else { racks.first() }) else { break };
+                    assert!(ctl.remove_modulator(at, index));
+                    graph.drain_commands();
+                    removed += 1;
+                    assert_eq!(graph.cables(), model_cables(&ctl.model), "after the {removed}th removal ({at:?} {index}, from the back: {from_the_back}, scene {scene})");
+                    ctl.model.check_ids().unwrap();
+                    // (The first scene has some from the start: its group's cables drive a cable its envelope does not have.)
+                    if scene > 0 {
+                        for lane in &ctl.model.instruments {
+                            assert_eq!(cables_driving_nothing(&lane.modulators), [], "scene {scene}, after the {removed}th removal");
+                        }
+                    }
+                }
+                assert!(removed > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn remove_modulator_leaves_no_cable_driving_the_depth_of_a_cable_that_went_with_it() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let (engine, mut ctl) = controller_for(testutil::CABLES_THAT_DRIVE_CABLES);
+        sent(&engine);
+        // The first modulator drives three parameters; the second drives the depth of its first and third cable, and
+        // the third the depth of the second's first. Take the first out: its cables go with it, and what drove them
+        // goes first (and what drove the depth of that).
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(driven(rack), [vec![], vec![]], "the two that are left drive nothing: what they drove is gone");
+        assert!(rack.iter().flat_map(|m| &m.targets).all(|t| !matches!(t.kind, K::ModulatorDepth { .. })));
+        ctl.model.check_ids().unwrap();
+        assert_eq!(
+            sent(&engine),
+            [
+                // The second modulator's first cable, after the third's that drove its depth; then its other.
+                "RemoveModTarget inst=0 mod=2 target=0",
+                "RemoveModTarget inst=0 mod=1 target=0",
+                "RemoveModTarget inst=0 mod=1 target=0",
+                "RemoveModulator inst=0 index=0",
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_modulator_takes_out_the_cables_of_others_that_drive_it_before_it_goes() {
+        let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        // The lane's third modulator's cables to its rate and to the depth of its cable, and then the group's, one at a
+        // time (each the one at the place it has when its turn comes).
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveModTarget inst=0 mod=2 target=0",
+                "RemoveModTarget inst=0 mod=2 target=0",
+                "RemoveGroupModTarget group=0 mod=1 target=5",
+                "RemoveGroupModTarget group=0 mod=1 target=6",
+                "RemoveModulator inst=0 index=0",
+            ]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_modulator_of_one_member_leaves_the_groups_cables_to_the_modulators_of_another() {
+        use crate::plugin::chain::CrossModField as F;
+        use crate::plugin::chain::ModTargetKind as K;
+        let cables = |count: usize| {
+            (0..count).map(|i| format!("[[instrument.modulator.target]]\nparam = \"detune\"\ndepth = 0.{}\n", i + 1)).collect::<String>()
+        };
+        // Two members with a modulator each; the group drives the depth of a cable of each, and the rate of the first's.
+        let session = format!(
+            r#"
+[[group]]
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+mod_depth = [0, 1]
+depth = 0.1
+[[group.modulator.target]]
+member = 1
+mod_depth = [0, 1]
+depth = 0.2
+[[group.modulator.target]]
+member = 0
+mod_rate = 0
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+{}
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 2.0
+{}"#,
+            cables(2),
+            cables(2)
+        );
+        let (engine, mut ctl) = controller_for(&session);
+        sent(&engine);
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        // The cables to the first member's modulator go, one after the other; the second member's stays.
+        assert_eq!(
+            sent(&engine),
+            ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=1", "RemoveModulator inst=0 index=0"]
+        );
+        assert_eq!(driven(&ctl.model.groups[0].modulators), [vec![K::GroupMemberMod { member: 1, mod_index: 0, field: F::Depth(1) }]]);
     }
 
     #[test]
