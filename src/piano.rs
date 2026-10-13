@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
@@ -10,7 +10,9 @@ use crate::note_input::{Delivery, NoteInput};
 /// If the terminal doesn't support it, the piano is disabled.
 pub struct VirtualPiano {
     base_octave: i8,
-    held_keys: HashSet<KeyCode>,
+    /// The keys that are down, each with the note it began: the octave can change while a key is held,
+    /// and the key still ends the note it began.
+    held_keys: HashMap<KeyCode, u8>,
     notes: NoteInput,
     enabled: bool,
 }
@@ -21,7 +23,7 @@ impl VirtualPiano {
     pub fn new(notes: NoteInput, enabled: bool) -> Self {
         VirtualPiano {
             base_octave: 4,
-            held_keys: HashSet::new(),
+            held_keys: HashMap::new(),
             notes,
             enabled,
         }
@@ -55,7 +57,7 @@ impl VirtualPiano {
                 }
 
                 // Dedup: ignore if already held
-                if self.held_keys.contains(&event.code) {
+                if self.held_keys.contains_key(&event.code) {
                     return;
                 }
 
@@ -65,13 +67,14 @@ impl VirtualPiano {
                     if self.notes.note_on(note, VELOCITY) == Delivery::Blocked {
                         return;
                     }
-                    self.held_keys.insert(event.code);
+                    self.held_keys.insert(event.code, note);
                     log::info!("Piano: NoteOn note={note} ({})", note_name(note));
                 }
             }
             KeyEventKind::Release => {
-                if let Some(note) = self.key_to_note(event.code) {
-                    self.held_keys.remove(&event.code);
+                // The note the key began, not the one it maps to now; and nothing for a key that is not
+                // down (no press, or one that a locked scale refused): it began no note, so it ends none.
+                if let Some(note) = self.held_keys.remove(&event.code) {
                     self.notes.note_off(note);
                     log::info!("Piano: NoteOff note={note} ({})", note_name(note));
                 }
@@ -84,11 +87,9 @@ impl VirtualPiano {
 
     /// Send NoteOff for all currently held keys.
     pub fn all_notes_off(&mut self) {
-        let keys: Vec<KeyCode> = self.held_keys.drain().collect();
-        for code in keys {
-            if let Some(note) = self.key_to_note(code) {
-                self.notes.note_off(note);
-            }
+        let notes: Vec<u8> = self.held_keys.drain().map(|(_, note)| note).collect();
+        for note in notes {
+            self.notes.note_off(note);
         }
     }
 
@@ -239,6 +240,44 @@ mod tests {
         sent(&rig);
         press(&mut rig, 'c');
         assert_eq!(sent(&rig), [(0, [0x90, 40, 100])], "and two down from there: E");
+    }
+
+    #[test]
+    fn a_key_ends_the_note_it_began_whatever_the_octave_has_become() {
+        let mut rig = rig(true);
+        press(&mut rig, 'z');
+        press(&mut rig, ']');
+        press(&mut rig, ']');
+        release(&mut rig, 'z');
+        assert_eq!(sent(&rig), [(0, [0x90, 48, 100]), (0, [0x80, 48, 0])], "C3 began, and C3 ends: not the C that z is now");
+        assert!(rig.held.held().is_empty(), "and nothing is left sounding");
+    }
+
+    #[test]
+    fn all_notes_off_ends_the_notes_the_keys_began_whatever_the_octave_has_become() {
+        let mut rig = rig(true);
+        press(&mut rig, 'z');
+        press(&mut rig, 'c');
+        press(&mut rig, '[');
+        sent(&rig);
+        rig.piano.all_notes_off();
+        let mut off = sent(&rig);
+        off.sort();
+        assert_eq!(off, [(0, [0x80, 48, 0]), (0, [0x80, 52, 0])]);
+        assert!(rig.held.held().is_empty());
+    }
+
+    #[test]
+    fn a_key_that_is_not_down_sends_nothing_when_it_goes_up() {
+        let mut rig = rig(true);
+        // A key that went up with no press (the terminal gave focus to the program with a key held), and
+        // one whose press a locked scale refused: neither began a note, so neither ends one (a note-off
+        // here would end a note a MIDI keyboard is holding).
+        release(&mut rig, 'z');
+        rig.filter.set_mode(PianoMode::Locked);
+        press(&mut rig, 's');
+        release(&mut rig, 's');
+        assert!(sent(&rig).is_empty());
     }
 
     #[test]

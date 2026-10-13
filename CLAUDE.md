@@ -1050,7 +1050,9 @@ Key:  Q  2  W  3  E  R  5  T  6  Y  7  U  I  9  O  0  P
 Note: C  C# D  D# E  F  F# G  G# A  A# B  C  C# D  D# E
 ```
 
-Notes sound on key press and stop on key release.
+Notes sound on key press and stop on key release. A key ends the note it began, at the octave
+it began in, even if `[` or `]` was pressed while it was held; a key that is not down (no
+press, or one that Locked mode refused) ends nothing when it goes up.
 
 The browser page plays the same layout (`tang serve`, `tang --web`): `web/src/client/keyboard.ts`,
 which `web/src/app/useKeyboardPiano.ts` feeds with the window's keys, so a key pressed with the

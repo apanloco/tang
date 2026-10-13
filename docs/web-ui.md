@@ -1608,12 +1608,15 @@ Each step is a reviewable change; the TUI must not regress at any point.
     now tested and caught. One mutation of the browser test survived and is not a gap: the
     oscillator does not scale its level with the velocity, so the meter cannot tell it (the
     velocity is checked in the unit tests).
-  - **Found on the way.** The TUI's virtual piano (`src/piano.rs`) has the bug the page's piano was
-    written not to have: a key is released as the note it *now* maps to, so a key held while `[` or
-    `]` is pressed ends a different note than it began and leaves the first one on (found by
-    reading; not fixed in this step). The TUI cannot play from the computer keyboard outside
-    `play` at all (CLAUDE.md's TODO of the Piano tab), so in `tang --web` the browser is the way
-    to play with the keys.
+  - **Found on the way (f53), fixed after the step.** The TUI's virtual piano (`src/piano.rs`) had the
+    bug the page's piano was written not to have: a key was released as the note it *now* maps to,
+    so a key held while `[` or `]` was pressed ended a different note than it began and left the
+    first one on, and `all_notes_off` did the same (the existing octave test did exactly this and
+    threw away what it sent). It remembers the note each held key began now, and a key that is not
+    down (no press, or one that Locked mode refused) ends nothing: a note-off for it would have
+    ended a note a MIDI keyboard was holding. Three tests first, all failing before; six mutations,
+    all caught; 767 Rust tests in the default build and 911 with the web feature. The TUI cannot play from the computer keyboard outside `play` at all (CLAUDE.md's
+    TODO of the Piano tab), so in `tang --web` the browser is the way to play with the keys.
   - **Not done.** An on-screen keyboard (a touch screen); showing the notes that are held and the
     piano's scale in the page; chords; BPM; Web MIDI. The keys are named by position, as a US
     keyboard has them, not by what is printed on them: on another layout `;` is the key right
