@@ -2485,12 +2485,19 @@ fn handle_preset_selector_key(s: &mut State, code: KeyCode) {
     }
 }
 
+/// The number typed into a popup, if it is one. `str::parse` takes `nan` and `inf` for
+/// numbers, and a NaN is not stopped by `clamp`: it would get into the model, and from
+/// there to the audio thread and to every browser (JSON has no NaN).
+fn parse_number(text: &str) -> Option<f32> {
+    text.trim().parse::<f32>().ok().filter(|value| value.is_finite())
+}
+
 fn handle_edit_key(s: &mut State, code: KeyCode) {
     let edit = s.editing.as_mut().unwrap();
     match code {
         KeyCode::Esc => s.editing = None,
         KeyCode::Enter => {
-            if let Ok(val) = edit.input.value.parse::<f32>() {
+            if let Some(val) = parse_number(&edit.input.value) {
                 s.set_param_value(val);
             }
             s.editing = None;
@@ -2575,7 +2582,7 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.bpm_editing = None,
         KeyCode::Enter => {
-            if let Ok(val) = edit.input.value.trim().parse::<f32>() {
+            if let Some(val) = parse_number(&edit.input.value) {
                 let bpm = val.clamp(edit.param_min, edit.param_max);
                 s.ctl.global_bpm = bpm;
                 let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
@@ -2605,7 +2612,7 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Esc => s.gain_editing = None,
         KeyCode::Enter => {
             let (node, gain) = (ge.node, ge.gain);
-            if let Ok(value) = ge.edit.input.value.trim().parse::<f32>() {
+            if let Some(value) = parse_number(&ge.edit.input.value) {
                 s.apply(Intent::SetGain { node, gain, value });
             }
             s.gain_editing = None;

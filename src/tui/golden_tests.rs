@@ -601,6 +601,48 @@ fn typing_a_value_sets_the_parameter() {
     assert_eq!(h.s.ctl.model.instruments[2].effects[0].params[0].value, 0.8);
 }
 
+/// What `str::parse` takes for a number and no number can be: `NaN` (which `clamp` keeps) and
+/// the infinities.
+const NOT_NUMBERS: [&str; 4] = ["nan", "NaN", "inf", "-infinity"];
+
+#[test]
+fn a_number_typed_into_a_popup_is_a_finite_number_with_or_without_spaces_around_it() {
+    use super::parse_number;
+    assert_eq!(parse_number("0.5"), Some(0.5));
+    assert_eq!(parse_number("  -12 "), Some(-12.0));
+    assert_eq!(parse_number("1e3"), Some(1000.0));
+    for text in NOT_NUMBERS.into_iter().chain(["", "abc", "1,5", "0.5.1"]) {
+        assert_eq!(parse_number(text), None, "{text:?}");
+    }
+}
+
+#[test]
+fn a_tempo_that_is_not_a_number_is_not_taken() {
+    for text in NOT_NUMBERS {
+        let mut h = Harness::new(scene_split());
+        h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars(text).press(KeyCode::Enter);
+        assert!(h.s.bpm_editing.is_none(), "{text}: the popup closes");
+        assert_eq!(h.s.ctl.global_bpm, 120.0, "{text}");
+        assert_eq!(h.commands(), Vec::<String>::new(), "{text}");
+        assert!(!h.s.ctl.dirty, "{text}");
+    }
+}
+
+#[test]
+fn a_value_that_is_not_a_number_is_not_taken_by_a_modulators_rate() {
+    for text in NOT_NUMBERS {
+        let mut h = Harness::new(scene_split());
+        h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+        h.press(KeyCode::Enter).press_n(KeyCode::Down, 2).press(KeyCode::Enter); // focus params, the rate row, the value popup
+        assert!(h.s.editing.is_some(), "{text}: the popup opens");
+        h.press_n(KeyCode::Backspace, 6).type_chars(text).press(KeyCode::Enter);
+        assert!(h.s.editing.is_none(), "{text}: the popup closes");
+        assert_eq!(h.commands(), Vec::<String>::new(), "{text}");
+        let ModSourceSlot::Lfo { rate, .. } = h.s.ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
+        assert_eq!(rate, 4.0, "{text}");
+    }
+}
+
 #[test]
 fn arrow_keys_and_typing_set_a_bus_effect_parameter() {
     let mut h = Harness::new(scene_bus_pair());
