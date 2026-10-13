@@ -1518,12 +1518,12 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the controller's. Found by me on the way: f40 (a cable driving the depth of a cable that was gone
     after its modulator was removed), f50 (the mock dropped the slot of a value another cable still
     drove).
-  - **Numbers.** 762 Rust tests in the default build (679 before the step), 904 with the web feature
+  - **Numbers.** 764 Rust tests in the default build (679 before the step), 906 with the web feature
     (820), 635 Vitest tests (502), 31 browser tests (22); about 220 mutations of the code written
     in the second half of the step (the survivors are named in the commit messages: two equivalent
     ones in the client's reach rule and its list, an id that is the same function at both ends, a
     refused add that reads the session) and some 70 of the groundwork before it. `tui/mod.rs` is
-    4,644 lines (4,788). 172 local commits since `feat/midi-learn-mpe-expression`, none pushed.
+    4,644 lines (4,788). 173 local commits since `feat/midi-learn-mpe-expression`, none pushed.
   - **Both paths and both front-ends.** The browser tests: seven on the mock engine (a drag, the
     ports marked while dragging and only the ones that take the cable, a drop where it does not belong
     and a drop out of reach, a modulator added and dragged from at once, the list, the buttons), two on
@@ -1549,14 +1549,23 @@ Each step is a reviewable change; the TUI must not regress at any point.
     Type row; undo (a removal is final, as the TUI's `d`); the canvas does not move to show a node it
     has added; **telemetry slots are never reused (4,096 of them): each modulator and each driven
     parameter uses one, so a very long session of building runs out and later cables have no live
-    dot**; f49 (below), f29, f30, f38 and f39 as before; the TUI's removal of an effect, a bus effect
+    dot**; f29, f30, f38 and f39 as before; the TUI's removal of an effect, a bus effect
     or a member still drops the cables that pointed at it with `retain`, which leaves the depth cables
     of f40 pointing at nothing (phase 1: they are the controller's then).
-  - **Found, open: f49.** A lane with no instrument plugin loses its modulators when the session
-    is saved and loaded: the format keeps a lane's modulators under its instrument plugin's table
-    (`load_lane_modulators`), the saver writes them under the bare `[[instrument]]`, and the loader
-    does not read them. Reachable in the TUI (`d` on the instrument of a lane that has effects keeps the
-    lane's modulators since f43) and by `AddModulator` on an empty lane.
+  - **Found by me on the way, and fixed: f49.** A lane with no instrument plugin lost its modulators
+    when the session was saved and loaded: the saver wrote them under the lane's `[[instrument]]`
+    table, but the loader read them from the instrument *plugin's* config, which such a lane has
+    none of (reachable in the TUI, by `d` on the instrument of a lane that has effects, and by
+    `AddModulator` on an empty lane). The session config now holds a lane's modulators on the slot
+    (`InstrumentSlotConfig.modulators`) and not on the plugin, with a test of the loader and one of
+    a save and a reload, each seen to fail first. A cable of such a lane that was on the cleared
+    instrument's own parameters (slot 0) has no parameter to land on, and the load skips it.
+  - **Found by me on the way, open: replacing a lane's instrument keeps the cables on the old one.**
+    `Controller::set_instrument` swaps the plugin and leaves the lane's modulators as they were, so a
+    cable on slot 0 keeps the old plugin's parameter *index*, range and label: with a different
+    plugin it drives whatever has that index there, until it is drawn again (the TUI's `i` does this
+    today). Phase 1's replace-instrument intent has to decide: re-resolve a cable by the parameter's
+    name, or take the cable out.
 
 ## 13. Later: track B (`builtin:patch`)
 

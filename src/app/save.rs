@@ -212,6 +212,42 @@ velocity = 100
     }
 
     #[test]
+    fn a_lane_whose_instrument_was_cleared_keeps_its_modulators_through_a_save_and_a_reload() {
+        // What `d` on the instrument of a lane that has effects does: the plugin goes; the lane, its effects and
+        // its modulators stay.
+        let mut first = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "lfo"
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+"#,
+        );
+        first.model.instruments[0].instrument = None;
+        let file = saved(&first.model);
+        let second = try_load(&file).unwrap_or_else(|e| panic!("the saved file does not load: {e:#}\n{file}"));
+        let rack = |model: &SessionModel| {
+            model.instruments[0]
+                .modulators
+                .iter()
+                .map(|m| (format!("{:?}", m.source), m.targets.iter().map(|t| (t.slot, t.param_name.clone(), t.depth)).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rack(&first.model).len(), 1);
+        assert_eq!(rack(&second.model), rack(&first.model), "the modulator and its cable are in the file:\n{file}");
+        assert!(second.model.instruments[0].instrument.is_none());
+        assert_eq!(second.model.instruments[0].effects.len(), 1);
+        assert_eq!(file, saved(&second.model), "and saving it again gives the same file");
+    }
+
+    #[test]
     fn a_plain_lane_is_saved_as_just_its_plugin() {
         let run = load("[[instrument]]\nplugin = \"builtin:osc\"\n");
         assert_eq!(saved(&run.model), "[[instrument]]\nplugin = \"builtin:osc\"\n");

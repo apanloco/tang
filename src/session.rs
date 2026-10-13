@@ -52,6 +52,9 @@ pub struct InstrumentSlotConfig {
     pub transpose: i8,
     pub instrument: Option<PluginConfig>,
     pub effects: Vec<EffectConfig>,
+    /// The lane's modulators (their targets carry the chain slot they land on). They belong to the lane, not
+    /// to its instrument plugin: a lane whose plugin was cleared has its effects and these still.
+    pub modulators: Vec<ModulatorConfig>,
     pub pattern: Option<PatternConfig>,
     /// Submix group membership: index into the session's groups, or None.
     pub group: Option<usize>,
@@ -153,8 +156,6 @@ pub struct PluginConfig {
     pub remap: HashMap<String, RemapTarget>,
     #[serde(default)]
     pub params: HashMap<String, f64>,
-    #[serde(default, rename = "modulator")]
-    pub modulators: Vec<ModulatorConfig>,
 }
 
 fn default_volume() -> f64 {
@@ -365,7 +366,6 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             pitch_bend_range: slot.pitch_bend_range,
             remap: slot.remap,
             params: slot.params,
-            modulators: slot.modulators,
         });
         // Drop out-of-range group references defensively.
         let group = slot.group.filter(|&g| g < groups.len());
@@ -374,6 +374,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             transpose: slot.transpose,
             instrument,
             effects: slot.effects,
+            modulators: slot.modulators,
             pattern,
             group,
         });
@@ -1418,7 +1419,7 @@ range = "C4-C8"
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
-        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        let inst = &config.instruments[0];
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.waveform, "sine");
@@ -1468,7 +1469,7 @@ range = "C4-C8"
         assert!(raw.contains("midi_cc = 74"), "expected bound CC:\n{raw}");
 
         let config = load(path.to_str().unwrap()).unwrap();
-        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        let inst = &config.instruments[0];
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.mod_type, "midi");
@@ -1515,7 +1516,7 @@ range = "C4-C8"
         assert!(raw.contains("midi_aftertouch = true"), "expected aftertouch binding:\n{raw}");
 
         let config = load(path.to_str().unwrap()).unwrap();
-        let m = &config.instruments[0].instrument.as_ref().unwrap().modulators[0];
+        let m = &config.instruments[0].modulators[0];
         assert_eq!(m.mod_type, "midi");
         assert!(m.midi_aftertouch);
         assert!(m.midi_cc.is_none());
@@ -1563,7 +1564,7 @@ range = "C4-C8"
         assert!(raw.contains("slot = 1"), "saved target should record its slot:\n{raw}");
 
         let config = load(path.to_str().unwrap()).unwrap();
-        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        let inst = &config.instruments[0];
         assert_eq!(inst.modulators.len(), 1);
         assert_eq!(inst.modulators[0].targets[0].slot, 1);
         assert_eq!(inst.modulators[0].targets[0].param.as_deref(), Some("cutoff"));
@@ -1946,7 +1947,7 @@ depth = 0.3
         std::fs::write(&path, toml).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
-        let inst = config.instruments[0].instrument.as_ref().unwrap();
+        let inst = &config.instruments[0];
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.waveform, "triangle");

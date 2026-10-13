@@ -579,8 +579,9 @@ pub fn load_session(
 /// effect). `chain_params[slot]` holds that plugin's parameters for name→index
 /// resolution.
 ///
-/// Migration: modulators come from the instrument's config (slot defaults to
-/// the target's `slot`, i.e. instrument unless set) and — for older sessions —
+/// Migration: modulators come from the lane's config (slot defaults to the
+/// target's `slot`, i.e. instrument unless set; a lane without an instrument
+/// plugin has them too, its slot-0 targets find no parameter) and — for older sessions —
 /// from each effect's config (those target their own effect, so their slot is
 /// forced to that effect, and their cross-mod sibling indices are offset by
 /// where the effect's group lands in the merged lane list).
@@ -593,10 +594,7 @@ fn load_lane_modulators(
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
     // Gather modulator groups with their default slot (instrument = 0, each
     // effect = its slot) and their base index in the merged lane list.
-    let mut groups: Vec<(&[session::ModulatorConfig], usize)> = Vec::new();
-    if let Some(ref inst) = inst_config.instrument {
-        groups.push((&inst.modulators, 0));
-    }
+    let mut groups: Vec<(&[session::ModulatorConfig], usize)> = vec![(&inst_config.modulators, 0)];
     for (i, fx) in inst_config.effects.iter().enumerate() {
         groups.push((&fx.modulators, i + 1));
     }
@@ -1575,6 +1573,43 @@ plugin = "builtin:filter"
         let lane = &run.model.instruments[0];
         assert_eq!(lane.modulators.len(), 3);
         assert_eq!(lane.modulators[1].targets[0].slot, 1);
+    }
+
+    #[test]
+    fn a_lane_with_no_plugin_still_has_the_modulators_the_file_gives_it() {
+        // A lane the TUI cleared keeps its effects and its modulators, and a save writes them under the bare
+        // `[[instrument]]`: the file has to give them back.
+        let run = load(
+            r#"
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "lfo"
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[instrument.modulator]]
+type = "envelope"
+"#,
+        );
+        assert_eq!(
+            run.commands,
+            [
+                "AddInstrument range=None",
+                "InsertEffect inst=0 index=0 plugin=Filter mix=1.000",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0 }",
+                "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.400 base=1.000 range=[0.000, 1.000]",
+                "InsertModulator inst=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
+            ]
+        );
+        let lane = &run.model.instruments[0];
+        assert!(lane.instrument.is_none());
+        assert_eq!(lane.modulators.len(), 2);
+        assert_eq!((lane.modulators[0].targets[0].slot, lane.modulators[0].targets[0].param_name.as_str()), (1, "cutoff"));
+        run.model.check_ids().unwrap();
     }
 
     #[test]

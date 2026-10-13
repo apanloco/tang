@@ -332,10 +332,11 @@ depth = 0.5             # fraction of param range, −1.0–1.0 (default: 0.5).
 Modulators always serialize under `[[instrument.modulator]]` (the instrument
 level), never under an effect. Older sessions that nested `[[...effect.
 modulator]]` still load: those modulators migrate into the lane with their
-targets pinned to that effect's slot.
-TODO: a lane with no instrument plugin (`d` on the instrument of a lane that has effects leaves
-one) loses its modulators when the session is saved and loaded: the saver writes them under the
-bare `[[instrument]]`, the loader reads a lane's modulators from its instrument plugin's table.
+targets pinned to that effect's slot. They belong to the lane, not to its
+instrument plugin: a lane with no `plugin` (what `d` on the instrument of a lane that
+has effects leaves) keeps its effects and its modulators through a save and a load. A
+target on slot 0 of such a lane has no parameter to land on, and a load skips it with a
+log line.
 
 **ADSR envelope modulator** (triggered by note-on/off):
 
