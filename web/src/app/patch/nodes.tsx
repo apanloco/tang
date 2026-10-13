@@ -6,7 +6,7 @@ import type { NodeProps } from "@xyflow/react";
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 
-import { effectItems } from "../../client/catalog";
+import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
 import { nodeById } from "../../client/selectors";
 import type { ModulatorKind, Node, NodeId } from "../../protocol";
@@ -84,6 +84,34 @@ function AddEffectMenu({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
+/** The `id` of the button that changes the instrument of the lane `node`, which the focus stays on (the lane's node stays). */
+const changeInstrumentId = (node: NodeId): string => `change-instrument-${String(node)}`;
+
+/**
+ * The button of a lane that puts another instrument in it: a menu of what is installed and can be one, under the format of each.
+ * An empty lane (the TUI can empty one) is asked to be given one. The lane keeps its effects, modulators, range and volume; the
+ * cables that drove the old instrument's parameters go with it.
+ */
+function ChangeInstrumentMenu({ node, name, empty }: { node: NodeId; name: string; empty: boolean }) {
+  const editor = useEditor();
+  const catalog = useClientState((state) => state.catalog);
+  const items = useMemo(() => instrumentItems(catalog?.entries ?? []), [catalog]);
+  return (
+    <MenuButton
+      id={changeInstrumentId(node)}
+      label={empty ? `Choose an instrument for ${name}` : `Change the instrument of ${name}`}
+      className="tang-node__instrument"
+      items={items}
+      onChoose={(plugin) => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        void editor.replaceInstrument(node, plugin);
+      }}
+    >
+      ♪
+    </MenuButton>
+  );
+}
+
 /** The button of a modulator or an effect that takes it out, with the cables that drive it; the focus goes to the button that adds one like it to its lane or group. */
 function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name: string; parent: NodeId | null; focusTo: (parent: NodeId) => string }) {
   const editor = useEditor();
@@ -119,6 +147,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
           <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
         ) : (
           <span className="tang-node__actions">
+            <ChangeInstrumentMenu node={data.node} name={data.name} empty={data.format === null} />
             <AddEffectMenu node={data.node} name={data.name} />
             <AddModulatorMenu node={data.node} name={data.name} />
           </span>

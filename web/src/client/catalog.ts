@@ -12,14 +12,24 @@ const placeOf = (format: string): number => {
   return place < 0 ? FORMATS.length : place;
 };
 
+/** The plugins that are instruments, or are not, as the items of a menu: see `effectItems`. */
+function itemsOf(entries: readonly CatalogEntry[], instruments: boolean): MenuItem[] {
+  return entries
+    .filter((entry) => entry.isInstrument === instruments)
+    .sort((a, b) => placeOf(a.format) - placeOf(b.format))
+    .map((entry) => ({ id: entry.id, label: entry.name, group: entry.format }));
+}
+
 /**
  * The plugins that can be an effect (the instruments cannot), as the items of a menu: each by the `id` the server knows
  * it by, under the format it is of, the formats in order and, within each, the order the server gave (which is by
  * name, the TUI's too).
  */
 export function effectItems(entries: readonly CatalogEntry[]): MenuItem[] {
-  return entries
-    .filter((entry) => !entry.isInstrument)
-    .sort((a, b) => placeOf(a.format) - placeOf(b.format))
-    .map((entry) => ({ id: entry.id, label: entry.name, group: entry.format }));
+  return itemsOf(entries, false);
+}
+
+/** The plugins that can be an instrument (the effects cannot), as the items of a menu, in the order of `effectItems`. */
+export function instrumentItems(entries: readonly CatalogEntry[]): MenuItem[] {
+  return itemsOf(entries, true);
 }

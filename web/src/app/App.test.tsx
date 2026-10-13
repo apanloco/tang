@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
@@ -138,6 +138,59 @@ describe("the page", () => {
     await waitFor(() => {
       expect(patch.querySelectorAll(".react-flow__edge")).toHaveLength(3);
     });
+  });
+
+  test("has a button in the bar that opens a menu of the instruments that are installed, under the format each is of, and not of the effects", async () => {
+    page();
+    fireEvent.click(await screen.findByRole("button", { name: "Add an instrument" }));
+    const menu = screen.getByRole("menu", { name: "Add an instrument" });
+    const groups = within(menu)
+      .getAllByRole("group")
+      .map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
+    expect(groups).toEqual([["Built-in", ["Oscillator"]]]);
+  });
+
+  test("asks for a lane with the instrument that was chosen, and the lane is on the canvas when the server has made it", async () => {
+    const { server } = page();
+    const patch = await screen.findByTestId("patch");
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(4);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add an instrument" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(5);
+    });
+    expect(server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []))).toEqual([{ type: "addInstrument", plugin: "builtin:osc" }]);
+    // The two lanes are told apart by a number, and the new one is a lane of its own: it has all the buttons a lane has.
+    expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add an effect to Oscillator 2" })).toBeTruthy();
+    // The menu has gone, and the focus is back on the button that opened it.
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an instrument" }));
+  });
+
+  test("has nothing to open until the server has said what is installed, or when nothing that is can be an instrument", async () => {
+    const effect = { id: "builtin:filter", name: "Filter", format: "Built-in", isInstrument: false, params: 4, presets: 0 };
+    for (const catalog of [{ entries: [], scanning: true }, { entries: [effect], scanning: false }]) {
+      page({ catalog });
+      const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Add an instrument" });
+      expect(button.disabled).toBe(true);
+      cleanup();
+    }
+  });
+
+  test("says why a lane could not be added, among the notices", async () => {
+    const { server } = page();
+    await screen.findByText("Connected");
+    fireEvent.click(await screen.findByRole("button", { name: "Add an instrument" }));
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    // (The menu is still there: what is installed is known, and the connection is what is not.)
+    fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
+    expect(await screen.findByText("Could not add Oscillator as an instrument: Not connected to the server.")).toBeTruthy();
   });
 
   test("keeps the session as JSON closed, and writes it only while it is open", async () => {

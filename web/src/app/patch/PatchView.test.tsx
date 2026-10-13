@@ -540,6 +540,128 @@ describe("the patch", () => {
     });
   });
 
+  describe("changing an instrument", () => {
+    const label = /^(Change the instrument of|Choose an instrument for) /;
+    const buttons = async () => (await screen.findAllByRole("button", { name: label })).map((button) => button.getAttribute("aria-label"));
+    const opened = async (name: string): Promise<HTMLElement> => {
+      fireEvent.click(await screen.findByRole("button", { name }));
+      return screen.getByRole("menu", { name });
+    };
+    const waveform = async (id: number): Promise<string> => within(await nodeOf(id)).getByRole<HTMLSelectElement>("combobox", { name: "waveform" }).value;
+
+    test("is offered on every lane, by a button that names whose it is (an empty lane is asked to be given one), and on nothing else", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      expect((await buttons()).sort()).toEqual(
+        [
+          "Change the instrument of Oscillator 1",
+          "Change the instrument of Oscillator 2",
+          "Change the instrument of Oscillator 3",
+          "Change the instrument of Oscillator 4",
+          "Choose an instrument for (empty)",
+        ].sort(),
+      );
+      for (const id of [0, 1, 2, 3, 5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: label })).toBeNull();
+    });
+
+    test("opens a menu of the instruments that are installed, under the format each is of, and not of the effects", async () => {
+      await rig(<PatchView />);
+      const menu = await opened("Change the instrument of Oscillator");
+      const groups = within(menu).getAllByRole("group").map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
+      expect(groups).toEqual([["Built-in", ["Oscillator"]]]);
+    });
+
+    test("has what the scan finds as it finds it, while it is open", async () => {
+      const { server } = await rig(<PatchView />, { catalog: { entries: builtinCatalog, scanning: true } });
+      const menu = await opened("Change the instrument of Oscillator");
+      expect(within(menu).getAllByRole("menuitem")).toHaveLength(1);
+      act(() => {
+        server.announceCatalog(
+          [
+            ...builtinCatalog,
+            { id: "vst3:Acme Synth", name: "Acme Synth", format: "VST3", isInstrument: true, params: 40, presets: 0 },
+            { id: "vst3:Acme Verb", name: "Acme Verb", format: "VST3", isInstrument: false, params: 4, presets: 0 },
+          ],
+          false,
+        );
+      });
+      await waitFor(() => {
+        expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Oscillator", "Acme Synth"]);
+      });
+    });
+
+    test("asks the server to put the one that was chosen in that lane, which keeps its node and has the new instrument's parameters", async () => {
+      const { requests } = await rig(<PatchView />);
+      expect(await waveform(oscillator.id)).toBe("3"); // the tracer's is a saw
+      await opened("Change the instrument of Oscillator");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "replaceInstrument", node: oscillator.id, plugin: "builtin:osc" }]);
+      });
+      await waitFor(async () => {
+        expect(await waveform(oscillator.id)).toBe("0"); // a new instrument starts as a sine
+      });
+      // The menu has gone, and the focus is back on the button that opened it.
+      expect(screen.queryByRole("menu")).toBeNull();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change the instrument of Oscillator" }));
+      });
+    });
+
+    test("fills an empty lane, which is called by its instrument then and has a button that changes it", async () => {
+      const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      await opened("Choose an instrument for (empty)");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
+      await waitFor(() => {
+        expect(requests().at(-1)?.intent).toEqual({ type: "replaceInstrument", node: 14, plugin: "builtin:osc" });
+      });
+      expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 5" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
+      expect(controlsIn(await nodeOf(14))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume"]);
+    });
+
+    test("takes the cables that drove the old instrument off the canvas, and leaves the others", async () => {
+      const { server, view } = await rig(<PatchView />);
+      server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: oscillator.id, port: { type: "param", index: 1 } } });
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".react-flow__edge")).toHaveLength(4);
+      });
+      await opened("Change the instrument of Oscillator");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".react-flow__edge")).toHaveLength(3);
+      });
+    });
+
+    test("has nothing to open when nothing that is installed can be an instrument, or the server has not said what is", async () => {
+      const effect = { id: "builtin:filter", name: "Filter", format: "Built-in", isInstrument: false, params: 4, presets: 0 };
+      for (const catalog of [{ entries: [], scanning: true }, { entries: [effect], scanning: false }]) {
+        await rig(<PatchView />, { catalog });
+        const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Change the instrument of Oscillator" });
+        expect(button.disabled).toBe(true);
+        cleanup();
+      }
+    });
+
+    test("says why when it is refused, on the page's notices, by the names the catalog gives", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      await opened("Change the instrument of Oscillator");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
+      expect(await screen.findByText("Could not change the instrument of Oscillator to Oscillator: Not connected to the server.")).toBeTruthy();
+    });
+  });
+
   describe("drawing a cable to a parameter, from a list", () => {
     /** The button of the list of the modulator `id`. */
     const pickerOf = async (id: number): Promise<HTMLButtonElement> => {

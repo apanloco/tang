@@ -21,6 +21,12 @@
   color: var(--tang-root);
 }
 
+/* (The button that adds a lane: wider than the glyphs of the nodes, and as tall as the session's Save.) */
+.tang-menu-button.tang-app__add-instrument {
+  height: auto;
+  padding: 2px var(--tang-space-3);
+}
+
 .tang-app__keys {
   margin-left: auto;
   font-size: var(--tang-text-small);

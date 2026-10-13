@@ -78,6 +78,11 @@
   letter-spacing: 0.02em;
 }
 
+/* (The one that changes the instrument of a lane: a glyph, as wide as the one of a modulator's "+".) */
+.tang-menu-button.tang-node__instrument {
+  min-width: 26px;
+}
+
 .tang-node__badge {
   flex: none;
   padding: 0 var(--tang-space-1);

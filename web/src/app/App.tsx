@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { NoticeBoard } from "../ui/NoticeBoard";
+import { AddInstrumentMenu } from "./AddInstrument";
 import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -49,6 +50,7 @@ export function App({ engine }: { engine: EngineKind }) {
         <h1 className="tang-app__title">Tang</h1>
         <ConnectionStatus status={status} />
         <SessionBar />
+        <AddInstrumentMenu />
         <span className="tang-app__keys" title={KEYS_HINT}>
           Keys: octave {octave}
         </span>

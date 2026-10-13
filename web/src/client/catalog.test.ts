@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { CatalogEntry } from "../protocol";
 import { builtinCatalog } from "./fixtures";
-import { effectItems } from "./catalog";
+import { effectItems, instrumentItems } from "./catalog";
 
 const entry = (id: string, name: string, format: string, isInstrument = false): CatalogEntry => ({ id, name, format, isInstrument, params: 1, presets: 0 });
 
@@ -47,6 +47,52 @@ describe("the plugins a person can choose an effect from", () => {
     const entries = [entry("vst3:A", "A", "VST3"), entry("builtin:filter", "Filter", "Built-in")];
     const copy = [...entries];
     effectItems(entries);
+    expect(entries).toEqual(copy);
+  });
+});
+
+describe("the plugins a person can choose an instrument from", () => {
+  test("are the ones that are instruments, each by the id the server knows it by, under the format it is of", () => {
+    expect(instrumentItems(builtinCatalog)).toEqual([{ id: "builtin:osc", label: "Oscillator", group: "Built-in" }]);
+    expect(instrumentItems([])).toEqual([]);
+    expect(instrumentItems([entry("builtin:filter", "Filter", "Built-in")])).toEqual([]);
+  });
+
+  test("are listed by format, the built-ins first and then CLAP, LV2 and VST3, in the order the server gave within each; a format this page does not know of last", () => {
+    const entries = [
+      entry("vst3:Pianoteq", "Pianoteq 8", "VST3", true),
+      entry("x:one", "One", "Other", true),
+      entry("clap:com.acme.pad", "Pad", "CLAP", true),
+      entry("builtin:osc", "Oscillator", "Built-in", true),
+      entry("lv2:http://acme.example/helm", "Helm", "LV2", true),
+      entry("clap:com.acme.fx", "Chorus", "CLAP"),
+      entry("clap:com.acme.pluck", "Pluck", "CLAP", true),
+    ];
+    expect(instrumentItems(entries).map((item) => `${item.group ?? "?"}: ${item.label}`)).toEqual([
+      "Built-in: Oscillator",
+      "CLAP: Pad",
+      "CLAP: Pluck",
+      "LV2: Helm",
+      "VST3: Pianoteq 8",
+      "Other: One",
+    ]);
+  });
+
+  test("and the ones an effect can be chosen from are the whole catalog between them, each in one list", () => {
+    const entries = [
+      entry("builtin:osc", "Oscillator", "Built-in", true),
+      entry("builtin:filter", "Filter", "Built-in"),
+      entry("vst3:Pianoteq", "Pianoteq 8", "VST3", true),
+      entry("vst3:Verb", "Verb", "VST3"),
+    ];
+    const both = [...instrumentItems(entries), ...effectItems(entries)].map((item) => item.id).sort();
+    expect(both).toEqual(entries.map((e) => e.id).sort());
+  });
+
+  test("leave what was given alone", () => {
+    const entries = [entry("vst3:A", "A", "VST3", true), entry("builtin:osc", "Oscillator", "Built-in", true)];
+    const copy = [...entries];
+    instrumentItems(entries);
     expect(entries).toEqual(copy);
   });
 });
