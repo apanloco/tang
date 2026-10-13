@@ -23,8 +23,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-/// A saw oscillator through a filter an LFO sweeps; quiet on purpose.
-const TRACER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/tracer.toml");
+/// A saw oscillator through a filter an LFO sweeps; quiet on purpose. The tests' own copy of the tracer scene, and not
+/// `examples/tracer.toml`, which a person who runs the program on it can save over.
+const TRACER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/web/src/client/fixtures/tracer.toml");
 
 /// `NodeId::MASTER`, as a client sees it.
 const MASTER: u64 = u32::MAX as u64;

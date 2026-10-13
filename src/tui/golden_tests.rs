@@ -3156,7 +3156,7 @@ mod with_web {
     use crate::tui::web::Web;
     use crate::web::testclient::{self, said, tell};
 
-    const TRACER: &str = include_str!("../../examples/tracer.toml");
+    const TRACER: &str = include_str!("../../web/src/client/fixtures/tracer.toml");
 
     fn key(code: KeyCode) -> io::Result<Event> {
         terminal_key(code, KeyModifiers::NONE)

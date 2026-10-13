@@ -269,11 +269,11 @@ mod tests {
         assert_eq!(meta.piano, PianoMeta { scale: "F# dorian".to_string(), locked: true });
     }
 
-    /// The snapshot of `examples/tracer.toml` as JSON text, with the layout's
+    /// The snapshot of the tracer scene (`web/src/client/fixtures/tracer.toml`) as JSON text, with the layout's
     /// fingerprint blanked: it comes from the hasher, which the standard library
     /// does not promise to keep the same from one release to the next.
     fn tracer_json() -> String {
-        let ctl = controller(include_str!("../../examples/tracer.toml"), Some("/home/someone/tracer.toml"));
+        let ctl = controller(include_str!("../../web/src/client/fixtures/tracer.toml"), Some("/home/someone/tracer.toml"));
         // Through the text the wire carries, so that the numbers read as they do there
         // (an f32 as its shortest text, not widened to an f64).
         let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
@@ -294,7 +294,7 @@ mod tests {
     /// current. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
     #[test]
     fn the_web_clients_fixture_of_the_tracer_is_current() {
-        let ctl = controller(include_str!("../../examples/tracer.toml"), Some("tracer.toml"));
+        let ctl = controller(include_str!("../../web/src/client/fixtures/tracer.toml"), Some("tracer.toml"));
         let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
         let mut json: serde_json::Value = serde_json::from_str(&wire).unwrap();
         // The layout's fingerprint comes from the hasher, which the standard library does not

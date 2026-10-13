@@ -1215,7 +1215,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     `Controller::snapshot()` is the revision, the graph, the layout and what
     belongs to the session as a whole (dirty, the file *name*, the tempo, the
     piano's scale and mode). 26 injected bugs, all caught.
-  - **The golden JSON** of the snapshot of `examples/tracer.toml` (a saw
+  - **The golden JSON** of the snapshot of the tracer scene (a saw
     oscillator through a filter with an LFO on its cutoff, volume 0.1: step 12's
     scene, added here), through the text the wire carries.
   - Found on the way and fixed with the test first: f21 (a group named `""` in a

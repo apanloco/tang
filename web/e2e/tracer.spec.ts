@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 
 import { cutoffAccordingToTheServer, knob, resetTracer, sampleCutoff, spyOnTheWire, wireOf } from "./support";
 
-// The tracer scene (examples/tracer.toml): a saw oscillator through a low-pass filter, with a
+// The tracer scene (src/client/fixtures/tracer.toml): a saw oscillator through a low-pass filter, with a
 // LFO of 0.5 Hz and a depth of 0.4 on the filter's cutoff, which is set to 0.5. The real
 // program, on the null audio backend, so that nothing is heard.
 

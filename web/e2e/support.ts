@@ -251,7 +251,7 @@ export async function cutoffAccordingToTheServer(page: Page): Promise<number> {
 }
 
 /**
- * Put the tracer's filter and LFO back as `examples/tracer.toml` has them, from another client of the
+ * Put the tracer's filter and LFO back as `fixtures/tracer.toml` has them, from another client of the
  * server. The tests of the real program share its one session, so what a test turns is what the
  * next would find (and what the page of another test would see).
  */

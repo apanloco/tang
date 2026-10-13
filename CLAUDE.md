@@ -1414,7 +1414,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   a test (`app::protocol::typescript`, run by the CI job `typescript`) fails
   when it is not what the types generate. After changing a wire type:
   `TANG_UPDATE_TYPES=1 cargo test --features web typescript`, and commit the
-  result. `examples/tracer.toml` has a golden JSON snapshot
+  result. The tracer scene (`web/src/client/fixtures/tracer.toml`: the tests' own
+  copy of what `examples/tracer.toml` was, since a person who runs the program on
+  the example and saves writes over it) has a golden JSON snapshot
   (`src/app/snapshots/`); review the diff when it changes
   (`INSTA_UPDATE=always cargo test the_tracer`).
 - **Server** (`src/web/`, built; step 10): `axum` on its own thread behind the

@@ -1,6 +1,7 @@
 // The session the mock engine serves and the tests read: the snapshot of
-// `examples/tracer.toml` (a saw oscillator through a low-pass filter whose cutoff an LFO
-// sweeps) exactly as the server makes it. The JSON is generated from the Rust types and
+// `fixtures/tracer.toml` (a saw oscillator through a low-pass filter whose cutoff an LFO
+// sweeps: what `examples/tracer.toml` was, kept as the tests' own since a person who runs the
+// program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
 import type { CatalogEntry, Node, NodeId, Plugin, Snapshot } from "../protocol";
