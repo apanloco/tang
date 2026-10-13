@@ -1486,7 +1486,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `app/patch/view.ts`), and not for a node another front-end adds. Step 21 added the presets: every
   instrument and every effect of a lane whose plugin has some has a "≡" menu that loads one
   (`PresetMenu`, `presetsOf`; `Editor.loadPreset`), the one loaded last marked and the menu opening on it
-  (`MenuItem.current`). What the controller
+  (`MenuItem.current`). Step 22 added all the parameters of a plugin (a node shows the first eight as knobs):
+  a "⚙" button on every instrument and effect docks a panel beside the canvas with a filter by name and a
+  page of forty rows at a time, turned like the knobs (`ParamPanel`, `ParamRow`, `client/paramSearch.ts`;
+  Escape or the button again closes it). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1546,6 +1549,10 @@ parameter the new plugin has under the same name (a vibrato on `detune` could su
 oscillator): a cable would have to be drawn again with the new plugin's index.
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
+TODO: pin a parameter to its node as a knob from the panel of parameters (a node shows the first eight, and every one a
+cable drives): kept in the session as the `ui` layout's `pinned` list (docs/web-ui.md §4.4).
+TODO: the panel's sliders ignore what a parameter says of its steps (`stepCount`) and of its group (`group`): a stepped
+parameter is turned as if it were continuous, and the filter looks at names only. (The plugins of this machine report neither.)
 TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at
 its own defaults (or at a preset the page then loads): ranges, groups and taking a lane out (waits for an undo)
 are not in the page yet.

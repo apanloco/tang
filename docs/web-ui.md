@@ -861,6 +861,21 @@ with no presets has no button (the oscillator and the filter), and neither has a
 loads a preset by a lane's slot). A plugin with hundreds of presets has one long menu (it has a height limit, and a
 letter finds an item): the filter of the TUI's selector is not built.
 
+**As built (step 22).** A node shows the first eight parameters of its plugin as knobs, and every one that a cable
+drives; the rest are in the panel. A "⚙" (`ParamsButton`, "Parameters of <name>") beside the preset menu on every
+instrument and every effect that has parameters (a group's bus effects too) docks a panel at the right of the canvas
+(`ParamPanel`: the canvas holds which node is in it, `InspectorContext`; `.tang-patch` is a row of the canvas and
+the panel): the plugin's name and format, a filter by name (`matchParams`: every word, any case, anywhere in the
+name; focused as the panel opens), how many there are ("10 parameters", or "1 of 10 parameters" while a filter is
+typed), a page of forty rows with a button for forty more, and a close button. A row (`ParamRow`) is the parameter's whole
+name, a slider and its value in its unit (a choice if its values have names), and a bar of what the engine makes of
+it while a cable drives it; it is turned like a knob, by the same `Control`, so the two agree (what is set shows
+until the engine has answered, one intent a frame, a gesture's end at once), and its keys are a knob's. One panel at
+a time: the button of another node puts that node's parameters in, with a filter of its own; the button again, the close
+button and Escape (with the focus in the panel) close it, the focus going back to the button; a node that goes takes
+its panel. Keys typed in the filter are text, not notes. Not built: pinning a parameter to the node, a slider that
+follows a parameter's steps or groups, a log scale for a range of decades.
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -2082,6 +2097,59 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 875 tests (872 before the step), 1023 with the `web` feature and 13 on the
     real program (12); web 845 (818 before); 39 in browsers (38).
 
+- [x] **22. All the parameters of a plugin from the page (phase 1).** A node shows the first eight parameters of its
+  plugin as knobs, so the rest could not be set by hand: found by trying the page against this machine's plugins, which
+  are not the built-ins (below). *Done when:* on the real program, a browser finds a parameter that its node has no knob
+  for by typing some of its name, turns it, and the file the session is saved to has it. In parts, each its own commit:
+  **22.1** finding a parameter by name and the list of a plugin's parameters (`matchParams`, `paramListOf`,
+  `paramCountOf`); **22.2** a parameter as a row of a list (`ParamRow`); **22.3** the "⚙" button and the panel, with a
+  browser test. *Not done (later steps):* pinning a parameter to the node (it needs the `ui` layout of §4.4), a slider
+  that follows a parameter's steps and groups.
+  - **The check that led to it.** The page had only been tried on the built-ins and a copy of the tracer. This machine has
+    two CLAP synths of the user's own (an Acid 303 with ten parameters and a sine synth with six) and four VST3
+    instruments (Pianoteq 9 with 2,202 parameters listed, the ones it marks "(locked)" being hidden as in the TUI, and 128 presets; two ROLI players; Traveler with 2,450), so the page was run
+    against them, on the null audio backend: the Acid 303 comes into a lane from the "♪" menu in about 0.1 s and looks like
+    any node (the "≡" is not on it: it has no presets), Pianoteq 9 in about 0.8 s with a snapshot of 302 KB, and neither
+    makes a long task in the browser or a line in its console; the preset menu of Pianoteq (128 "Program N") opens in
+    under 50 ms, on the preset that was loaded when it is 100 entries down (the item is scrolled into view), and the
+    list that draws a cable has 2,205 items and opens in 55 ms. What was wrong: a node has eight knobs, so the Acid 303's
+    "Slide Time" and "Tuning" and nearly everything of Pianoteq's could not be turned by hand (a cable to one pins it,
+    which is a cable, not a setting).
+  - **22.1 as built.** `matchParams(params, query)`: the parameters whose name has every word of the query, whatever the case
+    and wherever in the name (as the TUI's `/`, which takes one word), as the plugin's own indices in order; the
+    words are text, never a pattern. `paramListOf(state, node)`: every parameter of an instrument's plugin or any effect's
+    (a group's bus included), by name and own index, with the name the canvas gives the node and the plugin's format, and no
+    values, so that `sameParamList` finds it the same while they change (a plugin that numbers its parameters with gaps,
+    as Pianoteq does, is listed by its own numbers: the row's index is what the intent names). `paramCountOf`: how
+    many, for what only asks whether there are any.
+  - **22.2 as built.** `ParamRow` (`app/patch/controls.tsx`): the whole name (the tooltip has it when it does not fit),
+    a native slider over the parameter's range with no step of its own (`step="any"`: the browser's step on a slider
+    with none is the whole range) and the value in its unit, a choice for named values, and, while a cable drives
+    the parameter, a `LiveBar` ("<name>, as modulated") drawn on the frame from the same telemetry slot as the knob's dot.
+    Turned by the same `Control` as a knob: shown as set until the engine has answered, one intent a frame, a gesture's
+    end at once (the pointer up, the focus lost, a key, a choice); the keys are the knob's (`afterKey`) and kept from the
+    browser; a double click goes back to the default. What a knob and a row both read of a parameter is `useParam` now.
+  - **22.3 as built.** §9.3 above. `PatchView` holds the node in the panel and `PluginNode` asks for it through
+    `InspectorContext`; `ParamPanel` renders a page of rows (forty, so a plugin with thousands costs forty), keyed by
+    the plugin's own index, and closes itself (asks `onClose(false)`: no focus to give back) when its node, or
+    its plugin, is gone.
+  - **Tests.** Web: six on the search, nine on the list and the count, twenty on the row (in the order of the
+    knob's: range, unit, choice, nothing for what is not there, somebody else's change, shown at once and sent on the
+    frame, the end of a gesture, not pulled away, the keys and those that are not its own, the double click, the bar and
+    when it comes and goes, no render for telemetry or for another parameter), twenty-one on the canvas (the button
+    where it is and is not, the list, the controls and their agreement with the knobs, the reverb's last two, a plugin with
+    gaps in its numbers, the filter, paging, closing four ways, one panel at a time, a panel whose node is gone), one that
+    typing in the filter plays no note; in a browser on the real program, one: a reverb is put in the lane, "lowcut" is
+    found by typing "low", turned by the keyboard to 500 Hz, and the file saved has it. 56 mutations of the code of the step,
+    all caught in the end (five were not at first: a plugin whose indices are not its places, a longer list taken for the
+    same, a key that waited for the frame, the tooltip, blanks taken for a filter).
+  - **Found on the way.** `Param` has a `group` and a `stepCount` that the page does not use: the plugins of this machine
+    report neither (the Acid 303's waveform is a number between 0 and 1 with no steps, Pianoteq has no groups), so
+    it was left as a TODO rather than built blind. The panel does not move the canvas: its nodes that are under it are
+    reached by panning.
+  - **Numbers at the end of the step.** Rust 875 tests (as at the end of step 21, 1023 with the `web` feature and 13 on the
+    real program); web 902 (845 before the step); 40 in browsers (39).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2123,6 +2191,7 @@ mixer, delay, …) are the natural first increment.
 | D22 | Replacing a lane's instrument takes out every cable that drove the old plugin's parameters (a cable names its parameter by the plugin's own index, so one kept would drive whatever the new plugin has at that index); keeping the cables whose parameter the new plugin has under the same name is a later refinement, a TODO in `CLAUDE.md` | Built (step 20) |
 | D23 | The tests own the scene they take for the known one (`web/src/client/fixtures/tracer.toml`), and the examples are for people: a Save in the page writes to the file the program serves, and the way to try the program is to serve an example | Built (step 20) |
 | D24 | A preset is chosen from a menu on the node of the plugin that has it, the one loaded last marked and the menu opening on it; the knobs take the values from the `PresetLoaded` event, which every client is told, and the page reads nothing of the preset itself (a plugin of the machine's is not the page's to open); a load must also move what the cables that drive the plugin are centred on, which is the engine's to do (f64); a bus effect is offered none until the audio thread can load a preset into a group's chain | Built (step 21) |
+| D25 | All the parameters of a plugin are reached through one panel docked beside the canvas, with a filter by name, and not by letting a node grow: the layout of the canvas stays a function of the graph (no node changes size by a click), a plugin with thousands of parameters costs a page of rows, and a row is the same session parameter as a knob (one `Control` for both: what was set shows until the engine has answered) | Built (step 22) |
 
 Open questions
 
