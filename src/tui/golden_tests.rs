@@ -426,6 +426,92 @@ fn session_split_modulator_param_focus() {
     assert_golden("session_split_modulator_param_focus", &mut h);
 }
 
+/// A lane with the three kinds of modulator, each driving the filter and told apart by what it is set to.
+fn scene_three_kinds_of_modulator() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 2.5
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.02
+decay = 0.3
+sustain = 0.6
+release = 0.5
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = -0.25
+[[instrument.modulator]]
+type = "midi"
+midi_cc = 74
+[[instrument.modulator.target]]
+slot = 1
+param = "resonance"
+depth = 1.0
+"#
+}
+
+#[test]
+fn session_envelope_modulator_param_focus() {
+    // An envelope selected, the parameter pane focused on its Sustain row: Type, the four stages, Targets, a depth.
+    let mut h = Harness::new(scene_three_kinds_of_modulator());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+    h.press(KeyCode::Enter).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Down);
+    assert_golden("session_envelope_modulator_param_focus", &mut h);
+}
+
+#[test]
+fn session_midi_modulator_param_focus() {
+    // A MIDI control selected, the parameter pane focused on its depth: what it is bound to, Targets, a depth.
+    let mut h = Harness::new(scene_three_kinds_of_modulator());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 2 });
+    h.press(KeyCode::Enter).press(KeyCode::Down).press(KeyCode::Down);
+    assert_golden("session_midi_modulator_param_focus", &mut h);
+}
+
+#[test]
+fn enter_on_a_row_of_a_modulators_pane_opens_the_value_for_the_numbers_and_nothing_for_the_rest() {
+    // (modulator, row) -> the value popup's title, the text it starts with, and the range it is held to; None where
+    // the row is not a number to type.
+    type Popup = (&'static str, &'static str, f32, f32);
+    let rows: [(usize, usize, Option<Popup>); 15] = [
+        (0, 0, None), // the kind
+        (0, 1, None), // the waveform
+        (0, 2, Some(("Rate (Hz)", "2.50", 0.01, 50.0))),
+        (0, 3, None), // the separator
+        (0, 4, Some(("cutoff depth", "0.40", -1.0, 1.0))),
+        (1, 0, None),
+        (1, 1, Some(("Attack (s)", "0.020", 0.001, 10.0))),
+        (1, 2, Some(("Decay (s)", "0.300", 0.001, 10.0))),
+        (1, 3, Some(("Sustain", "0.600", 0.0, 1.0))),
+        (1, 4, Some(("Release (s)", "0.500", 0.001, 10.0))),
+        (1, 5, None),
+        (1, 6, Some(("cutoff depth", "-0.250", -1.0, 1.0))),
+        (2, 0, None), // what it is bound to
+        (2, 1, None),
+        (2, 2, Some(("resonance depth", "1.00", -1.0, 1.0))),
+    ];
+    for (modulator, row, expected) in rows {
+        let mut h = Harness::new(scene_three_kinds_of_modulator());
+        h.goto(TreeAddress::Modulator { inst: 0, index: modulator });
+        h.press(KeyCode::Enter);
+        for _ in 0..row {
+            h.press(KeyCode::Down);
+        }
+        h.press(KeyCode::Enter);
+        let got = h.s.editing.as_ref().map(|e| (e.param_name.as_str(), e.input.value.as_str(), e.param_min, e.param_max));
+        assert_eq!(got, expected, "modulator {modulator}, row {row}");
+    }
+}
+
 #[test]
 fn session_group_header() {
     // A group header selected: the bus pane (Volume + Pan), the nested members,

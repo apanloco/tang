@@ -3426,144 +3426,8 @@ fn render_session(
                 };
                 match m {
                     Some(m) => {
-                        use crate::plugin::chain::LfoWaveform;
-                        // Type enum (index 0) — always present.
-                        let type_names = vec!["LFO".to_string(), "Envelope".to_string()];
-                        let (name, type_idx) = match &m.source {
-                            ModSourceSlot::Lfo { waveform, rate } => {
-                                let name = format!("LFO {:.1}Hz {}", rate, waveform.name());
-                                mod_params.push(ParamSlot {
-                                    name: "Type".to_string(),
-                                    index: 0,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    default: 0.0,
-                                    value: 0.0,
-                                    kind: ParamKind::Enum(type_names),
-                                    ..Default::default()
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Waveform".to_string(),
-                                    index: 1,
-                                    min: 0.0,
-                                    max: (LfoWaveform::ALL.len() - 1) as f32,
-                                    default: 0.0,
-                                    value: waveform.to_index() as f32,
-                                    kind: ParamKind::Enum(
-                                        LfoWaveform::ALL.iter().map(|w| w.name().to_string()).collect(),
-                                    ),
-                                    ..Default::default()
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Rate (Hz)".to_string(),
-                                    index: 2,
-                                    min: 0.01,
-                                    max: 50.0,
-                                    default: 1.0,
-                                    value: *rate,
-                                    kind: ParamKind::Float,
-                                    ..Default::default()
-                                });
-                                (name, 0)
-                            }
-                            ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                                let name = "ADSR".to_string();
-                                mod_params.push(ParamSlot {
-                                    name: "Type".to_string(),
-                                    index: 0,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    default: 0.0,
-                                    value: 1.0,
-                                    kind: ParamKind::Enum(type_names),
-                                    ..Default::default()
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Attack (s)".to_string(),
-                                    index: 1,
-                                    min: 0.001,
-                                    max: 10.0,
-                                    default: 0.01,
-                                    value: *attack,
-                                    kind: ParamKind::Float,
-                                    ..Default::default()
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Decay (s)".to_string(),
-                                    index: 2,
-                                    min: 0.001,
-                                    max: 10.0,
-                                    default: 0.3,
-                                    value: *decay,
-                                    kind: ParamKind::Float,
-                                    ..Default::default()
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Sustain".to_string(),
-                                    index: 3,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    default: 0.7,
-                                    value: *sustain,
-                                    kind: ParamKind::Float,
-                                    ..Default::default()
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Release (s)".to_string(),
-                                    index: 4,
-                                    min: 0.001,
-                                    max: 10.0,
-                                    default: 0.5,
-                                    value: *release,
-                                    kind: ParamKind::Float,
-                                    ..Default::default()
-                                });
-                                (name, 1)
-                            }
-                            ModSourceSlot::MidiLearn { .. } => {
-                                // A single read-only info row showing the binding.
-                                mod_params.push(ParamSlot {
-                                    name: format!("Source: {}", m.source.label()),
-                                    index: 0,
-                                    min: 0.0,
-                                    max: 0.0,
-                                    default: 0.0,
-                                    value: 0.0,
-                                    kind: ParamKind::Separator,
-                                    ..Default::default()
-                                });
-                                ("MIDI".to_string(), 2)
-                            }
-                        };
-                        let _ = type_idx;
-                        // Separator before target depths.
-                        let depth_offset = match &m.source {
-                            ModSourceSlot::Lfo { .. } => 4,  // 3 source params + 1 separator
-                            ModSourceSlot::Envelope { .. } => 6,  // 5 source params + 1 separator
-                            ModSourceSlot::MidiLearn { .. } => 2, // 1 source-info row + 1 separator
-                        };
-                        mod_params.push(ParamSlot {
-                            name: "Targets".to_string(),
-                            index: 0,
-                            min: 0.0,
-                            max: 0.0,
-                            default: 0.0,
-                            value: 0.0,
-                            kind: ParamKind::Separator,
-                            ..Default::default()
-                        });
-                        for (i, t) in m.targets.iter().enumerate() {
-                            mod_params.push(ParamSlot {
-                                name: format!("{} depth", t.param_name),
-                                index: (i + depth_offset) as u32,
-                                min: DEPTH_MIN,
-                                max: DEPTH_MAX,
-                                default: 0.5,
-                                value: t.depth,
-                                kind: ParamKind::Float,
-                                ..Default::default()
-                            });
-                        }
+                        let (name, rows) = modulator_pane(m);
+                        mod_params = rows;
                         (name, mod_params.as_slice())
                     }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
@@ -4257,58 +4121,87 @@ fn render_help(frame: &mut ratatui::Frame, area: Rect, lines: &[String], offset:
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build the value-entry `EditState` for a modulator pseudo-param at row `pa`,
-/// or None for enum/separator rows. Scope-independent (lane or group).
-fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
-    if pa == 0 {
-        return None; // Type enum
+/// What a row of a modulator's pane is called, with the unit it is in.
+fn modulator_field_label(field: ModulatorField) -> &'static str {
+    match field {
+        ModulatorField::Rate => "Rate (Hz)",
+        ModulatorField::Waveform => "Waveform",
+        ModulatorField::Attack => "Attack (s)",
+        ModulatorField::Decay => "Decay (s)",
+        ModulatorField::Sustain => "Sustain",
+        ModulatorField::Release => "Release (s)",
     }
-    match &m.source {
-        ModSourceSlot::Lfo { rate, .. } => match pa {
-            1 => None, // Waveform enum
-            2 => Some(EditState {
-                input: TextInputState::new(&format!("{:.2}", rate)),
-                param_name: "Rate (Hz)".to_string(),
-                param_min: 0.01,
-                param_max: 50.0,
-            }),
-            3 => None, // Separator
-            _ => m.targets.get(pa - 4).map(|t| EditState {
-                input: TextInputState::new(&format!("{:.2}", t.depth)),
-                param_name: format!("{} depth", t.param_name),
-                param_min: DEPTH_MIN,
-                param_max: DEPTH_MAX,
-            }),
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-            let edit = match pa {
-                1 => Some((*attack, "Attack (s)".to_string(), 0.001f32, 10.0f32)),
-                2 => Some((*decay, "Decay (s)".to_string(), 0.001, 10.0)),
-                3 => Some((*sustain, "Sustain".to_string(), 0.0, 1.0)),
-                4 => Some((*release, "Release (s)".to_string(), 0.001, 10.0)),
-                5 => None, // Separator
-                _ => m.targets.get(pa - 6).map(|t| {
-                    (t.depth, format!("{} depth", t.param_name), DEPTH_MIN, DEPTH_MAX)
-                }),
-            };
-            edit.map(|(val, pname, min, max)| EditState {
-                input: TextInputState::new(&format!("{:.3}", val)),
-                param_name: pname,
-                param_min: min,
-                param_max: max,
+}
+
+/// The pane of a modulator: its title, and a row for each of what `modulator_row` says its rows are (the
+/// kind it is, its waveform, its settings, a separator, a depth for each cable), as parameters to draw.
+fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
+    use crate::plugin::chain::LfoWaveform;
+    let title = match &m.source {
+        ModSourceSlot::Lfo { .. } => m.source.label(),
+        ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
+        ModSourceSlot::MidiLearn { .. } => "MIDI".to_string(),
+    };
+    let row = |name: String, index: usize, min: f32, max: f32, default: f32, value: f32, kind: ParamKind| ParamSlot {
+        name,
+        index: index as u32,
+        min,
+        max,
+        default,
+        value,
+        kind,
+        ..Default::default()
+    };
+    // What a modulator of each kind starts as, which a row's default is.
+    let (new_lfo, new_envelope) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope());
+    let rows = (0..modulator_param_len(m))
+        .filter_map(|position| {
+            Some(match modulator_row(m, position)? {
+                ModulatorRow::Type => {
+                    let envelope = matches!(m.source, ModSourceSlot::Envelope { .. });
+                    row("Type".to_string(), position, 0.0, 1.0, 0.0, if envelope { 1.0 } else { 0.0 }, ParamKind::Enum(vec!["LFO".to_string(), "Envelope".to_string()]))
+                }
+                ModulatorRow::Waveform => {
+                    let (min, max) = ModulatorField::Waveform.range();
+                    let value = m.source.setting(ModulatorField::Waveform).unwrap_or(0.0);
+                    let names = LfoWaveform::ALL.iter().map(|w| w.name().to_string()).collect();
+                    row(modulator_field_label(ModulatorField::Waveform).to_string(), position, min, max, 0.0, value, ParamKind::Enum(names))
+                }
+                ModulatorRow::Setting(field) => {
+                    let (min, max) = field.range();
+                    let default = new_lfo.setting(field).or_else(|| new_envelope.setting(field)).unwrap_or(min);
+                    row(modulator_field_label(field).to_string(), position, min, max, default, m.source.setting(field)?, ParamKind::Float)
+                }
+                // A control's source, shown and not edited.
+                ModulatorRow::Info => row(format!("Source: {}", m.source.label()), position, 0.0, 0.0, 0.0, 0.0, ParamKind::Separator),
+                ModulatorRow::Separator => row("Targets".to_string(), position, 0.0, 0.0, 0.0, 0.0, ParamKind::Separator),
+                ModulatorRow::Depth(target) => {
+                    let target = m.targets.get(target)?;
+                    row(format!("{} depth", target.param_name), position, DEPTH_MIN, DEPTH_MAX, 0.5, target.depth, ParamKind::Float)
+                }
             })
+        })
+        .collect();
+    (title, rows)
+}
+
+/// Build the value-entry `EditState` for row `pa` of a modulator's pane, or None for a row that is
+/// not a number to type (the kind, the waveform, a separator). Scope-independent (lane or group).
+fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
+    // (An envelope's numbers are shown to a thousandth, the others' to a hundredth.)
+    let places = if matches!(m.source, ModSourceSlot::Envelope { .. }) { 3 } else { 2 };
+    let (value, name, min, max) = match modulator_row(m, pa)? {
+        ModulatorRow::Setting(field) => {
+            let (min, max) = field.range();
+            (m.source.setting(field)?, modulator_field_label(field).to_string(), min, max)
         }
-        // Row 0 = source info (handled above), 1 = Targets separator, 2+ = depths.
-        ModSourceSlot::MidiLearn { .. } => match pa {
-            1 => None,
-            _ => m.targets.get(pa - 2).map(|t| EditState {
-                input: TextInputState::new(&format!("{:.2}", t.depth)),
-                param_name: format!("{} depth", t.param_name),
-                param_min: DEPTH_MIN,
-                param_max: DEPTH_MAX,
-            }),
-        },
-    }
+        ModulatorRow::Depth(target) => {
+            let target = m.targets.get(target)?;
+            (target.depth, format!("{} depth", target.param_name), DEPTH_MIN, DEPTH_MAX)
+        }
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => return None,
+    };
+    Some(EditState { input: TextInputState::new(&format!("{value:.places$}")), param_name: name, param_min: min, param_max: max })
 }
 
 fn param_step(s: &State, modifiers: KeyModifiers) -> f32 {

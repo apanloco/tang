@@ -951,8 +951,10 @@ one that fails (`NotFound`, `EdgeNotFound`, `Invalid`) changes nothing. The TUI'
 parameter, gain, preset and modulator-row edits use them (what each row of a
 modulator's parameter pane is comes from one table, `modulator_row` in
 `src/app/model.rs`, which says its range, whether it is an enum and which intent it
-makes; the Type row, which turns an LFO into an envelope, is still the TUI's own
-edit). Its other edits still change the model and send the command
+makes; the pane is drawn (`modulator_pane`) and the value popup opened
+(`modulator_edit_state`) from it too, so a row's label, range and default are in one
+place in the TUI; the Type row, which turns an LFO into an envelope, is still the TUI's
+own edit). Its other edits still change the model and send the command
 themselves, until their intents exist; for deleting and moving an effect they
 use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
 targets of the lane and of its group pointing at the same plugins, as the audio
