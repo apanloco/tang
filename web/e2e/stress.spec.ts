@@ -52,13 +52,33 @@ test("every bar and every dot is alive: each of the 32 LFOs' bars has a value, a
   expect(second.filter((value, i) => Math.abs(value - (first[i] ?? value)) > 0.001).length).toBeGreaterThanOrEqual(30);
   expect(Math.max(...second)).toBeLessThanOrEqual(1);
   expect(Math.min(...second)).toBeGreaterThanOrEqual(-1);
-  // And so do the dots: they are written, so they are not where they started.
+  // And so do the dots: they are written, so they are not where they started. Not in one short
+  // interval (a sine at its peak hardly moves in an eighth of a second, so how many of the 64 had moved
+  // was chance: 54 where it wanted 55 now and then): a dot is alive if it is ever somewhere else than
+  // where it started, in half a second. Except one that sits at an end of its knob, where half of
+  // what an LFO does is clamped away (the stress scene has a volume at 1): it may stay for as long as
+  // the LFO is in that half. Nearly all of them move, and the ones that do not are at an end.
   const dots = page.locator('.tang-knob__dot[visibility="visible"]');
-  const where = () => dots.evaluateAll((all) => all.map((dot) => `${dot.getAttribute("cx") ?? ""},${dot.getAttribute("cy") ?? ""}`));
-  const dotsBefore = await where();
-  await page.waitForTimeout(130);
-  const dotsAfter = await where();
-  expect(dotsAfter.filter((place, i) => place !== dotsBefore[i]).length).toBeGreaterThanOrEqual(55);
+  const look = () =>
+    dots.evaluateAll((all) =>
+      all.map((dot) => {
+        const slider = dot.closest(".tang-knob")?.querySelector('[role="slider"]');
+        const now = Number(slider?.getAttribute("aria-valuenow"));
+        const atAnEnd = now === Number(slider?.getAttribute("aria-valuemin")) || now === Number(slider?.getAttribute("aria-valuemax"));
+        return { place: `${dot.getAttribute("cx") ?? ""},${dot.getAttribute("cy") ?? ""}`, atAnEnd };
+      }),
+    );
+  const started = await look();
+  const moved = new Set<number>();
+  for (let sample = 0; sample < 5; sample++) {
+    await page.waitForTimeout(100);
+    (await look()).forEach((dot, i) => {
+      if (dot.place !== started[i]?.place) moved.add(i);
+    });
+  }
+  expect(started).toHaveLength(64);
+  expect(moved.size).toBeGreaterThanOrEqual(60);
+  expect(started.flatMap((dot, i) => (dot.atAnEnd || moved.has(i) ? [] : [i]))).toEqual([]);
 });
 
 test("32 modulators and 64 live knobs run at the display's rate, and React renders nothing for them", async ({ page }) => {
