@@ -1,0 +1,60 @@
+.tang-menu-button {
+  flex: none;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tang-menu-button:hover:not(:disabled),
+.tang-menu-button[aria-expanded="true"] {
+  border-color: var(--tang-modulation);
+}
+
+.tang-menu-button:focus-visible,
+.tang-menu__item:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-menu-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Over the canvas, whose nodes and cables have z-indexes of their own. */
+.tang-menu {
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  padding: var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.45);
+}
+
+.tang-menu__item {
+  padding: 5px var(--tang-space-3);
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-size);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tang-menu__item:hover,
+.tang-menu__item:focus {
+  background: var(--tang-border);
+}
