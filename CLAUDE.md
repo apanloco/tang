@@ -606,9 +606,9 @@ watch it without resetting it. Clips from before the TUI started do not light it
 | 3 | Oscilloscope | Real-time waveform of audio output |
 | 4 | Help | Keybindings and usage reference (static, scrollable) |
 
-TODO: Piano and Oscilloscope tabs are placeholders — only Session and Help
-are functional today. The Piano tab will host the virtual piano UI; the
-Oscilloscope tab will draw the live waveform.
+TODO: the Oscilloscope tab is a placeholder and will draw the live waveform. The
+Piano tab draws the keyboard, the scale and the notes being held (see "Piano
+tab"), but takes no note input yet.
 
 ### Global keybindings
 
