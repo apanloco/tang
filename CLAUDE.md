@@ -1281,13 +1281,28 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`): TypeScript + React + Vite, React Flow for the patch
-  canvas, a framework-agnostic client layer, generated protocol types.
+- **Frontend** (`web/`, step 11 built the skeleton): TypeScript (strictest settings) +
+  React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
+  telemetry buffers, the connection with its reconnection and token, a vanilla zustand
+  store, and the mock engine, which speaks the protocol in the page), generated protocol
+  types, design tokens as CSS variables (`web/src/ui/tokens.css`), and for now one view:
+  the connection state and the session as JSON. React Flow for the patch canvas comes
+  with step 12. `cd web && npm ci`, then `npm run dev` (Vite on 5173, forwarding `/ws`
+  to `tang serve --web-origin http://localhost:5173`; `?engine=mock` in the address
+  needs no server), `npm test` (Vitest), `npm run lint`, `npm run typecheck`,
+  `npm run storybook`, `npm run build` (→ `web/dist`), `npm run e2e` (Playwright, needs
+  `cargo build --features web`; `npm run e2e:install` once). The program serves
+  `web/dist` itself (`src/web/assets.rs`, `rust-embed`: read from the disk in a debug
+  build, inside the binary in a release build, so **run `npm run build` before
+  `cargo build --release --features web`**; without it the program serves a placeholder
+  that says so). `web/dist/` keeps a `.gitkeep` so that the program builds without
+  Node. The tracer's snapshot in `web/src/client/fixtures/` is generated:
+  `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types.
 - **Scope**: track A first — a "rack-as-patch" canvas over the existing engine
   (serial audio chain, block-rate lane-global modulation, cables = modulation
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
-TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md`.
+TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md` (steps 12 and 13 are left).
 TODO: `--web[=addr]` (the web runtime alongside the TUI; step 13).
 TODO: `ui` layout fields in the session format.
 TODO: patterns as graph nodes (they have no `NodeId` yet).

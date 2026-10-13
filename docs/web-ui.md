@@ -545,6 +545,29 @@ audio hardware. Dev: `npm run dev` (Vite proxying `/ws` to `tang serve`) or the
 mock engine. Build: `npm run build` → `web/dist`, embedded with `rust-embed`
 under feature `web` (debug builds may serve from disk).
 
+**As built (step 11).** `web/src/client/`: `reducers.ts`, `telemetry.ts`,
+`connection.ts` (`Client`, `Transport`), `websocket.ts`, `mock.ts` (`MockServer`),
+`fixtures.ts`; `web/src/protocol/index.ts` lists the generated types the app uses;
+`web/src/ui/` has the tokens (`tokens.css`) and `ConnectionStatus`; `web/src/app/` has
+`App`, `ClientProvider` (`useClient`, `useClientState`) and `engine.ts` (which server a
+page talks to: its own, or the mock with `?engine=mock`). The store is vanilla zustand,
+so `client/` has no React in it; React binds to it with `useStore`. The page's address
+decides the socket (`ws:` or `wss:` on the page's own host) and a `#token=…` in it is
+the token. `web/dist/` is cleaned by `scripts/clean-dist.mjs` instead of by Vite, to keep
+its `.gitkeep`, which makes the folder exist in a checkout so that the program (which
+embeds it) builds without Node.
+
+**Serving it (`web::assets`).** `rust-embed` carries `web/dist`: in a release build the
+files are in the binary (`cargo build --release --features web` after `npm run build`:
+nothing warns if the interface was not built first, and the program then serves a
+placeholder that says how), in a debug build they are read from the disk, so rebuilding
+the interface needs no rebuild of the program. Only the interface's files are served
+(`/` is `index.html`; no hidden file, no `..`, no listing, a 404 for the rest, no SPA
+fallback until the app has routes). The page carries a content security policy (own
+scripts and styles, images and fonts, a connection to its own server; no inline script
+or style, no eval, no framing) and is looked at again each time; the files in `assets/`,
+which Vite names by their content, are kept for ever.
+
 ### 9.3 Patch view (track A)
 
 Layout: outline (the TUI's chain tree) | canvas | inspector (the TUI's parameter
@@ -603,6 +626,12 @@ pane), with the piano along the bottom.
   `npm test`, then `cargo clippy` / `cargo test --features web`. The existing
   matrix, including Windows' `--no-default-features --features vst3`, is
   untouched; whether `web` joins it is open.
+  **As built (steps 10 and 11):** the matrix also runs clippy (`--all-targets`) and
+  the tests with `--features web` on every platform; the job `typescript` checks the
+  generated types; and the job `web` runs, on Linux, `npm ci`, lint, types, unit
+  tests, the build, the Storybook build, then builds the program (without the plugin
+  formats), installs Chromium and runs the browser tests, keeping the report when they
+  fail.
 
 ## 11. Phases
 
@@ -1022,13 +1051,62 @@ Each step is a reviewable change; the TUI must not regress at any point.
   against a real browser (step 11 brings one); the null backend's pace under a
   loaded machine; `tang serve` with a plugin that takes seconds to load (the
   runtime starts after the session is loaded).
-- [ ] **11. `web/` skeleton and CI.** Vite + React + strict TypeScript +
+- [x] **11. `web/` skeleton and CI.** Vite + React + strict TypeScript +
   ESLint; the `client` layer (connection, store, reducers, telemetry buffers)
   and the mock engine; `ui` tokens; Storybook; Vitest; the Playwright harness;
   `.gitignore` entries; a Linux CI job that builds `web/`, runs the web tests,
   then `cargo clippy` / `cargo test --features web`; `rust-embed` wiring.
   *Done when:* CI is green, and `npm run dev` against both the mock engine and
   `tang serve` shows the connection state and the raw session.
+  - **Built, in nine commits** (the sections above, §9.2 and §10 especially, describe
+    the result):
+    1. `web/`: Vite 8 + React 19 + TypeScript 6 in its strictest settings
+       (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
+       `verbatimModuleSyntax`, no unused anything), ESLint 10 with typescript-eslint's
+       strict and stylistic type-checked rules, Vitest 5 (jsdom for components);
+       `package-lock.json` committed, Node 22 or later.
+    2. The tracer's snapshot as a fixture (`web/src/client/fixtures/`), kept current
+       by a Rust test the way the generated TypeScript is
+       (`TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture`).
+    3. `client/reducers.ts` (events applied to a snapshot, exhaustive over the event
+       types, structure shared) and `client/telemetry.ts` (frame decoding, the index of
+       what is where, buffers written in place for a drawing loop).
+    4. `client/connection.ts` (`Client`: a vanilla zustand store and the calls a view
+       makes; hello, token, subscribe, snapshot, events; resync on a gap; reconnection
+       with a delay that doubles; requests that resolve with the revision and fail with
+       the server's code), `client/websocket.ts` (the browser's transport) and
+       `client/mock.ts` (`MockServer`: the same protocol in the page, with intents
+       applied as the controller does and telemetry made up by the engine's formulas).
+    5. `app/` and `ui/`: the first view (the connection state in words, the reason the
+       page cannot go on, the session as JSON kept up to date), `ClientProvider` and
+       `useClientState`, `?engine=mock`, and the design tokens as CSS variables
+       (`ui/tokens.css`, with the TUI's colours for held, root, scale, modulation, group).
+    6. Playwright (`web/e2e`): Chromium against the mock engine and against the real
+       program on the null backend (through Vite's proxy, and directly).
+    7. Storybook 10: the status in every state, the colours, and the whole page over a
+       mock engine; every story is also rendered by `npm test`.
+    8. `web::assets`: `rust-embed` serves `web/dist` (see §9.2).
+    The ninth fixed what the work showed: the end-to-end test of `tang serve` left the
+    program running when it failed to start it.
+  - **Dev loop.** `cd web && npm ci`; `npm run dev` serves on 5173 and forwards `/ws`
+    to a `tang serve --web-origin http://localhost:5173` (or `$TANG_SERVER`);
+    `http://localhost:5173/?engine=mock` needs no server at all. `npm run storybook`,
+    `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`,
+    `npm run e2e` (`npm run e2e:install` once, for the browser; it needs
+    `cargo build --features web` first).
+  - **Checked.** 103 Vitest tests (reducers against the Rust-made fixture, telemetry
+    against the bytes of the Rust test, the client against the mock and against a
+    scripted server, the app in jsdom, every story), mutation-checked with a small runner
+    (about 90 mutants; the survivors are named in the commit messages), and 5 browser
+    tests: the mock; the real server through Vite; a change from another client
+    appearing on the page; the page served by the program itself, under its content
+    security policy, with no console error; its files and its 404s. A release build was
+    run with `web/dist` emptied, and still served the page and its script from inside
+    itself.
+  **Not checked:** the CI job `web` (the branch has not been pushed), browsers other
+  than Chromium (and so the policy's `connect-src 'self'` for a WebSocket in Safari and
+  Firefox), and a release build made before the interface was (it serves the
+  placeholder: nothing warns at build time).
 - [ ] **12. Tracer UI.** `examples/tracer.toml` (saw oscillator → filter, LFO →
   cutoff); a canvas with the lane strip, a modulator node and a cable; a `Knob`
   with value / ring / dot; telemetry-driven animation outside React's render
@@ -1070,6 +1148,8 @@ mixer, delay, …) are the natural first increment.
 | D9 | Short design + TODOs in `CLAUDE.md`, long form here | Assumed |
 | D10 | `tang serve` listens on `127.0.0.1:8765` by default; beyond loopback `--web-bind` and a token made for the run | Built (step 10) |
 | D11 | One current-thread tokio runtime on its own thread for the server and the pusher; `ctrlc` for stopping a headless process | Built (step 10) |
+| D12 | The client's store is vanilla zustand (no React in `client/`), the mock engine speaks the protocol through the same `Transport` as a socket, and the fixture the mock serves is generated from the Rust types and kept current by a Rust test | Built (step 11) |
+| D13 | `web/dist` is embedded with `rust-embed`, with a committed `.gitkeep` so that the program builds without Node; the interface's content security policy has no `unsafe-*` | Built (step 11) |
 
 Open questions
 
