@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 /// Default audio buffer size in frames.
 ///
@@ -15,6 +16,9 @@ use clap::{Args, Parser, Subcommand};
 pub const DEFAULT_BUFFER_SIZE: &str = "1024";
 #[cfg(not(target_os = "linux"))]
 pub const DEFAULT_BUFFER_SIZE: &str = "256";
+
+/// Where the web interface listens unless it is told otherwise: on this machine only.
+pub const DEFAULT_WEB_BIND: &str = "127.0.0.1:8765";
 
 // The flags are `global`: they are the same wherever they are written, before the
 // subcommand or after it (`tang play x.toml --audio-device none`).
@@ -46,8 +50,47 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub debug: bool,
 
+    /// Serve the session to a browser as well, while the terminal interface runs:
+    /// what is changed in either shows in the other. Takes an address (an IP and a
+    /// port) after an `=`, as in `--web=0.0.0.0:9000`; on its own, 127.0.0.1:8765.
+    /// Beyond this machine (anything but 127.0.0.1 or ::1) it needs a token: one is
+    /// made, and printed in the address to open.
+    #[arg(
+        long,
+        value_name = "ADDR",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = DEFAULT_WEB_BIND
+    )]
+    pub web: Option<SocketAddr>,
+
+    /// Another page that may connect to the web interface of `--web`, as
+    /// scheme://host:port (a dev server, say). Can be given more than once.
+    #[arg(long = "web-origin", value_name = "ORIGIN", requires = "web")]
+    pub web_origins: Vec<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Cli {
+    /// What the terminal interface is to serve to browsers, if it is to: the
+    /// arguments `serve` takes, from `--web` and `--web-origin`.
+    pub fn tui_web(&self) -> Option<WebArgs> {
+        self.web.map(|web_bind| WebArgs { web_bind, web_origins: self.web_origins.clone() })
+    }
+
+    /// What clap cannot say: `--web` is for the terminal interface, so a subcommand
+    /// has no use for it (`serve` has `--web-bind`, and `play` no web interface).
+    pub fn check(&self) -> Result<(), clap::Error> {
+        if self.web.is_some() && self.command.is_some() {
+            return Err(Cli::command().error(
+                ErrorKind::ArgumentConflict,
+                "--web is for the terminal interface (`tang --web`); `tang serve` has --web-bind, and the other subcommands have no web interface",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Subcommand)]
@@ -82,12 +125,12 @@ pub struct WebArgs {
     /// Address (an IP and a port) for the web interface to listen on. Beyond this
     /// machine (anything but 127.0.0.1 or ::1) it needs a token: one is made, and
     /// printed in the address to open.
-    #[arg(long, default_value = "127.0.0.1:8765")]
+    #[arg(long, default_value = DEFAULT_WEB_BIND)]
     pub web_bind: SocketAddr,
 
     /// Another page that may connect, as scheme://host:port (a dev server, say). Can be
     /// given more than once.
-    #[arg(long = "web-origin")]
+    #[arg(long = "web-origin", value_name = "ORIGIN")]
     pub web_origins: Vec<String>,
 }
 
@@ -151,6 +194,70 @@ mod tests {
         assert!(Cli::try_parse_from(["tang", "play", "x.toml", "--web-bind", "127.0.0.1:1"]).is_err());
         assert!(Cli::try_parse_from(["tang", "--web-bind", "127.0.0.1:1"]).is_err());
         assert!(Cli::try_parse_from(["tang", "serve", "--web-bind", "localhost:8765"]).is_err(), "an address, not a name");
+    }
+
+    #[test]
+    fn the_terminal_interface_serves_the_web_interface_when_asked_to() {
+        let cli = Cli::try_parse_from(["tang"]).unwrap();
+        assert_eq!((cli.web, cli.tui_web()), (None, None), "not unless asked for");
+
+        let cli = Cli::try_parse_from(["tang", "--web"]).unwrap();
+        assert_eq!(cli.web, Some("127.0.0.1:8765".parse().unwrap()), "on this machine, where `serve` listens");
+
+        let cli = Cli::try_parse_from(["tang", "--web=0.0.0.0:9000", "x.toml"]).unwrap();
+        assert_eq!((cli.web, cli.session.as_deref()), (Some("0.0.0.0:9000".parse().unwrap()), Some("x.toml")));
+
+        // The address comes after an `=` only, so a session after `--web` is a session.
+        let cli = Cli::try_parse_from(["tang", "--web", "x.toml"]).unwrap();
+        assert_eq!((cli.web, cli.session.as_deref()), (Some("127.0.0.1:8765".parse().unwrap()), Some("x.toml")));
+        let cli = Cli::try_parse_from(["tang", "x.toml", "--web"]).unwrap();
+        assert_eq!((cli.web, cli.session.as_deref()), (Some("127.0.0.1:8765".parse().unwrap()), Some("x.toml")));
+    }
+
+    #[test]
+    fn the_web_flag_of_the_terminal_interface_has_the_arguments_serve_has() {
+        let args = ["tang", "--web=[::1]:9000", "--web-origin", "http://localhost:5173", "--web-origin", "http://localhost:5174"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert_eq!(
+            cli.tui_web(),
+            Some(WebArgs {
+                web_bind: "[::1]:9000".parse().unwrap(),
+                web_origins: vec!["http://localhost:5173".to_string(), "http://localhost:5174".to_string()],
+            })
+        );
+        let plain = Cli::try_parse_from(["tang", "--web"]).unwrap();
+        assert_eq!(plain.tui_web(), Some(WebArgs { web_bind: "127.0.0.1:8765".parse().unwrap(), web_origins: vec![] }));
+    }
+
+    #[test]
+    fn the_web_origins_of_the_terminal_interface_need_the_web_flag() {
+        assert!(Cli::try_parse_from(["tang", "--web-origin", "http://localhost:5173"]).is_err());
+        assert!(Cli::try_parse_from(["tang", "x.toml", "--web-origin", "http://localhost:5173"]).is_err());
+        // (`serve` has its own, with the address it listens on.)
+        assert!(Cli::try_parse_from(["tang", "serve", "--web-origin", "http://localhost:5173"]).is_ok());
+    }
+
+    #[test]
+    fn an_address_is_an_ip_and_a_port() {
+        for bad in ["--web=localhost:8765", "--web=8765", "--web=127.0.0.1", "--web="] {
+            assert!(Cli::try_parse_from(["tang", bad]).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_web_flag_belongs_to_the_terminal_interface_alone() {
+        // `play` has no web interface, and `serve` has `--web-bind`.
+        assert!(Cli::try_parse_from(["tang", "play", "x.toml", "--web"]).is_err());
+        assert!(Cli::try_parse_from(["tang", "serve", "x.toml", "--web"]).is_err());
+        assert!(Cli::try_parse_from(["tang", "enumerate", "audio", "--web"]).is_err());
+        // Written before a subcommand it parses, because it is the top level's, and `check` refuses it.
+        for args in [["tang", "--web", "play", "x.toml"], ["tang", "--web", "serve", "x.toml"]] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let error = cli.check().expect_err("a subcommand and --web").to_string();
+            assert!(error.contains("--web"), "{error}");
+        }
+        assert!(Cli::try_parse_from(["tang", "--web", "x.toml"]).unwrap().check().is_ok());
+        assert!(Cli::try_parse_from(["tang", "play", "x.toml"]).unwrap().check().is_ok());
     }
 
     #[test]

@@ -46,6 +46,11 @@ use crossterm::event::{
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Err(e) = cli.check() {
+        e.exit();
+    }
+    // What the terminal interface is to serve to browsers (`--web`), if it is to.
+    let tui_web = cli.tui_web();
 
     // Load application config (extra plugin paths, etc.)
     if let Ok(config_dir) = dirs_config() {
@@ -89,10 +94,17 @@ fn main() -> anyhow::Result<()> {
         sample_rate,
         debug,
         command,
+        ..
     } = cli;
 
     match command {
-        None => run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Tui),
+        None => {
+            #[cfg(not(feature = "web"))]
+            if tui_web.is_some() {
+                anyhow::bail!("this build of tang has no web interface: build it with `--features web`");
+            }
+            run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Tui(tui_web))
+        }
         Some(Command::Enumerate(target)) => {
             env_logger::init();
             match target {
@@ -163,8 +175,9 @@ fn main() -> anyhow::Result<()> {
 
 /// What a session is run for.
 enum Mode {
-    /// The terminal interface.
-    Tui,
+    /// The terminal interface, which also serves the session to browsers if it has
+    /// the arguments for that (`--web`).
+    Tui(Option<cli::WebArgs>),
     /// No interface: the virtual piano and the MIDI devices play the session.
     Play,
     /// No interface at all: a browser controls the session.
@@ -277,7 +290,7 @@ fn run_session(
     debug: bool,
     mode: Mode,
 ) -> anyhow::Result<()> {
-    let use_tui = matches!(mode, Mode::Tui);
+    let use_tui = matches!(mode, Mode::Tui(_));
     #[cfg(feature = "web")]
     let serving = matches!(mode, Mode::Serve(_));
     #[cfg(not(feature = "web"))]
@@ -477,10 +490,8 @@ fn run_session(
     }
 
     // --- Branch: TUI view, a server for a browser, or plain play mode ---
-    let ctl = if use_tui {
-        // (`tang --web` comes with the command line for it: the terminal interface is
-        // not asked to serve the session yet.)
-        tui::run(ctl, None)?
+    let ctl = if let Mode::Tui(web) = &mode {
+        tui::run(ctl, web.as_ref())?
     } else if serving {
         #[cfg(feature = "web")]
         if let Mode::Serve(args) = &mode {
