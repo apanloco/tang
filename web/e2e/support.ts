@@ -116,10 +116,59 @@ export async function sampleCutoff(page: Page, ms: number): Promise<Sample[]> {
   );
 }
 
+/** What of the session a test looks at: the parameters of the plugins, the LFO's settings, and the depths of the cables. */
+interface SessionView {
+  graph: {
+    nodes: { id: number; name: string; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
+    edges: { kind: string; id?: number; amount?: number }[];
+  };
+}
+
 /** A message of the server, of which a test looks at the kind and, for a snapshot, the session. */
 interface Message {
   type: string;
-  snapshot?: { graph: { nodes: { id: number; name: string; plugin?: { params: { index: number; value: number }[] } }[] } };
+  snapshot?: SessionView;
+}
+
+/** What the server says of the tracer's LFO and of the cable from it to the cutoff. */
+export interface LfoView {
+  rate: number;
+  waveform: string;
+  depth: number;
+}
+
+/**
+ * Another client of the server (its own socket, as the TUI would be): the LFO's rate and waveform
+ * and the depth of its cable, as the server has them now.
+ */
+export async function lfoAccordingToTheServer(page: Page): Promise<LfoView> {
+  return page.evaluate(
+    (port) =>
+      new Promise<LfoView>((resolve, reject) => {
+        const Socket = window.__RealWebSocket ?? WebSocket;
+        const socket = new Socket(`ws://127.0.0.1:${String(port)}/ws`);
+        const timer = setTimeout(() => {
+          reject(new Error("no snapshot"));
+        }, 5000);
+        socket.addEventListener("message", (event: MessageEvent<unknown>) => {
+          if (typeof event.data !== "string") return;
+          const message = JSON.parse(event.data) as Message;
+          if (message.type === "hello") socket.send(JSON.stringify({ type: "subscribe" }));
+          if (message.type === "snapshot") {
+            clearTimeout(timer);
+            socket.close();
+            const lfo = message.snapshot?.graph.nodes.find((node) => node.name === "LFO");
+            const cable = message.snapshot?.graph.edges.find((edge) => edge.kind === "modulation");
+            if (lfo?.source?.rate !== undefined && lfo.source.waveform !== undefined && cable?.amount !== undefined) {
+              resolve({ rate: lfo.source.rate, waveform: lfo.source.waveform, depth: cable.amount });
+            } else {
+              reject(new Error("the tracer has no LFO with a cable"));
+            }
+          }
+        });
+      }),
+    TANG,
+  );
 }
 
 /**
@@ -155,7 +204,7 @@ export async function cutoffAccordingToTheServer(page: Page): Promise<number> {
 }
 
 /**
- * Put the tracer's filter back as `examples/tracer.toml` has it, from another client of the
+ * Put the tracer's filter and LFO back as `examples/tracer.toml` has them, from another client of the
  * server. The tests of the real program share its one session, so what a test turns is what the
  * next would find (and what the page of another test would see).
  */
@@ -171,6 +220,8 @@ export async function resetTracer(page: Page): Promise<void> {
         }, 5000);
         let filter: number | undefined;
         let oscillator: number | undefined;
+        let lfo: number | undefined;
+        let cable: number | undefined;
         let waiting = 0;
         socket.addEventListener("message", (event: MessageEvent<unknown>) => {
           if (typeof event.data !== "string") return;
@@ -180,7 +231,12 @@ export async function resetTracer(page: Page): Promise<void> {
             const nodes = message.snapshot?.graph.nodes ?? [];
             filter = nodes.find((node) => node.name === "Filter")?.id;
             oscillator = nodes.find((node) => node.name === "Oscillator")?.id;
+            lfo = nodes.find((node) => node.name === "LFO")?.id;
+            cable = message.snapshot?.graph.edges.find((edge) => edge.kind === "modulation")?.id;
             const intents = [
+              { type: "setModulatorField", node: lfo, field: "rate", value: 0.5 },
+              { type: "setModulatorField", node: lfo, field: "waveform", value: 0 },
+              { type: "setEdgeDepth", edge: cable, depth: 0.4 },
               { type: "setParam", node: filter, param: 0, value: 0.5 },
               { type: "setParam", node: filter, param: 1, value: 2 },
               { type: "setParam", node: filter, param: 2, value: 0 },
