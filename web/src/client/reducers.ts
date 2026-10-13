@@ -43,7 +43,8 @@ function changeNode(snapshot: Snapshot, event: StampedEvent): Node | string {
     case "presetLoaded": {
       const plugin = pluginOf(node);
       if (!plugin) return `node ${node.id} has no plugin`;
-      const changed = withValues({ ...plugin, currentPreset: event.preset }, event.values);
+      // The controller keeps a preset's values as the parameters' baseline too, and a snapshot shows the baseline as the default.
+      const changed = withValues({ ...plugin, currentPreset: event.preset }, event.values, true);
       return changed ? withPlugin(node, changed) : `the preset names a parameter node ${node.id} does not have`;
     }
   }
@@ -58,15 +59,15 @@ function withPlugin(node: Node, plugin: Plugin): Node {
   return node.kind === "instrument" || node.kind === "effect" ? { ...node, plugin } : node;
 }
 
-/** The plugin with these parameters at these values; null if it lacks one of them. */
-function withValues(plugin: Plugin, values: readonly ParamValue[]): Plugin | null {
+/** The plugin with these parameters at these values (and, if `baseline`, with them as their defaults); null if it lacks one of them. */
+function withValues(plugin: Plugin, values: readonly ParamValue[], baseline = false): Plugin | null {
   const wanted = new Map(values.map((v) => [v.param, v.value]));
   let found = 0;
   const params = plugin.params.map((param) => {
     const value = wanted.get(param.index);
     if (value === undefined) return param;
     found += 1;
-    return { ...param, value };
+    return baseline ? { ...param, value, default: value } : { ...param, value };
   });
   return found === wanted.size ? { ...plugin, params } : null;
 }

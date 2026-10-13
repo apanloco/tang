@@ -36,6 +36,12 @@ describe("a parameter set", () => {
     expect(paramOf(after, filter, 0).value).toBe(0.9);
   });
 
+  test("leaves the default of the parameter as it was: only a preset moves that", () => {
+    const before = paramOf(tracerSnapshot, filter, 0).default;
+    expect(before).not.toBe(0.9);
+    expect(paramOf(applied(tracerSnapshot, event), filter, 0).default).toBe(before);
+  });
+
   test("changes nothing else, and shares what it did not change", () => {
     const after = applied(tracerSnapshot, event);
     const before = paramOf(tracerSnapshot, filter, 1);
@@ -131,6 +137,22 @@ describe("a preset loaded", () => {
     expect(node?.kind === "effect" && node.plugin.currentPreset).toBe("Dark");
     expect([paramOf(after, filter, 0).value, paramOf(after, filter, 1).value]).toEqual([0.2, 4]);
     expect(paramOf(after, filter, 2)).toBe(paramOf(tracerSnapshot, filter, 2));
+  });
+
+  test("makes the values it set the parameters' defaults, which is what the controller keeps them as", () => {
+    const event: StampedEvent = {
+      rev: 1,
+      type: "presetLoaded",
+      node: filter.id,
+      preset: "Dark",
+      values: [
+        { param: 0, value: 0.2 },
+        { param: 1, value: 4 },
+      ],
+    };
+    const after = applied(tracerSnapshot, event);
+    expect([paramOf(after, filter, 0).default, paramOf(after, filter, 1).default]).toEqual([0.2, 4]);
+    expect(paramOf(after, filter, 2).default).toBe(paramOf(tracerSnapshot, filter, 2).default);
   });
 
   test("is refused if it sets a parameter the plugin does not have", () => {
