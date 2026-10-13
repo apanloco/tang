@@ -3,6 +3,7 @@
 import { WAVEFORMS } from "../protocol";
 import type { EdgeId, Gain, ModulatorField, Node, NodeId, Param, Preset } from "../protocol";
 import type { ClientState } from "./connection";
+import { displayNames } from "./names";
 
 /** The node of the session with this id, if the client has a session and it has one. */
 export function nodeById(state: ClientState, id: NodeId): Node | undefined {
@@ -28,6 +29,50 @@ export function presetsOf(state: ClientState, id: NodeId): { presets: readonly P
   if (!node.plugin) return null;
   if (node.kind === "effect" && state.snapshot?.graph.nodes.find((n) => n.id === node.parent)?.kind === "group") return null;
   return { presets: node.plugin.presets, current: node.plugin.currentPreset };
+}
+
+/** The parameters of a plugin to look through: what each is called and its own index, with whose they are. */
+export interface ParamList {
+  /** What the canvas calls the node. */
+  name: string;
+  /** What kind of plugin it is (`Built-in`, `CLAP`, ...). */
+  format: string;
+  params: readonly { index: number; name: string }[];
+}
+
+/**
+ * Every parameter of the plugin of node `id`, by name and the plugin's own index, for a person to find one in: the plugin
+ * of an instrument or of any effect, a group's bus included (a bus effect has parameters to turn, whatever it cannot be
+ * given as a preset). Null for a node that has no plugin. It holds no values, so that it is the same list, by `sameParamList`,
+ * while they change.
+ */
+export function paramListOf(state: ClientState, id: NodeId): ParamList | null {
+  const graph = state.snapshot?.graph;
+  const node = graph?.nodes.find((candidate) => candidate.id === id);
+  if (!graph || (node?.kind !== "instrument" && node?.kind !== "effect") || !node.plugin) return null;
+  return {
+    name: displayNames(graph).get(id) ?? node.name,
+    format: node.plugin.format,
+    params: node.plugin.params.map((param) => ({ index: param.index, name: param.name })),
+  };
+}
+
+/** How many parameters the plugin of node `id` has: none for a node that has no plugin. (Cheaper than the list, for what only asks whether there are any.) */
+export function paramCountOf(state: ClientState, id: NodeId): number {
+  const node = nodeById(state, id);
+  return (node?.kind === "instrument" || node?.kind === "effect" ? node.plugin?.params.length : undefined) ?? 0;
+}
+
+/** Whether two answers of `paramListOf` are the same list of the same plugin. */
+export function sameParamList(a: ParamList | null, b: ParamList | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.name === b.name &&
+    a.format === b.format &&
+    a.params.length === b.params.length &&
+    a.params.every((param, position) => param.index === b.params[position]?.index && param.name === b.params[position].name)
+  );
 }
 
 /** The value of a host-side gain of a node, if the node has that gain (`withGain` in reducers.ts is the other way round). */

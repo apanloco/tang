@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramOf, presetsOf } from "./selectors";
+import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, sameParamList } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
@@ -171,5 +171,107 @@ describe("finding the presets a plugin can be given", () => {
 
   test("a plugin that has no presets has an empty list: the caller decides what that is worth", () => {
     expect(presetsOf(state, filter.id)).toEqual({ presets: [], current: null });
+  });
+});
+
+describe("finding the parameters of a plugin to look through", () => {
+  const reach = stateOf(reachFixture.snapshot);
+
+  test("those of an instrument and of an effect, each by the plugin's own index, with the node's name and the plugin's format", () => {
+    expect(paramListOf(state, oscillator.id)).toEqual({
+      name: "Oscillator",
+      format: "Built-in",
+      params: ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan"].map((name, index) => ({ index, name })),
+    });
+    expect(paramListOf(state, filter.id)?.params).toEqual([
+      { index: 0, name: "cutoff" },
+      { index: 1, name: "resonance" },
+      { index: 2, name: "type" },
+      { index: 3, name: "drive" },
+    ]);
+  });
+
+  test("by the plugin's own index, which is not its place in the list: a plugin can number its parameters with gaps", () => {
+    const gaps = structuredClone(tracerSnapshot);
+    const node = gaps.graph.nodes.find((n) => n.id === filter.id);
+    if (node?.kind !== "effect") throw new Error("no filter");
+    node.plugin.params = node.plugin.params.map((param, position) => ({ ...param, index: [3, 8, 20, 21][position] ?? 99 }));
+    expect(paramListOf(stateOf(gaps), filter.id)?.params.map((param) => param.index)).toEqual([3, 8, 20, 21]);
+  });
+
+  test("those of an effect on a group's bus too: it has parameters to turn, whatever its presets", () => {
+    expect(paramListOf(reach, 3)?.params.length).toBeGreaterThan(0);
+    expect(presetsOf(reach, 3)).toBeNull();
+  });
+
+  test("the node's name is the one the canvas gives it: numbered when two nodes are called the same", () => {
+    const twins = structuredClone(tracerSnapshot);
+    const copy = structuredClone(oscillator);
+    twins.graph.nodes.push({ ...copy, id: 777 });
+    const twinned = stateOf(twins);
+    expect(paramListOf(twinned, oscillator.id)?.name).toBe("Oscillator 1");
+    expect(paramListOf(twinned, 777)?.name).toBe("Oscillator 2");
+  });
+
+  test("none for a node that has no plugin, a lane that has none, a node that is not there, or before there is a session", () => {
+    expect(paramListOf(reach, 15)).toBeNull(); // a modulator
+    expect(paramListOf(reach, 0)).toBeNull(); // a group
+    expect(paramListOf(reach, 14)).toBeNull(); // a lane with no instrument
+    expect(paramListOf(reach, 424242)).toBeNull();
+    expect(paramListOf(reach, MASTER)).toBeNull();
+    expect(paramListOf(stateOf(null), 10)).toBeNull();
+  });
+
+  test("a plugin that has no parameters has an empty list", () => {
+    const bare = structuredClone(tracerSnapshot);
+    const node = bare.graph.nodes.find((n) => n.id === filter.id);
+    if (node?.kind !== "effect") throw new Error("no filter");
+    node.plugin.params = [];
+    expect(paramListOf(stateOf(bare), filter.id)?.params).toEqual([]);
+  });
+
+  test("is the same list when only a value changed, and another when a name, an index, the format, the node's name or the number of parameters did", () => {
+    const base = paramListOf(state, filter.id);
+    if (!base) throw new Error("no list");
+    const moved = structuredClone(tracerSnapshot);
+    const node = moved.graph.nodes.find((n) => n.id === filter.id);
+    if (node?.kind !== "effect") throw new Error("no filter");
+    node.plugin.params = node.plugin.params.map((param, position) => (position === 0 ? { ...param, value: 0.9 } : param));
+    expect(sameParamList(base, paramListOf(stateOf(moved), filter.id))).toBe(true);
+    expect(sameParamList(base, base)).toBe(true);
+    expect(sameParamList(null, null)).toBe(true);
+    expect(sameParamList(base, null)).toBe(false);
+    expect(sameParamList(null, base)).toBe(false);
+
+    const other = (change: (list: { name: string; format: string; params: { index: number; name: string }[] }) => void) => {
+      const copy = structuredClone(base) as { name: string; format: string; params: { index: number; name: string }[] };
+      change(copy);
+      return sameParamList(base, copy);
+    };
+    expect(other((l) => (l.params[1] = { index: 1, name: "q" }))).toBe(false);
+    expect(other((l) => (l.params[1] = { index: 5, name: "resonance" }))).toBe(false);
+    expect(other((l) => (l.format = "VST3"))).toBe(false);
+    expect(other((l) => (l.name = "Filter 2"))).toBe(false);
+    expect(other((l) => l.params.pop())).toBe(false);
+    expect(other((l) => l.params.push({ index: 4, name: "extra" }))).toBe(false);
+  });
+});
+
+describe("counting the parameters of a plugin", () => {
+  const reach = stateOf(reachFixture.snapshot);
+
+  test("is how many the plugin of an instrument or an effect has, whatever the effect is in", () => {
+    expect(paramCountOf(state, oscillator.id)).toBe(8);
+    expect(paramCountOf(state, filter.id)).toBe(4);
+    expect(paramCountOf(reach, 3)).toBe(paramListOf(reach, 3)?.params.length);
+  });
+
+  test("is none for a node that has no plugin, a node that is not there, or before there is a session", () => {
+    expect(paramCountOf(reach, 15)).toBe(0); // a modulator
+    expect(paramCountOf(reach, 0)).toBe(0); // a group
+    expect(paramCountOf(reach, 14)).toBe(0); // a lane with no instrument
+    expect(paramCountOf(reach, MASTER)).toBe(0);
+    expect(paramCountOf(reach, 424242)).toBe(0);
+    expect(paramCountOf(stateOf(null), filter.id)).toBe(0);
   });
 });
