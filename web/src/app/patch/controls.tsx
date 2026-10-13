@@ -8,12 +8,14 @@ import { memo, useMemo, useSyncExternalStore } from "react";
 import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
 import { slotReader } from "../../client/readers";
-import { gainOf, paramOf } from "../../client/selectors";
-import { GAIN_RANGES } from "../../protocol";
-import type { Gain, NodeId, Param } from "../../protocol";
+import { gainOf, modulatorFieldOf, paramOf } from "../../client/selectors";
+import { GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
+import type { Gain, ModulatorField, NodeId, Param } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
+import type { Scale } from "../../ui/knob-geometry";
 import { useClient, useClientSelection, useClientState, useDrive, useFrames } from "../ClientProvider";
+import { seconds } from "./describe";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
 export function sameParamFacts(a: Param | undefined, b: Param | undefined): boolean {
@@ -130,6 +132,69 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
 });
 
 /**
+ * What a number of a modulator is called and written like, and how its knob is spread: a rate
+ * and the times of an envelope run over decades, a level does not. How far each goes, and what a
+ * double click puts it back to, are the controller's (`MODULATOR_FIELD_RANGES`, `_DEFAULTS`).
+ */
+const NUMBERS: Record<Exclude<ModulatorField, "waveform">, { label: string; scale: Scale; format: (value: number) => string }> = {
+  rate: { label: "Rate", scale: "log", format: (value) => `${formatValue(value)} Hz` },
+  attack: { label: "Attack", scale: "log", format: seconds },
+  decay: { label: "Decay", scale: "log", format: seconds },
+  sustain: { label: "Sustain", scale: "linear", format: formatValue },
+  release: { label: "Release", scale: "log", format: seconds },
+};
+
+/** A number of a modulator: an LFO's rate, a stage of an envelope. */
+export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: Exclude<ModulatorField, "waveform"> }) {
+  const frames = useFrames();
+  const control = useDrive().modulatorField(node, field);
+  const stored = useClientState((state) => modulatorFieldOf(state, node, field));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  const { label, scale, format } = NUMBERS[field];
+  const [min, max] = MODULATOR_FIELD_RANGES[field];
+  return (
+    <Knob
+      label={label}
+      value={shown}
+      min={min}
+      max={max}
+      scale={scale}
+      defaultValue={MODULATOR_FIELD_DEFAULTS[field]}
+      format={format}
+      onChange={(value) => {
+        control.set(value);
+      }}
+      onCommit={() => {
+        control.commit();
+      }}
+      frames={frames}
+    />
+  );
+});
+
+/** The waveform of an LFO: one of the four, chosen. */
+export const WaveformControl = memo(function WaveformControl({ node }: { node: NodeId }) {
+  const control = useDrive().modulatorField(node, "waveform");
+  const stored = useClientState((state) => modulatorFieldOf(state, node, "waveform"));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  return (
+    <Choice
+      label="Wave"
+      labels={WAVEFORMS}
+      value={shown}
+      onChange={(chosen) => {
+        control.set(chosen);
+        control.commit();
+      }}
+    />
+  );
+});
+
+/**
  * A parameter in a node with a place on its top edge where a cable from a modulator ends.
  * (That the control is there when a cable ends at it is for `toFlow` to see to: a
  * parameter that is driven is always among those a node shows.)
@@ -155,4 +220,9 @@ export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; g
       <GainControl node={node} gain={gain} />
     </div>
   );
+});
+
+/** A setting of a modulator, in a cell of the node's grid: a choice for the waveform, a knob for the rest. */
+export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, field }: { node: NodeId; field: ModulatorField }) {
+  return <div className="tang-cell">{field === "waveform" ? <WaveformControl node={node} /> : <ModulatorFieldControl node={node} field={field} />}</div>;
 });

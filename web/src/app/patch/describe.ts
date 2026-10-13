@@ -1,10 +1,10 @@
-// How a modulator is put in words and on a scale, for its node: what kind it is, its
-// settings, and the range its output is drawn over.
-import type { ModulatorSource } from "../../protocol";
+// How a modulator is put in words and on a scale, for its node: what kind it is, which
+// settings it has, and the range its output is drawn over.
+import type { ModulatorField, ModulatorSource } from "../../protocol";
 import { formatValue } from "../../ui/Knob";
 
 /** A time in seconds as a person writes it: milliseconds below a second. */
-function seconds(value: number): string {
+export function seconds(value: number): string {
   return value < 1 ? `${formatValue(value * 1000)} ms` : `${formatValue(value)} s`;
 }
 
@@ -20,24 +20,29 @@ export function kindOf(source: ModulatorSource): string {
   }
 }
 
-/** The settings of a source, on one line. */
-export function detailOf(source: ModulatorSource): string {
+/** The settings a source has, in the order its node shows them as controls. */
+export function settingsOf(source: ModulatorSource): readonly ModulatorField[] {
   switch (source.type) {
     case "lfo":
-      return `${source.waveform}, ${formatValue(source.rate)} Hz`;
+      return ["rate", "waveform"];
     case "envelope":
-      return `A ${seconds(source.attack)} · D ${seconds(source.decay)} · S ${formatValue(source.sustain)} · R ${seconds(source.release)}`;
+      return ["attack", "decay", "sustain", "release"];
     case "midiLearn":
-      if (source.learning) return "waiting for a control…";
-      if (source.control === null) return "not bound";
-      switch (source.control.type) {
-        case "cc":
-          return `CC ${String(source.control.number)}`;
-        case "pitchBend":
-          return "pitch bend";
-        case "aftertouch":
-          return "aftertouch";
-      }
+      return [];
+  }
+}
+
+/** What a MIDI control is bound to, in words (it has no settings to show as controls). */
+export function controlDetail(source: Extract<ModulatorSource, { type: "midiLearn" }>): string {
+  if (source.learning) return "waiting for a control…";
+  if (source.control === null) return "not bound";
+  switch (source.control.type) {
+    case "cc":
+      return `CC ${String(source.control.number)}`;
+    case "pitchBend":
+      return "pitch bend";
+    case "aftertouch":
+      return "aftertouch";
   }
 }
 

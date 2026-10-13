@@ -24,7 +24,10 @@ const HEADER_HEIGHT = 44;
 const CONTROL_ROW_HEIGHT = 108;
 const CONTROLS_PER_ROW = 4;
 const NODE_PADDING = 16;
+/** A modulator that has no settings (a MIDI control) is this tall... */
 export const MODULATOR_HEIGHT = 140;
+/** ...and one that has them has a row of controls more (measured in a browser: 184). */
+export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20;
 export const MASTER_HEIGHT = 164;
 
 export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master";
@@ -114,7 +117,7 @@ export function controlCount(node: Node, pinned: number): number {
 export function nodeHeight(node: Node, pinned: number): number {
   switch (node.kind) {
     case "modulator":
-      return MODULATOR_HEIGHT;
+      return node.source.type === "midiLearn" ? MODULATOR_HEIGHT : MODULATOR_SETTINGS_HEIGHT;
     case "master":
       return MASTER_HEIGHT;
     default: {
@@ -169,8 +172,8 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
     placed.set(node.id, { x: column * COLUMN, y });
   };
 
-  /** The room a strip's modulators need above its row. */
-  const aboveOf = (strip: Strip): number => (strip.modulators.length > 0 ? MODULATOR_HEIGHT + CABLE_GAP : 0);
+  /** The room a strip's modulators need above its row: the tallest of them, and the room for a cable. */
+  const aboveOf = (strip: Strip): number => (strip.modulators.length > 0 ? Math.max(...strip.modulators.map(heightOfNode)) + CABLE_GAP : 0);
 
   /** Put a strip's row from `column` on, its top at `rowTop`, its modulators above it; the y at the bottom of it. */
   const placeStrip = (strip: Strip, column: number, rowTop: number): number => {

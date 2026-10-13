@@ -1,11 +1,12 @@
 import { describe, expect, test } from "vitest";
 
 import type { ModulatorSource } from "../../protocol";
-import { cableWidth, detailOf, kindOf, outputScale } from "./describe";
+import { cableWidth, controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 
 const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5 };
 const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
-const midi = (control: Extract<ModulatorSource, { type: "midiLearn" }>["control"], learning = false): ModulatorSource => ({ type: "midiLearn", control, learning });
+type Control = Extract<ModulatorSource, { type: "midiLearn" }>;
+const midi = (control: Control["control"], learning = false): Control => ({ type: "midiLearn", control, learning });
 
 describe("a modulator in words", () => {
   test("is of a kind", () => {
@@ -14,21 +15,32 @@ describe("a modulator in words", () => {
     expect(kindOf(midi(null))).toBe("MIDI");
   });
 
-  test("has its settings on one line", () => {
-    expect(detailOf(lfo)).toBe("triangle, 0.5 Hz");
-    expect(detailOf({ type: "lfo", waveform: "sine", rate: 12.345 })).toBe("sine, 12.3 Hz");
-    expect(detailOf(envelope)).toBe("A 10 ms · D 300 ms · S 0.7 · R 2 s");
-    expect(detailOf({ type: "envelope", attack: 1, decay: 0.999, sustain: 1, release: 10 })).toBe("A 1 s · D 999 ms · S 1 · R 10 s");
+  test("has the settings that its kind has, in the order they are shown", () => {
+    expect(settingsOf(lfo)).toEqual(["rate", "waveform"]);
+    expect(settingsOf(envelope)).toEqual(["attack", "decay", "sustain", "release"]);
+    expect(settingsOf(midi({ type: "cc", number: 74 }))).toEqual([]);
   });
 
   test("says what a MIDI control is bound to, or that it is not", () => {
-    expect(detailOf(midi({ type: "cc", number: 74 }))).toBe("CC 74");
-    expect(detailOf(midi({ type: "pitchBend" }))).toBe("pitch bend");
-    expect(detailOf(midi({ type: "aftertouch" }))).toBe("aftertouch");
-    expect(detailOf(midi(null))).toBe("not bound");
-    expect(detailOf(midi(null, true))).toBe("waiting for a control…");
+    expect(controlDetail(midi({ type: "cc", number: 74 }))).toBe("CC 74");
+    expect(controlDetail(midi({ type: "pitchBend" }))).toBe("pitch bend");
+    expect(controlDetail(midi({ type: "aftertouch" }))).toBe("aftertouch");
+    expect(controlDetail(midi(null))).toBe("not bound");
+    expect(controlDetail(midi(null, true))).toBe("waiting for a control…");
     // While it is learning it is waiting, whatever it was bound to.
-    expect(detailOf(midi({ type: "cc", number: 1 }, true))).toBe("waiting for a control…");
+    expect(controlDetail(midi({ type: "cc", number: 1 }, true))).toBe("waiting for a control…");
+  });
+});
+
+describe("a time", () => {
+  test("is written in milliseconds below a second and in seconds from it", () => {
+    expect(seconds(0.01)).toBe("10 ms");
+    expect(seconds(0.3)).toBe("300 ms");
+    expect(seconds(0.999)).toBe("999 ms");
+    expect(seconds(1)).toBe("1 s");
+    expect(seconds(2.5)).toBe("2.5 s");
+    expect(seconds(10)).toBe("10 s");
+    expect(seconds(0.001)).toBe("1 ms");
   });
 });
 

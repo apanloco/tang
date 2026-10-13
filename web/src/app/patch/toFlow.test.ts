@@ -10,6 +10,7 @@ import {
   MASTER_HEIGHT,
   MAX_PINNED,
   MODULATOR_HEIGHT,
+  MODULATOR_SETTINGS_HEIGHT,
   NODE_WIDTH,
   nodeHeight,
   pinnedParams,
@@ -181,7 +182,7 @@ describe("the nodes on the canvas", () => {
     const second = at(flow, 5).position.y;
     // Room for the modulators above the first, then the tallest of its row, then the gap.
     const tallest = Math.max(...[1, 2, 3].map((id) => nodeHeight(nodeOf(twoLanes, id), at(flow, id).data.pinned.length)));
-    expect(first).toBe(MODULATOR_HEIGHT + CABLE_GAP);
+    expect(first).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
     expect(second).toBe(first + tallest + ROW_GAP);
   });
 
@@ -197,9 +198,24 @@ describe("the nodes on the canvas", () => {
     expect(at(flow, 4).position.y).toBe(at(flow, 1).position.y + (heights[1] ?? 0) + ROW_GAP);
   });
 
-  test("know how tall the modulators and the master are", () => {
-    expect(nodeHeight(modulator(1, 0), 0)).toBe(MODULATOR_HEIGHT);
+  test("know how tall the modulators and the master are: a modulator with settings has a row of controls more", () => {
+    const envelope: Node = { id: 2, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } };
+    const control: Node = { id: 3, parent: 0, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
+    expect(nodeHeight(modulator(1, 0), 0)).toBe(MODULATOR_SETTINGS_HEIGHT);
+    expect(nodeHeight(envelope, 0)).toBe(MODULATOR_SETTINGS_HEIGHT);
+    expect(nodeHeight(control, 0)).toBe(MODULATOR_HEIGHT);
+    expect(MODULATOR_SETTINGS_HEIGHT).toBeGreaterThan(MODULATOR_HEIGHT);
     expect(nodeHeight(master, 0)).toBe(MASTER_HEIGHT);
+  });
+
+  test("leave room above a strip for the tallest of its modulators, and no more", () => {
+    const control: Node = { id: 8, parent: 1, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
+    const only: Graph = { nodes: [instrument(1), control, master], edges: [audio(1, MASTER)] };
+    expect(at(toFlow(only), 1).position.y).toBe(MODULATOR_HEIGHT + CABLE_GAP);
+    const both: Graph = { nodes: [instrument(1), control, modulator(9, 1), master], edges: [audio(1, MASTER)] };
+    expect(at(toFlow(both), 1).position.y).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
+    const lfoOnly: Graph = { nodes: [instrument(1), modulator(9, 1), master], edges: [audio(1, MASTER)] };
+    expect(at(toFlow(lfoOnly), 1).position.y).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
   });
 
   test("have the modulators above their strip, over the node each drives", () => {
@@ -208,8 +224,8 @@ describe("the nodes on the canvas", () => {
     const filter = at(flow, 1);
     expect(lfo.position.x).toBe(filter.position.x);
     expect(lfo.position.y).toBe(0);
-    expect(filter.position.y).toBe(MODULATOR_HEIGHT + CABLE_GAP);
-    expect(lfo.position.y + MODULATOR_HEIGHT + CABLE_GAP).toBe(filter.position.y);
+    expect(filter.position.y).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
+    expect(lfo.position.y + MODULATOR_SETTINGS_HEIGHT + CABLE_GAP).toBe(filter.position.y);
   });
 
   test("have a modulator that drives nothing in the first column, and give several of them a column each", () => {
@@ -279,7 +295,7 @@ describe("the nodes on the canvas", () => {
     expect(at(flow, 4).position.y).toBeLessThan(Math.min(...members));
     expect(at(flow, 10).position.y).toBe((members[0] ?? 0) / 2 + (members[1] ?? 0) / 2);
     // The group's modulator is over it, and the master after its strip.
-    expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - (MODULATOR_HEIGHT + CABLE_GAP));
+    expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - (MODULATOR_SETTINGS_HEIGHT + CABLE_GAP));
     expect(at(flow, MASTER).position.x).toBe(groupColumn + 2 * COLUMN);
   });
 
@@ -291,7 +307,7 @@ describe("the nodes on the canvas", () => {
     };
     const flow = toFlow(graph);
     expect(at(flow, 11).position.y).toBeGreaterThanOrEqual(0);
-    expect(at(flow, 10).position.y).toBe(at(flow, 11).position.y + MODULATOR_HEIGHT + CABLE_GAP);
+    expect(at(flow, 10).position.y).toBe(at(flow, 11).position.y + MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
   });
 
   test("have the groups in the order of their members, whatever the order of the session's list", () => {

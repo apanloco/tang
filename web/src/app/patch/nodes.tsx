@@ -7,11 +7,12 @@ import { useMemo } from "react";
 
 import { slotReader } from "../../client/readers";
 import { nodeById } from "../../client/selectors";
+import type { Node } from "../../protocol";
 import { LiveBar } from "../../ui/LiveBar";
 import { Meter } from "../../ui/Meter";
-import { useClient, useClientState, useFrames } from "../ClientProvider";
-import { GainCell, ParamCell } from "./controls";
-import { detailOf, kindOf, outputScale } from "./describe";
+import { useClient, useClientSelection, useFrames } from "../ClientProvider";
+import { GainCell, ModulatorSettingCell, ParamCell } from "./controls";
+import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
 import type { PatchNode } from "./toFlow";
 
 function Header({ name, badge }: { name: string; badge?: string | null }) {
@@ -43,21 +44,40 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   );
 }
 
-/** A modulator: what it is, its settings, and what it puts out as it does so. */
+/**
+ * Whether two nodes are the same modulator as far as its node is drawn: of the same kind, and a
+ * control bound to the same thing. Its settings are not part of it: each control reads its own,
+ * so that turning one renders that control and not the node.
+ */
+export function sameModulatorShape(a: Node | undefined, b: Node | undefined): boolean {
+  if (a === b) return true;
+  if (a?.kind !== "modulator" || b?.kind !== "modulator" || a.source.type !== b.source.type) return false;
+  return a.source.type !== "midiLearn" || JSON.stringify(a.source) === JSON.stringify(b.source);
+}
+
+/** A modulator: what it is, its settings as controls, and what it puts out as it does so. */
 export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
   const frames = useFrames();
-  const node = useClientState((state) => nodeById(state, data.node));
+  const node = useClientSelection((state) => nodeById(state, data.node), sameModulatorShape);
   const read = useMemo(() => slotReader(client.telemetry, "modulation", data.node, { type: "modOut" }, "modOutput"), [client, data.node]);
   const source = node?.kind === "modulator" ? node.source : null;
   const scale = source ? outputScale(source) : { min: 0, max: 1, centred: false };
   // (An LFO is called what it is: its kind is not said twice.)
   const kind = source ? kindOf(source) : null;
+  const settings = source ? settingsOf(source) : [];
   return (
     <div className="tang-node tang-node--modulator">
       <Header name={data.name} badge={kind === data.name ? null : kind} />
+      {settings.length > 0 ? (
+        <div className="tang-node__controls nodrag nopan nowheel">
+          {settings.map((field) => (
+            <ModulatorSettingCell key={field} node={data.node} field={field} />
+          ))}
+        </div>
+      ) : null}
       <div className="tang-node__body">
-        <p className="tang-node__detail">{source ? detailOf(source) : ""}</p>
+        {source?.type === "midiLearn" ? <p className="tang-node__detail">{controlDetail(source)}</p> : null}
         <LiveBar label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />
       </div>
       <Handle isConnectable={false} type="source" position={Position.Bottom} id="modOut" className="tang-port tang-port--mod" />

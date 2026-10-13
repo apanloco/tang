@@ -5,10 +5,11 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { nodeNamed, tracerSnapshot } from "../../client/fixtures";
 import type { Modulation } from "../../client/modulation";
-import type { Param, Snapshot } from "../../protocol";
+import type { Node, Param, Snapshot } from "../../protocol";
+import { dragged } from "../../ui/knob-geometry";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { GainControl, ParamControl, sameModulations, sameParamFacts } from "./controls";
+import { GainControl, ModulatorFieldControl, ParamControl, sameModulations, sameParamFacts, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -368,6 +369,220 @@ describe("a host-side gain of a node", () => {
         <GainControl node={filter.id} gain="volume" />
         <GainControl node={4242} gain="volume" />
       </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+});
+
+/** The tracer with an envelope in it, for the settings that an LFO does not have. */
+function withEnvelope(): { snapshot: Snapshot; envelope: Node } {
+  const envelope: Node = { id: 90, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 } };
+  const snapshot: Snapshot = structuredClone(tracerSnapshot);
+  snapshot.graph.nodes.push(envelope);
+  return { snapshot, envelope };
+}
+
+const lfo = nodeNamed(tracerSnapshot, "LFO");
+
+describe("a number of a modulator", () => {
+  test("is a knob over the range the controller clamps to, at the value the modulator has, in its unit", async () => {
+    await rig(<ModulatorFieldControl node={lfo.id} field="rate" />);
+    const rate = slider("Rate");
+    expect([rate.getAttribute("aria-valuemin"), rate.getAttribute("aria-valuemax"), rate.getAttribute("aria-valuenow")]).toEqual(["0.01", "50", "0.5"]);
+    expect(rate.getAttribute("aria-valuetext")).toBe("0.5 Hz");
+  });
+
+  test("is one of the four stages of an envelope, each called what it is, a time written in milliseconds or seconds", async () => {
+    const { snapshot, envelope } = withEnvelope();
+    await rig(
+      <div data-testid="stages">
+        {(["attack", "decay", "sustain", "release"] as const).map((field) => (
+          <ModulatorFieldControl key={field} node={envelope.id} field={field} />
+        ))}
+      </div>,
+      { snapshot },
+    );
+    const stages = ["Attack", "Decay", "Sustain", "Release"].map((name) => slider(name));
+    expect(stages.map((stage) => stage.getAttribute("aria-valuetext"))).toEqual(["10 ms", "300 ms", "0.7", "2 s"]);
+    expect(stages.map((stage) => [stage.getAttribute("aria-valuemin"), stage.getAttribute("aria-valuemax")])).toEqual([
+      ["0.001", "10"],
+      ["0.001", "10"],
+      ["0", "1"],
+      ["0.001", "10"],
+    ]);
+  });
+
+  test("turns through the decades for a rate and a time, and evenly for a level", async () => {
+    const { snapshot, envelope } = withEnvelope();
+    const { requests, clock } = await rig(
+      <>
+        <ModulatorFieldControl node={lfo.id} field="rate" />
+        <ModulatorFieldControl node={envelope.id} field="sustain" />
+      </>,
+      { snapshot },
+    );
+    drag(slider("Rate"), 50);
+    expect(Number(slider("Rate").getAttribute("aria-valuenow"))).toBeCloseTo(dragged(0.5, -50, 0.01, 50, 1, "log"), 9);
+    // A quarter of the sweep on from 0.5, which is not far from the middle of the decades: about 4 Hz, not the 13 of a quarter of the range.
+    expect(Number(slider("Rate").getAttribute("aria-valuenow"))).toBeGreaterThan(4);
+    expect(Number(slider("Rate").getAttribute("aria-valuenow"))).toBeLessThan(5);
+    drag(slider("Sustain"), 50);
+    expect(Number(slider("Sustain").getAttribute("aria-valuenow"))).toBe(0.95);
+    // (The times of an envelope run over decades as a rate does: 10 ms is nearly a third of the way up from a millisecond to ten seconds.)
+    const times = withEnvelope();
+    await rig(
+      <>
+        {(["attack", "decay", "release"] as const).map((field) => (
+          <ModulatorFieldControl key={field} node={times.envelope.id} field={field} />
+        ))}
+      </>,
+      { snapshot: times.snapshot },
+    );
+    for (const [name, from] of [["Attack", 0.01], ["Decay", 0.3], ["Release", 2]] as const) {
+      const [knob] = screen.getAllByRole("slider", { name });
+      if (!knob) throw new Error(`no ${name}`);
+      drag(knob, 20);
+      expect(Number(knob.getAttribute("aria-valuenow")), name).toBeCloseTo(dragged(from, -20, 0.001, 10, 1, "log"), 9);
+      fireEvent.pointerUp(knob, { pointerId: 1 });
+    }
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(2);
+    });
+  });
+
+  test("is sent as a setting of the modulator, on the frame, once, and shown meanwhile", async () => {
+    const { requests, clock } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />);
+    drag(slider("Rate"), 50);
+    await settle();
+    expect(requests()).toEqual([]); // not before the frame
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setModulatorField", node: lfo.id, field: "rate", value: expect.closeTo(dragged(0.5, -50, 0.01, 50, 1, "log"), 9) as unknown });
+  });
+
+  test("goes back to what a new modulator has on a double click", async () => {
+    const { snapshot, envelope } = withEnvelope();
+    const { requests } = await rig(
+      <>
+        <ModulatorFieldControl node={lfo.id} field="rate" />
+        <ModulatorFieldControl node={envelope.id} field="release" />
+      </>,
+      { snapshot },
+    );
+    fireEvent.doubleClick(slider("Rate"));
+    fireEvent.doubleClick(slider("Release"));
+    await waitFor(() => {
+      expect(requests()).toEqual([
+        { intent: { type: "setModulatorField", node: lfo.id, field: "rate", value: 1 } },
+        { intent: { type: "setModulatorField", node: envelope.id, field: "release", value: 0.5 } },
+      ]);
+    });
+  });
+
+  test("sends a key press at once, a hundredth of the sweep on", async () => {
+    const { requests } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />);
+    fireEvent.keyDown(slider("Rate"), { key: "ArrowUp" });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setModulatorField", node: lfo.id, field: "rate", value: expect.closeTo(0.5 * 5000 ** 0.01, 9) as unknown });
+  });
+
+  test("follows a change somebody else makes (the TUI, another browser)", async () => {
+    const { server } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />);
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 7 });
+    });
+    await waitFor(() => {
+      expect(slider("Rate").getAttribute("aria-valuenow")).toBe("7");
+    });
+  });
+
+  test("shows nothing for a setting the modulator has not, or a node that is not one", async () => {
+    const { view } = await rig(
+      <div data-testid="where">
+        <ModulatorFieldControl node={lfo.id} field="attack" />
+        <ModulatorFieldControl node={filter.id} field="rate" />
+        <ModulatorFieldControl node={4242} field="rate" />
+      </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+
+  test("is not rendered again for a change of another setting, or of another node", async () => {
+    let renders = 0;
+    const { snapshot, envelope } = withEnvelope();
+    const { server, client } = await rig(
+      <Profiler id="rate" onRender={() => (renders += 1)}>
+        <ModulatorFieldControl node={lfo.id} field="rate" />
+      </Profiler>,
+      { snapshot },
+    );
+    const settled = renders;
+    const rev = client.state.snapshot?.rev ?? 0;
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "waveform", value: 2 });
+      server.apply({ type: "setModulatorField", node: envelope.id, field: "attack", value: 0.5 });
+      server.apply({ type: "setParam", node: filter.id, param: 0, value: 0.3 });
+    });
+    await waitFor(() => {
+      expect(client.state.snapshot?.rev).toBe(rev + 3);
+    });
+    expect(renders).toBe(settled);
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 3 });
+    });
+    await waitFor(() => {
+      expect(renders).toBeGreaterThan(settled);
+    });
+  });
+});
+
+describe("the waveform of an LFO", () => {
+  test("is a choice of the four, with the one it has selected", async () => {
+    await rig(<WaveformControl node={lfo.id} />);
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Wave" });
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "saw", "square"]);
+    expect(select.value).toBe("0");
+  });
+
+  test("is sent, as the index of the one chosen, at once", async () => {
+    const { requests } = await rig(<WaveformControl node={lfo.id} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Wave" }), { target: { value: "3" } });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setModulatorField", node: lfo.id, field: "waveform", value: 3 } }]);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Wave" }).value).toBe("3");
+    });
+  });
+
+  test("follows a change somebody else makes", async () => {
+    const { server } = await rig(<WaveformControl node={lfo.id} />);
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "waveform", value: 2 });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Wave" }).value).toBe("2");
+    });
+  });
+
+  test("shows nothing for a modulator that has no waveform, or a node that is not one", async () => {
+    const { snapshot, envelope } = withEnvelope();
+    const { view } = await rig(
+      <div data-testid="where">
+        <WaveformControl node={envelope.id} />
+        <WaveformControl node={filter.id} />
+        <WaveformControl node={4242} />
+      </div>,
+      { snapshot },
     );
     expect(view.getByTestId("where").innerHTML).toBe("");
   });

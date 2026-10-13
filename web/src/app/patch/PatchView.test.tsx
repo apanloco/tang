@@ -1,14 +1,21 @@
 // @vitest-environment jsdom
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { MASTER, nodeNamed, tracerSnapshot } from "../../client/fixtures";
 import { decodeFrame } from "../../client/telemetry";
 import type { Snapshot } from "../../protocol";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
+import * as describeModule from "./describe";
 import { cableWidth } from "./describe";
 import { PatchView, sameGraphStructure } from "./PatchView";
+
+// Wrapped, to count how often a node says what kind of modulator it is: once a render.
+vi.mock("./describe", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./describe")>();
+  return { ...original, kindOf: vi.fn(original.kindOf) };
+});
 
 afterEach(cleanup);
 
@@ -106,7 +113,11 @@ describe("the patch", () => {
     // (An LFO is called what it is, so its kind is not said twice.)
     expect(within(mod).getByText("LFO", { selector: ".tang-node__name" })).toBeTruthy();
     expect(mod.querySelector(".tang-node__badge")).toBeNull();
-    expect(within(mod).getByText("sine, 0.5 Hz")).toBeTruthy();
+    // Its settings are controls, not words: a knob for the rate and a choice for the waveform.
+    expect(controlsIn(mod)).toEqual(["Rate", "Wave"]);
+    expect(within(mod).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuetext")).toBe("0.5 Hz");
+    expect(within(mod).getByRole<HTMLSelectElement>("combobox", { name: "Wave" }).value).toBe("0");
+    expect(mod.querySelector(".tang-node__detail")).toBeNull();
     const bar = within(mod).getByRole("meter", { name: `${lfo.name} output` });
     expect(bar.getAttribute("aria-valuemin")).toBe("-1");
     expect(bar.getAttribute("aria-valuemax")).toBe("1");
@@ -124,6 +135,77 @@ describe("the patch", () => {
     expect(within(await nodeOf(90)).getByText("ADSR", { selector: ".tang-node__name" })).toBeTruthy();
     expect(within(await nodeOf(91)).getByText("MIDI", { selector: ".tang-node__badge" })).toBeTruthy();
     expect(within(await nodeOf(91)).getByText("CC 74", { selector: ".tang-node__name" })).toBeTruthy();
+  });
+
+  test("gives an envelope the four stages as knobs, and a MIDI control no settings but what it is bound to", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    snapshot.graph.nodes.push(
+      { id: 90, parent: 1, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 } },
+      { id: 91, parent: 1, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } },
+    );
+    await rig(<PatchView />, { snapshot });
+    const envelope = await nodeOf(90);
+    expect(controlsIn(envelope)).toEqual(["Attack", "Decay", "Sustain", "Release"]);
+    expect(Array.from(envelope.querySelectorAll('[role="slider"]')).map((knob) => knob.getAttribute("aria-valuetext"))).toEqual(["10 ms", "300 ms", "0.7", "2 s"]);
+    const control = await nodeOf(91);
+    expect(controlsIn(control)).toEqual([]);
+    expect(control.querySelector(".tang-node__controls")).toBeNull(); // (not an empty row of them)
+    expect(within(control).getByText("CC 74", { selector: ".tang-node__detail" })).toBeTruthy();
+  });
+
+  test("says what a control is bound to as soon as it is bound, though the settings of a modulator do not render its node", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    snapshot.graph.nodes.push({ id: 91, parent: 1, name: "MIDI (learning…)", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } });
+    const { client } = await rig(<PatchView />, { snapshot });
+    const control = await nodeOf(91);
+    expect(within(control).getByText("waiting for a control…", { selector: ".tang-node__detail" })).toBeTruthy();
+    const bound = structuredClone(snapshot);
+    const node = bound.graph.nodes.find((candidate) => candidate.id === 91);
+    if (node?.kind === "modulator") node.source = { type: "midiLearn", control: { type: "cc", number: 21 }, learning: false };
+    act(() => {
+      client.store.setState({ snapshot: { ...bound, rev: 5 } });
+    });
+    await waitFor(() => {
+      expect(within(control).getByText("CC 21", { selector: ".tang-node__detail" })).toBeTruthy();
+    });
+  });
+
+  test("turns a modulator's rate on its node, which sends it as a setting and shows it", async () => {
+    const { clock, requests } = await rig(<PatchView />);
+    const rate = within(await nodeOf(lfo.id)).getByRole("slider", { name: "Rate" });
+    fireEvent.keyDown(rate, { key: "ArrowUp" });
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toMatchObject({ type: "setModulatorField", node: lfo.id, field: "rate" });
+    await waitFor(() => {
+      expect(Number(rate.getAttribute("aria-valuenow"))).toBeCloseTo(0.5 * 5000 ** 0.01, 6);
+    });
+  });
+
+  test("does not render a modulator's node again for a change of its settings, only the control", async () => {
+    const { server, client } = await rig(<PatchView />);
+    const node = await nodeOf(lfo.id);
+    // A node renders from its own selection of the store, what it is made of and not the values of its settings, and says what kind it is each time it does.
+    const renders = () => vi.mocked(describeModule.kindOf).mock.calls.length;
+    const settled = renders();
+    expect(settled).toBeGreaterThan(0);
+    const rev = client.state.snapshot?.rev ?? 0;
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 9 });
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "waveform", value: 1 });
+    });
+    await waitFor(() => {
+      expect(client.state.snapshot?.rev).toBe(rev + 2);
+    });
+    await waitFor(() => {
+      expect(within(node).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuenow")).toBe("9");
+    });
+    expect(within(node).getByRole<HTMLSelectElement>("combobox", { name: "Wave" }).value).toBe("1");
+    expect(renders()).toBe(settled);
   });
 
   test("gives each node the ports it has: an effect takes audio in and puts it out, an instrument only puts it out, a modulator puts out modulation, the master takes audio in", async () => {
