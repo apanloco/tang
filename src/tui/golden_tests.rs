@@ -1270,8 +1270,17 @@ fn deleting_a_group_modulator_drops_cross_mod_targets_pointing_at_it() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::GroupModulator { group: 0, index: 0 });
     h.press(KeyCode::Char('d'));
-    // The ADSR's cable to its rate goes first, and then the LFO, with its own cables.
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=1 target=0", "RemoveGroupModulator group=0 index=0"]);
+    // The ADSR's cable to its rate goes first, and then the LFO, with its own cables; what those drove, a member's
+    // detune and a bus effect's parameter, has the value the user set.
+    assert_eq!(
+        h.commands(),
+        [
+            "RemoveGroupModTarget group=0 mod=1 target=0",
+            "RemoveGroupModulator group=0 index=0",
+            "SetParameter inst=0 slot=0 param=1 value=0.000",
+            "SetGroupParameter group=0 fx=0 param=2 value=0.350"
+        ]
+    );
     assert_eq!(h.s.ctl.model.groups[0].modulators.len(), 1);
     assert!(h.s.ctl.model.groups[0].modulators[0].targets.is_empty());
     assert!(h.tree().contains(&"  ~ ADSR  (bus)"), "{:#?}", h.tree());

@@ -417,6 +417,17 @@ Envelope behavior: note-on retriggers from Attack phase (continuing from the
 current level — a quick retrigger does not restart from silence). Release
 begins when all held notes are released. Linear ramps for A/D/R phases.
 
+**Taking a cable or a modulator out** (TUI `d`, the browser's "×"; both through
+`Controller::remove_edge` / `remove_modulator`) gives what it drove the value the
+user set: a cable writes into its target on every buffer, and nothing else would
+write the user's value back, so the parameter (or a modulator's rate, a stage of
+its envelope, the depth of a cable) would stay where the cable last put it. The
+values are the model's, sent as ordinary `SetParameter` / `SetModulatorRate` /
+`SetModTargetDepth`… commands after the removal; a target that another cable still
+drives is left to that cable, and one that went with the modulator is given
+nothing. What drives what is named by node and edge ids (`Driven`), which survive
+the removals around it, not by places in a rack.
+
 **Limitation:** a modulator envelope shapes *parameters*, not voices — it
 cannot make a note ring past the instrument's own release. Once the plugin
 stops its voice (the built-in oscillators hold notes ~12 ms past note-off by

@@ -3113,6 +3113,39 @@ impl AudioGraph {
             .collect()
     }
 
+    /// The value the plugin in `slot` of lane `inst` (0 is the instrument) has for parameter `param`,
+    /// as the plugin reports it, for a test.
+    #[cfg(test)]
+    pub fn plugin_parameter(&mut self, inst: usize, slot: usize, param: u32) -> Option<f32> {
+        let lane = self.instruments.get_mut(inst)?;
+        if slot == 0 {
+            lane.instrument.as_mut()?.get_parameter(param)
+        } else {
+            lane.effects.get_mut(slot - 1)?.get_parameter(param)
+        }
+    }
+
+    /// The value bus effect `effect` of group `group` has for parameter `param`, for a test.
+    #[cfg(test)]
+    pub fn bus_parameter(&mut self, group: usize, effect: usize, param: u32) -> Option<f32> {
+        self.groups.get_mut(group)?.effects.get_mut(effect)?.get_parameter(param)
+    }
+
+    /// The rate of lane `inst`'s LFO `index` and the depths of its cables, for a test.
+    #[cfg(test)]
+    pub fn lane_lfo(&self, inst: usize, index: usize) -> Option<(f32, Vec<f32>)> {
+        let modulator = self.instruments.get(inst)?.modulators.get(index)?;
+        let ModSource::Lfo { rate, .. } = modulator.source else { return None };
+        Some((rate, modulator.targets.iter().map(|t| t.depth).collect()))
+    }
+
+    /// The stages of lane `inst`'s envelope `index`: attack, decay, sustain and release, for a test.
+    #[cfg(test)]
+    pub fn lane_envelope(&self, inst: usize, index: usize) -> Option<(f32, f32, f32, f32)> {
+        let ModSource::Envelope { attack, decay, sustain, release, .. } = self.instruments.get(inst)?.modulators.get(index)?.source else { return None };
+        Some((attack, decay, sustain, release))
+    }
+
     /// Every modulator's cables, for a test to compare with the model's: the lanes' racks
     /// and then the groups', each modulator with its cables' kinds and depths in order.
     #[cfg(test)]

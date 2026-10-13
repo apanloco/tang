@@ -5,7 +5,7 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, NewTarget};
+use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
@@ -135,10 +135,7 @@ impl Controller {
         let command = match (&mut modulator.source, field) {
             (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => {
                 *rate = value;
-                match at {
-                    ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorRate { inst, mod_index: index, rate: value },
-                    ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorRate { group, mod_index: index, rate: value },
-                }
+                rate_command(at, index, value)
             }
             (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => {
                 *waveform = LfoWaveform::ALL[value as usize];
@@ -158,15 +155,7 @@ impl Controller {
                     ModulatorField::Sustain => *sustain = value,
                     _ => *release = value,
                 }
-                let (attack, decay, sustain, release) = (*attack, *decay, *sustain, *release);
-                match at {
-                    ModulatorLocation::Lane(inst) => {
-                        GraphCommand::SetModulatorEnvelopeParam { inst, mod_index: index, attack, decay, sustain, release }
-                    }
-                    ModulatorLocation::Group(group) => {
-                        GraphCommand::SetGroupModulatorEnvelopeParam { group, mod_index: index, attack, decay, sustain, release }
-                    }
-                }
+                envelope_command(at, index, (*attack, *decay, *sustain, *release))
             }
             _ => return Err(invalid(format!("{field:?} does not apply to that modulator"))),
         };
@@ -187,10 +176,7 @@ impl Controller {
             .and_then(|modulator| modulator.targets.get_mut(target_index))
             .ok_or(IntentError::EdgeNotFound(edge))?;
         target.depth = depth;
-        let _ = self.cmd_tx.send(match at {
-            ModulatorLocation::Lane(inst) => GraphCommand::SetModTargetDepth { inst, mod_index, target_index, depth },
-            ModulatorLocation::Group(group) => GraphCommand::SetGroupModTargetDepth { group, mod_index, target_index, depth },
-        });
+        let _ = self.cmd_tx.send(depth_command(at, mod_index, target_index, depth));
         Ok(Event::EdgeDepthSet { edge, depth })
     }
 
@@ -1025,7 +1011,8 @@ rate = 1.0
         let applied = ctl.apply(Intent::RemoveEdge { edge: cutoff }).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0"]);
+        // (The filter's cutoff, which the cable drove, is given the value the user set.)
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0", "SetParameter inst=0 slot=1 param=0 value=1.000"]);
         let rack = &ctl.model.instruments[0].modulators;
         assert_eq!(rack[0].targets.iter().map(|t| t.edge).collect::<Vec<_>>(), [rate], "the other cable is as it was");
         assert!(ctl.dirty);
@@ -1039,12 +1026,13 @@ rate = 1.0
         // The lane's first modulator's second cable drives the rate of the lane's fourth modulator.
         let rate = lane_edge(&ctl, 0, 1);
         ctl.apply(Intent::RemoveEdge { edge: rate }).unwrap();
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=1"]);
+        // (And the rate is the one the user set.)
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=1", "SetModulatorRate inst=0 mod=3 rate=1.000"]);
         assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1);
         // The group modulator's cable to its bus filter's cutoff: by the group's command.
         let bus = ctl.model.groups[0].modulators[0].targets[0].edge;
         ctl.apply(Intent::RemoveEdge { edge: bus }).unwrap();
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0"]);
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0", "SetGroupParameter group=0 fx=0 param=0 value=1.000"]);
         assert!(ctl.model.groups[0].modulators[0].targets.is_empty());
         assert_eq!(ctl.model.groups[0].modulators.len(), 2, "its modulator stays");
         assert_eq!(ctl.rev, 2);
@@ -1524,7 +1512,7 @@ type = "midi"
         assert_eq!(applied.events, [Event::EdgeDepthSet { edge, depth: -0.25 }]);
         assert_eq!(sent(&engine), ["SetModTargetDepth inst=0 mod=0 target=0 depth=-0.250"]);
         ctl.apply(Intent::RemoveEdge { edge }).unwrap();
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0"]);
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0", "SetParameter inst=0 slot=0 param=1 value=0.000"], "and the detune is the one the user set");
         assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
         // Drawn again, it is another cable.
         ctl.apply(cable_to(lfo, osc, detune)).unwrap();
@@ -1539,8 +1527,12 @@ type = "midi"
         let applied = remove(&mut ctl, first).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
-        // (Its own cables, the cutoff's and the other LFO's rate, go with it; the audio thread drops it, and nothing else.)
-        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0"]);
+        // (Its own cables, the cutoff's and the other LFO's rate, go with it; the audio thread drops it, and what they
+        // drove has the values the user set: the cutoff, and the rate of what is the third modulator now.)
+        assert_eq!(
+            sent(&engine),
+            ["RemoveModulator inst=0 index=0", "SetParameter inst=0 slot=1 param=0 value=1.000", "SetModulatorRate inst=0 mod=2 rate=1.000"]
+        );
         let rack = &ctl.model.instruments[0].modulators;
         assert_eq!(rack.iter().map(|m| m.node).collect::<Vec<_>>(), [envelope, learn, last], "the others stay, in their order");
         assert!(rack.iter().all(|m| m.targets.is_empty()));
@@ -1574,7 +1566,8 @@ type = "midi"
         sent(&engine);
         let (lfo, envelope) = (group_mod(&ctl, 0), group_mod(&ctl, 1));
         remove(&mut ctl, lfo).unwrap();
-        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0"]);
+        // (What its cable drove, the bus filter's cutoff, has the value the user set.)
+        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0", "SetGroupParameter group=0 fx=0 param=0 value=1.000"]);
         assert_eq!(ctl.model.groups[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>(), [envelope]);
         assert_eq!(ctl.model.instruments[0].modulators.len(), 4, "the lane's rack is untouched");
         ctl.model.check_ids().unwrap();

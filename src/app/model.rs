@@ -74,6 +74,33 @@ pub enum NodePath {
     Modulator { at: ModulatorLocation, index: usize },
 }
 
+/// What a cable drives, named so that it can be found again once other cables and modulators have gone
+/// and the places in the racks have moved: a plugin's parameter (by the node of the plugin), a
+/// modulator's rate or a stage of its envelope (by the node of the modulator), or the depth of a cable
+/// (by its edge).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Driven {
+    Param { plugin: NodeId, index: u32 },
+    Setting { modulator: NodeId, field: ModulatorField },
+    Depth(EdgeId),
+}
+
+/// The modulator, in the same rack, and the field of it that a cable of `kind` drives, if it drives one.
+fn sibling_field(kind: &ModTargetKind) -> Option<(usize, CrossModField)> {
+    match *kind {
+        ModTargetKind::ModulatorRate { mod_index } => Some((mod_index, CrossModField::Rate)),
+        ModTargetKind::ModulatorAttack { mod_index } => Some((mod_index, CrossModField::Attack)),
+        ModTargetKind::ModulatorDecay { mod_index } => Some((mod_index, CrossModField::Decay)),
+        ModTargetKind::ModulatorSustain { mod_index } => Some((mod_index, CrossModField::Sustain)),
+        ModTargetKind::ModulatorRelease { mod_index } => Some((mod_index, CrossModField::Release)),
+        ModTargetKind::ModulatorDepth { mod_index, target_index } => Some((mod_index, CrossModField::Depth(target_index))),
+        ModTargetKind::PluginParam { .. }
+        | ModTargetKind::GroupMember { .. }
+        | ModTargetKind::GroupBus { .. }
+        | ModTargetKind::GroupMemberMod { .. } => None,
+    }
+}
+
 /// What a front-end edits: the instrument lanes and the submix groups.
 #[derive(Debug, Default)]
 pub struct SessionModel {
@@ -228,6 +255,14 @@ impl SessionModel {
         }
     }
 
+    /// The modulator rack at `at`: a lane's or a group's, if it exists.
+    pub fn modulators(&self, at: ModulatorLocation) -> Option<&Vec<ModulatorSlot>> {
+        match at {
+            ModulatorLocation::Lane(inst) => self.instruments.get(inst).map(|n| &n.modulators),
+            ModulatorLocation::Group(group) => self.groups.get(group).map(|g| &g.modulators),
+        }
+    }
+
     /// Take the cable `edge` out of the session, and with it every cable that drives the
     /// depth of a cable that goes: those, and the ones that drive theirs in turn. (A cable
     /// that is left driving the depth of one that is gone would, being addressed by its place,
@@ -240,9 +275,21 @@ impl SessionModel {
     /// can be sent the same commands in the same order. A cable goes after the cables that
     /// drive its depth. `None`, and nothing changed, if there is no such cable.
     pub fn remove_edge(&mut self, edge: EdgeId) -> Option<Vec<(ModulatorLocation, usize, usize)>> {
+        let going = self.cascade_of(edge)?;
+        let mut removals = Vec::new();
+        for gone in going.into_iter().rev() {
+            let (at, mod_index, target) = self.locate_edge(gone)?;
+            self.remove_target_at(at, mod_index, target);
+            removals.push((at, mod_index, target));
+        }
+        Some(removals)
+    }
+
+    /// The cables that go when cable `edge` is taken out: it, and then, in turn, those that drive the
+    /// depth of one that goes (which may be one that is there already: they can drive each other's).
+    /// `None` if there is no such cable.
+    pub fn cascade_of(&self, edge: EdgeId) -> Option<Vec<EdgeId>> {
         self.locate_edge(edge)?;
-        // The cables that go: this one, and then, in turn, those that drive the depth of one
-        // that goes (which may be one that is there already: they can drive each other's).
         let mut going = vec![edge];
         let mut next = 0;
         while let Some(&gone) = going.get(next) {
@@ -253,13 +300,69 @@ impl SessionModel {
                 }
             }
         }
-        let mut removals = Vec::new();
-        for gone in going.into_iter().rev() {
-            let (at, mod_index, target) = self.locate_edge(gone)?;
-            self.remove_target_at(at, mod_index, target);
-            removals.push((at, mod_index, target));
+        Some(going)
+    }
+
+    /// What the cable of kind `kind`, from the modulator at `source` in the rack at `at`, drives. Nothing
+    /// if it names a plugin, a modulator or a cable that is not there, or a modulator that is its own (a
+    /// cable like that does nothing).
+    pub fn driven_by(&self, at: ModulatorLocation, source: usize, kind: &ModTargetKind) -> Option<Driven> {
+        use ModTargetKind as K;
+        // A field of the modulator at `index` of `rack`, as a cable of `field` drives it.
+        let field_of = |rack: &[ModulatorSlot], index: usize, field: CrossModField| -> Option<Driven> {
+            let modulator = rack.get(index)?;
+            let setting = |field| Driven::Setting { modulator: modulator.node, field };
+            Some(match field {
+                CrossModField::Rate => setting(ModulatorField::Rate),
+                CrossModField::Attack => setting(ModulatorField::Attack),
+                CrossModField::Decay => setting(ModulatorField::Decay),
+                CrossModField::Sustain => setting(ModulatorField::Sustain),
+                CrossModField::Release => setting(ModulatorField::Release),
+                CrossModField::Depth(target) => Driven::Depth(modulator.targets.get(target)?.edge),
+            })
+        };
+        match (at, kind) {
+            (ModulatorLocation::Lane(inst), &K::PluginParam { slot, param_index }) => {
+                Some(Driven::Param { plugin: self.instruments.get(inst)?.plugin_node(slot)?, index: param_index })
+            }
+            (ModulatorLocation::Group(group), &K::GroupMember { member, slot, param_index }) => {
+                Some(Driven::Param { plugin: self.group_member(group, member)?.plugin_node(slot)?, index: param_index })
+            }
+            (ModulatorLocation::Group(group), &K::GroupBus { effect_index, param_index }) => {
+                Some(Driven::Param { plugin: self.groups.get(group)?.effects.get(effect_index)?.node, index: param_index })
+            }
+            (ModulatorLocation::Group(group), &K::GroupMemberMod { member, mod_index, field }) => {
+                field_of(&self.group_member(group, member)?.modulators, mod_index, field)
+            }
+            (_, kind) => {
+                let (index, field) = sibling_field(kind)?;
+                if index == source {
+                    return None;
+                }
+                field_of(self.modulators(at)?, index, field)
+            }
         }
-        Some(removals)
+    }
+
+    /// What the cable `edge` drives.
+    pub fn driven_by_edge(&self, edge: EdgeId) -> Option<Driven> {
+        let (at, source, target) = self.locate_edge(edge)?;
+        let kind = &self.modulators(at)?.get(source)?.targets.get(target)?.kind;
+        self.driven_by(at, source, kind)
+    }
+
+    /// Whether any cable in the session drives `driven`.
+    pub fn is_driven(&self, driven: Driven) -> bool {
+        let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
+        let groups = self.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
+        lanes.chain(groups).any(|(at, rack)| {
+            rack.iter().enumerate().any(|(source, m)| m.targets.iter().any(|t| self.driven_by(at, source, &t.kind) == Some(driven)))
+        })
+    }
+
+    /// The lane that is member `member` of group `group`: the `member`th of the lanes in it.
+    fn group_member(&self, group: usize, member: usize) -> Option<&InstrumentNode> {
+        self.instruments.iter().filter(|lane| lane.group == Some(group)).nth(member)
     }
 
     /// Put the lanes at `a` and `b` in each other's places, each with everything it has (its
@@ -538,6 +641,16 @@ pub struct InstrumentNode {
     /// `None` if the slots had run out.
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which only the web runtime sends"))]
     pub meter: Option<MeterSlots>,
+}
+
+impl InstrumentNode {
+    /// The node of the plugin in `slot` of the lane's chain (0 is the instrument, 1.. the effects), if there is one.
+    pub fn plugin_node(&self, slot: usize) -> Option<NodeId> {
+        match slot {
+            0 => self.instrument.as_ref().map(|plugin| plugin.node),
+            effect => self.effects.get(effect - 1).map(|plugin| plugin.node),
+        }
+    }
 }
 
 /// A submix group: its members are the instruments whose `group` points here;

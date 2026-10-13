@@ -36,11 +36,11 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
-use crate::app::intent::Applied;
+use crate::app::intent::{Applied, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, ParamTarget, PatternState, PluginSlot, SessionModel,
-    fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
+    Driven, EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodePath, ParamTarget, PatternState, PluginSlot,
+    SessionModel, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -109,6 +109,31 @@ pub struct EngineHandles {
     pub midi_monitor: Arc<MidiMonitor>,
     /// What the audio thread publishes about itself: meters, for now.
     pub telemetry: Arc<Telemetry>,
+}
+
+/// The command that gives the audio thread the rate of the LFO at `index` of the rack at `at`.
+pub(super) fn rate_command(at: ModulatorLocation, index: usize, rate: f32) -> GraphCommand {
+    match at {
+        ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorRate { inst, mod_index: index, rate },
+        ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorRate { group, mod_index: index, rate },
+    }
+}
+
+/// The command that gives the audio thread the stages of the envelope at `index` of the rack at `at`:
+/// attack, decay, sustain and release.
+pub(super) fn envelope_command(at: ModulatorLocation, index: usize, (attack, decay, sustain, release): (f32, f32, f32, f32)) -> GraphCommand {
+    match at {
+        ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorEnvelopeParam { inst, mod_index: index, attack, decay, sustain, release },
+        ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorEnvelopeParam { group, mod_index: index, attack, decay, sustain, release },
+    }
+}
+
+/// The command that gives the audio thread the depth of cable `target_index` of the modulator at `mod_index` of the rack at `at`.
+pub(super) fn depth_command(at: ModulatorLocation, mod_index: usize, target_index: usize, depth: f32) -> GraphCommand {
+    match at {
+        ModulatorLocation::Lane(inst) => GraphCommand::SetModTargetDepth { inst, mod_index, target_index, depth },
+        ModulatorLocation::Group(group) => GraphCommand::SetGroupModTargetDepth { group, mod_index, target_index, depth },
+    }
 }
 
 /// A modulation target to bind (`Controller::add_target`): the parameter it
@@ -377,9 +402,16 @@ impl Controller {
             return false;
         }
         for edge in self.model.cables_into(at, index) {
-            // (One that an earlier one took with it is not there any more.)
-            self.remove_edge(edge);
+            // (One that an earlier one took with it is not there any more. They drive the modulator's own
+            // rate, stages and cable depths, and the cables that drive the depths of those go with them, so
+            // there is nothing left of what they drove to give anything back to.)
+            self.take_out(edge);
         }
+        // What its own cables drive, told before they go, and given back when it has gone.
+        let driven: Vec<Driven> = match self.model.modulators(at).and_then(|rack| rack.get(index)) {
+            Some(modulator) => modulator.targets.iter().filter_map(|t| self.model.driven_by(at, index, &t.kind)).collect(),
+            None => Vec::new(),
+        };
         match at {
             ModulatorLocation::Lane(inst) => {
                 let member_of = lane_member_ordinal(&self.model.instruments, inst);
@@ -403,22 +435,92 @@ impl Controller {
                 }
             }
         }
+        self.give_back(driven);
         true
     }
 
     /// Take the cable `edge` out: of the model, and of the audio thread, which is sent the same
     /// removals in the same order. The cables that drive the depth of a cable that goes are
-    /// taken out first and go with it (`SessionModel::remove_edge`). False, sending nothing,
-    /// if there is no such cable.
+    /// taken out first and go with it (`SessionModel::remove_edge`). What the cables that go
+    /// were driving has the value the user set again, unless another cable drives it
+    /// (`give_back`). False, sending nothing, if there is no such cable.
     pub fn remove_edge(&mut self, edge: EdgeId) -> bool {
-        let Some(removals) = self.model.remove_edge(edge) else { return false };
+        let Some(driven) = self.take_out(edge) else { return false };
+        self.give_back(driven);
+        true
+    }
+
+    /// `remove_edge` without giving anything back: what the cable was driving, for the caller to give
+    /// back when it has done what else it has to take out. (The cables that go with it, because they
+    /// drive the depth of cables that go, drive nothing that stays.) `None`, sending nothing, if there is
+    /// no such cable.
+    fn take_out(&mut self, edge: EdgeId) -> Option<Vec<Driven>> {
+        let driven = self.model.driven_by_edge(edge).into_iter().collect();
+        let removals = self.model.remove_edge(edge)?;
         for (at, mod_index, target_index) in removals {
             let _ = self.cmd_tx.send(match at {
                 ModulatorLocation::Lane(inst) => GraphCommand::RemoveModTarget { inst, mod_index, target_index },
                 ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModTarget { group, mod_index, target_index },
             });
         }
-        true
+        Some(driven)
+    }
+
+    /// Give what the user set back to what cables that are gone were driving. A cable writes into a
+    /// parameter, a modulator's rate or stage, or the depth of a cable, on every buffer, and nothing
+    /// writes the user's value back when it is taken out: what it wrote last would stay for ever. The
+    /// values are the model's, which are the user's; what another cable still drives is left to that
+    /// cable, and what is not there any more is given nothing. (`driven` is named by what survives the
+    /// removals: nodes and edges, not places in a rack.)
+    fn give_back(&mut self, driven: Vec<Driven>) {
+        let mut done: Vec<Driven> = Vec::new();
+        for driven in driven {
+            if done.contains(&driven) || self.model.is_driven(driven) {
+                continue;
+            }
+            done.push(driven);
+            if let Some(command) = self.value_command(driven) {
+                let _ = self.cmd_tx.send(command);
+            }
+        }
+    }
+
+    /// The command that gives the audio thread the model's value of `driven`; none if it is not there.
+    fn value_command(&self, driven: Driven) -> Option<GraphCommand> {
+        let value_of = |plugin: &PluginSlot, index: u32| plugin.params.iter().find(|p| p.index == index).map(|p| p.value);
+        match driven {
+            Driven::Param { plugin, index } => match self.model.locate(plugin)? {
+                NodePath::Instrument(inst) => {
+                    let value = value_of(self.model.instruments.get(inst)?.instrument.as_ref()?, index)?;
+                    Some(GraphCommand::SetParameter { inst, slot: 0, param_index: index, value })
+                }
+                NodePath::Effect { inst, index: effect } => {
+                    let value = value_of(self.model.instruments.get(inst)?.effects.get(effect)?, index)?;
+                    Some(GraphCommand::SetParameter { inst, slot: effect + 1, param_index: index, value })
+                }
+                NodePath::GroupEffect { group, index: effect } => {
+                    let value = value_of(self.model.groups.get(group)?.effects.get(effect)?, index)?;
+                    Some(GraphCommand::SetGroupParameter { group, index: effect, param_index: index, value })
+                }
+                NodePath::Group(_) | NodePath::Modulator { .. } => None,
+            },
+            Driven::Setting { modulator, field } => {
+                let NodePath::Modulator { at, index } = self.model.locate(modulator)? else { return None };
+                match (&self.model.modulators(at)?.get(index)?.source, field) {
+                    (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => Some(rate_command(at, index, *rate)),
+                    (
+                        ModSourceSlot::Envelope { attack, decay, sustain, release },
+                        ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Sustain | ModulatorField::Release,
+                    ) => Some(envelope_command(at, index, (*attack, *decay, *sustain, *release))),
+                    _ => None,
+                }
+            }
+            Driven::Depth(edge) => {
+                let (at, mod_index, target_index) = self.model.locate_edge(edge)?;
+                let depth = self.model.modulators(at)?.get(mod_index)?.targets.get(target_index)?.depth;
+                Some(depth_command(at, mod_index, target_index, depth))
+            }
+        }
     }
 
     /// Bind `new` as a target of modulator `index` in the rack at `at`, on the audio
@@ -1846,7 +1948,10 @@ plugin = "builtin:osc"
         sent(&engine);
         assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
         // (The cables that went with it first: `remove_modulator_takes_out_the_cables_that_drive_its_own...`.)
-        assert_eq!(sent(&engine).last().map(String::as_str), Some("RemoveModulator inst=0 index=0"));
+        // The modulator goes, and then what its own cable drove, the detune, is given the value the user set.
+        let commands = sent(&engine);
+        let removed = commands.iter().position(|c| c == "RemoveModulator inst=0 index=0").expect("the modulator is removed");
+        assert_eq!(commands[removed + 1..], ["SetParameter inst=0 slot=0 param=1 value=0.000"]);
         // The lane's third modulator drove the first's rate and depth (gone with it) and the second's stages
         // (which are now the first's).
         assert_eq!(
@@ -1905,9 +2010,15 @@ plugin = "builtin:osc"
         // The member's first modulator's one cable: the member's third modulator's cable and the group's drive its depth.
         let detune = ctl.model.instruments[0].modulators[0].targets[0].edge;
         assert!(ctl.remove_edge(detune));
+        // (And the detune that the cable drove is given the value the user set.)
         assert_eq!(
             sent(&engine),
-            ["RemoveGroupModTarget group=0 mod=1 target=7", "RemoveModTarget inst=0 mod=2 target=1", "RemoveModTarget inst=0 mod=0 target=0"]
+            [
+                "RemoveGroupModTarget group=0 mod=1 target=7",
+                "RemoveModTarget inst=0 mod=2 target=1",
+                "RemoveModTarget inst=0 mod=0 target=0",
+                "SetParameter inst=0 slot=0 param=1 value=0.000"
+            ]
         );
         ctl.model.check_ids().unwrap();
     }
@@ -2036,6 +2147,10 @@ plugin = "builtin:osc"
                 "RemoveModTarget inst=0 mod=1 target=0",
                 "RemoveModTarget inst=0 mod=1 target=0",
                 "RemoveModulator inst=0 index=0",
+                // Then what its own three cables drove has the value the user set: the detune, the volume and the pan.
+                "SetParameter inst=0 slot=0 param=1 value=0.000",
+                "SetParameter inst=0 slot=0 param=2 value=1.000",
+                "SetParameter inst=0 slot=0 param=7 value=0.000",
             ]
         );
     }
@@ -2055,6 +2170,9 @@ plugin = "builtin:osc"
                 "RemoveGroupModTarget group=0 mod=1 target=5",
                 "RemoveGroupModTarget group=0 mod=1 target=6",
                 "RemoveModulator inst=0 index=0",
+                // And what its own cable drove, the detune, has the value the user set (the rate and the depth that the
+                // cables drove were its own and its cable's: gone with it).
+                "SetParameter inst=0 slot=0 param=1 value=0.000",
             ]
         );
         ctl.model.check_ids().unwrap();
@@ -2107,7 +2225,13 @@ rate = 2.0
         // The cables to the first member's modulator go, one after the other; the second member's stays.
         assert_eq!(
             sent(&engine),
-            ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=1", "RemoveModulator inst=0 index=0"]
+            [
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=1",
+                "RemoveModulator inst=0 index=0",
+                // (What the removed modulator's own cable drove.)
+                "SetParameter inst=0 slot=0 param=1 value=0.000"
+            ]
         );
         assert_eq!(driven(&ctl.model.groups[0].modulators), [vec![K::GroupMemberMod { member: 1, mod_index: 0, field: F::Depth(1) }]]);
     }
@@ -2406,4 +2530,339 @@ depth = 0.1
         ctl.model.check_ids().unwrap();
         ctl.shutdown();
     }
+
+    // -- What a cable gives back when it is taken out --
+
+    /// A square LFO at rate 0 is a constant +1, so a cable from one adds `depth` of the range to what it drives.
+    const ONE_CUTOFF_TWO_CABLES: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[instrument.effect.params]
+cutoff = 0.5
+[[instrument.modulator]]
+waveform = "square"
+rate = 0.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.2
+[[instrument.modulator]]
+waveform = "square"
+rate = 0.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[instrument.modulator]]
+type = "envelope"
+[[instrument.modulator.target]]
+slot = 1
+param = "resonance"
+depth = 0.5
+"#;
+
+    /// Let the audio thread take what the controller has sent and run a few buffers.
+    fn run(graph: &mut crate::plugin::chain::AudioGraph) {
+        graph.drain_commands();
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        for _ in 0..3 {
+            graph.process(&[], &mut out).unwrap();
+        }
+    }
+
+    fn index_of(plugin: &PluginSlot, name: &str) -> u32 {
+        plugin.params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no parameter {name}")).index
+    }
+
+    #[test]
+    fn taking_a_cable_out_gives_the_parameter_back_what_the_user_set_unless_another_cable_still_drives_it() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(ONE_CUTOFF_TWO_CABLES);
+        let cutoff = index_of(&ctl.model.instruments[0].effects[0], "cutoff");
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.8), "0.5, and 0.2 and 0.1 from the two cables");
+        let first = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        assert!(ctl.remove_edge(first));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.6), "the other cable drives it still");
+        let second = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        assert!(ctl.remove_edge(second));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.5), "and now it is what the user set");
+        assert_eq!(ctl.model.instruments[0].effects[0].params[cutoff as usize].value, 0.5, "which is what the model says");
+    }
+
+    #[test]
+    fn taking_a_modulator_out_gives_back_what_its_cables_drove() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(ONE_CUTOFF_TWO_CABLES);
+        let filter = &ctl.model.instruments[0].effects[0];
+        let (cutoff, resonance) = (index_of(filter, "cutoff"), index_of(filter, "resonance"));
+        run(&mut graph);
+        // The envelope is at rest: its cable at depth 0.5 takes the resonance (2.0 on a range of 0.5 to 10, in the
+        // session's own default 0.707) half the way down to the bottom.
+        let driven = graph.plugin_parameter(0, 1, resonance).unwrap();
+        let set = ctl.model.instruments[0].effects[0].params[resonance as usize].value;
+        assert!(driven < set, "the envelope at rest holds the resonance below what is set: {driven} against {set}");
+
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 2));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 1, resonance), Some(set), "the envelope is gone, and the resonance is what is set");
+        assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.8), "what the others drive is left to them");
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.6));
+    }
+
+    /// m0, a square LFO at rate 0, drives the rate of m1 and the depth of its first cable; m1 drives the detune.
+    const CABLES_ON_CABLES: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+waveform = "square"
+rate = 0.0
+[[instrument.modulator.target]]
+mod_rate = 1
+depth = 0.5
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+depth = 0.5
+[[instrument.modulator]]
+waveform = "sine"
+rate = 2.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.1
+"#;
+
+    #[test]
+    fn taking_out_the_cables_that_drive_a_modulators_rate_and_depth_gives_them_back() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(CABLES_ON_CABLES);
+        run(&mut graph);
+        let (rate, depths) = graph.lane_lfo(0, 1).unwrap();
+        assert!(rate > 20.0 && depths[0] > 0.5, "driven: {rate} Hz, depth {}", depths[0]);
+        let (set_rate, set_depth) = match ctl.model.instruments[0].modulators[1].source {
+            crate::app::model::ModSourceSlot::Lfo { rate, .. } => (rate, ctl.model.instruments[0].modulators[1].targets[0].depth),
+            _ => panic!("an LFO"),
+        };
+        assert_eq!((set_rate, set_depth), (2.0, 0.1));
+
+        let rate_cable = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        assert!(ctl.remove_edge(rate_cable));
+        run(&mut graph);
+        assert_eq!(graph.lane_lfo(0, 1).map(|(r, _)| r), Some(2.0), "the rate is its own again");
+        assert!(graph.lane_lfo(0, 1).unwrap().1[0] > 0.5, "and the depth is still driven");
+        let depth_cable = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        assert!(ctl.remove_edge(depth_cable));
+        run(&mut graph);
+        assert_eq!(graph.lane_lfo(0, 1), Some((2.0, vec![0.1])), "and so is the depth");
+    }
+
+    /// Group 0 has a filter on its bus; its square LFO drives the first member's detune, the bus filter's cutoff and
+    /// the rate of the first member's own LFO.
+    const GROUP_CABLES: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[group.effect.params]
+cutoff = 0.5
+[[group.modulator]]
+waveform = "square"
+rate = 0.0
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.1
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.2
+[[group.modulator.target]]
+member = 0
+mod_rate = 0
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+waveform = "sine"
+rate = 2.0
+"#;
+
+    #[test]
+    fn taking_out_a_groups_cables_and_modulators_gives_back_what_they_drove_in_the_members_and_on_the_bus() {
+        let driven = || controller_on_a_real_graph(GROUP_CABLES);
+        // Cable by cable.
+        let (mut graph, mut ctl) = driven();
+        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
+        let cutoff = index_of(&ctl.model.groups[0].effects[0], "cutoff");
+        run(&mut graph);
+        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0, "detune is driven");
+        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.7));
+        assert!(graph.lane_lfo(0, 0).unwrap().0 > 20.0, "the member's LFO is driven");
+        for (cable, what) in [(0, "the member's detune"), (0, "the bus filter's cutoff"), (0, "the member LFO's rate")] {
+            let edge = ctl.model.groups[0].modulators[0].targets[cable].edge;
+            assert!(ctl.remove_edge(edge), "{what}");
+            run(&mut graph);
+        }
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "the detune the user set");
+        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.5));
+        assert_eq!(graph.lane_lfo(0, 0).map(|(r, _)| r), Some(2.0));
+
+        // And the group's modulator at once.
+        let (mut graph, mut ctl) = driven();
+        run(&mut graph);
+        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0));
+        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.5));
+        assert_eq!(graph.lane_lfo(0, 0).map(|(r, _)| r), Some(2.0));
+    }
+
+    #[test]
+    fn a_cable_that_is_not_the_last_on_a_parameter_gives_nothing_back_and_the_last_one_does() {
+        // The commands, not what the engine ends up with (a cable that is left writes every buffer): giving
+        // the user's value back to a parameter that is still driven would be a click for nothing.
+        let (engine, mut ctl) = controller_for(ONE_CUTOFF_TWO_CABLES);
+        sent(&engine);
+        let first = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        assert!(ctl.remove_edge(first));
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0"], "the other cable drives the cutoff still");
+        let second = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        assert!(ctl.remove_edge(second));
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=1 target=0", "SetParameter inst=0 slot=1 param=0 value=0.500"]);
+    }
+
+    /// m0, a square LFO at rate 0, drives the stages of the envelope m1: its attack, decay, sustain and release.
+    const CABLES_TO_AN_ENVELOPE: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+waveform = "square"
+rate = 0.0
+[[instrument.modulator.target]]
+mod_attack = 1
+depth = 0.1
+[[instrument.modulator.target]]
+mod_decay = 1
+depth = 0.1
+[[instrument.modulator.target]]
+mod_sustain = 1
+depth = 0.1
+[[instrument.modulator.target]]
+mod_release = 1
+depth = 0.1
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.2
+decay = 0.4
+sustain = 0.6
+release = 0.8
+"#;
+
+    #[test]
+    fn taking_out_the_cables_that_drive_an_envelopes_stages_gives_them_back() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(CABLES_TO_AN_ENVELOPE);
+        run(&mut graph);
+        let (attack, decay, sustain, release) = graph.lane_envelope(0, 1).unwrap();
+        assert!(attack > 0.2 && decay > 0.4 && sustain != 0.6 && release > 0.8, "driven: {:?}", (attack, decay, sustain, release));
+        // One at a time, from the first: what is let go of is its own again, and what is still driven is not.
+        for own_now in [(true, false, false, false), (true, true, false, false), (true, true, true, false), (true, true, true, true)] {
+            let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+            assert!(ctl.remove_edge(edge));
+            run(&mut graph);
+            let now = graph.lane_envelope(0, 1).unwrap();
+            assert_eq!((now.0 == 0.2, now.1 == 0.4, now.2 == 0.6, now.3 == 0.8), own_now, "after {now:?}");
+        }
+        assert_eq!(graph.lane_envelope(0, 1), Some((0.2, 0.4, 0.6, 0.8)));
+    }
+
+    #[test]
+    fn taking_out_a_group_modulators_cable_to_a_siblings_rate_gives_the_groups_rate_back() {
+        let (engine, mut ctl) = controller_for(testutil::GROUPS);
+        sent(&engine);
+        // The group's second modulator, an envelope, has a cable to the first one's rate (0.5 Hz) and one to the depth of its third cable.
+        let rate_cable = ctl.model.groups[0].modulators[1].targets[0].edge;
+        assert!(ctl.remove_edge(rate_cable));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=1 target=0", "SetGroupModulatorRate group=0 mod=0 rate=0.500"]);
+        let depth_cable = ctl.model.groups[0].modulators[1].targets[0].edge;
+        assert!(ctl.remove_edge(depth_cable));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=1 target=0", "SetGroupModTargetDepth group=0 mod=0 target=2 depth=0.250"]);
+    }
+
+    #[test]
+    fn a_groups_cables_to_a_second_member_and_to_a_members_modulator_give_back_their_values() {
+        let (engine, mut ctl) = controller_for(testutil::GROUPS);
+        sent(&engine);
+        // The group's first modulator: cables to member 0's detune, member 1's cutoff, the bus reverb's damping and the
+        // rate of member 1's own LFO (3 Hz).
+        let to_member_one = ctl.model.groups[0].modulators[0].targets[1].edge;
+        assert!(ctl.remove_edge(to_member_one));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=1", "SetParameter inst=1 slot=1 param=0 value=1.000"]);
+        let to_members_lfo = ctl.model.groups[0].modulators[0].targets[2].edge;
+        assert!(ctl.remove_edge(to_members_lfo));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=2", "SetModulatorRate inst=1 mod=0 rate=3.000"]);
+    }
+
+    #[test]
+    fn a_modulator_with_two_cables_to_one_parameter_gives_it_back_once_and_a_cable_to_its_own_modulator_gives_nothing() {
+        let (engine, mut ctl) = controller_for(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.2
+[[instrument.modulator.target]]
+mod_rate = 0
+depth = 0.3
+"#,
+        );
+        sent(&engine);
+        // (A cable to its own rate does nothing, and has nothing to give back.)
+        let own = ctl.model.instruments[0].modulators[0].targets[2].edge;
+        assert!(ctl.remove_edge(own));
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2"]);
+        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0", "SetParameter inst=0 slot=1 param=0 value=1.000"], "the cutoff once");
+    }
+
+    #[test]
+    fn a_cable_to_the_second_bus_effect_gives_that_effect_its_value_back() {
+        let (engine, mut ctl) = controller_for(
+            r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+[[group.modulator.target]]
+bus = 1
+param = "damping"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+"#,
+        );
+        sent(&engine);
+        let to_reverb = ctl.model.groups[0].modulators[0].targets[1].edge;
+        assert!(ctl.remove_edge(to_reverb));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=1", "SetGroupParameter group=0 fx=1 param=2 value=0.350"]);
+    }
 }
+
