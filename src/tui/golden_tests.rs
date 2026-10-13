@@ -1257,7 +1257,8 @@ fn deleting_a_bus_effect_drops_the_group_modulators_bus_targets() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveGroupEffect group=0 index=0"]);
+    // (The group LFO's cable to the reverb's damping goes first, then the reverb.)
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=1", "RemoveGroupEffect group=0 index=0"]);
     let tree = h.tree();
     assert!(!tree.iter().any(|l| l.contains("Reverb")), "{tree:#?}");
     assert!(tree.contains(&"  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)  (bus)"), "{tree:#?}");
@@ -1369,7 +1370,8 @@ fn deleting_an_effect_drops_its_modulator_targets_and_shifts_later_slots() {
     assert_eq!(h.tree()[3], "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Reverb: damping (30%)");
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+    // (The cable to the filter goes first, then the filter.)
+    assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=0", "RemoveEffect inst=0 index=0"]);
     // The reverb's `damping` (parameter 2) moved from slot 2 to slot 1 and the filter's target is gone.
     assert_eq!(lane_targets(&h), [(1, "PluginParam { slot: 1, param_index: 2 }".to_string())]);
     assert_eq!(
@@ -1383,7 +1385,7 @@ fn deleting_the_last_effect_keeps_the_earlier_targets() {
     let mut h = Harness::new(scene_two_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 1 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=1"]);
+    assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=1", "RemoveEffect inst=0 index=1"]);
     assert_eq!(
         h.tree(),
         ["♪ Oscillator  [Built-in]", "├ fx Filter  [Built-in]", "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%)"]
@@ -1504,7 +1506,7 @@ fn deleting_a_member_effect_drops_its_group_targets_and_shifts_the_later_slots()
     let mut h = Harness::new(scene_member_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveEffect inst=0 index=0"]);
     // Member 0's filter and its target are gone and its reverb is in slot 1 now;
     // member 1 is another lane and keeps its filter's target in slot 1.
     assert_eq!(member_targets(&h), [(0, 1, 2, 1), (1, 1, 0, 1)]);
@@ -1516,7 +1518,7 @@ fn deleting_the_last_member_effect_keeps_the_earlier_group_targets() {
     let mut h = Harness::new(scene_member_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 1 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=1"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=1", "RemoveEffect inst=0 index=1"]);
     assert_eq!(member_targets(&h), [(0, 1, 0, 1), (1, 1, 0, 1)]);
     assert_eq!(group_lfo_line(&h), "  ~ LFO 0.5Hz sine → M0 Filter: cutoff (40%), M1 Filter: cutoff (20%)  (bus)");
 }
@@ -1527,7 +1529,7 @@ fn deleting_an_effect_of_the_second_member_leaves_the_first_members_targets() {
     let mut h = Harness::new(scene_member_effects());
     h.goto(TreeAddress::Effect { inst: 1, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveEffect inst=1 index=0"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=2", "RemoveEffect inst=1 index=0"]);
     assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2)]);
 }
 

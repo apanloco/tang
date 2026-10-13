@@ -647,6 +647,104 @@ plugin = "builtin:reverb"
 rate = 6.0
 "#;
 
+/// What taking things out of the chains has to keep right, with a cable of every kind that can end at a
+/// plugin: a group (a filter and a reverb on its bus) of two lanes, and a lane in none. The first lane has a
+/// filter and a reverb of its own, and a modulator that drives both (and its own detune), and another that
+/// drives the depth of two of its cables; the group's first modulator drives the first member's filter and
+/// reverb, the second member's detune, both bus effects and the first member's modulator, and its second
+/// the depth of two of its own cables.
+pub const CHAINS: &str = r#"
+[[group]]
+name = "Pad"
+
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[group.modulator.target]]
+member = 0
+slot = 2
+param = "damping"
+depth = 0.3
+[[group.modulator.target]]
+member = 1
+param = "detune"
+depth = 0.2
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.1
+[[group.modulator.target]]
+bus = 1
+param = "damping"
+depth = 0.5
+[[group.modulator.target]]
+member = 0
+mod_rate = 0
+depth = 0.25
+
+[[group.modulator]]
+rate = 0.7
+[[group.modulator.target]]
+mod_depth = [0, 1]
+depth = 0.3
+[[group.modulator.target]]
+mod_depth = [0, 4]
+depth = 0.35
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[instrument.modulator.target]]
+slot = 2
+param = "damping"
+depth = 0.2
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.3
+[[instrument.modulator]]
+rate = 4.0
+[[instrument.modulator.target]]
+mod_depth = [0, 0]
+depth = 0.4
+[[instrument.modulator.target]]
+mod_depth = [0, 1]
+depth = 0.45
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.2
+"#;
+
 /// Panic, showing where, if two models differ anywhere. They are compared by their
 /// `Debug` dumps, so a field added to the model later is covered without touching this.
 pub fn assert_same_model(what: &str, a: &SessionModel, b: &SessionModel) {

@@ -428,6 +428,14 @@ drives is left to that cable, and one that went with the modulator is given
 nothing. What drives what is named by node and edge ids (`Driven`), which survive
 the removals around it, not by places in a rack.
 
+**Taking an effect out of a chain** (TUI `d` on an effect or a bus effect, through
+`Controller::remove_effect` / `remove_bus_effect`) takes the cables that drive its
+parameters out first, each by the same path as above (a lane's own, and a group's to a
+member's effect or to a bus effect, with the cables that drive their depths), and then
+the plugin, which the audio thread hands back. What the cables drove goes with the plugin,
+so nothing is given back; the cables to the effects after it are told their new slots (a
+group's, their new bus indices).
+
 **Limitation:** a modulator envelope shapes *parameters*, not voices — it
 cannot make a note ring past the instrument's own release. Once the plugin
 stops its voice (the built-in oscillators hold notes ~12 ms past note-off by
@@ -1465,9 +1473,10 @@ TODO: `ui` layout fields in the session format (the canvas lays itself out until
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
 the browser (`AddModEdge` takes a parameter port only; `RemoveEdge` takes any cable out).
-TODO: the TUI's removal of an effect, a bus effect or a group member still drops the modulator
-targets that pointed at it with `retain`, which leaves cables that drive the depth of a cable
-that is gone pointing at nothing (`remove_modulator` and `remove_edge` take them out).
+TODO: the TUI's removal of a lane or a group still drops the modulator targets that pointed at it
+with `retain`, which leaves cables that drive the depth of a cable that is gone pointing at
+nothing, and leaves what a removed group's cables drove at its last value (effects and bus effects,
+`remove_modulator` and `remove_edge` take them out through the controller).
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
 TODO: the canvas does not move to show a node that was added.

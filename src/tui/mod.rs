@@ -37,8 +37,7 @@ use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
-    ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_group_bus_after_remove,
-    fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
+    ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
     shift_group_member_after_insert,
 };
@@ -2730,9 +2729,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 let addr = s.tree_entries[sel].address;
                 match addr {
                     TreeAddress::Effect { inst, index } => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
-                        // Mirror the audio thread: drop / shift modulator targets.
-                        let _ = s.ctl.model.remove_effect(inst, index);
+                        s.ctl.remove_effect(inst, index);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
@@ -2772,14 +2769,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.rebuild_tree();
                     }
                     TreeAddress::GroupEffect { group, index } => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index });
-                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
-                            if index < g.effects.len() {
-                                g.effects.remove(index);
-                                // Drop/shift group-mod bus targets after the removed effect.
-                                fixup_group_bus_after_remove(&mut g.modulators, index);
-                            }
-                        }
+                        s.ctl.remove_bus_effect(group, index);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                     }

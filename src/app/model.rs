@@ -420,6 +420,25 @@ impl SessionModel {
         found
     }
 
+    /// The cables that drive a parameter of the plugin in node `plugin`, an instrument, an effect or a bus
+    /// effect: a lane's own, and a group's to its members' plugins and to its bus effects. In the order of the
+    /// racks (the lanes', then the groups'), each modulator's by place.
+    pub fn cables_into_plugin(&self, plugin: NodeId) -> Vec<EdgeId> {
+        let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
+        let groups = self.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
+        let mut found = Vec::new();
+        for (at, rack) in lanes.chain(groups) {
+            for (source, modulator) in rack.iter().enumerate() {
+                for target in &modulator.targets {
+                    if matches!(self.driven_by(at, source, &target.kind), Some(Driven::Param { plugin: driven, .. }) if driven == plugin) {
+                        found.push(target.edge);
+                    }
+                }
+            }
+        }
+        found
+    }
+
     /// The cables that drive the depth of cable `edge`: in the rack of its modulator, and, if
     /// the modulator is a lane's and the lane is a member of a group, in the group's.
     fn depth_cables_of(&self, edge: EdgeId) -> Vec<EdgeId> {
@@ -503,6 +522,20 @@ impl SessionModel {
                 fixup_member_slots_after_remove(&mut g.modulators, member, index);
             }
         }
+        Some(removed)
+    }
+
+    /// Take the bus effect at `index` out of group `group`, the way the audio thread's `RemoveGroupEffect`
+    /// does: the group's modulator targets on it go with it, and the ones on later bus effects move down an
+    /// index so that they keep pointing at the same plugins. `None` (and no change) if the group has no such
+    /// effect.
+    pub fn remove_bus_effect(&mut self, group: usize, index: usize) -> Option<PluginSlot> {
+        let bus = self.groups.get_mut(group)?;
+        if index >= bus.effects.len() {
+            return None;
+        }
+        let removed = bus.effects.remove(index);
+        fixup_group_bus_after_remove(&mut bus.modulators, index);
         Some(removed)
     }
 
@@ -1527,6 +1560,32 @@ type = "envelope"
         assert_eq!((model.instruments[0].modulators.len(), model.groups[0].modulators.len()), (2, 0));
     }
 
+    #[test]
+    fn the_cables_into_a_plugin_are_the_lanes_and_the_groups_that_drive_a_parameter_of_it() {
+        use crate::app::testutil::CHAINS;
+        let model = load(CHAINS).model;
+        let cable = |at: ModulatorLocation, modulator: usize, target: usize| model.modulators(at).unwrap()[modulator].targets[target].edge;
+        let lane = |i: usize, m: usize, t: usize| cable(ModulatorLocation::Lane(i), m, t);
+        let group = |m: usize, t: usize| cable(ModulatorLocation::Group(0), m, t);
+        let (first, second, third) = (&model.instruments[0], &model.instruments[1], &model.instruments[2]);
+        // The first lane's filter: its own modulator's cable to the cutoff, and the group's to it as the first member's.
+        assert_eq!(model.cables_into_plugin(first.effects[0].node), [lane(0, 0, 0), group(0, 0)]);
+        assert_eq!(model.cables_into_plugin(first.effects[1].node), [lane(0, 0, 1), group(0, 1)]);
+        // An instrument, which has the lane's node: its detune from its own modulator and, for the second member, from the group.
+        assert_eq!(model.cables_into_plugin(first.node), [lane(0, 0, 2)]);
+        assert_eq!(model.cables_into_plugin(second.node), [group(0, 2)]);
+        // The bus effects have the group's cables to them, and the third lane's filter its own.
+        assert_eq!(model.cables_into_plugin(model.groups[0].effects[0].node), [group(0, 3)]);
+        assert_eq!(model.cables_into_plugin(model.groups[0].effects[1].node), [group(0, 4)]);
+        assert_eq!(model.cables_into_plugin(third.effects[0].node), [lane(2, 0, 0)]);
+        // What drives only a modulator's settings or the depth of a cable is not a cable into a plugin, and a
+        // node that is no plugin (or is not there) has none.
+        assert!(model.cables_into_plugin(third.node).is_empty());
+        assert!(model.cables_into_plugin(model.groups[0].node).is_empty());
+        assert!(model.cables_into_plugin(first.modulators[1].node).is_empty());
+        assert!(model.cables_into_plugin(NodeId(9999)).is_empty());
+    }
+
     /// What a rack's modulators can drive, one run per plugin: its node and the kind of target, with the
     /// parameter's own index left out.
     fn plugins_driven(model: &SessionModel, at: ModulatorLocation) -> Vec<(NodeId, K)> {
@@ -2370,6 +2429,33 @@ depth = 0.5
         assert_eq!(model.instruments[1].effects.len(), 2);
         assert_eq!(model.instruments[0].effects.len(), 2);
         assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn removing_a_bus_effect_drops_the_groups_targets_on_it_and_moves_the_later_ones_down() {
+        use crate::app::testutil::CHAINS;
+        let mut model = load(CHAINS).model;
+        let bus_cables = |model: &SessionModel| -> Vec<K> { model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).filter(|kind| matches!(kind, K::GroupBus { .. })).collect() };
+        assert_eq!(bus_cables(&model), [K::GroupBus { effect_index: 0, param_index: 0 }, K::GroupBus { effect_index: 1, param_index: 2 }]);
+        let filter = model.groups[0].effects[0].node;
+        let removed = model.remove_bus_effect(0, 0).expect("the filter is there");
+        assert_eq!(removed.node, filter);
+        assert_eq!(model.groups[0].effects.len(), 1);
+        // The cable to the filter is gone, and the one to the reverb has its place now.
+        assert_eq!(bus_cables(&model), [K::GroupBus { effect_index: 0, param_index: 2 }]);
+        // The reverb is the only one left, and the last: nothing moves after it.
+        assert!(model.remove_bus_effect(0, 0).is_some());
+        assert!(bus_cables(&model).is_empty());
+    }
+
+    #[test]
+    fn removing_a_bus_effect_that_is_not_there_changes_nothing() {
+        use crate::app::testutil::CHAINS;
+        let mut model = load(CHAINS).model;
+        assert!(model.remove_bus_effect(0, 2).is_none(), "the bus has two effects");
+        assert!(model.remove_bus_effect(1, 0).is_none(), "there is no group 1");
+        assert_eq!(model.groups[0].effects.len(), 2);
+        assert_eq!(model.groups[0].modulators[0].targets.len(), 6);
     }
 
     #[test]

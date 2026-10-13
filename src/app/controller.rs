@@ -390,6 +390,36 @@ impl Controller {
         true
     }
 
+    /// Take the effect at `index` out of lane `inst`'s chain: the audio thread hands the plugin back, and
+    /// the model drops it. The cables that drive its parameters, a lane's and a group's, go first, each by
+    /// `take_out` with the cables that drive the depths of those (nothing is left pointing at a cable that is
+    /// not there); what they were driving goes with the plugin, so nothing is given back. The cables that
+    /// drive the plugins after it are told their new slots. False, sending nothing, if there is no such effect.
+    pub fn remove_effect(&mut self, inst: usize, index: usize) -> bool {
+        let Some(effect) = self.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)) else { return false };
+        for edge in self.model.cables_into_plugin(effect.node) {
+            // (One that an earlier one took with it is not there any more.)
+            self.take_out(edge);
+        }
+        let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
+        self.model.remove_effect(inst, index);
+        true
+    }
+
+    /// Take the effect at `index` out of group `group`'s bus: as `remove_effect` does for a lane's chain, the
+    /// group's cables to it go first (with the cables that drive their depths), and the group's cables to the
+    /// bus effects after it are told their new places. False, sending nothing, if there is no such effect.
+    pub fn remove_bus_effect(&mut self, group: usize, index: usize) -> bool {
+        let Some(effect) = self.model.groups.get(group).and_then(|g| g.effects.get(index)) else { return false };
+        for edge in self.model.cables_into_plugin(effect.node) {
+            // (One that an earlier one took with it is not there any more.)
+            self.take_out(edge);
+        }
+        let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index });
+        self.model.remove_bus_effect(group, index);
+        true
+    }
+
     /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
     /// thread drops it and the model with it, and its own cables with it. The cables of the
     /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
@@ -2255,6 +2285,38 @@ rate = 2.0
             .collect()
     }
 
+    /// The names of the effects of each lane as the model has them, in the terms `AudioGraph::effect_names` uses.
+    fn model_effect_names(model: &SessionModel) -> Vec<Vec<String>> {
+        model.instruments.iter().map(|lane| lane.effects.iter().map(|effect| effect.name.clone()).collect()).collect()
+    }
+
+    /// What each group is as the model has it, in the terms `AudioGraph::groups` uses.
+    fn model_groups(model: &SessionModel) -> Vec<crate::plugin::chain::GroupFacts> {
+        model
+            .groups
+            .iter()
+            .map(|group| crate::plugin::chain::GroupFacts {
+                effects: group.effects.iter().map(|effect| effect.name.clone()).collect(),
+                modulators: group.modulators.len(),
+                volume: group.volume,
+                pan: group.pan,
+            })
+            .collect()
+    }
+
+    /// The cables of the model that point at nothing: the plugin, the member, the modulator or the cable they
+    /// name is not there.
+    fn dangling(model: &SessionModel) -> Vec<EdgeId> {
+        let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
+        let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
+        lanes
+            .chain(groups)
+            .flat_map(|(at, rack)| {
+                rack.iter().enumerate().flat_map(move |(source, m)| m.targets.iter().filter(move |t| model.driven_by(at, source, &t.kind).is_none()).map(|t| t.edge))
+            })
+            .collect()
+    }
+
     #[test]
     fn swap_lanes_swaps_them_in_the_model_and_tells_the_audio_thread_once() {
         let (engine, mut ctl) = controller_for(testutil::LANES_IN_GROUPS);
@@ -2311,6 +2373,185 @@ rate = 2.0
                 }
                 graph.drain_commands();
                 same(&graph, &ctl, &format!("after step {step} ({a} and {b}), scene of {lanes} lanes"));
+            }
+        }
+    }
+
+    /// The cables of `CHAINS` in the order `model_cables` lists them (lane racks, then group racks), as
+    /// `(rack, modulator, [kind of each cable])`.
+    fn chains_cables(model: &SessionModel) -> Vec<(ModulatorLocation, usize, Vec<ModTargetKind>)> {
+        model_cables(model).into_iter().map(|(at, m, cables)| (at, m, cables.into_iter().map(|(kind, _)| kind).collect())).collect()
+    }
+
+    #[test]
+    fn the_chains_scene_has_the_cables_the_tests_of_removals_count_on() {
+        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
+        let (graph, ctl) = controller_on_a_real_graph(testutil::CHAINS);
+        assert_eq!(graph.cables(), model_cables(&ctl.model));
+        assert_eq!(model_effect_names(&ctl.model), [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
+        assert_eq!(graph.effect_names(), model_effect_names(&ctl.model));
+        assert_eq!(graph.groups(), model_groups(&ctl.model));
+        assert!(dangling(&ctl.model).is_empty());
+        let lane = |inst, m| (ModulatorLocation::Lane(inst), m);
+        let group = (ModulatorLocation::Group(0), 0);
+        let expected: Vec<((ModulatorLocation, usize), Vec<K>)> = vec![
+            // Lane 0: the first modulator drives the filter's cutoff (slot 1), the reverb's damping (slot 2) and the
+            // instrument's detune; the second the depth of its first two cables.
+            (lane(0, 0), vec![K::PluginParam { slot: 1, param_index: 0 }, K::PluginParam { slot: 2, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]),
+            (lane(0, 1), vec![K::ModulatorDepth { mod_index: 0, target_index: 0 }, K::ModulatorDepth { mod_index: 0, target_index: 1 }]),
+            (lane(2, 0), vec![K::PluginParam { slot: 1, param_index: 0 }]),
+        ];
+        let kinds: Vec<_> = chains_cables(&ctl.model).into_iter().filter(|(at, ..)| matches!(at, ModulatorLocation::Lane(_))).map(|(at, m, cables)| ((at, m), cables)).collect();
+        assert_eq!(kinds, expected);
+        let group_kinds = chains_cables(&ctl.model).into_iter().find(|(at, m, _)| (*at, *m) == group).map(|(.., cables)| cables).unwrap();
+        assert_eq!(
+            group_kinds,
+            [
+                K::GroupMember { member: 0, slot: 1, param_index: 0 },
+                K::GroupMember { member: 0, slot: 2, param_index: 2 },
+                K::GroupMember { member: 1, slot: 0, param_index: 1 },
+                K::GroupBus { effect_index: 0, param_index: 0 },
+                K::GroupBus { effect_index: 1, param_index: 2 },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_effect_that_is_taken_out_takes_the_cables_to_it_out_first_and_gives_nothing_back() {
+        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        // Lane 0's filter. Its modulator's cable to the cutoff goes, with the cable that drives the depth of that
+        // one (a cable goes after the cables that drive its depth), and so does the group's cable to the same cutoff.
+        assert!(ctl.remove_effect(0, 0));
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveModTarget inst=0 mod=1 target=0",
+                "RemoveModTarget inst=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveEffect inst=0 index=0",
+            ],
+            "what the cables were driving is gone with the filter: nothing is given back"
+        );
+        assert_eq!(model_effect_names(&ctl.model), [vec!["Reverb"], vec![], vec!["Filter"]]);
+        let cables = chains_cables(&ctl.model);
+        let rack = |at, m| cables.iter().find(|(a, i, _)| (*a, *i) == (at, m)).map(|(.., kinds)| kinds.clone()).unwrap();
+        // What drove the reverb (now in slot 1) still does, and what drove the depth of its cable does too, at its new place.
+        assert_eq!(rack(ModulatorLocation::Lane(0), 0), [K::PluginParam { slot: 1, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]);
+        assert_eq!(rack(ModulatorLocation::Lane(0), 1), [K::ModulatorDepth { mod_index: 0, target_index: 0 }]);
+        assert_eq!(rack(ModulatorLocation::Lane(2), 0), [K::PluginParam { slot: 1, param_index: 0 }], "another lane's filter is not this one");
+        assert_eq!(
+            rack(ModulatorLocation::Group(0), 0),
+            [
+                K::GroupMember { member: 0, slot: 1, param_index: 2 },
+                K::GroupMember { member: 1, slot: 0, param_index: 1 },
+                K::GroupBus { effect_index: 0, param_index: 0 },
+                K::GroupBus { effect_index: 1, param_index: 2 },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
+            ]
+        );
+        assert_eq!(rack(ModulatorLocation::Group(0), 1), [K::ModulatorDepth { mod_index: 0, target_index: 0 }, K::ModulatorDepth { mod_index: 0, target_index: 3 }]);
+        assert!(dangling(&ctl.model).is_empty());
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_effect_that_is_not_there_is_not_taken_out() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(!ctl.remove_effect(0, 2) && !ctl.remove_effect(1, 0) && !ctl.remove_effect(9, 0));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(model_effect_names(&ctl.model), [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
+    }
+
+    #[test]
+    fn effects_that_are_taken_out_leave_the_model_and_the_audio_thread_the_same() {
+        // Each effect of the scene on its own, and then all of them, in both orders.
+        let all = [(0, 0), (0, 1), (2, 0)];
+        let mut sequences: Vec<Vec<(usize, usize)>> = all.iter().map(|&one| vec![one]).collect();
+        sequences.push(vec![(0, 0), (0, 0), (2, 0)]); // (the reverb moves into the filter's place)
+        sequences.push(vec![(2, 0), (0, 1), (0, 0)]);
+        for sequence in sequences {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(testutil::CHAINS);
+            for (inst, index) in sequence.iter().copied() {
+                assert!(ctl.remove_effect(inst, index), "{sequence:?}: {inst}/{index}");
+                graph.drain_commands();
+                let what = format!("after {inst}/{index} of {sequence:?}");
+                assert_eq!(graph.effect_names(), model_effect_names(&ctl.model), "the chains {what}");
+                assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
+                ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+            }
+        }
+    }
+
+    /// The kinds of the cables of the rack `(at, modulator)` of `CHAINS`, as `chains_cables` lists them.
+    fn rack_kinds(model: &SessionModel, at: ModulatorLocation, modulator: usize) -> Vec<ModTargetKind> {
+        chains_cables(model).into_iter().find(|(a, m, _)| (*a, *m) == (at, modulator)).map(|(.., kinds)| kinds).unwrap()
+    }
+
+    #[test]
+    fn a_bus_effect_that_is_taken_out_takes_the_cables_to_it_out_first_and_gives_nothing_back() {
+        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        // The bus's filter: the group's cable to its cutoff goes, and nothing drives the depth of that.
+        assert!(ctl.remove_bus_effect(0, 0));
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0"]);
+        assert_eq!(ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Reverb"]);
+        let group = ModulatorLocation::Group(0);
+        // The cable to the reverb is the filter's now, and the cable that drives its depth knows the cable's new place.
+        assert_eq!(
+            rack_kinds(&ctl.model, group, 0),
+            [
+                K::GroupMember { member: 0, slot: 1, param_index: 0 },
+                K::GroupMember { member: 0, slot: 2, param_index: 2 },
+                K::GroupMember { member: 1, slot: 0, param_index: 1 },
+                K::GroupBus { effect_index: 0, param_index: 2 },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
+            ]
+        );
+        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 1 }, K::ModulatorDepth { mod_index: 0, target_index: 3 }]);
+        assert!(dangling(&ctl.model).is_empty());
+
+        // Then the reverb, which has a cable that drives the depth of its cable: that goes first.
+        assert!(ctl.remove_bus_effect(0, 0));
+        assert_eq!(
+            sent(&engine),
+            ["RemoveGroupModTarget group=0 mod=1 target=1", "RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0"]
+        );
+        assert!(ctl.model.groups[0].effects.is_empty());
+        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 1 }]);
+        assert!(dangling(&ctl.model).is_empty());
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_bus_effect_that_is_not_there_is_not_taken_out() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        assert!(!ctl.remove_bus_effect(0, 2) && !ctl.remove_bus_effect(1, 0));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.groups[0].effects.len(), 2);
+    }
+
+    #[test]
+    fn bus_effects_that_are_taken_out_leave_the_model_and_the_audio_thread_the_same() {
+        for sequence in [vec![0], vec![1], vec![0, 0], vec![1, 0]] {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(testutil::CHAINS);
+            for index in sequence.iter().copied() {
+                assert!(ctl.remove_bus_effect(0, index), "{sequence:?}: {index}");
+                graph.drain_commands();
+                let what = format!("after {index} of {sequence:?}");
+                assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
+                ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
             }
         }
     }

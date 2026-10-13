@@ -309,6 +309,17 @@ pub struct LaneFacts {
     pub pattern_index: usize,
 }
 
+/// What a group is, for a test to compare with the model's: the names of its bus effects, how many
+/// modulators, its volume and its pan.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct GroupFacts {
+    pub effects: Vec<String>,
+    pub modulators: usize,
+    pub volume: f32,
+    pub pan: f32,
+}
+
 /// Identifies what a modulation target points at.
 ///
 /// Modulators are lane-scoped: one modulator can drive parameters anywhere in
@@ -3109,6 +3120,26 @@ impl AudioGraph {
                 effects: lane.effects.len(),
                 modulators: lane.modulators.len(),
                 pattern_index: lane.pattern.inst_index,
+            })
+            .collect()
+    }
+
+    /// The names of the effects of each lane, in the order of its chain, for a test to compare with the model's.
+    #[cfg(test)]
+    pub fn effect_names(&self) -> Vec<Vec<String>> {
+        self.instruments.iter().map(|lane| lane.effects.iter().map(|effect| effect.name().to_string()).collect()).collect()
+    }
+
+    /// What each group is, for a test to compare with the model's.
+    #[cfg(test)]
+    pub fn groups(&self) -> Vec<GroupFacts> {
+        self.groups
+            .iter()
+            .map(|group| GroupFacts {
+                effects: group.effects.iter().map(|effect| effect.name().to_string()).collect(),
+                modulators: group.modulators.len(),
+                volume: group.volume,
+                pan: group.pan,
             })
             .collect()
     }
