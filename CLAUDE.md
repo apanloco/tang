@@ -1336,7 +1336,7 @@ in `src/tui/snapshots/`) and the commands the TUI sent to the audio thread. Afte
 an intentional UI change run `INSTA_UPDATE=always cargo test golden` and review
 the snapshot diff.
 
-## Web UI (planned)
+## Web UI
 
 A browser front-end to the same Tang process (local or LAN). Audio, plugins
 and MIDI stay native — the browser is a control surface, never an audio
@@ -1364,7 +1364,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   runtime streams them to the browser as binary frames. The slots, the engine
   side and the layout that says what each slot means
   (`SessionModel::telemetry_layout()`, `src/app/layout.rs`) are built (see
-  "Session state"); the binary frames and the web runtime are not.
+  "Session state"); `web::pusher` sends them to the browsers as binary frames (see "Server").
 - **Protocol**: the types that cross the socket (`Intent`, `Event`,
   `StampedEvent`, `Graph`, `TelemetryLayout`, `Snapshot`) derive serde — camel
   case, enums as objects tagged by `type` or `kind` — and, under the `web`
@@ -1390,7 +1390,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, steps 11 and 12 built): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1457,7 +1457,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
 
 Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Steps 14 and 15 did the
 first of phase 3 ahead of phase 1 (D18): a modulator's settings and a cable's depth are turned,
-modulators and cables are added and taken out, in the browser and in the TUI. Phase 1 (session
+modulators and cables are added and taken out, in the browser and in the TUI. Step 16 made the keys
+of the computer a piano in the page, so that what is built can be tried by ear. Phase 1 (session
 parity) is next, §11.
 TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
@@ -1477,8 +1478,6 @@ TODO: events of their own for what the audio thread reports to the controller (a
 finished pattern recording, a captured MIDI-learn control) and for what the TUI
 changes without an intent: until then connected browsers are given a snapshot
 (`Controller::resync`).
-TODO: bind the web interface's port before the session loads, so that a taken port
-is reported at once (it is found after the load now).
 TODO: the events of one intent share its revision, which a client takes for a repeat
 if there is more than one (every intent makes one event today).
 TODO: the held-notes telemetry channel (a 16-byte bitset, on change) and keep-alive
@@ -1509,7 +1508,7 @@ The `web` Cargo feature (off by default) is the browser front-end: `ts-rs`
 (which generates the TypeScript of the protocol types), the server (`axum`,
 `tokio`) and `ctrlc` for stopping `tang serve`. `tokio-tungstenite` and
 `futures-util` are in it for the tests' WebSocket client (axum's `ws` is built on
-the same crate). See "Web UI (planned)".
+the same crate). See "Web UI".
 
 CI runs clippy + tests on all three platforms:
 
