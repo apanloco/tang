@@ -333,6 +333,9 @@ Modulators always serialize under `[[instrument.modulator]]` (the instrument
 level), never under an effect. Older sessions that nested `[[...effect.
 modulator]]` still load: those modulators migrate into the lane with their
 targets pinned to that effect's slot.
+TODO: a lane with no instrument plugin (`d` on the instrument of a lane that has effects leaves
+one) loses its modulators when the session is saved and loaded: the saver writes them under the
+bare `[[instrument]]`, the loader reads a lane's modulators from its instrument plugin's table.
 
 **ADSR envelope modulator** (triggered by note-on/off):
 
@@ -946,7 +949,18 @@ range), `LoadPreset` (by preset id; the values the preset set are mirrored
 into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
 stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
 waveform rounded to its index: sine, triangle, saw, square) and `SetEdgeDepth` (a
-modulation cable's depth, -1 to 1). Every applied intent bumps `Controller::rev`;
+modulation cable's depth, -1 to 1); and four that change the structure: `RemoveEdge`
+(a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
+an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
+lane's node, or of a group), `AddModEdge { modulator, to }` (a cable to a plugin parameter at
+depth `NEW_CABLE_DEPTH`, 0.5: where it may end is `SessionModel::param_targets`, a lane's
+modulator reaching its lane's chain and a group's its members' chains and its bus effects;
+refused for a port that is not a parameter, a plugin out of reach, a parameter it drives
+already) and `RemoveNode` (a modulator, with its cables and those of the others that drove
+its settings; anything else is refused until chain editing). An intent that changes the
+structure has no event for a client to apply: `Applied::restructured` is set, `apply` calls
+`resync` at once, and the subscribers are given a snapshot at the revision after the
+intent's. Every applied intent bumps `Controller::rev`;
 one that fails (`NotFound`, `EdgeNotFound`, `Invalid`) changes nothing. The TUI's
 parameter, gain, preset and modulator-row edits use them (what each row of a
 modulator's parameter pane is comes from one table, `modulator_row` in
@@ -955,7 +969,9 @@ makes; the pane is drawn (`modulator_pane`) and the value popup opened
 (`modulator_edit_state`) from it too, so a row's label, range and default are in one
 place in the TUI; the Type row, which turns an LFO into an envelope, is still the TUI's
 own edit). Its other edits still change the model and send the command
-themselves, until their intents exist; for deleting and moving an effect they
+themselves, until their intents exist (but the TUI's `d` on a modulator, its `m` and
+`l` keys and its target selectors use `Controller::remove_modulator`, `add_modulator` and
+`add_target`, which the intents are made of, and `SessionModel::param_targets`); for deleting and moving an effect they
 use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
 targets of the lane and of its group pointing at the same plugins, as the audio
 thread does.
@@ -1304,8 +1320,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   model, the engine handles and the plugin catalog. Front-ends call
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
-  `SetGain`, `LoadPreset`, `SetModulatorField` and `SetEdgeDepth` (see "Session
-  state").
+  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `RemoveEdge`,
+  `AddModulator`, `AddModEdge` and `RemoveNode` (see "Session state").
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the
@@ -1360,14 +1376,22 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   a strip for each instrument, its modulators above it, cables, a node's knobs bound to
   the session; step 14 added the controls of a modulator: an LFO's rate and waveform and an
   envelope's stages on the node (`Knob scale="log"` for a rate and a time, which run over
-  decades), and a slider for the depth of each cable at its middle). What the controller
+  decades), and a slider for the depth of each cable at its middle; step 15 added building:
+  a "+" menu on every lane and group (`MenuButton`) that adds an LFO, an envelope or a MIDI
+  control, a "×" on every modulator and every cable, a list at the foot of a modulator that draws
+  a cable to any parameter it can drive (for a keyboard), and a cable dragged from a
+  modulator's output to a parameter's port, the ports that take it marked while it is
+  dragged; `client/editor.ts` is where the page asks for them and `Notices` /
+  `NoticeBoard` is where it says what the server refused; where a cable may end is the
+  controller's rule, read from the graph by `client/reach.ts` and pinned to the controller's by
+  a fixture it writes, `web/src/client/fixtures/reach.json`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
   (closed). `cd web && npm ci`, then `npm run dev` (Vite on 5173, forwarding `/ws`
   to `tang serve --web-origin http://localhost:5173`; `?engine=mock` in the address
   needs no server, `&scene=stress` serves eight lanes with 32 LFOs and 64 driven
-  parameters), `npm test` (Vitest), `npm run lint`, `npm run typecheck`,
+  parameters and `&scene=lanes` two lanes with an LFO each), `npm test` (Vitest), `npm run lint`, `npm run typecheck`,
   `npm run storybook`, `npm run build` (→ `web/dist`), `npm run e2e` (Playwright,
   one test at a time, since they share the real program's session; needs
   `cargo build --features web`; `npm run e2e:install` once; they include the
@@ -1378,7 +1402,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `cargo build --release --features web`**; without it the program serves a placeholder
   that says so). `web/dist/` keeps a `.gitkeep` so that the program builds without
   Node. The tracer's snapshot in `web/src/client/fixtures/` is generated:
-  `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types.
+  `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types (and
+  `reach.json`, next to it, which says where the controller let a cable be drawn).
 - **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
   runs the TUI and the web interface on one controller, on the main thread. The loop
   applies a browser's requests and reacts to what they changed (a value a browser set
@@ -1392,13 +1417,20 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (serial audio chain, block-rate lane-global modulation, cables = modulation
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
-Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Step 14 did the first
-of phase 3 ahead of phase 1 (D18): a modulator's settings and a cable's depth are turned in the
-browser and in the TUI. Phase 1 (session parity) is next, §11.
+Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Steps 14 and 15 did the
+first of phase 3 ahead of phase 1 (D18): a modulator's settings and a cable's depth are turned,
+modulators and cables are added and taken out, in the browser and in the TUI. Phase 1 (session
+parity) is next, §11.
 TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
-TODO: add and remove modulators and cables from the browser (structural intents and events;
-the engine's `RemoveModTarget` is not wired yet), and make the Type row (LFO to envelope) an
-intent: until then a browser is given a snapshot for it (`Controller::resync`).
+TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
+for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
+the browser (`AddModEdge` takes a parameter port only; `RemoveEdge` takes any cable out).
+TODO: the TUI's removal of an effect, a bus effect or a group member still drops the modulator
+targets that pointed at it with `retain`, which leaves cables that drive the depth of a cable
+that is gone pointing at nothing (`remove_modulator` and `remove_edge` take them out).
+TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
+for long enough runs out, and later cables have no live dot.
+TODO: the canvas does not move to show a node that was added.
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
 edge, and two cables with the same middle put theirs over each other; user-placed nodes and
 sliders that move along the cable would settle it.

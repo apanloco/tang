@@ -405,8 +405,18 @@ resolves cursor → ids and then calls `apply`.
   (sine, triangle, saw, square), refused with nothing changed for a node that is no
   modulator, a setting its kind lacks or a value that is not a number; and the depth of a
   cable, -1 to 1, with `EdgeNotFound` for one that is gone. The events are
-  `ModulatorFieldSet` and `EdgeDepthSet`, carrying the value after clamping. The rest of the
-  list is not.)
+  `ModulatorFieldSet` and `EdgeDepthSet`, carrying the value after clamping. Step 15 built the
+  four that change the structure: `RemoveEdge { edge }` (a cable, and with it the cables that
+  drive its depth, and theirs in turn: left pointing at a cable that is gone they would
+  drive whichever one is put there next), `AddModulator { parent, kind }` (an LFO, an
+  envelope or an armed MIDI control at the end of the rack of a lane, whose node is its
+  instrument's, or of a group; any other parent is refused), `AddModEdge { modulator, to }`
+  (a cable to a plugin parameter, `to` a node and a `param` port, at depth 0.5; the controller
+  decides where it may end, D21; the cables that drive a modulator's own rate, stages or depths
+  are refused, for now) and `RemoveNode { node }` (a modulator, with its cables and the cables
+  of the others that drove its settings; a lane, an effect or a group is refused until chain
+  editing, phase 1). A refusal changes nothing and is no revision. `LearnMidi` is the
+  rest of the list that is not.)
 - Patterns: `RecordPattern`, `ClearPattern`, `SetPatternField`.
 - Globals: `SetBpm`, `SetScale`, `SetPianoMode`, `Save`, `SaveAs`, `Undo`,
   `Redo`.
@@ -427,7 +437,14 @@ in one object, `Applied::stamped()` makes them): `ParamSet`, `NodeAdded`,
 nodes so client reducers stay trivial; value events are tiny. A client that sees
 a gap in `rev` refetches a snapshot. (**As built, step 13:** the structural events
 are not built, and until they are the controller's `resync` stands in for them: a
-change no intent made is told by a snapshot at a revision of its own, §3.4.)
+change no intent made is told by a snapshot at a revision of its own, §3.4. **Step 15**
+tells the intents that change the structure the same way (D20): `Applied` has `restructured`,
+`apply` calls `resync` at once, and the subscribers are given the new structure whole, at
+the revision after the intent's, before the answer to the client that asked. The controller's
+projection of the graph is the only one: a client that derived the audio path, the order of
+the nodes or the layout of the telemetry from events would be a second. What a client that
+added a node needs to know, the id of the node, is in that snapshot: it is the last
+modulator of the parent that it did not have before the request (`Editor.addModulator`).)
 
 **Undo / redo.** Each `Applied.undo` holds inverse intents. Structural removals
 also carry the removed subtree (with its modulation edges) and the plugin
@@ -748,6 +765,30 @@ px (a row of controls more than the 140 of a control without; 184 measured again
 program), and a strip leaves room above it for the tallest of its modulators and a gap for the
 cables. Adding and removing modulators and cables, and moving nodes, are not done.
 
+**As built (step 15).** Modulation is built on the canvas, by the controller's four structural
+intents (§5) through `Editor` (`web/src/client/editor.ts`: what the user does to the structure,
+as one place; `addModulator` resolves with the id of the node it made, and every method says,
+when the server refuses, what it could not do and why, as a notice in the names the canvas
+shows). The header of every instrument and group node has a "+" that opens a menu of an LFO, an
+envelope and a MIDI control (`MenuButton`, the WAI-ARIA menu-button pattern; the menu is drawn
+in the page and not in the node, where it would go under the next node and move with the
+canvas); a modulator's header ends in a "×" that takes it out (the focus goes to its lane's "+",
+asked for a frame at a time, since a node that has not been measured again is not visible and
+takes no focus), and each cable has a "×" beside its depth. A cable is drawn by dragging it from the
+output at the foot of a modulator to the port of a parameter: while it is dragged the ports that
+take it are marked and no others, and a drop anywhere else asks for nothing (a connection radius
+of 40 px makes the knob's cell the place to let go). The ports are the controller's rule read from
+the graph (`reachFrom`, `drivablesOf` in `client/reach.ts`, in the data of each modulator's
+node: D21). For a keyboard, and for the parameters a node does not show, a modulator has a list at
+its foot ("Cable from LFO 2 to"), grouped by plugin, of everything it can still drive; a cable to
+a parameter makes the node show it. What could not be done is on the `NoticeBoard` under the bar
+(a polite live region; it does not go by itself): the refusals of these and the knobs' (a
+`console.warn` before). Names that more than one node has are numbered (`client/names.ts`, shared
+by the canvas and the notices). The layout allows a modulator with settings 218 px and one
+without 128 (the list is 29 px, measured in a browser). A new node goes where the layout puts it
+(a modulator with no cable above the first free column of its strip, and over the node it drives
+once it has one); the canvas does not move to show it, and nodes still cannot be moved.
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -838,7 +879,8 @@ implementations. The TUI golden tests are the regression net.
 3. **Modulation, groups, patterns, MIDI-learn on the canvas.** *Exit:*
    everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
    a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
-   D18; adding and removing modulators and cables is still to do.)
+   D18, and adding and removing modulators and cables in step 15; still to do: cables to a
+   modulator's own rate, stages and depths, groups, patterns, MIDI-learn.)
 4. **Extras:** mixer view, session browser (needs runtime session loading),
    Web MIDI, touch layout.
 5. **Engine track B** (separate, §13).
@@ -1405,7 +1447,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     a typed value, for a lane's modulators and again for a group's, about 420 lines) are one
     `step_modulator_row` and one `set_modulator_row` over one table of what each row of a
     modulator's pane is (`modulator_row`), through `ModulatorSlot::row_intent`; `tui/mod.rs` is
-    319 lines shorter (4,788). The Type row, which makes an LFO an envelope, is still the TUI's
+    323 lines shorter (5,111 to 4,788). The Type row, which makes an LFO an envelope, is still the TUI's
     own edit (the browsers are given a snapshot). On the canvas: `Knob scale="log"`, the
     controls on the nodes, the depth slider on each cable, the layout's heights, and a cable's
     depth as a value (§9.3).
@@ -1423,7 +1465,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers.** 679 Rust tests in the default build (643 before the step), 820 with the web
     feature (778), 502 Vitest tests (436), 22 browser tests (16), some 190 mutations of the step's
     code (the survivors, real and equivalent, are named in the commit messages). 146 local
-    commits on the branch, none pushed.
+    commits since `feat/midi-learn-mpe-expression`, none pushed.
   - **The manual parity check**, scripted and run once, not part of CI, as in step 13: the real
     program on the null backend with the TUI in a pty and a real Chromium; 14 checks, both
     ways, all passed: the rate, the waveform and the depth turned in the browser are in the
@@ -1434,7 +1476,87 @@ Each step is a reviewable change; the TUI must not regress at any point.
     middle put their sliders over each other).
   - **Open, noted on the way:** f34 (a browser test measures milliseconds between sends where
     it means frames, and failed once under load); f29 and f30 as before; adding and removing
-    modulators and cables, and the Type row, are still direct edits.
+    modulators and cables, and the Type row, are still direct edits (the first two are step 15).
+
+- [x] **15. Building modulation in the browser (ahead of phase 1, D18).** A modulator is
+  added to a lane or a group, a cable is drawn from it to a parameter, and both are taken out,
+  by intents; the TUI does the same through the same controller methods; the canvas has the
+  controls. *Done when:* a browser adds a modulator to a lane or a group, draws a cable from
+  it to a parameter (by dragging it, or from a list), and takes the cable and the modulator out,
+  on the real program; the TUI shows each at once; and the TUI's own `m`, `t` and `d` show in
+  the browser.
+  - **As built, in the order it was done:** (1) *What the model knows*: `SessionModel::param_targets`
+    says which parameters a modulator can drive (a lane's: its lane's chain; a group's: its
+    members' chains and its bus effects), which the TUI's two target selectors use and the
+    controller's `AddModEdge` is the intent of (D21); removal moved from the TUI into
+    `Controller::remove_modulator` and `remove_edge`, which take with them the cables that point
+    at what goes and, in turn, the cables that drive their depths, and the engine's
+    `RemoveModTarget` and `RemoveGroupModTarget` were made live (with the fix-ups of the cables
+    that address the later targets by place). (2) *The first structural intent, `RemoveEdge`*,
+    and what it needs: `Applied.restructured` and the snapshot that follows (D20). (3) *The
+    other three intents*, `AddModulator`, `AddModEdge` and `RemoveNode` (§5), each with the
+    mock engine doing the same to a snapshot, and, for the rule of where a cable may end, a
+    fixture the controller writes (`web/src/client/fixtures/reach.json`: a session with two
+    groups and lanes in and out of them, a lane with nothing in it and six modulators, and what
+    the controller accepted of every plugin for each) that the client's `reachFrom` is tested
+    against. (4) *The client*: `client/names.ts` (the canvas's numbered names, shared), `Notices`
+    and `NoticeBoard`, `Editor`. (5) *The canvas* (§9.3): the "+" menu (`MenuButton`), the "×" on a
+    modulator and on a cable, the list at the foot of a modulator, the dragged cable. (6) *Both
+    ways*, in browsers and in the real program (below).
+  - **The review of step 14** (an independent agent, read-only, on its own worktree) came in during
+    the step, and each of its eight findings was checked against the code, then fixed with its test
+    first (f41 to f48): modulators of a lane laid over the groups and the master (the layout, with a
+    seeded fuzz of 400 graphs where no two rectangles overlap); a TOML number beyond 32 bits that
+    became infinity in the model and `null` on the wire, which blanked the page (the loader refuses
+    it, and the page has error boundaries); **after Shift+Up/Down on an instrument in the TUI the
+    model and the audio thread had different lanes**, grouped or not (CLAUDE.md said ungrouped ones
+    were safe: the TUI swapped whole nodes, `SwapInstruments` only the plugin, and `ClearInstrument`
+    cleared modulators the model kept; now both move whole lanes, with a test of the model against a
+    real audio graph); a browser's edit that cleared the TUI's parameter filter; turning a modulator's
+    setting drew every knob it drives again; nodes of one name had sliders of one name; the "one table"
+    of a modulator's rows was true of stepping and not of drawing; and the mock's numbers differed from
+    the controller's. Found by me on the way: f40 (a cable driving the depth of a cable that was gone
+    after its modulator was removed), f50 (the mock dropped the slot of a value another cable still
+    drove).
+  - **Numbers.** 762 Rust tests in the default build (679 before the step), 904 with the web feature
+    (820), 635 Vitest tests (502), 31 browser tests (22); about 220 mutations of the code written
+    in the second half of the step (the survivors are named in the commit messages: two equivalent
+    ones in the client's reach rule and its list, an id that is the same function at both ends, a
+    refused add that reads the session) and some 70 of the groundwork before it. `tui/mod.rs` is
+    4,644 lines (4,788). 172 local commits since `feat/midi-learn-mpe-expression`, none pushed.
+  - **Both paths and both front-ends.** The browser tests: seven on the mock engine (a drag, the
+    ports marked while dragging and only the ones that take the cable, a drop where it does not belong
+    and a drop out of reach, a modulator added and dragged from at once, the list, the buttons), two on
+    the real program (a modulator added and a cable dragged to the resonance are in the server's
+    session, read by another client, and the engine applies them: the envelope at rest takes the
+    resonance from 2 to 1.25 and the knob's dot is there, and goes when the modulator is taken out).
+    **The manual parity check**, scripted and run once, not part of CI, as in steps 13 and 14 (a real
+    TUI in a pty, a real Chromium, the null backend): 17 checks, both ways, all passed: an envelope
+    added in the browser, a cable dragged, its depth set, the cable and the modulator taken out are in
+    the TUI's tree as they happen (also with the TUI's cursor on the modulator that goes: the TUI
+    carries on), and a modulator added with `m`, a cable with `t` and the modulator taken out with `d`
+    in the TUI are on the canvas.
+  - **Found by the browser tests, and fixed:** giving the focus back after a modulator is taken out did
+    nothing in a browser (the canvas has not measured the node again, so it is not visible, and an
+    invisible element takes no focus), though the jsdom test passed: the focus is now asked for a
+    frame at a time (`focusWhenPossible`).
+  - **Not checked:** by ear (the null backend); a touch screen; browsers other than Chromium; a screen
+    reader beyond the roles, names and live regions (the menu follows the authoring practice; no
+    reader was run); two browsers adding to one lane at the same moment (each may be given the
+    other's node: the intent does not name what it made).
+  - **Not done, and open.** Cables that drive a modulator's rate, stages or depths cannot be drawn on
+    the canvas or by `AddModEdge` (they can be taken out by `RemoveEdge`, and the TUI makes them); the
+    Type row; undo (a removal is final, as the TUI's `d`); the canvas does not move to show a node it
+    has added; **telemetry slots are never reused (4,096 of them): each modulator and each driven
+    parameter uses one, so a very long session of building runs out and later cables have no live
+    dot**; f49 (below), f29, f30, f38 and f39 as before; the TUI's removal of an effect, a bus effect
+    or a member still drops the cables that pointed at it with `retain`, which leaves the depth cables
+    of f40 pointing at nothing (phase 1: they are the controller's then).
+  - **Found, open: f49.** A lane with no instrument plugin loses its modulators when the session
+    is saved and loaded: the format keeps a lane's modulators under its instrument plugin's table
+    (`load_lane_modulators`), the saver writes them under the bare `[[instrument]]`, and the loader
+    does not read them. Reachable in the TUI (`d` on the instrument of a lane that has effects keeps the
+    lane's modulators since f43) and by `AddModulator` on an empty lane.
 
 ## 13. Later: track B (`builtin:patch`)
 
@@ -1472,6 +1594,8 @@ mixer, delay, …) are the natural first increment.
 | D17 | `--web[=ADDR]` is a flag of the TUI alone, with `serve`'s arguments (`127.0.0.1:8765`, `--web-origin`, a token beyond loopback); the address comes only after an `=`; the address and the warnings are printed before the TUI starts and shown in the tab bar and on the Help tab | Built (step 13) |
 | D18 | The first of phase 3, a modulator's settings and a cable's depth, is done ahead of phase 1 (session parity): it is what the web UI is for ("build synths and control parameters with visual modulators"), it needs no structural intents, and it exercises the whole path (intent, controller, engine, event, reducer, control) on the thing the user wants to see | Built (step 14); say if phase 1 should have come first |
 | D19 | What the client has to know about what the controller clamps to (the ranges of the gains, of a modulator's settings and of a cable's depth, what a new modulator starts as, the order of the waveforms) is generated into `web/src/protocol/generated/constants.ts` from the Rust that clamps, and checked by the test that checks the generated types; the client's mock engine and its controls read it and keep no copy | Built (step 14) |
+| D20 | An intent that adds or takes out nodes or cables has no event a client could apply: `Applied.restructured` is set and the subscribers are given a snapshot at once, at the revision after the intent's, so that the controller's projection of the graph (the order of the nodes, the audio path, the layout of the telemetry) is the only one; the structural events of §5 are not built | Built (step 15) |
+| D21 | Where a cable may end is the model's rule (`SessionModel::param_targets`: a lane's modulator reaches its lane's chain, a group's its members' chains and its bus effects); `AddModEdge` refuses the rest. A client that marks the valid ports of a cable being dragged reads the rule from the graph by the `parent` of each node (`reachFrom`), and a fixture the controller writes (`reach.json`) pins the two together, so that they cannot drift | Built (step 15) |
 
 Open questions
 
