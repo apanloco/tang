@@ -5,9 +5,10 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::Controller;
+use crate::app::controller::{Controller, NewTarget};
+use crate::app::graph::{Endpoint, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
-use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::{plugin, session};
 
@@ -37,6 +38,7 @@ impl Controller {
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
+            Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
         };
         self.dirty = true;
@@ -210,6 +212,38 @@ impl Controller {
         Ok(Done::Restructured)
     }
 
+    fn add_mod_edge_intent(&mut self, modulator: NodeId, to: Endpoint) -> Result<Done, IntentError> {
+        let NodePath::Modulator { at, index } = self.model.locate(modulator).ok_or(IntentError::NotFound(modulator))? else {
+            return Err(invalid("a cable starts at a modulator"));
+        };
+        let Port::Param { index: param } = to.port else {
+            return Err(invalid("a cable can only end at a plugin's parameter so far"));
+        };
+        // The plugin has to be there, and in reach of the modulator (`param_targets`: the rule is the model's).
+        let plugin = self.locate_plugin(to.node)?;
+        if self.plugin_at(&plugin).is_none() {
+            return Err(invalid("that instrument has no plugin"));
+        }
+        let reachable = self.model.param_targets(at);
+        if !reachable.iter().any(|t| t.node == to.node) {
+            let owner = match at {
+                ModulatorLocation::Lane(_) => "lane",
+                ModulatorLocation::Group(_) => "group",
+            };
+            return Err(invalid(format!("a modulator of this {owner} cannot reach that plugin")));
+        }
+        let target = reachable
+            .into_iter()
+            .find(|t| t.node == to.node && t.param == param)
+            .ok_or_else(|| invalid(format!("the plugin has no parameter {param}")))?;
+        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.kind == target.kind));
+        if drives_it_already {
+            return Err(invalid("that modulator drives that parameter already"));
+        }
+        self.add_target(at, index, NewTarget::to_param(&target, NEW_CABLE_DEPTH));
+        Ok(Done::Restructured)
+    }
+
     fn remove_node_intent(&mut self, node: NodeId) -> Result<Done, IntentError> {
         let NodePath::Modulator { at, index } = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
             return Err(invalid("only a modulator can be removed so far"));
@@ -307,8 +341,9 @@ fn invalid(why: impl Into<String>) -> IntentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::graph::{Graph, NodeKind};
     use crate::app::testutil::{self, StubEngine, described, load};
-    use crate::plugin::chain::ModulatorLocation;
+    use crate::plugin::chain::{ModTargetKind, ModulatorLocation};
 
     /// A group with a bus filter and an LFO, a member with a reverb, and a lane
     /// with no instrument plugin.
@@ -1136,6 +1171,364 @@ rate = 1.0
 
     fn remove(ctl: &mut Controller, node: NodeId) -> Result<Applied, IntentError> {
         ctl.apply(Intent::RemoveNode { node })
+    }
+
+    /// Two groups (each with a bus effect and a modulator), three lanes in them (the first has an effect and a
+    /// modulator, the second a modulator, the third an effect), a lane of its own with an effect and a modulator,
+    /// and a lane with nothing in it.
+    const REACH: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.modulator]]
+type = "lfo"
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+type = "envelope"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "lfo"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "envelope"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "midi"
+
+[[instrument]]
+"#;
+
+    /// `REACH`, and an LFO in the lane that has nothing in it (a session file cannot say so: its modulators are
+    /// those of the instrument plugin; a lane the TUI cleared can have them).
+    fn reaching() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(REACH).model, handles, None);
+        ctl.add_modulator(ModulatorLocation::Lane(4), ModSourceSlot::new_lfo()).unwrap();
+        (engine, ctl)
+    }
+
+    fn cable_to(modulator: NodeId, node: NodeId, param: u32) -> Intent {
+        Intent::AddModEdge { modulator, to: Endpoint { node, port: Port::Param { index: param } } }
+    }
+
+    /// The lowest and the highest value of the parameter `name` of the plugin at `path`.
+    fn bounds(ctl: &Controller, path: NodePath, name: &str) -> (f32, f32) {
+        let (_, p) = ctl.model.nodes().find(|(_, p)| *p == path).unwrap();
+        let slot = match p {
+            NodePath::Instrument(i) => ctl.model.instruments[i].instrument.as_ref().unwrap(),
+            NodePath::Effect { inst, index } => &ctl.model.instruments[inst].effects[index],
+            NodePath::GroupEffect { group, index } => &ctl.model.groups[group].effects[index],
+            _ => panic!("{p:?} has no plugin"),
+        };
+        let row = slot.params.iter().find(|r| r.name == name).unwrap();
+        (row.min, row.max)
+    }
+
+    /// What the audio thread is told of a cable to a parameter: how it is addressed, and the depth, base value and range it starts from.
+    fn command(prefix: &str, kind: &str, ctl: &Controller, path: NodePath, name: &str) -> String {
+        let (_, value) = param(ctl, path, name);
+        let (min, max) = bounds(ctl, path, name);
+        format!("{prefix} kind={kind} depth=0.500 base={value:.3} range=[{min:.3}, {max:.3}]")
+    }
+
+    #[test]
+    fn add_mod_edge_draws_a_cable_from_a_lane_modulator_to_its_instrument_and_to_its_effects() {
+        let (engine, mut ctl) = reaching();
+        sent(&engine);
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let (osc, filter) = (ctl.model.instruments[0].node, ctl.model.instruments[0].effects[0].node);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 0, index: 0 }, "cutoff");
+
+        let applied = ctl.apply(cable_to(lfo, osc, detune)).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(
+            sent(&engine),
+            [command("AddModTarget inst=0 mod=0", &format!("PluginParam {{ slot: 0, param_index: {detune} }}"), &ctl, NodePath::Instrument(0), "detune")]
+        );
+        ctl.apply(cable_to(lfo, filter, cutoff)).unwrap();
+        assert_eq!(
+            sent(&engine),
+            [command("AddModTarget inst=0 mod=0", &format!("PluginParam {{ slot: 1, param_index: {cutoff} }}"), &ctl, NodePath::Effect { inst: 0, index: 0 }, "cutoff")]
+        );
+
+        let targets = &ctl.model.instruments[0].modulators[0].targets;
+        assert_eq!(targets.len(), 2);
+        assert_eq!((targets[0].slot, targets[0].param_name.as_str(), targets[0].depth), (0, "detune", 0.5));
+        assert!(matches!(targets[0].kind, ModTargetKind::PluginParam { slot: 0, param_index } if param_index == detune));
+        assert_eq!((targets[0].param_min, targets[0].param_max), (-24.0, 24.0));
+        assert_eq!((targets[1].slot, targets[1].param_name.as_str(), targets[1].depth), (1, "cutoff", 0.5));
+        assert!(matches!(targets[1].kind, ModTargetKind::PluginParam { slot: 1, param_index } if param_index == cutoff));
+        assert_ne!(targets[0].edge, targets[1].edge, "a cable of its own each");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+        assert!(ctl.model.groups[0].modulators[0].targets.is_empty(), "the group's modulator is untouched");
+    }
+
+    #[test]
+    fn add_mod_edge_draws_a_cable_from_a_group_modulator_to_its_members_and_its_bus_effects() {
+        let (engine, mut ctl) = reaching();
+        sent(&engine);
+        let group_lfo = ctl.model.groups[0].modulators[0].node;
+        // Lanes 0 and 1 are the members of group 0, in that order: the second one's instrument is member 1.
+        let (second, first_filter, bus) = (ctl.model.instruments[1].node, ctl.model.instruments[0].effects[0].node, ctl.model.groups[0].effects[0].node);
+        let (detune, _) = param(&ctl, NodePath::Instrument(1), "detune");
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 0, index: 0 }, "cutoff");
+        let (bus_cutoff, _) = param(&ctl, NodePath::GroupEffect { group: 0, index: 0 }, "cutoff");
+
+        ctl.apply(cable_to(group_lfo, second, detune)).unwrap();
+        ctl.apply(cable_to(group_lfo, first_filter, cutoff)).unwrap();
+        ctl.apply(cable_to(group_lfo, bus, bus_cutoff)).unwrap();
+        assert_eq!(
+            sent(&engine),
+            [
+                command("AddGroupModTarget group=0 mod=0", &format!("GroupMember {{ member: 1, slot: 0, param_index: {detune} }}"), &ctl, NodePath::Instrument(1), "detune"),
+                command("AddGroupModTarget group=0 mod=0", &format!("GroupMember {{ member: 0, slot: 1, param_index: {cutoff} }}"), &ctl, NodePath::Effect { inst: 0, index: 0 }, "cutoff"),
+                command("AddGroupModTarget group=0 mod=0", &format!("GroupBus {{ effect_index: 0, param_index: {bus_cutoff} }}"), &ctl, NodePath::GroupEffect { group: 0, index: 0 }, "cutoff"),
+            ]
+        );
+        let targets = &ctl.model.groups[0].modulators[0].targets;
+        assert_eq!(targets.iter().map(|t| (t.slot, t.param_name.as_str(), t.depth)).collect::<Vec<_>>(), [(0, "detune", 0.5), (1, "cutoff", 0.5), (0, "cutoff", 0.5)]);
+        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty(), "the lane's own modulator is untouched");
+        ctl.model.check_ids().unwrap();
+    }
+
+    /// Where a client may draw a cable from a modulator, as it can tell from the graph alone, by the `parent` of
+    /// each node (`reachFrom` in `web/src/app/patch/reach.ts` is the same rule): a lane's modulator reaches the
+    /// plugins in its lane, a group's the plugins of the lanes that are its members and its own bus effects.
+    fn reach_by_parent(graph: &Graph, modulator: NodeId) -> Vec<NodeId> {
+        let node = |id: NodeId| graph.nodes.iter().find(|n| n.id == id).unwrap();
+        let children = |id: NodeId| graph.nodes.iter().filter(move |n| n.parent == Some(id));
+        let is_effect = |n: &&crate::app::graph::Node| matches!(n.kind, NodeKind::Effect { .. });
+        // The chain of a lane: its instrument, if it has one (the lane's own node), and the effects whose parent it is.
+        let chain = |lane: &crate::app::graph::Node| -> Vec<NodeId> {
+            let instrument = matches!(lane.kind, NodeKind::Instrument { plugin: Some(_), .. }).then_some(lane.id);
+            instrument.into_iter().chain(children(lane.id).filter(is_effect).map(|n| n.id)).collect()
+        };
+        let owner = node(node(modulator).parent.expect("a modulator sits in a lane or a group"));
+        let mut found: Vec<NodeId> = match owner.kind {
+            NodeKind::Group { .. } => {
+                let bus = children(owner.id).filter(is_effect).map(|n| n.id);
+                let members = children(owner.id).filter(|n| matches!(n.kind, NodeKind::Instrument { .. })).flat_map(chain);
+                members.chain(bus).collect()
+            }
+            _ => chain(owner),
+        };
+        found.sort();
+        found
+    }
+
+    /// Every plugin of the session with a parameter to try (the lane that has no plugin, which a cable cannot end at, is among them with 0).
+    fn plugins_to_try(ctl: &Controller) -> Vec<(NodeId, u32)> {
+        ctl.model
+            .nodes()
+            .filter_map(|(id, path)| {
+                let slot = match path {
+                    NodePath::Instrument(i) => ctl.model.instruments[i].instrument.as_ref(),
+                    NodePath::Effect { inst, index } => ctl.model.instruments[inst].effects.get(index),
+                    NodePath::GroupEffect { group, index } => ctl.model.groups[group].effects.get(index),
+                    NodePath::Group(_) | NodePath::Modulator { .. } => return None,
+                };
+                Some((id, slot.map_or(0, |plugin| plugin.params[0].index)))
+            })
+            .collect()
+    }
+
+    /// The plugins the controller lets `modulator` draw a cable to: a cable to each is tried on a session of its own.
+    fn reach_by_controller(modulator: NodeId, plugins: &[(NodeId, u32)]) -> Vec<NodeId> {
+        let mut reached: Vec<NodeId> = plugins
+            .iter()
+            .filter(|&&(node, param)| {
+                let (_engine, mut fresh) = reaching();
+                fresh.apply(cable_to(modulator, node, param)).is_ok()
+            })
+            .map(|&(node, _)| node)
+            .collect();
+        reached.sort();
+        reached
+    }
+
+    fn modulators_of(ctl: &Controller) -> Vec<NodeId> {
+        ctl.model.nodes().filter(|(_, path)| matches!(path, NodePath::Modulator { .. })).map(|(id, _)| id).collect()
+    }
+
+    #[test]
+    fn add_mod_edge_reaches_what_a_client_can_tell_from_the_graph_that_a_modulator_reaches() {
+        let (_engine, ctl) = reaching();
+        let graph = ctl.model.graph();
+        let plugins = plugins_to_try(&ctl);
+        assert_eq!(plugins.len(), 10, "four lanes with a plugin and one without, three lane effects and two bus effects");
+        let modulators = modulators_of(&ctl);
+        assert_eq!(modulators.len(), 6);
+
+        let mut reached = Vec::new();
+        for modulator in modulators {
+            let by_controller = reach_by_controller(modulator, &plugins);
+            assert_eq!(by_controller, reach_by_parent(&graph, modulator), "{modulator:?}");
+            reached.push(by_controller.len());
+        }
+        // Group 0's LFO: lane 0's two plugins, lane 1's, the bus filter. Group 1's envelope: lane 2's two, the bus reverb.
+        // Lane 0's LFO: its two; lane 1's envelope: one; lane 3's control: two; the empty lane's LFO: none.
+        assert_eq!(reached, [4, 3, 2, 1, 2, 0]);
+    }
+
+    /// The session of `reaching()`, and what the controller lets each of its modulators draw a cable to, as the web
+    /// client's tests read it (`web/src/client/fixtures/reach.json`): they pin the rule the client draws its valid
+    /// targets by (`reachFrom`) to the controller's. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture`
+    /// rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_modulator_reaches_is_current() {
+        let (_engine, ctl) = reaching();
+        let plugins = plugins_to_try(&ctl);
+        let reach: std::collections::BTreeMap<String, Vec<NodeId>> =
+            modulators_of(&ctl).into_iter().map(|modulator| (modulator.0.to_string(), reach_by_controller(modulator, &plugins))).collect();
+        // Through the text the wire carries, so that the numbers read as they do there.
+        let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "reach": reach });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/reach.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the session reaches now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn add_mod_edge_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (engine, mut ctl) = reaching();
+        sent(&engine);
+        let slots = ctl.model.slots.high_water();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let group_lfo = ctl.model.groups[0].modulators[0].node;
+        let (osc, effect, group) = (ctl.model.instruments[0].node, ctl.model.instruments[0].effects[0].node, ctl.model.groups[0].node);
+        let lane_of_its_own = ctl.model.instruments[3].node;
+        let empty_lane = ctl.model.instruments[4].node;
+        let other_bus = ctl.model.groups[1].effects[0].node;
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let ghost = NodeId(9_999);
+        let heading = ctl.model.instruments[0].instrument.as_ref().unwrap().params[1].index;
+        ctl.model.instruments[0].instrument.as_mut().unwrap().params[1].kind = ParamKind::Separator;
+
+        let not_a_parameter = invalid("a cable can only end at a plugin's parameter so far");
+        let from_a_modulator = invalid("a cable starts at a modulator");
+        let cases = [
+            ("a modulator that is not there", cable_to(ghost, osc, detune), IntentError::NotFound(ghost)),
+            ("the master as the modulator", cable_to(NodeId::MASTER, osc, detune), IntentError::NotFound(NodeId::MASTER)),
+            ("a lane as the modulator", cable_to(osc, osc, detune), from_a_modulator.clone()),
+            ("an effect as the modulator", cable_to(effect, osc, detune), from_a_modulator.clone()),
+            ("a group as the modulator", cable_to(group, osc, detune), from_a_modulator),
+            ("a plugin that is not there", cable_to(lfo, ghost, 0), IntentError::NotFound(ghost)),
+            ("the master as the plugin", cable_to(lfo, NodeId::MASTER, 0), IntentError::NotFound(NodeId::MASTER)),
+            ("a group as the plugin", cable_to(lfo, group, 0), invalid("that node has no plugin")),
+            ("a modulator as the plugin", cable_to(lfo, group_lfo, 0), invalid("that node has no plugin")),
+            ("a lane with no instrument", cable_to(lfo, empty_lane, 0), invalid("that instrument has no plugin")),
+            ("a plugin of another lane", cable_to(lfo, lane_of_its_own, detune), invalid("a modulator of this lane cannot reach that plugin")),
+            ("a bus effect, from a lane's modulator", cable_to(lfo, ctl.model.groups[0].effects[0].node, 0), invalid("a modulator of this lane cannot reach that plugin")),
+            ("a plugin of another group", cable_to(group_lfo, other_bus, 0), invalid("a modulator of this group cannot reach that plugin")),
+            ("a lane outside the group", cable_to(group_lfo, lane_of_its_own, detune), invalid("a modulator of this group cannot reach that plugin")),
+            ("a parameter the plugin lacks", cable_to(lfo, osc, 999), invalid("the plugin has no parameter 999")),
+            ("a heading, which is not a parameter", cable_to(lfo, osc, heading), invalid(format!("the plugin has no parameter {heading}"))),
+        ];
+        for (what, intent, error) in cases {
+            assert_eq!(ctl.apply(intent), Err(error), "{what}");
+        }
+        // The ports that are not parameters (the cables that drive a modulator's own settings are not drawn by intent yet).
+        let others = [Port::ModOut, Port::AudioIn, Port::AudioOut, Port::Rate, Port::Attack, Port::Sustain, Port::Depth { edge: EdgeId(0) }];
+        for port in others {
+            let intent = Intent::AddModEdge { modulator: lfo, to: Endpoint { node: osc, port } };
+            assert_eq!(ctl.apply(intent), Err(not_a_parameter.clone()), "{port:?}");
+        }
+
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.model.slots.high_water(), slots, "no telemetry slot is used up for nothing");
+        assert!(ctl.model.groups.iter().flat_map(|g| &g.modulators).chain(ctl.model.instruments.iter().flat_map(|l| &l.modulators)).all(|m| m.targets.is_empty()));
+        // And no cable id was used up: the first cable that is drawn is the first there is.
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 0, index: 0 }, "cutoff");
+        ctl.apply(cable_to(lfo, effect, cutoff)).unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets[0].edge, EdgeId(0));
+    }
+
+    #[test]
+    fn add_mod_edge_refuses_a_modulator_that_drives_the_parameter_already_but_not_another_one() {
+        let (engine, mut ctl) = reaching();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let osc = ctl.model.instruments[0].node;
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let (volume, _) = param(&ctl, NodePath::Instrument(0), "volume");
+        ctl.apply(cable_to(lfo, osc, detune)).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        assert_eq!(ctl.apply(cable_to(lfo, osc, detune)), Err(invalid("that modulator drives that parameter already")));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, rev, "a refusal is not a revision");
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1);
+
+        // Another parameter of the same plugin is another cable; another modulator, of the lane or of the group, may drive the same one.
+        ctl.apply(cable_to(lfo, osc, volume)).unwrap();
+        let parent = lane(&ctl);
+        add(&mut ctl, parent, ModulatorKind::Envelope).unwrap();
+        let envelope = ctl.model.instruments[0].modulators[1].node;
+        ctl.apply(cable_to(envelope, osc, detune)).unwrap();
+        let group_lfo = ctl.model.groups[0].modulators[0].node;
+        ctl.apply(cable_to(group_lfo, osc, detune)).unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2);
+        assert_eq!(ctl.model.instruments[0].modulators[1].targets.len(), 1);
+        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_that_was_drawn_is_turned_and_taken_out_by_the_intents_that_name_a_cable() {
+        let (engine, mut ctl) = reaching();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let osc = ctl.model.instruments[0].node;
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        ctl.apply(cable_to(lfo, osc, detune)).unwrap();
+        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        sent(&engine);
+
+        let applied = ctl.apply(Intent::SetEdgeDepth { edge, depth: -0.25 }).unwrap();
+        assert_eq!(applied.events, [Event::EdgeDepthSet { edge, depth: -0.25 }]);
+        assert_eq!(sent(&engine), ["SetModTargetDepth inst=0 mod=0 target=0 depth=-0.250"]);
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0"]);
+        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
+        // Drawn again, it is another cable.
+        ctl.apply(cable_to(lfo, osc, detune)).unwrap();
+        assert_ne!(ctl.model.instruments[0].modulators[0].targets[0].edge, edge);
     }
 
     #[test]

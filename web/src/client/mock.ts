@@ -29,6 +29,7 @@ import type {
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { tracerSnapshot } from "./fixtures";
+import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
 
 export interface MockOptions {
@@ -70,6 +71,10 @@ function invalid(message: string): Outcome {
   return { error: { code: "invalid", message } };
 }
 
+function noNode(id: NodeId): Outcome {
+  return { error: { code: "notFound", message: `there is no node ${id}` } };
+}
+
 /** A setting of a modulator: clamped to its range, rounded if it is an index, and only if the modulator has it. */
 function fieldOutcome(node: Node, field: ModulatorField, value: number): Outcome {
   if (node.kind !== "modulator") return invalid("that node is not a modulator");
@@ -95,6 +100,49 @@ const isModulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } =
 
 /** A parameter of a node as one key, if the port is one. */
 const paramKey = (node: NodeId, port: Port): string | null => (port.type === "param" ? `${String(node)}:${String(port.index)}` : null);
+
+/** How deep a cable pulls when it is first drawn (`NEW_CABLE_DEPTH`). */
+const NEW_CABLE_DEPTH = 0.5;
+
+/**
+ * A cable drawn from a modulator to a parameter of a plugin it reaches (`reachFrom`: the controller's rule, read
+ * from the graph), at half depth. It joins the modulation cables in the order the graph lists them (the groups'
+ * modulators' first, then the lanes', each modulator's cables together); the value it drives gets a slot in the
+ * layout of the telemetry unless another cable drives it already (the layout names one slot for a parameter).
+ */
+function addModEdgeOutcome(snapshot: Snapshot, modulator: NodeId, to: Edge["to"], counters: Counters): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  const from = nodes.find((n) => n.id === modulator && n.kind !== "master");
+  if (!from) return noNode(modulator);
+  if (from.kind !== "modulator") return invalid("a cable starts at a modulator");
+  if (to.port.type !== "param") return invalid("a cable can only end at a plugin's parameter so far");
+  const index = to.port.index;
+  const target = nodes.find((n) => n.id === to.node && n.kind !== "master");
+  if (!target) return noNode(to.node);
+  if (target.kind !== "instrument" && target.kind !== "effect") return invalid("that node has no plugin");
+  if (!target.plugin) return invalid("that instrument has no plugin");
+  if (!reachFrom(snapshot.graph, modulator).has(to.node)) {
+    const owner = nodes.find((n) => n.id === from.parent)?.kind === "group" ? "group" : "lane";
+    return invalid(`a modulator of this ${owner} cannot reach that plugin`);
+  }
+  if (!target.plugin.params.some((p) => p.index === index)) return invalid(`the plugin has no parameter ${index}`);
+  const drivesIt = (e: Edge): boolean => isModulation(e) && e.from.node === modulator && e.to.node === to.node && e.to.port.type === "param" && e.to.port.index === index;
+  if (edges.some(drivesIt)) return invalid("that modulator drives that parameter already");
+
+  const added: Edge = { from: { node: modulator, port: { type: "modOut" } }, to, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
+  // After the last cable of a modulator that comes before this one in the graph, this one's own included.
+  const position = new Map(nodes.map((n, i) => [n.id, i]));
+  const mine = position.get(modulator) ?? 0;
+  const after = edges.findLastIndex((e) => isModulation(e) && (position.get(e.from.node) ?? Infinity) <= mine);
+  const first = edges.findIndex(isModulation);
+  const at = after >= 0 ? after + 1 : first >= 0 ? first : edges.length;
+
+  const key = paramKey(to.node, to.port);
+  const aimed = edges.some((e) => isModulation(e) && paramKey(e.to.node, e.to.port) === key);
+  const modulation = aimed ? snapshot.telemetry.modulation : [...snapshot.telemetry.modulation, { slot: counters.slot(), node: to.node, port: to.port, kind: "effective" as const }];
+  const telemetry = aimed ? snapshot.telemetry : { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation };
+  return { restructured: { ...snapshot, graph: { nodes, edges: [...edges.slice(0, at), added, ...edges.slice(at)] }, telemetry } };
+}
 
 /**
  * The cables that go when those of `start` do: they, and, in turn, the ones that drive the depth of a cable that
@@ -151,7 +199,7 @@ function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
  */
 function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
   const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
-  if (!found) return { error: { code: "notFound", message: `there is no node ${node}` } };
+  if (!found) return noNode(node);
   if (found.kind !== "modulator") return invalid("only a modulator can be removed so far");
   const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
   return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([node])) };
@@ -163,18 +211,25 @@ function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
  */
 class Counters {
   #node: number;
+  #edge: number;
   #slot: number;
 
   constructor(snapshot: Snapshot) {
     const { graph, telemetry } = snapshot;
     // (The master is a node of the graph and not of the model: its id is not one the model has handed out.)
     this.#node = 1 + Math.max(-1, ...graph.nodes.filter((n) => n.kind !== "master").map((n) => n.id));
+    this.#edge = 1 + Math.max(-1, ...graph.edges.filter(isModulation).map((e) => e.id));
     this.#slot = 1 + Math.max(-1, ...[...telemetry.meters, ...telemetry.modulation].map((entry) => entry.slot));
   }
 
   node(): NodeId {
     this.#node += 1;
     return this.#node - 1;
+  }
+
+  edge(): EdgeId {
+    this.#edge += 1;
+    return this.#edge - 1;
   }
 
   slot(): number {
@@ -197,7 +252,7 @@ const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSou
  */
 function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: ModulatorKind, counters: Counters): Outcome {
   const owner = snapshot.graph.nodes.find((n) => n.id === parent && n.kind !== "master");
-  if (!owner) return { error: { code: "notFound", message: `there is no node ${parent}` } };
+  if (!owner) return noNode(parent);
   if (owner.kind !== "instrument" && owner.kind !== "group") return invalid("a modulator goes in a lane or in a group");
   const { nodes } = snapshot.graph;
   const strip = (n: Node): boolean => n.id === parent || (n.parent === parent && (n.kind === "effect" || n.kind === "modulator"));
@@ -224,9 +279,10 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters): Outc
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
+  if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
-  if (!node) return { error: { code: "notFound", message: `there is no node ${intent.node}` } };
+  if (!node) return noNode(intent.node);
   switch (intent.type) {
     case "setParam": {
       const param = pluginOf(node)?.params.find((p) => p.index === intent.param);

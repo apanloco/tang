@@ -747,6 +747,8 @@ pub fn format_from_id(id: &str) -> String {
 /// editor's bound; sessions already round-trip negative depth.
 pub const DEPTH_MIN: f32 = -1.0;
 pub const DEPTH_MAX: f32 = 1.0;
+/// How deep a cable pulls when it is first drawn: half way, which a person can hear and turn either way.
+pub const NEW_CABLE_DEPTH: f32 = 0.5;
 
 /// What a row of a modulator's parameter pane is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

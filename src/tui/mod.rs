@@ -36,7 +36,7 @@ use crate::app::controller::{Controller, NewTarget};
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
-    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
+    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, default_effect_mix, fixup_group_bus_after_remove,
     fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
@@ -877,7 +877,7 @@ impl State {
                 kind: entry.kind.clone(),
                 slot: entry.slot,
                 param_name: entry.label.clone(),
-                depth: 0.5,
+                depth: NEW_CABLE_DEPTH,
                 base_value: entry.base_value,
                 param_min: entry.param_min,
                 param_max: entry.param_max,
@@ -1042,7 +1042,7 @@ impl State {
                 kind: ms.target_kind,
                 slot: ms.slot,
                 param_name: ms.param_name,
-                depth: 0.5,
+                depth: NEW_CABLE_DEPTH,
                 base_value: ms.base_value,
                 param_min: ms.param_min,
                 param_max: ms.param_max,

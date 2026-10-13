@@ -1,0 +1,1556 @@
+{
+  "reach": {
+    "13": [
+      11,
+      12
+    ],
+    "15": [
+      1,
+      4,
+      5,
+      7
+    ],
+    "16": [
+      3,
+      9,
+      10
+    ],
+    "17": [],
+    "6": [
+      4,
+      5
+    ],
+    "8": [
+      7
+    ]
+  },
+  "snapshot": {
+    "graph": {
+      "edges": [
+        {
+          "from": {
+            "node": 0,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 1,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 1,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 2,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 3,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 3,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 4,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 5,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 5,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 7,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 9,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 10,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 10,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 2,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 11,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 12,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 12,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 14,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        }
+      ],
+      "nodes": [
+        {
+          "id": 0,
+          "kind": "group",
+          "name": "Group 1",
+          "pan": 0.0,
+          "parent": null,
+          "volume": 1.0
+        },
+        {
+          "id": 1,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "presets": []
+          }
+        },
+        {
+          "id": 15,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 0,
+          "source": {
+            "rate": 1.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 2,
+          "kind": "group",
+          "name": "Group 2",
+          "pan": 0.0,
+          "parent": null,
+          "volume": 1.0
+        },
+        {
+          "id": 3,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Reverb",
+          "parent": 2,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:reverb",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.88,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 0.99,
+                "min": 0.1,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.88
+              },
+              {
+                "default": 0.85,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.3,
+                "name": "size",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.85
+              },
+              {
+                "default": 0.35,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "damping",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.35
+              },
+              {
+                "default": 0.04,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 0.25,
+                "min": 0.0,
+                "name": "predelay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.04
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 4,
+                "labels": null,
+                "max": 0.85,
+                "min": 0.0,
+                "name": "diffusion",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              },
+              {
+                "default": 0.3,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.05,
+                "name": "mod_rate",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 0.3
+              },
+              {
+                "default": 0.5,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "mod_depth",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 80.0,
+                "group": [],
+                "index": 8,
+                "labels": null,
+                "max": 500.0,
+                "min": 20.0,
+                "name": "lowcut",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 80.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "presets": [
+              {
+                "id": "arcadia",
+                "name": "Arcadia Dream Hall"
+              },
+              {
+                "id": "cathedral",
+                "name": "Cathedral"
+              },
+              {
+                "id": "plate",
+                "name": "Vintage Plate"
+              },
+              {
+                "id": "room",
+                "name": "Small Room"
+              },
+              {
+                "id": "ambient",
+                "name": "Ambient Wash"
+              }
+            ]
+          }
+        },
+        {
+          "id": 16,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": 2,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "id": 4,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 5,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 4,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "presets": []
+          }
+        },
+        {
+          "id": 6,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 4,
+          "source": {
+            "rate": 1.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 7,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 8,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": 7,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "id": 9,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 2,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 10,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Reverb",
+          "parent": 9,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:reverb",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.88,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 0.99,
+                "min": 0.1,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.88
+              },
+              {
+                "default": 0.85,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.3,
+                "name": "size",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.85
+              },
+              {
+                "default": 0.35,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "damping",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.35
+              },
+              {
+                "default": 0.04,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 0.25,
+                "min": 0.0,
+                "name": "predelay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.04
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 4,
+                "labels": null,
+                "max": 0.85,
+                "min": 0.0,
+                "name": "diffusion",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              },
+              {
+                "default": 0.3,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.05,
+                "name": "mod_rate",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 0.3
+              },
+              {
+                "default": 0.5,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "mod_depth",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 80.0,
+                "group": [],
+                "index": 8,
+                "labels": null,
+                "max": 500.0,
+                "min": 20.0,
+                "name": "lowcut",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 80.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "presets": [
+              {
+                "id": "arcadia",
+                "name": "Arcadia Dream Hall"
+              },
+              {
+                "id": "cathedral",
+                "name": "Cathedral"
+              },
+              {
+                "id": "plate",
+                "name": "Vintage Plate"
+              },
+              {
+                "id": "room",
+                "name": "Small Room"
+              },
+              {
+                "id": "ambient",
+                "name": "Ambient Wash"
+              }
+            ]
+          }
+        },
+        {
+          "id": 11,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 12,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 11,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "presets": []
+          }
+        },
+        {
+          "id": 13,
+          "kind": "modulator",
+          "name": "MIDI (learning…)",
+          "parent": 11,
+          "source": {
+            "control": null,
+            "learning": true,
+            "type": "midiLearn"
+          }
+        },
+        {
+          "id": 14,
+          "kind": "instrument",
+          "name": "(empty)",
+          "parent": null,
+          "plugin": null,
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 17,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 14,
+          "source": {
+            "rate": 1.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 4294967295,
+          "kind": "master",
+          "name": "Master",
+          "parent": null
+        }
+      ]
+    },
+    "meta": {
+      "bpm": 120.0,
+      "dirty": false,
+      "file": null,
+      "piano": {
+        "locked": false,
+        "scale": "C major"
+      }
+    },
+    "rev": 0,
+    "telemetry": {
+      "meters": [
+        {
+          "kind": "peak",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 0
+        },
+        {
+          "kind": "clips",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 1
+        },
+        {
+          "kind": "peak",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 2
+        },
+        {
+          "kind": "clips",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 3
+        },
+        {
+          "kind": "peak",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 4
+        },
+        {
+          "kind": "clips",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 5
+        },
+        {
+          "kind": "peak",
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 6
+        },
+        {
+          "kind": "clips",
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 7
+        },
+        {
+          "kind": "peak",
+          "node": 7,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 9
+        },
+        {
+          "kind": "clips",
+          "node": 7,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 10
+        },
+        {
+          "kind": "peak",
+          "node": 9,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 12
+        },
+        {
+          "kind": "clips",
+          "node": 9,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 13
+        },
+        {
+          "kind": "peak",
+          "node": 11,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 14
+        },
+        {
+          "kind": "clips",
+          "node": 11,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 15
+        },
+        {
+          "kind": "peak",
+          "node": 14,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 17
+        },
+        {
+          "kind": "clips",
+          "node": 14,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 18
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 15,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 19
+        },
+        {
+          "kind": "modOutput",
+          "node": 16,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 20
+        },
+        {
+          "kind": "modOutput",
+          "node": 6,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 8
+        },
+        {
+          "kind": "modOutput",
+          "node": 8,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 11
+        },
+        {
+          "kind": "modOutput",
+          "node": 13,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 16
+        },
+        {
+          "kind": "modOutput",
+          "node": 17,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 21
+        }
+      ],
+      "rev": 1
+    }
+  }
+}

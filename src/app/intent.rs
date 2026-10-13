@@ -16,6 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::graph::Endpoint;
 use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
 
 /// What a front-end asks of the controller, naming the node it concerns.
@@ -51,6 +52,14 @@ pub enum Intent {
     /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
     /// refused. It drives nothing yet.
     AddModulator { parent: NodeId, kind: ModulatorKind },
+    /// Draw a modulation cable from the modulator `modulator` to the parameter `to` of a plugin, which
+    /// has to be one that modulator reaches: a lane's modulator reaches the plugins in its lane (the
+    /// instrument and its effects), a group's reaches those of the lanes that are its members and its own
+    /// bus effects. The cable starts at half depth (`NEW_CABLE_DEPTH`; `SetEdgeDepth` changes it).
+    /// Refused, with nothing changed, for a port that is not a parameter (the cables that drive a
+    /// modulator's rate, stages or depths are not drawn by intent yet), a parameter or a plugin that
+    /// is out of reach or not there, and a modulator that drives that parameter already.
+    AddModEdge { modulator: NodeId, to: Endpoint },
     /// Take a node out of the session. Only a modulator can be so far, with its own cables and
     /// the cables of the others that drove its settings (and what drove the depth of any of
     /// those); any other node is refused.
@@ -237,6 +246,7 @@ impl std::error::Error for IntentError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::graph::Port;
     use serde_json::{Value, json};
 
     fn wire<T: serde::Serialize>(value: &T) -> Value {
@@ -265,6 +275,10 @@ mod tests {
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
+            (
+                Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
+                json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
+            ),
         ]
     }
 

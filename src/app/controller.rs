@@ -39,7 +39,7 @@ use crate::app::catalog::Catalog;
 use crate::app::intent::Applied;
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, PatternState, PluginSlot, SessionModel,
+    EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, ParamTarget, PatternState, PluginSlot, SessionModel,
     fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
@@ -124,6 +124,21 @@ pub struct NewTarget {
     pub base_value: f32,
     pub param_min: f32,
     pub param_max: f32,
+}
+
+impl NewTarget {
+    /// A cable to the plugin parameter `target` (`SessionModel::param_targets`), pulling `depth`.
+    pub fn to_param(target: &ParamTarget, depth: f32) -> NewTarget {
+        NewTarget {
+            kind: target.kind.clone(),
+            slot: target.slot,
+            param_name: target.param_name.clone(),
+            depth,
+            base_value: target.base_value,
+            param_min: target.param_min,
+            param_max: target.param_max,
+        }
+    }
 }
 
 pub struct Controller {
@@ -1153,6 +1168,34 @@ plugin = "builtin:reverb"
         let node = mirror.copy().graph.nodes.into_iter().find(|n| n.id == added).unwrap();
         assert_eq!(node.parent, Some(lane), "in the lane it was added to");
         assert!(matches!(node.kind, crate::app::graph::NodeKind::Modulator { source: crate::app::graph::ModulatorSource::Envelope { .. } }));
+    }
+
+    #[test]
+    fn a_cable_drawn_by_an_intent_is_in_the_snapshot_the_subscribers_are_given_with_the_slot_of_the_value_it_drives() {
+        use crate::app::graph::{Endpoint, Port};
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        let cables = |snapshot: &Snapshot| snapshot.graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).count();
+        let mirror = Mirror::join(&mut ctl);
+        let modulator = ctl.model.instruments[0].modulators[0].node;
+        let filter = ctl.model.instruments[0].effects[0].node;
+        let param = ctl.model.instruments[0].effects[0].params[0].index;
+        assert_eq!(cables(&mirror.copy()), 0);
+
+        let to = Endpoint { node: filter, port: Port::Param { index: param } };
+        let applied = ctl.apply(Intent::AddModEdge { modulator, to }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        let told = mirror.copy();
+        assert_eq!(cables(&told), 1);
+        let edge = told.graph.edges.iter().find(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).unwrap();
+        assert_eq!((edge.from, edge.to), (Endpoint { node: modulator, port: Port::ModOut }, to));
+        assert!(matches!(edge.kind, crate::app::graph::EdgeKind::Modulation { amount, .. } if amount == 0.5));
+        // The value the cable drives is published from now on, and the layout says where.
+        let slot = ctl.model.instruments[0].modulators[0].targets[0].effective.expect("a parameter's value has a slot").index();
+        let value = told.telemetry.modulation.iter().find(|e| e.kind == crate::app::layout::SlotKind::Effective && e.node == filter && e.port == Port::Param { index: param });
+        assert_eq!(value.map(|e| e.slot), Some(slot));
+        assert!(mirror.copy().meta.dirty);
     }
 
     #[test]
