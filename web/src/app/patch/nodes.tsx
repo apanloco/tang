@@ -68,7 +68,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const settings = source ? settingsOf(source) : [];
   return (
     <div className="tang-node tang-node--modulator">
-      <Header name={data.name} badge={kind === data.name ? null : kind} />
+      <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind} />
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">
           {settings.map((field) => (

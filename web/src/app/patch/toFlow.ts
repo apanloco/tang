@@ -35,7 +35,7 @@ export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "m
 export interface PatchNodeData extends Record<string, unknown> {
   /** The node of the session this one is the picture of. */
   node: NodeId;
-  /** What to call it. */
+  /** What to call it: the server's name, with a number after it when another node has the same (`displayNames`). */
   name: string;
   /** What kind of plugin it has (`Built-in`, `LV2`, `CLAP`, `VST3`), if it has one. */
   format: string | null;
@@ -232,8 +232,30 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
   return placed;
 }
 
+/**
+ * What each node is called on the canvas. The server names a node by what it is (a plugin's name, a
+ * modulator's kind: its settings are not in the name, they change under a client), so two LFOs, or two
+ * filters, have the same name, and a person, or a screen reader, cannot tell which is which, nor which
+ * `Rate` is which. A name that more than one node has is numbered, from 1, in the order of the graph;
+ * a node that is alone with its name keeps it.
+ */
+export function displayNames(graph: Graph): Map<NodeId, string> {
+  const shared = new Map<string, number>();
+  for (const node of graph.nodes) shared.set(node.name, (shared.get(node.name) ?? 0) + 1);
+  const next = new Map<string, number>();
+  return new Map(
+    graph.nodes.map((node) => {
+      if ((shared.get(node.name) ?? 0) < 2) return [node.id, node.name];
+      const number = (next.get(node.name) ?? 0) + 1;
+      next.set(node.name, number);
+      return [node.id, `${node.name} ${String(number)}`];
+    }),
+  );
+}
+
 /** The nodes of the session on the canvas, and the cables between them. */
 export function toFlow(graph: Graph): Flow {
+  const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const pinned = new Map<NodeId, number[]>();
   for (const node of graph.nodes) {
@@ -247,9 +269,11 @@ export function toFlow(graph: Graph): Flow {
     type: node.kind,
     position: positions.get(node.id) ?? { x: 0, y: 0 },
     width: NODE_WIDTH,
+    // (React Flow makes a node a group of this name for a screen reader.)
+    ariaLabel: names.get(node.id) ?? node.name,
     data: {
       node: node.id,
-      name: node.name,
+      name: names.get(node.id) ?? node.name,
       format: node.kind === "instrument" || node.kind === "effect" ? (node.plugin?.format ?? null) : null,
       pinned: pinned.get(node.id) ?? [],
       modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
@@ -265,7 +289,7 @@ export function toFlow(graph: Graph): Flow {
     if (sourceHandle === null || targetHandle === null) continue;
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle, targetHandle, deletable: false };
     if (edge.kind === "modulation") {
-      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, label: describeCable(graph, edge) }, zIndex: 10 });
+      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, label: describeCable(graph, names, edge) }, zIndex: 10 });
     } else {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
@@ -274,14 +298,12 @@ export function toFlow(graph: Graph): Flow {
 }
 
 /** What a modulation cable joins, in words: the modulator, then the plugin it drives and the parameter. */
-function describeCable(graph: Graph, edge: Edge): string {
-  const nameOf = (id: NodeId): Node | undefined => graph.nodes.find((node) => node.id === id);
-  const source = nameOf(edge.from.node)?.name ?? "?";
-  const target = nameOf(edge.to.node);
+function describeCable(graph: Graph, names: ReadonlyMap<NodeId, string>, edge: Edge): string {
+  const target = graph.nodes.find((node) => node.id === edge.to.node);
   const plugin = target?.kind === "instrument" || target?.kind === "effect" ? target.plugin : null;
   const index = edge.to.port.type === "param" ? edge.to.port.index : null;
   const param = plugin?.params.find((candidate) => candidate.index === index)?.name;
-  return `${source} → ${target?.name ?? "?"}${param ? `: ${param}` : ""}`;
+  return `${names.get(edge.from.node) ?? "?"} → ${names.get(edge.to.node) ?? "?"}${param ? `: ${param}` : ""}`;
 }
 
 /** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */

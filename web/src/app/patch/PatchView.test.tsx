@@ -203,6 +203,27 @@ describe("the patch", () => {
     expect(within(await nodeOf(91)).getByText("CC 74", { selector: ".tang-node__name" })).toBeTruthy();
   });
 
+  test("tells two modulators of one name apart: each node is a group of its own name, and so are the controls in it and the cables", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    // A second LFO on the same lane, driving the same cutoff.
+    snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });
+    snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
+    await rig(<PatchView />, { snapshot });
+    const first = await screen.findByRole("group", { name: "LFO 1" });
+    const second = await screen.findByRole("group", { name: "LFO 2" });
+    expect(first.getAttribute("data-id")).toBe(String(lfo.id));
+    expect(second.getAttribute("data-id")).toBe("90");
+    // Each has its own Rate, which is told by the node it is in.
+    expect(within(first).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuenow")).toBe("0.5");
+    expect(within(second).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuenow")).toBe("7");
+    expect(within(second).getByText("LFO 2", { selector: ".tang-node__name" })).toBeTruthy();
+    expect(within(second).queryByText("LFO", { selector: ".tang-node__badge" })).toBeNull(); // (it is said by the name)
+    // And each cable has a slider that says whose it is.
+    expect(screen.getByRole("slider", { name: "Depth of LFO 1 → Filter: cutoff" })).toBeTruthy();
+    expect(screen.getByRole("slider", { name: "Depth of LFO 2 → Filter: cutoff" })).toBeTruthy();
+    expect(screen.getByRole("meter", { name: "LFO 2 output" })).toBeTruthy();
+  });
+
   test("gives an envelope the four stages as knobs, and a MIDI control no settings but what it is bound to", async () => {
     const snapshot: Snapshot = structuredClone(tracerSnapshot);
     snapshot.graph.nodes.push(

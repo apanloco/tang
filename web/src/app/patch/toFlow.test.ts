@@ -62,6 +62,9 @@ const modulator = (id: NodeId, parent: NodeId): Node => ({
   source: { type: "lfo", waveform: "sine", rate: 1 },
 });
 
+const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
+const control = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } });
+
 const group = (id: NodeId): Node => ({ id, parent: null, name: `Group ${String(id)}`, kind: "group", volume: 1, pan: 0 });
 
 const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master" };
@@ -365,9 +368,6 @@ describe("the nodes on the canvas", () => {
     return null;
   }
 
-  const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
-  const control = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } });
-
   test("do not overlap when a lane has more modulators than nodes in its row, over the groups and the master that come after it", () => {
     const cases: [string, Graph][] = [
       [
@@ -469,6 +469,73 @@ describe("the nodes on the canvas", () => {
       if (first) first.value = 0.9;
     }
     expect(toFlow(moved)).toEqual(toFlow(tracerSnapshot.graph));
+  });
+});
+
+describe("what the nodes are called", () => {
+  const named = (node: Node, name: string): Node => ({ ...node, name });
+  const lfo = (id: NodeId, parent: NodeId): Node => named(modulator(id, parent), "LFO");
+
+  test("is the server's name for a node that has one of its own, and a number after it for each that shares it, from 1, in the order of the graph", () => {
+    const graph: Graph = {
+      nodes: [
+        named(group(10), "Pad"),
+        lfo(11, 10),
+        named(instrument(1, 3, 10), "Oscillator"),
+        named(effect(2, 1), "Filter"),
+        lfo(3, 1),
+        named(envelope(4, 1), "ADSR"),
+        lfo(5, 1),
+        named(instrument(6), "Oscillator"),
+        named(effect(7, 6), "Filter"),
+        named(effect(8, 6), "Reverb"),
+        master,
+      ],
+      edges: [],
+    };
+    const flow = toFlow(graph);
+    const names = Object.fromEntries(flow.nodes.map((node) => [node.id, node.data.name]));
+    expect(names).toEqual({
+      "10": "Pad",
+      "11": "LFO 1", // the group's, first in the graph
+      "1": "Oscillator 1",
+      "2": "Filter 1",
+      "3": "LFO 2",
+      "4": "ADSR", // the only one
+      "5": "LFO 3",
+      "6": "Oscillator 2",
+      "7": "Filter 2",
+      "8": "Reverb",
+      [String(MASTER)]: "Master",
+    });
+    // A screen reader hears the same: each node is a group of that name.
+    expect(Object.fromEntries(flow.nodes.map((node) => [node.id, node.ariaLabel]))).toEqual(names);
+  });
+
+  test("is not numbered while it is alone, and is when another comes", () => {
+    const one: Graph = { nodes: [instrument(1), lfo(2, 1), master], edges: [] };
+    expect(toFlow(one).nodes.map((node) => node.data.name)).toEqual(["Instrument 1", "LFO", "Master"]);
+    const two: Graph = { nodes: [instrument(1), lfo(2, 1), lfo(3, 1), master], edges: [] };
+    expect(toFlow(two).nodes.map((node) => node.data.name)).toEqual(["Instrument 1", "LFO 1", "LFO 2", "Master"]);
+  });
+
+  test("tells the cables of two modulators to the same parameter apart", () => {
+    const graph: Graph = {
+      nodes: [instrument(1), effect(2, 1), lfo(3, 1), lfo(4, 1), master],
+      edges: [audio(1, 2), audio(2, MASTER), cable(0, 3, 2, 1), cable(1, 4, 2, 1)],
+    };
+    expect(toFlow(graph).edges.filter((edge) => edge.type === "modulation").map((edge) => edge.data?.label)).toEqual([
+      "LFO 1 → Effect 2: p0",
+      "LFO 2 → Effect 2: p0",
+    ]);
+  });
+
+  test("does not change what a node is called by anything but the names of the graph", () => {
+    const a: Graph = { nodes: [instrument(1), lfo(2, 1), lfo(3, 1), master], edges: [] };
+    const moved = structuredClone(a);
+    const mod = moved.nodes[1];
+    if (mod?.kind === "modulator" && mod.source.type === "lfo") mod.source.rate = 9;
+    expect(toFlow(moved).nodes.map((node) => node.data.name)).toEqual(toFlow(a).nodes.map((node) => node.data.name));
   });
 });
 
