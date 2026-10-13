@@ -1,7 +1,8 @@
 # Web UI — design
 
-Status: **phase 0 is built** (the 13 steps of §12); phases 1 and on (§11) are
-planned. `CLAUDE.md` carries the short version and the TODOs; this file is the
+Status: **phase 0 is built** (the 13 steps of §12), and step 14 after it (a
+modulator's settings and a cable's depth, edited in the browser and in the TUI);
+phases 1 and on (§11) are planned. `CLAUDE.md` carries the short version and the TODOs; this file is the
 long form. Update both as steps land (tick the boxes in §12, move TODOs out of
 `CLAUDE.md` into the relevant section). Decisions are listed in §14 with their
 status.
@@ -398,7 +399,14 @@ resolves cursor → ids and then calls `apply`.
   `RemoveNode`, `MoveEffect`, `SetRange`, `AssignGroup`, `AddGroup`,
   `RenameGroup`.
 - Modulation: `AddModulator`, `SetModulatorField`, `AddModEdge`, `RemoveEdge`,
-  `SetEdgeDepth`, `LearnMidi`.
+  `SetEdgeDepth`, `LearnMidi`. (`SetModulatorField` and `SetEdgeDepth` are built, step
+  14: an LFO's rate and waveform and an envelope's four stages, in a lane's modulator or
+  a group's, clamped to `ModulatorField::range` with a waveform rounded to its index
+  (sine, triangle, saw, square), refused with nothing changed for a node that is no
+  modulator, a setting its kind lacks or a value that is not a number; and the depth of a
+  cable, -1 to 1, with `EdgeNotFound` for one that is gone. The events are
+  `ModulatorFieldSet` and `EdgeDepthSet`, carrying the value after clamping. The rest of the
+  list is not.)
 - Patterns: `RecordPattern`, `ClearPattern`, `SetPatternField`.
 - Globals: `SetBpm`, `SetScale`, `SetPianoMode`, `Save`, `SaveAs`, `Undo`,
   `Redo`.
@@ -721,6 +729,25 @@ graph. React Flow gives a node that can be neither dragged nor selected
 `pointer-events: none`, which put its pane over every knob; `patch.css` takes the pointer
 back for the nodes (a browser found that; jsdom has no CSS).
 
+**As built (step 14).** A modulator is turned on the canvas. An LFO's node has a knob for its
+rate and a choice for its waveform, an envelope's a knob for each stage, and a MIDI control's, which has
+no settings, says what it is bound to as before; each is a control like a parameter's (`Drive`:
+shown as set until the engine has answered, one intent a frame, a gesture's end at once), reading
+its own value, and the node renders from what it is made of (its kind, and what a control is
+bound to) and not from its settings. A rate and the times of an envelope are turned over the
+decades (`Knob scale="log"`: each decade is the same share of the turn), a level evenly; the ranges,
+the defaults a double click goes back to and the order of the waveforms are the controller's,
+generated into `constants.ts` from the Rust that clamps them (D19) and not copied. Every modulation
+cable has a slider at its middle for its depth, from -1 to 1 in hundredths, with the percentage
+beside it and a name that says what the cable joins (`Depth of LFO → Filter: cutoff`); it sits in
+React Flow's layer for what labels a cable, which is over the nodes (at the middle of a long cable
+that is sometimes over a node's edge). A cable's depth is a value, not part of the layout: it is
+left out of `sameStructure` and the cable reads it from the store for its thickness, so that
+turning it renders that cable and not the canvas. The layout allows a modulator with settings 188
+px (a row of controls more than the 140 of a control without; 184 measured against the real
+program), and a strip leaves room above it for the tallest of its modulators and a gap for the
+cables. Adding and removing modulators and cables, and moving nodes, are not done.
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -809,7 +836,9 @@ implementations. The TUI golden tests are the regression net.
 2. **Piano parity:** scale / lock, held notes, chords, BPM. *Exit:* play from
    the browser keyboard; held notes and chords match the TUI.
 3. **Modulation, groups, patterns, MIDI-learn on the canvas.** *Exit:*
-   everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables.
+   everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
+   a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
+   D18; adding and removing modulators and cables is still to do.)
 4. **Extras:** mixer view, session browser (needs runtime session loading),
    Web MIDI, touch layout.
 5. **Engine track B** (separate, §13).
@@ -1317,7 +1346,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     the roles and labels (sliders, a meter, a native select).
   - **Not done, on purpose.** Moving nodes and cabling by hand, the outline, the inspector, the
     piano and the toolbar (§9.3), persisted pinning and layout (§4.4); a modulator's
-    settings are shown but not editable (there is no intent for them yet). The modulation
+    settings are shown but not editable (there is no intent for them yet: step 14). The modulation
     cable crosses the header of the node it drives, because its port is on the knob below
     the header.
   - **Dev loop additions.** `?engine=mock&scene=stress` serves the big session from the mock.
@@ -1362,6 +1391,51 @@ Each step is a reviewable change; the TUI must not regress at any point.
     lines and `golden_tests.rs` 2,650: the TUI wants splitting (the loop and the web
     glue, the status bar, the popups) before it takes more.
 
+- [x] **14. Modulation from the browser (ahead of phase 1, D18).** A modulator's settings
+  and a cable's depth are intents, the TUI edits them through the same intents, and the canvas
+  has the controls. *Done when:* a browser turns an LFO's rate and waveform, an envelope's
+  stages and a cable's depth on the real program, the TUI shows each at once, and the TUI's
+  own edits show in the browser, both ways.
+  - **As built:** `SetModulatorField { node, field, value }` and `SetEdgeDepth { edge, depth }`
+    (§5), with `ModulatorFieldSet` / `EdgeDepthSet` events, `Snapshot::apply` and the client's
+    reducer following them, and the mock engine answering them as the controller does. The
+    ranges (`Gain::range`, `ModulatorField::range`, the depth's -1 to 1), what a new modulator
+    starts as and the order of the waveforms are generated into `constants.ts` (D19), which
+    removed the two copies of the gains' ranges the client had. The TUI's four modulator edit functions (a step and
+    a typed value, for a lane's modulators and again for a group's, about 420 lines) are one
+    `step_modulator_row` and one `set_modulator_row` over one table of what each row of a
+    modulator's pane is (`modulator_row`), through `ModulatorSlot::row_intent`; `tui/mod.rs` is
+    319 lines shorter (4,788). The Type row, which makes an LFO an envelope, is still the TUI's
+    own edit (the browsers are given a snapshot). On the canvas: `Knob scale="log"`, the
+    controls on the nodes, the depth slider on each cable, the layout's heights, and a cable's
+    depth as a value (§9.3).
+  - **The review of step 13** (an independent agent, read-only, on its own worktree) came in
+    during the step: a NaN typed into the tempo popup or a modulator's value, or written in a
+    session file, made every `resync` a full snapshot to every browser (NaN is not equal to
+    itself; f31: fixed in three commits, the comparison, the popups, the file); a client that
+    sent half a request and never the rest kept the web server from stopping for ever, in `tang
+    serve` and in `--web` (f32); and a test of the loop's wake did not observe the wake (f33).
+    Each was checked against the code before it was changed, and has its test first.
+  - **Found on the way, and fixed:** the tree did not show a target's new depth after it was
+    edited (f37); the structure of the canvas counted a cable's depth, which would have laid it
+    out sixty times a second under a slider (fixed before the slider existed, `sameStructure`);
+    a modulator's name carried its settings (`LFO 0.5Hz sine`), which change under a client.
+  - **Numbers.** 679 Rust tests in the default build (643 before the step), 820 with the web
+    feature (778), 502 Vitest tests (436), 22 browser tests (16), some 190 mutations of the step's
+    code (the survivors, real and equivalent, are named in the commit messages). 146 local
+    commits on the branch, none pushed.
+  - **The manual parity check**, scripted and run once, not part of CI, as in step 13: the real
+    program on the null backend with the TUI in a pty and a real Chromium; 14 checks, both
+    ways, all passed: the rate, the waveform and the depth turned in the browser are in the
+    TUI's tree at once, and stepped or typed in the TUI are in the browser's knob, choice and
+    slider; a NaN typed into the TUI's popup changes nothing.
+  - **Not checked:** by ear (the null backend); a touch screen; browsers other than Chromium;
+    several modulators of one cable path overlapping their sliders (two cables with the same
+    middle put their sliders over each other).
+  - **Open, noted on the way:** f34 (a browser test measures milliseconds between sends where
+    it means frames, and failed once under load); f29 and f30 as before; adding and removing
+    modulators and cables, and the Type row, are still direct edits.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -1396,6 +1470,8 @@ mixer, delay, …) are the natural first increment.
 | D15 | React Flow draws the canvas; `toFlow` is a pure function of the graph, nodes are functions of their data with controls that read their own values, and the canvas is laid out again only when the structure of the session changes | Built (step 12) |
 | D16 | The TUI loop selects on a reader thread's channel, the browsers' requests and a tick, on the one controller; what the TUI changes without an intent is found by comparing what the subscribers were told with the session (`resync`, a snapshot at a revision of its own), until every edit is an intent | Built (step 13) |
 | D17 | `--web[=ADDR]` is a flag of the TUI alone, with `serve`'s arguments (`127.0.0.1:8765`, `--web-origin`, a token beyond loopback); the address comes only after an `=`; the address and the warnings are printed before the TUI starts and shown in the tab bar and on the Help tab | Built (step 13) |
+| D18 | The first of phase 3, a modulator's settings and a cable's depth, is done ahead of phase 1 (session parity): it is what the web UI is for ("build synths and control parameters with visual modulators"), it needs no structural intents, and it exercises the whole path (intent, controller, engine, event, reducer, control) on the thing the user wants to see | Built (step 14); say if phase 1 should have come first |
+| D19 | What the client has to know about what the controller clamps to (the ranges of the gains, of a modulator's settings and of a cable's depth, what a new modulator starts as, the order of the waveforms) is generated into `web/src/protocol/generated/constants.ts` from the Rust that clamps, and checked by the test that checks the generated types; the client's mock engine and its controls read it and keep no copy | Built (step 14) |
 
 Open questions
 

@@ -291,6 +291,10 @@ Effects additionally have:
 
 Load order per plugin: load → preset → params.
 
+A number in a session file must be finite: TOML has `nan` and `inf`, and a session
+that has one is refused when it is loaded, with the place in the error
+(`instrument[0].volume is not a finite number (NaN)`).
+
 ### Modulator fields
 
 Modulators are **lane-scoped** block-rate sources: one modulator belongs to an
@@ -761,7 +765,8 @@ Opened by `Enter` on a selected parameter (and also used for `b` BPM entry,
 
 - Shows parameter name, current value, and valid range
 - Text input for entering a numeric value
-- `Enter` — accept value and close popup
+- `Enter` — accept value and close popup; text that is not a finite number
+  (`abc`, `nan`, `inf`) is ignored: the popup closes and nothing changes
 - `Escape` — cancel and close popup
 
 ### Range entry popup
@@ -934,10 +939,17 @@ model and the audio thread together and answers with `Event`s (`app::intent`,
 `app::apply`; `docs/web-ui.md` §5). Built so far: `SetParam` (clamped to the
 parameter's range, an enum rounded to a whole value), `SetGain` (instrument
 volume, effect and bus-effect mix, group volume and pan, each with its own
-range) and `LoadPreset` (by preset id; the values the preset set are mirrored
-into the model). Every applied intent bumps `Controller::rev`; one that fails
-(`NotFound`, `Invalid`) changes nothing. The TUI's parameter, gain and preset
-edits use them. Its other edits still change the model and send the command
+range), `LoadPreset` (by preset id; the values the preset set are mirrored
+into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
+stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
+waveform rounded to its index: sine, triangle, saw, square) and `SetEdgeDepth` (a
+modulation cable's depth, -1 to 1). Every applied intent bumps `Controller::rev`;
+one that fails (`NotFound`, `EdgeNotFound`, `Invalid`) changes nothing. The TUI's
+parameter, gain, preset and modulator-row edits use them (what each row of a
+modulator's parameter pane is comes from one table, `modulator_row` in
+`src/app/model.rs`, which says its range, whether it is an enum and which intent it
+makes; the Type row, which turns an LFO into an envelope, is still the TUI's own
+edit). Its other edits still change the model and send the command
 themselves, until their intents exist; for deleting and moving an effect they
 use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
 targets of the lane and of its group pointing at the same plugins, as the audio
@@ -1282,7 +1294,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   model, the engine handles and the plugin catalog. Front-ends call
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
-  `SetGain` and `LoadPreset` (see "Session state").
+  `SetGain`, `LoadPreset`, `SetModulatorField` and `SetEdgeDepth` (see "Session
+  state").
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the
@@ -1335,7 +1348,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   writing to the DOM, never through React state) and the patch canvas
   (`web/src/app/patch/`: `toFlow`, a pure layout of the graph, drawn with React Flow:
   a strip for each instrument, its modulators above it, cables, a node's knobs bound to
-  the session). The page is the connection state, the canvas and the session as JSON
+  the session; step 14 added the controls of a modulator: an LFO's rate and waveform and an
+  envelope's stages on the node (`Knob scale="log"` for a rate and a time, which run over
+  decades), and a slider for the depth of each cable at its middle). What the controller
+  clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
+  generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
+  engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
   (closed). `cd web && npm ci`, then `npm run dev` (Vite on 5173, forwarding `/ws`
   to `tang serve --web-origin http://localhost:5173`; `?engine=mock` in the address
   needs no server, `&scene=stress` serves eight lanes with 32 LFOs and 64 driven
@@ -1364,9 +1382,16 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (serial audio chain, block-rate lane-global modulation, cables = modulation
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
-Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Phase 1 (session
-parity) is next, §11.
+Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Step 14 did the first
+of phase 3 ahead of phase 1 (D18): a modulator's settings and a cable's depth are turned in the
+browser and in the TUI. Phase 1 (session parity) is next, §11.
 TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
+TODO: add and remove modulators and cables from the browser (structural intents and events;
+the engine's `RemoveModTarget` is not wired yet), and make the Type row (LFO to envelope) an
+intent: until then a browser is given a snapshot for it (`Controller::resync`).
+TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
+edge, and two cables with the same middle put theirs over each other; user-placed nodes and
+sliders that move along the cable would settle it.
 TODO: patterns as graph nodes (they have no `NodeId` yet).
 TODO: events of their own for what the audio thread reports to the controller (a
 finished pattern recording, a captured MIDI-learn control) and for what the TUI
