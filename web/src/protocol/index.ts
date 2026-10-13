@@ -27,4 +27,12 @@ export type { TelemetryChannel } from "./generated/TelemetryChannel";
 export type { TelemetryLayout } from "./generated/TelemetryLayout";
 export type { Waveform } from "./generated/Waveform";
 export type { WireError } from "./generated/WireError";
-export { DEPTH_RANGE, FRAME_HEADER_LEN, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL, WAVEFORMS } from "./generated/constants";
+export {
+  DEPTH_RANGE,
+  FRAME_HEADER_LEN,
+  GAIN_RANGES,
+  MODULATOR_FIELD_DEFAULTS,
+  MODULATOR_FIELD_RANGES,
+  PROTOCOL,
+  WAVEFORMS,
+} from "./generated/constants";

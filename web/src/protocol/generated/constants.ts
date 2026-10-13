@@ -27,6 +27,16 @@ export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, nu
   release: [0.001, 10],
 };
 
+/** What each setting of a modulator is when the modulator is new (`ModSourceSlot::new_lfo`, `new_envelope`): where a double click puts a knob. */
+export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {
+  rate: 1,
+  waveform: 0,
+  attack: 0.01,
+  decay: 0.3,
+  sustain: 0.7,
+  release: 0.5,
+};
+
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 

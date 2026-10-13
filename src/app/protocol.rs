@@ -347,6 +347,21 @@ mod typescript {
             .collect()
     }
 
+    /// The entries of a TypeScript object that says what each setting of a modulator is when the
+    /// modulator is new: what a new LFO and a new envelope start as.
+    fn default_entries() -> String {
+        use crate::app::model::ModSourceSlot;
+        let (lfo, envelope) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope());
+        MODULATOR_FIELDS
+            .iter()
+            .map(|&field| {
+                let name = serde_json::to_value(field).unwrap();
+                let value = lfo.setting(field).or_else(|| envelope.setting(field)).expect("a new LFO or a new envelope has every setting");
+                format!("  {}: {value},\n", name.as_str().expect("a unit variant is a string"))
+            })
+            .collect()
+    }
+
     /// The names an LFO's waveforms have on the wire, in the order of their index (the value
     /// of `ModulatorField::Waveform`: `LfoWaveform::ALL`), as the elements of a TypeScript array.
     fn waveform_names() -> String {
@@ -394,6 +409,8 @@ mod typescript {
                  export const GAIN_RANGES: Record<Gain, readonly [number, number]> = {{\n{}}};\n\n\
                  /** The same for each setting of a modulator (`ModulatorField::range`). */\n\
                  export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, number]> = {{\n{}}};\n\n\
+                 /** What each setting of a modulator is when the modulator is new (`ModSourceSlot::new_lfo`, `new_envelope`): where a double click puts a knob. */\n\
+                 export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {{\n{}}};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
                  /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */\n\
@@ -402,6 +419,7 @@ mod typescript {
                 super::FRAME_HEADER_LEN,
                 range_entries(&GAINS, Gain::range),
                 range_entries(&MODULATOR_FIELDS, ModulatorField::range),
+                default_entries(),
                 waveform_names(),
             ),
         )?;
@@ -454,6 +472,14 @@ mod typescript {
         assert_eq!(
             range_entries(&MODULATOR_FIELDS, ModulatorField::range),
             "  rate: [0.01, 50],\n  waveform: [0, 3],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n"
+        );
+    }
+
+    #[test]
+    fn what_a_new_modulator_starts_as_is_written_for_every_setting() {
+        assert_eq!(
+            default_entries(),
+            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n"
         );
     }
 
