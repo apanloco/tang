@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, sameParamList } from "./selectors";
+import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameParamList } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
@@ -273,5 +273,31 @@ describe("counting the parameters of a plugin", () => {
     expect(paramCountOf(reach, MASTER)).toBe(0);
     expect(paramCountOf(reach, 424242)).toBe(0);
     expect(paramCountOf(stateOf(null), filter.id)).toBe(0);
+  });
+});
+
+describe("finding the keys of a lane", () => {
+  const reach = stateOf(reachFixture.snapshot);
+
+  test("is none for a lane that takes every note, and its range for one that does not", () => {
+    expect(rangeOf(state, oscillator.id)).toBeNull();
+    const ranged = structuredClone(tracerSnapshot);
+    const node = ranged.graph.nodes.find((n) => n.id === oscillator.id);
+    if (node?.kind !== "instrument") throw new Error("no lane");
+    node.range = { low: 48, high: 71 };
+    expect(rangeOf(stateOf(ranged), oscillator.id)).toEqual({ low: 48, high: 71 });
+  });
+
+  test("is there for a lane that has no instrument", () => {
+    expect(rangeOf(reach, 14)).toBeNull();
+  });
+
+  test("is not there for what is not a lane, a node that is not there, or before there is a session", () => {
+    expect(rangeOf(state, filter.id)).toBeUndefined();
+    expect(rangeOf(state, lfo.id)).toBeUndefined();
+    expect(rangeOf(state, MASTER)).toBeUndefined();
+    expect(rangeOf(reach, 0)).toBeUndefined(); // a group
+    expect(rangeOf(state, 424242)).toBeUndefined();
+    expect(rangeOf(stateOf(null), oscillator.id)).toBeUndefined();
   });
 });

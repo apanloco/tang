@@ -1,7 +1,7 @@
 // Reading the session in the client's store: the parts of it a view shows, found by the id of
 // the node they are of. Pure, on the state, so that a view can hand one to a store hook.
 import { WAVEFORMS } from "../protocol";
-import type { EdgeId, Gain, ModulatorField, Node, NodeId, Param, Preset } from "../protocol";
+import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, Preset } from "../protocol";
 import type { ClientState } from "./connection";
 import { displayNames } from "./names";
 
@@ -73,6 +73,12 @@ export function sameParamList(a: ParamList | null, b: ParamList | null): boolean
     a.params.length === b.params.length &&
     a.params.every((param, position) => param.index === b.params[position]?.index && param.name === b.params[position].name)
   );
+}
+
+/** The keys a lane takes: null if every note, undefined if the node is not a lane (an empty lane is one). */
+export function rangeOf(state: ClientState, id: NodeId): NoteRange | null | undefined {
+  const node = nodeById(state, id);
+  return node?.kind === "instrument" ? node.range : undefined;
 }
 
 /** The value of a host-side gain of a node, if the node has that gain (`withGain` in reducers.ts is the other way round). */

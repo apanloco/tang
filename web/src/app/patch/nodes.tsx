@@ -16,7 +16,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
-import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell } from "./controls";
+import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
 import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { PatchNode } from "./toFlow";
@@ -225,6 +225,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
           <ParamCell key={index} node={data.node} index={index} driven={data.modulated.includes(index)} />
         ))}
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />
+        <RangeCell node={data.node} name={data.name} />
       </div>
     </div>
   );

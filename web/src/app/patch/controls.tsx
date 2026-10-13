@@ -3,15 +3,16 @@
 // has set it to until the server has answered (`Drive`), and draws the modulation on it:
 // the ring from the cables that end at it and the dot from the telemetry.
 import { Handle, Position } from "@xyflow/react";
-import { memo, useContext, useId, useMemo, useSyncExternalStore } from "react";
+import { memo, useContext, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
+import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
-import { cableDepthOf, gainOf, modulatorFieldOf, paramOf } from "../../client/selectors";
+import { cableDepthOf, gainOf, modulatorFieldOf, paramOf, rangeOf } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
-import type { EdgeId, Gain, ModulatorField, NodeId, Param } from "../../protocol";
+import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import { afterKey } from "../../ui/knob-geometry";
@@ -238,6 +239,75 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
       }}
       frames={frames}
     />
+  );
+});
+
+/**
+ * The keys a lane takes: where its notes begin and where they end, each a choice of `any` (no end) or a note, in a cell of the
+ * node's grid. A change asks for the range it makes (`SetRange`): the other end stays as it is, an end that is chosen past the
+ * other takes it along (one note is a range), and `any` at both is every note, which is no range. What was chosen shows at once
+ * and until the answer is in; after it, what the session has, which is what was asked for unless it was refused (and the page
+ * says why). An end of the keyboard is `any`: C-1 as the low end, and G9 as the high end, are not in the lists. A node that is no
+ * lane has no keys, and nothing is drawn for it.
+ */
+export const RangeCell = memo(function RangeCell({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const stored = useClientState((state) => rangeOf(state, node));
+  const [pending, setPending] = useState<NoteRange | null | undefined>(undefined);
+  const latest = useRef(0);
+  if (stored === undefined) return null;
+  const range = pending === undefined ? stored : pending;
+  const low = range?.low ?? 0;
+  const high = range?.high ?? 127;
+  const choose = (next: NoteRange): void => {
+    // (The whole keyboard is no range.)
+    const asked = next.low === 0 && next.high === 127 ? null : next;
+    const mine = (latest.current += 1);
+    setPending(asked);
+    void editor.setRange(node, asked).finally(() => {
+      if (latest.current === mine) setPending(undefined);
+    });
+  };
+  return (
+    <div className="tang-cell">
+      <div className="tang-keys">
+        <span className="tang-keys__label">Keys</span>
+        <select
+          className="tang-keys__select"
+          aria-label={`Lowest key of ${name}`}
+          title="Lowest key"
+          value={low === 0 ? "" : String(low)}
+          onChange={(event) => {
+            const note = event.target.value === "" ? 0 : Number(event.target.value);
+            choose({ low: note, high: Math.max(high, note) });
+          }}
+        >
+          <option value="">any</option>
+          {NOTE_NAMES.slice(1).map((label, place) => (
+            <option key={label} value={String(place + 1)}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="tang-keys__select"
+          aria-label={`Highest key of ${name}`}
+          title="Highest key"
+          value={high === 127 ? "" : String(high)}
+          onChange={(event) => {
+            const note = event.target.value === "" ? 127 : Number(event.target.value);
+            choose({ low: Math.min(low, note), high: note });
+          }}
+        >
+          <option value="">any</option>
+          {NOTE_NAMES.slice(0, 127).map((label, place) => (
+            <option key={label} value={String(place)}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 });
 

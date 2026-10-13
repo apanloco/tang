@@ -57,9 +57,9 @@ describe("the patch", () => {
     expect(within(await nodeOf(4294967295)).getByText("Master")).toBeTruthy();
   });
 
-  test("shows each plugin node's parameters as controls, and its own gain after them", async () => {
+  test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys after that)", async () => {
     await rig(<PatchView />);
-    expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume"]);
+    expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator", "Highest key of Oscillator"]);
     expect(controlsIn(await nodeOf(filter.id))).toEqual(["cutoff", "resonance", "type", "drive", "Mix"]);
   });
 
@@ -616,7 +616,7 @@ describe("the patch", () => {
       });
       expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 5" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
-      expect(controlsIn(await nodeOf(14))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume"]);
+      expect(controlsIn(await nodeOf(14))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator 5", "Highest key of Oscillator 5"]);
     });
 
     test("takes the cables that drove the old instrument off the canvas, and leaves the others", async () => {

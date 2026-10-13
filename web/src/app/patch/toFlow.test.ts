@@ -621,7 +621,7 @@ describe("the parameters a node shows", () => {
   });
 
   test("are counted with the node's own gain, so that the layout knows how tall it is", () => {
-    expect(controlCount(instrument(1), 3)).toBe(4);
+    expect(controlCount(instrument(1), 3)).toBe(5); // the parameters, the volume and the keys
     expect(controlCount(effect(2, 1), 8)).toBe(9);
     expect(controlCount(group(3), 0)).toBe(2);
     expect(controlCount(modulator(4, 1), 0)).toBe(0);
@@ -631,6 +631,11 @@ describe("the parameters a node shows", () => {
     expect(nodeHeight(effect(2, 1), 4)).toBeGreaterThan(nodeHeight(effect(2, 1), 3));
     expect(nodeHeight(effect(2, 1), 7)).toBe(nodeHeight(effect(2, 1), 4));
     expect(nodeHeight(effect(2, 1), 8)).toBeGreaterThan(nodeHeight(effect(2, 1), 7));
+    // An instrument has its keys as well as its volume: two parameters fill the first row with them, a third begins a second, a seventh a third.
+    expect(nodeHeight(instrument(1), 2)).toBe(nodeHeight(instrument(1), 0));
+    expect(nodeHeight(instrument(1), 3)).toBeGreaterThan(nodeHeight(instrument(1), 2));
+    expect(nodeHeight(instrument(1), 6)).toBe(nodeHeight(instrument(1), 3));
+    expect(nodeHeight(instrument(1), 7)).toBeGreaterThan(nodeHeight(instrument(1), 6));
   });
 });
 

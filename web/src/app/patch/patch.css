@@ -139,6 +139,36 @@
   padding-top: 10px;
 }
 
+/* The keys of a lane, in a cell of the grid: a label over the two ends. */
+.tang-keys {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 64px;
+}
+
+.tang-keys__label {
+  font-size: var(--tang-text-small);
+  text-align: center;
+  color: var(--tang-text-muted);
+}
+
+.tang-keys__select {
+  width: 100%;
+  padding: 2px;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-font);
+}
+
+.tang-keys__select:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
 /* Ports: where a cable starts or ends. */
 .tang-port {
   width: 10px;

@@ -109,10 +109,11 @@ function modulatedParams(graph: Graph): Map<NodeId, Set<number>> {
   return modulated;
 }
 
-/** How many controls a node shows: its parameters, and its own gain (a volume or a mix) or a group's two. */
+/** How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys too) or a group's two. */
 export function controlCount(node: Node, pinned: number): number {
   switch (node.kind) {
     case "instrument":
+      return pinned + 2;
     case "effect":
       return pinned + 1;
     case "group":
