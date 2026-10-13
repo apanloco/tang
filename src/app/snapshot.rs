@@ -8,11 +8,15 @@
 
 #![cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends snapshots"))]
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::app::controller::Controller;
-use crate::app::graph::Graph;
+use crate::app::graph::{Graph, Node, NodeKind, Plugin};
+use crate::app::intent::{Applied, Event, Gain};
 use crate::app::layout::TelemetryLayout;
+use crate::app::model::NodeId;
 use crate::piano_filter::PianoMode;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -50,6 +54,101 @@ pub struct PianoMeta {
     pub locked: bool,
 }
 
+/// An event that does not fit the snapshot it was applied to. The copy is not the
+/// session's any more: whoever holds it starts again from a fresh snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller applies events to what it has told its subscribers, from the next commit on"))]
+pub struct DoesNotFit(String);
+
+impl fmt::Display for DoesNotFit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DoesNotFit {}
+
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller applies events to what it has told its subscribers, from the next commit on"))]
+impl Snapshot {
+    /// The snapshot after the intent that `applied` describes: what a client does
+    /// with the events that follow the snapshot it started from. The rules are those
+    /// of `Controller::apply`, read from the other side, and the web client's
+    /// `applyEvent` (`web/src/client/reducers.ts`) follows them too.
+    ///
+    /// An intent is the next revision, or one this snapshot already has (nothing to
+    /// do: a snapshot asked for later may include what was told before it). Anything
+    /// else, or an event about what the snapshot lacks, does not fit, and the
+    /// snapshot is as it was before the event that did not.
+    pub fn apply(&mut self, applied: &Applied) -> Result<(), DoesNotFit> {
+        if applied.rev <= self.rev {
+            return Ok(());
+        }
+        if applied.rev != self.rev + 1 {
+            return Err(DoesNotFit(format!("the session is at revision {} and the next event is {}", self.rev, applied.rev)));
+        }
+        for event in &applied.events {
+            self.change(event)?;
+        }
+        self.rev = applied.rev;
+        // An intent, from whichever front-end, is a change the session has not saved.
+        self.meta.dirty = true;
+        Ok(())
+    }
+
+    fn change(&mut self, event: &Event) -> Result<(), DoesNotFit> {
+        match event {
+            Event::ParamSet { node, param, value } => {
+                let plugin = self.plugin_mut(*node)?;
+                let row = plugin
+                    .params
+                    .iter_mut()
+                    .find(|p| p.index == *param)
+                    .ok_or_else(|| DoesNotFit(format!("node {} has no parameter {param}", node.0)))?;
+                row.value = *value;
+            }
+            Event::GainSet { node, gain, value } => {
+                let target = match (gain, &mut self.node_mut(*node)?.kind) {
+                    (Gain::Volume, NodeKind::Instrument { volume, .. }) => volume,
+                    (Gain::Mix, NodeKind::Effect { mix, .. }) => mix,
+                    (Gain::GroupVolume, NodeKind::Group { volume, .. }) => volume,
+                    (Gain::GroupPan, NodeKind::Group { pan, .. }) => pan,
+                    _ => return Err(DoesNotFit(format!("{gain:?} does not apply to node {}", node.0))),
+                };
+                *target = *value;
+            }
+            Event::PresetLoaded { node, preset, values } => {
+                let plugin = self.plugin_mut(*node)?;
+                // All of it or none: look before changing anything.
+                if values.iter().any(|v| plugin.params.iter().all(|p| p.index != v.param)) {
+                    return Err(DoesNotFit(format!("the preset names a parameter node {} does not have", node.0)));
+                }
+                plugin.current_preset = Some(preset.clone());
+                for v in values {
+                    for row in plugin.params.iter_mut().filter(|p| p.index == v.param) {
+                        // The controller keeps a preset's values as the baseline too, and
+                        // the snapshot shows the baseline as the parameter's default.
+                        row.value = v.value;
+                        row.default = v.value;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn node_mut(&mut self, id: NodeId) -> Result<&mut Node, DoesNotFit> {
+        self.graph.nodes.iter_mut().find(|n| n.id == id).ok_or_else(|| DoesNotFit(format!("there is no node {}", id.0)))
+    }
+
+    /// The plugin of an instrument or effect node.
+    fn plugin_mut(&mut self, id: NodeId) -> Result<&mut Plugin, DoesNotFit> {
+        match &mut self.node_mut(id)?.kind {
+            NodeKind::Instrument { plugin: Some(plugin), .. } | NodeKind::Effect { plugin, .. } => Ok(plugin),
+            _ => Err(DoesNotFit(format!("node {} has no plugin", id.0))),
+        }
+    }
+}
+
 impl Controller {
     /// The session as it is now.
     pub fn snapshot(&self) -> Snapshot {
@@ -77,7 +176,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::app::intent::Intent;
+    use crate::app::graph::{Node, NodeKind, Plugin};
+    use crate::app::intent::{Applied, Event, Gain, Intent, ParamValue};
+    use crate::app::model::NodeId;
     use crate::app::testutil::{GROUPS, load, stub_engine};
     use crate::scale::ScaleSetting;
 
@@ -193,5 +294,193 @@ mod tests {
         assert_eq!(json["graph"]["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(json["telemetry"]["meters"].as_array().unwrap().len(), 4);
         assert_eq!(serde_json::from_value::<Snapshot>(json).unwrap(), snapshot);
+    }
+    /// A group with a bus filter, a member with a reverb (which has presets), and a
+    /// lane with no instrument plugin.
+    const APPLY: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+"#;
+
+    fn find(snapshot: &Snapshot, wanted: impl Fn(&Node) -> bool) -> NodeId {
+        snapshot.graph.nodes.iter().find(|n| wanted(n)).map(|n| n.id).expect("a node like that")
+    }
+
+    fn plugin_of(snapshot: &Snapshot, node: NodeId) -> &Plugin {
+        match &snapshot.graph.nodes.iter().find(|n| n.id == node).unwrap().kind {
+            NodeKind::Instrument { plugin: Some(plugin), .. } | NodeKind::Effect { plugin, .. } => plugin,
+            other => panic!("{other:?} has no plugin"),
+        }
+    }
+
+    fn param_named(snapshot: &Snapshot, node: NodeId, name: &str) -> u32 {
+        plugin_of(snapshot, node).params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no {name}")).index
+    }
+
+    /// The nodes of `APPLY` that the tests act on.
+    struct Nodes {
+        osc: NodeId,
+        reverb: NodeId,
+        bus: NodeId,
+        group: NodeId,
+        empty: NodeId,
+    }
+
+    fn nodes(snapshot: &Snapshot) -> Nodes {
+        let by_plugin = |id: &'static str| move |n: &Node| matches!(&n.kind, NodeKind::Instrument { plugin: Some(p), .. } | NodeKind::Effect { plugin: p, .. } if p.id == id);
+        Nodes {
+            osc: find(snapshot, by_plugin("builtin:osc")),
+            reverb: find(snapshot, by_plugin("builtin:reverb")),
+            bus: find(snapshot, by_plugin("builtin:filter")),
+            group: find(snapshot, |n| matches!(n.kind, NodeKind::Group { .. })),
+            empty: find(snapshot, |n| matches!(n.kind, NodeKind::Instrument { plugin: None, .. })),
+        }
+    }
+
+    fn applied(rev: u64, event: Event) -> Applied {
+        Applied { rev, events: vec![event] }
+    }
+
+    #[test]
+    fn the_events_of_an_intent_are_everything_it_changed() {
+        // What a client does: start from a snapshot and apply the events. It has to end
+        // up where the controller is, whatever the intent was.
+        let mut ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let n = nodes(&told);
+        let detune = param_named(&told, n.osc, "detune");
+        let waveform = param_named(&told, n.osc, "waveform");
+        let size = param_named(&told, n.reverb, "size");
+        let cutoff = param_named(&told, n.bus, "cutoff");
+        let intents = [
+            Intent::SetParam { node: n.osc, param: detune, value: 3.0 },
+            Intent::SetParam { node: n.reverb, param: size, value: 0.25 },
+            Intent::SetParam { node: n.bus, param: cutoff, value: 0.125 },
+            Intent::SetParam { node: n.osc, param: waveform, value: 1.75 },
+            Intent::SetParam { node: n.osc, param: detune, value: 1.0e9 },
+            Intent::SetGain { node: n.osc, gain: Gain::Volume, value: 2.5 },
+            Intent::SetGain { node: n.reverb, gain: Gain::Mix, value: 0.25 },
+            Intent::SetGain { node: n.bus, gain: Gain::Mix, value: 0.75 },
+            Intent::SetGain { node: n.group, gain: Gain::GroupVolume, value: 1.5 },
+            Intent::SetGain { node: n.group, gain: Gain::GroupPan, value: -0.5 },
+            Intent::LoadPreset { node: n.reverb, preset: "cathedral".to_string() },
+            Intent::SetParam { node: n.reverb, param: size, value: 0.5 },
+        ];
+        for intent in intents {
+            let before = told.clone();
+            let applied = ctl.apply(intent.clone()).unwrap();
+            told.apply(&applied).unwrap_or_else(|e| panic!("{intent:?}: {e}"));
+            assert_ne!(told, before, "{intent:?} changed something");
+            assert_eq!(told, ctl.snapshot(), "after {intent:?}");
+        }
+        assert_eq!(told.rev, 12);
+    }
+
+    #[test]
+    fn an_applied_event_leaves_the_session_dirty() {
+        let mut ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        assert!(!told.meta.dirty);
+        let osc = nodes(&told).osc;
+        let applied = ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.5 }).unwrap();
+        told.apply(&applied).unwrap();
+        assert!(told.meta.dirty, "an intent was applied");
+        assert_eq!(told.meta, ctl.snapshot().meta);
+    }
+
+    #[test]
+    fn a_preset_makes_the_values_it_sets_the_parameters_baseline() {
+        // The controller keeps a preset's values as the baseline too (what is not saved
+        // as the user's edit), and the snapshot shows the baseline as the default.
+        let mut ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let reverb = nodes(&told).reverb;
+        let applied = ctl.apply(Intent::LoadPreset { node: reverb, preset: "cathedral".to_string() }).unwrap();
+        told.apply(&applied).unwrap();
+        let plugin = plugin_of(&told, reverb);
+        assert_eq!(plugin.current_preset.as_deref(), Some("Cathedral"));
+        assert!(plugin.params.iter().any(|p| p.default != 0.0 && p.default == p.value));
+        assert!(plugin.params.iter().all(|p| p.default == p.value), "every parameter of a reverb is in the preset");
+    }
+
+    #[test]
+    fn an_event_the_snapshot_has_already_is_nothing_to_do() {
+        let mut ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let osc = nodes(&told).osc;
+        let detune = param_named(&told, osc, "detune");
+        let event = applied(0, Event::ParamSet { node: osc, param: detune, value: 5.0 });
+        let before = told.clone();
+        told.apply(&event).unwrap();
+        assert_eq!(told, before, "revision 0 is the one the snapshot is of");
+
+        let real = ctl.apply(Intent::SetParam { node: osc, param: detune, value: 5.0 }).unwrap();
+        told.apply(&real).unwrap();
+        let once = told.clone();
+        told.apply(&real).unwrap();
+        assert_eq!(told, once, "the second time is a repeat");
+    }
+
+    #[test]
+    fn an_event_that_skips_a_revision_does_not_fit() {
+        let ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let osc = nodes(&told).osc;
+        let before = told.clone();
+        let error = told.apply(&applied(2, Event::GainSet { node: osc, gain: Gain::Volume, value: 0.5 })).unwrap_err();
+        assert_eq!(error.to_string(), "the session is at revision 0 and the next event is 2");
+        assert_eq!(told, before);
+    }
+
+    #[test]
+    fn an_event_that_does_not_fit_what_it_names_is_refused_and_changes_nothing() {
+        let ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let n = nodes(&told);
+        let before = told.clone();
+        let ghost = NodeId(9_999);
+        let refused = [
+            (Event::GainSet { node: ghost, gain: Gain::Volume, value: 0.5 }, "there is no node 9999"),
+            (Event::ParamSet { node: ghost, param: 0, value: 0.5 }, "there is no node 9999"),
+            (Event::ParamSet { node: n.empty, param: 0, value: 0.5 }, "has no plugin"),
+            (Event::ParamSet { node: n.group, param: 0, value: 0.5 }, "has no plugin"),
+            (Event::ParamSet { node: n.osc, param: 4_000, value: 0.5 }, "has no parameter 4000"),
+            (Event::GainSet { node: n.osc, gain: Gain::Mix, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: n.reverb, gain: Gain::Volume, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: n.osc, gain: Gain::GroupPan, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: n.group, gain: Gain::Mix, value: 0.5 }, "does not apply"),
+            (Event::PresetLoaded { node: n.empty, preset: "x".to_string(), values: vec![] }, "has no plugin"),
+        ];
+        for (event, why) in refused {
+            let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();
+            assert!(error.contains(why), "{event:?}: {error}");
+            assert_eq!(told, before, "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_preset_that_names_a_parameter_the_plugin_lacks_is_refused_whole() {
+        let ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let reverb = nodes(&told).reverb;
+        let size = param_named(&told, reverb, "size");
+        let before = told.clone();
+        let preset = Event::PresetLoaded {
+            node: reverb,
+            preset: "Odd".to_string(),
+            values: vec![ParamValue { param: size, value: 0.9 }, ParamValue { param: 4_000, value: 0.1 }],
+        };
+        let error = told.apply(&applied(1, preset)).unwrap_err().to_string();
+        assert!(error.contains("a parameter"), "{error}");
+        assert_eq!(told, before, "not the half of it that fits");
     }
 }
