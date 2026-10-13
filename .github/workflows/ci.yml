@@ -84,3 +84,35 @@ jobs:
 
       - name: The generated TypeScript is up to date
         run: cargo test --no-default-features --features web typescript
+
+  # The browser front-end (web/, docs/web-ui.md): lint, types, unit tests and the production
+  # build. Its dependencies are in web/package-lock.json, so `npm ci` installs exactly those.
+  web:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Types
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

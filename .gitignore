@@ -6,3 +6,12 @@
 # insta: pending snapshot reviews
 *.snap.new
 .*.pending-snap
+
+# The web front-end (web/): installed packages and build output. `web/dist/` keeps a
+# `.gitkeep`, so that the Rust program, which embeds the folder, builds without Node.
+/web/node_modules
+/web/dist/*
+!/web/dist/.gitkeep
+/web/storybook-static
+/web/playwright-report
+/web/test-results
