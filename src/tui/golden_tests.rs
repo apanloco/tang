@@ -1925,6 +1925,24 @@ fn left_and_right_step_the_depth_of_a_target_and_a_typed_depth_goes_from_minus_o
 }
 
 #[test]
+fn the_tree_shows_the_depth_of_a_target_as_soon_as_it_is_edited() {
+    // The tree says how deep each target goes (`(4%)`): a lane's modulator and a group's.
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+    h.press(KeyCode::Right);
+    assert!(h.tree().contains(&"╰ ~ LFO 4.0Hz sine → Oscillator: detune (9%)"), "{:#?}", h.tree());
+    enter_value(&mut h, "0.5");
+    assert!(h.tree().contains(&"╰ ~ LFO 4.0Hz sine → Oscillator: detune (50%)"), "{:#?}", h.tree());
+
+    let mut h = Harness::new(scene_group());
+    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 4);
+    h.press(KeyCode::Right);
+    assert!(h.tree().iter().any(|l| l.contains("M0 Oscillator: detune (45%)")), "{:#?}", h.tree());
+    enter_value(&mut h, "0.1");
+    assert!(h.tree().iter().any(|l| l.contains("M0 Oscillator: detune (10%)")), "{:#?}", h.tree());
+}
+
+#[test]
 fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each() {
     let mut h = Harness::new(scene_split());
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);

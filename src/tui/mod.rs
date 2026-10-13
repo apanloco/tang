@@ -1547,6 +1547,7 @@ impl State {
         if let TreeAddress::GroupModulator { group, index } = addr {
             let pa = self.param_state.selected;
             self.adjust_group_modulator_param(group, index, pa, delta);
+            self.rebuild_tree(); // (the tree says how deep each target goes)
             return;
         }
 
@@ -1573,6 +1574,7 @@ impl State {
         if let TreeAddress::Modulator { index, .. } = addr {
             let pa = self.param_state.selected;
             self.adjust_modulator_param(inst, index, pa, delta);
+            self.rebuild_tree(); // (the tree says how deep each target goes)
             return;
         }
 
@@ -1801,6 +1803,7 @@ impl State {
         if let TreeAddress::GroupModulator { group, index } = addr {
             let pa = self.param_state.selected;
             self.set_group_modulator_param_value(group, index, pa, value);
+            self.rebuild_tree(); // (the tree says how deep each target goes)
             return;
         }
 
@@ -1840,6 +1843,7 @@ impl State {
         if let TreeAddress::Modulator { index, .. } = addr {
             let pa = self.param_state.selected;
             self.set_modulator_param_value(inst, index, pa, value);
+            self.rebuild_tree(); // (the tree says how deep each target goes)
             return;
         }
 
