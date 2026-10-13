@@ -6,7 +6,7 @@
 //! nothing, and does not count as a revision.
 
 use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
-use crate::app::graph::{Endpoint, Port};
+use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
@@ -40,6 +40,7 @@ impl Controller {
             Intent::LoadPreset { node, preset } => Done::Event(self.load_preset(node, &preset)?),
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
+            Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
@@ -130,6 +131,28 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::GainSet { node, gain, value })
+    }
+
+    /// The keys of a lane: in the model and, as `SetInstrumentRange`, in the audio thread (which lets go of the notes it
+    /// counted under the old range).
+    fn set_range(&mut self, node: NodeId, range: Option<NoteRange>) -> Result<Event, IntentError> {
+        let NodePath::Instrument(inst) = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
+            return Err(invalid("a key range belongs to a lane"));
+        };
+        if let Some(NoteRange { low, high }) = range {
+            for note in [low, high] {
+                if note > 127 {
+                    return Err(invalid(format!("{note} is not a note: the notes are 0 to 127")));
+                }
+            }
+            if low > high {
+                return Err(invalid(format!("the range goes from {} down to {}: its low note has to be the lower", crate::note_name(low), crate::note_name(high))));
+            }
+        }
+        let range = range.map(|r| (r.low, r.high));
+        self.model.instruments[inst].range = range;
+        let _ = self.cmd_tx.send(GraphCommand::SetInstrumentRange { inst, range });
+        Ok(Event::RangeSet { node, range: range.map(|(low, high)| NoteRange { low, high }) })
     }
 
     fn set_modulator_field(&mut self, node: NodeId, field: ModulatorField, value: f32) -> Result<Event, IntentError> {
@@ -654,6 +677,79 @@ plugin = "builtin:reverb"
         assert_eq!(sent(&engine), Vec::<String>::new());
         assert_eq!((ctl.rev, ctl.dirty), (0, false));
         assert_eq!(ctl.model.instruments[0].volume, 1.0);
+    }
+
+    fn range(ctl: &mut Controller, node: NodeId, low: u8, high: u8) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SetRange { node, range: Some(NoteRange { low, high }) })
+    }
+
+    #[test]
+    fn set_range_sets_a_lanes_key_range_in_the_model_and_the_engine_and_none_is_every_note() {
+        let (engine, mut ctl) = controller();
+        let instrument = lane(&ctl);
+        let applied = range(&mut ctl, instrument, 40, 90).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::RangeSet { node: instrument, range: Some(NoteRange { low: 40, high: 90 }) }]));
+        assert_eq!(ctl.model.instruments[0].range, Some((40, 90)));
+        assert_eq!(sent(&engine), ["SetInstrumentRange inst=0 range=Some((40, 90))"]);
+        assert!(ctl.dirty);
+
+        let applied = ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
+        assert_eq!(applied, Applied::of(2, vec![Event::RangeSet { node: instrument, range: None }]));
+        assert_eq!(ctl.model.instruments[0].range, None);
+        assert_eq!(sent(&engine), ["SetInstrumentRange inst=0 range=None"]);
+    }
+
+    #[test]
+    fn set_range_takes_a_single_note_and_the_whole_keyboard() {
+        let (engine, mut ctl) = controller();
+        let instrument = lane(&ctl);
+        range(&mut ctl, instrument, 60, 60).unwrap();
+        range(&mut ctl, instrument, 0, 127).unwrap();
+        assert_eq!(sent(&engine), ["SetInstrumentRange inst=0 range=Some((60, 60))", "SetInstrumentRange inst=0 range=Some((0, 127))"]);
+        assert_eq!(ctl.model.instruments[0].range, Some((0, 127)));
+    }
+
+    #[test]
+    fn set_range_is_for_a_lane_that_has_no_instrument_too_and_changes_only_the_lane_it_names() {
+        let (engine, mut ctl) = controller();
+        let empty = node(&ctl, NodePath::Instrument(1));
+        range(&mut ctl, empty, 0, 59).unwrap();
+        assert_eq!(sent(&engine), ["SetInstrumentRange inst=1 range=Some((0, 59))"]);
+        assert_eq!((ctl.model.instruments[0].range, ctl.model.instruments[1].range), (None, Some((0, 59))));
+    }
+
+    #[test]
+    fn set_range_refuses_what_is_not_a_range_of_notes_and_what_is_not_a_lane() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let group = node(&ctl, NodePath::Group(0));
+        let lfo = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let ghost = NodeId(9_999);
+        for node in [reverb, bus, group, lfo] {
+            assert_eq!(range(&mut ctl, node, 40, 90), Err(invalid("a key range belongs to a lane")), "{node:?}");
+        }
+        assert_eq!(range(&mut ctl, ghost, 40, 90), Err(IntentError::NotFound(ghost)));
+
+        let instrument = lane(&ctl);
+        assert_eq!(range(&mut ctl, instrument, 90, 40), Err(invalid("the range goes from F#6 down to E2: its low note has to be the lower")));
+        assert_eq!(range(&mut ctl, instrument, 40, 128), Err(invalid("128 is not a note: the notes are 0 to 127")));
+        assert_eq!(range(&mut ctl, instrument, 200, 255), Err(invalid("200 is not a note: the notes are 0 to 127")));
+
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert_eq!(ctl.model.instruments[0].range, None);
+    }
+
+    #[test]
+    fn a_range_that_was_set_is_what_a_session_saves() {
+        let (_engine, mut ctl) = controller();
+        let instrument = lane(&ctl);
+        range(&mut ctl, instrument, 40, 90).unwrap();
+        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model.instruments, &ctl.model.groups).0, &[], None).unwrap();
+        assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
+        ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
+        assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
     }
 
     #[test]

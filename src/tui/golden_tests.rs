@@ -3327,6 +3327,28 @@ mod with_web {
     }
 
     #[test]
+    fn a_range_set_in_a_browser_shows_on_the_lane_in_the_tree() {
+        let mut h = Harness::new("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert!(h.tree().iter().all(|line| !line.contains("C3-B4")), "{:#?}", h.tree());
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let lane = node(&snapshot, "Oscillator")["id"].as_u64().unwrap();
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setRange", "node": lane, "range": {"low": 48, "high": 71}}})).await;
+                let told = said(&mut client).await;
+                assert_eq!((told["type"].clone(), told["event"]["type"].clone()), (json!("event"), json!("rangeSet")), "{told}");
+                assert_eq!(said(&mut client).await["type"], "ack");
+                browser.quit().await;
+            },
+            |h, _| {
+                assert_eq!(h.s.ctl.model.instruments[0].range, Some((48, 71)));
+                assert!(h.tree().iter().any(|line| line.contains("Oscillator") && line.contains("C3-B4")), "the lane's label follows what the browser set: {:#?}", h.tree());
+            },
+        );
+    }
+
+    #[test]
     fn a_preset_loaded_in_a_browser_changes_the_parameters_the_tui_shows() {
         let mut h = Harness::new("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n");
         let before: Vec<f32> = h.s.ctl.model.instruments[0].effects[0].params.iter().map(|p| p.value).collect();

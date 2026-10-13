@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::graph::Endpoint;
+use crate::app::graph::{Endpoint, NoteRange};
 use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
 
 /// What a front-end asks of the controller, naming the node it concerns.
@@ -78,6 +78,12 @@ pub enum Intent {
     /// since the new plugin has parameters of its own, and a note remap goes with the old plugin. Refused, with nothing changed,
     /// for a node that is not a lane, and for what `AddInstrument` refuses.
     ReplaceInstrument { node: NodeId, plugin: String },
+    /// Set the keys a lane plays: `node` is the node of the lane (its instrument's, which an empty lane has too), and
+    /// `range` the notes it takes, both ends included, or `None` for every note. A lane that is given a range
+    /// plays no note outside it (a held note that was counted under the old range is let go). The ends are notes,
+    /// 0 to 127, and the low one is not above the high one. Refused, with nothing changed, for a node that is not
+    /// a lane and for a range that is not a range of notes.
+    SetRange { node: NodeId, range: Option<NoteRange> },
     /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
     /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
     /// effect, with the cables that drive its parameters (and what drove their depths): what they were
@@ -185,6 +191,8 @@ pub enum Event {
     /// A preset is loaded, by name; these are the parameters it set, by the
     /// plugin's own index, with their new values.
     PresetLoaded { node: NodeId, preset: String, values: Vec<ParamValue> },
+    /// A lane now takes the notes of `range`, or every note if it is `None`.
+    RangeSet { node: NodeId, range: Option<NoteRange> },
     /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
@@ -275,7 +283,7 @@ impl std::error::Error for IntentError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::graph::Port;
+    use crate::app::graph::{NoteRange, Port};
     use serde_json::{Value, json};
 
     fn wire<T: serde::Serialize>(value: &T) -> Value {
@@ -318,6 +326,11 @@ mod tests {
             ),
             (Intent::Save, json!({"type": "save"})),
             (
+                Intent::SetRange { node: NodeId(2), range: Some(NoteRange { low: 36, high: 84 }) },
+                json!({"type": "setRange", "node": 2, "range": {"low": 36, "high": 84}}),
+            ),
+            (Intent::SetRange { node: NodeId(2), range: None }, json!({"type": "setRange", "node": 2, "range": null})),
+            (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
             ),
@@ -347,6 +360,11 @@ mod tests {
                     "values": [{"param": 0, "value": 0.5}, {"param": 3, "value": 0.25}],
                 }),
             ),
+            (
+                Event::RangeSet { node: NodeId(2), range: Some(NoteRange { low: 36, high: 84 }) },
+                json!({"type": "rangeSet", "node": 2, "range": {"low": 36, "high": 84}}),
+            ),
+            (Event::RangeSet { node: NodeId(2), range: None }, json!({"type": "rangeSet", "node": 2, "range": null})),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]

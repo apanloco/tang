@@ -531,6 +531,66 @@ async fn a_browser_replaces_the_instrument_of_a_lane_and_what_was_set_on_the_old
     assert!(saved.contains("volume = 0.1"), "and its own volume: {saved}");
 }
 
+#[tokio::test]
+async fn a_browser_sets_the_keys_of_a_lane_and_a_note_outside_them_is_silent_and_one_inside_is_heard_and_the_saved_file_has_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+
+    // Every note is heard to begin with (the tracer's one lane is quiet on purpose: its volume is 0.1).
+    tell(&mut client, json!({"type": "noteOn", "note": 48, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.01).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 48})).await;
+    peak_until(&mut client, &tang, at, Duration::from_secs(15), "the note dying away", |peak| peak < 0.001).await;
+
+    // The browser gives the lane the keys C4 to C5: told as an event, answered by the revision.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setRange", "node": osc, "range": {"low": 60, "high": 72}}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "event").expect("the keys are told as an event");
+    assert_eq!(
+        (told["event"]["type"].clone(), told["event"]["node"].clone(), told["event"]["range"].clone()),
+        (json!("rangeSet"), json!(osc), json!({"low": 60, "high": 72})),
+        "{told}"
+    );
+
+    // A note below them is not played by the lane, and what is below is silent: the meter has nothing a moment after.
+    tell(&mut client, json!({"type": "noteOn", "note": 48, "velocity": 100})).await;
+    let outside = peak_after(&mut client, at, Duration::from_millis(800)).await;
+    assert!(outside < 0.001, "a note outside the keys is silent: {outside}\n{}", tang.log());
+    tell(&mut client, json!({"type": "noteOff", "note": 48})).await;
+    // A note inside them is heard.
+    tell(&mut client, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "a note inside the keys", |peak| peak > 0.01).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 64})).await;
+    peak_until(&mut client, &tang, at, Duration::from_secs(15), "the note dying away", |peak| peak < 0.001).await;
+
+    // What is saved has the keys, as the TUI writes them.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("range = \"C4-C5\""), "{saved}");
+
+    // No range is every note again: the note that was silent is heard, and the file has no range.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "setRange", "node": osc, "range": null}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+    tell(&mut client, json!({"type": "noteOn", "note": 48, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the note that was outside the keys", |peak| peak > 0.01).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 48})).await;
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("range ="), "no keys are every key");
+
+    // A range that is not one is refused in the controller's words, and the lane keeps the keys it had.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "setRange", "node": osc, "range": {"low": 90, "high": 40}}})).await;
+    let refused = answer(&mut client, 5).await;
+    assert_eq!(refused["type"], "rejected", "{refused}");
+    assert_eq!(refused["error"]["message"], "the range goes from F#6 down to E2: its low note has to be the lower", "{refused}");
+}
+
 /// The next value, in a frame of the modulation channel of the layout `rev`, at place `at` of it (frames of another layout, and of other channels, are skipped).
 async fn modulation_value(client: &mut Client, rev: u32, at: usize) -> f32 {
     let deadline = Instant::now() + Duration::from_secs(10);

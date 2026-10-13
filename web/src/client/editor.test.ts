@@ -257,6 +257,42 @@ describe("loading a preset", () => {
   });
 });
 
+describe("setting the keys of a lane", () => {
+  const keys = (client: Client, node: number = oscillator.id) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" ? found.range : "not a lane";
+  };
+
+  test("resolves true when the lane has the keys, which the session shows, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setRange(oscillator.id, { low: 36, high: 84 })).toBe(true);
+    expect(keys(client)).toEqual({ low: 36, high: 84 });
+    expect(await editor.setRange(oscillator.id, null)).toBe(true);
+    expect(keys(client)).toBeNull();
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a range that is not one and for a node that is not a lane: it resolves false, and the page says what it could not do and why, with the keys written as the TUI writes them", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setRange(oscillator.id, { low: 90, high: 40 })).toBe(false);
+    expect(await editor.setRange(filter.id, { low: 0, high: 59 })).toBe(false);
+    expect(await editor.setRange(lfo.id, null)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not set the keys of Oscillator to F#6-E2: the range goes from F#6 down to E2: its low note has to be the lower",
+      "Could not set the keys of Filter to -B3: a key range belongs to a lane",
+      "Could not set the keys of LFO to all keys: a key range belongs to a lane",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setRange(oscillator.id, { low: 60, high: 127 })).toBe(false);
+    expect(said(notices)).toEqual(["Could not set the keys of Oscillator to C4-: Not connected to the server."]);
+  });
+});
+
 describe("showing what was added", () => {
   test("is asked for each node the page added, in the order they were, once the session has it", async () => {
     const { editor, shown } = await open();

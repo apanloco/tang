@@ -4,9 +4,10 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Graph, Intent, ModulatorKind, NodeId } from "../protocol";
+import type { EdgeId, Graph, Intent, ModulatorKind, NodeId, NoteRange } from "../protocol";
 import type { Client } from "./connection";
 import { cableLabel, displayNames } from "./names";
+import { rangeLabel } from "./notes";
 import type { Notices } from "./notices";
 import type { Reveals } from "./reveals";
 
@@ -25,6 +26,7 @@ const DOING: Record<Intent["type"], string> = {
   addEffect: "add an effect",
   addInstrument: "add an instrument",
   replaceInstrument: "change the instrument of a lane",
+  setRange: "set the keys of a lane",
   removeNode: "remove a node",
   save: "save the session",
 };
@@ -100,6 +102,14 @@ export class Editor {
    */
   loadPreset(node: NodeId, preset: string): Promise<boolean> {
     return this.#attempt(`load ${this.#presetName(node, preset)} into ${this.#name(node)}`, { type: "loadPreset", node, preset });
+  }
+
+  /**
+   * Set the keys the lane `node` takes: `range`, both ends included, or null for every note. True if they were set (the page says
+   * why if they were not, with the keys written as the TUI writes them: `C2-C6`).
+   */
+  setRange(node: NodeId, range: NoteRange | null): Promise<boolean> {
+    return this.#attempt(`set the keys of ${this.#name(node)} to ${rangeLabel(range)}`, { type: "setRange", node, range });
   }
 
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */

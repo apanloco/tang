@@ -3,9 +3,10 @@ import type { EdgeId } from "./EdgeId";
 import type { Gain } from "./Gain";
 import type { ModulatorField } from "./ModulatorField";
 import type { NodeId } from "./NodeId";
+import type { NoteRange } from "./NoteRange";
 import type { ParamValue } from "./ParamValue";
 
 /**
  * What happened, in terms a front-end can apply to its own copy of the session.
  */
-export type Event = { "type": "paramSet", node: NodeId, param: number, value: number, } | { "type": "gainSet", node: NodeId, gain: Gain, value: number, } | { "type": "presetLoaded", node: NodeId, preset: string, values: Array<ParamValue>, } | { "type": "modulatorFieldSet", node: NodeId, field: ModulatorField, value: number, } | { "type": "edgeDepthSet", edge: EdgeId, depth: number, } | { "type": "saved", file: string | null, };
+export type Event = { "type": "paramSet", node: NodeId, param: number, value: number, } | { "type": "gainSet", node: NodeId, gain: Gain, value: number, } | { "type": "presetLoaded", node: NodeId, preset: string, values: Array<ParamValue>, } | { "type": "rangeSet", node: NodeId, range: NoteRange | null, } | { "type": "modulatorFieldSet", node: NodeId, field: ModulatorField, value: number, } | { "type": "edgeDepthSet", edge: EdgeId, depth: number, } | { "type": "saved", file: string | null, };

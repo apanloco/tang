@@ -33,6 +33,7 @@ use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
 use crate::app::controller::{Controller, NewTarget};
+use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
@@ -1617,6 +1618,8 @@ impl State {
             match event {
                 // The group header shows the volume.
                 intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
+                // A lane's label shows its keys.
+                intent::Event::RangeSet { .. } => self.rebuild_tree(),
                 // The tree shows a modulator's rate and waveform, and its cables' depths.
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 intent::Event::ParamSet { .. }
@@ -2223,15 +2226,9 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
                     Err(_) => return, // keep popup open on parse error
                 }
             };
-            let _ = s
-                .ctl
-                .cmd_tx
-                .send(GraphCommand::SetInstrumentRange { inst, range });
-            if let Some(node) = s.ctl.model.instruments.get_mut(inst) {
-                node.range = range;
+            if let Some(node) = s.ctl.model.instruments.get(inst).map(|lane| lane.node) {
+                s.apply(Intent::SetRange { node, range: range.map(|(low, high)| NoteRange { low, high }) });
             }
-            s.ctl.dirty = true;
-            s.rebuild_tree();
             s.range_edit = None;
         }
         KeyCode::Backspace => re.input.backspace(),

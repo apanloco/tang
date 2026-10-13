@@ -1451,6 +1451,71 @@ describe("loading a preset", () => {
   });
 });
 
+describe("setting the keys of a lane", () => {
+  const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+  const keys = (client: Client, node: number = oscillator.id) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    if (found?.kind !== "instrument") throw new Error(`node ${String(node)} is not a lane`);
+    return found.range;
+  };
+  const set = (range: { low: number; high: number } | null, node: number = oscillator.id): Intent => ({ type: "setRange", node, range });
+
+  test("is what the controller says it is: the lane has the range, and none is every note", async () => {
+    const client = await open(new MockServer());
+    expect(keys(client)).toBeNull();
+    await client.request(set({ low: 36, high: 84 }));
+    expect(keys(client)).toEqual({ low: 36, high: 84 });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    await client.request(set(null));
+    expect(keys(client)).toBeNull();
+  });
+
+  test("takes a single note, and the whole keyboard", async () => {
+    const client = await open(new MockServer());
+    await client.request(set({ low: 60, high: 60 }));
+    expect(keys(client)).toEqual({ low: 60, high: 60 });
+    await client.request(set({ low: 0, high: 127 }));
+    expect(keys(client)).toEqual({ low: 0, high: 127 });
+  });
+
+  test("is told to the other clients as the event it is", async () => {
+    const server = new MockServer();
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(set({ low: 48, high: 71 }));
+    await until(() => keys(second) !== null, "the second client's copy");
+    expect(keys(second)).toEqual({ low: 48, high: 71 });
+  });
+
+  test("is refused for what is not a lane, and for what is not a range of notes, in the controller's words, and changes nothing", async () => {
+    const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    const lane = reachFixture.snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null)?.id ?? -1;
+    const refused = [
+      [set({ low: 40, high: 90 }, 10), "invalid", "a key range belongs to a lane"], // an effect
+      [set({ low: 40, high: 90 }, 3), "invalid", "a key range belongs to a lane"], // a bus effect
+      [set({ low: 40, high: 90 }, 0), "invalid", "a key range belongs to a lane"], // a group
+      [set({ low: 40, high: 90 }, 15), "invalid", "a key range belongs to a lane"], // a modulator
+      [set({ low: 40, high: 90 }, 424242), "notFound", "there is no node 424242"],
+      [set({ low: 40, high: 90 }, MASTER), "notFound", `there is no node ${String(MASTER)}`],
+      [set({ low: 90, high: 40 }, lane), "invalid", "the range goes from F#6 down to E2: its low note has to be the lower"],
+      [set({ low: 40, high: 128 }, lane), "invalid", "128 is not a note: the notes are 0 to 127"],
+      [set({ low: -1, high: 40 }, lane), "invalid", "-1 is not a note: the notes are 0 to 127"],
+      [set({ low: 40.5, high: 60 }, lane), "invalid", "40.5 is not a note: the notes are 0 to 127"],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(reachFixture.snapshot);
+  });
+
+  test("is for a lane that has no instrument too", async () => {
+    const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    await client.request(set({ low: 0, high: 59 }, 14));
+    expect(keys(client, 14)).toEqual({ low: 0, high: 59 });
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();

@@ -57,6 +57,8 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
       const changed = withValues({ ...plugin, currentPreset: event.preset }, event.values, true);
       return changed ? withPlugin(node, changed) : `the preset names a parameter node ${node.id} does not have`;
     }
+    case "rangeSet":
+      return node.kind === "instrument" ? { ...node, range: event.range } : `node ${node.id} is not a lane`;
     case "modulatorFieldSet":
       return withSetting(node, event.field, event.value);
   }

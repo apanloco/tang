@@ -120,6 +120,12 @@ impl Snapshot {
                 };
                 *target = *value;
             }
+            Event::RangeSet { node, range } => {
+                let NodeKind::Instrument { range: keys, .. } = &mut self.node_mut(*node)?.kind else {
+                    return Err(DoesNotFit(format!("node {} is not a lane", node.0)));
+                };
+                *keys = *range;
+            }
             Event::PresetLoaded { node, preset, values } => {
                 let plugin = self.plugin_mut(*node)?;
                 // All of it or none: look before changing anything.
@@ -211,7 +217,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::app::graph::{EdgeKind, ModulatorSource, Node, NodeKind, Plugin};
+    use crate::app::graph::{EdgeKind, ModulatorSource, Node, NodeKind, NoteRange, Plugin};
     use crate::app::intent::{Applied, Event, Gain, Intent, ModulatorField, ParamValue};
     use crate::app::model::{EdgeId, NodeId};
     use crate::app::testutil::{GROUPS, load, stub_engine};
@@ -461,6 +467,9 @@ type = "envelope"
             Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Release, value: 2.0 },
             Intent::SetEdgeDepth { edge: cables(&told)[0], depth: -0.5 },
             Intent::SetEdgeDepth { edge: cables(&told)[1], depth: 9.0 },
+            Intent::SetRange { node: n.osc, range: Some(NoteRange { low: 36, high: 84 }) },
+            Intent::SetRange { node: n.empty, range: Some(NoteRange { low: 0, high: 59 }) },
+            Intent::SetRange { node: n.osc, range: None },
         ];
         for intent in intents {
             let before = told.clone();
@@ -469,7 +478,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 21);
+        assert_eq!(told.rev, 24);
     }
 
     #[test]

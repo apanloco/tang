@@ -19,6 +19,7 @@ import type {
   ModulatorSource,
   Node,
   NodeId,
+  NoteRange,
   Plugin,
   Port,
   ServerMessage,
@@ -30,6 +31,7 @@ import type {
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
+import { noteName } from "./notes";
 import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
 
@@ -415,6 +417,21 @@ function presetOutcome(snapshot: Snapshot, node: Node, id: string): Outcome {
   return { event: { type: "presetLoaded", node: node.id, preset: preset.name, values } };
 }
 
+/**
+ * The keys of a lane set, as the controller's `set_range` does it: only a lane has them (an empty one too), and they are
+ * notes, whole numbers from 0 to 127, the low one not above the high one; none is every note.
+ */
+function rangeOutcome(node: Node, range: NoteRange | null): Outcome {
+  if (node.kind !== "instrument") return invalid("a key range belongs to a lane");
+  if (range !== null) {
+    for (const note of [range.low, range.high]) {
+      if (!Number.isInteger(note) || note < 0 || note > 127) return invalid(`${String(note)} is not a note: the notes are 0 to 127`);
+    }
+    if (range.low > range.high) return invalid(`the range goes from ${noteName(range.low)} down to ${noteName(range.high)}: its low note has to be the lower`);
+  }
+  return { event: { type: "rangeSet", node: node.id, range } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -456,6 +473,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
     }
     case "loadPreset":
       return presetOutcome(snapshot, node, intent.preset);
+    case "setRange":
+      return rangeOutcome(node, intent.range);
     case "setModulatorField":
       return fieldOutcome(node, intent.field, intent.value);
   }
