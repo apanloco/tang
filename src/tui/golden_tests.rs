@@ -2175,3 +2175,30 @@ fn escape_and_a_filter_with_no_match_load_nothing() {
     assert!(!h.s.ctl.dirty);
     assert_eq!(h.s.ctl.model.instruments[0].effects[0].current_preset.as_deref(), Some("Vintage Plate"));
 }
+
+#[test]
+fn groups_without_a_name_are_called_group_and_their_number() {
+    // Three groups, none named: each place that names a group counts from one by
+    // the group's own position.
+    let mut h = Harness::new(
+        "[[group]]\n[[group]]\n[[group]]\n\
+         [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n\
+         [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 1\n\
+         [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 2\n",
+    );
+    let headers: Vec<&str> = h.tree().into_iter().filter(|l| l.starts_with('▦')).collect();
+    assert_eq!(headers, ["▦ Group 1", "▦ Group 2", "▦ Group 3"], "the tree");
+
+    // The parameter pane is titled by the group under the cursor.
+    h.goto(TreeAddress::Group(2));
+    let screen = h.dump();
+    assert!(screen.lines().any(|l| l.contains("┐┌ Group 3 ")), "the parameter pane's title: {screen}");
+
+    // The group popup lists them all, and marks the one the lane is in.
+    h.goto(TreeAddress::Instrument(1));
+    h.press(KeyCode::Char('g'));
+    let screen = h.dump();
+    for name in ["Group 1", "Group 2 (current)", "Group 3"] {
+        assert!(screen.contains(name), "the group popup lacks {name}: {screen}");
+    }
+}

@@ -381,6 +381,14 @@ pub struct GroupNode {
     pub meter: Option<MeterSlots>,
 }
 
+impl GroupNode {
+    /// What the group is called: its name, or "Group N" counting from one by its
+    /// position `index` among the session's groups.
+    pub fn display_name(&self, index: usize) -> String {
+        self.name.clone().unwrap_or_else(|| format!("Group {}", index + 1))
+    }
+}
+
 #[derive(Debug)]
 pub enum ModSourceSlot {
     Lfo {
@@ -905,6 +913,16 @@ mod tests {
         let mut model = SessionModel::default();
         let first = model.alloc_node();
         assert_ne!(model.alloc_node(), first);
+    }
+
+    #[test]
+    fn a_group_is_called_by_its_name_or_else_by_its_number_counting_from_one() {
+        let mut model = load("[[group]]\nname = \"Pad\"\n[[group]]\n[[group]]\nname = \"\"\n").model;
+        let names: Vec<String> = model.groups.iter().enumerate().map(|(g, group)| group.display_name(g)).collect();
+        assert_eq!(names, ["Pad", "Group 2", ""], "an empty name is a name, the loader never makes one");
+        model.groups[0].name = None;
+        assert_eq!(model.groups[0].display_name(0), "Group 1");
+        assert_eq!(model.groups[0].display_name(6), "Group 7", "it is the index it is asked about");
     }
 
     #[test]

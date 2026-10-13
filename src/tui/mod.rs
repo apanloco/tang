@@ -1336,7 +1336,7 @@ impl State {
             items.push(FilterListItem { cells: vec!["Ungroup".into()], index: 1 });
         }
         for (g_idx, group) in self.ctl.model.groups.iter().enumerate() {
-            let name = group.name.clone().unwrap_or_else(|| format!("Group {}", g_idx + 1));
+            let name = group.display_name(g_idx);
             let marker = if current == Some(g_idx) { " (current)" } else { "" };
             let idx = choices.len();
             choices.push(GroupAssignChoice::Existing(g_idx));
@@ -3932,10 +3932,7 @@ fn render_session(
                             kind: ParamKind::Float,
                             ..Default::default()
                         });
-                        let name = g
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| format!("Group {}", group + 1));
+                        let name = g.display_name(*group);
                         (name, mod_params.as_slice())
                     }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
@@ -4737,7 +4734,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
     // Groups first: a header, the member instruments nested under it, then the
     // group's bus effects.
     for (g_idx, group) in groups.iter().enumerate() {
-        let name = group.name.clone().unwrap_or_else(|| format!("Group {}", g_idx + 1));
+        let name = group.display_name(g_idx);
         let vol = if (group.volume - 1.0).abs() > f32::EPSILON {
             format!("  vol {:.2}", group.volume)
         } else {
