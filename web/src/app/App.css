@@ -1,0 +1,53 @@
+.tang-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.tang-app__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-4);
+  padding: var(--tang-space-2) var(--tang-space-4);
+  background: var(--tang-surface);
+  border-bottom: 1px solid var(--tang-border);
+}
+
+.tang-app__title {
+  margin: 0;
+  font-size: var(--tang-text-size);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tang-root);
+}
+
+.tang-app__engine {
+  margin-left: auto;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-app__main {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--tang-space-4);
+}
+
+.tang-app__problem {
+  max-width: 48em;
+  padding: var(--tang-space-3) var(--tang-space-4);
+  border: 1px solid var(--tang-danger);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+}
+
+.tang-session {
+  margin: 0;
+  padding: var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+  font: var(--tang-text-small) / 1.45 var(--tang-mono);
+  white-space: pre-wrap;
+}

@@ -1,0 +1,17 @@
+/* The page itself: the tokens' background and type, and nothing else. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--tang-bg);
+  color: var(--tang-text);
+  font: var(--tang-text-size) / 1.5 var(--tang-font);
+}
+
+* {
+  box-sizing: border-box;
+}

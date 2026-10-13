@@ -1,0 +1,42 @@
+/* The design tokens of the interface (docs/web-ui.md §9.1): colours, type and space as CSS
+   variables, so that every component draws from one place. The palette that means
+   something is the TUI's, so that the same thing has the same colour in both. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces and text */
+  --tang-bg: #14151a;
+  --tang-surface: #1c1e25;
+  --tang-surface-raised: #262933;
+  --tang-border: #353946;
+  --tang-text: #e6e7ea;
+  --tang-text-muted: #9a9fad;
+
+  /* What the colours mean (the Piano tab's, and the Session tab's tree) */
+  --tang-held: rgb(200 40 50); /* a key that is down */
+  --tang-root: rgb(240 185 70); /* the root of the scale */
+  --tang-scale: rgb(110 195 215); /* a note of the scale */
+  --tang-modulation: #d070d0; /* modulators and what they drive */
+  --tang-group: #4cc9d8; /* groups and their buses */
+  --tang-instrument: #e6c84c;
+  --tang-effect: #5fc86f;
+
+  /* State */
+  --tang-ok: #5fc86f;
+  --tang-warn: #e6c84c;
+  --tang-danger: #ff5a64;
+
+  /* Type */
+  --tang-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --tang-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --tang-text-size: 14px;
+  --tang-text-small: 12px;
+
+  /* Space and shape */
+  --tang-space-1: 4px;
+  --tang-space-2: 8px;
+  --tang-space-3: 12px;
+  --tang-space-4: 16px;
+  --tang-space-5: 24px;
+  --tang-radius: 6px;
+}
