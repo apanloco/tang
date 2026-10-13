@@ -75,6 +75,21 @@ describe("the patch", () => {
     expect(modulation[0]?.style.strokeWidth).toBe(String(cableWidth(0.4)));
   });
 
+  test("draws a cable as thick as it is deep as it is turned, without laying the canvas out again", async () => {
+    const { view, server } = await rig(<PatchView />);
+    const width = () => view.container.querySelector<SVGPathElement>(".tang-cable--modulation")?.style.strokeWidth;
+    await waitFor(() => {
+      expect(width()).toBe(String(cableWidth(0.4)));
+    });
+    act(() => {
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: -1 });
+    });
+    await waitFor(() => {
+      expect(width()).toBe(String(cableWidth(-1)));
+    });
+    expect(cableWidth(-1)).not.toBe(cableWidth(0.4));
+  });
+
   test("marks the port of the control that a cable ends at, and no other", async () => {
     await rig(<PatchView />);
     const fil = await nodeOf(filter.id);

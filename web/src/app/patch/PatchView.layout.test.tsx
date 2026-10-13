@@ -16,6 +16,7 @@ vi.mock("./toFlow", async (importOriginal) => {
 afterEach(cleanup);
 
 const filter = nodeNamed(tracerSnapshot, "Filter");
+const lfo = nodeNamed(tracerSnapshot, "LFO");
 
 describe("laying out the canvas", () => {
   test("is done once for a session, and not again for the values that change in it", async () => {
@@ -26,9 +27,13 @@ describe("laying out the canvas", () => {
     act(() => {
       for (let step = 1; step <= 5; step += 1) server.apply({ type: "setParam", node: filter.id, param: 0, value: step / 10 });
       server.apply({ type: "setGain", node: filter.id, gain: "mix", value: 0.5 });
+      // A modulator's settings and a cable's depth are turned at the pace of the frames, like a knob.
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 7 });
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "waveform", value: 3 });
+      for (let step = 1; step <= 5; step += 1) server.apply({ type: "setEdgeDepth", edge: 0, depth: step / 10 });
     });
     await waitFor(() => {
-      expect(client.state.snapshot?.rev).toBe(rev + 6);
+      expect(client.state.snapshot?.rev).toBe(rev + 13);
     });
     expect(vi.mocked(flow.toFlow).mock.calls.length).toBe(made);
   });

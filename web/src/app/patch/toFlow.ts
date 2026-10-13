@@ -6,7 +6,7 @@
 // for now; the ones a user chooses are kept in the session in a later step (§4.4).
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
-import type { Graph, Node, NodeId, Plugin, Port } from "../../protocol";
+import type { Edge, EdgeId, Graph, Node, NodeId, Plugin, Port } from "../../protocol";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
 export const NODE_WIDTH = 304;
@@ -47,8 +47,13 @@ export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
 export type PatchEdgeKind = "audio" | "modulation";
 
 export interface PatchEdgeData extends Record<string, unknown> {
-  /** The depth of a modulation cable, -1 to 1. */
-  amount?: number;
+  /**
+   * The id of a modulation cable, by which the cable reads how deep it goes (a value, which is
+   * turned at the pace of the frames, and so not part of what the canvas is laid out by).
+   */
+  cable?: EdgeId;
+  /** What the cable is, in words: `LFO → Filter: cutoff`. */
+  label?: string;
 }
 
 export type PatchEdge = FlowEdge<PatchEdgeData, PatchEdgeKind>;
@@ -249,7 +254,7 @@ export function toFlow(graph: Graph): Flow {
     if (sourceHandle === null || targetHandle === null) continue;
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle, targetHandle, deletable: false };
     if (edge.kind === "modulation") {
-      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { amount: edge.amount }, zIndex: 10 });
+      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, label: describeCable(graph, edge) }, zIndex: 10 });
     } else {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
@@ -257,10 +262,25 @@ export function toFlow(graph: Graph): Flow {
   return { nodes, edges };
 }
 
+/** What a modulation cable joins, in words: the modulator, then the plugin it drives and the parameter. */
+function describeCable(graph: Graph, edge: Edge): string {
+  const nameOf = (id: NodeId): Node | undefined => graph.nodes.find((node) => node.id === id);
+  const source = nameOf(edge.from.node)?.name ?? "?";
+  const target = nameOf(edge.to.node);
+  const plugin = target?.kind === "instrument" || target?.kind === "effect" ? target.plugin : null;
+  const index = edge.to.port.type === "param" ? edge.to.port.index : null;
+  const param = plugin?.params.find((candidate) => candidate.index === index)?.name;
+  return `${source} → ${target?.name ?? "?"}${param ? `: ${param}` : ""}`;
+}
+
+/** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */
+const cableStructure = (edge: Edge): string => JSON.stringify(edge.kind === "modulation" ? { ...edge, amount: 0 } : edge);
+
 /**
  * Whether two graphs are laid out the same: the same nodes, in the same places in the
  * tree, with the same names, the same plugins' parameters, and the same cables. What is
- * not part of it is what the values in them are, which change all the time.
+ * not part of it is what the values in them are, which change all the time: a parameter's,
+ * a gain, a modulator's rate or stages, the depth of a cable.
  */
 export function sameStructure(a: Graph, b: Graph): boolean {
   if (a === b) return true;
@@ -274,7 +294,7 @@ export function sameStructure(a: Graph, b: Graph): boolean {
   for (let i = 0; i < a.edges.length; i += 1) {
     const x = a.edges[i];
     const y = b.edges[i];
-    if (!x || !y || JSON.stringify(x) !== JSON.stringify(y)) return false;
+    if (!x || !y || cableStructure(x) !== cableStructure(y)) return false;
   }
   return true;
 }

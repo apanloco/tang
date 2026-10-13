@@ -452,7 +452,7 @@ describe("the cables on the canvas", () => {
     expect(into && [into.type, into.sourceHandle, into.targetHandle]).toEqual(["audio", "audioOut", "audioIn"]);
   });
 
-  test("carry modulation from a modulator's output to the control it drives, with its depth", () => {
+  test("carry modulation from a modulator's output to the control it drives, as the cable that it is", () => {
     const flow = toFlow(tracerSnapshot.graph);
     const modulation = flow.edges.filter((edge) => edge.type === "modulation");
     expect(modulation).toHaveLength(1);
@@ -461,7 +461,8 @@ describe("the cables on the canvas", () => {
     expect(edge?.sourceHandle).toBe("modOut");
     expect(edge?.target).toBe("1");
     expect(edge?.targetHandle).toBe("param-0");
-    expect(edge?.data?.amount).toBeCloseTo(0.4, 6);
+    // (How deep it goes is a value, which the cable reads for itself: it is not in what the canvas is laid out by.)
+    expect(edge?.data).toEqual({ cable: 0, label: "LFO → Filter: cutoff" });
     expect(edge?.id).toBe("mod:0");
     // Over the nodes it passes by, rather than behind them.
     expect(edge?.zIndex ?? 0).toBeGreaterThan(0);
@@ -518,6 +519,21 @@ describe("whether two graphs are laid out the same", () => {
     }
     expect(sameStructure(base, changed)).toBe(true);
     expect(sameStructure(changed, base)).toBe(true);
+  });
+
+  test("they are when only a modulator's settings or a cable's depth differ: those are turned at the pace of the frames", () => {
+    const turned = structuredClone(base);
+    for (const edge of turned.edges) if (edge.kind === "modulation") edge.amount = -0.9;
+    expect(sameStructure(base, turned)).toBe(true);
+    expect(sameStructure(turned, base)).toBe(true);
+    const faster = structuredClone(base);
+    for (const node of faster.nodes) if (node.kind === "modulator" && node.source.type === "lfo") Object.assign(node.source, { rate: 12, waveform: "square" });
+    expect(sameStructure(base, faster)).toBe(true);
+    const staged = structuredClone(base);
+    const envelope: Node = { id: 60, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 } };
+    const withEnvelope: Graph = { nodes: [...staged.nodes, envelope], edges: staged.edges };
+    const slower: Graph = { nodes: [...staged.nodes, { ...envelope, source: { type: "envelope", attack: 5, decay: 6, sustain: 0.9, release: 7 } }], edges: staged.edges };
+    expect(sameStructure(withEnvelope, slower)).toBe(true);
   });
 
   test("they are when only an unrelated part of an unchanged node is a new object", () => {
@@ -583,14 +599,20 @@ describe("whether two graphs are laid out the same", () => {
     expect(sameStructure(base, other)).toBe(false);
   });
 
-  test("they are not when a cable is added, removed, retargeted or changes its depth", () => {
+  test("they are not when a cable is added, removed or retargeted", () => {
     expect(sameStructure(base, { nodes: base.nodes, edges: base.edges.slice(1) })).toBe(false);
     expect(sameStructure(base, { nodes: base.nodes, edges: [...base.edges, cable(9, 2, 1, 1)] })).toBe(false);
     const retargeted = structuredClone(base);
     for (const edge of retargeted.edges) if (edge.kind === "modulation") edge.to.port = { type: "param", index: 1 };
     expect(sameStructure(base, retargeted)).toBe(false);
-    const deeper = structuredClone(base);
-    for (const edge of deeper.edges) if (edge.kind === "modulation") edge.amount = 0.9;
-    expect(sameStructure(base, deeper)).toBe(false);
+    // The audio is cabled as it is too: an effect that is fed by another is not the same as one that is not.
+    const rerouted = structuredClone(base);
+    const audio = rerouted.edges.find((edge) => edge.kind === "audio");
+    if (audio) audio.to.node = 99;
+    expect(sameStructure(base, rerouted)).toBe(false);
+    // (Nor when one cable is another, though it is as deep: its id is what it is.)
+    const renumbered = structuredClone(base);
+    for (const edge of renumbered.edges) if (edge.kind === "modulation") edge.id = 8;
+    expect(sameStructure(base, renumbered)).toBe(false);
   });
 });
