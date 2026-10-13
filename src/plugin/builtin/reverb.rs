@@ -31,19 +31,21 @@ struct ParamSpec {
     min: f32,
     max: f32,
     default: f32,
+    unit: Option<&'static str>,
+    group: Option<&'static str>,
 }
 
 const PARAMS: &[ParamSpec] = &[
-    ParamSpec { name: "decay",     min: 0.1,  max: 0.99,             default: 0.88 },
-    ParamSpec { name: "size",      min: 0.3,  max: 1.0,              default: 0.85 },
-    ParamSpec { name: "damping",   min: 0.0,  max: 1.0,              default: 0.35 },
-    ParamSpec { name: "predelay",  min: 0.0,  max: MAX_PREDELAY_SEC, default: 0.04 },
-    ParamSpec { name: "diffusion", min: 0.0,  max: 0.85,             default: 0.70 },
-    ParamSpec { name: "mod_rate",  min: 0.05, max: 2.0,              default: 0.30 },
-    ParamSpec { name: "mod_depth", min: 0.0,  max: 1.0,              default: 0.50 },
-    ParamSpec { name: "width",     min: 0.0,  max: 1.0,              default: 1.00 },
-    ParamSpec { name: "lowcut",    min: 20.0, max: 500.0,            default: 80.0 },
-    ParamSpec { name: "level",     min: 0.0,  max: 2.0,              default: 1.00 },
+    ParamSpec { name: "decay",     min: 0.1,  max: 0.99,             default: 0.88, unit: None, group: None },
+    ParamSpec { name: "size",      min: 0.3,  max: 1.0,              default: 0.85, unit: None, group: None },
+    ParamSpec { name: "damping",   min: 0.0,  max: 1.0,              default: 0.35, unit: None, group: None },
+    ParamSpec { name: "predelay",  min: 0.0,  max: MAX_PREDELAY_SEC, default: 0.04, unit: Some("s"), group: None },
+    ParamSpec { name: "diffusion", min: 0.0,  max: 0.85,             default: 0.70, unit: None, group: None },
+    ParamSpec { name: "mod_rate",  min: 0.05, max: 2.0,              default: 0.30, unit: Some("Hz"), group: Some("Modulation") },
+    ParamSpec { name: "mod_depth", min: 0.0,  max: 1.0,              default: 0.50, unit: None, group: Some("Modulation") },
+    ParamSpec { name: "width",     min: 0.0,  max: 1.0,              default: 1.00, unit: None, group: None },
+    ParamSpec { name: "lowcut",    min: 20.0, max: 500.0,            default: 80.0, unit: Some("Hz"), group: None },
+    ParamSpec { name: "level",     min: 0.0,  max: 2.0,              default: 1.00, unit: None, group: None },
 ];
 
 pub const PRESETS: &[(&str, &str, [f32; 10])] = &[
@@ -357,6 +359,8 @@ impl Plugin for Reverb {
                 min: p.min,
                 max: p.max,
                 default: p.default,
+                unit: p.unit.map(String::from),
+                group: p.group.map(String::from).into_iter().collect(),
                 ..Default::default()
             })
             .collect()

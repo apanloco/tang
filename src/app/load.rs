@@ -143,6 +143,9 @@ fn plugin_slot(
             max: p.max,
             default: baseline,
             value,
+            unit: p.unit.clone(),
+            group: p.group.clone(),
+            step_count: p.step_count,
         })
         .collect();
     PluginSlot {
@@ -1018,6 +1021,7 @@ mod tests {
             max: 10.0,
             default: 5.0,
             labels: labels.map(|l| l.into_iter().map(String::from).collect()),
+            ..Default::default()
         };
         let params = Params {
             all: vec![
@@ -1047,6 +1051,27 @@ mod tests {
         assert!(matches!(&slot.params[1].kind, ParamKind::Enum(l) if l == &["low", "high"]));
         // The loader still resolves modulator targets against the full list.
         assert_eq!(params.all.len(), 3);
+    }
+
+    #[test]
+    fn a_slot_keeps_each_parameters_unit_section_and_steps() {
+        let info = |index: u32, name: &str, unit: Option<&str>, group: &[&str], step_count: u32| plugin::ParameterInfo {
+            index,
+            name: name.to_string(),
+            max: 10.0,
+            unit: unit.map(String::from),
+            group: group.iter().map(|g| g.to_string()).collect(),
+            step_count,
+            ..Default::default()
+        };
+        let params = Params {
+            all: vec![info(0, "gain", Some("dB"), &["Output", "Master"], 0), info(1, "steps", None, &[], 5)],
+            baselines: vec![0.0, 0.0],
+            values: vec![0.0, 0.0],
+        };
+        let slot = plugin_slot(NodeId(1), "P".to_string(), "builtin:osc".to_string(), false, &params, vec![], None, 1.0);
+        let rows: Vec<_> = slot.params.iter().map(|p| (p.unit.as_deref(), p.group.clone(), p.step_count)).collect();
+        assert_eq!(rows, [(Some("dB"), vec!["Output".to_string(), "Master".to_string()], 0), (None, vec![], 5)]);
     }
 
     #[test]

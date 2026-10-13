@@ -329,6 +329,8 @@ impl Plugin for Filter {
                 max: (TYPE_NAMES.len() - 1) as f32,
                 default: 0.0,
                 labels: Some(TYPE_NAMES.iter().map(|s| s.to_string()).collect()),
+                step_count: (TYPE_NAMES.len() - 1) as u32,
+                ..Default::default()
             },
             ParameterInfo {
                 index: 3,

@@ -261,14 +261,15 @@ pub struct PluginSlot {
     pub mix: f32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum ParamKind {
+    #[default]
     Float,
     Enum(Vec<String>),
     Separator,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ParamSlot {
     pub name: String,
     pub index: u32,
@@ -277,6 +278,17 @@ pub struct ParamSlot {
     pub default: f32,
     pub value: f32,
     pub kind: ParamKind,
+    /// What the value is measured in, for showing it (`ParameterInfo::unit`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    pub unit: Option<String>,
+    /// The sections the plugin files the parameter under, outermost first
+    /// (`ParameterInfo::group`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    pub group: Vec<String>,
+    /// How many steps there are between `min` and `max`; 0 for a continuous
+    /// parameter (`ParameterInfo::step_count`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the graph sent to clients reads it in step 8"))]
+    pub step_count: u32,
 }
 
 // ---------------------------------------------------------------------------

@@ -3716,6 +3716,7 @@ fn render_session(
                                     default: 0.0,
                                     value: 0.0,
                                     kind: ParamKind::Enum(type_names),
+                                    ..Default::default()
                                 });
                                 mod_params.push(ParamSlot {
                                     name: "Waveform".to_string(),
@@ -3727,6 +3728,7 @@ fn render_session(
                                     kind: ParamKind::Enum(
                                         LfoWaveform::ALL.iter().map(|w| w.name().to_string()).collect(),
                                     ),
+                                    ..Default::default()
                                 });
                                 mod_params.push(ParamSlot {
                                     name: "Rate (Hz)".to_string(),
@@ -3736,6 +3738,7 @@ fn render_session(
                                     default: 1.0,
                                     value: *rate,
                                     kind: ParamKind::Float,
+                                    ..Default::default()
                                 });
                                 (name, 0)
                             }
@@ -3749,6 +3752,7 @@ fn render_session(
                                     default: 0.0,
                                     value: 1.0,
                                     kind: ParamKind::Enum(type_names),
+                                    ..Default::default()
                                 });
                                 mod_params.push(ParamSlot {
                                     name: "Attack (s)".to_string(),
@@ -3758,6 +3762,7 @@ fn render_session(
                                     default: 0.01,
                                     value: *attack,
                                     kind: ParamKind::Float,
+                                    ..Default::default()
                                 });
                                 mod_params.push(ParamSlot {
                                     name: "Decay (s)".to_string(),
@@ -3767,6 +3772,7 @@ fn render_session(
                                     default: 0.3,
                                     value: *decay,
                                     kind: ParamKind::Float,
+                                    ..Default::default()
                                 });
                                 mod_params.push(ParamSlot {
                                     name: "Sustain".to_string(),
@@ -3776,6 +3782,7 @@ fn render_session(
                                     default: 0.7,
                                     value: *sustain,
                                     kind: ParamKind::Float,
+                                    ..Default::default()
                                 });
                                 mod_params.push(ParamSlot {
                                     name: "Release (s)".to_string(),
@@ -3785,6 +3792,7 @@ fn render_session(
                                     default: 0.5,
                                     value: *release,
                                     kind: ParamKind::Float,
+                                    ..Default::default()
                                 });
                                 (name, 1)
                             }
@@ -3798,6 +3806,7 @@ fn render_session(
                                     default: 0.0,
                                     value: 0.0,
                                     kind: ParamKind::Separator,
+                                    ..Default::default()
                                 });
                                 ("MIDI".to_string(), 2)
                             }
@@ -3817,6 +3826,7 @@ fn render_session(
                             default: 0.0,
                             value: 0.0,
                             kind: ParamKind::Separator,
+                            ..Default::default()
                         });
                         for (i, t) in m.targets.iter().enumerate() {
                             mod_params.push(ParamSlot {
@@ -3827,6 +3837,7 @@ fn render_session(
                                 default: 0.5,
                                 value: t.depth,
                                 kind: ParamKind::Float,
+                                ..Default::default()
                             });
                         }
                         (name, mod_params.as_slice())
@@ -3847,6 +3858,7 @@ fn render_session(
                             default: 4.0,
                             value: p.length_beats,
                             kind: ParamKind::Float,
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "Enabled".to_string(),
@@ -3856,6 +3868,7 @@ fn render_session(
                             default: 1.0,
                             value: if p.enabled { 1.0 } else { 0.0 },
                             kind: ParamKind::Enum(vec!["Off".to_string(), "On".to_string()]),
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "Loop".to_string(),
@@ -3865,6 +3878,7 @@ fn render_session(
                             default: 1.0,
                             value: if p.looping { 1.0 } else { 0.0 },
                             kind: ParamKind::Enum(vec!["Off".to_string(), "On".to_string()]),
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "Transpose".to_string(),
@@ -3874,6 +3888,7 @@ fn render_session(
                             default: 0.0,
                             value: if p.in_key { 1.0 } else { 0.0 },
                             kind: ParamKind::Enum(vec!["Chromatic".to_string(), "In Key".to_string()]),
+                            ..Default::default()
                         });
                         if !p.events.is_empty() {
                             let notes = p.events.iter().filter(|e| e.1 == 0x90).count();
@@ -3885,6 +3900,7 @@ fn render_session(
                                 default: 0.0,
                                 value: notes as f32,
                                 kind: ParamKind::Separator,
+                                ..Default::default()
                             });
                         }
                         ("Pattern".to_string(), mod_params.as_slice())
@@ -3904,6 +3920,7 @@ fn render_session(
                             default: 1.0,
                             value: g.volume,
                             kind: ParamKind::Float,
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "pan".to_string(),
@@ -3913,6 +3930,7 @@ fn render_session(
                             default: 0.0,
                             value: g.pan,
                             kind: ParamKind::Float,
+                            ..Default::default()
                         });
                         let name = g
                             .name

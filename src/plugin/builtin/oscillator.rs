@@ -295,6 +295,8 @@ impl Plugin for Oscillator {
                 max: (WAVEFORMS.len() - 1) as f32,
                 default: 0.0,
                 labels: Some(WAVEFORMS.iter().map(|s| s.to_string()).collect()),
+                step_count: (WAVEFORMS.len() - 1) as u32,
+                ..Default::default()
             },
             ParameterInfo {
                 index: 1,
@@ -302,6 +304,7 @@ impl Plugin for Oscillator {
                 min: DETUNE_MIN,
                 max: DETUNE_MAX,
                 default: 0.0,
+                unit: Some("st".into()),
                 ..Default::default()
             },
             ParameterInfo {
@@ -318,6 +321,8 @@ impl Plugin for Oscillator {
                 min: 0.0,
                 max: ADSR_TIME_MAX,
                 default: DEFAULT_ATTACK_SEC,
+                unit: Some("s".into()),
+                group: vec!["Envelope".into()],
                 ..Default::default()
             },
             ParameterInfo {
@@ -326,6 +331,8 @@ impl Plugin for Oscillator {
                 min: 0.0,
                 max: ADSR_TIME_MAX,
                 default: DEFAULT_DECAY_SEC,
+                unit: Some("s".into()),
+                group: vec!["Envelope".into()],
                 ..Default::default()
             },
             ParameterInfo {
@@ -334,6 +341,7 @@ impl Plugin for Oscillator {
                 min: 0.0,
                 max: 1.0,
                 default: DEFAULT_SUSTAIN,
+                group: vec!["Envelope".into()],
                 ..Default::default()
             },
             ParameterInfo {
@@ -342,6 +350,8 @@ impl Plugin for Oscillator {
                 min: 0.0,
                 max: ADSR_TIME_MAX,
                 default: DEFAULT_RELEASE_SEC,
+                unit: Some("s".into()),
+                group: vec!["Envelope".into()],
                 ..Default::default()
             },
             ParameterInfo {

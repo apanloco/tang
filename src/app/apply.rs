@@ -550,6 +550,7 @@ plugin = "builtin:reverb"
             default: value,
             value,
             kind: ParamKind::Float,
+            ..Default::default()
         };
         // A plugin with hidden parameters numbers the rows it shows 5, 9 and 12;
         // it also reports a hidden 7, and nothing for 12.

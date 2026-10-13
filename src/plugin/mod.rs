@@ -19,6 +19,16 @@ pub struct ParameterInfo {
     /// 0, max len-1), and the UI shows names and steps by 1 instead of
     /// rendering a continuous bar.
     pub labels: Option<Vec<String>>,
+    /// What the value is measured in (`"Hz"`, `"s"`, `"st"`, ...), for showing it.
+    /// `None` for a plain number, or when the plugin does not say.
+    pub unit: Option<String>,
+    /// The sections the plugin files the parameter under, outermost first
+    /// (`["Envelope"]`); empty for one at the top level. A client lays a big
+    /// plugin's parameters out by it.
+    pub group: Vec<String>,
+    /// How many steps there are between `min` and `max`: 0 for a continuous
+    /// parameter, 3 for one with four values (an enum with four labels).
+    pub step_count: u32,
 }
 
 #[derive(Debug, Clone)]

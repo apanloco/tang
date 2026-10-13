@@ -93,6 +93,82 @@ mod tests {
         }
     }
 
+    /// What each parameter of a built-in says about itself besides its range:
+    /// `(name, unit, group, step count)`.
+    fn metadata(id: &str) -> Vec<(String, Option<String>, Vec<String>, u32)> {
+        let plugin = load(id, 48000.0, 512).unwrap();
+        plugin.parameters().into_iter().map(|p| (p.name, p.unit, p.group, p.step_count)).collect()
+    }
+
+    /// The expected `(name, unit, group, step count)` of a parameter.
+    fn row(name: &str, unit: Option<&str>, group: &[&str], step_count: u32) -> (String, Option<String>, Vec<String>, u32) {
+        (name.to_string(), unit.map(String::from), group.iter().map(|g| g.to_string()).collect(), step_count)
+    }
+
+    #[test]
+    fn the_oscillators_parameters_say_their_unit_their_section_and_their_steps() {
+        assert_eq!(
+            metadata("builtin:osc"),
+            [
+                row("waveform", None, &[], 3),
+                row("detune", Some("st"), &[], 0),
+                row("volume", None, &[], 0),
+                row("attack", Some("s"), &["Envelope"], 0),
+                row("decay", Some("s"), &["Envelope"], 0),
+                row("sustain", None, &["Envelope"], 0),
+                row("release", Some("s"), &["Envelope"], 0),
+                row("pan", None, &[], 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_filters_parameters_say_their_steps() {
+        // The cutoff is a position on an exponential scale, not a frequency: no unit.
+        assert_eq!(
+            metadata("builtin:filter"),
+            [row("cutoff", None, &[], 0), row("resonance", None, &[], 0), row("type", None, &[], 6), row("drive", None, &[], 0)]
+        );
+    }
+
+    #[test]
+    fn the_reverbs_parameters_say_their_unit_and_their_section() {
+        assert_eq!(
+            metadata("builtin:reverb"),
+            [
+                row("decay", None, &[], 0),
+                row("size", None, &[], 0),
+                row("damping", None, &[], 0),
+                row("predelay", Some("s"), &[], 0),
+                row("diffusion", None, &[], 0),
+                row("mod_rate", Some("Hz"), &["Modulation"], 0),
+                row("mod_depth", None, &["Modulation"], 0),
+                row("width", None, &[], 0),
+                row("lowcut", Some("Hz"), &[], 0),
+                row("level", None, &[], 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_parameter_with_value_labels_has_a_step_for_each_gap_between_them() {
+        for info in enumerate_plugins() {
+            let plugin = load(&info.id, 48000.0, 512).unwrap();
+            for p in plugin.parameters() {
+                let what = format!("{}: {}", info.id, p.name);
+                match &p.labels {
+                    Some(labels) => {
+                        assert_eq!(p.step_count as usize, labels.len() - 1, "{what}");
+                        assert_eq!((p.min, p.max), (0.0, p.step_count as f32), "{what}");
+                    }
+                    None => assert_eq!(p.step_count, 0, "{what}: continuous"),
+                }
+                assert_ne!(p.unit.as_deref(), Some(""), "{what}: no unit is None, not an empty string");
+                assert!(p.group.iter().all(|g| !g.is_empty()), "{what}: a section has a name");
+            }
+        }
+    }
+
     #[test]
     fn enumerate_lists_one_oscillator() {
         let plugins = enumerate_plugins();
