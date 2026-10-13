@@ -28,11 +28,14 @@ export interface Rig {
 /**
  * Render `ui` below a provider, over a mock engine that makes telemetry on request (every
  * 5 ms, at the time `rig.time.seconds` says), and wait until the client has the session.
+ * A connection the test drops stays down: the client would otherwise be back in a quarter of
+ * a second, and a test that is slow to get to what it does with the lost connection (a busy
+ * machine, a canvas that takes long to draw) would find it up again.
  */
 export async function rig(ui: ReactNode, options: MockOptions = {}): Promise<Rig> {
   const time = { seconds: 0 };
   const server = new MockServer({ telemetryPeriod: 5, clock: () => time.seconds, ...options });
-  const client = new Client({ transport: server.transport, telemetry: ["meters", "modulation"] });
+  const client = new Client({ transport: server.transport, telemetry: ["meters", "modulation"], reconnectDelay: () => 60_000 });
   const clock = new Clock();
   const frames = new FrameLoop(clock);
   const view = render(
