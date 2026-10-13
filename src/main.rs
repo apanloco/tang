@@ -478,7 +478,9 @@ fn run_session(
 
     // --- Branch: TUI view, a server for a browser, or plain play mode ---
     let ctl = if use_tui {
-        tui::run(ctl)?
+        // (`tang --web` comes with the command line for it: the terminal interface is
+        // not asked to serve the session yet.)
+        tui::run(ctl, None)?
     } else if serving {
         #[cfg(feature = "web")]
         if let Mode::Serve(args) = &mode {

@@ -4,6 +4,7 @@ mod golden_tests;
 mod piano_view;
 pub mod splash;
 mod terminal_input;
+mod web;
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -24,6 +25,7 @@ use ratatui::Terminal;
 use crossbeam_channel::Receiver;
 use terminal_input::TerminalReader;
 use view::DIM;
+use web::{Web, WebStatus};
 use view::filter_list::{FilterListItem, FilterListState};
 use view::list::{ListItem, ListSpan, ListState};
 use view::scroll_view::ScrollLine;
@@ -31,6 +33,7 @@ use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
 use crate::app::controller::{Controller, NewTarget};
+use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId,
@@ -367,6 +370,8 @@ struct State {
     ctl: Controller,
     /// The CLIP light of the status bar, fed by the master meter.
     clip: clip::ClipLight,
+    /// The web interface this TUI serves, if it does (`tang --web`).
+    web: Option<WebStatus>,
     active_tab: usize,
     tree_entries: Vec<TreeEntry>,
     chain_state: ListState,
@@ -411,12 +416,13 @@ impl State {
             .and_then(|n| n.instrument.as_ref())
             .map_or(0, |p| p.params.len());
 
-        let help_lines = build_help_lines();
+        let help_lines = build_help_lines(None);
         let clip = clip::ClipLight::new(ctl.telemetry.count(telemetry::MASTER.clips));
 
         State {
             ctl,
             clip,
+            web: None,
             active_tab: 0,
             chain_state: ListState::new(tree_entries.len()),
             param_state: ListState::new(param_len),
@@ -446,6 +452,13 @@ impl State {
             piano_view_octave: 4,
             scale_selector: None,
         }
+    }
+
+    /// The web interface is up: say so in the tab bar and on the Help tab. (After this
+    /// only the number of browsers changes, in `self.web`.)
+    fn set_web(&mut self, web: WebStatus) {
+        self.help_lines = build_help_lines(Some(&web));
+        self.web = Some(web);
     }
 
     fn rebuild_tree(&mut self) {
@@ -2093,7 +2106,7 @@ impl State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
+pub fn run(mut ctl: Controller, web: Option<&WebArgs>) -> anyhow::Result<Controller> {
     // Suppress Rust logging for the whole TUI lifetime when stderr is the
     // terminal: the background catalog scan and plugin loads log verbosely and
     // would corrupt the alternate screen. Must be set BEFORE the scan spawns,
@@ -2116,6 +2129,14 @@ pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
         None
     };
 
+    // Serve the session to browsers too, if asked to. A server that cannot start (the
+    // port is taken) is an error before the terminal is taken over; the address is
+    // printed on stdout, where a script can find it (the TUI shows it as well).
+    let mut web = web.map(|args| Web::start(&mut ctl, args)).transpose()?;
+    if let Some(web) = &web {
+        println!("Web interface: {}", web.status().url);
+    }
+
     // Scan the plugin catalog on a background thread so the TUI can draw
     // immediately — a full scan instantiates every installed plugin and can
     // take seconds. Results arrive per format and are folded in by
@@ -2123,6 +2144,9 @@ pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
     ctl.catalog.scan();
 
     let mut s = State::new(ctl);
+    if let Some(web) = &web {
+        s.set_web(web.status());
+    }
 
     // Probe keyboard enhancement support (must be done before entering raw mode).
     let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
@@ -2145,7 +2169,7 @@ pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
 
     // (Rust logging was already suppressed at the top of this function, before
     // the background scan spawned; it's restored below at teardown.)
-    let result = TerminalReader::start().and_then(|reader| event_loop(&mut terminal, &mut s, reader.events()));
+    let result = TerminalReader::start().and_then(|reader| event_loop(&mut terminal, &mut s, reader.events(), web.as_mut()));
 
     log::set_max_level(prev_log_level);
 
@@ -2160,7 +2184,8 @@ pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
     crossterm::terminal::disable_raw_mode()?;
 
     // The controller goes back to the caller, which shuts it down once the audio
-    // stream has stopped.
+    // stream has stopped. (The web server, if there is one, stops when this function
+    // returns, and the browsers are told: before the controller is shut down.)
     result.map(|()| s.ctl).map_err(Into::into)
 }
 
@@ -2189,26 +2214,38 @@ fn tick_at(s: &mut State, now: Instant) {
 const TICK: Duration = Duration::from_millis(100);
 
 /// Run the interface until the user quits: draw, then wait for `input` (the terminal's
-/// events, from a `TerminalReader`) or the tick, handle what came, and draw again.
-/// The events that are waiting when the loop wakes are all handled before the next
-/// frame.
+/// events, from a `TerminalReader`), the requests of the browsers if the session is
+/// served (`web`), or the tick; handle what came, and draw again. The events that are
+/// waiting when the loop wakes are all handled before the next frame.
+///
+/// The browsers and the terminal act on the one controller from here, one thing at a
+/// time. What a browser changes is reacted to like what the TUI itself changed, and
+/// what the TUI changes other than by intents is found by `resync` when it has handled
+/// its input and told to the browsers.
 fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     s: &mut State,
     input: &Receiver<io::Result<Event>>,
+    mut web: Option<&mut Web>,
 ) -> io::Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
     let ticks = crossbeam_channel::tick(TICK);
+    let mut web_requests = web.as_deref().map(Web::requests);
     loop {
         tick(s);
+        if let Some(web) = web.as_deref_mut() {
+            web.refresh(&s.ctl);
+            s.web = Some(web.status());
+        }
 
         render(terminal, s)?;
         if s.quit {
             break;
         }
 
+        let requests = web_requests.clone().unwrap_or_else(crossbeam_channel::never);
         crossbeam_channel::select! {
             recv(input) -> event => {
                 let Ok(event) = event else {
@@ -2218,7 +2255,17 @@ where
                 while let Ok(event) = input.try_recv() {
                     process_event(s, event?);
                 }
+                web::resync(&mut s.ctl);
             }
+            recv(requests) -> request => match (request, web.as_deref_mut()) {
+                (Ok(request), Some(web)) => {
+                    for applied in web.serve(&mut s.ctl, request) {
+                        s.react_to(&applied.events);
+                    }
+                }
+                // The server is gone: there is nothing more to wait for from it.
+                _ => web_requests = None,
+            },
             recv(ticks) -> _ => {}
         }
     }
@@ -3527,10 +3574,16 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
     frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
 
-    // The right side of the tab bar: the CLIP light while it is lit, then the BPM.
+    // The right side of the tab bar: the web interface when there is one, the CLIP
+    // light while it is lit, then the BPM. The web label gives way first: it is
+    // shortened, or left out, to keep clear of the tabs.
     let bpm_text = format!("{:.0} BPM", s.ctl.global_bpm);
     let clip_text = if s.clip.is_lit() { "CLIP  " } else { "" };
-    let status_width = (clip_text.len() + bpm_text.len()) as u16;
+    let tabs_width = tab_names.iter().map(|name| name.chars().count()).sum::<usize>() + 3 * (tab_names.len() - 1);
+    // (The tabs, a gap of two, the label, two blanks after it, the rest, and a blank at the edge.)
+    let room = (tab_area.width as usize).saturating_sub(tabs_width + 2 + 2 + clip_text.len() + bpm_text.len() + 1);
+    let web_text = s.web.as_ref().and_then(|web| web.label(room)).map(|label| format!("{label}  ")).unwrap_or_default();
+    let status_width = (web_text.len() + clip_text.len() + bpm_text.len()) as u16;
     if tab_area.width > status_width + 2 {
         let status_area = Rect {
             x: tab_area.right() - status_width - 1,
@@ -3541,6 +3594,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
         let clip_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         frame.render_widget(
             Paragraph::new(ratatui::text::Line::from(vec![
+                ratatui::text::Span::raw(web_text),
                 ratatui::text::Span::styled(clip_text, clip_style),
                 ratatui::text::Span::raw(bpm_text),
             ]))
@@ -4886,10 +4940,21 @@ fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Optio
     None
 }
 
-fn build_help_lines() -> Vec<String> {
-    vec![
+fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
+    let mut lines = vec![
         "Tang — Terminal Audio Plugin Host".into(),
         "".into(),
+    ];
+    if let Some(web) = web {
+        lines.extend([
+            "Web interface (--web):".into(),
+            format!("  {}", web.url),
+            "  Open it in a browser: what is changed there shows here, and what is".into(),
+            "  changed here shows there.".into(),
+            "".into(),
+        ]);
+    }
+    lines.extend(vec![
         "Global keybindings:".into(),
         "  1 2 3 4    Switch to tab by number".into(),
         "  Tab        Next tab".into(),
@@ -4945,7 +5010,8 @@ fn build_help_lines() -> Vec<String> {
         "  Click      Select items, tabs, actions".into(),
         "  Drag       Adjust parameter bars".into(),
         "  Scroll     Navigate lists".into(),
-    ]
+    ]);
+    lines
 }
 
 #[cfg(test)]

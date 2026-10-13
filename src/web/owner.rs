@@ -58,7 +58,6 @@ impl Owner {
     }
 
     /// How many clients are connected.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the TUI shows it, from the commit that has it serve the web interface"))]
     pub fn clients(&self) -> usize {
         self.hub.client_count()
     }

@@ -184,7 +184,6 @@ impl Server {
 
     /// Where the server listens (the port is the one the system chose, if it was asked
     /// for 0).
-    #[cfg(test)]
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
@@ -199,14 +198,22 @@ impl Server {
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
+impl Server {
+    /// Stop serving: the connections are told, and the thread is joined. Does nothing
+    /// the second time.
+    pub fn stop(&mut self) {
         self.stop.send_replace(true);
         if let Some(thread) = self.thread.take() {
             if thread.join().is_err() {
                 log::warn!("The web server's thread panicked");
             }
         }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

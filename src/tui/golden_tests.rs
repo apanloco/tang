@@ -2223,7 +2223,7 @@ fn the_loop_handles_what_the_terminal_sends_in_order_draws_it_and_stops_on_quit(
     tx.send(terminal_key(KeyCode::Down, KeyModifiers::NONE)).unwrap();
     tx.send(terminal_quit()).unwrap();
 
-    event_loop(&mut h.terminal, &mut h.s, &rx).unwrap();
+    event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap();
 
     assert!(h.s.quit);
     assert_eq!(h.s.chain_state.selected, 2, "both keys were handled");
@@ -2243,7 +2243,7 @@ fn the_loop_wakes_by_itself_to_fold_in_what_the_audio_thread_reports() {
         tx.send(terminal_quit()).unwrap();
     });
 
-    event_loop(&mut h.terminal, &mut h.s, &rx).unwrap();
+    event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap();
     quitter.join().unwrap();
 
     assert!(h.s.ctl.model.instruments[0].pattern.is_some(), "the recording was folded in");
@@ -2258,7 +2258,7 @@ fn a_loop_whose_terminal_has_gone_ends_with_an_error() {
     let mut h = Harness::new(scene_split());
     let (tx, rx) = unbounded::<io::Result<Event>>();
     drop(tx);
-    let error = event_loop(&mut h.terminal, &mut h.s, &rx).unwrap_err();
+    let error = event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap_err();
     assert!(error.to_string().contains("terminal"), "{error}");
 }
 
@@ -2268,7 +2268,7 @@ fn a_failure_of_the_terminal_ends_the_loop_with_it() {
     let (tx, rx) = unbounded();
     tx.send(Err(io::Error::new(io::ErrorKind::BrokenPipe, "the terminal went"))).unwrap();
     tx.send(terminal_quit()).unwrap();
-    let error = event_loop(&mut h.terminal, &mut h.s, &rx).unwrap_err();
+    let error = event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap_err();
     assert_eq!((error.kind(), error.to_string().as_str()), (io::ErrorKind::BrokenPipe, "the terminal went"));
 }
 
@@ -2280,7 +2280,7 @@ fn a_failure_that_comes_behind_other_events_is_not_lost() {
     tx.send(Err(io::Error::new(io::ErrorKind::BrokenPipe, "the terminal went"))).unwrap();
     // (A quit after it, so that a loop that carries on ends the test instead of hanging it.)
     tx.send(terminal_quit()).unwrap();
-    let error = event_loop(&mut h.terminal, &mut h.s, &rx).unwrap_err();
+    let error = event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     assert_eq!(h.s.chain_state.selected, 1, "what came before it was handled");
     assert!(!h.s.quit, "and what came after it was not");
@@ -2296,11 +2296,345 @@ fn the_events_that_are_waiting_are_all_handled_before_the_next_frame_is_drawn() 
     }
     tx.send(terminal_quit()).unwrap();
 
-    event_loop(&mut h.terminal, &mut h.s, &rx).unwrap();
+    event_loop(&mut h.terminal, &mut h.s, &rx, None).unwrap();
 
     // (The cursor wraps round the end of the tree.)
     assert_eq!(h.s.chain_state.selected, 40 % h.s.tree_entries.len(), "every key was handled");
     // (One frame before the keys and one after them; a few more if the machine stalled long enough for the tick to come.)
     let frames = h.terminal.get_frame().count();
     assert!(frames <= 4, "{frames} frames for 41 events");
+}
+
+// ---------------------------------------------------------------------------
+// The web interface in the TUI
+// ---------------------------------------------------------------------------
+
+fn web_status(address: &str, clients: usize) -> WebStatus {
+    WebStatus { address: address.parse().unwrap(), url: format!("http://{address}/#token=abc"), clients }
+}
+
+/// The first row of the screen: the tab bar, and the status at its right. (The dump
+/// starts with the size of the screen and a heading.)
+fn tab_bar(h: &mut Harness) -> String {
+    h.dump().lines().nth(2).unwrap().to_string()
+}
+
+#[test]
+fn the_tab_bar_says_where_the_web_interface_is_and_how_many_browsers_are_on_it() {
+    let mut h = Harness::new(scene_split());
+    assert!(!tab_bar(&mut h).contains("web"), "not unless it is served");
+    assert!(tab_bar(&mut h).ends_with("120 BPM"));
+
+    h.s.web = Some(web_status("127.0.0.1:8765", 0));
+    let bar = tab_bar(&mut h);
+    assert!(bar.ends_with("web 127.0.0.1:8765  120 BPM"), "{bar}");
+    h.s.web.as_mut().unwrap().clients = 2;
+    let bar = tab_bar(&mut h);
+    assert!(bar.ends_with("web 127.0.0.1:8765 (2)  120 BPM"), "{bar}");
+}
+
+#[test]
+fn the_web_label_comes_before_the_clip_light() {
+    let mut h = Harness::new(scene_split());
+    h.s.web = Some(web_status("127.0.0.1:8765", 1));
+    h.s.clip = clip::ClipLight::new(0);
+    h.s.clip.update(1, Instant::now());
+    assert!(h.s.clip.is_lit());
+    let bar = tab_bar(&mut h);
+    assert!(bar.ends_with("web 127.0.0.1:8765 (1)  CLIP  120 BPM"), "{bar}");
+}
+
+#[test]
+fn the_web_label_gives_way_before_the_tabs_the_clip_light_and_the_tempo_do() {
+    let mut h = Harness::new(scene_split());
+    h.s.web = Some(web_status("127.0.0.1:8765", 3));
+    let tabs = "(1) Session │ (2) Piano │ (3) Scope │ (4) Help";
+    for lit in [false, true] {
+        h.s.clip = clip::ClipLight::new(0);
+        if lit {
+            h.s.clip.update(1, Instant::now());
+        }
+        assert_eq!(h.s.clip.is_lit(), lit);
+        let tail = if lit { "CLIP  120 BPM" } else { "120 BPM" };
+        let mut shown = Vec::new();
+        for width in 60..=130u16 {
+            h.terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
+            let bar = tab_bar(&mut h);
+            let context = format!("{width} columns, clip light {}: {bar}", if lit { "on" } else { "off" });
+            assert!(bar.starts_with(tabs), "the tabs are whole: {context}");
+            assert!(bar.ends_with(tail), "the clip light and the tempo are there: {context}");
+            shown.push(if bar.contains("web 127.0.0.1:8765 (3)") {
+                "full"
+            } else if bar.contains("web (3)") {
+                "short"
+            } else {
+                assert!(!bar.contains("web"), "{context}");
+                "none"
+            });
+            if shown.last() != Some(&"none") {
+                assert!(bar.starts_with(&format!("{tabs}  ")), "two blanks between the tabs and the label: {context}");
+                assert!(bar.ends_with(&format!("  {tail}")), "and two between the label and the rest: {context}");
+            }
+        }
+        // The narrower the terminal, the less of it: all, the short one, none; each in one stretch of widths.
+        let mut order = shown.clone();
+        order.dedup();
+        assert_eq!(order, ["none", "short", "full"], "clip light {lit}: {shown:?}");
+    }
+}
+
+#[test]
+fn the_help_tab_says_where_the_web_interface_is_when_there_is_one() {
+    let mut h = Harness::new(scene_split());
+    assert!(!h.s.help_lines.iter().any(|l| l.to_lowercase().contains("web")), "not unless it is served");
+
+    h.s.set_web(web_status("127.0.0.1:8765", 0));
+    assert!(h.s.help_lines.iter().any(|l| l.contains("http://127.0.0.1:8765/#token=abc")), "{:?}", h.s.help_lines);
+    h.press(KeyCode::Char('4'));
+    let screen = h.dump();
+    assert!(screen.contains("Web interface"), "{screen}");
+    assert!(screen.contains("http://127.0.0.1:8765/#token=abc"), "the address to open, with the token if it has one: {screen}");
+}
+
+#[cfg(feature = "web")]
+mod with_web {
+    //! The TUI loop and a browser on one controller.
+
+    use std::future::Future;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use crossbeam_channel::Sender;
+    use serde_json::{Value, json};
+    use tokio::sync::oneshot;
+
+    use super::*;
+    use crate::cli::WebArgs;
+    use crate::tui::web::Web;
+    use crate::web::testclient::{self, said, tell};
+
+    const TRACER: &str = include_str!("../../examples/tracer.toml");
+
+    fn key(code: KeyCode) -> io::Result<Event> {
+        terminal_key(code, KeyModifiers::NONE)
+    }
+
+    fn start(h: &mut Harness) -> Web {
+        Web::start(&mut h.s.ctl, &WebArgs { web_bind: "127.0.0.1:0".parse().unwrap(), web_origins: vec![] }).expect("the web interface starts")
+    }
+
+    /// What a browser's side of a test gets: where to connect, the terminal (to press
+    /// keys in the TUI as a user would: they go to the loop as the terminal's events),
+    /// and a signal that comes when the test has looked at the TUI and the browser may
+    /// go.
+    struct Browser {
+        addr: SocketAddr,
+        keys: Sender<io::Result<Event>>,
+        done: oneshot::Receiver<()>,
+    }
+
+    impl Browser {
+        /// Connect, subscribe, and take the snapshot.
+        async fn join(&self) -> (testclient::Client, Value) {
+            let mut client = testclient::connect(self.addr).await;
+            assert_eq!(said(&mut client).await["type"], "hello");
+            tell(&mut client, json!({"type": "subscribe"})).await;
+            let snapshot = said(&mut client).await;
+            assert_eq!(snapshot["type"], "snapshot");
+            (client, snapshot)
+        }
+
+        /// End the loop, and keep the connection open until the test is done with the screen.
+        async fn quit(self) {
+            self.keys.send(terminal_quit()).unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(10), self.done).await;
+        }
+    }
+
+    /// Run the loop of `h` with the web interface up, and `script` as a browser on its
+    /// own thread. The loop ends when the script quits (or fails, which is reported
+    /// when `after` has had its look at the screen).
+    fn run<F, Fut>(h: &mut Harness, script: F, after: impl FnOnce(&mut Harness, &Web))
+    where
+        F: FnOnce(Browser) -> Fut + Send + 'static,
+        Fut: Future<Output = ()>,
+    {
+        let mut web = start(h);
+        let addr = web.status().address;
+        let (tx, rx) = unbounded();
+        let (done_tx, done) = oneshot::channel();
+        let keys = tx.clone();
+        let browser = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let quit = keys.clone();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(script(Browser { addr, keys, done }))));
+            // A browser that failed ends the loop too, rather than leave the test waiting for a quit.
+            let _ = quit.send(terminal_quit());
+            if let Err(panic) = result {
+                std::panic::resume_unwind(panic);
+            }
+        });
+
+        let looped = event_loop(&mut h.terminal, &mut h.s, &rx, Some(&mut web));
+        // (The browser's side is still connected: it waits for this.)
+        after(h, &web);
+        let _ = done_tx.send(());
+        browser.join().expect("the browser's side passed");
+        looped.unwrap();
+    }
+
+    fn node<'a>(snapshot: &'a Value, name: &str) -> &'a Value {
+        snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("no node {name}"))
+    }
+
+    #[test]
+    fn both_front_ends_share_one_controller() {
+        let mut h = Harness::new(TRACER);
+        // The TUI's cursor is on the filter.
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let (filter, cutoff) = (node(&snapshot, "Filter")["id"].as_u64().unwrap(), node(&snapshot, "Filter")["plugin"]["params"][0]["index"].as_u64().unwrap());
+                assert_eq!(snapshot["snapshot"]["rev"], 0);
+
+                // The browser turns the cutoff up; the TUI is looking at the filter.
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setParam", "node": filter, "param": cutoff, "value": 0.9}})).await;
+                assert_eq!(said(&mut client).await["event"], json!({"rev": 1, "type": "paramSet", "node": filter, "param": cutoff, "value": 0.9}));
+                assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
+
+                // The TUI turns it down a step (Enter takes the parameters' pane; the cutoff is the first). The
+                // step starts from where the browser left it, and the browser hears it.
+                browser.keys.send(key(KeyCode::Enter)).unwrap();
+                browser.keys.send(key(KeyCode::Left)).unwrap();
+                let event = said(&mut client).await;
+                assert_eq!(event["type"], "event", "{event}");
+                let (rev, value) = (event["event"]["rev"].as_u64().unwrap(), event["event"]["value"].as_f64().unwrap());
+                assert_eq!((event["event"]["type"].clone(), event["event"]["node"].clone(), rev), (json!("paramSet"), json!(filter), 2));
+                assert!(value < 0.9 && value > 0.8, "a step down from what the browser set, not from what the TUI had: {value}");
+
+                // A browser that comes now is told where the session is, though no snapshot has been sent since:
+                // the loop keeps it current (every 100 ms or so).
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                let mut late = testclient::connect(browser.addr).await;
+                assert_eq!(said(&mut late).await["rev"], 2, "hello");
+                drop(late);
+
+                // The TUI sets the tempo with `b`, which no intent does: the browser is given a snapshot.
+                browser.keys.send(key(KeyCode::Esc)).unwrap();
+                browser.keys.send(key(KeyCode::Char('b'))).unwrap();
+                // (The popup starts with 120, which goes.)
+                for _ in 0..3 {
+                    browser.keys.send(key(KeyCode::Backspace)).unwrap();
+                }
+                for c in ['9', '0'] {
+                    browser.keys.send(key(KeyCode::Char(c))).unwrap();
+                }
+                browser.keys.send(key(KeyCode::Enter)).unwrap();
+                let told = said(&mut client).await;
+                assert_eq!(told["type"], "snapshot", "{told}");
+                assert_eq!((told["snapshot"]["rev"].clone(), told["snapshot"]["meta"]["bpm"].clone()), (json!(3), json!(90.0)));
+                assert_eq!(told["snapshot"]["meta"]["dirty"], true);
+                let seen = told["snapshot"]["graph"]["nodes"].as_array().unwrap().len();
+
+                // And adds a lane with `n` (and leaves the oscillator it comes with).
+                browser.keys.send(key(KeyCode::Char('n'))).unwrap();
+                browser.keys.send(key(KeyCode::Esc)).unwrap();
+                let told = said(&mut client).await;
+                assert_eq!(told["type"], "snapshot", "{told}");
+                assert_eq!(told["snapshot"]["rev"], 4);
+                assert_eq!(told["snapshot"]["graph"]["nodes"].as_array().unwrap().len(), seen + 1, "a lane");
+                // (What was told before is in it: the cutoff the TUI set.)
+                assert_eq!(node(&told, "Filter")["plugin"]["params"][0]["value"].as_f64().unwrap(), value);
+
+                browser.quit().await;
+            },
+            |h, web| {
+                // What the browser set and the TUI changed after it, in the model and so on the screen.
+                let cutoff = h.s.ctl.model.instruments[0].effects[0].params[0].value;
+                assert!(cutoff < 0.9 && cutoff > 0.8, "{cutoff}");
+                assert_eq!(h.s.ctl.global_bpm, 90.0);
+                assert_eq!(h.s.ctl.model.instruments.len(), 2, "the lane");
+                assert_eq!(h.s.ctl.rev, 4, "an intent from the browser, one from the TUI, and a snapshot for each of the TUI's other two changes");
+                let bar = tab_bar(h);
+                assert!(bar.contains(&format!("web {} (1)", web.status().address)), "the browser is counted: {bar}");
+            },
+        );
+    }
+
+    #[test]
+    fn a_group_volume_set_in_a_browser_shows_in_the_trees_group_header() {
+        let mut h = Harness::new(scene_group());
+        assert!(h.tree().contains(&"▦ Pad  vol 0.80"), "{:#?}", h.tree());
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let group = node(&snapshot, "Pad")["id"].as_u64().unwrap();
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setGain", "node": group, "gain": "groupVolume", "value": 2.5}})).await;
+                assert_eq!(said(&mut client).await["type"], "event");
+                assert_eq!(said(&mut client).await["type"], "ack");
+                browser.quit().await;
+            },
+            |h, _| {
+                assert_eq!(h.s.ctl.model.groups[0].volume, 2.5);
+                assert!(h.tree().contains(&"▦ Pad  vol 2.50"), "the header follows what the browser set: {:#?}", h.tree());
+            },
+        );
+    }
+
+    #[test]
+    fn a_preset_loaded_in_a_browser_changes_the_parameters_the_tui_shows() {
+        let mut h = Harness::new("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n");
+        let before: Vec<f32> = h.s.ctl.model.instruments[0].effects[0].params.iter().map(|p| p.value).collect();
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let reverb = node(&snapshot, "Reverb")["id"].as_u64().unwrap();
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "loadPreset", "node": reverb, "preset": "cathedral"}})).await;
+                let event = said(&mut client).await;
+                assert_eq!(event["event"]["type"], "presetLoaded");
+                assert_eq!(said(&mut client).await["type"], "ack");
+                browser.quit().await;
+            },
+            |h, _| {
+                let slot = &h.s.ctl.model.instruments[0].effects[0];
+                assert_eq!(slot.current_preset.as_deref(), Some("Cathedral"));
+                let after: Vec<f32> = slot.params.iter().map(|p| p.value).collect();
+                assert_ne!(before, after, "the preset's values are in what the TUI shows");
+            },
+        );
+    }
+
+    #[test]
+    fn a_server_that_has_stopped_does_not_make_the_loop_spin() {
+        let mut h = Harness::new(TRACER);
+        let mut web = start(&mut h);
+        // Nothing can send a request any more, and the loop is told so by the channel.
+        web.stop_server();
+        let (tx, rx) = unbounded();
+        let quitter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            tx.send(terminal_quit()).unwrap();
+        });
+        event_loop(&mut h.terminal, &mut h.s, &rx, Some(&mut web)).unwrap();
+        quitter.join().unwrap();
+        let frames = h.terminal.get_frame().count();
+        assert!(frames < 40, "{frames} frames in half a second: the loop spins on a channel that has nothing more to give");
+    }
+
+    #[test]
+    fn the_web_interface_that_is_up_is_in_the_tab_bar_from_the_first_frame() {
+        let mut h = Harness::new(TRACER);
+        let mut web = start(&mut h);
+        let (tx, rx) = unbounded();
+        tx.send(terminal_quit()).unwrap();
+        event_loop(&mut h.terminal, &mut h.s, &rx, Some(&mut web)).unwrap();
+        let bar = tab_bar(&mut h);
+        assert!(bar.contains(&format!("web {}", web.status().address)), "{bar}");
+        assert!(!bar.contains("web 127.0.0.1:0"), "the address it listens on, not the one it was asked for: {bar}");
+    }
 }

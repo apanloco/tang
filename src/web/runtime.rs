@@ -15,8 +15,10 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 
 use crate::app::controller::Controller;
+use crate::app::intent::Applied;
 use crate::web::Shared;
 use crate::web::assets::Embedded;
+use crate::web::connection::OwnerRequest;
 use crate::web::hub::Hub;
 use crate::web::owner::Owner;
 use crate::web::server::{Config, Parts, Server};
@@ -57,7 +59,6 @@ impl Runtime {
     }
 
     /// Where the server listens.
-    #[cfg(test)]
     pub fn addr(&self) -> std::net::SocketAddr {
         self.server.addr()
     }
@@ -67,10 +68,35 @@ impl Runtime {
         self.server.url()
     }
 
+    /// Stop the server, as if its thread had died: nothing can send a request any more.
+    #[cfg(test)]
+    pub fn stop_server(&mut self) {
+        self.server.stop();
+    }
+
     /// How many browsers are connected.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the TUI shows it, from the commit that has it serve the web interface"))]
     pub fn clients(&self) -> usize {
         self.owner.clients()
+    }
+
+    /// The requests the browsers make, for a loop that waits for them along with other
+    /// things (a clone of the receiver can be selected on).
+    pub fn requests(&self) -> Receiver<OwnerRequest> {
+        self.owner.requests().clone()
+    }
+
+    /// Answer `request`, and the ones that are waiting behind it; the intents that were
+    /// applied, for the loop to react to.
+    pub fn serve(&mut self, ctl: &mut Controller, request: OwnerRequest) -> Vec<Applied> {
+        let mut applied: Vec<Applied> = self.owner.handle(ctl, request).into_iter().collect();
+        self.owner.serve_with(ctl, |intent| applied.push(intent));
+        applied
+    }
+
+    /// Keep what the connections read current: call it on every turn of a loop that is
+    /// not the headless one.
+    pub fn refresh(&mut self, ctl: &Controller) {
+        self.owner.refresh(ctl);
     }
 
     /// The loop of a headless server: answer requests as they come, and every tick poll

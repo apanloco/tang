@@ -30,7 +30,7 @@ pub mod runtime;
 pub mod security;
 pub mod server;
 #[cfg(test)]
-mod testclient;
+pub(crate) mod testclient;
 
 /// What the owner of the controller shares with every connection and the telemetry
 /// pusher: things they only read.
@@ -58,7 +58,7 @@ impl Shared {
 /// The server's configuration for an address to listen on. Beyond this machine anyone who
 /// can reach the port could drive the session, and loading a plugin loads native code, so
 /// there it comes with a token that was made for this run.
-fn config_for(bind: SocketAddr, origins: &[String]) -> Config {
+pub(crate) fn config_for(bind: SocketAddr, origins: &[String]) -> Config {
     let mut config = Config::new(bind);
     config.extra_origins = origins.to_vec();
     if !bind.ip().is_loopback() {
