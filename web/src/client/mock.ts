@@ -19,6 +19,7 @@ import type {
   Node,
   NodeId,
   Plugin,
+  Port,
   ServerMessage,
   Snapshot,
   StampedEvent,
@@ -90,40 +91,39 @@ function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome 
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
 }
 
-/** The parameter a port is, if it is one. */
-function paramIndexOf(port: Edge["to"]["port"]): number | null {
-  return port.type === "param" ? port.index : null;
-}
+const isModulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } => e.kind === "modulation";
+
+/** A parameter of a node as one key, if the port is one. */
+const paramKey = (node: NodeId, port: Port): string | null => (port.type === "param" ? `${String(node)}:${String(port.index)}` : null);
 
 /**
  * A cable taken out of the session, and with it the cables that drive the depth of one that goes (and
- * theirs in turn). The slots the cables published their parameters' values in go from the layout.
+ * theirs in turn). The slot of the value a cable drove goes from the layout of the telemetry unless another
+ * cable still drives it: the layout names one slot for a parameter, whichever cables are left.
  */
 function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
   const cables = snapshot.graph.edges;
-  const modulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } => e.kind === "modulation";
-  if (!cables.some((e) => modulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
+  if (!cables.some((e) => isModulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
   const going = new Set<EdgeId>([edge]);
   for (let grown = true; grown; ) {
     grown = false;
     for (const e of cables) {
-      if (modulation(e) && !going.has(e.id) && e.to.port.type === "depth" && going.has(e.to.port.edge)) {
+      if (isModulation(e) && !going.has(e.id) && e.to.port.type === "depth" && going.has(e.to.port.edge)) {
         going.add(e.id);
         grown = true;
       }
     }
   }
-  const gone = cables.filter((e) => modulation(e) && going.has(e.id));
-  const modulationSlots = [...snapshot.telemetry.modulation];
-  for (const cable of gone) {
-    const index = paramIndexOf(cable.to.port);
-    if (index === null) continue;
-    const at = modulationSlots.findIndex((entry) => entry.kind === "effective" && entry.node === cable.to.node && paramIndexOf(entry.port) === index);
-    if (at >= 0) modulationSlots.splice(at, 1);
-  }
+  const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)));
+  const aimedBefore = new Set(cables.map((e) => paramKey(e.to.node, e.to.port)));
+  const aimedAfter = new Set(edges.map((e) => paramKey(e.to.node, e.to.port)));
+  const orphaned = (entry: LayoutEntry): boolean => {
+    const key = paramKey(entry.node, entry.port);
+    return entry.kind === "effective" && aimedBefore.has(key) && !aimedAfter.has(key);
+  };
+  const modulationSlots = snapshot.telemetry.modulation.filter((entry) => !orphaned(entry));
   const changed = modulationSlots.length !== snapshot.telemetry.modulation.length;
   const telemetry = changed ? { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation: modulationSlots } : snapshot.telemetry;
-  const edges = cables.filter((e) => !gone.includes(e));
   return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges }, telemetry } };
 }
 

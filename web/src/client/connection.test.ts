@@ -48,6 +48,32 @@ function valueOf(client: Client, node: typeof filter, param: number): number | u
   return found.plugin?.params.find((p) => p.index === param)?.value;
 }
 
+/** The tracer with two more modulators: one drives the depth of the cutoff's cable, the other the depth of that. */
+function withCablesThatDriveCables(): Snapshot {
+  const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
+  const drives = (from: number, edge: number, id: number) =>
+    ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: from === 5 ? 2 : 5, port: { type: "depth", edge } } }) as const;
+  return {
+    ...tracerSnapshot,
+    graph: {
+      nodes: [...tracerSnapshot.graph.nodes, modulator(5, "LFO"), modulator(6, "LFO")],
+      edges: [...tracerSnapshot.graph.edges, drives(5, 0, 1), { ...drives(6, 1, 2), to: { node: 5, port: { type: "depth", edge: 1 } } }],
+    },
+  };
+}
+
+/** The tracer with a second LFO that drives the same cutoff: two cables, one value, one slot for it in the layout. */
+function withTwoCablesToTheCutoff(): Snapshot {
+  const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+  const cable = { kind: "modulation", id: 1, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } } as const;
+  const [output, ...rest] = tracerSnapshot.telemetry.modulation;
+  return {
+    ...tracerSnapshot,
+    graph: { nodes: [...tracerSnapshot.graph.nodes, second], edges: [...tracerSnapshot.graph.edges, cable] },
+    telemetry: { ...tracerSnapshot.telemetry, modulation: [...(output ? [output] : []), { kind: "modOutput", node: 5, port: { type: "modOut" }, slot: 6 }, ...rest] },
+  };
+}
+
 describe("connecting", () => {
   test("says hello, subscribes and has the session", async () => {
     const server = new MockServer();
@@ -323,20 +349,6 @@ describe("taking a cable out", () => {
     expect(layout?.meters).toEqual(tracerSnapshot.telemetry.meters);
   });
 
-  /** The tracer with two more modulators: one drives the depth of the cutoff's cable, the other the depth of that. */
-  function withCablesThatDriveCables(): Snapshot {
-    const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
-    const drives = (from: number, edge: number, id: number) =>
-      ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: from === 5 ? 2 : 5, port: { type: "depth", edge } } }) as const;
-    return {
-      ...tracerSnapshot,
-      graph: {
-        nodes: [...tracerSnapshot.graph.nodes, modulator(5, "LFO"), modulator(6, "LFO")],
-        edges: [...tracerSnapshot.graph.edges, drives(5, 0, 1), { ...drives(6, 1, 2), to: { node: 5, port: { type: "depth", edge: 1 } } }],
-      },
-    };
-  }
-
   test("takes the cables that drive the depth of a cable that goes, and theirs in turn", async () => {
     const server = new MockServer({ snapshot: withCablesThatDriveCables() });
     const client = await open(server);
@@ -346,6 +358,19 @@ describe("taking a cable out", () => {
     expect(cables(client.state.snapshot)).toEqual([]);
     // The modulators stay: what goes is what they drove.
     expect(client.state.snapshot?.graph.nodes).toHaveLength(tracerSnapshot.graph.nodes.length + 2);
+  });
+
+  test("keeps the slot of the value it drove while another cable still drives it", async () => {
+    const server = new MockServer({ snapshot: withTwoCablesToTheCutoff() });
+    const client = await open(server);
+    const effective = () => client.state.snapshot?.telemetry.modulation.filter((entry) => entry.kind === "effective") ?? [];
+    expect(effective()).toHaveLength(1);
+    await client.request({ type: "removeEdge", edge: 0 });
+    expect(cables(client.state.snapshot).map((e) => e.id)).toEqual([1]);
+    expect(effective()).toHaveLength(1);
+    expect(client.state.snapshot?.telemetry, "the layout is as it was").toEqual(withTwoCablesToTheCutoff().telemetry);
+    await client.request({ type: "removeEdge", edge: 1 });
+    expect(effective()).toEqual([]);
   });
 
   test("takes only a cable that nothing drives, when it is the one that is asked for", async () => {
