@@ -12,12 +12,14 @@
 }
 
 .tang-choice__select {
-  padding: 2px var(--tang-space-1);
+  width: 100%;
+  padding: 2px;
+  text-overflow: ellipsis;
   border: 1px solid var(--tang-border);
   border-radius: 4px;
   background: var(--tang-surface-raised);
   color: var(--tang-text);
-  font: var(--tang-text-small) / 1.4 var(--tang-font);
+  font: 11px / 1.4 var(--tang-font);
 }
 
 .tang-choice__select:focus-visible {

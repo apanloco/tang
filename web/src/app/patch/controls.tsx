@@ -135,10 +135,16 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
  * (That the control is there when a cable ends at it is for `toFlow` to see to: a
  * parameter that is driven is always among those a node shows.)
  */
-export const ParamCell = memo(function ParamCell({ node, index }: { node: NodeId; index: number }) {
+export const ParamCell = memo(function ParamCell({ node, index, driven }: { node: NodeId; index: number; driven: boolean }) {
   return (
     <div className="tang-cell">
-      <Handle type="target" position={Position.Top} id={`param-${String(index)}`} className="tang-port tang-port--param" />
+      <Handle
+        isConnectable={false}
+        type="target"
+        position={Position.Top}
+        id={`param-${String(index)}`}
+        className={driven ? "tang-port tang-port--param tang-port--driven" : "tang-port tang-port--param"}
+      />
       <ParamControl node={node} index={index} />
     </div>
   );

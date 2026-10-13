@@ -1,0 +1,138 @@
+/* The canvas, and the nodes on it. The sizes keep to what `toFlow` assumes (HEADER_HEIGHT,
+   CONTROL_ROW_HEIGHT, NODE_PADDING, NODE_WIDTH): a node is 304px wide, its header is 44px
+   and each row of four controls is 108px. */
+.tang-patch {
+  width: 100%;
+  height: 100%;
+}
+
+.tang-patch .react-flow {
+  --xy-background-color: var(--tang-bg);
+  --xy-background-pattern-dots-color-default: var(--tang-border);
+}
+
+.tang-node {
+  position: relative;
+  width: 304px;
+  border: 1px solid var(--tang-border);
+  border-top: 3px solid var(--kind, var(--tang-border));
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+  color: var(--tang-text);
+}
+
+.tang-node--instrument {
+  --kind: var(--tang-instrument);
+}
+
+.tang-node--effect {
+  --kind: var(--tang-effect);
+}
+
+.tang-node--modulator {
+  --kind: var(--tang-modulation);
+}
+
+.tang-node--group {
+  --kind: var(--tang-group);
+}
+
+.tang-node--master {
+  --kind: var(--tang-root);
+}
+
+.tang-node__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tang-space-2);
+  height: 40px;
+  padding: 0 var(--tang-space-3);
+}
+
+.tang-node__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.tang-node__badge {
+  flex: none;
+  padding: 0 var(--tang-space-1);
+  border-radius: 3px;
+  background: var(--tang-surface-raised);
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-node__controls {
+  display: grid;
+  grid-template-columns: repeat(4, 72px);
+  grid-auto-rows: 108px;
+  justify-content: center;
+  padding: 0 0 12px;
+}
+
+.tang-node__body {
+  display: grid;
+  gap: var(--tang-space-2);
+  padding: 0 var(--tang-space-3) var(--tang-space-3);
+}
+
+.tang-node__detail {
+  min-height: 18px;
+  margin: 0;
+  font: var(--tang-text-small) / 1.5 var(--tang-mono);
+  color: var(--tang-text-muted);
+}
+
+/* A control in a node: a cell of the grid, which is where a cable arrives. */
+.tang-cell {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 10px;
+}
+
+/* Ports: where a cable starts or ends. */
+.tang-port {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--tang-surface);
+  background: var(--tang-text-muted);
+}
+
+.tang-port--mod,
+.tang-port--param {
+  background: var(--tang-modulation);
+}
+
+/* A parameter's port is there for every control, and quiet until a cable ends at it. */
+.tang-port--param {
+  top: 4px;
+  width: 6px;
+  height: 6px;
+  opacity: 0.4;
+}
+
+.tang-port--driven {
+  width: 10px;
+  height: 10px;
+  opacity: 1;
+}
+
+/* Cables. */
+.tang-cable {
+  fill: none;
+}
+
+.tang-cable--audio {
+  stroke: var(--tang-text-muted);
+  stroke-width: 2px;
+}
+
+.tang-cable--modulation {
+  stroke: var(--tang-modulation);
+  stroke-dasharray: 7 5;
+}

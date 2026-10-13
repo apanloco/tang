@@ -38,6 +38,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   format: string | null;
   /** The parameters of its plugin it shows as controls, by the plugin's own index. */
   pinned: readonly number[];
+  /** Those of them that a modulator drives (a cable ends at them). */
+  modulated: readonly number[];
 }
 
 export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
@@ -234,6 +236,7 @@ export function toFlow(graph: Graph): Flow {
       name: node.name,
       format: node.kind === "instrument" || node.kind === "effect" ? (node.plugin?.format ?? null) : null,
       pinned: pinned.get(node.id) ?? [],
+      modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
     },
     draggable: false,
     deletable: false,

@@ -397,6 +397,21 @@ describe("the parameters a node shows", () => {
     expect(at(flow, MASTER).data.pinned).toEqual([]);
   });
 
+  test("say which of them a cable ends at, in order", () => {
+    const flow = toFlow(twoLanes);
+    // The cable of twoLanes drives the second parameter (index 3) of the effect 3.
+    expect(at(flow, 3).data.modulated).toEqual([1]);
+    expect(at(flow, 2).data.modulated).toEqual([]);
+    expect(at(flow, 4).data.modulated).toEqual([]);
+    const graph: Graph = {
+      nodes: [instrument(1), modulator(2, 1), master],
+      edges: [audio(1, MASTER), cable(0, 2, 1, 5), cable(1, 2, 1, 1), cable(2, 2, 1, 3)],
+    };
+    expect(at(toFlow(graph), 1).data.modulated).toEqual([1, 3, 5]);
+    expect(at(toFlow(tracerSnapshot.graph), 1).data.modulated).toEqual([0]);
+    expect(at(toFlow(tracerSnapshot.graph), 0).data.modulated).toEqual([]);
+  });
+
   test("include a parameter that is beyond the first few when a cable ends at it", () => {
     const wide = plugin(12);
     const last = wide.params[11]?.index ?? -1;
