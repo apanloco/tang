@@ -1,0 +1,42 @@
+.tang-session-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  font-size: var(--tang-text-small);
+}
+
+.tang-session-bar__file {
+  color: var(--tang-text);
+}
+
+.tang-session-bar__state {
+  color: var(--tang-text-muted);
+}
+
+.tang-session-bar__state--unsaved {
+  color: var(--tang-modulation);
+}
+
+.tang-session-bar__save {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tang-session-bar__save:hover:not(:disabled) {
+  border-color: var(--tang-modulation);
+}
+
+.tang-session-bar__save:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-session-bar__save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

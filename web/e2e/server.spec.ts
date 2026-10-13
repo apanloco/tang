@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
+
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-import { TANG } from "../playwright.config";
+import { SESSION_FILE, TANG } from "../playwright.config";
 import { resetTracer, sessionAccordingToTheServer } from "./support";
 
 interface Session {
@@ -177,4 +179,38 @@ test("a cable drawn from the list, and one taken out with its button, are in the
   await expect(page.getByRole("slider", { name: "Depth of LFO → Filter: drive" })).toHaveCount(0);
   const back = await sessionAccordingToTheServer(page);
   expect(back.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(1);
+});
+
+// -- Saving --
+
+test("the session is saved from the page, by the button and by the keys, to the server's own file", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const resonance = page.getByRole("slider", { name: "resonance" });
+  const saved = page.getByText("Saved", { exact: true });
+  const unsaved = page.getByText("Unsaved changes");
+  const save = page.getByRole("button", { name: /^Save/ });
+
+  // A change makes the session unsaved, and the file is as it was.
+  const before = readFileSync(SESSION_FILE, "utf8");
+  await resonance.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(unsaved).toBeVisible();
+  expect(readFileSync(SESSION_FILE, "utf8")).toBe(before);
+
+  // The button writes it: the file has the change, and the page says there is nothing unsaved.
+  await save.click();
+  await expect(saved).toBeVisible();
+  await expect(save).toBeDisabled();
+  const first = readFileSync(SESSION_FILE, "utf8");
+  expect(first).not.toBe(before);
+  expect(first).toContain("resonance");
+
+  // And Control+S does too, which is not the browser's save-the-page.
+  await resonance.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(unsaved).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+s");
+  await expect(saved).toBeVisible();
+  expect(readFileSync(SESSION_FILE, "utf8")).not.toBe(first);
 });

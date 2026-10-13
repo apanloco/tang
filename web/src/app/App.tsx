@@ -6,6 +6,7 @@ import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PatchView } from "./patch/PatchView";
+import { SessionBar } from "./SessionBar";
 import { useKeyboardPiano } from "./useKeyboardPiano";
 import "./App.css";
 
@@ -47,6 +48,7 @@ export function App({ engine }: { engine: EngineKind }) {
       <header className="tang-app__bar">
         <h1 className="tang-app__title">Tang</h1>
         <ConnectionStatus status={status} />
+        <SessionBar />
         <span className="tang-app__keys" title={KEYS_HINT}>
           Keys: octave {octave}
         </span>

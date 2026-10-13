@@ -15,3 +15,5 @@
 /web/storybook-static
 /web/playwright-report
 /web/test-results
+# The copy of the tracer the browser tests' server saves to.
+/web/.e2e-session
