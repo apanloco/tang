@@ -1725,6 +1725,370 @@ fn the_tui_reaps_plugins_the_audio_thread_hands_back() {
 }
 
 // ---------------------------------------------------------------------------
+// Modulator rows: what Left / Right and typing a value do to a modulator
+// ---------------------------------------------------------------------------
+//
+// An LFO has the rows Type, Waveform, Rate, a separator and then one depth a target;
+// an envelope Type, Attack, Decay, Sustain, Release, a separator and the depths; a MIDI
+// control a row about its source, a separator and the depths. A lane's modulator and a
+// group's are the same to the user and different to the engine, which is told with the
+// commands of the lane or of the group, so both are pinned.
+
+/// The cursor on the modulator at `addr`, in the parameter pane (from the chain), on row
+/// `row`. (The pane keeps the row it was on, so it is moved from there.)
+fn on_modulator_row(h: &mut Harness, addr: TreeAddress, row: usize) {
+    h.goto(addr);
+    h.press(KeyCode::Enter);
+    while h.s.param_state.selected < row {
+        h.press(KeyCode::Down);
+    }
+    while h.s.param_state.selected > row {
+        h.press(KeyCode::Up);
+    }
+    assert_eq!(h.s.param_state.selected, row);
+}
+
+/// Enter a value in the popup of the row the cursor is on.
+fn enter_value(h: &mut Harness, text: &str) {
+    h.press(KeyCode::Enter);
+    assert!(h.s.editing.is_some(), "the value popup opens");
+    h.press_n(KeyCode::Backspace, 8).type_chars(text).press(KeyCode::Enter);
+    assert!(h.s.editing.is_none(), "and closes");
+}
+
+/// A lane with an envelope (A 0.1, D 0.2, S 0.5, R 0.4) and a MIDI control bound to CC 74,
+/// each with a target.
+const LANE_ENVELOPE_AND_CONTROL: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.1
+decay = 0.2
+sustain = 0.5
+release = 0.4
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.5
+
+[[instrument.modulator]]
+type = "midi"
+midi_cc = 74
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.5
+"#;
+
+fn lane_source(h: &Harness, inst: usize, index: usize) -> &ModSourceSlot {
+    &h.s.ctl.model.instruments[inst].modulators[index].source
+}
+
+fn group_source(h: &Harness, group: usize, index: usize) -> &ModSourceSlot {
+    &h.s.ctl.model.groups[group].modulators[index].source
+}
+
+fn lane_depth(h: &Harness, inst: usize, index: usize, target: usize) -> f32 {
+    h.s.ctl.model.instruments[inst].modulators[index].targets[target].depth
+}
+
+fn group_depth(h: &Harness, group: usize, index: usize, target: usize) -> f32 {
+    h.s.ctl.model.groups[group].modulators[index].targets[target].depth
+}
+
+/// The `(attack, decay, sustain, release)` of an envelope source.
+fn stages(source: &ModSourceSlot) -> (f32, f32, f32, f32) {
+    match *source {
+        ModSourceSlot::Envelope { attack, decay, sustain, release } => (attack, decay, sustain, release),
+        ref other => panic!("not an envelope: {other:?}"),
+    }
+}
+
+fn lfo_rate(source: &ModSourceSlot) -> f32 {
+    match *source {
+        ModSourceSlot::Lfo { rate, .. } => rate,
+        ref other => panic!("not an LFO: {other:?}"),
+    }
+}
+
+fn lfo_waveform(source: &ModSourceSlot) -> crate::plugin::chain::LfoWaveform {
+    match *source {
+        ModSourceSlot::Lfo { waveform, .. } => waveform,
+        ref other => panic!("not an LFO: {other:?}"),
+    }
+}
+
+#[test]
+fn left_and_right_step_an_lfos_rate_by_a_twentieth_with_shift_a_hundredth_with_ctrl_a_tenth() {
+    // (The step is that of a range of 1, whatever the range of the row: here 0.01 to 50.)
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=4.050"]);
+    h.press_with(KeyCode::Right, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=4.060"]);
+    h.press_with(KeyCode::Left, KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=3.960"]);
+    h.press(KeyCode::Left);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=3.910"]);
+    assert!((lfo_rate(lane_source(&h, 0, 0)) - 3.91).abs() < 1e-5);
+    assert!(h.s.ctl.dirty);
+    assert!(h.tree().iter().any(|l| l.contains("LFO 3.9Hz")), "the tree shows the new rate: {:#?}", h.tree());
+    // The other lane's LFO is as it was.
+    assert_eq!(lfo_rate(lane_source(&h, 1, 0)), 7.0);
+}
+
+#[test]
+fn a_value_typed_for_an_lfos_rate_is_clamped_to_its_range() {
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+    for (text, rate) in [("12.5", 12.5), ("999", 50.0), ("0", 0.01), ("-3", 0.01)] {
+        enter_value(&mut h, text);
+        assert_eq!(h.commands(), [format!("SetModulatorRate inst=0 mod=0 rate={rate:.3}")], "{text}");
+        assert_eq!(lfo_rate(lane_source(&h, 0, 0)), rate, "{text}");
+    }
+    // At the end of its range a step sends the value that stands.
+    enter_value(&mut h, "50");
+    h.commands();
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=50.000"]);
+    assert_eq!(lfo_rate(lane_source(&h, 0, 0)), 50.0);
+}
+
+#[test]
+fn left_and_right_on_an_lfos_waveform_go_round_the_four_whatever_the_modifiers() {
+    use crate::plugin::chain::LfoWaveform::{Saw, Sine, Square, Triangle};
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 1);
+    let mut seen = Vec::new();
+    for (code, modifiers) in [
+        (KeyCode::Right, KeyModifiers::NONE),
+        (KeyCode::Right, KeyModifiers::SHIFT),
+        (KeyCode::Right, KeyModifiers::CONTROL),
+        (KeyCode::Right, KeyModifiers::NONE), // round to the first again
+        (KeyCode::Left, KeyModifiers::NONE),  // and back round to the last
+        (KeyCode::Left, KeyModifiers::CONTROL),
+    ] {
+        h.press_with(code, modifiers);
+        seen.push((h.commands(), lfo_waveform(lane_source(&h, 0, 0))));
+    }
+    let said = |w: &str| vec![format!("SetModulatorWaveform inst=0 mod=0 waveform={w}")];
+    assert_eq!(
+        seen,
+        [
+            (said("Triangle"), Triangle),
+            (said("Saw"), Saw),
+            (said("Square"), Square),
+            (said("Sine"), Sine),
+            (said("Square"), Square),
+            (said("Saw"), Saw),
+        ]
+    );
+    assert!(h.tree().iter().any(|l| l.contains("LFO 4.0Hz saw")), "the tree shows it: {:#?}", h.tree());
+}
+
+#[test]
+fn no_popup_opens_for_a_waveform_or_a_type_or_a_separator_and_a_separator_does_not_step() {
+    let mut h = Harness::new(scene_split());
+    for row in [0, 1, 3] {
+        on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, row);
+        h.press(KeyCode::Enter);
+        assert!(h.s.editing.is_none(), "row {row}: there is no number to type");
+        assert_eq!(h.commands(), Vec::<String>::new(), "row {row}");
+        h.press(KeyCode::Esc);
+    }
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 3);
+    h.press(KeyCode::Right).press(KeyCode::Left);
+    assert_eq!(h.commands(), Vec::<String>::new(), "the separator");
+    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 4.0 }");
+}
+
+#[test]
+fn left_and_right_step_the_depth_of_a_target_and_a_typed_depth_goes_from_minus_one_to_one() {
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=0.090"]);
+    h.press_with(KeyCode::Left, KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=-0.010"]);
+    for (text, depth) in [("0.5", 0.5), ("5", 1.0), ("-5", -1.0), ("-0.25", -0.25)] {
+        enter_value(&mut h, text);
+        assert_eq!(h.commands(), [format!("SetModTargetDepth inst=0 mod=0 target=0 depth={depth:.3}")], "{text}");
+        assert_eq!(lane_depth(&h, 0, 0, 0), depth, "{text}");
+    }
+    assert!(h.s.ctl.dirty);
+    // At the end of its range a step sends the value that stands.
+    enter_value(&mut h, "1");
+    h.commands();
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=1.000"]);
+}
+
+#[test]
+fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each() {
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);
+    h.press(KeyCode::Right);
+    assert_eq!(
+        h.commands(),
+        ["SetModulatorSource inst=0 mod=0 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }"]
+    );
+    assert_eq!(stages(lane_source(&h, 0, 0)), (0.01, 0.3, 0.7, 0.5));
+    assert_eq!(h.s.param_state.selected, 0);
+    assert!(h.tree().iter().any(|l| l.contains("ADSR")), "{:#?}", h.tree());
+    h.press(KeyCode::Left);
+    assert_eq!(
+        h.commands(),
+        ["SetModulatorSource inst=0 mod=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]
+    );
+    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 1.0 }");
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn left_and_right_step_one_stage_of_an_envelope_and_the_engine_is_given_all_four() {
+    let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+    let addr = TreeAddress::Modulator { inst: 0, index: 0 };
+    for (row, expected, command) in [
+        (1, (0.15, 0.2, 0.5, 0.4), "attack=0.150 decay=0.200 sustain=0.500 release=0.400"),
+        (2, (0.15, 0.25, 0.5, 0.4), "attack=0.150 decay=0.250 sustain=0.500 release=0.400"),
+        (3, (0.15, 0.25, 0.55, 0.4), "attack=0.150 decay=0.250 sustain=0.550 release=0.400"),
+        (4, (0.15, 0.25, 0.55, 0.45), "attack=0.150 decay=0.250 sustain=0.550 release=0.450"),
+    ] {
+        on_modulator_row(&mut h, addr, row);
+        h.press(KeyCode::Right);
+        assert_eq!(h.commands(), [format!("SetModulatorEnvelopeParam inst=0 mod=0 {command}")], "row {row}");
+        let (a, d, s, r) = stages(lane_source(&h, 0, 0));
+        let close = |x: f32, y: f32| (x - y).abs() < 1e-5;
+        assert!(close(a, expected.0) && close(d, expected.1) && close(s, expected.2) && close(r, expected.3), "row {row}: {:?}", (a, d, s, r));
+        h.press(KeyCode::Esc);
+    }
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn a_value_typed_for_an_envelope_stage_is_clamped_to_its_range() {
+    let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+    let addr = TreeAddress::Modulator { inst: 0, index: 0 };
+    for (row, text, expected) in [
+        (1, "99", (10.0, 0.2, 0.5, 0.4)),
+        (1, "0", (0.001, 0.2, 0.5, 0.4)),
+        (2, "2.5", (0.001, 2.5, 0.5, 0.4)),
+        (3, "5", (0.001, 2.5, 1.0, 0.4)),
+        (3, "-5", (0.001, 2.5, 0.0, 0.4)),
+        (4, "7", (0.001, 2.5, 0.0, 7.0)),
+    ] {
+        on_modulator_row(&mut h, addr, row);
+        enter_value(&mut h, text);
+        let (a, d, s, r) = expected;
+        assert_eq!(
+            h.commands(),
+            [format!("SetModulatorEnvelopeParam inst=0 mod=0 attack={a:.3} decay={d:.3} sustain={s:.3} release={r:.3}")],
+            "row {row}: {text}"
+        );
+        assert_eq!(stages(lane_source(&h, 0, 0)), expected, "row {row}: {text}");
+        h.press(KeyCode::Esc);
+    }
+}
+
+#[test]
+fn the_depth_rows_of_an_envelope_and_a_midi_control_are_stepped_and_typed_like_an_lfos() {
+    let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+    // The envelope's rows are Type, A, D, S, R, a separator and then the depth; the control's, its source, a separator and the depth.
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=0.550"]);
+    enter_value(&mut h, "9");
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=1.000"]);
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 1 }, 2);
+    h.press(KeyCode::Left);
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=1 target=0 depth=0.450"]);
+    enter_value(&mut h, "-9");
+    assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=1 target=0 depth=-1.000"]);
+    assert_eq!((lane_depth(&h, 0, 0, 0), lane_depth(&h, 0, 1, 0)), (1.0, -1.0));
+}
+
+#[test]
+fn the_rows_of_a_midi_control_that_are_not_depths_do_nothing() {
+    let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+    for row in [0, 1] {
+        on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 1 }, row);
+        h.press(KeyCode::Right).press(KeyCode::Left).press(KeyCode::Enter);
+        assert!(h.s.editing.is_none(), "row {row}: there is no number to type");
+        assert_eq!(h.commands(), Vec::<String>::new(), "row {row}");
+        h.press(KeyCode::Esc);
+    }
+    assert!(matches!(lane_source(&h, 0, 1), ModSourceSlot::MidiLearn { .. }), "still a control");
+    assert_eq!(lane_depth(&h, 0, 1, 0), 0.5);
+}
+
+#[test]
+fn a_group_lfo_is_stepped_and_typed_with_the_commands_of_the_group() {
+    use crate::plugin::chain::LfoWaveform::Triangle;
+    let mut h = Harness::new(scene_group());
+    let addr = TreeAddress::GroupModulator { group: 0, index: 0 };
+    on_modulator_row(&mut h, addr, 2);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupModulatorRate group=0 mod=0 rate=0.550"]);
+    enter_value(&mut h, "99");
+    assert_eq!(h.commands(), ["SetGroupModulatorRate group=0 mod=0 rate=50.000"]);
+    assert_eq!(lfo_rate(group_source(&h, 0, 0)), 50.0);
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, addr, 1);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupModulatorWaveform group=0 mod=0 waveform=Triangle"]);
+    assert_eq!(lfo_waveform(group_source(&h, 0, 0)), Triangle);
+    h.press(KeyCode::Esc);
+    // Two targets, a member's detune and the bus's damping: a depth row each.
+    on_modulator_row(&mut h, addr, 4);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=0 target=0 depth=0.450"]);
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, addr, 5);
+    enter_value(&mut h, "-4");
+    assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=0 target=1 depth=-1.000"]);
+    assert!((group_depth(&h, 0, 0, 0) - 0.45).abs() < 1e-5);
+    assert_eq!(group_depth(&h, 0, 0, 1), -1.0);
+    assert!(h.s.ctl.dirty);
+    // (None of it went to a lane.)
+    assert_eq!(lfo_rate(lane_source(&h, 2, 0)), 0.2);
+}
+
+#[test]
+fn a_group_envelope_is_stepped_and_typed_with_the_commands_of_the_group() {
+    let mut h = Harness::new(scene_group());
+    let addr = TreeAddress::GroupModulator { group: 0, index: 1 };
+    on_modulator_row(&mut h, addr, 3);
+    h.press(KeyCode::Left);
+    assert_eq!(h.commands(), ["SetGroupModulatorEnvelopeParam group=0 mod=1 attack=0.010 decay=0.300 sustain=0.650 release=0.500"]);
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, addr, 1);
+    enter_value(&mut h, "99");
+    assert_eq!(h.commands(), ["SetGroupModulatorEnvelopeParam group=0 mod=1 attack=10.000 decay=0.300 sustain=0.650 release=0.500"]);
+    h.press(KeyCode::Esc);
+    // Its only target is the LFO's rate, a modulator's field: a depth row like the others.
+    on_modulator_row(&mut h, addr, 6);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=1 target=0 depth=0.350"]);
+    let (a, d, s, r) = stages(group_source(&h, 0, 1));
+    assert_eq!((a, d, r), (10.0, 0.3, 0.5));
+    assert!((s - 0.65).abs() < 1e-5);
+}
+
+#[test]
+fn the_type_row_of_a_group_modulator_switches_it_with_the_commands_of_the_group() {
+    let mut h = Harness::new(scene_group());
+    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 0);
+    h.press(KeyCode::Right);
+    assert_eq!(
+        h.commands(),
+        ["SetGroupModulatorSource group=0 mod=0 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }"]
+    );
+    assert_eq!(stages(group_source(&h, 0, 0)), (0.01, 0.3, 0.7, 0.5));
+}
+
+// ---------------------------------------------------------------------------
 // What the audio thread and the plugin scan report back
 // ---------------------------------------------------------------------------
 //

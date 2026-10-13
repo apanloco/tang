@@ -103,6 +103,12 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModTargetDepth { inst, mod_index, target_index, depth } => {
             format!("SetModTargetDepth inst={inst} mod={mod_index} target={target_index} depth={depth:.3}")
         }
+        C::SetModulatorSource { inst, mod_index, source } => {
+            format!("SetModulatorSource inst={inst} mod={mod_index} source={source:?}")
+        }
+        C::SetGroupModulatorSource { group, mod_index, source } => {
+            format!("SetGroupModulatorSource group={group} mod={mod_index} source={source:?}")
+        }
         C::SetModulatorWaveform { inst, mod_index, waveform } => {
             format!("SetModulatorWaveform inst={inst} mod={mod_index} waveform={waveform:?}")
         }
