@@ -55,6 +55,15 @@ export class FrameLoop {
     };
   }
 
+  /** Call `callback` once, on the next frame, unless the function that is returned is called first. */
+  next(callback: FrameCallback): () => void {
+    const stop = this.subscribe((time) => {
+      stop();
+      callback(time);
+    });
+    return stop;
+  }
+
   #schedule(): void {
     this.#handle ??= this.#scheduler.request(this.#tick);
   }
@@ -62,7 +71,10 @@ export class FrameLoop {
   readonly #tick = (time: number): void => {
     this.#handle = null;
     this.#frames += 1;
-    for (const entry of this.#entries) {
+    // Whoever listens from now on is first called on the next frame; and whoever has left
+    // in the middle of this one is not called.
+    for (const entry of [...this.#entries]) {
+      if (!this.#entries.has(entry)) continue;
       try {
         entry.callback(time);
       } catch (error) {

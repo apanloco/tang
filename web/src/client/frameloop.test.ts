@@ -73,6 +73,94 @@ describe("the frame loop", () => {
     expect(heard).toEqual(["a", "b", "b"]);
   });
 
+  test("does not call a listener that was taken away by one before it in the same frame", () => {
+    const clock = new Clock();
+    const loop = new FrameLoop(clock);
+    const heard: string[] = [];
+    let leaveB = (): void => undefined;
+    loop.subscribe(() => {
+      heard.push("a");
+      leaveB();
+    });
+    leaveB = loop.subscribe(() => heard.push("b"));
+    clock.tick(1);
+    expect(heard).toEqual(["a"]);
+  });
+
+  test("first calls a listener that comes in the middle of a frame on the next", () => {
+    const clock = new Clock();
+    const loop = new FrameLoop(clock);
+    const heard: string[] = [];
+    let added = false;
+    loop.subscribe(() => {
+      heard.push("a");
+      if (!added) {
+        added = true;
+        loop.subscribe(() => heard.push("late"));
+      }
+    });
+    clock.tick(1);
+    expect(heard).toEqual(["a"]);
+    clock.tick(2);
+    expect(heard).toEqual(["a", "a", "late"]);
+  });
+
+  test("calls a listener that asked for the next frame once, on it, and then lets the loop rest", () => {
+    const clock = new Clock();
+    const loop = new FrameLoop(clock);
+    const heard: number[] = [];
+    loop.next((time) => heard.push(time));
+    expect(clock.pending).toBe(1);
+    clock.tick(16);
+    expect(heard).toEqual([16]);
+    expect(clock.pending).toBe(0);
+    expect(loop.running).toBe(false);
+    clock.tick(33); // nothing is waiting
+    expect(heard).toEqual([16]);
+  });
+
+  test("takes back a request for the next frame, and the frame that was asked for it", () => {
+    const clock = new Clock();
+    const loop = new FrameLoop(clock);
+    const heard: number[] = [];
+    const cancel = loop.next((time) => heard.push(time));
+    cancel();
+    expect(clock.pending).toBe(0);
+    expect(heard).toEqual([]);
+    clock.tick(16);
+    expect(heard).toEqual([]);
+    cancel(); // again, and after the fact: nothing happens
+  });
+
+  test("lets the others go on after a request for the next frame is met", () => {
+    const clock = new Clock();
+    const loop = new FrameLoop(clock);
+    const heard: string[] = [];
+    loop.subscribe(() => heard.push("always"));
+    loop.next(() => heard.push("once"));
+    clock.tick(1);
+    clock.tick(2);
+    expect(heard).toEqual(["always", "once", "always"]);
+    expect(clock.pending).toBe(1);
+  });
+
+  test("lets a request for the next frame ask for another, which is for the frame after", () => {
+    const clock = new Clock();
+    const loop = new FrameLoop(clock);
+    const heard: number[] = [];
+    const again = (time: number): void => {
+      heard.push(time);
+      if (heard.length < 3) loop.next(again);
+    };
+    loop.next(again);
+    clock.tick(1);
+    expect(heard).toEqual([1]);
+    clock.tick(2);
+    clock.tick(3);
+    expect(heard).toEqual([1, 2, 3]);
+    expect(clock.pending).toBe(0);
+  });
+
   test("counts a function that listens twice twice, and one that leaves once leaves one", () => {
     const clock = new Clock();
     const loop = new FrameLoop(clock);
