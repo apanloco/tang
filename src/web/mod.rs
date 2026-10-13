@@ -8,5 +8,6 @@
 //! back through the hub to every client's bounded queue, and notes go straight to
 //! the audio thread through `NoteInput`.
 
+pub mod connection;
 pub mod hub;
 pub mod security;
