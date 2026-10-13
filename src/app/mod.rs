@@ -10,6 +10,7 @@ pub mod controller;
 pub mod intent;
 pub mod load;
 pub mod model;
+pub mod protocol;
 pub mod save;
 #[cfg(test)]
 pub mod testutil;

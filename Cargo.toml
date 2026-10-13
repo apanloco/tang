@@ -10,6 +10,9 @@ edition = "2024"
 default = ["lv2", "vst3"]
 lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
+# The browser front-end (docs/web-ui.md). Off by default. So far it only adds the
+# TypeScript generated from the protocol types (`app::protocol`).
+web = ["dep:ts-rs"]
 
 [dependencies]
 view = { path = "view" }
@@ -31,6 +34,7 @@ clack-finder = { git = "https://github.com/prokopyl/clack" }
 clack-extensions = { git = "https://github.com/prokopyl/clack", features = ["clack-host", "audio-ports", "note-ports", "params", "preset-discovery", "state"] }
 vst3 = { version = "0.3", optional = true }
 libloading = { version = "0.8", optional = true }
+ts-rs = { version = "12", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -41,6 +45,7 @@ cpal = { version = "0.15", features = ["jack"] }
 [dev-dependencies]
 tempfile = "3"
 insta = "1"
+serde_json = "1"
 
 # lv2-sys upstream (RustAudio/rust-lv2) doesn't compile on macOS — its
 # unsupported.rs hits a compile_error! instead of using the Linux bindings.

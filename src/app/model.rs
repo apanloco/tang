@@ -19,7 +19,8 @@ use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 /// or a modulator) for as long as it exists. The engine and the tree address
 /// nodes by position, which shifts when others come and go; a `NodeId` does not.
 /// Allocated by the model, never reused during a run, not saved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
 pub struct NodeId(pub u32);
 
 /// Hands out `NodeId`s, each one once.
