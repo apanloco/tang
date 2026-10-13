@@ -45,6 +45,7 @@ use crate::app::save::to_save;
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
+use crate::note_input::NoteInput;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{
     GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
@@ -358,6 +359,12 @@ impl Controller {
             ModulatorLocation::Group(group) => GraphCommand::AddGroupModTarget { group, mod_index: index, target },
         });
         true
+    }
+
+    /// A handle on the note path (the Locked mode, the held notes, the channel to
+    /// the audio thread) for a note source to keep and call from its own thread.
+    pub fn note_input(&self) -> NoteInput {
+        NoteInput::new(self.midi_tx.clone(), self.held.clone(), self.piano_filter.clone())
     }
 
     /// Save the session to the file it came from.

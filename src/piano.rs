@@ -1,12 +1,8 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::audio::MidiEvent;
-use crate::held_notes::HeldNotes;
-use crate::piano_filter::PianoFilter;
+use crate::note_input::{Delivery, NoteInput};
 
 /// Virtual piano using Amiga tracker keyboard layout.
 ///
@@ -15,28 +11,19 @@ use crate::piano_filter::PianoFilter;
 pub struct VirtualPiano {
     base_octave: i8,
     held_keys: HashSet<KeyCode>,
-    midi_tx: Sender<MidiEvent>,
+    notes: NoteInput,
     enabled: bool,
-    held: Arc<HeldNotes>,
-    piano_filter: Arc<PianoFilter>,
 }
 
 const VELOCITY: u8 = 100;
 
 impl VirtualPiano {
-    pub fn new(
-        midi_tx: Sender<MidiEvent>,
-        enabled: bool,
-        held: Arc<HeldNotes>,
-        piano_filter: Arc<PianoFilter>,
-    ) -> Self {
+    pub fn new(notes: NoteInput, enabled: bool) -> Self {
         VirtualPiano {
             base_octave: 4,
             held_keys: HashSet::new(),
-            midi_tx,
+            notes,
             enabled,
-            held,
-            piano_filter,
         }
     }
 
@@ -73,24 +60,19 @@ impl VirtualPiano {
                 }
 
                 if let Some(note) = self.key_to_note(event.code) {
-                    // Locked mode: drop off-scale note-ons (silent — no
-                    // sound, no held visualization).
-                    if self.piano_filter.block_note_on(note) {
+                    // Locked mode drops an off-scale note-on (silent — no sound, no
+                    // held visualization), and then the key is not held either.
+                    if self.notes.note_on(note, VELOCITY) == Delivery::Blocked {
                         return;
                     }
                     self.held_keys.insert(event.code);
-                    self.held.note_on(note);
-                    // NoteOn: 0x90, note, velocity
-                    let _ = self.midi_tx.send((0, [0x90, note, VELOCITY]));
                     log::info!("Piano: NoteOn note={note} ({})", note_name(note));
                 }
             }
             KeyEventKind::Release => {
                 if let Some(note) = self.key_to_note(event.code) {
                     self.held_keys.remove(&event.code);
-                    self.held.note_off(note);
-                    // NoteOff: 0x80, note, 0
-                    let _ = self.midi_tx.send((0, [0x80, note, 0]));
+                    self.notes.note_off(note);
                     log::info!("Piano: NoteOff note={note} ({})", note_name(note));
                 }
             }
@@ -105,8 +87,7 @@ impl VirtualPiano {
         let keys: Vec<KeyCode> = self.held_keys.drain().collect();
         for code in keys {
             if let Some(note) = self.key_to_note(code) {
-                self.held.note_off(note);
-                let _ = self.midi_tx.send((0, [0x80, note, 0]));
+                self.notes.note_off(note);
             }
         }
     }
@@ -167,4 +148,141 @@ impl VirtualPiano {
 
 fn note_name(note: u8) -> String {
     crate::note_name(note)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crossterm::event::KeyModifiers;
+
+    use super::*;
+    use crate::audio::MidiEvent;
+    use crate::held_notes::HeldNotes;
+    use crate::piano_filter::{PianoFilter, PianoMode};
+    use crate::scale::ScaleSetting;
+
+    struct Rig {
+        piano: VirtualPiano,
+        rx: crossbeam_channel::Receiver<MidiEvent>,
+        held: Arc<HeldNotes>,
+        filter: Arc<PianoFilter>,
+    }
+
+    fn rig(enabled: bool) -> Rig {
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let held = Arc::new(HeldNotes::new());
+        let filter = Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight));
+        let piano = VirtualPiano::new(NoteInput::new(tx, held.clone(), filter.clone()), enabled);
+        Rig { piano, rx, held, filter }
+    }
+
+    fn press(rig: &mut Rig, key: char) {
+        rig.piano.handle_key_event(KeyEvent::new_with_kind(KeyCode::Char(key), KeyModifiers::NONE, KeyEventKind::Press));
+    }
+
+    fn release(rig: &mut Rig, key: char) {
+        rig.piano.handle_key_event(KeyEvent::new_with_kind(KeyCode::Char(key), KeyModifiers::NONE, KeyEventKind::Release));
+    }
+
+    fn sent(rig: &Rig) -> Vec<MidiEvent> {
+        rig.rx.try_iter().collect()
+    }
+
+    #[test]
+    fn a_key_sounds_its_note_while_it_is_down() {
+        let mut rig = rig(true);
+        press(&mut rig, 'z');
+        assert_eq!(sent(&rig), [(0, [0x90, 48, 100])], "the lower row starts at C3, MIDI 48");
+        assert_eq!(rig.held.held(), [48]);
+        release(&mut rig, 'z');
+        assert_eq!(sent(&rig), [(0, [0x80, 48, 0])]);
+        assert!(rig.held.held().is_empty());
+    }
+
+    #[test]
+    fn a_key_can_be_played_again_once_it_is_released() {
+        let mut rig = rig(true);
+        press(&mut rig, 'z');
+        release(&mut rig, 'z');
+        sent(&rig);
+        press(&mut rig, 'z');
+        assert_eq!(sent(&rig), [(0, [0x90, 48, 100])]);
+    }
+
+    #[test]
+    fn the_upper_row_is_an_octave_above_the_lower() {
+        let mut rig = rig(true);
+        press(&mut rig, 'q');
+        press(&mut rig, 'w');
+        assert_eq!(sent(&rig), [(0, [0x90, 60, 100]), (0, [0x90, 62, 100])]);
+    }
+
+    #[test]
+    fn a_key_held_down_sounds_once_and_a_repeat_is_ignored() {
+        let mut rig = rig(true);
+        press(&mut rig, 'x');
+        press(&mut rig, 'x');
+        rig.piano.handle_key_event(KeyEvent::new_with_kind(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Repeat));
+        assert_eq!(sent(&rig).len(), 1);
+    }
+
+    #[test]
+    fn the_octave_keys_move_the_keyboard() {
+        let mut rig = rig(true);
+        press(&mut rig, ']');
+        press(&mut rig, 'z');
+        assert_eq!(sent(&rig), [(0, [0x90, 60, 100])], "an octave up");
+        press(&mut rig, '[');
+        press(&mut rig, '[');
+        release(&mut rig, 'z');
+        sent(&rig);
+        press(&mut rig, 'c');
+        assert_eq!(sent(&rig), [(0, [0x90, 40, 100])], "and two down from there: E");
+    }
+
+    #[test]
+    fn a_keyboard_the_terminal_cannot_report_is_silent() {
+        let mut rig = rig(false);
+        press(&mut rig, 'z');
+        release(&mut rig, 'z');
+        assert!(sent(&rig).is_empty());
+        assert!(rig.held.held().is_empty());
+    }
+
+    #[test]
+    fn a_key_with_no_note_does_nothing() {
+        let mut rig = rig(true);
+        press(&mut rig, 'a');
+        press(&mut rig, '1');
+        assert!(sent(&rig).is_empty());
+    }
+
+    #[test]
+    fn in_locked_mode_an_off_scale_key_is_silent_and_an_in_scale_one_sounds() {
+        let mut rig = rig(true);
+        rig.filter.set_mode(PianoMode::Locked);
+        press(&mut rig, 's'); // C# in octave 4: not in C major
+        assert!(sent(&rig).is_empty());
+        assert!(rig.held.held().is_empty());
+        rig.piano.all_notes_off();
+        assert!(sent(&rig).is_empty(), "the key that sounded nothing is not down");
+        press(&mut rig, 'x'); // D
+        assert_eq!(sent(&rig), [(0, [0x90, 50, 100])]);
+    }
+
+    #[test]
+    fn all_notes_off_ends_every_key_that_is_down() {
+        let mut rig = rig(true);
+        press(&mut rig, 'z');
+        press(&mut rig, 'c');
+        sent(&rig);
+        rig.piano.all_notes_off();
+        let mut off = sent(&rig);
+        off.sort();
+        assert_eq!(off, [(0, [0x80, 48, 0]), (0, [0x80, 52, 0])]);
+        assert!(rig.held.held().is_empty());
+        rig.piano.all_notes_off();
+        assert!(sent(&rig).is_empty(), "and then nothing is down");
+    }
 }

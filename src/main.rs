@@ -11,6 +11,7 @@ mod enumerate;
 mod held_notes;
 mod midi;
 mod midi_monitor;
+mod note_input;
 mod piano;
 mod piano_filter;
 mod plugin;
@@ -363,13 +364,8 @@ fn run_session(
     }
     // Live incoming-MIDI monitor for `--debug` (a no-op when disabled).
     let midi_monitor = std::sync::Arc::new(midi_monitor::MidiMonitor::new(debug));
-    let mut midi_mgr = midi::MidiManager::new(
-        midi_tx.clone(),
-        midi_device,
-        held.clone(),
-        piano_filter.clone(),
-        midi_monitor.clone(),
-    );
+    let notes = note_input::NoteInput::new(midi_tx.clone(), held.clone(), piano_filter.clone());
+    let mut midi_mgr = midi::MidiManager::new(notes, midi_device, midi_monitor.clone());
     midi_mgr.open_ports()?;
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
@@ -478,8 +474,7 @@ fn run_session(
         }
 
         // Create virtual piano
-        let mut virt_piano =
-            piano::VirtualPiano::new(ctl.midi_tx.clone(), kitty_supported, ctl.held.clone(), ctl.piano_filter.clone());
+        let mut virt_piano = piano::VirtualPiano::new(ctl.note_input(), kitty_supported);
 
         log::info!("Playing. Ctrl+Q or Ctrl+C to quit.");
 

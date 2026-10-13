@@ -1,39 +1,26 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crossbeam_channel::Sender;
 use midir::{MidiInput, MidiInputConnection};
 
-use crate::audio::MidiEvent;
-use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
-use crate::piano_filter::PianoFilter;
+use crate::note_input::{Delivery, NoteInput};
 
 pub struct MidiManager {
-    sender: Sender<MidiEvent>,
+    notes: NoteInput,
     device_filter: Option<String>,
     connections: Vec<MidiInputConnection<()>>,
     connected_names: HashSet<String>,
-    held: Arc<HeldNotes>,
-    piano_filter: Arc<PianoFilter>,
     monitor: Arc<MidiMonitor>,
 }
 
 impl MidiManager {
-    pub fn new(
-        sender: Sender<MidiEvent>,
-        device_filter: Option<String>,
-        held: Arc<HeldNotes>,
-        piano_filter: Arc<PianoFilter>,
-        monitor: Arc<MidiMonitor>,
-    ) -> Self {
+    pub fn new(notes: NoteInput, device_filter: Option<String>, monitor: Arc<MidiMonitor>) -> Self {
         MidiManager {
-            sender,
+            notes,
             device_filter,
             connections: Vec::new(),
             connected_names: HashSet::new(),
-            held,
-            piano_filter,
             monitor,
         }
     }
@@ -63,9 +50,7 @@ impl MidiManager {
                 }
             }
 
-            let sender = self.sender.clone();
-            let held = self.held.clone();
-            let piano_filter = self.piano_filter.clone();
+            let notes = self.notes.clone();
             let monitor = self.monitor.clone();
             let log_name = name.clone();
             let conn_name = name.clone();
@@ -97,31 +82,10 @@ impl MidiManager {
                     log::info!("MIDI in  [{log_name}] {kind} ch={ch}{note_info} data={bytes:02x?}");
                     // Feed the on-screen `--debug` monitor (no-op unless enabled).
                     monitor.record(bytes);
-                    // Locked mode: drop note-ons for off-scale notes so they
-                    // never reach the audio thread or the held bitset. Note-offs
-                    // always pass through (clean up any sounding note).
-                    let is_note_on = (status & 0xF0) == 0x90 && bytes.len() >= 3 && bytes[2] > 0;
-                    if is_note_on && piano_filter.block_note_on(bytes[1]) {
-                        return;
-                    }
-
-                    // Tap into the stream to track currently-held notes for the
-                    // Piano tab. A NoteOn with velocity 0 means NoteOff.
-                    if bytes.len() >= 3 {
-                        match status & 0xF0 {
-                            0x90 if bytes[2] > 0 => held.note_on(bytes[1]),
-                            0x90 | 0x80 => held.note_off(bytes[1]),
-                            _ => {}
-                        }
-                    }
-                    // Timestamp 0 = place at start of next buffer
-                    // Copy into fixed [u8; 3] — skip messages longer than 3 bytes (e.g. SysEx)
-                    if !bytes.is_empty() && bytes.len() <= 3 {
-                        let mut buf = [0u8; 3];
-                        buf[..bytes.len()].copy_from_slice(bytes);
-                        if sender.try_send((0, buf)).is_err() {
-                            log::warn!("MIDI channel full — dropping event from {log_name}");
-                        }
+                    // Locked mode, the held notes and the channel to the audio
+                    // thread: the note path every source shares.
+                    if notes.send(bytes) == Delivery::Full {
+                        log::warn!("MIDI channel full — dropping event from {log_name}");
                     }
                 },
                 (),
