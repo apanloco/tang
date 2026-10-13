@@ -15,6 +15,7 @@ import type { EdgeId, Gain, ModulatorField, NodeId, Param } from "../../protocol
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import type { Scale } from "../../ui/knob-geometry";
+import { MenuButton } from "../../ui/MenuButton";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
@@ -282,36 +283,34 @@ export const CableDepthControl = memo(function CableDepthControl({ edge, label }
   );
 });
 
+/** The `id` of the button of the list that draws a cable from the modulator `node`, which what takes a cable out gives the focus to. */
+export const drivesId = (node: NodeId): string => `drives-${String(node)}`;
+
 /**
  * The list that draws a cable from a modulator to any parameter it can still drive, plugin by plugin: for a
- * keyboard (which cannot drag a cable), and for the parameters a node does not show as controls. Choosing
- * one is the cable; the list goes back to its first line (the cable's parameter is not on it any more).
+ * keyboard (which cannot drag a cable), and for the parameters a node does not show as controls. It is a menu
+ * and not a native list: the arrow keys of a closed one change its value on some platforms, which here is a
+ * cable on each key. Choosing a parameter is the cable; the menu closes and the focus is on its button.
  */
 export const DrivePicker = memo(function DrivePicker({ modulator, name, targets }: { modulator: NodeId; name: string; targets: readonly Drivable[] }) {
   const editor = useEditor();
-  const nothing = targets.length === 0;
+  const items = useMemo(
+    () => targets.flatMap((group) => group.params.map((param) => ({ id: `${String(group.node)}:${String(param.index)}`, label: param.name, group: group.name }))),
+    [targets],
+  );
   return (
-    <select
+    <MenuButton
+      id={drivesId(modulator)}
       className="tang-drives"
-      aria-label={`Cable from ${name} to`}
-      value=""
-      disabled={nothing}
-      onChange={(event) => {
-        const [node, param] = event.target.value.split(":").map(Number);
+      label={`Add a cable from ${name}`}
+      items={items}
+      onChoose={(choice) => {
+        const [node, param] = choice.split(":").map(Number);
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
         if (node !== undefined && param !== undefined) void editor.addCable(modulator, node, param);
       }}
     >
-      <option value="">{nothing ? "Nothing to drive" : "Add a cable to…"}</option>
-      {targets.map((group) => (
-        <optgroup key={group.node} label={group.name}>
-          {group.params.map((param) => (
-            <option key={param.index} value={`${String(group.node)}:${String(param.index)}`}>
-              {param.name}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
+      {items.length === 0 ? "Nothing to drive" : "Add a cable…"}
+    </MenuButton>
   );
 });

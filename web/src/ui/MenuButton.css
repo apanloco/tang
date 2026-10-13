@@ -42,6 +42,31 @@
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.45);
 }
 
+/* The items and groups keep their height in a menu that is taller than it is allowed to be (it scrolls). */
+.tang-menu > *,
+.tang-menu__group > * {
+  flex: none;
+}
+
+.tang-menu__group {
+  display: flex;
+  flex-direction: column;
+}
+
+.tang-menu__group + .tang-menu__group,
+.tang-menu__item + .tang-menu__group {
+  margin-top: var(--tang-space-1);
+  padding-top: var(--tang-space-1);
+  border-top: 1px solid var(--tang-border);
+}
+
+.tang-menu__heading {
+  padding: 3px var(--tang-space-3) 1px;
+  color: var(--tang-text-muted);
+  font-size: var(--tang-text-small);
+  line-height: 1.3;
+}
+
 .tang-menu__item {
   padding: 5px var(--tang-space-3);
   border: 0;

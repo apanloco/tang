@@ -230,21 +230,17 @@
   display: flex;
 }
 
-.tang-drives {
+/* (A menu button, drawn as a field of the node's width.) */
+.tang-menu-button.tang-drives {
   flex: 1;
   min-width: 0;
-  padding: 2px;
+  height: auto;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-align: left;
   text-overflow: ellipsis;
-  border: 1px solid var(--tang-border);
-  border-radius: 4px;
-  background: var(--tang-surface-raised);
-  color: var(--tang-text);
+  white-space: nowrap;
   font: 11px / 1.4 var(--tang-font);
-}
-
-.tang-drives:focus-visible {
-  outline: 2px solid var(--tang-scale);
-  outline-offset: 1px;
 }
 
 .tang-drives:disabled {

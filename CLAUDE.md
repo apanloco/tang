@@ -1406,7 +1406,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   decades), and a slider for the depth of each cable at its middle; step 15 added building:
   a "+" menu on every lane and group (`MenuButton`) that adds an LFO, an envelope or a MIDI
   control, a "×" on every modulator and every cable, a list at the foot of a modulator that draws
-  a cable to any parameter it can drive (for a keyboard), and a cable dragged from a
+  a cable to any parameter it can drive (for a keyboard: a `MenuButton` with the plugins as
+  headings, which finds an item by its first letters), and a cable dragged from a
   modulator's output to a parameter's port, the ports that take it marked while it is
   dragged; `client/editor.ts` is where the page asks for them and `Notices` /
   `NoticeBoard` is where it says what the server refused; where a cable may end is the

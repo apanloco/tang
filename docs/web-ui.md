@@ -785,8 +785,14 @@ step 15 measured that the radius of 40 px, which this said was enough, reached o
 knob, and at the foot of its cell took the port of the knob below it. The ports are the controller's rule read from
 the graph (`reachFrom`, `drivablesOf` in `client/reach.ts`, in the data of each modulator's
 node: D21). For a keyboard, and for the parameters a node does not show, a modulator has a list at
-its foot ("Cable from LFO 2 to"), grouped by plugin, of everything it can still drive; a cable to
-a parameter makes the node show it. What could not be done is on the `NoticeBoard` under the bar
+its foot ("Add a cable from LFO 2"), grouped by plugin, of everything it can still drive; a cable to
+a parameter makes the node show it. The list is a `MenuButton` and not a native select, whose arrow
+keys change its value, and so would draw a cable on each key, on Windows and Linux (the review of
+step 15 suspected it; macOS opens the list instead, so it could not be seen here). `MenuButton` has
+items in groups (a heading for each, a group of the menu for a screen reader), a height of at most
+360 px past which it scrolls, a letter (or the first letters of a name, typed together) that goes to
+the item that starts with it, and keeps the focus on its item when the items change while it is open;
+the keys it uses are not heard by the page, whose keys play notes. What could not be done is on the `NoticeBoard` under the bar
 (a polite live region; it does not go by itself): the refusals of these and the knobs' (a
 `console.warn` before). Names that more than one node has are numbered (`client/names.ts`, shared
 by the canvas and the notices). The layout allows a modulator with settings 218 px and one

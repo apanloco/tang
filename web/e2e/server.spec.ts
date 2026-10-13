@@ -168,7 +168,8 @@ test("a cable drawn from the list, and one taken out with its button, are in the
   await page.goto("/");
   await expect(page.getByRole("status")).toHaveText("Connected");
   await resetTracer(page);
-  await page.getByRole("combobox", { name: "Cable from LFO to" }).selectOption({ label: "drive" });
+  await page.getByRole("button", { name: "Add a cable from LFO" }).click();
+  await page.getByRole("menuitem", { name: "drive", exact: true }).click();
   await expect(page.getByRole("slider", { name: "Depth of LFO → Filter: drive" })).toBeVisible();
   const drawn = await sessionAccordingToTheServer(page);
   expect(drawn.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(2);

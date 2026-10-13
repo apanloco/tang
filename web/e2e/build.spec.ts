@@ -167,13 +167,52 @@ test("Tab out of the add menu goes on from its button, as Tab does when the menu
 
 test("a cable is drawn from the keyboard, from the list at the foot of a modulator", async ({ page }) => {
   await open(page);
-  const picker = page.getByRole("combobox", { name: "Cable from LFO to" });
-  await picker.selectOption({ label: "detune" });
+  const picker = page.getByRole("button", { name: "Add a cable from LFO" });
+  // From the keyboard alone: an arrow key opens the list, letters find a parameter, Enter chooses it.
+  await picker.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menu", { name: "Add a cable from LFO" })).toBeVisible();
+  await page.keyboard.type("det");
+  await expect(page.getByRole("menuitem", { name: "detune", exact: true })).toBeFocused();
+  // (Nothing is drawn until Enter: not by opening the list, nor by finding a parameter in it.)
+  await expect(cables(page)).toHaveCount(1);
+  await page.keyboard.press("Enter");
   await expect(page.getByRole("slider", { name: "Depth of LFO → Oscillator: detune" })).toBeVisible();
   await expect(cables(page)).toHaveCount(2);
-  // The parameter is off the list now, and the list is back at its first line.
-  await expect(picker.locator("option", { hasText: "detune" })).toHaveCount(0);
-  await expect(picker).toHaveValue("");
+  // The list is closed, with the focus on its button, and the parameter is off it.
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(picker).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitem", { name: "volume", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "detune", exact: true })).toHaveCount(0);
+});
+
+test("the list of what a modulator can be drawn to has a heading for each plugin, and stays on the page", async ({ page }) => {
+  await open(page);
+  const picker = page.getByRole("button", { name: "Add a cable from LFO" });
+  // (The button is a field as wide as the node's body, not a glyph.)
+  const field = await picker.boundingBox();
+  const lfo = await node(page, "LFO").boundingBox();
+  expect(field).not.toBeNull();
+  expect(lfo).not.toBeNull();
+  if (field && lfo) expect(field.width).toBeGreaterThan(lfo.width * 0.7);
+  await picker.click();
+  const menu = page.getByRole("menu", { name: "Add a cable from LFO" });
+  await expect(menu).toBeVisible();
+  // (The tracer's list is eleven parameters under two headings; one that is longer scrolls, at 360 px.)
+  const box = await menu.boundingBox();
+  const size = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(size).not.toBeNull();
+  if (box && size) {
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(size.height);
+    expect(box.height).toBeLessThanOrEqual(360);
+  }
+  await expect(menu.getByRole("group", { name: "Oscillator" })).toBeVisible();
+  await expect(menu.getByRole("group", { name: "Filter" })).toBeVisible();
+  // (And a heading drawn for each, which a screen reader does not read twice.)
+  await expect(menu.locator(".tang-menu__heading")).toHaveText(["Oscillator", "Filter"]);
 });
 
 test("a cable and a modulator are taken out by their buttons", async ({ page }) => {
