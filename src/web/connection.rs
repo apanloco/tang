@@ -169,11 +169,19 @@ impl Connection {
         match message {
             // Already in: nothing to do, and no harm.
             ClientMessage::Auth { .. } => Flow::Continue,
+            // A client says each of these once per connection; one that says them over
+            // and over (each subscribe makes the owner build a snapshot) is not one to go on with.
             ClientMessage::Subscribe => {
+                if !self.limiter.allow(now) {
+                    return self.close_with(ErrorCode::RateLimited, "too many requests: slow down");
+                }
                 self.ask_owner(OwnerRequest::Subscribe { client: self.id });
                 Flow::Continue
             }
             ClientMessage::Telemetry { channels } => {
+                if !self.limiter.allow(now) {
+                    return self.close_with(ErrorCode::RateLimited, "too many requests: slow down");
+                }
                 self.hub.set_channels(self.id, &channels);
                 Flow::Continue
             }
@@ -490,6 +498,44 @@ mod tests {
         assert!(!rig.hub.wanted(Meters) && rig.hub.wanted(Modulation));
         rig.send(json!({"type": "telemetry", "channels": []}));
         assert!(!rig.hub.wanted(Meters) && !rig.hub.wanted(Modulation));
+    }
+
+    #[test]
+    fn subscribing_over_and_over_is_too_fast_and_ends_the_connection() {
+        // Each one makes the owner build a snapshot, so each one costs a token.
+        let mut rig = rig_with(open_policy(), Limits { burst: 3.0, per_second: 1.0 }, 64);
+        for _ in 0..3 {
+            assert_eq!(rig.send(json!({"type": "subscribe"})), Flow::Continue);
+        }
+        assert_eq!(rig.asked().len(), 3);
+        assert_eq!(rig.send(json!({"type": "subscribe"})), Flow::Close);
+        let said = rig.said();
+        assert_eq!((said[0]["type"].clone(), said[0]["error"]["code"].clone()), (json!("closing"), json!("rateLimited")));
+        assert!(rig.asked().is_empty(), "the owner is not asked for a fourth snapshot");
+    }
+
+    #[test]
+    fn asking_for_telemetry_over_and_over_is_too_fast_and_ends_the_connection() {
+        use crate::app::protocol::TelemetryChannel::{Meters, Modulation};
+        let mut rig = rig_with(open_policy(), Limits { burst: 2.0, per_second: 1.0 }, 64);
+        assert_eq!(rig.send(json!({"type": "telemetry", "channels": ["meters"]})), Flow::Continue);
+        assert_eq!(rig.send(json!({"type": "telemetry", "channels": ["modulation"]})), Flow::Continue);
+        assert_eq!(rig.send(json!({"type": "telemetry", "channels": ["meters"]})), Flow::Close);
+        assert_eq!(rig.said()[0]["error"]["code"], "rateLimited");
+        assert!(!rig.hub.wanted(Meters) && rig.hub.wanted(Modulation), "the last one that was taken stands");
+    }
+
+    #[test]
+    fn what_a_client_sends_once_per_connection_costs_next_to_nothing() {
+        // A client that subscribes, asks for its telemetry and then drags a slider is nowhere near the limit.
+        let mut rig = rig_with(open_policy(), Limits { burst: 5.0, per_second: 1.0 }, 64);
+        assert_eq!(rig.send(json!({"type": "subscribe"})), Flow::Continue);
+        assert_eq!(rig.send(json!({"type": "telemetry", "channels": ["meters", "modulation"]})), Flow::Continue);
+        for _ in 0..3 {
+            assert_eq!(rig.send(set_param()), Flow::Continue);
+        }
+        assert!(rig.said().is_empty());
+        assert_eq!(rig.asked().len(), 4);
     }
 
     // -- Notes --
