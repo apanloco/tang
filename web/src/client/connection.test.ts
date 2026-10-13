@@ -224,6 +224,42 @@ describe("a request", () => {
     expect(client.state.snapshot).toEqual(tracerSnapshot);
   });
 
+  test("that names the master is for a node that is not there (the master is not a node of the model), as the controller has it", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    for (const intent of [
+      { type: "setParam", node: MASTER, param: 0, value: 1 },
+      { type: "setGain", node: MASTER, gain: "volume", value: 1 },
+      { type: "setModulatorField", node: MASTER, field: "rate", value: 1 },
+    ] as const) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], intent.type).toEqual(["notFound", `there is no node ${String(MASTER)}`]);
+    }
+  });
+
+  test("with a number the controller cannot hold (beyond 32 bits: infinity there) is refused, and a half that rounds up in 32 bits is rounded up", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    for (const intent of [
+      { type: "setParam", node: filter.id, param: 0, value: 1e39 },
+      { type: "setGain", node: oscillator.id, gain: "volume", value: -1e39 },
+      { type: "setModulatorField", node: lfo.id, field: "rate", value: 1e39 },
+      { type: "setEdgeDepth", edge: 0, depth: 1e39 },
+    ] as const) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, intent.type], failure.message).toEqual(["invalid", intent.type]);
+    }
+    // 0.49999999 is 0.5 in 32 bits, which a waveform rounds to the next: the triangle, not the sine.
+    await client.request({ type: "setModulatorField", node: lfo.id, field: "waveform", value: 0.49999999 });
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === lfo.id)).toMatchObject({ source: { waveform: "triangle" } });
+    // So does an enum parameter: the oscillator's waveform, 1.49999999 being 1.5 and so the third.
+    await client.request({ type: "setParam", node: oscillator.id, param: 0, value: 1.49999999 });
+    const waveform = client.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id);
+    expect(waveform?.kind === "instrument" && waveform.plugin?.params[0]?.value).toBe(2);
+    expect(client.state.snapshot?.rev).toBe(2);
+  });
+
   test("for a value that is not a number is refused in the server's own process (JSON has no such number to send)", () => {
     const server = new MockServer();
     expect(() => {

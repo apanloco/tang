@@ -50,6 +50,15 @@ type Outcome = { event: Event } | { restructured: Snapshot } | { error: WireErro
 
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), high);
 
+/**
+ * Whether the controller can hold a number: its numbers are 32 bits, and one beyond them is infinity there (JSON
+ * has no infinity to send; a number a person types, or a script sends, can be 1e39).
+ */
+const holds = (value: number): boolean => Number.isFinite(Math.fround(value));
+
+/** A number rounded the way the controller does, in 32 bits: 0.49999999 is 0.5 there, which rounds up. */
+const roundIn32Bits = (value: number): number => Math.round(Math.fround(value));
+
 function pluginOf(node: Node): Plugin | null {
   return node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
 }
@@ -61,13 +70,13 @@ function invalid(message: string): Outcome {
 /** A setting of a modulator: clamped to its range, rounded if it is an index, and only if the modulator has it. */
 function fieldOutcome(node: Node, field: ModulatorField, value: number): Outcome {
   if (node.kind !== "modulator") return invalid("that node is not a modulator");
-  if (!Number.isFinite(value)) return invalid(`${value} is not a value for ${field}`);
+  if (!holds(value)) return invalid(`${value} is not a value for ${field}`);
   const [low, high] = MODULATOR_FIELD_RANGES[field];
   const clamped = clamp(value, low, high);
   const { type } = node.source;
   const fits = type === "lfo" ? field === "rate" || field === "waveform" : type === "envelope" && field !== "rate" && field !== "waveform";
   if (!fits) return invalid(`${field} does not apply to that modulator`);
-  return { event: { type: "modulatorFieldSet", node: node.id, field, value: field === "waveform" ? Math.round(clamped) : clamped } };
+  return { event: { type: "modulatorFieldSet", node: node.id, field, value: field === "waveform" ? roundIn32Bits(clamped) : clamped } };
 }
 
 /** The depth of a cable: clamped, and only of a cable that is there. */
@@ -75,7 +84,7 @@ function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome 
   if (!snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge)) {
     return { error: { code: "notFound", message: `there is no cable ${edge}` } };
   }
-  if (!Number.isFinite(depth)) return invalid(`${depth} is not a value for the depth of a cable`);
+  if (!holds(depth)) return invalid(`${depth} is not a value for the depth of a cable`);
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
 }
 
@@ -120,15 +129,16 @@ function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
 function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
-  const node = snapshot.graph.nodes.find((n) => n.id === intent.node);
+  // (The master is a node of the graph and not of the model: the controller does not find it.)
+  const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
   if (!node) return { error: { code: "notFound", message: `there is no node ${intent.node}` } };
   switch (intent.type) {
     case "setParam": {
       const param = pluginOf(node)?.params.find((p) => p.index === intent.param);
       if (!param) return invalid(`that node has no parameter ${intent.param}`);
-      if (!Number.isFinite(intent.value)) return invalid(`${intent.value} is not a value for ${param.name}`);
+      if (!holds(intent.value)) return invalid(`${intent.value} is not a value for ${param.name}`);
       const clamped = clamp(intent.value, param.min, param.max);
-      const value = param.labels === null ? clamped : Math.round(clamped);
+      const value = param.labels === null ? clamped : roundIn32Bits(clamped);
       return { event: { type: "paramSet", node: node.id, param: param.index, value } };
     }
     case "setGain": {
@@ -137,7 +147,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent): Outcome {
         (intent.gain === "mix" && node.kind === "effect") ||
         ((intent.gain === "groupVolume" || intent.gain === "groupPan") && node.kind === "group");
       if (!fits) return invalid(`${intent.gain} does not apply to that node`);
-      if (!Number.isFinite(intent.value)) return invalid(`${intent.value} is not a value for ${intent.gain}`);
+      if (!holds(intent.value)) return invalid(`${intent.value} is not a value for ${intent.gain}`);
       const [low, high] = GAIN_RANGES[intent.gain];
       return { event: { type: "gainSet", node: node.id, gain: intent.gain, value: clamp(intent.value, low, high) } };
     }
