@@ -153,6 +153,33 @@ mod tests {
         insta::assert_snapshot!("snapshot_tracer", tracer_json());
     }
 
+    /// The tracer's snapshot as the web client's mock engine serves it (and its tests read
+    /// it): the file `web/src/client/fixtures/tracer.snapshot.json`, which this test keeps
+    /// current. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_the_tracer_is_current() {
+        let ctl = controller(include_str!("../../examples/tracer.toml"), Some("tracer.toml"));
+        let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not
+        // promise to keep the same from one release to the next; the fixture needs some number.
+        json["telemetry"]["rev"] = json!(1);
+        let fresh = serde_json::to_string_pretty(&json).unwrap() + "\n";
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/tracer.snapshot.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the tracer's snapshot is now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     #[test]
     fn a_snapshot_is_camel_case_json() {
         let ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n", Some("a.toml"));
