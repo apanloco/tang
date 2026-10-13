@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 import { TANG } from "../playwright.config";
-import { resetTracer } from "./support";
+import { resetTracer, sessionAccordingToTheServer } from "./support";
 
 interface Session {
   meta: { file: string | null };
@@ -72,4 +73,82 @@ test("a change another front-end makes appears on the page", async ({ page }) =>
 
   // The resonance knob of the filter shows it.
   await expect(page.getByRole("slider", { name: "resonance" })).toHaveAttribute("aria-valuenow", "3.14159");
+});
+
+// -- Building modulation on the real session --
+
+/** Where the dot of the knob called `name` is on its sweep right now, 0 to 1; null if it is not shown (nothing drives it). */
+async function dotOf(page: Page, name: string): Promise<number | null> {
+  return page.evaluate((label) => {
+    const slider = document.querySelector(`[role="slider"][aria-label="${label}"]`);
+    const dot = slider?.closest(".tang-knob")?.querySelector(".tang-knob__dot");
+    if (dot?.getAttribute("visibility") !== "visible") return null;
+    const x = Number(dot.getAttribute("cx")) - 24;
+    const y = 24 - Number(dot.getAttribute("cy"));
+    return ((Math.atan2(x, y) * 180) / Math.PI + 135) / 270;
+  }, name);
+}
+
+test("a modulator added from the menu and a cable dragged to a parameter are in the server's session, and the engine runs them", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await resetTracer(page);
+  await expect(page.getByRole("slider", { name: "resonance" })).toBeVisible();
+  expect(await dotOf(page, "resonance")).toBeNull(); // nothing drives it
+
+  await page.getByRole("button", { name: "Add a modulator to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Envelope" }).click();
+  const envelope = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^ADSR$/ }) });
+  await expect(envelope).toBeVisible();
+  const added = await sessionAccordingToTheServer(page);
+  const adsr = added.graph.nodes.find((node) => node.name === "ADSR");
+  expect(adsr?.source?.type).toBe("envelope");
+  expect(adsr?.parent).toBe(added.graph.nodes.find((node) => node.name === "Oscillator")?.id);
+
+  // Drag its output to the resonance knob's port.
+  const from = await envelope.locator('.react-flow__handle[data-handleid="modOut"]').boundingBox();
+  const to = await page.locator(".tang-cell").filter({ has: page.locator('[aria-label="resonance"]') }).locator(".react-flow__handle").boundingBox();
+  if (!from || !to) throw new Error("no handles");
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 20 });
+  await page.mouse.up();
+  await expect(page.getByRole("slider", { name: "Depth of ADSR → Filter: resonance" })).toHaveValue("0.5");
+
+  const drawn = await sessionAccordingToTheServer(page);
+  const cable = drawn.graph.edges.find((edge) => edge.kind === "modulation" && edge.from?.node === adsr?.id);
+  expect(cable?.amount).toBe(0.5);
+  expect(cable?.to?.port).toEqual({ type: "param", index: 1 });
+  expect(cable?.to?.node).toBe(drawn.graph.nodes.find((node) => node.name === "Filter")?.id);
+
+  // The engine applies it: an envelope at rest is 0, which takes the resonance (2, from 0.5 to 10) down by half
+  // of the way to its minimum, to 1.25: a dot a little below where the knob is set.
+  await expect.poll(() => dotOf(page, "resonance")).not.toBeNull();
+  const setAt = (2 - 0.5) / (10 - 0.5);
+  const dot = (await dotOf(page, "resonance")) ?? Number.NaN;
+  expect(dot).toBeCloseTo(((1.25 - 0.5) / (10 - 0.5)), 1);
+  expect(dot).toBeLessThan(setAt);
+
+  // And taken out with its button: the cable goes with it, and the resonance is its own again.
+  await page.getByRole("button", { name: "Remove ADSR" }).click();
+  await expect(envelope).toHaveCount(0);
+  const gone = await sessionAccordingToTheServer(page);
+  expect(gone.graph.nodes.find((node) => node.name === "ADSR")).toBeUndefined();
+  expect(gone.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(1);
+  await expect.poll(() => dotOf(page, "resonance")).toBeNull();
+});
+
+test("a cable drawn from the list, and one taken out with its button, are in the server's session", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await resetTracer(page);
+  await page.getByRole("combobox", { name: "Cable from LFO to" }).selectOption({ label: "drive" });
+  await expect(page.getByRole("slider", { name: "Depth of LFO → Filter: drive" })).toBeVisible();
+  const drawn = await sessionAccordingToTheServer(page);
+  expect(drawn.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(2);
+  await page.getByRole("button", { name: "Remove cable LFO → Filter: drive" }).click();
+  await expect(page.getByRole("slider", { name: "Depth of LFO → Filter: drive" })).toHaveCount(0);
+  const back = await sessionAccordingToTheServer(page);
+  expect(back.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(1);
 });

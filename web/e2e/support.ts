@@ -135,8 +135,8 @@ export async function sampleCutoff(page: Page, ms: number): Promise<Sample[]> {
 /** What of the session a test looks at: the parameters of the plugins, the LFO's settings, and the depths of the cables. */
 interface SessionView {
   graph: {
-    nodes: { id: number; name: string; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
-    edges: { kind: string; id?: number; amount?: number }[];
+    nodes: { id: number; name: string; parent?: number | null; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
+    edges: { kind: string; id?: number; amount?: number; from?: { node: number }; to?: { node: number; port: { type: string; index?: number } } }[];
   };
 }
 
@@ -180,6 +180,37 @@ export async function lfoAccordingToTheServer(page: Page): Promise<LfoView> {
             } else {
               reject(new Error("the tracer has no LFO with a cable"));
             }
+          }
+        });
+      }),
+    TANG,
+  );
+}
+
+/** What of the session a test looks at, as another client of the server is told it. */
+export type Session = SessionView;
+
+/**
+ * The session as the server has it now, told to another client of it (its own socket, as the TUI would
+ * be): what the page shows is the page's own copy of it, which is what a test is of; this is the server's.
+ */
+export async function sessionAccordingToTheServer(page: Page): Promise<Session> {
+  return page.evaluate(
+    (port) =>
+      new Promise<SessionView>((resolve, reject) => {
+        const Socket = window.__RealWebSocket ?? WebSocket;
+        const socket = new Socket(`ws://127.0.0.1:${String(port)}/ws`);
+        const timer = setTimeout(() => {
+          reject(new Error("no snapshot"));
+        }, 5000);
+        socket.addEventListener("message", (event: MessageEvent<unknown>) => {
+          if (typeof event.data !== "string") return;
+          const message = JSON.parse(event.data) as Message;
+          if (message.type === "hello") socket.send(JSON.stringify({ type: "subscribe" }));
+          if (message.type === "snapshot" && message.snapshot) {
+            clearTimeout(timer);
+            socket.close();
+            resolve(message.snapshot);
           }
         });
       }),
@@ -247,9 +278,19 @@ export async function resetTracer(page: Page): Promise<void> {
             const nodes = message.snapshot?.graph.nodes ?? [];
             filter = nodes.find((node) => node.name === "Filter")?.id;
             oscillator = nodes.find((node) => node.name === "Oscillator")?.id;
-            lfo = nodes.find((node) => node.name === "LFO")?.id;
+            lfo = nodes.filter((node) => node.name === "LFO").sort((a, b) => a.id - b.id)[0]?.id;
             cable = message.snapshot?.graph.edges.find((edge) => edge.kind === "modulation")?.id;
+            // What a test built is taken out: the modulators but the tracer's own LFO (the first, whose id is the lowest), and
+            // the cables of that one but the first. (A modulator takes its cables with it.)
+            const edges = message.snapshot?.graph.edges ?? [];
+            const modulators = nodes.filter((node) => node.source !== undefined).map((node) => node.id);
+            const own = lfo === undefined ? undefined : Math.min(...modulators);
+            const extraNodes = modulators.filter((id) => id !== own);
+            const ownCables = edges.filter((edge) => edge.kind === "modulation" && edge.from?.node === own).map((edge) => edge.id ?? -1);
+            const extraCables = ownCables.filter((id) => id !== cable);
             const intents = [
+              ...extraNodes.map((node) => ({ type: "removeNode", node })),
+              ...extraCables.map((edge) => ({ type: "removeEdge", edge })),
               { type: "setModulatorField", node: lfo, field: "rate", value: 0.5 },
               { type: "setModulatorField", node: lfo, field: "waveform", value: 0 },
               { type: "setEdgeDepth", edge: cable, depth: 0.4 },
