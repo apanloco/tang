@@ -101,6 +101,9 @@ impl TreeAddress {
 struct TreeEntry {
     label: String,
     address: TreeAddress,
+    /// The node of the session the entry is of (a lane's, for its pattern). An address is a
+    /// position, and what is at it changes as nodes come and go; this does not.
+    node: NodeId,
     #[allow(dead_code)]
     color: Color,
     #[allow(dead_code)]
@@ -460,17 +463,35 @@ impl State {
         self.web = Some(web);
     }
 
+    /// Build the tree again from the model. What is typed into the parameter filter stays if the
+    /// node the cursor is on is the same one (a value changed under it, by a browser, say), and goes
+    /// if it is not.
     fn rebuild_tree(&mut self) {
+        let was_on = self.selection_key();
         self.tree_entries = build_tree_entries(&self.ctl.model.instruments, &self.ctl.model.groups);
         self.chain_state.set_len(self.tree_entries.len());
-        self.sync_param_state();
+        if self.selection_key() == was_on {
+            self.sync_param_len();
+        } else {
+            self.sync_param_state();
+        }
     }
 
+    /// What the cursor is on, as the tree shows it: its address, and the id of the node it is of (an address is a
+    /// position, and what is at it changes as nodes come and go).
+    fn selection_key(&self) -> Option<(TreeAddress, NodeId)> {
+        self.tree_entries.get(self.chain_state.selected).map(|entry| (entry.address, entry.node))
+    }
+
+    /// The cursor is on another node: what was typed into the parameter filter was for the other one.
     fn sync_param_state(&mut self) {
-        // Clear filter when selected node changes.
         self.param_filter_input = TextInputState::new("");
         self.param_filtering = false;
+        self.sync_param_len();
+    }
 
+    /// The parameter pane has as many rows as the node the cursor is on has parameters.
+    fn sync_param_len(&mut self) {
         let sel = self.chain_state.selected;
         if sel < self.tree_entries.len() {
             let addr = &self.tree_entries[sel].address;
@@ -4366,6 +4387,7 @@ fn push_instrument_entries(
     entries.push(TreeEntry {
         label: format!("{prefix}{plugin_label}{range_label}{transpose_label}"),
         address: TreeAddress::Instrument(inst_idx),
+        node: inst.node,
         color: Color::Green,
         indent: 0,
     });
@@ -4387,6 +4409,7 @@ fn push_instrument_entries(
             entries.push(TreeEntry {
                 label: format!("{prefix}{} {icon} Pattern  {detail}", branch_for(child_idx)),
                 address: TreeAddress::Pattern(inst_idx),
+                node: inst.node,
                 color,
                 indent: 1,
             });
@@ -4398,6 +4421,7 @@ fn push_instrument_entries(
         entries.push(TreeEntry {
             label: format!("{prefix}{} fx {}  [{}]", branch_for(child_idx), fx.name, fx.format),
             address: TreeAddress::Effect { inst: inst_idx, index: fx_idx },
+            node: fx.node,
             color: Color::Yellow,
             indent: 1,
         });
@@ -4435,6 +4459,7 @@ fn push_instrument_entries(
         entries.push(TreeEntry {
             label: format!("{prefix}{} ~ {source_label}{targets}", branch_for(child_idx)),
             address: TreeAddress::Modulator { inst: inst_idx, index: mod_idx },
+            node: m.node,
             color: Color::Magenta,
             indent: 1,
         });
@@ -4457,6 +4482,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
         entries.push(TreeEntry {
             label: format!("\u{25a6} {name}{vol}"),
             address: TreeAddress::Group(g_idx),
+            node: group.node,
             color: Color::Cyan,
             indent: 0,
         });
@@ -4469,6 +4495,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
             entries.push(TreeEntry {
                 label: format!("  fx {}  [{}]  (bus)", fx.name, fx.format),
                 address: TreeAddress::GroupEffect { group: g_idx, index: fx_idx },
+                node: fx.node,
                 color: Color::Yellow,
                 indent: 1,
             });
@@ -4530,6 +4557,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
                 entries.push(TreeEntry {
                     label: format!("  ~ {source_label}{targets}  (bus)"),
                     address: TreeAddress::GroupModulator { group: g_idx, index: mod_idx },
+                    node: m.node,
                     color: Color::Magenta,
                     indent: 1,
                 });

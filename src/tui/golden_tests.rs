@@ -760,6 +760,55 @@ fn arrow_keys_edit_the_parameter_the_filter_shows() {
 }
 
 #[test]
+fn a_change_of_a_modulators_setting_made_elsewhere_leaves_the_parameter_filter_being_typed_as_it_is() {
+    // The TUI is filtering the filter's parameters ("cut" typed, not yet confirmed) when a browser turns the LFO's
+    // rate and the depth of its cable. The tree shows both, so it is built again, and that is not a new node.
+    let session = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n\
+        [[instrument.modulator]]\nrate = 1.0\n[[instrument.modulator.target]]\nslot = 1\nparam = \"cutoff\"\ndepth = 0.4\n";
+    let mut h = Harness::new(session);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Enter);
+    h.press(KeyCode::Char('/')).type_chars("cut");
+    assert!(h.s.param_filtering);
+    assert!(!h.dump().contains("resonance"), "(only the cutoff is let through)");
+
+    let lfo = h.s.ctl.model.instruments[0].modulators[0].node;
+    let cable = h.s.ctl.model.instruments[0].modulators[0].targets[0].edge;
+    for intent in [
+        Intent::SetModulatorField { node: lfo, field: ModulatorField::Rate, value: 7.0 },
+        Intent::SetEdgeDepth { edge: cable, depth: 0.9 },
+    ] {
+        let applied = h.s.ctl.apply(intent).unwrap();
+        h.s.react_to(&applied);
+    }
+    assert!(h.tree().iter().any(|line| line.contains("7.0Hz") && line.contains("(90%)")), "the tree shows them: {:#?}", h.tree());
+    assert!(h.s.param_filtering, "still being typed");
+    assert_eq!(h.s.param_filter_input.value, "cut");
+    assert_eq!(h.s.chain_state.selected, h.s.tree_entries.iter().position(|e| e.address == TreeAddress::Effect { inst: 0, index: 0 }).unwrap());
+    // And on the screen: what is typed, and only the rows it lets through.
+    let after = h.dump();
+    assert!(after.contains("/ cut") && after.contains("cutoff") && !after.contains("resonance"), "{after}");
+}
+
+#[test]
+fn the_parameter_filter_goes_when_the_node_under_the_cursor_is_another_one() {
+    // "res" is typed and confirmed for the filter, and the cursor is in its parameters. The filter is taken out (by
+    // another front-end) and the reverb is at its place in the tree: the cursor is at the same address, and on another
+    // node, which is not what the filter was typed for.
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Enter);
+    h.press(KeyCode::Char('/')).type_chars("res").press(KeyCode::Enter);
+    assert_eq!(h.s.param_filter_input.value, "res");
+    h.s.ctl.model.remove_effect(0, 0);
+    h.s.rebuild_tree();
+    assert_eq!(h.s.selection_key().map(|(addr, _)| addr), Some(TreeAddress::Effect { inst: 0, index: 0 }));
+    assert_eq!(h.s.ctl.model.instruments[0].effects[0].name, "Reverb");
+    assert_eq!(h.s.param_filter_input.value, "", "the reverb is shown whole");
+    assert!(!h.s.param_filtering);
+}
+
+#[test]
 fn clicking_and_dragging_a_parameter_bar_sets_its_value() {
     use crossterm::event::{MouseEvent, MouseEventKind};
     let mut h = Harness::new(scene_split());
