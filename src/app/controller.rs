@@ -43,6 +43,7 @@ use crate::app::model::{
     mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
+use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
@@ -110,29 +111,6 @@ pub struct EngineHandles {
     pub telemetry: Arc<Telemetry>,
 }
 
-/// Someone who wants to hear about every intent the controller applies, whichever
-/// front-end asked for it (`Controller::subscribe`): the web runtime, to tell its
-/// clients. It is called on the owner thread, inside `apply`, after the model and
-/// the audio thread have been changed, so it must not block.
-pub trait EventSink: Send {
-    fn applied(&mut self, applied: &Applied);
-}
-
-impl<F: FnMut(&Applied) + Send> EventSink for F {
-    fn applied(&mut self, applied: &Applied) {
-        self(applied)
-    }
-}
-
-/// Names a subscription, to end it with `Controller::unsubscribe`. Never reused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SubscriberId(u64);
-
-struct Subscriber {
-    id: SubscriberId,
-    sink: Box<dyn EventSink>,
-}
-
 /// A modulation target to bind (`Controller::add_target`): the parameter it
 /// drives, or the modulator field, and how strongly.
 pub struct NewTarget {
@@ -180,9 +158,8 @@ pub struct Controller {
     return_rx: Receiver<Box<dyn Plugin>>,
     devices: Option<Box<dyn DeviceWatcher>>,
     last_device_poll: Instant,
-    /// Who hears what `apply` does, in the order they subscribed.
-    subscribers: Vec<Subscriber>,
-    next_subscriber: u64,
+    /// Who hears what `apply` does.
+    subscribers: Subscribers,
 }
 
 /// The tempo a session starts at: that of the first lane with a recorded
@@ -242,8 +219,7 @@ impl Controller {
             return_rx,
             devices: None,
             last_device_poll: now,
-            subscribers: Vec::new(),
-            next_subscriber: 0,
+            subscribers: Subscribers::default(),
         }
     }
 
@@ -393,25 +369,18 @@ impl Controller {
     /// Tell `sink` about every intent applied from now on (see `EventSink`).
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime subscribes"))]
     pub fn subscribe(&mut self, sink: Box<dyn EventSink>) -> SubscriberId {
-        let id = SubscriberId(self.next_subscriber);
-        self.next_subscriber += 1;
-        self.subscribers.push(Subscriber { id, sink });
-        id
+        self.subscribers.add(sink)
     }
 
     /// End a subscription. False if there is none by that id (any more).
     #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime subscribes, later in step 10"))]
     pub fn unsubscribe(&mut self, id: SubscriberId) -> bool {
-        let before = self.subscribers.len();
-        self.subscribers.retain(|s| s.id != id);
-        self.subscribers.len() != before
+        self.subscribers.remove(id)
     }
 
     /// Tell the subscribers about an intent that has been applied.
     pub(super) fn publish(&mut self, applied: &Applied) {
-        for subscriber in &mut self.subscribers {
-            subscriber.sink.applied(applied);
-        }
+        self.subscribers.publish(applied);
     }
 
     /// A handle on the note path (the Locked mode, the held notes, the channel to

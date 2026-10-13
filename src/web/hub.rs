@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-use crate::app::controller::EventSink;
+use crate::app::subscribers::EventSink;
 use crate::app::intent::Applied;
 use crate::app::protocol::{ServerMessage, TelemetryChannel};
 

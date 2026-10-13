@@ -15,5 +15,6 @@ pub mod model;
 pub mod protocol;
 pub mod save;
 pub mod snapshot;
+pub mod subscribers;
 #[cfg(test)]
 pub mod testutil;
