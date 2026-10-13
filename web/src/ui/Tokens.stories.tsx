@@ -11,6 +11,7 @@ const COLOURS: [name: string, means: string][] = [
   ["--tang-held", "a key that is down"],
   ["--tang-root", "the root of the scale"],
   ["--tang-scale", "a note of the scale"],
+  ["--tang-value", "what a parameter is set to"],
   ["--tang-modulation", "modulators and what they drive"],
   ["--tang-group", "groups and their buses"],
   ["--tang-instrument", "an instrument"],
