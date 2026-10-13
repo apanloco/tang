@@ -589,6 +589,58 @@ describe("the patch", () => {
       expect(screen.queryByRole("slider", { name: /^Depth of/ })).toBeNull();
     });
 
+    test("gives the focus to the list of the modulator that drove the cable, where the next cable is drawn from, and not to the page", async () => {
+      await rig(<PatchView />);
+      const button = await screen.findByRole("button", { name: "Remove cable LFO → Filter: cutoff" });
+      button.focus();
+      fireEvent.click(button);
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: /^Remove cable/ })).toBeNull();
+      });
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a cable from LFO" }));
+      });
+    });
+
+    test("gives it to the list of the modulator of that cable, whichever modulators there are", async () => {
+      const snapshot: Snapshot = structuredClone(tracerSnapshot);
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });
+      snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
+      // (A second cable of the second modulator, so that it still has one cable when the first is taken out.)
+      snapshot.graph.edges.push({ kind: "modulation", id: 2, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: oscillator.id, port: { type: "param", index: 1 } } });
+      await rig(<PatchView />, { snapshot });
+      for (const [cable, picker] of [
+        ["Remove cable LFO 2 → Filter: cutoff", "Add a cable from LFO 2"],
+        ["Remove cable LFO 1 → Filter: cutoff", "Add a cable from LFO 1"],
+      ] as const) {
+        fireEvent.click(await screen.findByRole("button", { name: cable }));
+        await waitFor(() => {
+          expect(document.activeElement).toBe(screen.getByRole("button", { name: picker }));
+        });
+      }
+    });
+
+    test("leaves the focus where it was when the cable could not be taken out, and says why", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      const button = await screen.findByRole("button", { name: "Remove cable LFO → Filter: cutoff" });
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      button.focus();
+      fireEvent.click(button);
+      expect(await screen.findByText(/^Could not take out the cable LFO → Filter: cutoff: /)).toBeTruthy();
+      expect(document.activeElement).toBe(button);
+    });
+
     test("names two cables of two modulators of one name apart", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
       snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });

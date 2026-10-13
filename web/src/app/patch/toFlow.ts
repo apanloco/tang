@@ -62,6 +62,8 @@ export interface PatchEdgeData extends Record<string, unknown> {
    * turned at the pace of the frames, and so not part of what the canvas is laid out by).
    */
   cable?: EdgeId;
+  /** The modulator that drives the cable, whose list the focus goes to when the cable is taken out. */
+  modulator?: NodeId;
   /** What the cable is, in words: `LFO → Filter: cutoff`. */
   label?: string;
 }
@@ -276,7 +278,7 @@ export function toFlow(graph: Graph): Flow {
     if (sourceHandle === null || targetHandle === null) continue;
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle, targetHandle, deletable: false };
     if (edge.kind === "modulation") {
-      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, label: describeCable(graph, names, edge) }, zIndex: 10 });
+      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: describeCable(graph, names, edge) }, zIndex: 10 });
     } else {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }

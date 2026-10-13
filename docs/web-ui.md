@@ -776,7 +776,8 @@ envelope and a MIDI control (`MenuButton`, the WAI-ARIA menu-button pattern; the
 in the page and not in the node, where it would go under the next node and move with the
 canvas); a modulator's header ends in a "×" that takes it out (the focus goes to its lane's "+",
 asked for a frame at a time, since a node that has not been measured again is not visible and
-takes no focus), and each cable has a "×" beside its depth. A cable is drawn by dragging it from the
+takes no focus), and each cable has a "×" beside its depth (the focus goes to the list of its modulator, where
+the next cable is drawn from: the button went with the cable, and the focus with it, to the page). A cable is drawn by dragging it from the
 output at the foot of a modulator to the port of a parameter: while it is dragged the ports that
 take it are marked and no others, and a drop anywhere else asks for nothing. The port of a parameter
 that takes the cable grows from its dot to the whole cell of the control while the cable is dragged

@@ -4,9 +4,10 @@ import { BaseEdge, EdgeLabelRenderer, getBezierPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 
 import { cableDepthOf } from "../../client/selectors";
-import type { EdgeId } from "../../protocol";
+import type { EdgeId, NodeId } from "../../protocol";
 import { useClientState, useEditor } from "../ClientProvider";
-import { CableDepthControl } from "./controls";
+import { focusWhenPossible } from "../focus";
+import { CableDepthControl, drivesId } from "./controls";
 import { cableWidth } from "./describe";
 import type { PatchEdge } from "./toFlow";
 
@@ -15,8 +16,8 @@ export function AudioEdge(props: EdgeProps<PatchEdge>) {
   return <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--audio" />;
 }
 
-/** The button on a cable that takes it out (the modulator stays). */
-function RemoveCableButton({ edge, label }: { edge: EdgeId; label: string }) {
+/** The button on a cable that takes it out (the modulator stays); the focus goes to the list of the modulator, where the next cable is drawn from. */
+function RemoveCableButton({ edge, modulator, label }: { edge: EdgeId; modulator: NodeId | undefined; label: string }) {
   const editor = useEditor();
   return (
     <button
@@ -25,8 +26,10 @@ function RemoveCableButton({ edge, label }: { edge: EdgeId; label: string }) {
       aria-label={`Remove cable ${label}`}
       title={`Remove cable ${label}`}
       onClick={() => {
-        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-        void editor.removeCable(edge);
+        // (If it is refused the page says so: `Editor` puts the reason among the notices, and the focus stays on the button.)
+        void editor.removeCable(edge).then((removed) => {
+          if (removed && modulator !== undefined) focusWhenPossible(drivesId(modulator));
+        });
       }}
     >
       ×
@@ -47,7 +50,7 @@ export function ModulationEdge(props: EdgeProps<PatchEdge>) {
         <EdgeLabelRenderer>
           <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
             <CableDepthControl edge={cable} label={props.data?.label ?? "a cable"} />
-            <RemoveCableButton edge={cable} label={props.data?.label ?? "a cable"} />
+            <RemoveCableButton edge={cable} modulator={props.data?.modulator} label={props.data?.label ?? "a cable"} />
           </div>
         </EdgeLabelRenderer>
       )}

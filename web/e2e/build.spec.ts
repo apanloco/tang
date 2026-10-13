@@ -220,6 +220,8 @@ test("a cable and a modulator are taken out by their buttons", async ({ page }) 
   await page.getByRole("button", { name: "Remove cable LFO → Filter: cutoff" }).click();
   await expect(cables(page)).toHaveCount(0);
   await expect(node(page, "LFO")).toBeVisible();
+  // The cable's button went with it: the focus is on the list of its modulator, where the next one is drawn from.
+  await expect(page.getByRole("button", { name: "Add a cable from LFO" })).toBeFocused();
   await page.getByRole("button", { name: "Remove LFO" }).click();
   await expect(node(page, "LFO")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add a modulator to Oscillator" })).toBeFocused();

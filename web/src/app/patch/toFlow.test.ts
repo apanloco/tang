@@ -659,8 +659,9 @@ describe("the cables on the canvas", () => {
     expect(edge?.sourceHandle).toBe("modOut");
     expect(edge?.target).toBe("1");
     expect(edge?.targetHandle).toBe("param-0");
-    // (How deep it goes is a value, which the cable reads for itself: it is not in what the canvas is laid out by.)
-    expect(edge?.data).toEqual({ cable: 0, label: "LFO → Filter: cutoff" });
+    // (How deep it goes is a value, which the cable reads for itself: it is not in what the canvas is laid out by.
+    // It knows its modulator, whose list the focus goes to when the cable is taken out.)
+    expect(edge?.data).toEqual({ cable: 0, modulator: 2, label: "LFO → Filter: cutoff" });
     expect(edge?.id).toBe("mod:0");
     // Over the nodes it passes by, rather than behind them.
     expect(edge?.zIndex ?? 0).toBeGreaterThan(0);
