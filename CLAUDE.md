@@ -1363,7 +1363,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `RemoveEdge`,
-  `AddModulator`, `AddModEdge` and `RemoveNode` (see "Session state").
+  `AddModulator`, `AddModEdge`, `RemoveNode` and `Save` (see "Session state").
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the
@@ -1405,7 +1405,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16 and 18): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1428,7 +1428,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `NoticeBoard` is where it says what the server refused; where a cable may end is the
   controller's rule, read from the graph by `client/reach.ts` and pinned to the controller's by
   a fixture it writes, `web/src/client/fixtures/reach.json`). Step 16 made the page's keys a
-  piano (`client/keyboard.ts`, `app/useKeyboardPiano.ts`; see "Virtual piano"). What the controller
+  piano (`client/keyboard.ts`, `app/useKeyboardPiano.ts`; see "Virtual piano"). Step 18 made the
+  page save the session (`app/SessionBar.tsx`: the file's name, "Saved" or "Unsaved changes", a Save
+  button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1437,7 +1439,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   needs no server, `&scene=stress` serves eight lanes with 32 LFOs and 64 driven
   parameters and `&scene=lanes` two lanes with an LFO each), `npm test` (Vitest), `npm run lint`, `npm run typecheck`,
   `npm run storybook`, `npm run build` (→ `web/dist`), `npm run e2e` (Playwright,
-  one test at a time, since they share the real program's session; needs
+  one test at a time, since they share the real program's session, which is a copy of the tracer in
+  `web/.e2e-session/` so that a test that saves does not write the example; needs
   `cargo build --features web`; `npm run e2e:install` once; they include the
   performance tests of docs/web-ui.md §9.4, which need the Vite dev server for the
   count of React's commits). The program serves

@@ -421,7 +421,11 @@ resolves cursor → ids and then calls `apply`.
   rest of the list that is not.)
 - Patterns: `RecordPattern`, `ClearPattern`, `SetPatternField`.
 - Globals: `SetBpm`, `SetScale`, `SetPianoMode`, `Save`, `SaveAs`, `Undo`,
-  `Redo`.
+  `Redo`. (`Save` is built, step 18: it writes the session to its own file, as the TUI's
+  `Ctrl+S` does, and nobody names a file; it is answered by a revision and the event
+  `Saved { file }`, which leaves the session with nothing unsaved; a session with no file, or
+  one that cannot be written, is refused with the code `io`, which is no revision and changes
+  nothing. `SaveAs` waits for the one validated file name, §8.)
 - Layout: `SetNodeUi` (not undoable; marks the session dirty).
 
 `apply` returns `Applied { rev, events, undo }` or an `IntentError` (`NotFound`,
@@ -1662,6 +1666,72 @@ Each step is a reviewable change; the TUI must not regress at any point.
     keyboard has them, not by what is printed on them: on another layout `;` is the key right
     of `L` and `/` the key right of `.`, whatever they print there. By ear, on a real device,
     nothing was checked beyond the meter.
+
+- [x] **17. The controller takes things out of the chains (phase 1, first piece).** The TUI's
+  `d` on an effect, a bus effect, a lane or a group did its work by itself: it sent the engine's
+  removal and dropped the modulator targets that pointed at what went with `retain` (the audio
+  thread did the same), which left the cables that drive the depth of a cable that is gone pointing at
+  nothing, and, when a group was removed, left its members' parameters at the last value the group's
+  cables had written (f65). `Controller::remove_effect`, `remove_bus_effect`, `remove_lane` and
+  `remove_group` do it now, and the TUI asks them. *Done when:* each leaves the model and a real
+  audio graph with the same lanes, groups, chains and cables, whatever is removed in whatever order,
+  and nothing points at nothing.
+  - **As built.** Every removal takes the cables that point at what goes out first, one at a time and
+    by the path a cable always goes (`take_out`: the engine is sent `RemoveModTarget`s in the order
+    the model makes them, and the cables that drive the depth of one that goes go before it): for a
+    plugin, the cables that drive its parameters (`SessionModel::cables_into_plugin`: a lane's own,
+    and a group's to a member's plugin or to a bus effect); for a lane, its group's cables to its
+    plugins and its modulators (`group_cables_into_lane`; its own modulators' cables go with it, a
+    lane's modulator reaching only its own chain); for a group, all of its cables. Then the plugins
+    are handed back by the audio thread and the model drops them (`SessionModel::remove_bus_effect`,
+    `remove_lane` and `remove_group` mirror the audio thread's `RemoveGroupEffect`,
+    `RemoveInstrument` and `RemoveGroup`, which renumber what comes after). What the cables drove
+    goes with the plugin or the lane, so nothing is given back, except what a group's cables drove
+    in the lanes that stay: a member's parameters, its modulators' rates and stages and the depths of
+    their cables have the value the user set again (f54's `give_back`), unless a cable of the lane's
+    own still drives them. A session keeps a lane: the last is not taken out.
+  - **Tests.** A scene with a cable of every kind that can end at a plugin and cables that drive the
+    depth of those (`testutil::CHAINS`), compared with a real audio graph (`AudioGraph::effect_names`
+    and `groups` for it): every removal on its own, in sequence and in both orders, over four scenes,
+    leaves the same lanes, groups, chains and cables and no cable pointing at nothing; the commands of
+    four removals are pinned (the depth cable goes before the cable it drives, then the group's, then
+    the plugin; what a removed group's cables drove is given back and what its members' own cables
+    drive is not); after a group goes, a member's detune and the rate of its LFO are what the user set,
+    in the audio thread. 39 mutations of the code written, 38 caught, and the one that is not is equivalent.
+  - **Not done.** The intent: `RemoveNode` still refuses a node that is not a modulator, since the
+    browser has no button for one and no undo (a click on a "×" there would be final), and the mock
+    engine would have to derive the audio path to do the same. `clear_instrument` (the first `d` on an
+    instrument) leaves the cables to the plugin's parameters pointing at nothing (f66, with f51: what
+    to do with them when an instrument is replaced).
+
+- [x] **18. Saving from the browser (phase 1).** The page could build modulation and play it, but
+  nothing it did was kept unless the TUI was there to press `Ctrl+S`. *Done when:* on the real
+  program, a change made in the page is written to the session's file by a button and by
+  `Control+S` (`Command+S`), and the page says what is unsaved.
+  - **As built.** `Intent::Save` (§5) and the event `Saved { file }`, the error code `io`
+    (`IntentError::Io`), `Controller::session_file_name` (the snapshot's `meta.file` and the event
+    use it). `Snapshot::apply` and the web client's `applyEvent` follow the rules of the controller
+    (a save is no change of a node; nothing is unsaved after it, and any other intent leaves the
+    session unsaved). A save that the TUI makes reaches the browsers as a snapshot at a revision of its
+    own (`resync`: the comparison includes the meta). `Editor.save()`; the mock engine saves, and
+    refuses a session with no file with the controller's words. `app/SessionBar.tsx`: the file's name,
+    "Saved" or "Unsaved changes" (a polite live region, not a `role="status"`, which the connection's
+    is), a "Save" button that is disabled while there is nothing to save or it is saving, and the
+    chord, which is listened to on the window and keeps the browser from offering to save the page
+    even when there is nothing to save; Shift+Control+S is left alone (Save As is the TUI's, and the
+    page's when there is a validated name for it, §8).
+  - **Tests.** Rust: the intent over a file in a temporary directory (the file is the session as it
+    is; a session with no file, and one whose file cannot be written, are refused, with no revision
+    and the session still unsaved), the event as a subscriber hears it, the snapshot that follows the
+    controller through a save, a save the TUI makes told as a snapshot, the TUI's tab (the mark goes
+    when a browser saves) and the real program (a client saves and the file has the change; a client
+    that arrives after is given a clean session). Web: 27 mutations of the reducer, the mock, the
+    editor and the bar, 24 caught at once and three that were not and showed gaps, covered now (a key
+    that is not S, a save of a clean session, the text of a refusal); 22 Vitest tests (708 in all); a browser test on the
+    real program, which serves a copy of the tracer (`web/.e2e-session`, so that a test that saves
+    does not write the example).
+  - **Not done.** Save As (a validated file name for both front-ends, §8); the page does not warn
+    before it is closed with changes that are not saved.
 
 ## 13. Later: track B (`builtin:patch`)
 
