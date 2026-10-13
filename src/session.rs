@@ -319,8 +319,24 @@ pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
     parse(&content)
 }
 
+/// Refuse a `nan` or an `inf` anywhere in a session file (TOML has both): as a volume, a
+/// rate or a depth it would be in the model and in the audio thread, and a snapshot with a
+/// NaN in it is not even JSON. The error says where it is.
+fn reject_non_finite(table: &toml::Table) -> anyhow::Result<()> {
+    fn walk(value: &toml::Value, path: &str) -> anyhow::Result<()> {
+        match value {
+            toml::Value::Float(number) if !number.is_finite() => anyhow::bail!("{path} is not a finite number ({number})"),
+            toml::Value::Array(items) => items.iter().enumerate().try_for_each(|(i, item)| walk(item, &format!("{path}[{i}]"))),
+            toml::Value::Table(table) => table.iter().try_for_each(|(key, item)| walk(item, &format!("{path}.{key}"))),
+            _ => Ok(()),
+        }
+    }
+    table.iter().try_for_each(|(key, value)| walk(value, key))
+}
+
 /// Parse session TOML text (the body of `load`, usable without a file).
 pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
+    reject_non_finite(&content.parse::<toml::Table>()?)?;
     let raw: SessionRaw = toml::from_str(content)?;
     let groups: Vec<GroupConfig> = raw
         .groups
@@ -1129,6 +1145,31 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_that_is_not_a_number_is_refused_wherever_it_is_and_the_error_says_where() {
+        // TOML has `nan` and `inf`. As a volume, a rate or a depth they would be in the
+        // model and in the audio thread, and a snapshot with a NaN in it is not even JSON.
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        for (text, place) in [
+            (format!("{osc}volume = nan\n"), "instrument[0].volume"),
+            (format!("bpm = inf\n{osc}"), "bpm"),
+            (format!("{osc}[instrument.params]\ncutoff = -inf\n"), "instrument[0].params.cutoff"),
+            (format!("{osc}[[instrument.effect]]\nplugin = \"builtin:reverb\"\nmix = nan\n"), "instrument[0].effect[0].mix"),
+            (format!("{osc}[[instrument.modulator]]\nrate = nan\n"), "instrument[0].modulator[0].rate"),
+            (format!("[[group]]\npan = nan\n{osc}"), "group[0].pan"),
+            (format!("{osc}[instrument.pattern]\nbpm = nan\n"), "instrument[0].pattern.bpm"),
+        ] {
+            let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert!(error.contains(place) && error.contains("is not a finite number"), "{error}\nfor:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_word_that_looks_like_a_number_that_is_not_one_is_only_a_word() {
+        let config = parse("[[instrument]]\nplugin = \"builtin:osc\"\npreset = \"nan\"\nvolume = 1e2\n").unwrap();
+        assert_eq!(config.instruments[0].instrument.as_ref().map(|i| (i.preset.as_deref(), i.volume)), Some((Some("nan"), 100.0)));
+    }
 
     #[test]
     fn parse_range_valid() {
