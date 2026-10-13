@@ -762,7 +762,9 @@ Mouse: click to select, drag a parameter bar to set its value, drag the
 parameter scrollbar to scroll. Mouse wheel scrolls the parameter list and the
 Help tab.
 
-TODO: `p` on a group bus effect (the `LoadPreset` intent already reaches those).
+TODO: `p` on a group bus effect, and a "≡" menu on one in the page: the controller refuses `LoadPreset` for a
+bus effect (`a bus effect has no presets to load`), since the audio thread's `LoadPreset` command addresses a
+lane's slot; a command for a group's chain would do it.
 TODO: `e` shortcut to open the value entry popup directly (currently use
 `Enter` from chain focus or land on a param and press `Enter`).
 TODO: `Ctrl+R` shortcut to clear a pattern (currently select the pattern
@@ -1399,6 +1401,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `Controller::put_instrument` (a lane's, which the TUI's `i` asks) and `add_instrument_lane`
   (a new lane), from the catalog only, which `ReplaceInstrument` and `AddInstrument` wrap
   (`builtins.instruments.json` is the mock engine's node for each built-in instrument).
+  A preset is loaded by `LoadPreset` (the instrument of a lane, or an effect of a lane's chain; a
+  bus effect is refused, since the audio thread's command addresses a lane's slot), which also
+  centres the cables that drive the plugin on the preset's values; the mock engine answers with
+  what the controller says each built-in preset does (`builtins.presets.json`, which Rust writes).
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the
@@ -1477,7 +1483,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   puts another instrument in it (`ChangeInstrumentMenu`; `Editor.replaceInstrument`) and the bar a
   "+ Instrument" menu that adds a lane with one (`app/AddInstrument.tsx`; `Editor.addInstrument`); the
   canvas moves to a node the page has added when it is not all in the view (`client/reveals.ts`,
-  `app/patch/view.ts`), and not for a node another front-end adds. What the controller
+  `app/patch/view.ts`), and not for a node another front-end adds. Step 21 added the presets: every
+  instrument and every effect of a lane whose plugin has some has a "≡" menu that loads one
+  (`PresetMenu`, `presetsOf`; `Editor.loadPreset`), the one loaded last marked and the menu opening on it
+  (`MenuItem.current`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1526,7 +1535,8 @@ Phase 0 (foundations) is built: the 13 steps of `docs/web-ui.md` §12. Steps 14 
 first of phase 3 ahead of phase 1 (D18): a modulator's settings and a cable's depth are turned,
 modulators and cables are added and taken out, in the browser and in the TUI. Step 16 made the keys
 of the computer a piano in the page, so that what is built can be tried by ear. Phase 1 (session
-parity) is next, §11.
+parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
+page saves the session (18), puts effects (19) and instruments (20) in the chains and loads presets (21).
 TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
@@ -1537,7 +1547,8 @@ oscillator): a cable would have to be drawn again with the new plugin's index.
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
 TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at
-its own defaults: ranges, groups, presets and taking a lane out (waits for an undo) are not in the page yet.
+its own defaults (or at a preset the page then loads): ranges, groups and taking a lane out (waits for an undo)
+are not in the page yet.
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
 edge, and two cables with the same middle put theirs over each other; user-placed nodes and
 sliders that move along the cable would settle it.

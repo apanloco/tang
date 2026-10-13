@@ -396,7 +396,12 @@ lists all of them). Attaching a cable pins its target automatically.
 resolves cursor → ids and then calls `apply`.
 
 - Params and gains: `SetParam`, `SetGain { Volume | Mix | GroupVolume |
-  GroupPan }`, `LoadPreset` (built in step 6; the rest of the list is not).
+  GroupPan }`, `LoadPreset` (built in step 6; the rest of the list is not). (`LoadPreset { node, preset }` takes a
+  preset's `id` and the node of a lane's instrument or of an effect in a lane's chain. The plugin's parameters take the
+  preset's values, which the event carries with its name (`PresetLoaded`), and the cables that drive them are centred
+  on those (step 21: until then the audio thread put the old values back at the next buffer, f64). Refused, with
+  nothing changed, for a node that has no plugin, a lane with no instrument, a preset the plugin does not have, and a
+  bus effect (`a bus effect has no presets to load`: the audio thread's command addresses a lane's slot).)
 - Structure: `AddInstrument`, `ReplaceInstrument`, `AddEffect { parent, plugin }`,
   `RemoveNode`, `MoveEffect`, `SetRange`, `AssignGroup`, `AddGroup`,
   `RenameGroup`. (`AddEffect` is built, step 19: `parent` is the node of a lane (an empty lane has
@@ -846,6 +851,15 @@ effects'), which asks for `ReplaceInstrument`; and the bar of the page has a "+ 
 `AddInstrument`. The canvas moves to a node the page has just added when it is not all in the view (`Reveals`,
 `app/patch/view.ts`, `ShowWhatWasAdded`): the node in the middle, at the zoom the person has or lower if it does not
 fit, animated over 250 ms; a node that another front-end adds is not shown this way.
+
+**As built (step 21).** On an instrument, after the "♪", and on an effect of a lane, before the "×", a "≡" opens a menu of
+the plugin's presets by name, in the plugin's order (`PresetMenu`: `presetsOf`, `client/selectors.ts`), which asks for
+`LoadPreset` (`Editor.loadPreset`): the knobs take the preset's values when the server tells that it was loaded, or
+when another front-end loaded it. The preset that was loaded last is marked (a check, bold, `aria-current`:
+`MenuItem.current` of `MenuButton`) and the menu opens on it, so the keyboard is where the person left it. A plugin
+with no presets has no button (the oscillator and the filter), and neither has an effect on a group's bus (the engine
+loads a preset by a lane's slot). A plugin with hundreds of presets has one long menu (it has a height limit, and a
+letter finds an item): the filter of the TUI's selector is not built.
 
 ### 9.4 Performance rules
 
@@ -1654,7 +1668,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     rate, stage or depth on a default and not on what the file gives that field, so a saved session
     came back with an LFO at 2 Hz swept around 1 Hz (fixed). Open, for phase 1: **f64**, loading a preset
     may leave the audio thread's base values of the cables stale (from reading `load_preset`, not
-    tested), and **f65**, a lane that leaves a group may leave what the group's cables drove at their
+    tested: it did, and step 21 fixed it), and **f65**, a lane that leaves a group may leave what the group's cables drove at their
     last value (the same class as f54, not tested: the TUI's `g` is not an intent yet). f52 (a flaky
     browser test of the stress scene) and f53 (the TUI's piano), found in step 16, are fixed.
   - **Found by me on the way, open: replacing a lane's instrument keeps the cables on the old one.**
@@ -2017,6 +2031,57 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 872 tests (848 before the step), 1020 with the `web` feature and 12 on the
     real program; web 818 (752 before); 38 in browsers (37).
 
+- [x] **21. Presets from the browser (phase 1).** The TUI has loaded presets since step 6 (`p`: the `LoadPreset`
+  intent), but the page offered none: a plugin that has presets could only be turned knob by knob. *Done when:* on the
+  real program, a browser loads a preset into a plugin that has some, the knobs take its values, the menu marks it and
+  the file the session is saved to names it. In parts, each its own commit: **21.0** f64, which the engine's `LoadPreset`
+  had (below), fixed first, and shown on the real program; **21.1** the editor's `loadPreset` and the mock engine's,
+  with what the controller says each built-in preset does as a fixture that Rust writes; **21.2** the "≡" menu on a
+  node, with a browser test. *Not done (later steps):* a preset for an effect on a group's bus (the engine), a filter
+  for a menu of hundreds of presets, the ranges and groups of a lane, undo.
+  - **21.0, f64 fixed first.** The finding of step 15 was true. A cable modulates around its base value and puts the
+    result on its parameter at every buffer; `SetParameter` refreshes the base and the engine's `LoadPreset` did not,
+    so the plugin took the preset's values and the first buffer after it the cables that drive a parameter put the old
+    base back (plus their offset): a preset was heard for everything but what was modulated, while the model, and so
+    the page, showed the preset's value. After the plugin has loaded the preset, the cables of the lane's own
+    modulators that drive that slot, and those of the group's modulators that drive it as a member
+    (`update_group_member_base`), take the value the plugin reports (`b1e7adf`). Two tests over a real audio graph
+    (after "arcadia" the reverb's damping was 0.30 and both cables on it were centred on 0.35), and six mutations, all
+    caught; and one on the real program (`tests/serve.rs`): a reverb in the tracer's lane with the lane's LFO on its
+    decay at a depth of 0.1, the "room" preset (decay 0.55) loaded, and the effective value in the modulation frames
+    moving around 0.55 and not around the 0.88 it had, which the one mutation (the lane's cables left alone) fails. That test
+    first failed once in a loaded run, with 0.969, the old centre at the LFO's peak: the first frame after an
+    acknowledgement can be older than the audio thread's reading of the command, so the test throws away what the
+    connection has already received before it reads.
+  - **21.1 as built.** `Editor.loadPreset(node, preset)` asks for `LoadPreset` and resolves true when it was loaded; if the
+    server refuses, a notice says what could not be done in the names the canvas shows ("Could not load Cathedral into
+    Reverb: ..."), the preset by the name the plugin's own list gives it (its id if the list is not known). The mock
+    engine does what `load_preset` does: it refuses a node that has no plugin, a bus effect, a lane with no instrument
+    and a preset the plugin does not have, in the controller's words, and answers with the preset's name and the values
+    the plugin has for its parameters after it. For a built-in plugin they are the controller's own, a fixture Rust
+    writes (`web/src/client/fixtures/builtins.presets.json`, kept current by
+    `the_web_clients_fixture_of_the_builtin_presets_is_current`; only the reverb has presets: five, ten values each); for
+    a plugin of the machine's the mock knows none and says so. Until now the mock said no values at all, so a page that
+    shows what a preset does could not be tested against it.
+  - **21.2 as built.** The "≡" menu of §9.3 (`PresetMenu`, `MenuItem.current`, `presetsOf`): a selector that says which
+    presets a node's plugin can be given (an instrument's, a lane's effect's; none for a node with no plugin or a bus
+    effect), with the one loaded last by its name; the menu is a `MenuButton` that marks the current item and opens on it
+    whatever its place, an arrow key opens it at the arrow's own end as before. A refusal is among the notices.
+  - **Tests.** Web: nine on the mock engine and the editor (each refusal, the values, the name, the other clients being
+    told, a plugin the mock has no values for, the fixture's own keys), six on the selector, five on the menu with a
+    current item, seven on the canvas (the button on what has presets and on nothing else, the menu in the plugin's order,
+    the request, the mark and where it opens, a preset another front-end loads, a refusal); 18 mutations of the client and the menu,
+    all caught. One in a browser on the real program (a program of its own, as step 20's): a reverb is put in the lane, "Small
+    Room" is loaded from the menu and its decay, size and pre-delay are what the preset says, the menu marks it and opens on it,
+    "Cathedral" is loaded by the keyboard alone, and the file saved names it and keeps none of its values as the user's own.
+  - **Found on the way.** f64 (above). A test of step 20 (a lane that could not be added: the page's notice) failed in two
+    full runs on a machine with a load of 20 and never alone: its client reconnects after 5 ms, as the other tests of the page
+    do, and a click that came late found the connection up again and the lane added; a click delayed by 50 ms failed it every
+    time, and its client waits a minute now (`09d6c0e`). CLAUDE.md said the TUI's `p` on a group's bus effect only lacked a key
+    ("the `LoadPreset` intent already reaches those"); the controller refuses it, as above (the TODO says so now).
+  - **Numbers at the end of the step.** Rust 875 tests (872 before the step), 1023 with the `web` feature and 13 on the
+    real program (12); web 845 (818 before); 39 in browsers (38).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2057,6 +2122,7 @@ mixer, delay, …) are the natural first increment.
 | D21 | Where a cable may end is the model's rule (`SessionModel::param_targets`: a lane's modulator reaches its lane's chain, a group's its members' chains and its bus effects); `AddModEdge` refuses the rest. A client that marks the valid ports of a cable being dragged reads the rule from the graph by the `parent` of each node (`reachFrom`), and a fixture the controller writes (`reach.json`) pins the two together, so that they cannot drift | Built (step 15) |
 | D22 | Replacing a lane's instrument takes out every cable that drove the old plugin's parameters (a cable names its parameter by the plugin's own index, so one kept would drive whatever the new plugin has at that index); keeping the cables whose parameter the new plugin has under the same name is a later refinement, a TODO in `CLAUDE.md` | Built (step 20) |
 | D23 | The tests own the scene they take for the known one (`web/src/client/fixtures/tracer.toml`), and the examples are for people: a Save in the page writes to the file the program serves, and the way to try the program is to serve an example | Built (step 20) |
+| D24 | A preset is chosen from a menu on the node of the plugin that has it, the one loaded last marked and the menu opening on it; the knobs take the values from the `PresetLoaded` event, which every client is told, and the page reads nothing of the preset itself (a plugin of the machine's is not the page's to open); a load must also move what the cables that drive the plugin are centred on, which is the engine's to do (f64); a bus effect is offered none until the audio thread can load a preset into a group's chain | Built (step 21) |
 
 Open questions
 
