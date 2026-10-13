@@ -3,7 +3,7 @@
 // has set it to until the server has answered (`Drive`), and draws the modulation on it:
 // the ring from the cables that end at it and the dot from the telemetry.
 import { Handle, Position } from "@xyflow/react";
-import { memo, useContext, useMemo, useSyncExternalStore } from "react";
+import { memo, useContext, useId, useMemo, useSyncExternalStore } from "react";
 
 import { modulationExtent, modulationsOn } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
@@ -14,7 +14,9 @@ import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RAN
 import type { EdgeId, Gain, ModulatorField, NodeId, Param } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
+import { afterKey } from "../../ui/knob-geometry";
 import type { Scale } from "../../ui/knob-geometry";
+import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
@@ -56,19 +58,28 @@ function formatterFor(unit: string | null): (value: number) => string {
   return unit ? (value) => `${formatValue(value)} ${unit}` : formatValue;
 }
 
-/** A parameter of the plugin in a node: a knob, or a choice if its values have names. */
-export const ParamControl = memo(function ParamControl({ node, index }: { node: NodeId; index: number }) {
+/**
+ * What any control of a parameter of the plugin in `node` reads and does: what the parameter is (`facts`, which do not change
+ * as its value does), what it shows (what the user set it to, until the engine has answered, and then the session's value),
+ * the control that sets it, and the reader of what the engine makes of it (modulation included), for a view to draw on a frame.
+ */
+function useParam(node: NodeId, index: number) {
   const client = useClient();
-  const frames = useFrames();
   const control = useDrive().param(node, index);
   const facts = useClientSelection((state) => paramOf(state, node, index), sameParamFacts);
   const stored = useClientState((state) => paramOf(state, node, index)?.value);
-  const modulations = useClientSelection((state) => (state.snapshot ? modulationsOn(state.snapshot.graph, node, index) : []), sameModulations);
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
   const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, { type: "param", index }, "effective"), [client, node, index]);
+  return { facts, shown: pending ?? stored, control, readEffective };
+}
+
+/** A parameter of the plugin in a node: a knob, or a choice if its values have names. */
+export const ParamControl = memo(function ParamControl({ node, index }: { node: NodeId; index: number }) {
+  const frames = useFrames();
+  const { facts, shown, control, readEffective } = useParam(node, index);
+  const modulations = useClientSelection((state) => (state.snapshot ? modulationsOn(state.snapshot.graph, node, index) : []), sameModulations);
   const format = useMemo(() => formatterFor(facts?.unit ?? null), [facts?.unit]);
 
-  const shown = pending ?? stored;
   const ring = useMemo(
     () => (facts && shown !== undefined ? modulationExtent(shown, facts.min, facts.max, modulations) : undefined),
     [facts, shown, modulations],
@@ -106,6 +117,91 @@ export const ParamControl = memo(function ParamControl({ node, index }: { node: 
       readEffective={readEffective}
       frames={frames}
     />
+  );
+});
+
+/**
+ * A parameter of the plugin in `node` as a row of a list: its whole name, a slider, its value; a choice if its values have
+ * names; and, while a cable drives it, a bar of what the engine makes of it. For a list to look through (a plugin can have
+ * thousands of parameters, and a knob has room for a few letters). It is turned like a knob: shown as set until the engine
+ * has answered, one intent a frame, a gesture's end at once; the keys are a knob's (a hundredth of the range, a thousandth
+ * with shift, a tenth on the page keys, the ends on Home and End), kept from the browser, whose own step on a slider
+ * that has none is the whole range; a double click goes back to the default.
+ */
+export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; index: number }) {
+  const frames = useFrames();
+  const id = useId();
+  const { facts, shown, control, readEffective } = useParam(node, index);
+  const driven = useClientState((state) => (state.snapshot ? modulationsOn(state.snapshot.graph, node, index).length > 0 : false));
+  const format = useMemo(() => formatterFor(facts?.unit ?? null), [facts?.unit]);
+  if (!facts || shown === undefined) return null;
+
+  const name = (
+    <label className="tang-row__name" htmlFor={id} title={facts.name}>
+      {facts.name}
+    </label>
+  );
+  if (facts.labels) {
+    return (
+      <div className="tang-row">
+        {name}
+        <select
+          id={id}
+          className="tang-row__select"
+          value={String(Math.round(shown))}
+          onChange={(event) => {
+            control.set(Number(event.target.value));
+            control.commit();
+          }}
+        >
+          {facts.labels.map((label, position) => (
+            <option key={`${String(position)}:${label}`} value={String(position)}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+  const { min, max } = facts;
+  return (
+    <div className="tang-row">
+      {name}
+      <input
+        id={id}
+        type="range"
+        className="tang-row__slider"
+        min={min}
+        max={max}
+        step="any"
+        value={shown}
+        aria-valuetext={format(shown)}
+        onChange={(event) => {
+          control.set(event.target.valueAsNumber);
+        }}
+        onPointerUp={() => {
+          control.commit();
+        }}
+        onBlur={() => {
+          control.commit();
+        }}
+        onKeyDown={(event) => {
+          const next = afterKey(event.key, event.shiftKey, shown, min, max);
+          if (next === undefined) return;
+          event.preventDefault();
+          if (next === shown) return;
+          control.set(next);
+          control.commit();
+        }}
+        onDoubleClick={() => {
+          if (facts.default === shown) return;
+          control.set(facts.default);
+          control.commit();
+        }}
+      />
+      <span className="tang-row__value">{format(shown)}</span>
+      {driven ? <LiveBar label={`${facts.name}, as modulated`} read={readEffective} min={min} max={max} format={format} frames={frames} /> : null}
+    </div>
   );
 });
 

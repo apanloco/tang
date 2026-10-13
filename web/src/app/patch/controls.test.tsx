@@ -9,7 +9,7 @@ import type { Node, Param, Snapshot } from "../../protocol";
 import { dragged } from "../../ui/knob-geometry";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { GainControl, ModulatorFieldControl, ParamControl, sameModulations, sameParamFacts, WaveformControl } from "./controls";
+import { GainControl, ModulatorFieldControl, ParamControl, ParamRow, sameModulations, sameParamFacts, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -702,5 +702,284 @@ describe("whether two sets of modulators are the same", () => {
   test("they are not when the order differs", () => {
     const two: Modulation = { source: envelope, amount: -0.2 };
     expect(sameModulations([one, two], [two, one])).toBe(false);
+  });
+});
+
+describe("a parameter of a plugin as a row", () => {
+  const row = (name: string) => screen.getByRole<HTMLInputElement>("slider", { name });
+
+  test("is a slider named for the parameter, over its range, with its value written beside it, and its unit if it has one", async () => {
+    await rig(
+      <>
+        <ParamRow node={filter.id} index={0} />
+        <ParamRow node={oscillator.id} index={1} />
+      </>,
+    );
+    const cutoff = row("cutoff");
+    expect([cutoff.min, cutoff.max, cutoff.value, cutoff.step]).toEqual(["0", "1", "0.5", "any"]);
+    expect(cutoff.getAttribute("aria-valuetext")).toBe("0.5");
+    expect(screen.getByText("cutoff")).toBeTruthy();
+    expect(screen.getByText("0.5")).toBeTruthy();
+    const detune = row("detune");
+    expect([detune.min, detune.max, detune.value]).toEqual(["-24", "24", "0"]);
+    expect(detune.getAttribute("aria-valuetext")).toBe("0 st");
+    expect(screen.getByText("0 st")).toBeTruthy();
+  });
+
+  test("is a choice when its values have names, with the chosen one selected, and no slider", async () => {
+    await rig(<ParamRow node={oscillator.id} index={0} />);
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "waveform" });
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "square", "saw"]);
+    expect(select.value).toBe("3");
+    expect(screen.queryByRole("slider")).toBeNull();
+  });
+
+  test("shows nothing for a parameter that is not there, or a node that is not", async () => {
+    const { view } = await rig(
+      <div data-testid="where">
+        <ParamRow node={filter.id} index={99} />
+        <ParamRow node={4242} index={0} />
+      </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+
+  test("follows a change somebody else makes", async () => {
+    const { server } = await rig(<ParamRow node={filter.id} index={0} />);
+    act(() => {
+      server.apply({ type: "setParam", node: filter.id, param: 0, value: 0.8 });
+    });
+    await waitFor(() => {
+      expect(row("cutoff").value).toBe("0.8");
+    });
+    expect(screen.getByText("0.8")).toBeTruthy();
+  });
+
+  test("shows what it is set to at once, and sends it on the frame, once", async () => {
+    const { clock, requests } = await rig(<ParamRow node={filter.id} index={0} />);
+    fireEvent.change(row("cutoff"), { target: { value: "0.75" } });
+    expect(row("cutoff").value).toBe("0.75");
+    expect(row("cutoff").getAttribute("aria-valuetext")).toBe("0.75");
+    await settle();
+    expect(requests()).toEqual([]); // not before the frame
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setParam", node: filter.id, param: 0, value: 0.75 } }]);
+    });
+  });
+
+  test("sends where it ended at once when the gesture is over, and goes on showing it while the engine answers", async () => {
+    const { requests, client } = await rig(<ParamRow node={filter.id} index={0} />);
+    fireEvent.change(row("cutoff"), { target: { value: "0.3" } });
+    fireEvent.pointerUp(row("cutoff"));
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setParam", node: filter.id, param: 0, value: 0.3 } }]);
+    });
+    expect(row("cutoff").value).toBe("0.3");
+    await waitFor(() => {
+      const node = client.state.snapshot?.graph.nodes.find((candidate) => candidate.id === filter.id);
+      expect(node?.kind === "effect" && node.plugin.params[0]?.value).toBeCloseTo(0.3, 6);
+    });
+    expect(row("cutoff").value).toBe("0.3");
+  });
+
+  test("sends what it was set to at once when it loses the focus, which a gesture that ended off the slider leaves", async () => {
+    const { requests } = await rig(<ParamRow node={filter.id} index={0} />);
+    fireEvent.change(row("cutoff"), { target: { value: "0.2" } });
+    fireEvent.blur(row("cutoff"));
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setParam", node: filter.id, param: 0, value: 0.2 } }]);
+    });
+  });
+
+  test("does not let somebody else's change pull it away while it is being set", async () => {
+    const { server, clock, client } = await rig(<ParamRow node={filter.id} index={0} />);
+    fireEvent.change(row("cutoff"), { target: { value: "0.6" } });
+    act(() => {
+      clock.tick(16);
+    });
+    act(() => {
+      server.apply({ type: "setParam", node: filter.id, param: 0, value: 0.05 });
+    });
+    await waitFor(() => {
+      expect(client.state.snapshot?.rev).toBeGreaterThanOrEqual(2);
+    });
+    expect(Number(row("cutoff").value)).toBeCloseTo(0.6, 6);
+  });
+
+  test("steps by a hundredth of its range on the arrows, a thousandth with shift, a tenth on the page keys, to the ends on Home and End: each sent at once, and the browser's own step kept off", async () => {
+    const { requests, clock } = await rig(<ParamRow node={filter.id} index={0} />);
+    let sent = 0;
+    // (One intent goes in a frame: the next press has to wait for the frame after the one before it.)
+    const press = async (key: string, shiftKey = false): Promise<boolean> => {
+      const left = fireEvent.keyDown(row("cutoff"), { key, shiftKey });
+      act(() => {
+        clock.tick(16);
+      });
+      sent += 1;
+      await waitFor(() => {
+        expect(requests()).toHaveLength(sent);
+      });
+      return left;
+    };
+    expect(await press("ArrowUp")).toBe(false); // (false: the key was kept from the browser)
+    expect(row("cutoff").value).toBe("0.51");
+    await press("ArrowDown", true);
+    await press("PageUp");
+    await press("End");
+    await press("Home");
+    expect(requests().map((request) => (request.intent as { value: number }).value)).toEqual([0.51, 0.509, 0.609, 1, 0]);
+    expect(requests().every((request) => (request.intent as { param: number }).param === 0)).toBe(true);
+  });
+
+  test("sends a key press at once, before the frame", async () => {
+    const { requests } = await rig(<ParamRow node={filter.id} index={0} />);
+    fireEvent.keyDown(row("cutoff"), { key: "ArrowUp" });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setParam", node: filter.id, param: 0, value: 0.51 } }]);
+    });
+  });
+
+  test("has the whole name where it is too long for the row: as the tooltip of the name", async () => {
+    await rig(<ParamRow node={filter.id} index={0} />);
+    expect(screen.getByText("cutoff").getAttribute("title")).toBe("cutoff");
+  });
+
+  test("leaves a key that is not its own to the browser: Tab, a letter", async () => {
+    const { requests } = await rig(<ParamRow node={filter.id} index={0} />);
+    expect(fireEvent.keyDown(row("cutoff"), { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(row("cutoff"), { key: "a" })).toBe(true);
+    await settle();
+    expect(requests()).toEqual([]);
+  });
+
+  test("goes back to its default on a double click, at once", async () => {
+    const { server, requests } = await rig(<ParamRow node={filter.id} index={1} />);
+    act(() => {
+      server.apply({ type: "setParam", node: filter.id, param: 1, value: 5 });
+    });
+    await waitFor(() => {
+      expect(row("resonance").value).toBe("5");
+    });
+    fireEvent.doubleClick(row("resonance"));
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setParam", node: filter.id, param: 1, value: 0.707 } }]);
+    });
+  });
+
+  test("does nothing on a double click at its default", async () => {
+    const { requests } = await rig(<ParamRow node={filter.id} index={3} />);
+    fireEvent.doubleClick(row("drive"));
+    await settle();
+    expect(requests()).toEqual([]);
+  });
+
+  test("sends the choice that is made at once, as the index", async () => {
+    const { requests } = await rig(<ParamRow node={oscillator.id} index={0} />);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setParam", node: oscillator.id, param: 0, value: 1 } }]);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox").value).toBe("1");
+    });
+  });
+
+  test("has a bar of what the engine makes of it, taken from the telemetry on the frame, when a cable drives it", async () => {
+    const { client, clock, time } = await rig(<ParamRow node={filter.id} index={0} />);
+    const bar = screen.getByRole("meter", { name: "cutoff, as modulated" });
+    time.seconds = 0.5; // the LFO is at its peak: the cutoff is 0.5 + 0.4
+    await waitFor(() => {
+      expect(client.telemetry.has("modulation")).toBe(true);
+    });
+    await waitFor(() => {
+      act(() => {
+        clock.tick(performance.now());
+      });
+      expect(Number(bar.getAttribute("aria-valuenow"))).toBeCloseTo(0.9, 3);
+    });
+    time.seconds = 1.5;
+    await waitFor(() => {
+      act(() => {
+        clock.tick(performance.now());
+      });
+      expect(Number(bar.getAttribute("aria-valuenow"))).toBeCloseTo(0.1, 3);
+    });
+    expect([bar.getAttribute("aria-valuemin"), bar.getAttribute("aria-valuemax")]).toEqual(["0", "1"]);
+  });
+
+  test("has no bar for a parameter that nothing drives, or one that has named values", async () => {
+    await rig(
+      <>
+        <ParamRow node={filter.id} index={1} />
+        <ParamRow node={oscillator.id} index={0} />
+      </>,
+    );
+    expect(screen.queryByRole("meter")).toBeNull();
+  });
+
+  test("has the bar from the moment a cable comes to it, and not after the cable goes", async () => {
+    const { server } = await rig(<ParamRow node={filter.id} index={1} />);
+    expect(screen.queryByRole("meter")).toBeNull();
+    act(() => {
+      server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: filter.id, port: { type: "param", index: 1 } } });
+    });
+    expect(await screen.findByRole("meter", { name: "resonance, as modulated" })).toBeTruthy();
+    act(() => {
+      server.apply({ type: "removeEdge", edge: 1 });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("meter")).toBeNull();
+    });
+  });
+
+  test("does not render the row again for the telemetry, however many frames come", async () => {
+    let renders = 0;
+    const { client, clock, time } = await rig(
+      <Profiler id="cutoff" onRender={() => (renders += 1)}>
+        <ParamRow node={filter.id} index={0} />
+      </Profiler>,
+    );
+    await waitFor(() => {
+      expect(client.telemetry.has("modulation")).toBe(true);
+    });
+    const settled = renders;
+    for (let frame = 1; frame <= 60; frame += 1) {
+      time.seconds = frame / 40;
+      await new Promise((resolve) => setTimeout(resolve, 6)); // the engine makes a frame every 5 ms
+      act(() => {
+        clock.tick(frame * 16);
+      });
+    }
+    expect(client.telemetry.frames).toBeGreaterThan(20);
+    expect(renders).toBe(settled);
+  });
+
+  test("does not render the row again when another parameter of the plugin changes, nor when the depth of its cable does", async () => {
+    let renders = 0;
+    const { server, client } = await rig(
+      <Profiler id="cutoff" onRender={() => (renders += 1)}>
+        <ParamRow node={filter.id} index={0} />
+      </Profiler>,
+    );
+    const settled = renders;
+    const rev = client.state.snapshot?.rev ?? 0;
+    act(() => {
+      server.apply({ type: "setParam", node: filter.id, param: 1, value: 4 });
+      server.apply({ type: "setParam", node: filter.id, param: 3, value: 2 });
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: 0.1 });
+    });
+    await waitFor(() => {
+      expect(client.state.snapshot?.rev).toBe(rev + 3);
+    });
+    expect(renders).toBe(settled);
+    act(() => {
+      server.apply({ type: "setParam", node: filter.id, param: 0, value: 0.2 });
+    });
+    await waitFor(() => {
+      expect(renders).toBeGreaterThan(settled);
+    });
   });
 });
