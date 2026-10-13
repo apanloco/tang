@@ -117,6 +117,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build Storybook
+        run: npm run build-storybook
+
       # The browser tests drive a real browser against the real program on the null audio
       # backend (no sound card or MIDI port is used): the page through Vite, and `tang serve`
       # behind it. The debug build of tang, without the plugin formats the tests do not need.
