@@ -12,7 +12,7 @@ lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
 # The browser front-end (docs/web-ui.md). Off by default: the TypeScript
 # generated from the protocol types (`app::protocol`) and the web runtime (`web`).
-web = ["dep:ts-rs", "dep:getrandom"]
+web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json"]
 
 [dependencies]
 view = { path = "view" }
@@ -36,6 +36,8 @@ vst3 = { version = "0.3", optional = true }
 libloading = { version = "0.8", optional = true }
 ts-rs = { version = "12", optional = true }
 getrandom = { version = "0.4", optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", optional = true, features = ["sync", "rt-multi-thread", "net", "time", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
