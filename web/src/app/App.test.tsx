@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
 import { nodeNamed, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
+import type { Notices } from "../client/notices";
 import { App } from "./App";
-import { ClientProvider } from "./ClientProvider";
+import { ClientProvider, useNotices } from "./ClientProvider";
 
 afterEach(cleanup);
 
@@ -65,6 +66,30 @@ describe("the page", () => {
     const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
     expect(() => render(<App engine="mock" />)).toThrow(/ClientProvider/);
     quiet.mockRestore();
+  });
+
+  test("says what could not be done, where the person can read it and take it away", async () => {
+    const server = new MockServer();
+    const client = new Client({ transport: server.transport, reconnectDelay: () => 5 });
+    let notices: Notices | undefined;
+    function Probe() {
+      notices = useNotices();
+      return null;
+    }
+    render(
+      <ClientProvider client={client}>
+        <Probe />
+        <App engine="mock" />
+      </ClientProvider>,
+    );
+    await screen.findByText("Connected");
+    expect(screen.queryByRole("button", { name: /^Dismiss/ })).toBeNull();
+    act(() => {
+      notices?.say("Could not add an LFO to Filter: a modulator goes in a lane or in a group");
+    });
+    expect(screen.getByText(/^Could not add an LFO to Filter/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Dismiss: Could not add an LFO/ }));
+    expect(screen.queryByText(/^Could not add an LFO to Filter/)).toBeNull();
   });
 
   test("shows a change somebody else makes", async () => {

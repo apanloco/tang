@@ -22,3 +22,6 @@ export function displayNames(graph: Graph): Map<NodeId, string> {
     }),
   );
 }
+
+/** What a cable joins, in words: `LFO → Filter: cutoff` (the parameter is left out when it is not one). */
+export const cableLabel = (from: string, to: string, param?: string | null): string => `${from} → ${to}${param ? `: ${param}` : ""}`;

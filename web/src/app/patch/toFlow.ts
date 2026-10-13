@@ -6,7 +6,7 @@
 // for now; the ones a user chooses are kept in the session in a later step (§4.4).
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
-import { displayNames } from "../../client/names";
+import { cableLabel, displayNames } from "../../client/names";
 import type { Edge, EdgeId, Graph, Node, NodeId, Plugin, Port } from "../../protocol";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
@@ -283,7 +283,7 @@ function describeCable(graph: Graph, names: ReadonlyMap<NodeId, string>, edge: E
   const plugin = target?.kind === "instrument" || target?.kind === "effect" ? target.plugin : null;
   const index = edge.to.port.type === "param" ? edge.to.port.index : null;
   const param = plugin?.params.find((candidate) => candidate.index === index)?.name;
-  return `${names.get(edge.from.node) ?? "?"} → ${names.get(edge.to.node) ?? "?"}${param ? `: ${param}` : ""}`;
+  return cableLabel(names.get(edge.from.node) ?? "?", names.get(edge.to.node) ?? "?", param);
 }
 
 /** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */

@@ -4,11 +4,13 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
 import type { Control } from "../client/drive";
+import type { Editor } from "../client/editor";
 import { FrameLoop } from "../client/frameloop";
 import { nodeNamed, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
+import type { Notices } from "../client/notices";
 import { Clock } from "../client/testing";
-import { ClientProvider, useClient, useClientSelection, useClientState, useDrive, useFrames } from "./ClientProvider";
+import { ClientProvider, useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames, useNotices } from "./ClientProvider";
 
 afterEach(cleanup);
 
@@ -133,12 +135,14 @@ describe("what the page gives its views", () => {
     expect(loops.at(-1)).toBe(own);
   });
 
-  test("tells what a drive could not get through, in the console, since the page has nowhere to say it", async () => {
+  test("tells what a drive could not get through, as a notice, and not in the console", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const clock = new Clock();
     let missing: Control | undefined;
+    let notices: Notices | undefined;
     function Probe() {
       missing = useDrive().param(filter.id, 99); // no such parameter
+      notices = useNotices();
       return null;
     }
     const { client } = mount(<Probe />, new FrameLoop(clock));
@@ -150,16 +154,58 @@ describe("what the page gives its views", () => {
       missing?.commit();
     });
     await waitFor(() => {
-      expect(warn).toHaveBeenCalled();
+      expect(notices?.getItems()).toHaveLength(1);
     });
-    expect(String(warn.mock.calls[0]?.[0])).toContain("setParam was not done");
-    expect(String(warn.mock.calls[0]?.[1])).toMatch(/no parameter 99/);
+    expect(notices?.getItems()[0]?.text).toBe("Could not set a parameter: that node has no parameter 99");
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  test("is an editor that adds what is asked to the session of the client, and says what it could not through the same notices", async () => {
+    let editor: Editor | undefined;
+    let notices: Notices | undefined;
+    function Probe() {
+      editor = useEditor();
+      notices = useNotices();
+      return null;
+    }
+    const { client, server } = mount(<Probe />);
+    await waitFor(() => {
+      expect(client.state.status).toBe("open");
+    });
+    expect(await editor?.addModulator(nodeNamed(tracerSnapshot, "Oscillator").id, "lfo")).toBe(3);
+    expect(server.snapshot.graph.nodes.map((node) => node.id)).toContain(3);
+    expect(await editor?.addModulator(filter.id, "lfo")).toBeNull();
+    expect(notices?.getItems().map((notice) => notice.text)).toEqual(["Could not add an LFO to Filter: a modulator goes in a lane or in a group"]);
+  });
+
+  test("is the same editor and notices for as long as the client is, and others for another client", () => {
+    const seen: [unknown, unknown][] = [];
+    function Probe() {
+      seen.push([useEditor(), useNotices()]);
+      return null;
+    }
+    const { view, client } = mount(<Probe />);
+    view.rerender(
+      <ClientProvider client={client}>
+        <Probe />
+      </ClientProvider>,
+    );
+    expect(new Set(seen.map(([editor]) => editor)).size).toBe(1);
+    expect(new Set(seen.map(([, notices]) => notices)).size).toBe(1);
+    const other = new Client({ transport: new MockServer({ telemetryPeriod: 1000 }).transport });
+    view.rerender(
+      <ClientProvider client={other}>
+        <Probe />
+      </ClientProvider>,
+    );
+    expect(seen.at(-1)?.[0]).not.toBe(seen[0]?.[0]);
+    expect(seen.at(-1)?.[1]).not.toBe(seen[0]?.[1]);
   });
 
   test("cannot be asked for below no provider", () => {
     const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    for (const hook of [useClient, useDrive, useFrames]) {
+    for (const hook of [useClient, useDrive, useFrames, useNotices, useEditor]) {
       function Probe() {
         hook();
         return null;

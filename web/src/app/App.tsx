@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 
 import { ConnectionStatus } from "../ui/ConnectionStatus";
-import { useClientState } from "./ClientProvider";
+import { NoticeBoard } from "../ui/NoticeBoard";
+import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PatchView } from "./patch/PatchView";
@@ -34,6 +35,7 @@ function RawSession() {
 export function App({ engine }: { engine: EngineKind }) {
   const status = useClientState((state) => state.status);
   const problem = useClientState((state) => state.problem);
+  const notices = useNotices();
 
   return (
     <div className="tang-app">
@@ -48,6 +50,7 @@ export function App({ engine }: { engine: EngineKind }) {
             {problem}
           </p>
         ) : null}
+        <NoticeBoard notices={notices} />
         <div className="tang-app__patch">
           <ErrorBoundary what="the patch">
             <PatchView />

@@ -5,28 +5,28 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 
 import type { Client, ClientState } from "../client/connection";
 import { Drive } from "../client/drive";
+import { Editor, refusal } from "../client/editor";
 import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
-import type { Intent } from "../protocol";
+import { Notices } from "../client/notices";
 
-/** What the views of the page have in common: the client, the frames they draw on, and the controls that are turned. */
+/** What the views of the page have in common: the client, the frames they draw on, the controls that are turned, and what is done to the structure. */
 interface Services {
   client: Client;
   frames: FrameLoop;
   drive: Drive;
+  /** What the page has to tell the person that nobody asked it for: what could not be done. */
+  notices: Notices;
+  editor: Editor;
 }
 
 const ServicesContext = createContext<Services | null>(null);
 
-/** What is done about an intent that did not get through; there is nowhere on the page to say it yet. */
-function reportRefused(error: unknown, intent: Intent): void {
-  console.warn(`${intent.type} was not done:`, error instanceof Error ? error.message : error);
-}
-
 /**
  * Gives the views below it a client, the frame loop they draw their live values on (the
- * page's own unless a test brings one) and a `Drive` that sends their changes through the
- * client; and keeps the client connected for as long as it is on the page.
+ * page's own unless a test brings one), a `Drive` that sends their changes through the
+ * client and an `Editor` that adds and takes out modulators and cables (both say what
+ * the server refused as a notice); and keeps the client connected for as long as it is on the page.
  */
 export function ClientProvider({ client, frames = pageFrames, children }: { client: Client; frames?: FrameLoop; children: ReactNode }) {
   useEffect(() => {
@@ -35,10 +35,11 @@ export function ClientProvider({ client, frames = pageFrames, children }: { clie
       client.stop();
     };
   }, [client]);
-  const services = useMemo<Services>(
-    () => ({ client, frames, drive: new Drive({ frames, send: (intent) => client.request(intent), onError: reportRefused }) }),
-    [client, frames],
-  );
+  const services = useMemo<Services>(() => {
+    const notices = new Notices();
+    const drive = new Drive({ frames, send: (intent) => client.request(intent), onError: (error, intent) => notices.say(refusal(intent, error)) });
+    return { client, frames, drive, notices, editor: new Editor(client, notices) };
+  }, [client, frames]);
   return <ServicesContext.Provider value={services}>{children}</ServicesContext.Provider>;
 }
 
@@ -55,6 +56,16 @@ export function useClient(): Client {
 /** The controls of the session: where a view that turns a parameter sets it. */
 export function useDrive(): Drive {
   return useServices().drive;
+}
+
+/** What the page says of what could not be done. */
+export function useNotices(): Notices {
+  return useServices().notices;
+}
+
+/** Where a view that adds or takes out a modulator or a cable asks for it. */
+export function useEditor(): Editor {
+  return useServices().editor;
 }
 
 /** The loop a view that draws a live value subscribes to. */
