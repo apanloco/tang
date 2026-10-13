@@ -274,7 +274,18 @@
     "dirty": false,
     "file": "tracer.toml",
     "piano": {
+      "kind": "major",
       "locked": false,
+      "notes": [
+        0,
+        2,
+        4,
+        5,
+        7,
+        9,
+        11
+      ],
+      "root": 0,
       "scale": "C major"
     }
   },

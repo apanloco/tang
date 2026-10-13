@@ -84,6 +84,16 @@ pub enum Intent {
     /// 0 to 127, and the low one is not above the high one. Refused, with nothing changed, for a node that is not
     /// a lane and for a range that is not a range of notes.
     SetRange { node: NodeId, range: Option<NoteRange> },
+    /// Set the scale of the piano (the Piano tab's): `scale` is a root and a kind of scale as the session file
+    /// says it, `C major` or `F# dorian`, where the root may be a sharp or a flat, and the name of the kind
+    /// short or long, in any case. The piano colours the notes of the scale, and drops the others when it is
+    /// locked (`SetLocked`). The scale is saved with the session. Refused, with nothing changed, for text that is
+    /// not a scale.
+    SetScale { scale: String },
+    /// Lock the piano to its scale, so that a note that is not in it is dropped where it is sent (from the page,
+    /// a MIDI keyboard or the computer's keys), or let every note through, with the ones outside the scale only
+    /// coloured. It is saved with the session.
+    SetLocked { locked: bool },
     /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
     /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
     /// effect, with the cables that drive its parameters (and what drove their depths): what they were
@@ -193,6 +203,12 @@ pub enum Event {
     PresetLoaded { node: NodeId, preset: String, values: Vec<ParamValue> },
     /// A lane now takes the notes of `range`, or every note if it is `None`.
     RangeSet { node: NodeId, range: Option<NoteRange> },
+    /// The piano's scale is now this: `scale` as the session file says it (`F# dorian`), and what a client
+    /// needs to draw it without knowing any scale: its `root` (a pitch class, 0 C to 11 B), the short name of
+    /// its `kind` (`dorian`, `harm minor`) and the pitch classes of its `notes`, lowest first.
+    ScaleSet { scale: String, root: u8, kind: String, notes: Vec<u8> },
+    /// The piano is locked to its scale, or it is not.
+    LockedSet { locked: bool },
     /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
@@ -330,6 +346,8 @@ mod tests {
                 json!({"type": "setRange", "node": 2, "range": {"low": 36, "high": 84}}),
             ),
             (Intent::SetRange { node: NodeId(2), range: None }, json!({"type": "setRange", "node": 2, "range": null})),
+            (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
+            (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
             (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
@@ -365,6 +383,11 @@ mod tests {
                 json!({"type": "rangeSet", "node": 2, "range": {"low": 36, "high": 84}}),
             ),
             (Event::RangeSet { node: NodeId(2), range: None }, json!({"type": "rangeSet", "node": 2, "range": null})),
+            (
+                Event::ScaleSet { scale: "F# dorian".to_string(), root: 6, kind: "dorian".to_string(), notes: vec![1, 3, 4, 6, 8, 9, 11] },
+                json!({"type": "scaleSet", "scale": "F# dorian", "root": 6, "kind": "dorian", "notes": [1, 3, 4, 6, 8, 9, 11]}),
+            ),
+            (Event::LockedSet { locked: false }, json!({"type": "lockedSet", "locked": false})),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]
@@ -416,6 +439,10 @@ mod tests {
             ("a kind of modulator that does not exist", json!({"type": "addModulator", "parent": 3, "kind": "noise"})),
             ("a kind spelled the Rust way", json!({"type": "addModulator", "parent": 3, "kind": "MidiLearn"})),
             ("no kind", json!({"type": "addModulator", "parent": 3})),
+            ("a scale that is a number", json!({"type": "setScale", "scale": 3})),
+            ("no scale", json!({"type": "setScale"})),
+            ("a lock that is not a boolean", json!({"type": "setLocked", "locked": "yes"})),
+            ("no lock", json!({"type": "setLocked"})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<Intent>(json).is_err(), "{what}");

@@ -20,6 +20,7 @@ export type { NodeId } from "./generated/NodeId";
 export type { NoteRange } from "./generated/NoteRange";
 export type { Param } from "./generated/Param";
 export type { ParamValue } from "./generated/ParamValue";
+export type { PianoMeta } from "./generated/PianoMeta";
 export type { Plugin } from "./generated/Plugin";
 export type { Port } from "./generated/Port";
 export type { Preset } from "./generated/Preset";
@@ -38,5 +39,7 @@ export {
   MODULATOR_FIELD_DEFAULTS,
   MODULATOR_FIELD_RANGES,
   PROTOCOL,
+  SCALE_KINDS,
+  SCALE_ROOTS,
   WAVEFORMS,
 } from "./generated/constants";

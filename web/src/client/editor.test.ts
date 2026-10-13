@@ -293,6 +293,57 @@ describe("setting the keys of a lane", () => {
   });
 });
 
+describe("setting the scale of the piano", () => {
+  const piano = (client: Client) => client.state.snapshot?.meta.piano;
+
+  test("resolves true when the piano has the scale, which the session shows, and says nothing", async () => {
+    const { server, client, notices, editor } = await open();
+    expect(await editor.setScale("F# dorian")).toBe(true);
+    // (The words are the server's to read: they go as they were given.)
+    expect(server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []))).toEqual([{ type: "setScale", scale: "F# dorian" }]);
+    expect(piano(client)).toEqual({ scale: "F# dorian", root: 6, kind: "dorian", notes: [1, 3, 4, 6, 8, 9, 11], locked: false });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for what is not a scale: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setScale("banana")).toBe(false);
+    expect(said(notices)).toEqual(['Could not set the scale of the piano to banana: "banana" is not a scale: a root and a kind of scale, like C major or F# dorian']);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setScale("A minor")).toBe(false);
+    expect(said(notices)).toEqual(["Could not set the scale of the piano to A minor: Not connected to the server."]);
+  });
+});
+
+describe("locking the piano to its scale", () => {
+  test("resolves true when the piano is locked and when it is let go, which the session shows, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(tracerSnapshot.meta.piano.locked).toBe(false);
+    expect(await editor.setLocked(true)).toBe(true);
+    expect(client.state.snapshot?.meta.piano).toEqual({ ...tracerSnapshot.meta.piano, locked: true });
+    expect(await editor.setLocked(false)).toBe(true);
+    expect(client.state.snapshot?.meta.piano).toEqual(tracerSnapshot.meta.piano);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("with no connection says so, in the words of what it was to do", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setLocked(true)).toBe(false);
+    expect(await editor.setLocked(false)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not lock the piano to its scale: Not connected to the server.",
+      "Could not let the piano play every note: Not connected to the server.",
+    ]);
+  });
+});
+
 describe("showing what was added", () => {
   test("is asked for each node the page added, in the order they were, once the session has it", async () => {
     const { editor, shown } = await open();

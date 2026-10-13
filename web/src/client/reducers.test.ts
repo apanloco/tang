@@ -148,6 +148,57 @@ describe("a saved event", () => {
   });
 });
 
+describe("a scale set", () => {
+  const dorian: StampedEvent = { rev: 1, type: "scaleSet", scale: "F# dorian", root: 6, kind: "dorian", notes: [1, 3, 4, 6, 8, 9, 11] };
+  const locked = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, piano: { ...tracerSnapshot.meta.piano, locked: true } } };
+
+  test("sets the scale of the piano as the controller tells it, and keeps the lock", () => {
+    expect(tracerSnapshot.meta.piano).toEqual({ scale: "C major", root: 0, kind: "major", notes: [0, 2, 4, 5, 7, 9, 11], locked: false });
+    expect(applied(tracerSnapshot, dorian).meta.piano).toEqual({ scale: "F# dorian", root: 6, kind: "dorian", notes: [1, 3, 4, 6, 8, 9, 11], locked: false });
+    expect(applied(locked, dorian).meta.piano.locked).toBe(true);
+  });
+
+  test("leaves the session with changes that are not saved, and the rest of its meta as it was", () => {
+    const after = applied(tracerSnapshot, dorian);
+    expect(after.meta.dirty).toBe(true);
+    expect({ ...after.meta, piano: null }).toEqual({ ...tracerSnapshot.meta, dirty: true, piano: null });
+    expect(after.rev).toBe(1);
+  });
+
+  test("changes nothing of the graph or the layout: they are the objects they were", () => {
+    const after = applied(tracerSnapshot, dorian);
+    expect(after.graph).toBe(tracerSnapshot.graph);
+    expect(after.telemetry).toBe(tracerSnapshot.telemetry);
+  });
+
+  test("leaves the snapshot it was applied to as it was", () => {
+    const before = structuredClone(tracerSnapshot);
+    applied(tracerSnapshot, dorian);
+    expect(tracerSnapshot).toEqual(before);
+  });
+
+  test("is an event like the others: one that skips a revision means events were missed", () => {
+    expect(applyEvent(tracerSnapshot, { ...dorian, rev: 2 }).ok).toBe(false);
+  });
+});
+
+describe("a lock set", () => {
+  const locked = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, piano: { ...tracerSnapshot.meta.piano, locked: true } } };
+
+  test("locks the piano and lets it go again, and keeps the scale", () => {
+    const after = applied(tracerSnapshot, { rev: 1, type: "lockedSet", locked: true });
+    expect(after.meta.piano).toEqual({ ...tracerSnapshot.meta.piano, locked: true });
+    expect(applied(after, { rev: 2, type: "lockedSet", locked: false }).meta.piano).toEqual(tracerSnapshot.meta.piano);
+  });
+
+  test("leaves the session with changes that are not saved, and changes nothing of the graph", () => {
+    const after = applied(tracerSnapshot, { rev: 1, type: "lockedSet", locked: true });
+    expect(after.meta.dirty).toBe(true);
+    expect(after.graph).toBe(tracerSnapshot.graph);
+    expect(applied(locked, { rev: 1, type: "lockedSet", locked: false }).graph).toBe(locked.graph);
+  });
+});
+
 describe("a gain set", () => {
   test("sets the volume of an instrument", () => {
     const after = applied(tracerSnapshot, { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 });

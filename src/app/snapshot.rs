@@ -19,6 +19,7 @@ use crate::app::layout::TelemetryLayout;
 use crate::app::model::NodeId;
 use crate::plugin::chain::LfoWaveform;
 use crate::piano_filter::PianoMode;
+use crate::scale::ScaleSetting;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
@@ -51,8 +52,20 @@ pub struct Meta {
 pub struct PianoMeta {
     /// As it is saved in the session file: `C major`, `F# dorian`.
     pub scale: String,
+    /// The scale's root, a pitch class: 0 C to 11 B. (A client draws the scale from this and `notes`, and knows no scale.)
+    pub root: u8,
+    /// The short name of the kind of scale: `major`, `dorian`, `harm minor`.
+    pub kind: String,
+    /// The pitch classes of the scale, lowest first.
+    pub notes: Vec<u8>,
     /// Off-scale notes are dropped (Locked mode), as opposed to just coloured.
     pub locked: bool,
+}
+
+impl PianoMeta {
+    pub fn new(scale: ScaleSetting, locked: bool) -> Self {
+        PianoMeta { scale: scale.short(), root: scale.root, kind: scale.kind().to_string(), notes: scale.pitch_classes(), locked }
+    }
 }
 
 /// An event that does not fit the snapshot it was applied to. The copy is not the
@@ -172,6 +185,14 @@ impl Snapshot {
                     .ok_or_else(|| DoesNotFit(format!("there is no cable {}", edge.0)))?;
                 *amount = *depth;
             }
+            Event::ScaleSet { scale, root, kind, notes } => {
+                let piano = &mut self.meta.piano;
+                piano.scale.clone_from(scale);
+                piano.root = *root;
+                piano.kind.clone_from(kind);
+                piano.notes.clone_from(notes);
+            }
+            Event::LockedSet { locked } => self.meta.piano.locked = *locked,
             Event::Saved { file } => self.meta.file.clone_from(file),
         }
         Ok(())
@@ -199,10 +220,7 @@ impl Controller {
                 dirty: self.dirty,
                 file: self.session_file_name(),
                 bpm: self.global_bpm,
-                piano: PianoMeta {
-                    scale: self.piano_filter.scale().short(),
-                    locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
-                },
+                piano: PianoMeta::new(self.piano_filter.scale(), matches!(self.piano_filter.mode(), PianoMode::Locked)),
             },
             graph: self.model.graph(),
             telemetry: self.model.telemetry_layout(),
@@ -238,7 +256,12 @@ mod tests {
         assert_eq!(snapshot.telemetry, ctl.model.telemetry_layout());
         assert_eq!(
             snapshot.meta,
-            Meta { dirty: false, file: None, bpm: 120.0, piano: PianoMeta { scale: "C major".to_string(), locked: false } }
+            Meta {
+                dirty: false,
+                file: None,
+                bpm: 120.0,
+                piano: PianoMeta { scale: "C major".to_string(), root: 0, kind: "major".to_string(), notes: vec![0, 2, 4, 5, 7, 9, 11], locked: false },
+            }
         );
     }
 
@@ -272,7 +295,10 @@ mod tests {
         ctl.piano_filter.set_mode(PianoMode::Locked);
         let meta = ctl.snapshot().meta;
         assert_eq!(meta.bpm, 93.5);
-        assert_eq!(meta.piano, PianoMeta { scale: "F# dorian".to_string(), locked: true });
+        assert_eq!(
+            meta.piano,
+            PianoMeta { scale: "F# dorian".to_string(), root: 6, kind: "dorian".to_string(), notes: vec![1, 3, 4, 6, 8, 9, 11], locked: true }
+        );
     }
 
     /// The snapshot of the tracer scene (`web/src/client/fixtures/tracer.toml`) as JSON text, with the layout's
@@ -330,7 +356,12 @@ mod tests {
         assert_eq!(json["rev"], json!(0));
         assert_eq!(
             json["meta"],
-            json!({"dirty": false, "file": "a.toml", "bpm": 120.0, "piano": {"scale": "C major", "locked": false}})
+            json!({
+                "dirty": false,
+                "file": "a.toml",
+                "bpm": 120.0,
+                "piano": {"scale": "C major", "root": 0, "kind": "major", "notes": [0, 2, 4, 5, 7, 9, 11], "locked": false},
+            })
         );
         assert_eq!(json["graph"]["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(json["telemetry"]["meters"].as_array().unwrap().len(), 4);
@@ -470,6 +501,10 @@ type = "envelope"
             Intent::SetRange { node: n.osc, range: Some(NoteRange { low: 36, high: 84 }) },
             Intent::SetRange { node: n.empty, range: Some(NoteRange { low: 0, high: 59 }) },
             Intent::SetRange { node: n.osc, range: None },
+            Intent::SetScale { scale: "F# dorian".to_string() },
+            Intent::SetLocked { locked: true },
+            Intent::SetScale { scale: "Bb Natural Minor".to_string() },
+            Intent::SetLocked { locked: false },
         ];
         for intent in intents {
             let before = told.clone();
@@ -478,7 +513,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 24);
+        assert_eq!(told.rev, 28);
     }
 
     #[test]

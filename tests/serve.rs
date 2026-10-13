@@ -640,6 +640,65 @@ async fn the_notes_that_are_held_are_told_to_every_browser_that_asks_whoever_hol
     held_until(&mut watcher, &tang, SOON, "the note ending with the browser that held it", |v| v.iter().all(|x| *x == 0.0)).await;
 }
 
+#[tokio::test]
+async fn a_browser_locks_the_piano_to_a_scale_and_a_note_outside_it_is_dropped_before_it_is_heard_or_held_and_the_saved_file_has_the_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, _) = listening(&tang).await;
+    // (Another browser watches the notes that are held.)
+    let mut watcher = connect(&tang).await;
+    next_json(&mut watcher).await;
+    tell(&mut watcher, json!({"type": "subscribe"})).await;
+    assert_eq!(next_json(&mut watcher).await["type"], "snapshot");
+    tell(&mut watcher, json!({"type": "telemetry", "channels": ["held"]})).await;
+
+    // The scale is told as an event, in the form the session file has it and with the notes that a page draws.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setScale", "scale": "Bb Natural Minor"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "event").expect("the scale is told as an event");
+    assert_eq!(told["event"], json!({"rev": 1, "type": "scaleSet", "scale": "A# minor", "root": 10, "kind": "minor", "notes": [0, 1, 3, 5, 6, 8, 10]}), "{told}");
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setLocked", "locked": true}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(2)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "event").expect("the lock is told as an event");
+    assert_eq!(told["event"], json!({"rev": 2, "type": "lockedSet", "locked": true}), "{told}");
+
+    // D4 (62) is not in A# minor: it is dropped where it is sent, so the lane is silent...
+    tell(&mut client, json!({"type": "noteOn", "note": 62, "velocity": 100})).await;
+    let outside = peak_after(&mut client, at, Duration::from_millis(800)).await;
+    assert!(outside < 0.001, "a note outside the scale is silent: {outside}\n{}", tang.log());
+    // ...and C#4 (61) is, and is heard and held (the note before it was handled first: it is not held either).
+    tell(&mut client, json!({"type": "noteOn", "note": 61, "velocity": 100})).await;
+    let held = held_until(&mut watcher, &tang, SOON, "a note inside the scale", |v| v[61] == 1.0).await;
+    assert_eq!(held[62], 0.0, "the note outside the scale was never held");
+    peak_until(&mut client, &tang, at, SOON, "a note inside the scale", |peak| peak > 0.01).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 61})).await;
+    peak_until(&mut client, &tang, at, Duration::from_secs(15), "the note dying away", |peak| peak < 0.001).await;
+
+    // What is saved has the scale as the TUI writes it, and the lock.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("[piano]") && saved.contains("scale = \"A# minor\"") && saved.contains("locked = true"), "{saved}");
+
+    // Let go, the note that was dropped is played, held and heard.
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "setLocked", "locked": false}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    tell(&mut client, json!({"type": "noteOn", "note": 62, "velocity": 100})).await;
+    held_until(&mut watcher, &tang, SOON, "the note that was dropped", |v| v[62] == 1.0).await;
+    peak_until(&mut client, &tang, at, SOON, "the note that was dropped", |peak| peak > 0.01).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 62})).await;
+
+    // Text that is not a scale is refused in the controller's words, and the scale stays.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "setScale", "scale": "Cé"}})).await;
+    let refused = answer(&mut client, 5).await;
+    assert_eq!(refused["type"], "rejected", "{refused}");
+    assert_eq!(refused["error"]["message"], "\"Cé\" is not a scale: a root and a kind of scale, like C major or F# dorian", "{refused}");
+}
+
 /// The next value, in a frame of the modulation channel of the layout `rev`, at place `at` of it (frames of another layout, and of other channels, are skipped).
 async fn modulation_value(client: &mut Client, rev: u32, at: usize) -> f32 {
     let deadline = Instant::now() + Duration::from_secs(10);

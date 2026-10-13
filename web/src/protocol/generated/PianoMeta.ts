@@ -9,6 +9,18 @@ export type PianoMeta = {
  */
 scale: string, 
 /**
+ * The scale's root, a pitch class: 0 C to 11 B. (A client draws the scale from this and `notes`, and knows no scale.)
+ */
+root: number, 
+/**
+ * The short name of the kind of scale: `major`, `dorian`, `harm minor`.
+ */
+kind: string, 
+/**
+ * The pitch classes of the scale, lowest first.
+ */
+notes: Array<number>, 
+/**
  * Off-scale notes are dropped (Locked mode), as opposed to just coloured.
  */
 locked: boolean, };

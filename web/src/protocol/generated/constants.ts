@@ -42,3 +42,25 @@ export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 
 /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */
 export const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square"];
+
+/** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */
+export const SCALE_ROOTS: readonly string[] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+/** The kinds of scale, in the order the TUI lists them: the name a person reads, the short name that `setScale` and a session file say, and the semitones above the root of each of its notes (`scale::SCALES`). */
+export const SCALE_KINDS: readonly { name: string; short: string; intervals: readonly number[] }[] = [
+  { name: "Major", short: "major", intervals: [0, 2, 4, 5, 7, 9, 11] },
+  { name: "Natural Minor", short: "minor", intervals: [0, 2, 3, 5, 7, 8, 10] },
+  { name: "Harmonic Minor", short: "harm minor", intervals: [0, 2, 3, 5, 7, 8, 11] },
+  { name: "Melodic Minor", short: "mel minor", intervals: [0, 2, 3, 5, 7, 9, 11] },
+  { name: "Dorian", short: "dorian", intervals: [0, 2, 3, 5, 7, 9, 10] },
+  { name: "Phrygian", short: "phrygian", intervals: [0, 1, 3, 5, 7, 8, 10] },
+  { name: "Lydian", short: "lydian", intervals: [0, 2, 4, 6, 7, 9, 11] },
+  { name: "Mixolydian", short: "mixolydian", intervals: [0, 2, 4, 5, 7, 9, 10] },
+  { name: "Locrian", short: "locrian", intervals: [0, 1, 3, 5, 6, 8, 10] },
+  { name: "Major Pentatonic", short: "maj pent", intervals: [0, 2, 4, 7, 9] },
+  { name: "Minor Pentatonic", short: "min pent", intervals: [0, 3, 5, 7, 10] },
+  { name: "Blues", short: "blues", intervals: [0, 3, 5, 6, 7, 10] },
+  { name: "Whole Tone", short: "whole tone", intervals: [0, 2, 4, 6, 8, 10] },
+  { name: "Diminished", short: "diminished", intervals: [0, 2, 3, 5, 6, 8, 9, 11] },
+  { name: "Chromatic", short: "chromatic", intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+];

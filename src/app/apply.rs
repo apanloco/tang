@@ -9,7 +9,9 @@ use crate::app::controller::{Controller, NewTarget, depth_command, envelope_comm
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
+use crate::scale::ScaleSetting;
 use crate::{plugin, session};
 
 /// What an intent did, for `apply` to tell.
@@ -41,6 +43,8 @@ impl Controller {
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
+            Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
+            Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
@@ -153,6 +157,20 @@ impl Controller {
         self.model.instruments[inst].range = range;
         let _ = self.cmd_tx.send(GraphCommand::SetInstrumentRange { inst, range });
         Ok(Event::RangeSet { node, range: range.map(|(low, high)| NoteRange { low, high }) })
+    }
+
+    /// The scale of the piano, which the threads that send notes and the Piano tab read: it is nothing of the audio thread's.
+    fn set_scale(&mut self, scale: &str) -> Result<Event, IntentError> {
+        let setting = ScaleSetting::parse(scale)
+            .ok_or_else(|| invalid(format!("{scale:?} is not a scale: a root and a kind of scale, like C major or F# dorian")))?;
+        self.piano_filter.set_scale(setting);
+        Ok(Event::ScaleSet { scale: setting.short(), root: setting.root, kind: setting.kind().to_string(), notes: setting.pitch_classes() })
+    }
+
+    /// Whether the piano drops the notes that are not in its scale.
+    fn set_locked(&mut self, locked: bool) -> Event {
+        self.piano_filter.set_mode(if locked { PianoMode::Locked } else { PianoMode::Highlight });
+        Event::LockedSet { locked }
     }
 
     fn set_modulator_field(&mut self, node: NodeId, field: ModulatorField, value: f32) -> Result<Event, IntentError> {
@@ -750,6 +768,99 @@ plugin = "builtin:reverb"
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
+    }
+
+    fn scale_set(scale: &str, root: u8, kind: &str, notes: &[u8]) -> Event {
+        Event::ScaleSet { scale: scale.to_string(), root, kind: kind.to_string(), notes: notes.to_vec() }
+    }
+
+    #[test]
+    fn set_scale_sets_the_scale_of_the_piano_and_tells_what_a_client_draws_of_it() {
+        let (engine, mut ctl) = controller();
+        let applied = ctl.apply(Intent::SetScale { scale: "F# dorian".to_string() }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![scale_set("F# dorian", 6, "dorian", &[1, 3, 4, 6, 8, 9, 11])]));
+        assert_eq!(ctl.piano_filter.scale().short(), "F# dorian");
+        assert!(ctl.dirty, "the scale is saved with the session");
+        assert_eq!(sent(&engine), Vec::<String>::new(), "the audio thread has no part in it: the notes are sorted out where they are sent");
+    }
+
+    #[test]
+    fn set_scale_takes_the_names_a_session_file_does_and_tells_the_form_it_saves() {
+        let (_engine, mut ctl) = controller();
+        let cases = [
+            ("Bb Natural Minor", "A# minor", 10, "minor", vec![0, 1, 3, 5, 6, 8, 10]),
+            ("db MAJOR", "C# major", 1, "major", vec![0, 1, 3, 5, 6, 8, 10]),
+            ("  e  blues ", "E blues", 4, "blues", vec![2, 4, 7, 9, 10, 11]),
+            ("G# maj pent", "G# maj pent", 8, "maj pent", vec![0, 3, 5, 8, 10]),
+        ];
+        for (asked, scale, root, kind, notes) in cases {
+            let applied = ctl.apply(Intent::SetScale { scale: asked.to_string() }).unwrap();
+            assert_eq!(applied.events, [scale_set(scale, root, kind, &notes)], "{asked}");
+            assert_eq!(ctl.piano_filter.scale().short(), scale, "{asked}");
+        }
+    }
+
+    #[test]
+    fn set_scale_refuses_what_is_not_a_scale_and_changes_nothing() {
+        let (engine, mut ctl) = controller();
+        for text in ["", "banana", "C", "C wibble", "H major", "major", "Cé", "日本語"] {
+            assert_eq!(
+                ctl.apply(Intent::SetScale { scale: text.to_string() }),
+                Err(invalid(format!("{text:?} is not a scale: a root and a kind of scale, like C major or F# dorian"))),
+                "{text:?}"
+            );
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.piano_filter.scale().short(), "C major");
+    }
+
+    #[test]
+    fn set_locked_locks_the_piano_to_its_scale_or_lets_every_note_through() {
+        use crate::piano_filter::PianoMode;
+        let (engine, mut ctl) = controller();
+        // C major to begin with, and not locked: C#4 (61) is off the scale, and goes through.
+        assert_eq!(ctl.piano_filter.mode(), PianoMode::Highlight);
+        assert!(!ctl.piano_filter.block_note_on(61));
+
+        let applied = ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::LockedSet { locked: true }]));
+        assert_eq!(ctl.piano_filter.mode(), PianoMode::Locked);
+        assert!(ctl.piano_filter.block_note_on(61), "locked, a note that is not on the scale is dropped where it is sent");
+        assert!(!ctl.piano_filter.block_note_on(60), "and one that is on it is not");
+        assert!(ctl.dirty, "the lock is saved with the session");
+
+        // What it is locked to is the scale that is set: C# major has C# (61), and not D (62).
+        ctl.apply(Intent::SetScale { scale: "C# major".to_string() }).unwrap();
+        assert!(!ctl.piano_filter.block_note_on(61));
+        assert!(ctl.piano_filter.block_note_on(62));
+
+        let applied = ctl.apply(Intent::SetLocked { locked: false }).unwrap();
+        assert_eq!(applied, Applied::of(3, vec![Event::LockedSet { locked: false }]));
+        assert_eq!(ctl.piano_filter.mode(), PianoMode::Highlight);
+        assert!(!ctl.piano_filter.block_note_on(60));
+        assert_eq!(sent(&engine), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_lock_that_is_set_again_is_a_revision_and_tells_what_it_is() {
+        let (_engine, mut ctl) = controller();
+        for revision in 1..=2 {
+            let applied = ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            assert_eq!(applied, Applied::of(revision, vec![Event::LockedSet { locked: true }]));
+        }
+    }
+
+    #[test]
+    fn the_scale_and_the_lock_that_were_set_are_what_a_session_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (_engine, mut ctl) = controller_with_file(&path);
+        ctl.apply(Intent::SetScale { scale: "Bb dorian".to_string() }).unwrap();
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        ctl.apply(Intent::Save).unwrap();
+        let piano = session::parse(&std::fs::read_to_string(&path).unwrap()).unwrap().piano.expect("the piano settings are saved");
+        assert_eq!((piano.scale.as_deref(), piano.locked), (Some("A# dorian"), true));
     }
 
     #[test]

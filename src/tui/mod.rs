@@ -1449,9 +1449,9 @@ impl State {
         let current = self.ctl.piano_filter.scale();
         if current.root != root || current.scale_idx != scale_idx {
             let new_scale = ScaleSetting { root, scale_idx };
-            self.ctl.piano_filter.set_scale(new_scale);
-            self.ctl.dirty = true;
-            log::info!("Scale set to {}", new_scale.display());
+            if self.apply(Intent::SetScale { scale: new_scale.short() }).is_some() {
+                log::info!("Scale set to {}", new_scale.display());
+            }
         }
     }
 
@@ -1620,6 +1620,8 @@ impl State {
                 intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
                 // A lane's label shows its keys.
                 intent::Event::RangeSet { .. } => self.rebuild_tree(),
+                // (The Piano tab reads the scale and the lock from the shared filter, on every frame.)
+                intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
                 // The tree shows a modulator's rate and waveform, and its cables' depths.
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 intent::Event::ParamSet { .. }
@@ -2438,9 +2440,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 PianoMode::Highlight => PianoMode::Locked,
                 PianoMode::Locked => PianoMode::Highlight,
             };
-            s.ctl.piano_filter.set_mode(new_mode);
-            s.ctl.dirty = true;
-            log::info!("Piano mode → {}", new_mode.label());
+            if s.apply(Intent::SetLocked { locked: new_mode == PianoMode::Locked }).is_some() {
+                log::info!("Piano mode → {}", new_mode.label());
+            }
         }
         KeyCode::Char('[') if s.active_tab == 1 && s.piano_view_octave > 0 => {
             s.piano_view_octave -= 1;

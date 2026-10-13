@@ -402,6 +402,28 @@ mod typescript {
         names.join(", ")
     }
 
+    /// The names of the roots a scale can have, by pitch class (0 C to 11 B), as the elements of a TypeScript
+    /// array: what `setScale` and a session file call them (`scale::NOTE_NAMES`).
+    fn scale_root_names() -> String {
+        let names: Vec<String> = crate::scale::NOTE_NAMES.iter().map(|name| serde_json::to_string(name).unwrap()).collect();
+        names.join(", ")
+    }
+
+    /// The kinds of scale, in the order the TUI lists them, as the lines of a TypeScript array of objects: the name a
+    /// person reads, the short name that `setScale` and a session file say, and the semitones from the root of each of
+    /// its notes (`scale::SCALES`).
+    fn scale_kinds() -> String {
+        crate::scale::SCALES
+            .iter()
+            .map(|scale| {
+                let name = serde_json::to_string(scale.name).unwrap();
+                let short = serde_json::to_string(scale.short).unwrap();
+                let intervals = serde_json::to_string(scale.intervals).unwrap().replace(',', ", ");
+                format!("  {{ name: {name}, short: {short}, intervals: {intervals} }},\n")
+            })
+            .collect()
+    }
+
     /// Where the generated TypeScript is committed.
     fn generated_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("web/src/protocol/generated")
@@ -444,13 +466,19 @@ mod typescript {
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
                  /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */\n\
-                 export const WAVEFORMS: readonly Waveform[] = [{}];\n",
+                 export const WAVEFORMS: readonly Waveform[] = [{}];\n\n\
+                 /** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */\n\
+                 export const SCALE_ROOTS: readonly string[] = [{}];\n\n\
+                 /** The kinds of scale, in the order the TUI lists them: the name a person reads, the short name that `setScale` and a session file say, and the semitones above the root of each of its notes (`scale::SCALES`). */\n\
+                 export const SCALE_KINDS: readonly {{ name: string; short: string; intervals: readonly number[] }}[] = [\n{}];\n",
                 super::PROTOCOL,
                 super::FRAME_HEADER_LEN,
                 range_entries(&GAINS, Gain::range),
                 range_entries(&MODULATOR_FIELDS, ModulatorField::range),
                 default_entries(),
                 waveform_names(),
+                scale_root_names(),
+                scale_kinds(),
             ),
         )?;
         Ok(())
@@ -520,6 +548,25 @@ mod typescript {
         for (index, name) in crate::plugin::chain::LfoWaveform::ALL.iter().enumerate() {
             assert_eq!(name.to_index(), index);
         }
+    }
+
+    #[test]
+    fn the_roots_of_a_scale_are_written_in_the_order_of_their_pitch_class() {
+        assert_eq!(scale_root_names(), "\"C\", \"C#\", \"D\", \"D#\", \"E\", \"F\", \"F#\", \"G\", \"G#\", \"A\", \"A#\", \"B\"");
+    }
+
+    #[test]
+    fn the_kinds_of_scale_are_written_with_the_name_a_person_reads_and_the_short_name_a_session_file_says() {
+        let written = scale_kinds();
+        assert_eq!(written.lines().count(), crate::scale::SCALES.len());
+        assert!(
+            written.starts_with(
+                "  { name: \"Major\", short: \"major\", intervals: [0, 2, 4, 5, 7, 9, 11] },\n  { name: \"Natural Minor\", short: \"minor\", intervals: [0, 2, 3, 5, 7, 8, 10] },\n"
+            ),
+            "{written}"
+        );
+        assert!(written.contains("{ name: \"Minor Pentatonic\", short: \"min pent\", intervals: [0, 3, 5, 7, 10] },\n"), "{written}");
+        assert!(written.ends_with("{ name: \"Chromatic\", short: \"chromatic\", intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },\n"), "{written}");
     }
 
     #[test]

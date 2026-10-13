@@ -34,6 +34,7 @@ import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tra
 import { noteName } from "./notes";
 import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
+import { parseScale } from "./scales";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -432,6 +433,16 @@ function rangeOutcome(node: Node, range: NoteRange | null): Outcome {
   return { event: { type: "rangeSet", node: node.id, range } };
 }
 
+/**
+ * The piano's scale set, as the controller's `set_scale` does it: the text has to be a root and a kind of scale (the flats and
+ * the long names too, in any case). The event tells the scale as it is saved, and its notes.
+ */
+function scaleOutcome(text: string): Outcome {
+  const scale = parseScale(text);
+  if (!scale) return invalid(`${JSON.stringify(text)} is not a scale: a root and a kind of scale, like C major or F# dorian`);
+  return { event: { type: "scaleSet", ...scale } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -441,6 +452,8 @@ function saveOutcome(snapshot: Snapshot): Outcome {
 /** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names. */
 function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
+  if (intent.type === "setScale") return scaleOutcome(intent.scale);
+  if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);

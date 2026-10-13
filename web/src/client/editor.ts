@@ -27,6 +27,8 @@ const DOING: Record<Intent["type"], string> = {
   addInstrument: "add an instrument",
   replaceInstrument: "change the instrument of a lane",
   setRange: "set the keys of a lane",
+  setScale: "set the scale of the piano",
+  setLocked: "lock or unlock the piano",
   removeNode: "remove a node",
   save: "save the session",
 };
@@ -110,6 +112,19 @@ export class Editor {
    */
   setRange(node: NodeId, range: NoteRange | null): Promise<boolean> {
     return this.#attempt(`set the keys of ${this.#name(node)} to ${rangeLabel(range)}`, { type: "setRange", node, range });
+  }
+
+  /**
+   * Set the scale of the piano: `scale` is a root and a kind as the session file says them (`C major`, `F# dorian`). True if it
+   * was set (the page says why if it was not).
+   */
+  setScale(scale: string): Promise<boolean> {
+    return this.#attempt(`set the scale of the piano to ${scale}`, { type: "setScale", scale });
+  }
+
+  /** Lock the piano to its scale, so that a note outside it is not played, or let every note through. True if it was done. */
+  setLocked(locked: boolean): Promise<boolean> {
+    return this.#attempt(locked ? "lock the piano to its scale" : "let the piano play every note", { type: "setLocked", locked });
   }
 
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */

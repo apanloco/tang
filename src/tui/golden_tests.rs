@@ -643,6 +643,32 @@ fn piano_locked_mode_in_d_dorian() {
     assert_golden("piano_locked_mode_in_d_dorian", &mut h);
 }
 
+#[test]
+fn choosing_a_scale_in_the_picker_is_an_intent_that_the_controller_carries_out() {
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Char('2')).press(KeyCode::Char('k'));
+    h.type_chars("d dorian").press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.piano_filter.scale().short(), "D dorian");
+    // One intent, so a front-end that watches the session hears of it, and a change to save.
+    assert_eq!((h.s.ctl.rev, h.s.ctl.dirty), (1, true));
+    assert_eq!(h.commands(), Vec::<String>::new(), "the scale is nothing of the audio thread's");
+
+    // Choosing the scale that is set again is no change.
+    h.press(KeyCode::Char('k')).press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.rev, 1);
+}
+
+#[test]
+fn the_lock_key_is_an_intent_that_the_controller_carries_out_and_a_second_press_undoes() {
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Char('2')).press(KeyCode::Char('l'));
+    assert_eq!(h.s.ctl.piano_filter.mode(), PianoMode::Locked);
+    assert_eq!((h.s.ctl.rev, h.s.ctl.dirty), (1, true));
+    h.press(KeyCode::Char('l'));
+    assert_eq!(h.s.ctl.piano_filter.mode(), PianoMode::Highlight);
+    assert_eq!(h.s.ctl.rev, 2);
+}
+
 // ---------------------------------------------------------------------------
 // Scenarios: key sequences → engine commands + the tree the user sees
 //

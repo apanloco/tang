@@ -120,11 +120,24 @@ impl ScaleSetting {
 
     /// Compact form for serialization, e.g. "C major".
     pub fn short(&self) -> String {
-        format!(
-            "{} {}",
-            NOTE_NAMES[self.root as usize],
-            SCALES[self.scale_idx].short
-        )
+        format!("{} {}", self.root_name(), self.kind())
+    }
+
+    /// The name of the root, e.g. "C", "F#".
+    pub fn root_name(&self) -> &'static str {
+        NOTE_NAMES[self.root as usize]
+    }
+
+    /// The short name of the kind of scale, as `short` and the session file say it: "major", "harm minor".
+    pub fn kind(&self) -> &'static str {
+        SCALES[self.scale_idx].short
+    }
+
+    /// The pitch classes of the scale (0 C … 11 B), lowest first: the notes it has in every octave.
+    pub fn pitch_classes(&self) -> Vec<u8> {
+        let mut classes: Vec<u8> = SCALES[self.scale_idx].intervals.iter().map(|interval| (self.root + interval) % 12).collect();
+        classes.sort_unstable();
+        classes
     }
 
     /// Parse a "root scale" string. Accepts sharps ("C#") and flats ("Db").
@@ -264,6 +277,48 @@ mod tests {
         for &(note, from, to) in &[(60u8, 60u8, 63u8), (64, 60, 61), (67, 62, 59)] {
             let expected = (note as i32 + to as i32 - from as i32).clamp(0, 127) as u8;
             assert_eq!(s.transpose_in_key(note, from, to), expected);
+        }
+    }
+
+    #[test]
+    fn the_pitch_classes_of_a_scale_are_its_notes_in_one_octave_lowest_first() {
+        let classes = |text: &str| ScaleSetting::parse(text).unwrap().pitch_classes();
+        assert_eq!(classes("C major"), [0, 2, 4, 5, 7, 9, 11]);
+        // D dorian has the notes of C major, from another root.
+        assert_eq!(classes("D dorian"), [0, 2, 4, 5, 7, 9, 11]);
+        // F# dorian (F# G# A B C# D# E) goes round the octave: lowest first is not from its root.
+        assert_eq!(classes("F# dorian"), [1, 3, 4, 6, 8, 9, 11]);
+        assert_eq!(classes("A min pent"), [0, 2, 4, 7, 9]);
+        assert_eq!(classes("G# chromatic"), (0..12).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn the_pitch_classes_are_the_notes_that_contains_says_are_in_the_scale_for_every_root_and_scale() {
+        for root in 0..12u8 {
+            for scale_idx in 0..SCALES.len() {
+                let scale = ScaleSetting { root, scale_idx };
+                let classes = scale.pitch_classes();
+                assert!(classes.windows(2).all(|pair| pair[0] < pair[1]), "{}: lowest first, none twice", scale.short());
+                assert!(classes.contains(&root), "{}: its root is in it", scale.short());
+                for note in 0..=127u8 {
+                    assert_eq!(scale.contains(note), classes.contains(&(note % 12)), "{} at {note}", scale.short());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_scale_is_told_by_its_root_and_its_kind_and_both_make_the_text_that_is_saved() {
+        let scale = ScaleSetting::parse("Bb Natural Minor").unwrap();
+        assert_eq!((scale.root_name(), scale.kind()), ("A#", "minor"));
+        assert_eq!(scale.short(), "A# minor");
+        for root in 0..12u8 {
+            for scale_idx in 0..SCALES.len() {
+                let scale = ScaleSetting { root, scale_idx };
+                assert_eq!(format!("{} {}", scale.root_name(), scale.kind()), scale.short());
+                let back = ScaleSetting::parse(&scale.short()).unwrap();
+                assert_eq!((back.root, back.scale_idx), (root, scale_idx), "{}", scale.short());
+            }
         }
     }
 
