@@ -9,8 +9,9 @@ import { FrameLoop } from "../client/frameloop";
 import { nodeNamed, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { Notices } from "../client/notices";
+import type { Reveals } from "../client/reveals";
 import { Clock } from "../client/testing";
-import { ClientProvider, useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames, useNotices } from "./ClientProvider";
+import { ClientProvider, useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames, useNotices, useReveals } from "./ClientProvider";
 
 afterEach(cleanup);
 
@@ -179,6 +180,25 @@ describe("what the page gives its views", () => {
     expect(notices?.getItems().map((notice) => notice.text)).toEqual(["Could not add an LFO to Filter: a modulator goes in a lane or in a group"]);
   });
 
+  test("is an editor that has what it adds shown through the reveals the views can listen to", async () => {
+    let editor: Editor | undefined;
+    let reveals: Reveals | undefined;
+    function Probe() {
+      editor = useEditor();
+      reveals = useReveals();
+      return null;
+    }
+    const { client } = mount(<Probe />);
+    await waitFor(() => {
+      expect(client.state.status).toBe("open");
+    });
+    const shown: number[] = [];
+    reveals?.subscribe((node) => shown.push(node));
+    expect(await editor?.addInstrument("builtin:osc")).toBe(3);
+    expect(await editor?.addModulator(filter.id, "lfo")).toBeNull(); // refused: nothing to show
+    expect(shown).toEqual([3]);
+  });
+
   test("is the same editor and notices for as long as the client is, and others for another client", () => {
     const seen: [unknown, unknown][] = [];
     function Probe() {
@@ -205,7 +225,7 @@ describe("what the page gives its views", () => {
 
   test("cannot be asked for below no provider", () => {
     const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    for (const hook of [useClient, useDrive, useFrames, useNotices, useEditor]) {
+    for (const hook of [useClient, useDrive, useFrames, useNotices, useEditor, useReveals]) {
       function Probe() {
         hook();
         return null;

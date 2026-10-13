@@ -8,6 +8,7 @@ import type { EdgeId, Graph, Intent, ModulatorKind, NodeId } from "../protocol";
 import type { Client } from "./connection";
 import { cableLabel, displayNames } from "./names";
 import type { Notices } from "./notices";
+import type { Reveals } from "./reveals";
 
 const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
 
@@ -38,10 +39,13 @@ export function refusal(intent: Intent, error: unknown): string {
 export class Editor {
   readonly #client: Client;
   readonly #notices: Notices;
+  readonly #reveals: Reveals | undefined;
 
-  constructor(client: Client, notices: Notices) {
+  /** `reveals`, if there is a canvas to show things on, is told which node the page added, for it to show. */
+  constructor(client: Client, notices: Notices, reveals?: Reveals) {
     this.#client = client;
     this.#notices = notices;
+    this.#reveals = reveals;
   }
 
   /**
@@ -54,7 +58,7 @@ export class Editor {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     if (!(await this.#attempt(`add ${KINDS[kind]} to ${this.#name(parent)}`, { type: "addModulator", parent, kind }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === parent && !before.has(node.id));
-    return added?.at(-1)?.id ?? null;
+    return this.#shown(added?.at(-1)?.id);
   }
 
   /**
@@ -66,7 +70,7 @@ export class Editor {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} to ${this.#name(parent)}`, { type: "addEffect", parent, plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "effect" && node.parent === parent && !before.has(node.id));
-    return added?.at(-1)?.id ?? null;
+    return this.#shown(added?.at(-1)?.id);
   }
 
   /**
@@ -78,7 +82,7 @@ export class Editor {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} as an instrument`, { type: "addInstrument", plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "instrument" && !before.has(node.id));
-    return added?.at(-1)?.id ?? null;
+    return this.#shown(added?.at(-1)?.id);
   }
 
   /**
@@ -109,6 +113,13 @@ export class Editor {
   /** Write the session to its own file. True if it was written (the page says why if it was not). */
   save(): Promise<boolean> {
     return this.#attempt(DOING.save, { type: "save" });
+  }
+
+  /** The node the page added, if it found it, which the canvas is asked to show (it is in the session by now); the node, or null. */
+  #shown(node: NodeId | undefined): NodeId | null {
+    if (node === undefined) return null;
+    this.#reveals?.show(node);
+    return node;
   }
 
   get #graph(): Graph | undefined {

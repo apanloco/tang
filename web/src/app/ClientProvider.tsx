@@ -9,6 +9,7 @@ import { Editor, refusal } from "../client/editor";
 import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
 import { Notices } from "../client/notices";
+import { Reveals } from "../client/reveals";
 
 /** What the views of the page have in common: the client, the frames they draw on, the controls that are turned, and what is done to the structure. */
 interface Services {
@@ -18,6 +19,8 @@ interface Services {
   /** What the page has to tell the person that nobody asked it for: what could not be done. */
   notices: Notices;
   editor: Editor;
+  /** What the page has added and wants shown: the canvas moves to it. */
+  reveals: Reveals;
 }
 
 const ServicesContext = createContext<Services | null>(null);
@@ -37,8 +40,9 @@ export function ClientProvider({ client, frames = pageFrames, children }: { clie
   }, [client]);
   const services = useMemo<Services>(() => {
     const notices = new Notices();
+    const reveals = new Reveals();
     const drive = new Drive({ frames, send: (intent) => client.request(intent), onError: (error, intent) => notices.say(refusal(intent, error)) });
-    return { client, frames, drive, notices, editor: new Editor(client, notices) };
+    return { client, frames, drive, notices, reveals, editor: new Editor(client, notices, reveals) };
   }, [client, frames]);
   return <ServicesContext.Provider value={services}>{children}</ServicesContext.Provider>;
 }
@@ -61,6 +65,11 @@ export function useDrive(): Drive {
 /** What the page says of what could not be done. */
 export function useNotices(): Notices {
   return useServices().notices;
+}
+
+/** Where a view that shows the session (the canvas) hears of a node the page has just added, to show it. */
+export function useReveals(): Reveals {
+  return useServices().reveals;
 }
 
 /** Where a view that adds or takes out a modulator or a cable asks for it. */

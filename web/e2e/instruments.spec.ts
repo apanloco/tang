@@ -19,7 +19,7 @@ async function loudest(page: Page, ms: number): Promise<number> {
   return top;
 }
 
-test("an instrument is added in a lane of its own from the bar and heard, another is put in a lane from its menu, and the saved file has both lanes", async ({ page, own }) => {
+test("an instrument is put in a lane from its menu, another is added in a lane of its own from the bar and heard, and the saved file has both lanes", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
@@ -27,7 +27,20 @@ test("an instrument is added in a lane of its own from the bar and heard, anothe
   const meter = page.getByRole("meter", { name: "Master level" });
   const level = async (): Promise<number> => Number(await meter.getAttribute("aria-valuenow"));
 
-  // The tracer's one lane is quiet on purpose (its volume is 0.1): a note, and the level it makes.
+  // The tracer's lane has its saw, and a new instrument put in it by its menu starts as a sine: the lane keeps its filter and its LFO.
+  const waveform = lane("Oscillator").getByRole("combobox", { name: "waveform" });
+  await expect(waveform).toHaveValue("3");
+  await page.getByRole("button", { name: "Change the instrument of Oscillator" }).click();
+  const instruments = page.getByRole("menu", { name: "Change the instrument of Oscillator" }).getByRole("group", { name: "Built-in" });
+  await expect(instruments.getByRole("menuitem")).toHaveText(["Oscillator"]);
+  await instruments.getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(waveform).toHaveValue("0");
+  await expect(lane("Filter")).toBeVisible();
+  await expect(lane("LFO")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Change the instrument of Oscillator" })).toBeFocused();
+  await expect(page.getByText("Unsaved changes")).toBeVisible();
+
+  // The lane is quiet on purpose (its volume is 0.1, which the lane keeps): a note, and the level it makes.
   await page.keyboard.down("z");
   await expect.poll(level, { message: "the note is heard" }).toBeGreaterThan(-50);
   const before = await loudest(page, 600);
@@ -40,27 +53,18 @@ test("an instrument is added in a lane of its own from the bar and heard, anothe
   await expect(builtins.getByRole("menuitem")).toHaveText(["Oscillator"]);
   await builtins.getByRole("menuitem", { name: "Oscillator" }).click();
 
-  // A lane of its own is on the canvas, called by a number now that there are two, with the buttons of a lane; the session has something to save.
+  // A lane of its own is on the canvas, called by a number now that there are two, with the buttons of a lane. It was added below
+  // the first, which fills the screen: the canvas has moved to show it.
   await expect(lane("Oscillator 2")).toBeVisible();
+  await expect(lane("Oscillator 2")).toBeInViewport({ ratio: 1 });
   await expect(page.getByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add an effect to Oscillator 2" })).toBeVisible();
-  await expect(page.getByText("Unsaved changes")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add an instrument" })).toBeFocused();
 
-  // The next note is heard through it too: the new oscillator is at its own full volume, far louder than the tracer's lane.
+  // The next note is heard through it too: the new oscillator is at its own full volume, far louder than the first lane.
   await page.keyboard.down("z");
   await expect.poll(level, { message: "the note through both lanes" }).toBeGreaterThan(before + 10);
   await page.keyboard.up("z");
-
-  // The tracer's lane has its saw; a new instrument put in it by its menu starts as a sine, and the lane keeps its filter and its LFO.
-  const waveform = lane("Oscillator 1").getByRole("combobox", { name: "waveform" });
-  await expect(waveform).toHaveValue("3");
-  await page.getByRole("button", { name: "Change the instrument of Oscillator 1" }).click();
-  await page.getByRole("menuitem", { name: "Oscillator" }).click();
-  await expect(waveform).toHaveValue("0");
-  await expect(lane("Filter")).toBeVisible();
-  await expect(lane("LFO")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Change the instrument of Oscillator 1" })).toBeFocused();
 
   // What is saved has both lanes, and the first has none of the saw it had.
   await page.getByRole("button", { name: /^Save/ }).click();

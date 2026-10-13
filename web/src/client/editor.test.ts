@@ -6,6 +6,7 @@ import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 import { Editor } from "./editor";
 import { Notices } from "./notices";
+import { Reveals } from "./reveals";
 
 const clients: Client[] = [];
 afterEach(() => {
@@ -28,7 +29,14 @@ async function open(options: MockOptions = {}) {
   client.start();
   await until(() => client.state.status === "open", "the session");
   const notices = new Notices();
-  return { server, client, notices, editor: new Editor(client, notices) };
+  const reveals = new Reveals();
+  const shown: number[] = [];
+  reveals.subscribe((node) => {
+    // (What is shown is in the session the client has by then: the canvas has something to look for.)
+    expect(client.state.snapshot?.graph.nodes.some((n) => n.id === node), `node ${String(node)} is shown before the client has it`).toBe(true);
+    shown.push(node);
+  });
+  return { server, client, notices, shown, editor: new Editor(client, notices, reveals) };
 }
 
 const said = (notices: Notices): string[] => notices.getItems().map((notice) => notice.text);
@@ -213,6 +221,37 @@ describe("replacing an instrument", () => {
     client.stop();
     expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(false);
     expect(said(notices)).toEqual(["Could not change the instrument of Oscillator to Oscillator: Not connected to the server."]);
+  });
+});
+
+describe("showing what was added", () => {
+  test("is asked for each node the page added, in the order they were, once the session has it", async () => {
+    const { editor, shown } = await open();
+    const lfo = await editor.addModulator(oscillator.id, "lfo");
+    const effect = await editor.addEffect(oscillator.id, "builtin:reverb");
+    const lane = await editor.addInstrument("builtin:osc");
+    expect(shown).toEqual([lfo, effect, lane]);
+    expect(shown).toEqual([3, 4, 5]);
+  });
+
+  test("is not asked for what was refused, nor for what was not added but changed or taken out, nor for a cable", async () => {
+    const { editor, shown } = await open();
+    expect(await editor.addEffect(filter.id, "builtin:reverb")).toBeNull();
+    expect(await editor.addInstrument("builtin:reverb")).toBeNull();
+    expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(true);
+    expect(await editor.addCable(lfo.id, oscillator.id, param(oscillator, "detune"))).toBe(true);
+    expect(await editor.removeNode(lfo.id)).toBe(true);
+    expect(shown).toEqual([]);
+  });
+
+  test("is not needed: an editor with nobody to show things to adds as it did", async () => {
+    const { server } = await open();
+    const client = new Client({ transport: server.transport, reconnectDelay: () => 5 });
+    clients.push(client);
+    client.start();
+    await until(() => client.state.status === "open", "the session");
+    const editor = new Editor(client, new Notices());
+    expect(await editor.addInstrument("builtin:osc")).toBe(3);
   });
 });
 

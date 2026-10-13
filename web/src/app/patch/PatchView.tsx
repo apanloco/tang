@@ -3,16 +3,18 @@
 // kept in the session in a later step); what can be done on the canvas is to turn the controls on
 // the nodes, to add a modulator to a lane or a group, to take a modulator or a cable out, and to
 // draw a cable by dragging it from a modulator's output to a parameter's port.
-import { Background, Controls, ReactFlow } from "@xyflow/react";
+import { Background, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
 import type { Connection, Edge, EdgeTypes, NodeTypes, OnConnectStart } from "@xyflow/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { Graph } from "../../protocol";
-import { useClientSelection, useEditor } from "../ClientProvider";
+import type { Graph, NodeId } from "../../protocol";
+import { useClientSelection, useEditor, useReveals } from "../ClientProvider";
 import { cableOf, canDraw, ConnectingContext, drawableFrom } from "./connection";
 import { AudioEdge, ModulationEdge } from "./edges";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
 import { sameStructure, toFlow } from "./toFlow";
+import type { Flow } from "./toFlow";
+import { rectOf, viewToShow } from "./view";
 import "@xyflow/react/dist/style.css";
 import "./patch.css";
 
@@ -32,6 +34,59 @@ const CONNECTION_LINE = { stroke: "var(--tang-modulation)", strokeWidth: 2, stro
 
 /** Whether two graphs (or the lack of one) are laid out the same: what the canvas depends on, which is not the values. */
 export const sameGraphStructure = (a: Graph | null, b: Graph | null): boolean => (a && b ? sameStructure(a, b) : a === b);
+
+/** How long a node the page added is waited for: the layout that has it comes with the snapshot, which is as good as at once. */
+const SHOW_WITHIN_MS = 3000;
+
+/** How long the canvas takes to move to a node. */
+const MOVE_MS = 250;
+
+/**
+ * Moves the canvas to a node the page has just added, if it is not all in the view (a lane goes below the others, an effect
+ * after the last of its row): the page asks for it through `Reveals` once the session has the node, and the layout may come a
+ * moment later. It is only for what the page itself added: a node somebody else adds is not worth the canvas moving under a
+ * person who is turning a knob. Draws nothing; it is in the canvas for the instance of it (`useReactFlow`).
+ */
+function ShowWhatWasAdded({ graph, flow }: { graph: Graph | null; flow: Flow }) {
+  const reveals = useReveals();
+  const canvas = useReactFlow();
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  const minZoom = useStore((state) => state.minZoom);
+  const latest = useRef({ graph, flow });
+  const wanted = useRef<{ node: NodeId; until: number } | null>(null);
+
+  const show = useCallback(() => {
+    const want = wanted.current;
+    if (!want) return;
+    if (Date.now() > want.until) {
+      wanted.current = null;
+      return;
+    }
+    const { graph: now, flow: laidOut } = latest.current;
+    const rect = now ? rectOf(now, laidOut, want.node) : null;
+    // (Not laid out yet: when the next layout is.)
+    if (!rect) return;
+    wanted.current = null;
+    const next = viewToShow(rect, canvas.getViewport(), { width, height }, minZoom);
+    if (next) void canvas.setViewport(next, { duration: MOVE_MS });
+  }, [canvas, width, height, minZoom]);
+
+  useEffect(() => {
+    latest.current = { graph, flow };
+    show();
+  }, [graph, flow, show]);
+
+  useEffect(
+    () =>
+      reveals.subscribe((node) => {
+        wanted.current = { node, until: Date.now() + SHOW_WITHIN_MS };
+        show();
+      }),
+    [reveals, show],
+  );
+  return null;
+}
 
 export function PatchView() {
   // The canvas is laid out again when something other than a value changed.
@@ -91,6 +146,7 @@ export function PatchView() {
         >
           <Background gap={24} />
           <Controls showInteractive={false} />
+          <ShowWhatWasAdded graph={graph} flow={flow} />
         </ReactFlow>
       </ConnectingContext.Provider>
     </div>
