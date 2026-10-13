@@ -29,6 +29,8 @@ export class Control {
   /** Intents sent and not yet answered. */
   #inFlight = 0;
   #cancelFrame: (() => void) | null = null;
+  /** The frame (as the loop counts them) in which an intent was last sent: there is one in each. */
+  #sentInFrame = -1;
   readonly #listeners = new Set<() => void>();
   readonly #make: (value: number) => Intent;
   readonly #options: DriveOptions;
@@ -64,7 +66,11 @@ export class Control {
     });
   }
 
-  /** Send what has been set, now, and not on the next frame: a gesture is over. */
+  /**
+   * Send what has been set, now and not on the next frame, because a gesture is over; unless
+   * an intent has gone in this frame already, and then on the next, which is the one that is
+   * allowed.
+   */
   commit(): void {
     this.#cancelFrame?.();
     this.#cancelFrame = null;
@@ -73,6 +79,17 @@ export class Control {
 
   #flush(): void {
     if (!this.#dirty || this.#pending === null) return;
+    const { frames } = this.#options;
+    if (frames.frames === this.#sentInFrame) {
+      // One intent a frame: what has been set since waits for the next one.
+      // (Nothing is waiting for a frame here: the one that called this has just left, or `commit` took it back.)
+      this.#cancelFrame = frames.next(() => {
+        this.#cancelFrame = null;
+        this.#flush();
+      });
+      return;
+    }
+    this.#sentInFrame = frames.frames;
     this.#dirty = false;
     const intent = this.#make(this.#pending);
     this.#inFlight += 1;

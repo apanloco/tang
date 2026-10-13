@@ -211,6 +211,58 @@ describe("the end of a gesture", () => {
     expect(calls.map((call) => call.intent)).toEqual([setParam(0.7), setParam(0.8)]);
   });
 
+  test("waits for the next frame when an intent has gone in this one already: one intent a frame", () => {
+    const { drive, calls, clock } = setup();
+    const control = drive.param(1, 0);
+    control.set(0.1);
+    clock.tick(16); // sent, on the frame
+    control.set(0.2);
+    control.commit(); // the gesture is over, in the same frame
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1)]);
+    expect(clock.pending).toBe(1);
+    clock.tick(33);
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1), setParam(0.2)]);
+    expect(clock.pending).toBe(0);
+    // And the control is as it was: what is set next goes on the next frame.
+    control.set(0.3);
+    clock.tick(50);
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1), setParam(0.2), setParam(0.3)]);
+  });
+
+  test("does not hold a commit back that comes in a frame in which this control sent nothing", () => {
+    const { drive, calls, clock, frames } = setup();
+    frames.subscribe(() => undefined); // something else draws on the frames, so that they go on
+    const control = drive.param(1, 0);
+    control.set(0.1);
+    clock.tick(16);
+    clock.tick(33); // another frame, in which this control sends nothing
+    control.set(0.2);
+    control.commit();
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1), setParam(0.2)]);
+  });
+
+  test("when no frame has gone by since it sent, as when nothing draws on them, a commit waits for the next", () => {
+    const { drive, calls, clock } = setup();
+    const control = drive.param(1, 0);
+    control.set(0.1);
+    clock.tick(16); // sent; the loop has no one else and rests
+    control.set(0.2);
+    control.commit();
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1)]);
+    clock.tick(33);
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1), setParam(0.2)]);
+  });
+
+  test("lets each control send its own intent in a frame", () => {
+    const { drive, calls, clock } = setup();
+    drive.param(1, 0).set(0.1);
+    clock.tick(16);
+    const other = drive.param(1, 1);
+    other.set(0.3);
+    other.commit(); // in the same frame, but it is not the control that sent
+    expect(calls.map((call) => call.intent)).toEqual([setParam(0.1, 1, 0), setParam(0.3, 1, 1)]);
+  });
+
   test("sends nothing when everything has been sent", () => {
     const { drive, calls, clock } = setup();
     const control = drive.param(1, 0);
