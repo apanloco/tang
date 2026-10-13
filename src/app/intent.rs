@@ -92,7 +92,7 @@ pub struct ParamValue {
 /// revisions has missed something and asks for a snapshot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
-#[cfg_attr(not(test), expect(dead_code, reason = "the web runtime sends them in step 10"))]
+#[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends events"))]
 pub struct StampedEvent {
     pub rev: u64,
     #[serde(flatten)]
@@ -109,7 +109,7 @@ pub struct Applied {
 
 impl Applied {
     /// The events, each stamped with the revision this intent brought about.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime sends them in step 10"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends events"))]
     pub fn stamped(&self) -> Vec<StampedEvent> {
         self.events.iter().map(|event| StampedEvent { rev: self.rev, event: event.clone() }).collect()
     }

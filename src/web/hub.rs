@@ -11,8 +11,6 @@
 //! The hub's methods are synchronous and short (a lock and `try_send`), so the
 //! owner thread can call them from inside the controller's `apply`.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the server (later in step 10) uses it"))]
-
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -69,6 +67,7 @@ impl Hub {
         self.lock().remove(&id);
     }
 
+    #[cfg(test)]
     pub fn client_count(&self) -> usize {
         self.lock().len()
     }

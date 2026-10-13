@@ -14,8 +14,6 @@
 //! Everything here is pure: the headers and the token are passed in, so that the
 //! policy can be tested without a socket.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the server (later in step 10) applies it"))]
-
 use std::net::SocketAddr;
 
 /// Why a request is refused.
@@ -39,6 +37,7 @@ impl Token {
         Token(bytes.iter().map(|b| format!("{b:02x}")).collect())
     }
 
+    #[cfg(test)]
     pub fn new(secret: impl Into<String>) -> Token {
         Token(secret.into())
     }

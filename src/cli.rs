@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
+
+use clap::{Args, Parser, Subcommand};
 
 /// Default audio buffer size in frames.
 ///
@@ -63,6 +65,30 @@ pub enum Command {
         /// Path to session file (.toml). If omitted, creates a new session.
         session: Option<String>,
     },
+    /// Load a session and serve it to a browser, with no TUI (needs a build with the
+    /// `web` feature)
+    Serve {
+        /// Path to session file (.toml). If omitted, creates a new session.
+        session: Option<String>,
+
+        #[command(flatten)]
+        web: WebArgs,
+    },
+}
+
+/// How the web interface listens.
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct WebArgs {
+    /// Address (an IP and a port) for the web interface to listen on. Beyond this
+    /// machine (anything but 127.0.0.1 or ::1) it needs a token: one is made, and
+    /// printed in the address to open.
+    #[arg(long, default_value = "127.0.0.1:8765")]
+    pub web_bind: SocketAddr,
+
+    /// Another page that may connect, as scheme://host:port (a dev server, say). Can be
+    /// given more than once.
+    #[arg(long = "web-origin")]
+    pub web_origins: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -95,7 +121,7 @@ mod tests {
     #[test]
     fn the_flags_of_the_session_commands_work_wherever_they_are_written() {
         let flags = ["--audio-device", "none", "--midi-device", "keys", "--buffer-size", "128", "--sample-rate", "44100", "--debug"];
-        for subcommand in [["play", "x.toml"]] {
+        for subcommand in [["play", "x.toml"], ["serve", "x.toml"]] {
             for args in placements(&subcommand, &flags) {
                 let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
                 assert_eq!(cli.audio_device.as_deref(), Some("none"), "{args:?}");
@@ -103,6 +129,28 @@ mod tests {
                 assert_eq!((cli.buffer_size, cli.sample_rate, cli.debug), (128, 44100, true), "{args:?}");
             }
         }
+    }
+
+    #[test]
+    fn serve_listens_on_loopback_unless_told_otherwise() {
+        let Command::Serve { session, web } = Cli::try_parse_from(["tang", "serve", "x.toml"]).unwrap().command.unwrap() else {
+            panic!("not serve")
+        };
+        assert_eq!(session.as_deref(), Some("x.toml"));
+        assert_eq!(web, WebArgs { web_bind: "127.0.0.1:8765".parse().unwrap(), web_origins: vec![] });
+
+        let args = ["tang", "serve", "--web-bind", "0.0.0.0:9000", "--web-origin", "http://localhost:5173", "--web-origin", "http://localhost:5174"];
+        let Command::Serve { session, web } = Cli::try_parse_from(args).unwrap().command.unwrap() else { panic!("not serve") };
+        assert_eq!(session, None, "a new session, like the others");
+        assert_eq!(web.web_bind, "0.0.0.0:9000".parse().unwrap());
+        assert_eq!(web.web_origins, ["http://localhost:5173", "http://localhost:5174"]);
+    }
+
+    #[test]
+    fn the_web_flags_belong_to_serve_alone() {
+        assert!(Cli::try_parse_from(["tang", "play", "x.toml", "--web-bind", "127.0.0.1:1"]).is_err());
+        assert!(Cli::try_parse_from(["tang", "--web-bind", "127.0.0.1:1"]).is_err());
+        assert!(Cli::try_parse_from(["tang", "serve", "--web-bind", "localhost:8765"]).is_err(), "an address, not a name");
     }
 
     #[test]

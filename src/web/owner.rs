@@ -12,8 +12,6 @@
 //! client gets the snapshot of revision *n* and then exactly the events of revisions
 //! after *n*, without a gap or a repeat.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the server (later in step 10) runs it"))]
-
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

@@ -391,7 +391,7 @@ impl Controller {
     }
 
     /// Tell `sink` about every intent applied from now on (see `EventSink`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime subscribes, later in step 10"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime subscribes"))]
     pub fn subscribe(&mut self, sink: Box<dyn EventSink>) -> SubscriberId {
         let id = SubscriberId(self.next_subscriber);
         self.next_subscriber += 1;

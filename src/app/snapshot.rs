@@ -6,7 +6,7 @@
 //! session (`app::graph`), what the telemetry slots mean (`app::layout`), and the
 //! few things that belong to the session as a whole rather than to a node.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) sends it"))]
+#![cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends snapshots"))]
 
 use serde::{Deserialize, Serialize};
 

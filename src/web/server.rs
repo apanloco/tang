@@ -17,8 +17,6 @@
 //! a client that the hub gave up on (its queue was full) is told and closed. Either
 //! way the connection's notes are ended and its place is free again.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "`tang serve` (next in step 10) runs it"))]
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -193,6 +191,7 @@ impl Server {
 
     /// Where the server listens (the port is the one the system chose, if it was asked
     /// for 0).
+    #[cfg(test)]
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }

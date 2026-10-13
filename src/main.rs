@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     } = cli;
 
     match command {
-        None => run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, true),
+        None => run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Tui),
         Some(Command::Enumerate(target)) => {
             env_logger::init();
             match target {
@@ -148,9 +148,28 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Play { session: play_session }) => {
-            run_session(play_session, audio_device, midi_device, buffer_size, sample_rate, debug, false)
+            run_session(play_session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Play)
+        }
+        #[cfg(feature = "web")]
+        Some(Command::Serve { session: serve_session, web }) => {
+            run_session(serve_session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Serve(web))
+        }
+        #[cfg(not(feature = "web"))]
+        Some(Command::Serve { .. }) => {
+            anyhow::bail!("this build of tang has no web interface: build it with `--features web`")
         }
     }
+}
+
+/// What a session is run for.
+enum Mode {
+    /// The terminal interface.
+    Tui,
+    /// No interface: the virtual piano and the MIDI devices play the session.
+    Play,
+    /// No interface at all: a browser controls the session.
+    #[cfg(feature = "web")]
+    Serve(cli::WebArgs),
 }
 
 /// Custom logger that writes to stderr with \r\n line endings for raw mode.
@@ -256,16 +275,28 @@ fn run_session(
     buffer_size: u32,
     sample_rate: u32,
     debug: bool,
-    use_tui: bool,
+    mode: Mode,
 ) -> anyhow::Result<()> {
-    // Set up raw mode logger early so plugin loading messages are visible
-    log::set_logger(&RAW_MODE_LOGGER).ok();
-    log::set_max_level(
-        std::env::var("RUST_LOG")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(log::LevelFilter::Info),
-    );
+    let use_tui = matches!(mode, Mode::Tui);
+    #[cfg(feature = "web")]
+    let serving = matches!(mode, Mode::Serve(_));
+    #[cfg(not(feature = "web"))]
+    let serving = false;
+
+    // Set up the logger early so plugin loading messages are visible. The terminal is in
+    // raw mode (and wants \r\n) in the TUI and in `play`; a server's log is plain text.
+    if serving {
+        #[cfg(feature = "web")]
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    } else {
+        log::set_logger(&RAW_MODE_LOGGER).ok();
+        log::set_max_level(
+            std::env::var("RUST_LOG")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(log::LevelFilter::Info),
+        );
+    }
 
     let sample_rate_f = sample_rate as f32;
     let max_block_size = buffer_size as usize;
@@ -368,7 +399,16 @@ fn run_session(
     let midi_monitor = std::sync::Arc::new(midi_monitor::MidiMonitor::new(debug));
     let notes = note_input::NoteInput::new(midi_tx.clone(), held.clone(), piano_filter.clone());
     let mut midi_mgr = midi::MidiManager::new(notes, midi_device, midi_monitor.clone());
-    midi_mgr.open_ports()?;
+    // A server may well be somewhere with no MIDI at all (a container, CI): the
+    // browser's keyboard still plays, and nobody should be warned about it every second.
+    let midi_available = match midi_mgr.open_ports() {
+        Ok(_) => true,
+        Err(e) if serving => {
+            log::warn!("No MIDI inputs: {e}");
+            false
+        }
+        Err(e) => return Err(e),
+    };
     log::info!("MIDI inputs connected: {}", midi_mgr.connection_count());
 
     // Build audio engine (not playing yet — will start after initial commands are queued)
@@ -432,11 +472,19 @@ fn run_session(
         },
         Some(std::path::PathBuf::from(&source)),
     );
-    ctl.watch_devices(Box::new(midi_mgr));
+    if midi_available {
+        ctl.watch_devices(Box::new(midi_mgr));
+    }
 
-    // --- Branch: TUI view vs plain play mode ---
+    // --- Branch: TUI view, a server for a browser, or plain play mode ---
     let ctl = if use_tui {
         tui::run(ctl)?
+    } else if serving {
+        #[cfg(feature = "web")]
+        if let Mode::Serve(args) = &mode {
+            web::serve(&mut ctl, args)?;
+        }
+        ctl
     } else {
         // --- Plain play mode (original) ---
 

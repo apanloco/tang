@@ -8,8 +8,6 @@
 //! sounding. It reaches the client through the hub. The socket glue that feeds it
 //! frames and writes out the queue is in `web::server`.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the server (later in step 10) drives it"))]
-
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;

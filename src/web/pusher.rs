@@ -11,8 +11,6 @@
 //! cadence; a client that cannot take a frame (its queue is full) misses it, and the
 //! next one is newer.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "`tang serve` (next in step 10) runs the server that runs it"))]
-
 use std::sync::Arc;
 use std::time::Duration;
 

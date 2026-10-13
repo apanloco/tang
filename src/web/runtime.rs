@@ -9,9 +9,6 @@
 //! current. `run_headless` is that loop for `tang serve`; the TUI loop of `tang --web`
 //! (step 13) will do the same among its own business.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "`tang serve` (next in step 10) runs it"))]
-
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -58,7 +55,8 @@ impl Runtime {
     }
 
     /// Where the server listens.
-    pub fn addr(&self) -> SocketAddr {
+    #[cfg(test)]
+    pub fn addr(&self) -> std::net::SocketAddr {
         self.server.addr()
     }
 
@@ -93,6 +91,7 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
     use std::thread::{JoinHandle, ThreadId};
 
     use serde_json::{Value, json};

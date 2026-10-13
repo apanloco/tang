@@ -32,7 +32,7 @@ impl Slot {
     }
 
     /// The cell's number, for describing it to a client.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the layout a client gets (`app::layout`) names the slots; the web runtime sends it in step 10"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "the layout a client gets (`app::layout`) names the slots; only the web runtime sends it"))]
     pub fn index(self) -> u32 {
         self.0
     }
@@ -81,13 +81,13 @@ impl Telemetry {
 
     /// The float last published in the slot numbered `index`, as a layout names it;
     /// 0.0 for a number that is not a slot.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) reads the values for its telemetry frames"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime reads the values for its telemetry frames"))]
     pub fn load_index(&self, index: u32) -> f32 {
         self.cells.get(index as usize).map_or(0.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed)))
     }
 
     /// How many events the slot numbered `index` has counted.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) reads the values for its telemetry frames"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime reads the values for its telemetry frames"))]
     pub fn count_index(&self, index: u32) -> u32 {
         self.cells.get(index as usize).map_or(0, |cell| cell.load(Ordering::Relaxed))
     }

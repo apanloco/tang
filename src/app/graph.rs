@@ -21,7 +21,7 @@
 //! `type`) on each variant; the TypeScript is generated from them
 //! (`app::protocol`).
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the snapshot a client gets is built from it; the web runtime (step 10) sends that"))]
+#![cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends the graph"))]
 
 use serde::{Deserialize, Serialize};
 

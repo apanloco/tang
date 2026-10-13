@@ -17,7 +17,7 @@
 //! lane's modulators to the group's, because a lane's modulator is applied after
 //! the group's and wins.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the snapshot a client gets is built from it; the web runtime (step 10) sends that"))]
+#![cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends the telemetry layout"))]
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};

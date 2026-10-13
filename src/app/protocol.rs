@@ -14,7 +14,7 @@
 //!
 //! rewrites the directory.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "the web runtime (step 10) speaks it"))]
+#![cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime speaks the protocol"))]
 
 use serde::{Deserialize, Serialize};
 
