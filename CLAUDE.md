@@ -984,8 +984,10 @@ volume, effect and bus-effect mix, group volume and pan, each with its own
 range), `LoadPreset` (by preset id; the values the preset set are mirrored
 into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
 stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
-waveform rounded to its index: sine, triangle, saw, square) and `SetEdgeDepth` (a
-modulation cable's depth, -1 to 1); `Save` (the session's own file); and seven that change
+waveform rounded to its index: sine, triangle, saw, square), `SetEdgeDepth` (a
+modulation cable's depth, -1 to 1) and `SetRange { node, range }` (the notes a lane takes, both
+ends included, or every note for none; refused for a node that is no lane, a note above 127 and a low
+note above the high one; the TUI's `R` popup asks it too); `Save` (the session's own file); and seven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1390,7 +1392,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   model, the engine handles and the plugin catalog. Front-ends call
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
-  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `RemoveEdge`,
+  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
   `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
@@ -1489,7 +1491,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`MenuItem.current`). Step 22 added all the parameters of a plugin (a node shows the first eight as knobs):
   a "⚙" button on every instrument and effect docks a panel beside the canvas with a filter by name and a
   page of forty rows at a time, turned like the knobs (`ParamPanel`, `ParamRow`, `client/paramSearch.ts`;
-  Escape or the button again closes it). What the controller
+  Escape or the button again closes it). Step 23 added the keys of a lane: every lane has a "Keys" cell
+  with a lowest and a highest key (or `any` at an open end) that asks `SetRange` (`RangeCell`; the notes are
+  named as in the TUI, `client/notes.ts`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1554,7 +1558,7 @@ cable drives): kept in the session as the `ui` layout's `pinned` list (docs/web-
 TODO: the panel's sliders ignore what a parameter says of its steps (`stepCount`) and of its group (`group`): a stepped
 parameter is turned as if it were continuous, and the filter looks at names only. (The plugins of this machine report neither.)
 TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at
-its own defaults (or at a preset the page then loads): ranges, groups and taking a lane out (waits for an undo)
+its own defaults (or at a preset the page then loads): groups and taking a lane out (waits for an undo)
 are not in the page yet.
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
 edge, and two cables with the same middle put theirs over each other; user-placed nodes and

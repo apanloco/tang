@@ -417,7 +417,11 @@ resolves cursor → ids and then calls `apply`.
   is filled) replaced; the cables that drove the old plugin's parameters are taken out. Refused, with nothing
   changed, for a node that is no lane (checked first), a plugin the catalog does not name, an effect, one that does
   not load, and one with no audio output; told by a snapshot like the others; `Editor.addInstrument` resolves with
-  the node of the lane.)
+  the node of the lane.) (`SetRange { node, range }` is built, step 23: the notes a lane takes, both ends included, or
+  every note for `null`; `node` is a lane's (an empty lane's too). Refused, with nothing changed, for a node that is no
+  lane, for a note above 127 and for a low note above the high one ("the range goes from F#6 down to E2: its low note has
+  to be the lower"); answered by `RangeSet`, an event and not a snapshot, since no node or cable comes or goes. The TUI's
+  `R` popup asks it, so that what it sets reaches the browsers.)
 - Modulation: `AddModulator`, `SetModulatorField`, `AddModEdge`, `RemoveEdge`,
   `SetEdgeDepth`, `LearnMidi`. (`SetModulatorField` and `SetEdgeDepth` are built, step
   14: an LFO's rate and waveform and an envelope's four stages, in a lane's modulator or
@@ -875,6 +879,14 @@ a time: the button of another node puts that node's parameters in, with a filter
 button and Escape (with the focus in the panel) close it, the focus going back to the button; a node that goes takes
 its panel. Keys typed in the filter are text, not notes. Not built: pinning a parameter to the node, a slider that
 follows a parameter's steps or groups, a log scale for a range of decades.
+
+**As built (step 23).** A lane's node has a cell called Keys after its volume, in the grid of its controls, with a
+lowest and a highest key (`RangeCell`, `app/patch/controls.tsx`): each a choice of `any` (no end) or a note by name, which
+asks for `SetRange` (`Editor.setRange`). The other end of the range stays; an end chosen past the other takes it
+along, so that a choice is never refused for crossing; `any` at both ends is every note, which is no range. The lists
+leave out the note that is any already (C-1 as a low end, G9 as a high one). What was chosen shows until the answer is in,
+the last choice while earlier ones are answered, and then what the session has. The cell counts among a node's controls
+for its height (`controlCount`: an instrument's are its parameters, its volume and its keys).
 
 ### 9.4 Performance rules
 
@@ -2150,6 +2162,47 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 875 tests (as at the end of step 21, 1023 with the `web` feature and 13 on the
     real program); web 902 (845 before the step); 40 in browsers (39).
 
+- [x] **23. Key ranges from the page (phase 1).** A lane takes every note unless it is given a range, and the page could
+  not give one: a split or a layer was a thing for the TUI's `R`. *Done when:* on the real program, a browser chooses the
+  keys of a lane, a note outside them is silent and one inside is heard, and the file the session is saved to has them. In
+  parts, each its own commit: **23.1** `SetRange` as an intent, which the TUI's `R` asks too, with the client's reducer,
+  the mock engine, `Editor.setRange` and the names of notes; **23.2** the Keys cell and a browser test.
+  *Not done (later steps):* groups (the TUI's `g` is not an intent yet), taking a lane out.
+  - **23.1 as built.** `Intent::SetRange { node, range: Option<NoteRange> }` and `Event::RangeSet`. `Controller::set_range`
+    does what the popup did (the model's range, the audio thread's `SetInstrumentRange`, which lets go of the notes it
+    counted under the old range) after the checks the popup did not need: the node is a lane, the ends are notes (0 to
+    127) and the low one is not above the high one. The snapshot a client keeps applies the event
+    (`Snapshot::change`, which the invariant test `the_events_of_an_intent_are_everything_it_changed` pins), and the
+    TUI's loop rebuilds its tree for it (the lane's label has the keys). The TUI's `R` asks the intent now, and its
+    golden test, which pins the command the audio thread gets, did not change. On the page: the reducer, the mock engine
+    (the controller's rule and words), `Editor.setRange` and `client/notes.ts` (`noteName`: sharps, `C4` is 60, `C-1` is 0;
+    `NOTE_NAMES`; `rangeLabel`: `C2-C6`, `-B3`, `C4-`, `all keys`), which the notice uses: "Could not set the keys of
+    Oscillator to F#6-E2: ...".
+  - **23.2 as built.** §9.3 above. `RangeCell`: two native choices, labelled `Lowest key of <lane>` and `Highest key of <lane>`
+    (and a tooltip each), in a cell called Keys. The choice shows at once through a state of its own (`pending`) and not
+    through `Drive`: a choice is one request, not a stream; a counter of requests keeps the answer to an earlier choice from
+    clearing a later one (a key held down on a closed choice makes many a second). It is drawn for every node and is
+    nothing for one that is no lane.
+  - **Tests.** Rust: five on the controller, the intent and the event on the wire (two intents, two events), three
+    more intents in the snapshot invariant, one on the TUI's loop with a browser, and on the real program one: a note
+    below the lane's keys is silent in the master's meter (the peak a moment after, below 0.001) and one inside is heard,
+    the file saved says `range = "C4-C5"`, none is every note again and the file has no range, a range that is not
+    one is refused in the controller's words. 14 mutations of the Rust, all caught, and three of them by the
+    real-program test alone. Web: 36 (902 before the step): the reducer, the mock engine, the editor, the notes, the
+    selector, and fourteen on the canvas, among them the held-back answers (`holdable`: a connection whose messages
+    to the client are let through a few at a time); in a browser on the real program one: C4 to B4 are chosen on the
+    node, the computer's Z (a C below them) makes nothing of the master's meter and its Q (C4) does, the file has the keys,
+    and any at both ends is every note again. 32 mutations of the page, 28 caught at once; one test was missing (any at the
+    high end) and was written, two are the same page (a value that has no option shows the list's first, which is any:
+    the explicit `""` is for the reader), and one was a guard the cell has anyway, taken out.
+  - **Found on the way.** The shared test rig reconnected after a quarter of a second, and a test of the canvas that drops
+    the connection and then clicks failed once in a full run (the canvas takes longer to draw with every control a node
+    has): the rig keeps a dropped connection down now (`6bf6795`; a click 400 ms late failed it every time before and
+    passes now). My first refusal for a range with its ends crossed named the notes the wrong way round; the test
+    for it said so before it was committed.
+  - **Numbers at the end of the step.** Rust 880 tests (875 before the step), 1029 with the `web` feature and 14 on the
+    real program (13); web 938 (902); 41 in browsers (40).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2192,6 +2245,7 @@ mixer, delay, …) are the natural first increment.
 | D23 | The tests own the scene they take for the known one (`web/src/client/fixtures/tracer.toml`), and the examples are for people: a Save in the page writes to the file the program serves, and the way to try the program is to serve an example | Built (step 20) |
 | D24 | A preset is chosen from a menu on the node of the plugin that has it, the one loaded last marked and the menu opening on it; the knobs take the values from the `PresetLoaded` event, which every client is told, and the page reads nothing of the preset itself (a plugin of the machine's is not the page's to open); a load must also move what the cables that drive the plugin are centred on, which is the engine's to do (f64); a bus effect is offered none until the audio thread can load a preset into a group's chain | Built (step 21) |
 | D25 | All the parameters of a plugin are reached through one panel docked beside the canvas, with a filter by name, and not by letting a node grow: the layout of the canvas stays a function of the graph (no node changes size by a click), a plugin with thousands of parameters costs a page of rows, and a row is the same session parameter as a knob (one `Control` for both: what was set shows until the engine has answered) | Built (step 22) |
+| D26 | A lane's keys are chosen in the page as two notes, `any` or a note each, and are never typed as text (`C0-B3`): the text is for the session file and the TUI, which have one parser; the intent carries numbers, a choice that would cross the other end pushes it along instead of being refused, and the whole keyboard is no range | Built (step 23) |
 
 Open questions
 
