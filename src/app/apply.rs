@@ -44,6 +44,7 @@ impl Controller {
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
+            Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
             Intent::Save => unreachable!("saving is done above"),
         };
         self.dirty = true;
@@ -242,6 +243,15 @@ impl Controller {
             return Err(invalid("that modulator drives that parameter already"));
         }
         self.add_target(at, index, NewTarget::to_param(&target, NEW_CABLE_DEPTH));
+        Ok(Done::Restructured)
+    }
+
+    fn add_effect_intent(&mut self, parent: NodeId, plugin: &str) -> Result<Done, IntentError> {
+        match self.model.locate(parent).ok_or(IntentError::NotFound(parent))? {
+            NodePath::Instrument(inst) => self.add_effect(inst, plugin)?,
+            NodePath::Group(group) => self.add_bus_effect(group, plugin)?,
+            _ => return Err(invalid("an effect goes in a lane or in a group")),
+        };
         Ok(Done::Restructured)
     }
 
@@ -1714,5 +1724,162 @@ type = "midi"
         assert_eq!(ctl.model.slots.high_water(), slots, "no telemetry slot is used up for nothing");
         assert!(ctl.model.instruments[0].modulators.is_empty());
         assert_eq!(ctl.model.groups[0].modulators.len(), 1);
+    }
+
+    // -- AddEffect --
+
+    /// `controller()`, with the built-in plugins in its catalog, as a scan finds them.
+    fn controller_with_builtins() -> (StubEngine, Controller) {
+        let (engine, mut ctl) = controller();
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        (engine, ctl)
+    }
+
+    fn add_effect(ctl: &mut Controller, parent: NodeId, plugin: &str) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::AddEffect { parent, plugin: plugin.to_string() })
+    }
+
+    #[test]
+    fn add_effect_puts_an_effect_at_the_end_of_a_lanes_chain_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let lane0 = lane(&ctl);
+        let applied = add_effect(&mut ctl, lane0, "builtin:filter").unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["InsertEffect inst=0 index=1 plugin=Filter mix=1.000"]);
+        let chain: Vec<_> = ctl.model.instruments[0].effects.iter().map(|e| (e.name.as_str(), e.mix)).collect();
+        // (The reverb the session has is at the mix its file gives it, which is fully wet when it gives none.)
+        assert_eq!(chain, [("Reverb", 1.0), ("Filter", 1.0)]);
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+        // It is a node a client can name, in the lane, whose parameters the intents reach.
+        let added = ctl.model.instruments[0].effects[1].node;
+        assert_eq!(ctl.model.locate(added), Some(NodePath::Effect { inst: 0, index: 1 }));
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "cutoff");
+        ctl.apply(Intent::SetParam { node: added, param: cutoff, value: 0.25 }).unwrap();
+        assert_eq!(sent(&engine), ["SetParameter inst=0 slot=2 param=0 value=0.250"]);
+    }
+
+    #[test]
+    fn add_effect_to_a_group_goes_on_its_bus_by_the_groups_command() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let group = node(&ctl, NodePath::Group(0));
+        assert_eq!(add_effect(&mut ctl, group, "builtin:reverb"), Ok(Applied::restructured(1)));
+        assert_eq!(sent(&engine), ["InsertGroupEffect group=0 index=1 plugin=Reverb mix=0.500"]);
+        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(bus, ["Filter", "Reverb"]);
+        assert_eq!(ctl.model.instruments[0].effects.len(), 1, "the member's chain is as it was");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_effect_to_a_lane_that_has_no_instrument_takes_one_too() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        assert!(ctl.model.instruments[1].instrument.is_none());
+        add_effect(&mut ctl, empty, "builtin:filter").unwrap();
+        assert_eq!(sent(&engine), ["InsertEffect inst=1 index=0 plugin=Filter mix=1.000"]);
+    }
+
+    #[test]
+    fn the_graph_after_adding_an_effect_has_its_node_and_the_audio_path_through_it() {
+        use crate::app::graph::EdgeKind;
+        let (_engine, mut ctl) = controller_with_builtins();
+        let (lane0, group, reverb) = (lane(&ctl), node(&ctl, NodePath::Group(0)), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        add_effect(&mut ctl, lane0, "builtin:filter").unwrap();
+        let graph = ctl.model.graph();
+        let filter = ctl.model.instruments[0].effects[1].node;
+        // The node is the lane's, after the effects the lane has and before its modulators.
+        let strip: Vec<_> = graph.nodes.iter().filter(|n| n.parent == Some(lane0) || n.id == lane0).map(|n| (n.id, n.name.as_str())).collect();
+        assert_eq!(strip, [(lane0, "Oscillator"), (reverb, "Reverb"), (filter, "Filter")]);
+        // The audio path goes through it: the lane, the reverb, the filter, and then the group the lane is a member of.
+        let path: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. }) && (e.from.node == lane0 || e.from.node == reverb || e.from.node == filter))
+            .map(|e| (e.from.node, e.to.node, matches!(e.kind, EdgeKind::Member)))
+            .collect();
+        assert_eq!(path, [(lane0, reverb, false), (reverb, filter, false), (filter, group, true)]);
+    }
+
+    #[test]
+    fn a_cable_can_be_drawn_to_an_effect_as_soon_as_it_has_been_added() {
+        let (engine, mut ctl) = controller_with_builtins();
+        let (group_lfo, lane0) = (ctl.model.groups[0].modulators[0].node, lane(&ctl));
+        add_effect(&mut ctl, lane0, "builtin:filter").unwrap();
+        sent(&engine);
+        let filter = ctl.model.instruments[0].effects[1].node;
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "cutoff");
+        // The group's modulator reaches the plugins of its members: the new filter is the member's slot 2 (the instrument, the reverb).
+        ctl.apply(cable_to(group_lfo, filter, cutoff)).unwrap();
+        assert_eq!(
+            sent(&engine),
+            [command("AddGroupModTarget group=0 mod=0", &format!("GroupMember {{ member: 0, slot: 2, param_index: {cutoff} }}"), &ctl, NodePath::Effect { inst: 0, index: 1 }, "cutoff")]
+        );
+    }
+
+    #[test]
+    fn add_effect_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let untouched = load(SESSION).model;
+        let (lane0, reverb) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let modulator = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let ghost = NodeId(9_999);
+        let not_a_chain = invalid("an effect goes in a lane or in a group");
+        let cases = [
+            ("an effect", reverb, "builtin:filter", not_a_chain.clone()),
+            ("a bus effect", bus, "builtin:filter", not_a_chain.clone()),
+            ("a modulator", modulator, "builtin:filter", not_a_chain),
+            ("a node that is not there", ghost, "builtin:filter", IntentError::NotFound(ghost)),
+            ("the master, which the model does not have", NodeId::MASTER, "builtin:filter", IntentError::NotFound(NodeId::MASTER)),
+            ("an instrument", lane0, "builtin:osc", invalid("Oscillator is an instrument, not an effect")),
+            ("a path", lane0, "./examples/plugin.clap", invalid("./examples/plugin.clap is not a plugin that is installed")),
+            ("an id the catalog does not have", lane0, "clap:com.example.nothing", invalid("clap:com.example.nothing is not a plugin that is installed")),
+        ];
+        for (what, parent, plugin, error) in cases {
+            assert_eq!(add_effect(&mut ctl, parent, plugin), Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    /// What the web client's mock engine makes of an effect it is asked to add, for each built-in effect: the
+    /// node the controller makes for it, without the ids (the mock hands out its own): the file
+    /// `web/src/client/fixtures/builtins.effects.json`, which this test keeps current.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_the_builtin_effects_is_current() {
+        let mut effects = serde_json::Map::new();
+        for info in plugin::builtin::enumerate_plugins().into_iter().filter(|p| !p.is_instrument) {
+            let (_engine, mut ctl) = controller_with_builtins();
+            let lane0 = lane(&ctl);
+            add_effect(&mut ctl, lane0, &info.id).unwrap();
+            let added = ctl.model.instruments[0].effects.last().unwrap().node;
+            let mut json = serde_json::to_value(ctl.model.graph().nodes.iter().find(|n| n.id == added).unwrap()).unwrap();
+            let object = json.as_object_mut().unwrap();
+            object.remove("id");
+            object.remove("parent");
+            effects.insert(info.id.clone(), json);
+        }
+        let fresh = serde_json::to_string_pretty(&effects).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/builtins.effects.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the built-in effects are now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 }

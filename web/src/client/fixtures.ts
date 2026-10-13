@@ -3,7 +3,8 @@
 // sweeps) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Node, NodeId, Snapshot } from "../protocol";
+import type { CatalogEntry, Node, NodeId, Plugin, Snapshot } from "../protocol";
+import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
@@ -19,6 +20,13 @@ export const reachFixture = reach as unknown as { snapshot: Snapshot; reach: Rec
 
 /** The built-in plugins as the server lists them in its catalog, which the mock engine serves: written by Rust (`the_web_clients_fixture_of_the_builtins_is_current`). */
 export const builtinCatalog = builtins as CatalogEntry[];
+
+/**
+ * What the controller makes of each built-in effect that is added to a lane or a group, by the plugin's id: the node's name,
+ * the plugin with the parameters it has when it is new, and the mix it starts at; the ids are the mock's to hand out. Written
+ * by Rust (`the_web_clients_fixture_of_the_builtin_effects_is_current`).
+ */
+export const builtinEffects = builtinEffectNodes as unknown as Record<string, { name: string; kind: "effect"; plugin: Plugin; mix: number }>;
 
 /** The master's node id, as the server numbers it (`NodeId::MASTER`). */
 export const MASTER: NodeId = 4294967295;

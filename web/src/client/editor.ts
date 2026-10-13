@@ -21,6 +21,7 @@ const DOING: Record<Intent["type"], string> = {
   removeEdge: "take out a cable",
   addModulator: "add a modulator",
   addModEdge: "draw a cable",
+  addEffect: "add an effect",
   removeNode: "remove a node",
   save: "save the session",
 };
@@ -54,6 +55,18 @@ export class Editor {
     return added?.at(-1)?.id ?? null;
   }
 
+  /**
+   * Put the plugin `plugin` (the `id` of an entry of the catalog the server told) at the end of the effect chain of the lane
+   * or group `parent`. Resolves with the id of the node it made, or with null if it was refused (the page says why). As for
+   * `addModulator`: the node is the last effect of `parent` the session did not have before.
+   */
+  async addEffect(parent: NodeId, plugin: string): Promise<NodeId | null> {
+    const before = new Set(this.#graph?.nodes.map((node) => node.id));
+    if (!(await this.#attempt(`add ${this.#pluginName(plugin)} to ${this.#name(parent)}`, { type: "addEffect", parent, plugin }))) return null;
+    const added = this.#graph?.nodes.filter((node) => node.kind === "effect" && node.parent === parent && !before.has(node.id));
+    return added?.at(-1)?.id ?? null;
+  }
+
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */
   addCable(modulator: NodeId, node: NodeId, param: number): Promise<boolean> {
     const words = cableLabel(this.#name(modulator), this.#name(node), this.#paramName(node, param));
@@ -77,6 +90,11 @@ export class Editor {
 
   get #graph(): Graph | undefined {
     return this.#client.state.snapshot?.graph;
+  }
+
+  /** What a plugin is called, by the catalog the server told, or by its id if the catalog is not known (yet) or does not have it. */
+  #pluginName(id: string): string {
+    return this.#client.state.catalog?.entries.find((entry) => entry.id === id)?.name ?? id;
   }
 
   #name(node: NodeId): string {

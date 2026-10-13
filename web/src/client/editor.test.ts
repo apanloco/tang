@@ -93,6 +93,59 @@ describe("adding a modulator", () => {
   });
 });
 
+describe("adding an effect", () => {
+  test("resolves with the node it made, which is in the lane's chain then, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    const id = await editor.addEffect(oscillator.id, "builtin:reverb");
+    expect(id).toBe(3);
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === id);
+    expect(node).toMatchObject({ kind: "effect", parent: oscillator.id, name: "Reverb", mix: 0.5 });
+    expect(said(notices)).toEqual([]);
+    // The next is the next, and a filter goes in fully wet.
+    expect(await editor.addEffect(oscillator.id, "builtin:filter")).toBe(4);
+  });
+
+  test("finds its own node when another front-end added one to another lane at the same time", async () => {
+    const { server, editor } = await open({ snapshot: reachFixture.snapshot });
+    server.apply({ type: "addEffect", parent: 7, plugin: "builtin:filter" }); // another front-end's, to the second lane of group 1, before this one is answered
+    const id = await editor.addEffect(4, "builtin:reverb");
+    const mine = server.snapshot.graph.nodes.find((n) => n.id === id);
+    expect(mine).toMatchObject({ parent: 4, name: "Reverb" });
+  });
+
+  test("takes the last of the effects that are new to the lane, which is its own, when another front-end added one to the same lane just before", async () => {
+    const { server, editor } = await open();
+    server.apply({ type: "addEffect", parent: oscillator.id, plugin: "builtin:filter" });
+    const id = await editor.addEffect(oscillator.id, "builtin:reverb");
+    const names = server.snapshot.graph.nodes.filter((n) => n.parent === oscillator.id && n.kind === "effect").map((n) => [n.id, n.name]);
+    expect(names).toEqual([[1, "Filter"], [3, "Filter"], [4, "Reverb"]]);
+    expect(id).toBe(4);
+  });
+
+  test("is refused for what is no lane or group, or a plugin that is not installed: it resolves with null, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addEffect(filter.id, "builtin:reverb")).toBeNull();
+    expect(await editor.addEffect(oscillator.id, "./examples/plugin.clap")).toBeNull();
+    expect(await editor.addEffect(oscillator.id, "builtin:osc")).toBeNull();
+    expect(said(notices)).toEqual([
+      "Could not add Reverb to Filter: an effect goes in a lane or in a group",
+      "Could not add ./examples/plugin.clap to Oscillator: ./examples/plugin.clap is not a plugin that is installed",
+      "Could not add Oscillator to Oscillator: Oscillator is an instrument, not an effect",
+    ]);
+    // (A node that is not there is named as the page names what it cannot find.)
+    expect(await editor.addEffect(MASTER, "builtin:reverb")).toBeNull();
+    expect(said(notices).at(-1)).toBe("Could not add Reverb to Master: there is no node 4294967295");
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.addEffect(oscillator.id, "builtin:reverb")).toBeNull();
+    expect(said(notices)).toEqual(["Could not add Reverb to Oscillator: Not connected to the server."]);
+  });
+});
+
 describe("drawing a cable", () => {
   test("joins a modulator to a parameter, and says nothing", async () => {
     const { client, notices, editor } = await open();

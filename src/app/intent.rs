@@ -60,6 +60,13 @@ pub enum Intent {
     /// modulator's rate, stages or depths are not drawn by intent yet), a parameter or a plugin that
     /// is out of reach or not there, and a modulator that drives that parameter already.
     AddModEdge { modulator: NodeId, to: Endpoint },
+    /// Put a plugin at the end of the effect chain of a lane or of a group's bus: `parent` is the node of the lane
+    /// (its instrument's, which an empty lane has too) or of the group, and `plugin` the `id` of an entry of the
+    /// catalog the server told (`ServerMessage::Catalog`): it is loaded by the server, which loads only what its own
+    /// catalog names, and not an instrument. It starts at the mix that suits it (a filter fully wet, the rest half
+    /// wet). Refused, with nothing changed, for a parent that is not a lane or a group, a plugin the catalog does
+    /// not name, an instrument, one that does not load, and one whose outputs are not the chain's channels.
+    AddEffect { parent: NodeId, plugin: String },
     /// Take a node out of the session. Only a modulator can be so far, with its own cables and
     /// the cables of the others that drove its settings (and what drove the depth of any of
     /// those); any other node is refused.
@@ -284,6 +291,10 @@ mod tests {
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
+            (
+                Intent::AddEffect { parent: NodeId(2), plugin: "builtin:filter".to_string() },
+                json!({"type": "addEffect", "parent": 2, "plugin": "builtin:filter"}),
+            ),
             (Intent::Save, json!({"type": "save"})),
             (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },

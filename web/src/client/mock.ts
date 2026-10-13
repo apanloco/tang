@@ -29,7 +29,7 @@ import type {
   WireError,
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
-import { builtinCatalog, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, tracerSnapshot } from "./fixtures";
 import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
 
@@ -276,15 +276,51 @@ function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: Modulator
   };
 }
 
+/**
+ * An effect put at the end of the chain of a lane or a group, as the controller does it (`Controller::add_effect`): the plugin
+ * has to be one the catalog names (the mock's, `catalog`), not an instrument, and one the mock can make a node of (the built-ins:
+ * the controller's own nodes, as a fixture). The graph lists the nodes of a lane, or of a group's bus, together (the lane or the group, its
+ * effects, its modulators), so the effect goes after the last effect it has; and the audio path goes through it: the link that
+ * led out of the chain (to the master, or, for a lane in a group, to the group) leaves from it now.
+ */
+function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
+  const owner = snapshot.graph.nodes.find((n) => n.id === parent && n.kind !== "master");
+  if (!owner) return noNode(parent);
+  if (owner.kind !== "instrument" && owner.kind !== "group") return invalid("an effect goes in a lane or in a group");
+  const entry = catalog.find((e) => e.id === plugin);
+  if (!entry) return invalid(`${plugin} is not a plugin that is installed`);
+  if (entry.isInstrument) return invalid(`${entry.name} is an instrument, not an effect`);
+  const made = builtinEffects[plugin];
+  if (!made) return invalid(`${entry.name} could not be loaded`);
+
+  const { nodes, edges } = snapshot.graph;
+  const lastEffect = nodes.findLastIndex((n) => n.parent === parent && n.kind === "effect");
+  const end = lastEffect >= 0 ? nodes[lastEffect] : owner;
+  const at = nodes.indexOf(end ?? owner) + 1;
+  const added: Node = { id: counters.node(), parent, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix };
+  const out = edges.findIndex((e) => e.kind !== "modulation" && e.from.node === (end ?? owner).id && e.from.port.type === "audioOut");
+  const leaving = edges[out];
+  if (!leaving || leaving.kind === "modulation") return invalid("that has no audio path to put an effect in");
+  const into: Edge = { from: leaving.from, to: { node: added.id, port: { type: "audioIn" } }, kind: "audio" };
+  const onwards: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: leaving.to, kind: leaving.kind };
+  return {
+    restructured: {
+      ...snapshot,
+      graph: { nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)], edges: [...edges.slice(0, out), into, onwards, ...edges.slice(out + 1)] },
+    },
+  };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
   return { event: { type: "saved", file: snapshot.meta.file } };
 }
 
-/** Do what the controller does with an intent, to a snapshot. */
-function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters): Outcome {
+/** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names. */
+function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
+  if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
@@ -392,14 +428,14 @@ export class MockServer {
 
   /** Another front-end's intent (the TUI's, or another browser's): applied, and every subscribed client is told. */
   apply(intent: Intent): void {
-    const outcome = outcomeOf(this.#snapshot, intent, this.#counters);
+    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
     if ("error" in outcome) throw new Error(outcome.error.message);
     this.#commit(outcome, true);
   }
 
   /** Change the session without telling anybody: the clients will see a revision missing at the next change. */
   applyQuietly(intent: Intent): void {
-    const outcome = outcomeOf(this.#snapshot, intent, this.#counters);
+    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
     if ("error" in outcome) throw new Error(outcome.error.message);
     this.#commit(outcome, false);
   }
@@ -483,7 +519,7 @@ export class MockServer {
         connection.wantTelemetry(message.channels);
         break;
       case "request": {
-        const outcome = outcomeOf(this.#snapshot, message.intent, this.#counters);
+        const outcome = outcomeOf(this.#snapshot, message.intent, this.#counters, this.#catalog.entries);
         if ("error" in outcome) {
           connection.tell({ type: "rejected", reqId: message.reqId, error: outcome.error });
         } else {

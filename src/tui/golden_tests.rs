@@ -3351,6 +3351,37 @@ mod with_web {
     }
 
     #[test]
+    fn an_effect_a_browser_adds_is_in_the_tuis_tree_at_once_and_the_browser_is_given_the_new_structure() {
+        let mut h = Harness::new(TRACER);
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        assert!(!h.tree().iter().any(|line| line.contains("fx Reverb")));
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let oscillator = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "Oscillator").unwrap()["id"].clone();
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addEffect", "parent": oscillator, "plugin": "builtin:reverb"}})).await;
+                // The structure is told as a snapshot, at the revision after the intent's, and the answer follows it.
+                let told = said(&mut client).await;
+                assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(2)), "{told}");
+                let names: Vec<_> = told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
+                assert!(names.contains(&"Reverb".to_string()), "{names:?}");
+                assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
+                // A plugin that is not in the catalog is refused, with the words of the controller.
+                tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addEffect", "parent": oscillator, "plugin": "./evil.clap"}})).await;
+                let refused = said(&mut client).await;
+                assert_eq!((refused["type"].clone(), refused["error"]["code"].clone()), (json!("rejected"), json!("invalid")), "{refused}");
+                assert!(refused["error"]["message"].as_str().unwrap().contains("not a plugin that is installed"), "{refused}");
+                browser.quit().await;
+            },
+            |h, _| {
+                assert_eq!(h.s.ctl.model.instruments[0].effects.len(), 2, "the filter, and the reverb the browser added");
+                assert!(h.tree().iter().any(|line| line.contains("fx Reverb")), "the tree is built again: {:#?}", h.tree());
+            },
+        );
+    }
+
+    #[test]
     fn a_server_that_has_stopped_does_not_make_the_loop_spin() {
         let mut h = Harness::new(TRACER);
         let mut web = start(&mut h);
@@ -3439,6 +3470,20 @@ rate = 3.0
         h.press(KeyCode::Char('d'));
         let lane = &h.s.ctl.model.instruments[1];
         assert!(lane.instrument.is_some() && lane.effects.is_empty(), "the reverb went: {:#?}", h.tree());
+    }
+
+    #[test]
+    fn an_effect_a_browser_adds_is_in_the_tree_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(TWO_LANES);
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        let lane0 = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::AddEffect { parent: lane0, plugin: "builtin:filter".to_string() });
+        assert!(h.tree().iter().any(|line| line.contains("fx Filter")), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+        assert!(h.s.ctl.dirty);
     }
 
     #[test]

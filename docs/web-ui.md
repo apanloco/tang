@@ -397,9 +397,17 @@ resolves cursor → ids and then calls `apply`.
 
 - Params and gains: `SetParam`, `SetGain { Volume | Mix | GroupVolume |
   GroupPan }`, `LoadPreset` (built in step 6; the rest of the list is not).
-- Structure: `AddInstrument`, `ReplaceInstrument`, `AddEffect { parent }`,
+- Structure: `AddInstrument`, `ReplaceInstrument`, `AddEffect { parent, plugin }`,
   `RemoveNode`, `MoveEffect`, `SetRange`, `AssignGroup`, `AddGroup`,
-  `RenameGroup`.
+  `RenameGroup`. (`AddEffect` is built, step 19: `parent` is the node of a lane (an empty lane has
+  one too) or of a group, and `plugin` the `id` of an entry of the catalog the server told (§7). The
+  server loads it, puts it at the end of the chain (a lane's, or a group's bus) in a node of its own, and
+  starts it at the mix that suits it. It is a change of structure, told by a snapshot like the others
+  (D20); the node it made is the last effect of the parent that the client did not have before
+  (`Editor.addEffect`). Refused, with nothing changed and no revision, for a parent that is neither a
+  lane nor a group, a plugin the catalog does not name (a path of the client's own is not loaded, however
+  it is spelled), an instrument, a plugin that does not load, and one whose outputs are not the chain's
+  channels.)
 - Modulation: `AddModulator`, `SetModulatorField`, `AddModEdge`, `RemoveEdge`,
   `SetEdgeDepth`, `LearnMidi`. (`SetModulatorField` and `SetEdgeDepth` are built, step
   14: an LFO's rate and waveform and an envelope's four stages, in a lane's modulator or
@@ -1802,6 +1810,30 @@ Each step is a reviewable change; the TUI must not regress at any point.
     and for a bus). 24 mutations, 20 caught at once; two that were not were equivalent (a check that the
     next function makes again: removed) and two showed that nothing pinned the TUI's refusal (covered,
     for a lane and for a bus).
+  - **19.2 (second part) as built.** `Intent::AddEffect { parent, plugin }` (§5) wraps the two methods, with
+    the node of a lane or of a group; a change of structure, so the answer is a snapshot, like the four of step
+    15. In the TUI's loop a browser's effect is in the tree at once and the cursor stays on its node. The page:
+    `Editor.addEffect(parent, plugin)` (the node it made is the last effect of the parent that the session did
+    not have before; a refusal says "Could not add Reverb to Oscillator: …", the plugin by the catalog's
+    name), and the mock engine does what the controller does: the catalog's gate, the order of the nodes of a
+    strip (the lane or group, its effects, its modulators), the audio path through the new node (the link that
+    left the chain, to the master or, for a lane in a group, to the group, leaves from it now), the mix it starts at,
+    and a node of the controller's own making for each built-in effect (`builtins.effects.json`, written by Rust,
+    `the_web_clients_fixture_of_the_builtin_effects_is_current`: the controller adds each to a lane and the
+    fixture is what it made, without the ids). A plugin the catalog names and the mock has no node for (a
+    VST3, say) is refused as one that does not load.
+  - **19.2 (second part) tests.** Rust: the intent over the stub engine (a lane's chain, a group's bus, a lane
+    with no instrument; the graph has the node in the lane's strip and the audio path through it; a cable can be
+    drawn to it at once, and the engine addresses it by the right slot; refused for an effect, a bus effect, a
+    modulator, a node that is not there, the master, an instrument, and a path and an id the catalog does not name,
+    with nothing changed), the wire, and in the TUI's loop a browser that adds an effect (the tree, the browser's
+    snapshot and the refusal's words) and one that adds it above the cursor. Web: nine on the mock (the order of
+    the nodes, the audio path, a member lane's link to its group, an empty lane, a cable at once, the ids, every
+    refusal, the other clients, the fixture's agreement with the catalog's) and five on the editor; and on the real
+    program a browser puts a second filter at the end of the lane's chain, closes its cutoff down and hears, in
+    the master's meter, that the note is hardly there (the meter falls 40 dB a second, so two seconds on it shows
+    what is there), and the file it saves has both filters and the cutoff. 31 mutations (22 in the mock and
+    the editor, 6 in the intent, 3 in the engine's side of it), all caught.
   - **f68 (open).** A session file that names an effect with other outputs than the chain has loads, and
     its model keeps the effect that the audio thread dropped (the loader sends the command and pushes the
     slot without looking). CLAUDE.md has the TODO: the loader should refuse such a session.

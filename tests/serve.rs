@@ -351,6 +351,72 @@ async fn a_session_named_by_a_relative_path_is_saved_to_that_file_wherever_the_p
     assert!(tang.log().contains(&wanted), "the file is named by where it is, not by how it was asked for:\n{}", tang.log());
 }
 
+/// The master's peak a moment after `wait` has passed, as the frames say (the frames are read all the while).
+async fn peak_after(client: &mut Client, at: usize, wait: Duration) -> f32 {
+    let deadline = Instant::now() + wait;
+    let mut last = f32::NAN;
+    while Instant::now() < deadline {
+        if let Ok(Some(Ok(Message::Binary(frame)))) = tokio::time::timeout(Duration::from_millis(100), client.next()).await {
+            last = f32::from_le_bytes(frame[8 + 4 * at..12 + 4 * at].try_into().unwrap());
+        }
+    }
+    last
+}
+
+#[tokio::test]
+async fn a_browser_puts_a_filter_in_the_chain_and_hears_it_in_the_meter_and_the_saved_file_has_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+    let (first_filter, _) = param_of(&snapshot, "Filter", "cutoff");
+
+    // A note, held: the level the meter shows through the chain as it is.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.01).await;
+    let before = peak_after(&mut client, at, Duration::from_millis(500)).await;
+    assert!(before > 0.01, "the note is heard: {before}");
+
+    // The browser puts a filter at the end of the lane's chain (the catalog names it: the built-ins are the first batch
+    // the scan finds, folded in long before this): told by a snapshot, answered by the revision.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addEffect", "parent": osc, "plugin": "builtin:filter"}})).await;
+    let mut said = Vec::new();
+    let answered = loop {
+        let message = next_json(&mut client).await;
+        if message["reqId"] == 1 {
+            break message;
+        }
+        said.push(message);
+    };
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    let names: Vec<_> = told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Oscillator", "Filter", "Filter", "LFO", "Master"]);
+    let (added, cutoff) = {
+        let nodes = told["snapshot"]["graph"]["nodes"].as_array().unwrap();
+        let added = nodes.iter().find(|n| n["name"] == "Filter" && n["id"] != json!(first_filter)).expect("a second filter");
+        let cutoff = added["plugin"]["params"].as_array().unwrap().iter().find(|p| p["name"] == "cutoff").unwrap();
+        (added["id"].as_u64().unwrap(), cutoff["index"].as_u64().unwrap())
+    };
+
+    // It has a node whose parameters are turned like the others', and the engine has it in the chain: closed down to nothing,
+    // the note is hardly heard (the meter falls 40 dB a second, so a moment on it shows what is there).
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setParam", "node": added, "param": cutoff, "value": 0.0}})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    let after = peak_after(&mut client, at, Duration::from_secs(2)).await;
+    assert!(after < before / 10.0, "the new filter is in the audio path: {after} against {before}\n{}", tang.log());
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+
+    // And what is saved has it, with the value it was given.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(saved.matches("plugin = \"builtin:filter\"").count(), 2, "{saved}");
+    assert!(saved.contains("cutoff = 0.0"), "{saved}");
+}
+
 #[tokio::test]
 async fn a_second_browser_hears_what_the_first_one_changes() {
     let tang = Tang::start();

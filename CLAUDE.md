@@ -1375,7 +1375,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `AddModulator`, `AddModEdge`, `RemoveNode` and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
-  them), which the intent `AddEffect` will wrap.
+  them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
+  tells them; the mock engine's nodes for the built-in effects are a fixture Rust writes,
+  `web/src/client/fixtures/builtins.effects.json`).
 - **Model**: graph-shaped (nodes, ports, edges, layout) with stable `NodeId`s
   (and `EdgeId`s for modulation edges); today's lane/group/modulator structure
   is projected into it: `SessionModel::graph()` (`src/app/graph.rs`) gives the

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import type { CatalogEntry, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
-import { builtinCatalog, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 
@@ -880,6 +880,136 @@ describe("the catalog of plugins", () => {
     await quiet();
     expect(heard.map((message) => message.type)).toEqual(["hello"]);
     transport.close();
+  });
+});
+
+describe("adding an effect", () => {
+  const audioPath = (snapshot: Snapshot | null) => (snapshot?.graph.edges ?? []).filter((e) => e.kind !== "modulation").map((e) => `${e.kind} ${String(e.from.node)}→${String(e.to.node)}`);
+  const strip = (snapshot: Snapshot | null) => (snapshot?.graph.nodes ?? []).map((n) => `${String(n.id)} ${n.name}`);
+  const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+  const add = (parent: number, plugin: string): Intent => ({ type: "addEffect", parent, plugin });
+  const reach = reachFixture.snapshot;
+
+  test("puts an effect after the effects a lane has and before its modulators, in the audio path, with the controller's own node", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(add(oscillator.id, "builtin:reverb"));
+    const snapshot = client.state.snapshot;
+    expect(strip(snapshot)).toEqual(["0 Oscillator", "1 Filter", "3 Reverb", "2 LFO", `${String(MASTER)} Master`]);
+    expect(audioPath(snapshot)).toEqual(["audio 0→1", "audio 1→3", `audio 3→${String(MASTER)}`]);
+    // The node is what the controller made for a reverb that is new: its plugin, its parameters at their defaults, its mix.
+    const node = snapshot?.graph.nodes.find((n) => n.id === 3);
+    expect(node).toEqual({ id: 3, parent: oscillator.id, ...builtinEffects["builtin:reverb"] });
+    expect(node?.kind === "effect" && node.mix).toBe(0.5);
+    // The cable that was there is as it was, the layout of the telemetry is the same, and the session has something to save.
+    expect(snapshot?.graph.edges.filter((e) => e.kind === "modulation")).toEqual(tracerSnapshot.graph.edges.filter((e) => e.kind === "modulation"));
+    expect(snapshot?.telemetry).toEqual(tracerSnapshot.telemetry);
+    expect(snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(snapshot);
+  });
+
+  test("starts a filter fully wet and anything else half wet", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(add(oscillator.id, "builtin:filter"));
+    await client.request(add(oscillator.id, "builtin:reverb"));
+    const mixes = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "effect").map((n) => [n.name, n.mix]);
+    expect(mixes).toEqual([["Filter", 1], ["Filter", 1], ["Reverb", 0.5]]);
+  });
+
+  test("goes at the end of a group's bus, and a lane that is a member of a group still ends in the group", async () => {
+    const server = new MockServer({ snapshot: reach });
+    const client = await open(server);
+    // Group 0: its bus has a filter (1). The new effect is the node 18.
+    await client.request(add(0, "builtin:reverb"));
+    expect(strip(client.state.snapshot).slice(0, 5)).toEqual(["0 Group 1", "1 Filter", "18 Reverb", "15 LFO", "2 Group 2"]);
+    expect(audioPath(client.state.snapshot).slice(0, 4)).toEqual(["audio 0→1", "audio 1→18", `audio 18→${String(MASTER)}`, "audio 2→3"]);
+    // The lane 4 is a member of group 0, with a filter (5) and an LFO (6): the effect goes between them, and the path still ends in the group.
+    await client.request(add(4, "builtin:filter"));
+    const snapshot = client.state.snapshot;
+    expect(strip(snapshot).slice(strip(snapshot).indexOf("4 Oscillator"), strip(snapshot).indexOf("4 Oscillator") + 4)).toEqual(["4 Oscillator", "5 Filter", "19 Filter", "6 LFO"]);
+    expect(audioPath(snapshot)).toContain("audio 5→19");
+    expect(audioPath(snapshot)).toContain("member 19→0");
+    expect(audioPath(snapshot)).not.toContain("member 5→0");
+  });
+
+  test("goes into a lane that has nothing in it, and into one that is a member of a group and has no effects", async () => {
+    const server = new MockServer({ snapshot: reach });
+    const client = await open(server);
+    await client.request(add(14, "builtin:filter")); // the lane with no instrument
+    await client.request(add(7, "builtin:reverb")); // a member of group 0 with no effects
+    const path = audioPath(client.state.snapshot);
+    expect(path).toContain("audio 14→18");
+    expect(path).toContain(`audio 18→${String(MASTER)}`);
+    expect(path).toContain("audio 7→19");
+    expect(path).toContain("member 19→0");
+    expect(path).not.toContain("member 7→0");
+    const nodes = strip(client.state.snapshot);
+    expect(nodes.slice(nodes.indexOf("7 Oscillator"), nodes.indexOf("7 Oscillator") + 3)).toEqual(["7 Oscillator", "19 Reverb", "8 ADSR"]);
+  });
+
+  test("makes a node a modulator can be drawn to at once, if the modulator reaches the lane or group it is in", async () => {
+    const server = new MockServer({ snapshot: reach });
+    const client = await open(server);
+    await client.request(add(4, "builtin:reverb")); // node 18, in lane 4, which group 0's modulator (15) and lane 4's own (6) reach
+    const damping = (builtinEffects["builtin:reverb"]?.plugin.params ?? []).find((p) => p.name === "damping")?.index ?? -1;
+    const draw = (modulator: number): Intent => ({ type: "addModEdge", modulator, to: { node: 18, port: { type: "param", index: damping } } });
+    await client.request(draw(6));
+    await client.request(draw(15));
+    const refused = await client.request(draw(8)).catch((e: unknown) => e); // lane 7's modulator does not reach lane 4
+    expect(refused).toBeInstanceOf(RequestError);
+    expect((refused as RequestError).message).toBe("a modulator of this lane cannot reach that plugin");
+    const cables = (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation" && e.to.node === 18);
+    expect(cables.map((e) => e.from.node).sort((a, b) => a - b)).toEqual([6, 15]);
+  });
+
+  test("numbers the nodes after the ones that have been made, whatever has been taken out", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(add(oscillator.id, "builtin:reverb")); // 3
+    await client.request({ type: "removeNode", node: lfo.id });
+    await client.request(add(oscillator.id, "builtin:filter"));
+    expect((client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "effect").map((n) => n.id)).toEqual([1, 3, 4]);
+  });
+
+  test("is refused for what is not a lane or a group, a plugin the catalog does not name, an instrument, or a plugin that cannot be loaded, and changes nothing", async () => {
+    const pianoteq = { id: "vst3:Pianoteq 8", name: "Pianoteq 8", format: "VST3", isInstrument: false, params: 300, presets: 12 };
+    const server = new MockServer({ catalog: { entries: [...builtinCatalog, pianoteq], scanning: false } });
+    const client = await open(server);
+    const filterNode = nodeNamed(tracerSnapshot, "Filter");
+    const refused = [
+      [add(filterNode.id, "builtin:reverb"), "invalid", "an effect goes in a lane or in a group"],
+      [add(lfo.id, "builtin:reverb"), "invalid", "an effect goes in a lane or in a group"],
+      [add(424242, "builtin:reverb"), "notFound", "there is no node 424242"],
+      [add(MASTER, "builtin:reverb"), "notFound", `there is no node ${String(MASTER)}`],
+      [add(oscillator.id, "./examples/plugin.clap"), "invalid", "./examples/plugin.clap is not a plugin that is installed"],
+      [add(oscillator.id, "builtin:osc"), "invalid", "Oscillator is an instrument, not an effect"],
+      [add(oscillator.id, pianoteq.id), "invalid", "Pianoteq 8 could not be loaded"],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("is told to the other clients as a snapshot, as every change of structure is", async () => {
+    const server = new MockServer();
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(add(oscillator.id, "builtin:reverb"));
+    await until(() => (second.state.snapshot?.graph.nodes.length ?? 0) === 5, "the second client's snapshot");
+    expect(second.state.snapshot).toEqual(first.state.snapshot);
+  });
+
+  test("has a node for each effect the catalog of the mock names, and for no other", () => {
+    expect(Object.keys(builtinEffects).sort()).toEqual(builtinCatalog.filter((entry) => !entry.isInstrument).map((entry) => entry.id).sort());
+    for (const [id, effect] of Object.entries(builtinEffects)) {
+      expect(effect.plugin.id, id).toBe(id);
+      expect(effect.plugin.isInstrument, id).toBe(false);
+      expect(effect.name, id).toBe(builtinCatalog.find((entry) => entry.id === id)?.name);
+      expect(effect.plugin.params.length, id).toBe(builtinCatalog.find((entry) => entry.id === id)?.params);
+    }
   });
 });
 
