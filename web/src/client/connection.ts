@@ -1,0 +1,335 @@
+// The connection to the server, as the rest of the app sees it: a store of what the
+// client knows (the connection's state, the session) and the calls it makes. It speaks
+// the protocol of docs/web-ui.md §7: hello, the token if one is wanted, subscribe, a
+// snapshot, and then events that are applied one by one. Nothing here depends on React
+// or on the browser: the socket is a `Transport`, so the same client talks to a real
+// server (`websocket.ts`) or to the mock engine (`mock.ts`).
+import { createStore } from "zustand/vanilla";
+import type { StoreApi } from "zustand/vanilla";
+
+import { PROTOCOL } from "../protocol";
+import type { ClientMessage, ErrorCode, Intent, ServerMessage, Snapshot, TelemetryChannel, WireError } from "../protocol";
+import { applyEvent } from "./reducers";
+import { decodeFrame, TelemetryBuffers } from "./telemetry";
+
+/** What a transport tells the client. */
+export interface TransportEvents {
+  open: () => void;
+  text: (data: string) => void;
+  binary: (data: ArrayBuffer) => void;
+  close: (info: CloseInfo) => void;
+}
+
+export interface CloseInfo {
+  code: number;
+  reason: string;
+}
+
+/** One connection to a server, used once: a WebSocket, or the mock engine's stand-in. */
+export interface Transport {
+  connect: (events: TransportEvents) => void;
+  send: (text: string) => void;
+  close: () => void;
+}
+
+export type TransportFactory = () => Transport;
+
+/**
+ * Where the client is.
+ * - `idle`: not started.
+ * - `connecting`: the first attempt is under way.
+ * - `syncing`: the server has said hello and the client has asked for the session (a snapshot is awaited).
+ * - `open`: the client has the session and hears of every change.
+ * - `reconnecting`: the connection is gone (the session shown, if any, is the last known) and another attempt is coming or under way.
+ * - `stopped`: not going on: stopped by the caller, or refused (see `problem`).
+ */
+export type Status = "idle" | "connecting" | "syncing" | "open" | "reconnecting" | "stopped";
+
+export interface Hello {
+  protocol: number;
+  rev: number;
+  features: readonly string[];
+  needsToken: boolean;
+}
+
+export interface ClientState {
+  status: Status;
+  /** Why the client is not going on, in words for a person; null while it is, or is trying to. */
+  problem: string | null;
+  hello: Hello | null;
+  snapshot: Snapshot | null;
+  /** How many times the connection has been lost and made again. */
+  reconnects: number;
+}
+
+/** A request that was not carried out: the server rejected it, or the connection went before it answered. */
+export class RequestError extends Error {
+  constructor(
+    message: string,
+    /** The server's code for it, if it was the server that refused. */
+    readonly code: ErrorCode | null,
+  ) {
+    super(message);
+    this.name = "RequestError";
+  }
+}
+
+export interface ClientOptions {
+  transport: TransportFactory;
+  /** What a server that wants a token is given. */
+  token?: string | undefined;
+  /** The telemetry channels to ask for on every connection. */
+  telemetry?: readonly TelemetryChannel[];
+  /** Milliseconds to wait before the `attempt`th try to connect again (1 for the first). */
+  reconnectDelay?: (attempt: number) => number;
+}
+
+/** A quarter of a second, doubling up to five seconds. */
+const defaultDelay = (attempt: number): number => Math.min(250 * 2 ** (attempt - 1), 5000);
+
+/** What the server says before it closes a connection, when it is not worth trying again. */
+const FINAL: readonly ErrorCode[] = ["unauthorized", "badRequest"];
+
+interface Pending {
+  resolve: (rev: number) => void;
+  reject: (error: RequestError) => void;
+}
+
+export class Client {
+  readonly store: StoreApi<ClientState> = createStore<ClientState>(() => ({
+    status: "idle",
+    problem: null,
+    hello: null,
+    snapshot: null,
+    reconnects: 0,
+  }));
+  /** The latest telemetry, for a loop that draws it. */
+  readonly telemetry = new TelemetryBuffers();
+
+  readonly #options: ClientOptions;
+  #channels: TelemetryChannel[];
+  #transport: Transport | null = null;
+  readonly #pending = new Map<number, Pending>();
+  #nextRequest = 1;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  #attempt = 0;
+  #running = false;
+  /** What the server said it was closing the connection for. */
+  #closing: WireError | null = null;
+
+  constructor(options: ClientOptions) {
+    this.#options = options;
+    this.#channels = [...(options.telemetry ?? [])];
+  }
+
+  get state(): ClientState {
+    return this.store.getState();
+  }
+
+  /** Connect, and go on connecting when the connection is lost, until `stop`. */
+  start(): void {
+    if (this.#running) return;
+    this.#running = true;
+    this.#attempt = 0;
+    this.#set({ status: "connecting", problem: null });
+    this.#connect();
+  }
+
+  /** Disconnect, and stay so. What the client knew stays in the store. */
+  stop(): void {
+    this.#running = false;
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
+    const transport = this.#transport;
+    this.#transport = null;
+    transport?.close();
+    this.#rejectPending("The client was stopped.");
+    this.#set({ status: "stopped" });
+  }
+
+  /**
+   * Ask the server to apply an intent. Resolves with the revision of the session it
+   * brought about once the server has answered, by which time the change is in the
+   * store (the event comes before the answer); rejects with a `RequestError` if the
+   * server refused it or the connection went first.
+   */
+  request(intent: Intent): Promise<number> {
+    if (!this.#live) return Promise.reject(new RequestError("Not connected to the server.", null));
+    const reqId = this.#nextRequest;
+    this.#nextRequest = (this.#nextRequest + 1) >>> 0 || 1;
+    return new Promise<number>((resolve, reject) => {
+      this.#pending.set(reqId, { resolve, reject });
+      this.#send({ type: "request", reqId, intent });
+    });
+  }
+
+  /** Ask for these telemetry channels (and no others), now and on every connection after. */
+  setTelemetry(channels: readonly TelemetryChannel[]): void {
+    this.#channels = [...channels];
+    if (this.#live) this.#send({ type: "telemetry", channels: this.#channels });
+  }
+
+  noteOn(note: number, velocity = 100): void {
+    if (this.#live) this.#send({ type: "noteOn", note, velocity });
+  }
+
+  noteOff(note: number): void {
+    if (this.#live) this.#send({ type: "noteOff", note });
+  }
+
+  /** The server has said hello and the connection is up. */
+  get #live(): boolean {
+    const { status } = this.store.getState();
+    return this.#transport !== null && (status === "syncing" || status === "open");
+  }
+
+  #set(partial: Partial<ClientState>): void {
+    this.store.setState(partial);
+  }
+
+  #send(message: ClientMessage): void {
+    this.#transport?.send(JSON.stringify(message));
+  }
+
+  #connect(): void {
+    const transport = this.#options.transport();
+    this.#transport = transport;
+    this.#closing = null;
+    // What an abandoned transport still says is of no interest.
+    const current = (): boolean => this.#transport === transport;
+    transport.connect({
+      open: () => {
+        // The server speaks first.
+      },
+      text: (data) => {
+        if (current()) this.#onText(data);
+      },
+      binary: (data) => {
+        if (current()) this.#onFrame(data);
+      },
+      close: () => {
+        if (current()) this.#onClose();
+      },
+    });
+  }
+
+  #onText(data: string): void {
+    let message: ServerMessage;
+    try {
+      message = JSON.parse(data) as ServerMessage;
+    } catch {
+      this.#giveUp("The server sent something that is not a message. Reload the page.");
+      return;
+    }
+    switch (message.type) {
+      case "hello":
+        this.#onHello(message);
+        break;
+      case "snapshot":
+        this.telemetry.setLayout(message.snapshot.telemetry);
+        this.#attempt = 0;
+        this.#set({ snapshot: message.snapshot, status: "open", problem: null });
+        break;
+      case "event": {
+        const { snapshot } = this.store.getState();
+        if (!snapshot) break;
+        const applied = applyEvent(snapshot, message.event);
+        if (applied.ok) {
+          if (applied.snapshot !== snapshot) this.#set({ snapshot: applied.snapshot });
+        } else {
+          // Something was missed: start again from a snapshot (the events go on meanwhile).
+          this.#set({ status: "syncing" });
+          this.#send({ type: "subscribe" });
+        }
+        break;
+      }
+      case "layout": {
+        this.telemetry.setLayout(message.layout);
+        const { snapshot } = this.store.getState();
+        if (snapshot) this.#set({ snapshot: { ...snapshot, telemetry: message.layout } });
+        break;
+      }
+      case "ack":
+        this.#settle(message.reqId, (pending) => {
+          pending.resolve(message.rev);
+        });
+        break;
+      case "rejected":
+        this.#settle(message.reqId, (pending) => {
+          pending.reject(new RequestError(message.error.message, message.error.code));
+        });
+        break;
+      case "closing":
+        this.#closing = message.error;
+        break;
+    }
+  }
+
+  #onHello(hello: Hello): void {
+    this.#set({ hello: { protocol: hello.protocol, rev: hello.rev, features: hello.features, needsToken: hello.needsToken } });
+    if (hello.protocol !== PROTOCOL) {
+      this.#giveUp(
+        `This page speaks protocol ${PROTOCOL} and the server speaks ${hello.protocol}: the page and the program are not from the same build.`,
+      );
+      return;
+    }
+    if (hello.needsToken) {
+      const { token } = this.#options;
+      if (!token) {
+        this.#giveUp("This server wants a token: open the address Tang printed when it started, which has it after the #.");
+        return;
+      }
+      this.#send({ type: "auth", token });
+    }
+    this.#send({ type: "subscribe" });
+    if (this.#channels.length > 0) this.#send({ type: "telemetry", channels: this.#channels });
+    this.#set({ status: "syncing" });
+  }
+
+  #onFrame(data: ArrayBuffer): void {
+    const frame = decodeFrame(data);
+    if (frame) this.telemetry.accept(frame);
+  }
+
+  #onClose(): void {
+    this.#transport = null;
+    this.#rejectPending("The connection was lost before the server answered.");
+    const closing = this.#closing;
+    this.#closing = null;
+    if (!this.#running) return;
+    if (closing && FINAL.includes(closing.code)) {
+      this.#giveUp(closing.message);
+      return;
+    }
+    this.#attempt += 1;
+    const delay = (this.#options.reconnectDelay ?? defaultDelay)(this.#attempt);
+    this.#set({ status: "reconnecting", reconnects: this.store.getState().reconnects + 1 });
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      if (this.#running) this.#connect();
+    }, delay);
+  }
+
+  /** Stop for good, because trying again would not help: say why. */
+  #giveUp(problem: string): void {
+    this.#running = false;
+    const transport = this.#transport;
+    this.#transport = null;
+    transport?.close();
+    this.#rejectPending(problem);
+    this.#set({ status: "stopped", problem });
+  }
+
+  #settle(reqId: number, how: (pending: Pending) => void): void {
+    const pending = this.#pending.get(reqId);
+    if (!pending) return;
+    this.#pending.delete(reqId);
+    how(pending);
+  }
+
+  #rejectPending(why: string): void {
+    const pending = [...this.#pending.values()];
+    this.#pending.clear();
+    for (const p of pending) p.reject(new RequestError(why, null));
+  }
+}
