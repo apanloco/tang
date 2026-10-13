@@ -2202,3 +2202,105 @@ fn groups_without_a_name_are_called_group_and_their_number() {
         assert!(screen.contains(name), "the group popup lacks {name}: {screen}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// The loop: what wakes it, and what it does
+// ---------------------------------------------------------------------------
+
+fn terminal_key(code: KeyCode, modifiers: KeyModifiers) -> io::Result<Event> {
+    Ok(Event::Key(KeyEvent::new(code, modifiers)))
+}
+
+fn terminal_quit() -> io::Result<Event> {
+    terminal_key(KeyCode::Char('q'), KeyModifiers::CONTROL)
+}
+
+#[test]
+fn the_loop_handles_what_the_terminal_sends_in_order_draws_it_and_stops_on_quit() {
+    let mut h = Harness::new(scene_split());
+    let (tx, rx) = unbounded();
+    tx.send(terminal_key(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+    tx.send(terminal_key(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+    tx.send(terminal_quit()).unwrap();
+
+    event_loop(&mut h.terminal, &mut h.s, &rx).unwrap();
+
+    assert!(h.s.quit);
+    assert_eq!(h.s.chain_state.selected, 2, "both keys were handled");
+    let screen = dump_buffer(h.terminal.backend().buffer());
+    assert!(screen.contains("Oscillator"), "the last frame drawn shows the session: {screen}");
+}
+
+#[test]
+fn the_loop_wakes_by_itself_to_fold_in_what_the_audio_thread_reports() {
+    let mut h = Harness::new(scene_split());
+    let (tx, rx) = unbounded();
+    assert!(h.s.ctl.model.instruments[0].pattern.is_none());
+    h.pattern_tx.send(recording(0)).unwrap();
+    // No key is pressed; the loop is told to quit well after it has had time to wake up.
+    let quitter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        tx.send(terminal_quit()).unwrap();
+    });
+
+    event_loop(&mut h.terminal, &mut h.s, &rx).unwrap();
+    quitter.join().unwrap();
+
+    assert!(h.s.ctl.model.instruments[0].pattern.is_some(), "the recording was folded in");
+    assert!(h.tree().iter().any(|l| l.contains('▶')), "and the view caught up: {:?}", h.tree());
+    // It woke up on its own, which is what drew frames with no key pressed (a few ticks in half a second).
+    let frames = h.terminal.get_frame().count();
+    assert!(frames >= 3, "{frames} frames");
+}
+
+#[test]
+fn a_loop_whose_terminal_has_gone_ends_with_an_error() {
+    let mut h = Harness::new(scene_split());
+    let (tx, rx) = unbounded::<io::Result<Event>>();
+    drop(tx);
+    let error = event_loop(&mut h.terminal, &mut h.s, &rx).unwrap_err();
+    assert!(error.to_string().contains("terminal"), "{error}");
+}
+
+#[test]
+fn a_failure_of_the_terminal_ends_the_loop_with_it() {
+    let mut h = Harness::new(scene_split());
+    let (tx, rx) = unbounded();
+    tx.send(Err(io::Error::new(io::ErrorKind::BrokenPipe, "the terminal went"))).unwrap();
+    tx.send(terminal_quit()).unwrap();
+    let error = event_loop(&mut h.terminal, &mut h.s, &rx).unwrap_err();
+    assert_eq!((error.kind(), error.to_string().as_str()), (io::ErrorKind::BrokenPipe, "the terminal went"));
+}
+
+#[test]
+fn a_failure_that_comes_behind_other_events_is_not_lost() {
+    let mut h = Harness::new(scene_split());
+    let (tx, rx) = unbounded();
+    tx.send(terminal_key(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+    tx.send(Err(io::Error::new(io::ErrorKind::BrokenPipe, "the terminal went"))).unwrap();
+    // (A quit after it, so that a loop that carries on ends the test instead of hanging it.)
+    tx.send(terminal_quit()).unwrap();
+    let error = event_loop(&mut h.terminal, &mut h.s, &rx).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    assert_eq!(h.s.chain_state.selected, 1, "what came before it was handled");
+    assert!(!h.s.quit, "and what came after it was not");
+}
+
+#[test]
+fn the_events_that_are_waiting_are_all_handled_before_the_next_frame_is_drawn() {
+    // A paste, or a key held down: a frame for each key would fall behind.
+    let mut h = Harness::new(scene_split());
+    let (tx, rx) = unbounded();
+    for _ in 0..40 {
+        tx.send(terminal_key(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+    }
+    tx.send(terminal_quit()).unwrap();
+
+    event_loop(&mut h.terminal, &mut h.s, &rx).unwrap();
+
+    // (The cursor wraps round the end of the tree.)
+    assert_eq!(h.s.chain_state.selected, 40 % h.s.tree_entries.len(), "every key was handled");
+    // (One frame before the keys and one after them; a few more if the machine stalled long enough for the tick to come.)
+    let frames = h.terminal.get_frame().count();
+    assert!(frames <= 4, "{frames} frames for 41 events");
+}

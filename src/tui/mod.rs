@@ -3,23 +3,26 @@ mod clip;
 mod golden_tests;
 mod piano_view;
 pub mod splash;
+mod terminal_input;
 
 use std::io;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Terminal;
 
+use crossbeam_channel::Receiver;
+use terminal_input::TerminalReader;
 use view::DIM;
 use view::filter_list::{FilterListItem, FilterListState};
 use view::list::{ListItem, ListSpan, ListState};
@@ -2142,7 +2145,7 @@ pub fn run(mut ctl: Controller) -> anyhow::Result<Controller> {
 
     // (Rust logging was already suppressed at the top of this function, before
     // the background scan spawned; it's restored below at teardown.)
-    let result = event_loop(&mut terminal, &mut s);
+    let result = TerminalReader::start().and_then(|reader| event_loop(&mut terminal, &mut s, reader.events()));
 
     log::set_max_level(prev_log_level);
 
@@ -2180,10 +2183,24 @@ fn tick_at(s: &mut State, now: Instant) {
     s.clip.update(s.ctl.telemetry.count(telemetry::MASTER.clips), now);
 }
 
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+/// How often the loop wakes by itself: to fold in what the audio thread and the
+/// catalog scan have reported, and to redraw what moves (the meters, the CLIP
+/// light, the held notes).
+const TICK: Duration = Duration::from_millis(100);
+
+/// Run the interface until the user quits: draw, then wait for `input` (the terminal's
+/// events, from a `TerminalReader`) or the tick, handle what came, and draw again.
+/// The events that are waiting when the loop wakes are all handled before the next
+/// frame.
+fn event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
     s: &mut State,
-) -> io::Result<()> {
+    input: &Receiver<io::Result<Event>>,
+) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let ticks = crossbeam_channel::tick(TICK);
     loop {
         tick(s);
 
@@ -2192,15 +2209,17 @@ fn event_loop(
             break;
         }
 
-        // Poll with timeout so we wake up to drain pattern notifications
-        // even when there's no user input.
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-        let ev = event::read()?;
-        process_event(s, ev);
-        while event::poll(Duration::ZERO)? {
-            process_event(s, event::read()?);
+        crossbeam_channel::select! {
+            recv(input) -> event => {
+                let Ok(event) = event else {
+                    return Err(io::Error::other("the terminal reader has stopped"));
+                };
+                process_event(s, event?);
+                while let Ok(event) = input.try_recv() {
+                    process_event(s, event?);
+                }
+            }
+            recv(ticks) -> _ => {}
         }
     }
     Ok(())
@@ -3478,11 +3497,11 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-fn render(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    s: &mut State,
-) -> io::Result<()> {
-    terminal.draw(|frame| draw(frame, s))?;
+fn render<B: Backend>(terminal: &mut Terminal<B>, s: &mut State) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    terminal.draw(|frame| draw(frame, s)).map_err(io::Error::other)?;
     Ok(())
 }
 
