@@ -2134,7 +2134,11 @@ pub fn run(mut ctl: Controller, web: Option<&WebArgs>) -> anyhow::Result<Control
     // printed on stdout, where a script can find it (the TUI shows it as well).
     let mut web = web.map(|args| Web::start(&mut ctl, args)).transpose()?;
     if let Some(web) = &web {
-        println!("Web interface: {}", web.status().url);
+        let status = web.status();
+        println!("Web interface: {}", status.url);
+        for warning in status.warnings() {
+            println!("{warning}");
+        }
     }
 
     // Scan the plugin catalog on a background thread so the TUI can draw
@@ -4951,8 +4955,9 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
             format!("  {}", web.url),
             "  Open it in a browser: what is changed there shows here, and what is".into(),
             "  changed here shows there.".into(),
-            "".into(),
         ]);
+        lines.extend(web.warnings().into_iter().map(|warning| format!("  {warning}")));
+        lines.push("".into());
     }
     lines.extend(vec![
         "Global keybindings:".into(),

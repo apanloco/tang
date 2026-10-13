@@ -21,6 +21,22 @@ pub struct WebStatus {
 }
 
 impl WebStatus {
+    /// What to tell the user about where it listens, for the screen before the TUI and
+    /// for the Help tab (the same words `tang serve` logs): beyond this machine anyone
+    /// who has the token in the address can control the session, and an address that
+    /// means every interface is not one to open.
+    pub fn warnings(&self) -> Vec<String> {
+        let ip = self.address.ip();
+        let mut warnings = Vec::new();
+        if !ip.is_loopback() {
+            warnings.push("Listening beyond this machine: whoever has the token in that address can control this session.".to_string());
+            if ip.is_unspecified() {
+                warnings.push(format!("Open it by an address of this machine rather than {ip}."));
+            }
+        }
+        warnings
+    }
+
     /// The tab bar's words for it, the longest of the two that fits in `room`
     /// columns: where it listens and how many browsers are connected, or only that
     /// there is one and how many. None if even that does not fit.
@@ -138,6 +154,32 @@ mod tests {
 
     fn status(address: &str, clients: usize) -> WebStatus {
         WebStatus { address: address.parse().unwrap(), url: format!("http://{address}/"), clients }
+    }
+
+    #[test]
+    fn an_address_on_this_machine_needs_no_warning() {
+        for address in ["127.0.0.1:8765", "[::1]:9000", "127.0.0.2:1"] {
+            assert_eq!(status(address, 0).warnings(), Vec::<String>::new(), "{address}");
+        }
+    }
+
+    #[test]
+    fn an_address_beyond_this_machine_is_warned_about() {
+        for address in ["192.168.1.5:8765", "[fe80::1]:8765"] {
+            let warnings = status(address, 0).warnings();
+            assert_eq!(warnings.len(), 1, "{address}: {warnings:?}");
+            assert!(warnings[0].contains("beyond this machine") && warnings[0].contains("token"), "{warnings:?}");
+        }
+    }
+
+    #[test]
+    fn an_address_that_means_every_interface_is_also_not_one_to_open() {
+        for (address, ip) in [("0.0.0.0:8765", "0.0.0.0"), ("[::]:8765", "::")] {
+            let warnings = status(address, 0).warnings();
+            assert_eq!(warnings.len(), 2, "{address}: {warnings:?}");
+            assert!(warnings[0].contains("beyond this machine"), "{warnings:?}");
+            assert_eq!(warnings[1], format!("Open it by an address of this machine rather than {ip}."));
+        }
     }
 
     #[test]

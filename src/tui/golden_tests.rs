@@ -2384,6 +2384,20 @@ fn the_web_label_gives_way_before_the_tabs_the_clip_light_and_the_tempo_do() {
 }
 
 #[test]
+fn the_help_tab_warns_about_an_address_beyond_this_machine_and_only_then() {
+    let mut h = Harness::new(scene_split());
+    h.s.set_web(web_status("127.0.0.1:8765", 0));
+    assert!(!h.s.help_lines.iter().any(|l| l.contains("beyond this machine")), "{:?}", h.s.help_lines);
+
+    h.s.set_web(web_status("0.0.0.0:8765", 0));
+    assert!(h.s.help_lines.iter().any(|l| l.contains("beyond this machine")), "{:?}", h.s.help_lines);
+    assert!(h.s.help_lines.iter().any(|l| l.contains("rather than 0.0.0.0")), "{:?}", h.s.help_lines);
+    h.press(KeyCode::Char('4'));
+    let screen = h.dump();
+    assert!(screen.contains("beyond this machine"), "{screen}");
+}
+
+#[test]
 fn the_help_tab_says_where_the_web_interface_is_when_there_is_one() {
     let mut h = Harness::new(scene_split());
     assert!(!h.s.help_lines.iter().any(|l| l.to_lowercase().contains("web")), "not unless it is served");
