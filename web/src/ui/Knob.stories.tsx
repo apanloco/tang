@@ -49,6 +49,11 @@ export const Bipolar: Story = {
   args: { label: "Detune", value: 0, min: -24, max: 24, defaultValue: 0, format: (value) => `${value.toFixed(1)} st` },
 };
 
+/** A rate over four decades: each decade is a quarter of the turn, so that 1 Hz is in the middle (drag it and see). */
+export const Logarithmic: Story = {
+  args: { label: "Rate", value: 1, min: 0.01, max: 100, scale: "log", defaultValue: 1, format: (value) => `${String(Number(value.toPrecision(3)))} Hz` },
+};
+
 /** The ring is how far modulation swings the value; the dot is where it is now. */
 export const Modulated: Story = {
   args: { modulation: { low: 0.3, high: 0.7 }, readEffective: wobble(0.5, 0.2, 0.5) },

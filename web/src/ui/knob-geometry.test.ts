@@ -136,3 +136,76 @@ describe("a key press", () => {
     }
   });
 });
+
+describe("a logarithmic scale", () => {
+  // From 0.01 to 100 is four decades: each decade is a quarter of the sweep, so that a rate of 1 is in the middle.
+  test("spaces equal ratios equally", () => {
+    expect(fractionOf(0.01, 0.01, 100, "log")).toBe(0);
+    expect(fractionOf(0.1, 0.01, 100, "log")).toBeCloseTo(0.25, 10);
+    expect(fractionOf(1, 0.01, 100, "log")).toBeCloseTo(0.5, 10);
+    expect(fractionOf(10, 0.01, 100, "log")).toBeCloseTo(0.75, 10);
+    expect(fractionOf(100, 0.01, 100, "log")).toBe(1);
+  });
+
+  test("keeps a value that is out of the range, or no value at all, at an end", () => {
+    expect(fractionOf(0.001, 0.01, 100, "log")).toBe(0);
+    expect(fractionOf(0, 0.01, 100, "log")).toBe(0);
+    expect(fractionOf(-5, 0.01, 100, "log")).toBe(0);
+    expect(fractionOf(1000, 0.01, 100, "log")).toBe(1);
+  });
+
+  test("is a linear scale for a range that starts at nothing or below, which has no logarithm", () => {
+    expect(fractionOf(5, 0, 10, "log")).toBe(0.5);
+    expect(fractionOf(0, -24, 24, "log")).toBe(0.5);
+    expect(valueAt(0.5, 0, 10, "log")).toBe(5);
+    expect(dragged(5, -DRAG_PIXELS / 4, 0, 10, 1, "log")).toBe(7.5);
+  });
+
+  test("goes back to the value, and to the ends exactly", () => {
+    expect(valueAt(0.5, 0.01, 100, "log")).toBeCloseTo(1, 10);
+    expect(valueAt(0.75, 0.01, 100, "log")).toBeCloseTo(10, 10);
+    expect(valueAt(0, 0.01, 100, "log")).toBe(0.01);
+    expect(valueAt(1, 0.001, 10, "log")).toBe(10);
+    expect(valueAt(-1, 0.01, 100, "log")).toBe(0.01);
+    expect(valueAt(2, 0.01, 100, "log")).toBe(100);
+    // (A range for which the arithmetic of the top is not exact, 7.000000000000001, and the top is still 7.)
+    expect(valueAt(1, 0.003, 7, "log")).toBe(7);
+    expect(valueAt(fractionOf(3.7, 0.001, 10, "log"), 0.001, 10, "log")).toBeCloseTo(3.7, 10);
+  });
+
+  test("is dragged by a share of the sweep, not of the range", () => {
+    // A quarter of the drag up from 1 (the middle) is a quarter of the sweep on: 1 to 10.
+    expect(dragged(1, -DRAG_PIXELS / 4, 0.01, 100, 1, "log")).toBeCloseTo(10, 9);
+    expect(dragged(1, DRAG_PIXELS / 4, 0.01, 100, 1, "log")).toBeCloseTo(0.1, 10);
+    expect(dragged(1, -DRAG_PIXELS / 4, 0.01, 100, 0.1, "log")).toBeCloseTo(10 ** 0.1, 9);
+    expect(dragged(50, -DRAG_PIXELS, 0.01, 100, 1, "log")).toBe(100);
+    expect(dragged(0.02, DRAG_PIXELS, 0.01, 100, 1, "log")).toBe(0.01);
+  });
+
+  test("is not moved by a drag that has not moved", () => {
+    expect(dragged(3.3, 0, 0.01, 100, 1, "log")).toBe(3.3);
+  });
+
+  test("is stepped by a share of the sweep", () => {
+    expect(stepped(1, 1, 0.25, 0.01, 100, "log")).toBeCloseTo(10, 9);
+    expect(stepped(1, -2, 0.25, 0.01, 100, "log")).toBeCloseTo(0.01, 9);
+    expect(stepped(50, 1, 0.25, 0.01, 100, "log")).toBe(100);
+    expect(stepped(3.3, 0, 0.25, 0.01, 100, "log")).toBe(3.3);
+  });
+
+  test("is moved by the keys by a hundredth of the sweep, to the ends by Home and End", () => {
+    expect(afterKey("ArrowUp", false, 1, 0.01, 100, "log")).toBeCloseTo(10 ** 0.04, 9);
+    expect(afterKey("ArrowDown", true, 1, 0.01, 100, "log")).toBeCloseTo(10 ** -0.004, 9);
+    expect(afterKey("PageUp", false, 1, 0.01, 100, "log")).toBeCloseTo(10 ** 0.4, 9);
+    expect(afterKey("Home", false, 1, 0.01, 100, "log")).toBe(0.01);
+    expect(afterKey("End", false, 1, 0.01, 100, "log")).toBe(100);
+    // At the end there is nowhere to go, and the value that comes back is the end itself.
+    expect(afterKey("ArrowUp", false, 100, 0.01, 100, "log")).toBe(100);
+    expect(afterKey("ArrowDown", false, 0.01, 0.01, 100, "log")).toBe(0.01);
+  });
+
+  test("is the linear scale unless asked for", () => {
+    expect(fractionOf(1, 0.01, 100)).toBeCloseTo(0.99 / 99.99, 10);
+    expect(dragged(5, -DRAG_PIXELS / 4, 0, 10)).toBe(7.5);
+  });
+});

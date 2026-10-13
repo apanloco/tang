@@ -571,3 +571,58 @@ describe("the dot that shows what the parameter is now", () => {
     error.mockRestore();
   });
 });
+
+describe("a knob on a logarithmic scale", () => {
+  // 0.01 to 100 is four decades; 1 is in the middle.
+  const rate = { min: 0.01, max: 100, scale: "log" } as const;
+
+  test("draws the pointer where the value is in the decades, not in the range", () => {
+    const { container } = show({ ...rate, value: 1 });
+    const pointer = container.querySelector(".tang-knob__pointer");
+    const to = pointAt(24, 18, angleOf(0.5));
+    expect(Number(pointer?.getAttribute("x2"))).toBeCloseTo(to.x, 10);
+    expect(Number(pointer?.getAttribute("y2"))).toBeCloseTo(to.y, 10);
+    expect(container.querySelector(".tang-knob__arc")?.getAttribute("d")).toBe(arcPath(24, 18, 0, 0.5));
+  });
+
+  test("is dragged through the decades: a quarter of the drag up from 1 is 10", () => {
+    const knob = mount({ ...rate, start: 1 });
+    fireEvent.pointerDown(knob.dial, { clientY: 300, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(knob.dial, { clientY: 300 - DRAG_PIXELS / 4, pointerId: 1 });
+    expect(knob.changes).toHaveLength(1);
+    expect(knob.changes[0]).toBeCloseTo(10, 9);
+    fireEvent.pointerUp(knob.dial, { pointerId: 1 });
+    expect(knob.commits).toHaveLength(1);
+  });
+
+  test("is moved by the arrows by a hundredth of the sweep, and goes to the ends with Home and End", () => {
+    const knob = mount({ ...rate, start: 1 });
+    fireEvent.keyDown(knob.dial, { key: "ArrowUp" });
+    expect(knob.changes[0]).toBeCloseTo(10 ** 0.04, 9);
+    fireEvent.keyDown(knob.dial, { key: "Home" });
+    fireEvent.keyDown(knob.dial, { key: "End" });
+    expect(knob.changes.slice(1)).toEqual([0.01, 100]);
+  });
+
+  test("puts the dot where the value it reads is in the decades", () => {
+    const clock = new Clock();
+    const { container } = render(<Knob label="Rate" value={1} {...rate} readEffective={() => 10} frames={new FrameLoop(clock)} />);
+    clock.tick(16);
+    const at = pointAt(24, 18, angleOf(0.75));
+    const dot = dotAt(container);
+    expect(dot.visibility).toBe("visible");
+    expect(Number(dot.x)).toBeCloseTo(at.x, 9);
+    expect(Number(dot.y)).toBeCloseTo(at.y, 9);
+  });
+
+  test("draws the ring of a modulation in the decades too", () => {
+    const { container } = show({ ...rate, value: 1, modulation: { low: 0.1, high: 10 } });
+    expect(container.querySelector(".tang-knob__ring")?.getAttribute("d")).toBe(arcPath(24, 21.5, 0.25, 0.75));
+  });
+
+  test("is a linear knob unless it is asked to be otherwise", () => {
+    const { container } = show({ value: 1, min: 0.01, max: 100 });
+    const arc = container.querySelector(".tang-knob__arc")?.getAttribute("d");
+    expect(arc).toBe(arcPath(24, 18, 0, 0.99 / 99.99));
+  });
+});

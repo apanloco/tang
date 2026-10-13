@@ -10,15 +10,30 @@ export const DRAG_PIXELS = 200;
 
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), high);
 
+/**
+ * How the values of a knob are spread over its sweep: evenly, or, for a rate or a time that
+ * runs over decades, so that equal ratios are equally far apart (which needs a range that
+ * starts above nothing: a range that does not is spread evenly whatever is asked).
+ */
+export type Scale = "linear" | "log";
+
+const isLog = (scale: Scale, min: number): boolean => scale === "log" && min > 0;
+
 /** Where `value` is between `min` and `max`, from 0 to 1 (0 for a range that is nothing). */
-export function fractionOf(value: number, min: number, max: number): number {
+export function fractionOf(value: number, min: number, max: number, scale: Scale = "linear"): number {
   if (!(max > min)) return 0;
+  if (isLog(scale, min)) {
+    // (A value at or below the start has no logarithm to speak of, and is at the start.)
+    return value <= min ? 0 : clamp(Math.log(value / min) / Math.log(max / min), 0, 1);
+  }
   return clamp((value - min) / (max - min), 0, 1);
 }
 
-/** The value at `fraction` of the way from `min` to `max`. */
-export function valueAt(fraction: number, min: number, max: number): number {
-  return min + clamp(fraction, 0, 1) * (max - min);
+/** The value at `fraction` of the way from `min` to `max` (the ends themselves, exactly, at 0 and 1). */
+export function valueAt(fraction: number, min: number, max: number, scale: Scale = "linear"): number {
+  const at = clamp(fraction, 0, 1);
+  if (isLog(scale, min)) return at <= 0 ? min : at >= 1 ? max : min * (max / min) ** at;
+  return min + at * (max - min);
 }
 
 /** A point at `radius` from the centre, `degrees` clockwise from straight up. */
@@ -53,12 +68,19 @@ export function arcPath(centre: number, radius: number, from: number, to: number
  * The value after the pointer has moved `pixels` down the screen (negative is up, which
  * raises the value), at `speed` times the usual rate (a tenth for a fine adjustment).
  */
-export function dragged(value: number, pixels: number, min: number, max: number, speed = 1): number {
+export function dragged(value: number, pixels: number, min: number, max: number, speed = 1, scale: Scale = "linear"): number {
+  if (isLog(scale, min)) {
+    // A drag that has not moved leaves the value as it is, not an ulp away from it.
+    return pixels === 0 ? value : valueAt(fractionOf(value, min, max, scale) - (pixels / DRAG_PIXELS) * speed, min, max, scale);
+  }
   return clamp(value - (pixels / DRAG_PIXELS) * (max - min) * speed, min, max);
 }
 
-/** The value after `steps` steps of `size` of the range (negative steps go down). */
-export function stepped(value: number, steps: number, size: number, min: number, max: number): number {
+/** The value after `steps` steps of `size` of the range, or of the sweep on a logarithmic scale (negative steps go down). */
+export function stepped(value: number, steps: number, size: number, min: number, max: number, scale: Scale = "linear"): number {
+  if (isLog(scale, min)) {
+    return steps === 0 ? value : valueAt(fractionOf(value, min, max, scale) + steps * size, min, max, scale);
+  }
   return clamp(value + steps * size * (max - min), min, max);
 }
 
@@ -66,19 +88,19 @@ export function stepped(value: number, steps: number, size: number, min: number,
  * The value after a key press: a step for the arrows (a tenth of a step with shift held), ten
  * for the page keys, the ends for Home and End. `undefined` for a key that is not the knob's.
  */
-export function afterKey(key: string, fine: boolean, value: number, min: number, max: number): number | undefined {
+export function afterKey(key: string, fine: boolean, value: number, min: number, max: number, scale: Scale = "linear"): number | undefined {
   const size = fine ? 0.001 : 0.01;
   switch (key) {
     case "ArrowUp":
     case "ArrowRight":
-      return stepped(value, 1, size, min, max);
+      return stepped(value, 1, size, min, max, scale);
     case "ArrowDown":
     case "ArrowLeft":
-      return stepped(value, -1, size, min, max);
+      return stepped(value, -1, size, min, max, scale);
     case "PageUp":
-      return stepped(value, 10, size, min, max);
+      return stepped(value, 10, size, min, max, scale);
     case "PageDown":
-      return stepped(value, -10, size, min, max);
+      return stepped(value, -10, size, min, max, scale);
     case "Home":
       return min;
     case "End":

@@ -4,6 +4,7 @@ import type { KeyboardEvent, PointerEvent } from "react";
 import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
 import { afterKey, angleOf, arcPath, dragged, fractionOf, pointAt } from "./knob-geometry";
+import type { Scale } from "./knob-geometry";
 import "./Knob.css";
 
 const CENTRE = 24;
@@ -25,6 +26,8 @@ export interface KnobProps {
   value: number;
   min: number;
   max: number;
+  /** How the values are spread over the sweep: evenly (the default), or, for a rate or a time over decades, by their ratios. */
+  scale?: Scale;
   /** What a double click puts the value back to. */
   defaultValue?: number;
   format?: (value: number) => string;
@@ -49,6 +52,7 @@ export function Knob({
   value,
   min,
   max,
+  scale = "linear",
   defaultValue,
   format = formatValue,
   modulation,
@@ -66,11 +70,11 @@ export function Knob({
   const readOnly = !onChange;
   const inert = disabled || readOnly;
 
-  const fraction = fractionOf(value, min, max);
+  const fraction = fractionOf(value, min, max, scale);
   const pointerAngle = angleOf(fraction);
   const from = pointAt(CENTRE, POINTER_START, pointerAngle);
   const to = pointAt(CENTRE, TRACK_RADIUS, pointerAngle);
-  const ring = modulation ? arcPath(CENTRE, RING_RADIUS, fractionOf(modulation.low, min, max), fractionOf(modulation.high, min, max)) : "";
+  const ring = modulation ? arcPath(CENTRE, RING_RADIUS, fractionOf(modulation.low, min, max, scale), fractionOf(modulation.high, min, max, scale)) : "";
 
   useEffect(() => {
     if (!readEffective) return undefined;
@@ -85,12 +89,12 @@ export function Knob({
         circle.setAttribute("visibility", "hidden");
         return;
       }
-      const at = pointAt(CENTRE, TRACK_RADIUS, angleOf(fractionOf(effective, min, max)));
+      const at = pointAt(CENTRE, TRACK_RADIUS, angleOf(fractionOf(effective, min, max, scale)));
       circle.setAttribute("cx", String(at.x));
       circle.setAttribute("cy", String(at.y));
       circle.setAttribute("visibility", "visible");
     });
-  }, [frames, readEffective, min, max]);
+  }, [frames, readEffective, min, max, scale]);
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
     if (inert || event.button !== 0) return;
@@ -110,7 +114,7 @@ export function Knob({
     if (!gesture || !onChange) return;
     // Rebased on each move, so that a change of speed (shift) does not make the knob jump,
     // and so that a pointer that has gone past an end comes back at once.
-    const next = dragged(gesture.value, event.clientY - gesture.y, min, max, event.shiftKey ? 0.1 : 1);
+    const next = dragged(gesture.value, event.clientY - gesture.y, min, max, event.shiftKey ? 0.1 : 1, scale);
     drag.current = { y: event.clientY, value: next, moved: gesture.moved || next !== gesture.value };
     if (next !== gesture.value) onChange(next);
   };
@@ -125,7 +129,7 @@ export function Knob({
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (inert) return;
-    const next = afterKey(event.key, event.shiftKey, value, min, max);
+    const next = afterKey(event.key, event.shiftKey, value, min, max, scale);
     if (next === undefined) return;
     event.preventDefault();
     if (next === value) return;
