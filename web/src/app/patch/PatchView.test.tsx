@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { builtinCatalog, builtinEffects, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
+import { builtinCatalog, builtinEffects, builtinPresets, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import { decodeFrame } from "../../client/telemetry";
 import type { Snapshot } from "../../protocol";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
@@ -659,6 +659,114 @@ describe("the patch", () => {
       await opened("Change the instrument of Oscillator");
       fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
       expect(await screen.findByText("Could not change the instrument of Oscillator to Oscillator: Not connected to the server.")).toBeTruthy();
+    });
+  });
+
+  describe("loading a preset", () => {
+    const label = /^Load a preset into /;
+    const buttons = async () => (await screen.findAllByRole("button", { name: label })).map((button) => button.getAttribute("aria-label"));
+    const opened = async (name: string): Promise<HTMLElement> => {
+      fireEvent.click(await screen.findByRole("button", { name }));
+      return screen.getByRole("menu", { name });
+    };
+    /** What a knob of a node says it is at. */
+    const knob = async (node: number, name: string): Promise<string | null> => within(await nodeOf(node)).getByRole("slider", { name }).getAttribute("aria-valuenow");
+    const PRESETS = ["Arcadia Dream Hall", "Cathedral", "Vintage Plate", "Small Room", "Ambient Wash"];
+
+    test("is offered on every instrument and effect of a lane that has presets, by a button that names whose it is, and on nothing else", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      // (Of the two reverbs, the one on a group's bus has none to load into: the audio thread addresses a preset by a lane's slot.)
+      expect(await buttons()).toEqual(["Load a preset into Reverb 2"]);
+      for (const id of [0, 1, 2, 3, 4, 5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: label })).toBeNull();
+    });
+
+    test("is offered on an instrument that has presets too, and not on one that has none", async () => {
+      const snapshot = structuredClone(tracerSnapshot);
+      const osc = snapshot.graph.nodes.find((n) => n.id === oscillator.id);
+      if (osc?.kind !== "instrument" || !osc.plugin) throw new Error("no instrument");
+      osc.plugin.presets = [
+        { id: "pad", name: "Pad" },
+        { id: "lead", name: "Lead" },
+      ];
+      await rig(<PatchView />, { snapshot });
+      expect(await buttons()).toEqual(["Load a preset into Oscillator"]);
+      expect(within(await nodeOf(filter.id)).queryByRole("button", { name: label })).toBeNull();
+    });
+
+    test("opens a menu of the preset names, in the plugin's order, none marked while none is loaded", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      const menu = await opened("Load a preset into Reverb 2");
+      const entries = within(menu).getAllByRole("menuitem");
+      expect(entries.map((entry) => entry.textContent)).toEqual(PRESETS);
+      expect(entries.map((entry) => entry.getAttribute("aria-current"))).toEqual([null, null, null, null, null]);
+    });
+
+    test("asks the server to load the one that was chosen, and the knobs of the node show what it sets", async () => {
+      const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      const before = await knob(10, "decay");
+      await opened("Load a preset into Reverb 2");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Cathedral" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "loadPreset", node: 10, preset: "cathedral" }]);
+      });
+      // (The reverb's decay is the first of a preset's values: a long one in Cathedral.)
+      const decay = (builtinPresets["builtin:reverb"]?.cathedral ?? []).find((v) => v.param === 0)?.value;
+      await waitFor(async () => {
+        expect(Number(await knob(10, "decay"))).toBeCloseTo(decay ?? Number.NaN, 5);
+      });
+      expect(Number(before)).not.toBeCloseTo(decay ?? 0, 5);
+      // The menu has gone, and the focus is back on the button that opened it.
+      expect(screen.queryByRole("menu")).toBeNull();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Load a preset into Reverb 2" }));
+      });
+    });
+
+    test("has the preset that was loaded marked, and the menu opens on it", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      await opened("Load a preset into Reverb 2");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Vintage Plate" }));
+      await waitFor(() => {
+        expect(screen.queryByRole("menu")).toBeNull();
+      });
+      const menu = await opened("Load a preset into Reverb 2");
+      const marked = within(menu).getAllByRole("menuitem").filter((entry) => entry.getAttribute("aria-current") === "true");
+      expect(marked.map((entry) => entry.textContent)).toEqual(["Vintage Plate"]);
+      expect(document.activeElement).toBe(marked[0]);
+    });
+
+    test("is told of a preset that another front-end loads: the mark moves, and so do the knobs", async () => {
+      const { server } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      await screen.findByRole("button", { name: "Load a preset into Reverb 2" });
+      act(() => {
+        server.apply({ type: "loadPreset", node: 10, preset: "room" });
+      });
+      const room = (builtinPresets["builtin:reverb"]?.room ?? []).find((v) => v.param === 0)?.value;
+      await waitFor(async () => {
+        expect(Number(await knob(10, "decay"))).toBeCloseTo(room ?? Number.NaN, 5);
+      });
+      const menu = await opened("Load a preset into Reverb 2");
+      expect(within(menu).getAllByRole("menuitem").filter((entry) => entry.getAttribute("aria-current") === "true").map((entry) => entry.textContent)).toEqual(["Small Room"]);
+    });
+
+    test("says why when it is refused, on the page's notices, by the preset's name", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+        { snapshot: reachFixture.snapshot },
+      );
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      await opened("Load a preset into Reverb 2");
+      fireEvent.click(screen.getByRole("menuitem", { name: "Cathedral" }));
+      expect(await screen.findByText("Could not load Cathedral into Reverb 2: Not connected to the server.")).toBeTruthy();
     });
   });
 

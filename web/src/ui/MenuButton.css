@@ -83,3 +83,18 @@
 .tang-menu__item:focus {
   background: var(--tang-border);
 }
+
+/* The one that is the choice now: bold, with a check in the room the items leave at the left. */
+.tang-menu__item[aria-current="true"] {
+  position: relative;
+  font-weight: 600;
+}
+
+.tang-menu__item[aria-current="true"]::before {
+  content: "✓";
+  position: absolute;
+  left: 2px;
+  font-size: 11px;
+  line-height: inherit;
+  color: var(--tang-scale);
+}

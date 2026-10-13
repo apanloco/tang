@@ -1,7 +1,7 @@
 // Reading the session in the client's store: the parts of it a view shows, found by the id of
 // the node they are of. Pure, on the state, so that a view can hand one to a store hook.
 import { WAVEFORMS } from "../protocol";
-import type { EdgeId, Gain, ModulatorField, Node, NodeId, Param } from "../protocol";
+import type { EdgeId, Gain, ModulatorField, Node, NodeId, Param, Preset } from "../protocol";
 import type { ClientState } from "./connection";
 
 /** The node of the session with this id, if the client has a session and it has one. */
@@ -14,6 +14,20 @@ export function paramOf(state: ClientState, id: NodeId, index: number): Param | 
   const node = nodeById(state, id);
   if (node?.kind !== "instrument" && node?.kind !== "effect") return undefined;
   return node.plugin?.params.find((param) => param.index === index);
+}
+
+/**
+ * The presets that can be loaded into the plugin of node `id`, and the name of the one that was loaded last: those of a lane's
+ * instrument or of an effect in a lane's chain. Null for a node that has no such plugin: a bus effect has presets, but the audio thread
+ * loads one by a lane's slot (the controller says "a bus effect has no presets to load"), so it is not offered one. A plugin with no
+ * presets has an empty list.
+ */
+export function presetsOf(state: ClientState, id: NodeId): { presets: readonly Preset[]; current: string | null } | null {
+  const node = nodeById(state, id);
+  if (node?.kind !== "instrument" && node?.kind !== "effect") return null;
+  if (!node.plugin) return null;
+  if (node.kind === "effect" && state.snapshot?.graph.nodes.find((n) => n.id === node.parent)?.kind === "group") return null;
+  return { presets: node.plugin.presets, current: node.plugin.currentPreset };
 }
 
 /** The value of a host-side gain of a node, if the node has that gain (`withGain` in reducers.ts is the other way round). */

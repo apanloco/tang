@@ -8,8 +8,8 @@ import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
-import { nodeById } from "../../client/selectors";
-import type { ModulatorKind, Node, NodeId } from "../../protocol";
+import { nodeById, presetsOf } from "../../client/selectors";
+import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
 import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
@@ -112,6 +112,41 @@ function ChangeInstrumentMenu({ node, name, empty }: { node: NodeId; name: strin
   );
 }
 
+/** (The same empty list every time, for what depends on one.) */
+const NO_PRESETS: readonly Preset[] = [];
+
+/** Whether two answers of `presetsOf` are the same list and the same preset: what the menu depends on, and not the values of the plugin. */
+const samePresets = (a: ReturnType<typeof presetsOf>, b: ReturnType<typeof presetsOf>): boolean =>
+  a === b || (a !== null && b !== null && a.presets === b.presets && a.current === b.current);
+
+/**
+ * The button of an instrument, or of an effect of a lane, that loads one of its plugin's presets: a menu of their names, the one that was
+ * loaded last marked, and the menu opening on it. Nothing for a plugin that has no presets, and for a bus effect (the audio thread
+ * loads a preset by a lane's slot). The parameters take the preset's values when the server says it was loaded.
+ */
+function PresetMenu({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const found = useClientSelection((state) => presetsOf(state, node), samePresets);
+  const presets = found?.presets ?? NO_PRESETS;
+  const current = found?.current ?? null;
+  const items = useMemo<MenuItem[]>(() => presets.map((preset) => ({ id: preset.id, label: preset.name, current: preset.name === current })), [presets, current]);
+  if (items.length === 0) return null;
+  return (
+    <MenuButton
+      id={`presets-${String(node)}`}
+      label={`Load a preset into ${name}`}
+      className="tang-node__presets"
+      items={items}
+      onChoose={(preset) => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        void editor.loadPreset(node, preset);
+      }}
+    >
+      ≡
+    </MenuButton>
+  );
+}
+
 /** The button of a modulator or an effect that takes it out, with the cables that drive it; the focus goes to the button that adds one like it to its lane or group. */
 function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name: string; parent: NodeId | null; focusTo: (parent: NodeId) => string }) {
   const editor = useEditor();
@@ -144,10 +179,14 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
       <Header name={data.name} badge={data.format}>
         {effect ? (
-          <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
+          <span className="tang-node__actions">
+            <PresetMenu node={data.node} name={data.name} />
+            <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
+          </span>
         ) : (
           <span className="tang-node__actions">
             <ChangeInstrumentMenu node={data.node} name={data.name} empty={data.format === null} />
+            <PresetMenu node={data.node} name={data.name} />
             <AddEffectMenu node={data.node} name={data.name} />
             <AddModulatorMenu node={data.node} name={data.name} />
           </span>

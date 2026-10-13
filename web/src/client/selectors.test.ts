@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
-import { MASTER, nodeNamed, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramOf } from "./selectors";
+import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramOf, presetsOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
@@ -127,5 +127,49 @@ describe("the settings of a modulator and the depths of its cables", () => {
     // The audio edges have no id of the kind: the number that is the id of a cable is not theirs.
     expect(tracerSnapshot.graph.edges.filter((edge) => edge.kind !== "modulation")).not.toHaveLength(0);
     expect(cableDepthOf(state, 1)).toBeUndefined();
+  });
+});
+
+describe("finding the presets a plugin can be given", () => {
+  const reach = stateOf(reachFixture.snapshot);
+
+  test("those of an effect of a lane, with none loaded to begin with", () => {
+    const found = presetsOf(reach, 10);
+    expect(found?.presets.map((p) => p.id)).toEqual(["arcadia", "cathedral", "plate", "room", "ambient"]);
+    expect(found?.current).toBeNull();
+  });
+
+  test("and the one that was loaded last, by its name", () => {
+    const loaded = structuredClone(reachFixture.snapshot);
+    const reverb = loaded.graph.nodes.find((n) => n.id === 10);
+    if (reverb?.kind !== "effect") throw new Error("no reverb");
+    reverb.plugin.currentPreset = "Cathedral";
+    expect(presetsOf(stateOf(loaded), 10)?.current).toBe("Cathedral");
+  });
+
+  test("those of an instrument", () => {
+    const given = structuredClone(tracerSnapshot);
+    const osc = given.graph.nodes.find((n) => n.id === oscillator.id);
+    if (osc?.kind !== "instrument" || !osc.plugin) throw new Error("no instrument");
+    osc.plugin.presets = [{ id: "pad", name: "Pad" }];
+    expect(presetsOf(stateOf(given), oscillator.id)?.presets).toEqual([{ id: "pad", name: "Pad" }]);
+  });
+
+  test("none for an effect on a group's bus (a preset is loaded by a lane's slot), though it has them", () => {
+    expect(paramOf(reach, 3, 0)).toBeDefined();
+    expect(presetsOf(reach, 3)).toBeNull();
+  });
+
+  test("none for a node that has no plugin, a lane that has none, a node that is not there, or before there is a session", () => {
+    expect(presetsOf(reach, 15)).toBeNull(); // a modulator
+    expect(presetsOf(reach, 0)).toBeNull(); // a group
+    expect(presetsOf(reach, 14)).toBeNull(); // a lane with no instrument
+    expect(presetsOf(reach, 424242)).toBeNull();
+    expect(presetsOf(reach, MASTER)).toBeNull();
+    expect(presetsOf(stateOf(null), 10)).toBeNull();
+  });
+
+  test("a plugin that has no presets has an empty list: the caller decides what that is worth", () => {
+    expect(presetsOf(state, filter.id)).toEqual({ presets: [], current: null });
   });
 });

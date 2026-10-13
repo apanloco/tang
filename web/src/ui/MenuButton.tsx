@@ -9,6 +9,8 @@ export interface MenuItem<Id extends string = string> {
   label: string;
   /** The heading it is listed under: a run of items that have the same one is a group of the menu, drawn under it. */
   group?: string;
+  /** It is the choice now (the preset a plugin has): marked, and where the menu opens when the button is pressed. */
+  current?: boolean;
 }
 
 export interface MenuButtonProps<Id extends string = string> {
@@ -192,7 +194,7 @@ export function MenuButton<Id extends string>({ label, id, className, items, onC
         disabled={items.length === 0}
         onClick={() => {
           if (open) close(false);
-          else openAt(0);
+          else openAt(Math.max(0, items.findIndex((item) => item.current === true)));
         }}
         onKeyDown={onTriggerKey}
       >
@@ -226,6 +228,7 @@ export function MenuButton<Id extends string>({ label, id, className, items, onC
                     type="button"
                     role="menuitem"
                     className="tang-menu__item"
+                    aria-current={item.current === true ? "true" : undefined}
                     tabIndex={index === focused ? 0 : -1}
                     onClick={() => {
                       onChoose(item.id);

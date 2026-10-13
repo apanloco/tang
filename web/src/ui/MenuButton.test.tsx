@@ -328,6 +328,59 @@ describe("a menu with groups", () => {
   });
 });
 
+describe("a menu with a current item", () => {
+  const CHOICES = [
+    { id: "a", label: "Arcadia" },
+    { id: "b", label: "Cathedral", current: true },
+    { id: "c", label: "Plate" },
+  ];
+
+  function mountChoices(choices: readonly { id: string; label: string; current?: boolean }[] = CHOICES, onChoose = vi.fn()) {
+    render(
+      <MenuButton label="Load a preset" items={choices} onChoose={onChoose}>
+        ≡
+      </MenuButton>,
+    );
+    return { onChoose, trigger: screen.getByRole("button", { name: "Load a preset" }) };
+  }
+
+  test("marks it, for a screen reader, and no other", () => {
+    const { trigger } = mountChoices();
+    fireEvent.click(trigger);
+    expect(items().map((entry) => entry.getAttribute("aria-current"))).toEqual([null, "true", null]);
+  });
+
+  test("opens on it, whatever comes first", () => {
+    const { trigger } = mountChoices();
+    fireEvent.click(trigger);
+    expect(focusedLabel()).toBe("Cathedral");
+    // (Arrows go on from there.)
+    fireEvent.keyDown(item(1), { key: "ArrowDown" });
+    expect(focusedLabel()).toBe("Plate");
+  });
+
+  test("opens on the first when no item is current", () => {
+    const { trigger } = mountChoices(CHOICES.map(({ id, label }) => ({ id, label })));
+    fireEvent.click(trigger);
+    expect(focusedLabel()).toBe("Arcadia");
+  });
+
+  test("is opened by an arrow at the arrow's own end, current or not", () => {
+    const { trigger } = mountChoices();
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    expect(focusedLabel()).toBe("Plate");
+  });
+
+  test("is chosen like any other item", () => {
+    const { trigger, onChoose } = mountChoices();
+    fireEvent.click(trigger);
+    fireEvent.click(item(1));
+    expect(onChoose).toHaveBeenCalledWith("b");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
 describe("a long menu", () => {
   const MANY = Array.from({ length: 100 }, (_, index) => ({ id: `p${String(index)}`, label: `parameter ${String(index)}` }));
 

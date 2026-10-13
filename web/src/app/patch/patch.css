@@ -78,6 +78,11 @@
   letter-spacing: 0.02em;
 }
 
+/* (The one that loads a preset: a glyph too.) */
+.tang-menu-button.tang-node__presets {
+  min-width: 26px;
+}
+
 /* (The one that changes the instrument of a lane: a glyph, as wide as the one of a modulator's "+".) */
 .tang-menu-button.tang-node__instrument {
   min-width: 26px;
