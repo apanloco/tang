@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use crossbeam_channel::Receiver;
 
 use crate::app::controller::Controller;
+use crate::app::intent::Applied;
 use crate::app::protocol::{ServerMessage, WireError};
 use crate::web::Shared;
 use crate::web::connection::OwnerRequest;
@@ -27,27 +28,39 @@ pub struct Owner {
     hub: Arc<Hub>,
     shared: Arc<Shared>,
     requests: Receiver<OwnerRequest>,
-    /// The `rev` of the layout the clients last heard of.
-    layout_rev: u32,
 }
 
 impl Owner {
     /// An owner for `ctl`: from now on what the controller applies is told to the
-    /// hub's subscribed clients, whichever front-end asked for it.
+    /// hub's subscribed clients, whichever front-end asked for it, and so is a
+    /// snapshot when the session changes in a way no intent describes.
     pub fn new(ctl: &mut Controller, hub: Arc<Hub>, shared: Arc<Shared>, requests: Receiver<OwnerRequest>) -> Owner {
-        ctl.subscribe(Box::new(HubSink { hub: hub.clone() }));
-        let layout_rev = shared.layout().rev;
-        Owner { hub, shared, requests, layout_rev }
+        ctl.subscribe(Box::new(HubSink { hub: hub.clone(), shared: shared.clone() }));
+        Owner { hub, shared, requests }
     }
 
     /// Answer every request that is waiting, in the order they came. How many.
     pub fn serve(&mut self, ctl: &mut Controller) -> usize {
+        self.serve_with(ctl, |_| {})
+    }
+
+    /// `serve`, handing each intent that was applied to `applied`: the front-end that
+    /// shows the session (the TUI) has to react to what a browser changed.
+    pub fn serve_with(&mut self, ctl: &mut Controller, mut applied: impl FnMut(Applied)) -> usize {
         let mut handled = 0;
         while let Ok(request) = self.requests.try_recv() {
-            self.handle(ctl, request);
+            if let Some(intent) = self.handle(ctl, request) {
+                applied(intent);
+            }
             handled += 1;
         }
         handled
+    }
+
+    /// How many clients are connected.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the TUI shows it, from the commit that has it serve the web interface"))]
+    pub fn clients(&self) -> usize {
+        self.hub.client_count()
     }
 
     /// The requests the connections make, for a loop that waits for them along with
@@ -56,26 +69,29 @@ impl Owner {
         &self.requests
     }
 
-    /// Answer one request.
-    pub fn handle(&mut self, ctl: &mut Controller, request: OwnerRequest) {
-        match request {
+    /// Answer one request. The intent it applied, if it applied one.
+    pub fn handle(&mut self, ctl: &mut Controller, request: OwnerRequest) -> Option<Applied> {
+        let applied = match request {
             OwnerRequest::Subscribe { client } => {
                 // Subscribed and sent the snapshot in one step: no event can come between.
                 if self.hub.subscribe(client) {
                     self.send(client, &ServerMessage::Snapshot { snapshot: ctl.snapshot() });
                 }
+                None
             }
             OwnerRequest::Apply { client, req_id, intent } => {
                 // The events go out to the subscribed clients from inside `apply`, so the
                 // answer follows them.
-                let reply = match ctl.apply(intent) {
-                    Ok(applied) => ServerMessage::Ack { req_id, rev: applied.rev },
-                    Err(e) => ServerMessage::Rejected { req_id, error: WireError::from(&e) },
+                let (reply, applied) = match ctl.apply(intent) {
+                    Ok(applied) => (ServerMessage::Ack { req_id, rev: applied.rev }, Some(applied)),
+                    Err(e) => (ServerMessage::Rejected { req_id, error: WireError::from(&e) }, None),
                 };
                 self.send(client, &reply);
+                applied
             }
-        }
+        };
         self.shared.rev.store(ctl.rev, Ordering::Relaxed);
+        applied
     }
 
     /// Keep what the connections read current: the session's revision, and the
@@ -85,8 +101,9 @@ impl Owner {
     pub fn refresh(&mut self, ctl: &Controller) {
         self.shared.rev.store(ctl.rev, Ordering::Relaxed);
         let layout = ctl.model.telemetry_layout();
-        if layout.rev != self.layout_rev {
-            self.layout_rev = layout.rev;
+        // (A snapshot carries the layout, and sets it in `shared` when it is sent: then
+        // there is nothing to tell here.)
+        if layout.rev != self.shared.layout().rev {
             self.shared.set_layout(layout.clone());
             self.hub.broadcast(&Self::text(&ServerMessage::Layout { layout }));
         }
@@ -307,6 +324,66 @@ mod tests {
         let intent = volume(&rig, 0.5);
         rig.ctl.apply(intent).unwrap();
         assert_eq!(types(&said(&mut queue)), ["event"]);
+    }
+
+    #[test]
+    fn handle_hands_back_the_intent_it_applied_so_that_a_front_end_that_shows_the_session_can_react() {
+        let mut rig = rig();
+        let (client, _queue) = rig.hub.connect();
+        let intent = volume(&rig, 0.5);
+        let applied = rig.owner.handle(&mut rig.ctl, OwnerRequest::Apply { client, req_id: 1, intent }).expect("it was applied");
+        assert_eq!(applied.rev, 1);
+        assert_eq!(applied.events.len(), 1);
+
+        let ghost = NodeId(9_999);
+        let refused = OwnerRequest::Apply { client, req_id: 2, intent: Intent::SetGain { node: ghost, gain: Gain::Volume, value: 1.0 } };
+        assert_eq!(rig.owner.handle(&mut rig.ctl, refused), None, "nothing was applied");
+        assert_eq!(rig.owner.handle(&mut rig.ctl, OwnerRequest::Subscribe { client }), None, "nor is a subscription an intent");
+    }
+
+    #[test]
+    fn serve_with_hands_back_each_intent_that_was_applied_in_the_order_they_came() {
+        let mut rig = rig();
+        let (client, _queue) = rig.hub.connect();
+        for req_id in 0..3 {
+            let intent = volume(&rig, 0.1 * (req_id + 1) as f32);
+            rig.tx.send(OwnerRequest::Apply { client, req_id, intent }).unwrap();
+        }
+        let ghost = NodeId(9_999);
+        rig.tx.send(OwnerRequest::Apply { client, req_id: 3, intent: Intent::SetGain { node: ghost, gain: Gain::Volume, value: 1.0 } }).unwrap();
+        rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        let mut revs = Vec::new();
+        assert_eq!(rig.owner.serve_with(&mut rig.ctl, |applied| revs.push(applied.rev)), 5, "every request is counted");
+        assert_eq!(revs, [1, 2, 3], "and every intent that was applied is handed back");
+    }
+
+    #[test]
+    fn what_the_tui_edits_without_an_intent_reaches_the_clients_as_a_snapshot_that_carries_the_layout() {
+        let mut rig = rig();
+        let (client, mut queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        said(&mut queue);
+
+        // The tempo, set in the TUI's popup.
+        rig.ctl.global_bpm = 90.0;
+        assert!(rig.ctl.resync());
+        let told = said(&mut queue);
+        assert_eq!(types(&told), ["snapshot"]);
+        assert_eq!((told[0]["snapshot"]["rev"].clone(), told[0]["snapshot"]["meta"]["bpm"].clone()), (json!(1), json!(90.0)));
+        assert_eq!(rig.shared.rev.load(Ordering::Relaxed), 1, "a client that connects now is told where the session is");
+
+        // A lane, added with `n`. The snapshot carries the new layout, so it is not told again.
+        let before = rig.shared.layout().rev;
+        rig.ctl.add_lane();
+        assert!(rig.ctl.resync());
+        let told = said(&mut queue);
+        assert_eq!(types(&told), ["snapshot"]);
+        assert_eq!(told[0]["snapshot"]["graph"]["nodes"].as_array().unwrap().len(), 4, "three lanes and the master");
+        assert_ne!(rig.shared.layout().rev, before, "the frames are made for the new layout at once");
+        assert_eq!(told[0]["snapshot"]["telemetry"]["rev"], json!(rig.shared.layout().rev));
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty(), "the layout was told in the snapshot");
     }
 
     #[test]

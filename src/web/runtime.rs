@@ -67,6 +67,12 @@ impl Runtime {
         self.server.url()
     }
 
+    /// How many browsers are connected.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the TUI shows it, from the commit that has it serve the web interface"))]
+    pub fn clients(&self) -> usize {
+        self.owner.clients()
+    }
+
     /// The loop of a headless server: answer requests as they come, and every tick poll
     /// the controller and refresh. Returns when `quit` says so (or its senders are gone).
     pub fn run_headless(&mut self, ctl: &mut Controller, quit: &Receiver<()>) {
@@ -303,6 +309,35 @@ depth = 0.5
         // The tab is closed with the key still down.
         drop(a);
         assert_eq!(live.engine.midi_rx.recv_timeout(Duration::from_secs(5)).unwrap(), (0, [0x80, 64, 0]));
+    }
+
+    #[tokio::test]
+    async fn a_recording_the_audio_thread_reports_reaches_the_browsers_as_a_snapshot() {
+        let live = live();
+        let (mut a, snapshot) = subscribed(&live).await;
+        assert_eq!(snapshot["snapshot"]["meta"]["dirty"], false);
+        live.engine.pattern_tx.send(testutil::recording(0)).unwrap();
+        let told = tokio::time::timeout(Duration::from_secs(5), said(&mut a)).await.expect("nothing was told");
+        assert_eq!(told["type"], "snapshot");
+        assert_eq!(told["snapshot"]["meta"]["dirty"], true, "the recording is part of the session");
+        assert_eq!(told["snapshot"]["rev"], 1, "a revision of its own");
+    }
+
+    #[tokio::test]
+    async fn the_clients_that_are_connected_are_counted() {
+        let live = live();
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(SESSION).model, handles, None);
+        let runtime = Runtime::start(&mut ctl, Config::new("127.0.0.1:0".parse().unwrap())).unwrap();
+        assert_eq!(runtime.clients(), 0);
+        let a = testclient::connect(runtime.addr()).await;
+        wait_until("the connection was not counted", || runtime.clients() == 1).await;
+        let b = testclient::connect(runtime.addr()).await;
+        wait_until("the second connection was not counted", || runtime.clients() == 2).await;
+        drop(a);
+        wait_until("the closed connection was still counted", || runtime.clients() == 1).await;
+        drop(b);
+        let _ = live;
     }
 
     #[tokio::test]

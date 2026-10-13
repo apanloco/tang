@@ -17,9 +17,11 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-use crate::app::subscribers::EventSink;
 use crate::app::intent::Applied;
 use crate::app::protocol::{ServerMessage, TelemetryChannel};
+use crate::app::snapshot::Snapshot;
+use crate::app::subscribers::EventSink;
+use crate::web::Shared;
 
 /// Names a connection for as long as it is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,7 +69,7 @@ impl Hub {
         self.lock().remove(&id);
     }
 
-    #[cfg(test)]
+    /// How many clients are connected.
     pub fn client_count(&self) -> usize {
         self.lock().len()
     }
@@ -141,9 +143,14 @@ impl Hub {
 }
 
 /// What the controller tells when it applies an intent, passed on to the clients: an
-/// event message for each event, to every client that has subscribed.
+/// event message for each event, to every client that has subscribed. And when it
+/// changes in a way no intent describes (`Controller::resync`), the snapshot to start
+/// again from.
 pub struct HubSink {
     pub hub: Arc<Hub>,
+    /// What the connections and the telemetry frames read: a snapshot brings the
+    /// revision and the layout it carries, and they follow at once.
+    pub shared: Arc<Shared>,
 }
 
 impl EventSink for HubSink {
@@ -152,6 +159,13 @@ impl EventSink for HubSink {
             let json = serde_json::to_string(&ServerMessage::Event { event }).expect("an event is serializable");
             self.hub.broadcast(&Outgoing::Text(json.into()));
         }
+    }
+
+    fn resync(&mut self, snapshot: &Snapshot) {
+        self.shared.rev.store(snapshot.rev, Ordering::Relaxed);
+        self.shared.set_layout(snapshot.telemetry.clone());
+        let json = serde_json::to_string(&ServerMessage::Snapshot { snapshot: snapshot.clone() }).expect("a snapshot is serializable");
+        self.hub.broadcast(&Outgoing::Text(json.into()));
     }
 }
 
@@ -337,7 +351,7 @@ mod tests {
         let (a, mut ra) = hub.connect();
         let (_b, mut rb) = hub.connect();
         hub.subscribe(a);
-        let mut sink = HubSink { hub: hub.clone() };
+        let mut sink = HubSink { hub: hub.clone(), shared: shared() };
         sink.applied(&Applied {
             rev: 4,
             events: vec![
@@ -361,6 +375,44 @@ mod tests {
             ]
         );
         assert!(drain(&mut rb).is_empty());
+    }
+
+    fn shared() -> Arc<Shared> {
+        Arc::new(Shared::new(0, crate::app::model::SessionModel::default().telemetry_layout()))
+    }
+
+    #[test]
+    fn a_snapshot_the_controller_resyncs_with_goes_to_the_subscribed_clients() {
+        let hub = Arc::new(Hub::new(16));
+        let (subscribed, mut subscribed_queue) = hub.connect();
+        let (_plain, mut plain_queue) = hub.connect();
+        hub.subscribe(subscribed);
+        let (handles, _engine) = crate::app::testutil::stub_engine();
+        let mut ctl = crate::app::controller::Controller::new(crate::app::testutil::load("[[instrument]]\nplugin = \"builtin:osc\"\n").model, handles, None);
+        let shared = Arc::new(Shared::new(ctl.rev, ctl.model.telemetry_layout()));
+        let mut sink = HubSink { hub: hub.clone(), shared: shared.clone() };
+
+        ctl.add_lane();
+        let mut snapshot = ctl.snapshot();
+        snapshot.rev = 7;
+        sink.resync(&snapshot);
+
+        // (Through the text, as the wire has it: an f32 as its shortest text, not widened to an f64.)
+        let text = serde_json::to_string(&ServerMessage::Snapshot { snapshot: snapshot.clone() }).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let told: Vec<serde_json::Value> = drain(&mut subscribed_queue)
+            .iter()
+            .map(|m| match m {
+                Outgoing::Text(t) => serde_json::from_str(t).unwrap(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(told, [expected]);
+        assert!(drain(&mut plain_queue).is_empty(), "a client that has not subscribed is not told");
+        // What the connections and the frames read follows at once: a client that
+        // connects now is told this revision, and the frames are made for this layout.
+        assert_eq!(shared.rev.load(Ordering::Relaxed), 7);
+        assert_eq!(*shared.layout(), snapshot.telemetry);
     }
 
     #[test]
