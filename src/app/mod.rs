@@ -7,6 +7,7 @@
 pub mod apply;
 pub mod catalog;
 pub mod controller;
+pub mod graph;
 pub mod intent;
 pub mod load;
 pub mod model;

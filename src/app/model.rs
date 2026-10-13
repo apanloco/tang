@@ -23,6 +23,13 @@ use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 pub struct NodeId(pub u32);
 
+impl NodeId {
+    /// The master mix, where every ungrouped lane and every group ends up. It is a
+    /// node of the graph a client gets but not of the model: nothing is allocated
+    /// with this id, and `SessionModel::locate` does not find it.
+    pub const MASTER: NodeId = NodeId(u32::MAX);
+}
+
 /// Names a modulation edge, one target of one modulator, for as long as it
 /// exists: the cable a client draws from the modulator to what it drives. Edges
 /// come and go as targets are bound and removed, and a target is addressed by its

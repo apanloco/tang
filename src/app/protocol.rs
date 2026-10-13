@@ -32,6 +32,7 @@ mod typescript {
 
     use ts_rs::{Config, TS};
 
+    use crate::app::graph::Graph;
     use crate::app::intent::{Event, Intent, StampedEvent};
 
     /// Where the generated TypeScript is committed.
@@ -49,6 +50,7 @@ mod typescript {
         Intent::export_all(&cfg)?;
         Event::export_all(&cfg)?;
         StampedEvent::export_all(&cfg)?;
+        Graph::export_all(&cfg)?;
         Ok(())
     }
 
