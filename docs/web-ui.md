@@ -503,8 +503,9 @@ pane), with the piano along the bottom.
   the `chain.rs` tests already do); golden JSON for the protocol; a freshness
   check on the generated TS types; web integration tests (WebSocket client ↔
   controller ↔ null audio).
-- **Null audio backend** (`--audio-device none`): a timer-driven `process()`
-  thread, so `tang serve`, CI and end-to-end tests run without audio hardware.
+- **Null audio backend** (`--audio-device none`, built in step 9): a timer-driven
+  `process()` thread, so `tang serve`, CI and end-to-end tests run without audio
+  hardware.
 - **Web:** Vitest for the client layer, Storybook for components, Playwright
   end-to-end against `tang serve --audio-device none`.
 - **CI:** a new job (Linux first, macOS later) with Node: `npm ci`, build,
@@ -785,10 +786,9 @@ Each step is a reviewable change; the TUI must not regress at any point.
   *Done:* `cargo test` and clippy green on both feature sets. `chain.rs` tests
   drive `process()` and assert slot values for an LFO with a target, an envelope,
   a MIDI-learn control, group modulators and every meter; the audio path does
-  relaxed atomic stores and nothing else. **Not checked:** the `CLIP` light in the
-  real binary. The audio callback does not run in the sandboxed pseudo-terminal
-  sessions used for the manual runs, so that check waits for the null audio
-  backend (step 9).
+  relaxed atomic stores and nothing else. **Not checked then:** the `CLIP` light in
+  the real binary (the audio callback does not run in the sandboxed
+  pseudo-terminal sessions used for the manual runs); step 9 checked it.
 - [x] **8. Graph projection and protocol types.** `SessionModel::graph()`;
   serde types for `Snapshot`, `Event`, `Intent`, `TelemetryLayout`; the
   `ParameterInfo` v2 fields filled in for built-ins; `ts-rs` export (feature `web`)
@@ -836,10 +836,33 @@ Each step is a reviewable change; the TUI must not regress at any point.
   checked in the test suite and in CI. **Not checked:** the TypeScript compiles
   and means the same in a browser (there is no `web/` toolchain until step 11);
   the CI job has not run (it runs once the branch is pushed).
-- [ ] **9. Null audio backend.** `--audio-device none` starts a timer-driven
+- [x] **9. Null audio backend.** `--audio-device none` starts a timer-driven
   thread that calls `AudioGraph::process` at the buffer cadence; shared by
-  `serve`, tests and CI. *Done when:* the engine runs on a machine without an
-  audio device, and a test pumps notes through it and reads telemetry.
+  `serve`, tests and CI. Done in two commits:
+  - **`audio::Renderer`.** What the cpal callback does (take the MIDI that
+    arrived, render the graph into one buffer per channel, interleave) is a struct
+    of its own, so that a second backend runs the same work. It had no tests; it
+    has seven now (silence, a note and the channel order, any block length, MIDI
+    taken off the channel once, a block rendered from zero, a failing graph).
+  - **The backend.** `audio::NULL_DEVICE` (`none`) opens no host and no device;
+    `AudioEngine` is an enum of the cpal stream and the null backend with the same
+    `build` / `play` / `stop` (`play` takes `&mut self` now). A thread named
+    `tang-null-audio` renders a block every `buffer / sample rate` seconds and
+    throws the samples away; the cadence does not drift, and a stall of more than a
+    period starts it again instead of bursting through the missed blocks. `stop`
+    joins the thread, and the plugins are dropped by the caller. Normal priority:
+    no real-time promotion. 13 injected bugs, 12 caught (the other was a no-op).
+  - **Checked in the real binary**, which step 7 could not: `tang --audio-device
+    none` on a session of three oscillators at four times the volume, with a note
+    from a virtual MIDI port, logs "Audio callback running (null backend, 256
+    frames every 5.333333ms)" and shows `CLIP` in the status bar. No sound card was
+    opened, so nothing was heard.
+  *Done:* `cargo test` and clippy green on all three feature sets; the tests run the
+  engine without an audio device, send it a note and read the telemetry
+  (`a_lane_that_is_too_loud_clips_and_the_clips_are_counted` and friends).
+  **Not checked:** the null backend on Linux and Windows, and its timing under a
+  heavily loaded CI machine (the pace test allows 15 to 60 blocks in half a second
+  of 10 ms blocks).
 - [ ] **10. `web` feature and `tang serve`.** The axum / tokio runtime; `/`
   (embedded placeholder page) and `/ws`; `Hello`, `Origin` / `Host` checks,
   token for non-loopback; hub fan-out with bounded per-client queues; snapshot

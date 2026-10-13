@@ -1251,8 +1251,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   targets). A patchable synth engine (`builtin:patch`, track B) comes later.
 
 TODO: Phase 0 (foundations) — see the step list in `docs/web-ui.md`.
-TODO: `tang serve <session.toml>`, `--web[=addr]` and `--audio-device none`
-(a timer-driven null audio backend for CI and headless use).
+TODO: `tang serve <session.toml>` and `--web[=addr]`.
 TODO: `NoteInput` — one lock-free note path shared by hardware MIDI, the
 virtual piano and the browser.
 TODO: `ui` layout fields in the session format.
