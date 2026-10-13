@@ -1,3 +1,8 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::Receiver;
 
@@ -175,29 +180,128 @@ impl Renderer {
     }
 }
 
+/// The device name that stands for none: `--audio-device none` renders the engine
+/// on a timer with no sound card, for CI, headless runs (`tang serve`) and tests.
+pub const NULL_DEVICE: &str = "none";
+
+/// The time one block of `buffer_size` frames lasts at `sample_rate`.
+fn block_period(buffer_size: u32, sample_rate: u32) -> Duration {
+    Duration::from_secs_f64(buffer_size as f64 / sample_rate as f64)
+}
+
+/// When the next block of the null backend is due, once the one due at `deadline`
+/// has been rendered and the time is `now`. Blocks keep the cadence (a period after
+/// the one before, so that waking up late does not make it drift), unless the
+/// engine has fallen more than a period behind (a stall): then the blocks it
+/// missed are not rendered in a burst, the cadence starts again from `now`.
+fn next_deadline(deadline: Instant, period: Duration, now: Instant) -> Instant {
+    let next = deadline + period;
+    if now.saturating_duration_since(next) > period { now } else { next }
+}
+
+/// The null backend: a thread that renders a block every `period`, and throws
+/// the samples away.
+struct NullBackend {
+    /// What renders, until `play` hands it to the thread.
+    renderer: Option<Renderer>,
+    frames: usize,
+    period: Duration,
+    running: Option<Running>,
+}
+
+struct Running {
+    stop: Arc<AtomicBool>,
+    /// Gives the renderer back when it ends, so that the plugins are dropped by
+    /// whoever stops the engine, not by the rendering thread.
+    thread: JoinHandle<Renderer>,
+}
+
+impl NullBackend {
+    fn play(&mut self) -> anyhow::Result<()> {
+        let Some(renderer) = self.renderer.take() else {
+            return Ok(()); // already playing
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let (frames, period) = (self.frames, self.period);
+        let thread = std::thread::Builder::new().name("tang-null-audio".to_string()).spawn({
+            let stop = stop.clone();
+            move || render_on_a_timer(renderer, frames, period, &stop)
+        })?;
+        self.running = Some(Running { stop, thread });
+        log::info!("Audio stream started");
+        Ok(())
+    }
+
+    fn stop(mut self) {
+        if let Some(running) = self.running.take() {
+            running.stop.store(true, Ordering::Relaxed);
+            match running.thread.join() {
+                Ok(renderer) => drop(renderer),
+                Err(_) => log::error!("The null audio thread panicked"),
+            }
+        }
+        log::info!("Audio stream stopped");
+    }
+}
+
+/// Render a block every `period` until `stop`, into a buffer nobody listens to.
+fn render_on_a_timer(mut renderer: Renderer, frames: usize, period: Duration, stop: &AtomicBool) -> Renderer {
+    let mut data = vec![0.0f32; frames * renderer.num_channels];
+    let mut cb_num: u64 = 0;
+    let mut deadline = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        if cb_num == 0 {
+            log::info!("Audio callback running (null backend, {frames} frames every {period:?})");
+        }
+        renderer.render(&mut data, cb_num);
+        cb_num += 1;
+        let now = Instant::now();
+        deadline = next_deadline(deadline, period, now);
+        if let Some(wait) = deadline.checked_duration_since(now) {
+            std::thread::sleep(wait);
+        }
+    }
+    renderer
+}
+
 pub struct AudioEngine {
-    stream: cpal::Stream,
+    backend: Backend,
+}
+
+enum Backend {
+    Cpal(cpal::Stream),
+    /// Boxed: the renderer it holds is much bigger than a stream.
+    Null(Box<NullBackend>),
 }
 
 impl AudioEngine {
     /// Stop the audio stream. Call this before dropping the plugin.
     pub fn stop(self) {
+        let stream = match self.backend {
+            Backend::Cpal(stream) => stream,
+            Backend::Null(null) => return null.stop(),
+        };
         // Pause the stream first so the callback stops being invoked
-        if let Err(e) = self.stream.pause() {
+        if let Err(e) = stream.pause() {
             log::warn!("Failed to pause audio stream: {e}");
         }
         // Give the audio callback time to finish if it's mid-flight
         std::thread::sleep(std::time::Duration::from_millis(50));
         // Now drop the stream
-        drop(self.stream);
+        drop(stream);
         log::info!("Audio stream stopped");
     }
 
     /// Start playing the audio stream. Call after initial commands are queued.
-    pub fn play(&self) -> anyhow::Result<()> {
-        self.stream.play()?;
-        log::info!("Audio stream started");
-        Ok(())
+    pub fn play(&mut self) -> anyhow::Result<()> {
+        match &mut self.backend {
+            Backend::Cpal(stream) => {
+                stream.play()?;
+                log::info!("Audio stream started");
+                Ok(())
+            }
+            Backend::Null(null) => null.play(),
+        }
     }
 
     /// Build the audio engine but don't start playing yet.
@@ -209,6 +313,17 @@ impl AudioEngine {
         sample_rate: u32,
         buffer_size: u32,
     ) -> anyhow::Result<Self> {
+        if device_name == Some(NULL_DEVICE) {
+            log::info!("Using audio device: {NULL_DEVICE} (no audio output; the engine runs on a timer)");
+            return Ok(AudioEngine {
+                backend: Backend::Null(Box::new(NullBackend {
+                    renderer: Some(Renderer::new(graph, midi_rx, buffer_size as usize)),
+                    frames: buffer_size as usize,
+                    period: block_period(buffer_size, sample_rate),
+                    running: None,
+                })),
+            });
+        }
         let host = select_audio_host(buffer_size, sample_rate);
 
         let device = if let Some(name) = device_name {
@@ -268,7 +383,7 @@ impl AudioEngine {
             None,
         )?;
 
-        Ok(AudioEngine { stream })
+        Ok(AudioEngine { backend: Backend::Cpal(stream) })
     }
 }
 
@@ -433,5 +548,210 @@ mod tests {
         let mut data = vec![0.0f32; 64 * 2];
         rig.renderer.render(&mut data, 0);
         assert!(rig.midi_tx.is_empty(), "all of it, in one block");
+    }
+
+    // -- The null backend: `--audio-device none` --
+
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::telemetry::{self, Telemetry};
+
+    /// An engine on the null backend, with the channels it listens on, the cells it
+    /// publishes into and a sender for commands, built and not yet playing.
+    struct NullRig {
+        engine: AudioEngine,
+        midi_tx: crossbeam_channel::Sender<MidiEvent>,
+        cmd_tx: crossbeam_channel::Sender<crate::plugin::chain::GraphCommand>,
+        telemetry: Arc<Telemetry>,
+        _return_rx: Receiver<Box<dyn crate::plugin::Plugin>>,
+    }
+
+    fn null_rig(buffer_size: u32) -> NullRig {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
+        let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
+        let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
+        let telemetry = Arc::new(Telemetry::new());
+        graph.set_telemetry(telemetry.clone());
+        let engine = AudioEngine::build(graph, midi_rx, Some(NULL_DEVICE), 48_000, buffer_size).expect("the null backend needs no device");
+        NullRig { engine, midi_tx, cmd_tx, telemetry, _return_rx: return_rx }
+    }
+
+    /// Wait up to five seconds for `done`.
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "gave up waiting for {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn without_a_device_a_note_is_rendered_on_a_timer_and_measured() {
+        let mut rig = null_rig(256);
+        load_onto("[[instrument]]\nplugin = \"builtin:osc\"\n", &rig.cmd_tx);
+        rig.engine.play().unwrap();
+        assert_eq!(rig.telemetry.load(telemetry::MASTER.peak), 0.0, "silence before a note");
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        wait_for("the master's peak to rise", || rig.telemetry.load(telemetry::MASTER.peak) > 0.1);
+        assert_eq!(rig.telemetry.count(telemetry::MASTER.clips), 0, "and it does not clip");
+        rig.engine.stop();
+    }
+
+    #[test]
+    fn a_lane_that_is_too_loud_clips_and_the_clips_are_counted() {
+        // Three oscillators at four times the volume: far past full scale. Safe to
+        // run: nothing is played.
+        let mut rig = null_rig(256);
+        let lane = "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 4.0\n";
+        load_onto(&lane.repeat(3), &rig.cmd_tx);
+        rig.engine.play().unwrap();
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        wait_for("a clip to be counted", || rig.telemetry.count(telemetry::MASTER.clips) > 0);
+        assert!(rig.telemetry.load(telemetry::MASTER.peak) > 1.0, "the peak is past full scale");
+        let counted = rig.telemetry.count(telemetry::MASTER.clips);
+        wait_for("another buffer to clip", || rig.telemetry.count(telemetry::MASTER.clips) > counted);
+        rig.engine.stop();
+    }
+
+    /// An instrument that renders nothing, counts the blocks it is asked for, and
+    /// says which thread dropped it.
+    struct Probe {
+        blocks: Arc<AtomicUsize>,
+        /// How many frames the last block had.
+        frames: Arc<AtomicUsize>,
+        dropped_on: crossbeam_channel::Sender<std::thread::ThreadId>,
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.dropped_on.send(std::thread::current().id());
+        }
+    }
+
+    impl crate::plugin::Plugin for Probe {
+        fn name(&self) -> &str {
+            "Probe"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn sample_rate(&self) -> f32 {
+            48_000.0
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
+        fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            self.frames.store(out[0].len(), Ordering::Relaxed);
+            self.blocks.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn parameters(&self) -> Vec<crate::plugin::ParameterInfo> {
+            Vec::new()
+        }
+        fn get_parameter(&mut self, _: u32) -> Option<f32> {
+            None
+        }
+        fn set_parameter(&mut self, _: u32, _: f32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<crate::plugin::Preset> {
+            Vec::new()
+        }
+        fn load_preset(&mut self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A rig with a probe in the first lane, the blocks it has been asked for, the
+    /// frames of the last one, and where it reports being dropped.
+    fn probed(buffer_size: u32) -> (NullRig, Arc<AtomicUsize>, Arc<AtomicUsize>, Receiver<std::thread::ThreadId>) {
+        use crate::plugin::chain::GraphCommand;
+        let rig = null_rig(buffer_size);
+        let blocks = Arc::new(AtomicUsize::new(0));
+        let frames = Arc::new(AtomicUsize::new(0));
+        let (dropped_on, dropped) = crossbeam_channel::unbounded();
+        rig.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        rig.cmd_tx
+            .send(GraphCommand::SwapInstrument {
+                inst: 0,
+                instrument: Box::new(Probe { blocks: blocks.clone(), frames: frames.clone(), dropped_on }),
+                inst_buf: vec![Vec::new(), Vec::new()],
+                remapper: None,
+            })
+            .unwrap();
+        (rig, blocks, frames, dropped)
+    }
+
+    #[test]
+    fn nothing_is_rendered_before_play_and_blocks_come_at_the_pace_of_the_buffer() {
+        // 480 frames at 48 kHz: one block every 10 ms.
+        let (mut rig, blocks, frames, _dropped) = probed(480);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(blocks.load(Ordering::Relaxed), 0, "not before play");
+        rig.engine.play().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let rendered = blocks.load(Ordering::Relaxed);
+        // About 50, with room for a busy machine: not a free-running loop (thousands),
+        // and not stalled.
+        assert!((15..=60).contains(&rendered), "{rendered} blocks in half a second of 10 ms blocks");
+        assert_eq!(frames.load(Ordering::Relaxed), 480, "each block is the buffer's size");
+        rig.engine.stop();
+    }
+
+    #[test]
+    fn stopping_ends_the_rendering_and_drops_the_plugins_on_the_thread_that_stops() {
+        let (mut rig, blocks, _frames, dropped) = probed(128);
+        rig.engine.play().unwrap();
+        wait_for("blocks to be rendered", || blocks.load(Ordering::Relaxed) > 3);
+        rig.engine.stop();
+        let after_stop = blocks.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(blocks.load(Ordering::Relaxed), after_stop, "nothing is rendered after stop");
+        let thread = dropped.recv_timeout(Duration::from_secs(5)).expect("the plugin was dropped");
+        assert_eq!(thread, std::thread::current().id(), "here, not on the rendering thread");
+    }
+
+    #[test]
+    fn an_engine_that_never_played_stops_cleanly() {
+        let (rig, blocks, _frames, _dropped) = probed(128);
+        rig.engine.stop();
+        assert_eq!(blocks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn play_twice_does_not_start_two_threads() {
+        let (mut rig, blocks, _frames, _dropped) = probed(480);
+        rig.engine.play().unwrap();
+        rig.engine.play().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let rendered = blocks.load(Ordering::Relaxed);
+        assert!(rendered <= 40, "one thread's worth of 10 ms blocks in 300 ms: {rendered}");
+        rig.engine.stop();
+    }
+
+    #[test]
+    fn a_block_is_as_long_as_the_buffer_in_time() {
+        assert_eq!(block_period(480, 48_000), Duration::from_millis(10));
+        assert_eq!(block_period(1024, 48_000), Duration::from_secs_f64(1024.0 / 48_000.0));
+        assert_eq!(block_period(256, 44_100), Duration::from_secs_f64(256.0 / 44_100.0));
+    }
+
+    #[test]
+    fn the_next_block_is_due_a_period_after_the_last_unless_the_engine_fell_far_behind() {
+        let t0 = Instant::now();
+        let period = Duration::from_millis(10);
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        // On time, early or a little late: the cadence holds, so that sleeping does not make it drift.
+        assert_eq!(next_deadline(at(0), period, at(2)), at(10));
+        assert_eq!(next_deadline(at(0), period, at(0)), at(10));
+        assert_eq!(next_deadline(at(0), period, at(15)), at(10), "5 ms behind the next one is still caught up by running early");
+        assert_eq!(next_deadline(at(0), period, at(20)), at(10), "exactly one period behind: the next block is due now-ish");
+        // More than a period behind (a stall): do not burst through the missed blocks.
+        assert_eq!(next_deadline(at(0), period, at(35)), at(35));
     }
 }

@@ -27,7 +27,7 @@ These flags apply to both the TUI and the `play` subcommand:
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--midi-device <name>` | all inputs | Open only the named MIDI input |
-| `--audio-device <name>` | system default | Use the named audio output |
+| `--audio-device <name>` | system default | Use the named audio output; `none` opens no device and renders the engine on a timer (for CI, headless runs and tests: the audio thread's work happens, nothing is heard) |
 | `--buffer-size <frames>` | 1024 (Linux), 256 (macOS/Windows) | Audio buffer size in frames |
 | `--sample-rate <hz>` | 48000 | Sample rate |
 | `--debug` | off | Show a live incoming-MIDI monitor at the bottom of the TUI (diagnoses what a controller actually sends) |
@@ -1082,6 +1082,17 @@ scheduling (priority 50) on its first invocation. This requires the user to
 have `rtprio` privileges (typically via the `audio` group). Fails silently
 if privileges are missing. macOS and Windows handle real-time audio thread
 scheduling natively.
+
+**Null backend.** `--audio-device none` (`audio::NULL_DEVICE`) opens no host and
+no device: a thread named `tang-null-audio` renders a block every
+`buffer / sample rate` seconds (5.3 ms at 256 frames and 48 kHz) with the same
+code the real callback runs (`audio::Renderer`) and throws the samples away. MIDI,
+the meters and the telemetry behave as with a sound card, so CI, headless runs
+(`tang serve`, later) and tests can drive and measure the engine, and a loud
+session can be tried without making a sound. The cadence is kept without drift,
+and a stall is not caught up with a burst of blocks. `stop` hands the plugins back
+to the stopping thread to drop, which the real stream does not promise. It runs
+at normal priority: no real-time promotion.
 
 ## Plugin compatibility
 

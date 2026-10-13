@@ -377,7 +377,7 @@ fn run_session(
     if let Some(sp) = &splash {
         sp.status("Starting audio engine…");
     }
-    let engine = audio::AudioEngine::build(
+    let mut engine = audio::AudioEngine::build(
         graph,
         midi_rx,
         audio_device.as_deref(),

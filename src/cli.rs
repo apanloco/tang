@@ -20,7 +20,8 @@ pub struct Cli {
     /// Session file path (.toml). Defaults to a new session.
     pub session: Option<String>,
 
-    /// Audio output device name (default: system default)
+    /// Audio output device name (default: system default). `none` runs the
+    /// engine on a timer without a sound card, for CI and headless use.
     #[arg(long)]
     pub audio_device: Option<String>,
 
