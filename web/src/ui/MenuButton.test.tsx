@@ -37,6 +37,7 @@ function item(index: number): HTMLElement {
 describe("a menu button", () => {
   test("is a button named for what it does, with a menu that is not there until it is opened", () => {
     const { trigger } = mount();
+    expect(trigger.getAttribute("title")).toBe("Add a modulator to Oscillator");
     expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(trigger.hasAttribute("aria-controls")).toBe(false); // (there is nothing for it to control)

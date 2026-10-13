@@ -4,17 +4,17 @@ import { createPortal } from "react-dom";
 
 import "./MenuButton.css";
 
-export interface MenuItem {
-  id: string;
+export interface MenuItem<Id extends string = string> {
+  id: Id;
   label: string;
 }
 
-export interface MenuButtonProps {
-  /** What pressing the button does, for a screen reader: the button itself is a glyph. */
+export interface MenuButtonProps<Id extends string = string> {
+  /** What pressing the button does, for a screen reader (and a tooltip): the button itself is a glyph. */
   label: string;
-  items: readonly MenuItem[];
+  items: readonly MenuItem<Id>[];
   /** The id of the item that was chosen. */
-  onChoose: (id: string) => void;
+  onChoose: (id: Id) => void;
   /** What the button shows. */
   children: ReactNode;
 }
@@ -34,7 +34,7 @@ interface Place {
  * and move it with the canvas), so it closes when the page is scrolled, sized, or pressed anywhere else. The
  * arrow keys, Home and End move between its items, Enter or Space chooses, Escape and Tab leave it.
  */
-export function MenuButton({ label, items, onChoose, children }: MenuButtonProps) {
+export function MenuButton<Id extends string>({ label, items, onChoose, children }: MenuButtonProps<Id>) {
   const [place, setPlace] = useState<Place | null>(null);
   const [focused, setFocused] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -114,6 +114,7 @@ export function MenuButton({ label, items, onChoose, children }: MenuButtonProps
         type="button"
         className="tang-menu-button nodrag nopan"
         aria-label={label}
+        title={label}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}

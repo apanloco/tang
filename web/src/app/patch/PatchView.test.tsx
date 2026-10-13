@@ -2,10 +2,12 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { MASTER, nodeNamed, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import { decodeFrame } from "../../client/telemetry";
 import type { Snapshot } from "../../protocol";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
+import { NoticeBoard } from "../../ui/NoticeBoard";
+import { useNotices } from "../ClientProvider";
 import { rig } from "../testing";
 import * as describeModule from "./describe";
 import { cableWidth } from "./describe";
@@ -319,6 +321,87 @@ describe("the patch", () => {
       expect(node.classList.contains("selectable")).toBe(false);
     }
     expect(view.container.querySelectorAll(".react-flow__handle.connectable")).toHaveLength(0);
+  });
+
+  describe("adding a modulator", () => {
+    const addButtons = async () => (await screen.findAllByRole("button", { name: /^Add a modulator to / })).map((button) => button.getAttribute("aria-label"));
+
+    test("is offered on every lane and group, by a button that names whose it is, and on nothing else", async () => {
+      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      const names = (await addButtons()).sort();
+      expect(names).toEqual(
+        [
+          "Add a modulator to (empty)",
+          "Add a modulator to Group 1",
+          "Add a modulator to Group 2",
+          "Add a modulator to Oscillator 1",
+          "Add a modulator to Oscillator 2",
+          "Add a modulator to Oscillator 3",
+          "Add a modulator to Oscillator 4",
+        ].sort(),
+      );
+      // None on an effect, a modulator or the master.
+      for (const id of [5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Add a modulator/ })).toBeNull();
+    });
+
+    test("opens a menu of the kinds of modulator", async () => {
+      await rig(<PatchView />);
+      fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
+      const menu = screen.getByRole("menu", { name: "Add a modulator to Oscillator" });
+      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "MIDI control"]);
+    });
+
+    test("asks the server to add the kind that was chosen to that lane, and the node is on the canvas with its controls when it has", async () => {
+      const { requests } = await rig(<PatchView />);
+      expect(screen.queryByRole("group", { name: "ADSR" })).toBeNull();
+      fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Envelope" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind: "envelope" }]);
+      });
+      const added = await screen.findByRole("group", { name: "ADSR" });
+      expect(controlsIn(added)).toEqual(["Attack", "Decay", "Sustain", "Release"]);
+      // The menu has gone, and the focus is back on the button that opened it.
+      expect(screen.queryByRole("menu")).toBeNull();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a modulator to Oscillator" }));
+      });
+    });
+
+    test("to a group asks for one in the group, whichever kind", async () => {
+      const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+      for (const [item, kind] of [["LFO", "lfo"], ["MIDI control", "midiLearn"]] as const) {
+        fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Group 2" }));
+        fireEvent.click(screen.getByRole("menuitem", { name: item }));
+        await waitFor(() => {
+          expect(requests().at(-1)?.intent).toEqual({ type: "addModulator", parent: 2, kind });
+        });
+      }
+      await waitFor(() => {
+        expect(requests()).toHaveLength(2);
+      });
+    });
+
+    test("says why when it is refused, on the page's notices, and the canvas is as it was", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client, view } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+      );
+      const before = view.container.querySelectorAll(".react-flow__node").length;
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "LFO" }));
+      expect(await screen.findByText("Could not add an LFO to Oscillator: Not connected to the server.")).toBeTruthy();
+      expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
+    });
   });
 
   test("gives the master a level meter with a clip light", async () => {
