@@ -172,8 +172,9 @@ impl Renderer {
             }
         }
 
-        // Log peak level when there were MIDI events
-        if !self.midi_events.is_empty() {
+        // Log peak level when there were MIDI events (and somebody is listening: the scan
+        // is for the log alone, and this is the audio thread).
+        if !self.midi_events.is_empty() && log::log_enabled!(log::Level::Debug) {
             let peak = data.iter().fold(0.0f32, |max, &s| max.max(s.abs()));
             log::debug!("Audio cb #{cb_num}: output peak = {peak:.6}");
         }
