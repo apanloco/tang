@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
+import type { ClientOptions } from "../client/connection";
 import { nodeNamed, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
@@ -14,9 +15,9 @@ afterEach(cleanup);
 
 const filter = nodeNamed(tracerSnapshot, "Filter");
 
-function page(options: MockOptions = {}) {
+function page(options: MockOptions = {}, clientOptions: Partial<ClientOptions> = {}) {
   const server = new MockServer(options);
-  const client = new Client({ transport: server.transport, reconnectDelay: () => 5 });
+  const client = new Client({ transport: server.transport, reconnectDelay: () => 5, ...clientOptions });
   const view = render(
     <ClientProvider client={client}>
       <App engine="mock" />
@@ -181,7 +182,8 @@ describe("the page", () => {
   });
 
   test("says why a lane could not be added, among the notices", async () => {
-    const { server } = page();
+    // (The connection stays down: after a few milliseconds, as in the other tests, a slow machine would find it up again at the click.)
+    const { server } = page({}, { reconnectDelay: () => 60_000 });
     await screen.findByText("Connected");
     fireEvent.click(await screen.findByRole("button", { name: "Add an instrument" }));
     server.drop();
