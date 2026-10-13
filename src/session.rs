@@ -319,13 +319,18 @@ pub fn load(path: &str) -> anyhow::Result<SessionConfig> {
     parse(&content)
 }
 
-/// Refuse a `nan` or an `inf` anywhere in a session file (TOML has both): as a volume, a
-/// rate or a depth it would be in the model and in the audio thread, and a snapshot with a
-/// NaN in it is not even JSON. The error says where it is.
+/// Refuse a `nan` or an `inf` anywhere in a session file (TOML has both), and a number too
+/// big for the 32-bit floats the model and the audio thread hold (`1e39` is finite to TOML's
+/// 64 bits and `inf` once narrowed): as a volume, a rate or a depth it would be in the model
+/// and in the audio thread, and a snapshot with one in it is not even JSON. The error says
+/// where it is.
 fn reject_non_finite(table: &toml::Table) -> anyhow::Result<()> {
     fn walk(value: &toml::Value, path: &str) -> anyhow::Result<()> {
         match value {
             toml::Value::Float(number) if !number.is_finite() => anyhow::bail!("{path} is not a finite number ({number})"),
+            toml::Value::Float(number) if !(*number as f32).is_finite() => {
+                anyhow::bail!("{path} is too big for the 32-bit numbers the audio engine holds ({number})")
+            }
             toml::Value::Array(items) => items.iter().enumerate().try_for_each(|(i, item)| walk(item, &format!("{path}[{i}]"))),
             toml::Value::Table(table) => table.iter().try_for_each(|(key, item)| walk(item, &format!("{path}.{key}"))),
             _ => Ok(()),
@@ -1163,6 +1168,25 @@ mod tests {
             let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
             assert!(error.contains(place) && error.contains("is not a finite number"), "{error}\nfor:\n{text}");
         }
+    }
+
+    #[test]
+    fn a_number_too_big_for_the_audio_thread_is_refused_like_one_that_is_not_a_number() {
+        // TOML's floats are 64 bits and the model's are 32: 1e39 is finite to the one and `inf` to the other, and
+        // it would be in the model as that, and in a snapshot as `null`.
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        for (text, place) in [
+            (format!("{osc}volume = 1e39\n"), "instrument[0].volume"),
+            (format!("{osc}[[instrument.modulator]]\nrate = 1e39\n"), "instrument[0].modulator[0].rate"),
+            (format!("{osc}[[instrument.modulator]]\n[[instrument.modulator.target]]\nparam = \"detune\"\ndepth = -1e39\n"), "instrument[0].modulator[0].target[0].depth"),
+            (format!("[[group]]\nvolume = 4e38\n{osc}"), "group[0].volume"),
+        ] {
+            let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert!(error.contains(place) && error.contains("32-bit"), "{error}\nfor:\n{text}");
+        }
+        // The largest the audio thread holds is as good as any other number, and so is a very small one.
+        assert!(parse(&format!("{osc}volume = 3.4e38\n")).is_ok());
+        assert!(parse(&format!("{osc}volume = 1e-50\n")).is_ok());
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { useClientState } from "./ClientProvider";
 import type { EngineKind } from "./engine";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { PatchView } from "./patch/PatchView";
 import "./App.css";
 
@@ -48,9 +49,13 @@ export function App({ engine }: { engine: EngineKind }) {
           </p>
         ) : null}
         <div className="tang-app__patch">
-          <PatchView />
+          <ErrorBoundary what="the patch">
+            <PatchView />
+          </ErrorBoundary>
         </div>
-        <RawSession />
+        <ErrorBoundary what="the session as JSON">
+          <RawSession />
+        </ErrorBoundary>
       </main>
     </div>
   );

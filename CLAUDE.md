@@ -291,9 +291,12 @@ Effects additionally have:
 
 Load order per plugin: load → preset → params.
 
-A number in a session file must be finite: TOML has `nan` and `inf`, and a session
-that has one is refused when it is loaded, with the place in the error
-(`instrument[0].volume is not a finite number (NaN)`).
+A number in a session file must be finite, and small enough for the 32-bit floats
+the model and the audio thread hold: TOML has `nan` and `inf`, and 64-bit floats, so
+`1e39` is finite to TOML and infinite once narrowed. A session that has one is refused
+when it is loaded, with the place in the error
+(`instrument[0].volume is not a finite number (NaN)`,
+`instrument[0].volume is too big for the 32-bit numbers the audio engine holds (1e39)`).
 
 ### Modulator fields
 

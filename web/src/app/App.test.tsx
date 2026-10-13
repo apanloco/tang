@@ -130,6 +130,20 @@ describe("the page", () => {
     expect(document.querySelector(".tang-session")).toBeNull();
   });
 
+  test("does not go blank for a number the server could not write: JSON has no infinity, and says null", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.id === oscillator.id && node.kind === "instrument" ? { ...node, volume: null as unknown as number } : node));
+    page({ snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } } });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/the patch/);
+    // What is not the patch is there: the state of the connection, and the session as the server sent it.
+    expect(screen.getByRole("status").textContent).toBe("Connected");
+    openJson();
+    expect(shown()).toContain('"volume": null');
+    quiet.mockRestore();
+  });
+
   test("leaves the server when it is taken off the page", async () => {
     const { server, view } = page();
     await screen.findByText("Connected");
