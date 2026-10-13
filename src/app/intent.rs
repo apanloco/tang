@@ -67,6 +67,17 @@ pub enum Intent {
     /// wet). Refused, with nothing changed, for a parent that is not a lane or a group, a plugin the catalog does
     /// not name, an instrument, one that does not load, and one whose outputs are not the chain's channels.
     AddEffect { parent: NodeId, plugin: String },
+    /// Add a lane at the end with an instrument in it: `plugin` is the `id` of an entry of the catalog the server told, which has
+    /// to be an instrument with an audio output; it is loaded by the server, which loads only what its own catalog names. The lane
+    /// is full range, in no group, and has a meter of its own (and the master's meter hears it). Refused, with nothing changed and
+    /// no lane made, for a plugin the catalog does not name, an effect, one that does not load, and one with no audio output.
+    AddInstrument { plugin: String },
+    /// Put an instrument in a lane, replacing the one it has (an empty lane is filled): `node` is the node of the lane, which the
+    /// instrument keeps, and `plugin` is as for `AddInstrument`. The lane keeps its effects, modulators, range, volume and group.
+    /// The cables that drove the old plugin's parameters (a lane's and a group's, with what drives their depths) are taken out,
+    /// since the new plugin has parameters of its own, and a note remap goes with the old plugin. Refused, with nothing changed,
+    /// for a node that is not a lane, and for what `AddInstrument` refuses.
+    ReplaceInstrument { node: NodeId, plugin: String },
     /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
     /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
     /// effect, with the cables that drive its parameters (and what drove their depths): what they were
@@ -296,6 +307,14 @@ mod tests {
             (
                 Intent::AddEffect { parent: NodeId(2), plugin: "builtin:filter".to_string() },
                 json!({"type": "addEffect", "parent": 2, "plugin": "builtin:filter"}),
+            ),
+            (
+                Intent::AddInstrument { plugin: "builtin:osc".to_string() },
+                json!({"type": "addInstrument", "plugin": "builtin:osc"}),
+            ),
+            (
+                Intent::ReplaceInstrument { node: NodeId(2), plugin: "builtin:osc".to_string() },
+                json!({"type": "replaceInstrument", "node": 2, "plugin": "builtin:osc"}),
             ),
             (Intent::Save, json!({"type": "save"})),
             (

@@ -22,6 +22,8 @@ const DOING: Record<Intent["type"], string> = {
   addModulator: "add a modulator",
   addModEdge: "draw a cable",
   addEffect: "add an effect",
+  addInstrument: "add an instrument",
+  replaceInstrument: "change the instrument of a lane",
   removeNode: "remove a node",
   save: "save the session",
 };
@@ -65,6 +67,27 @@ export class Editor {
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} to ${this.#name(parent)}`, { type: "addEffect", parent, plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "effect" && node.parent === parent && !before.has(node.id));
     return added?.at(-1)?.id ?? null;
+  }
+
+  /**
+   * Add a lane at the end of the session with the instrument `plugin` (the `id` of an entry of the catalog the server told) in it.
+   * Resolves with the id of the lane it made (its instrument's node), or with null if it was refused (the page says why). As for
+   * `addModulator`: the node is the last lane the session did not have before.
+   */
+  async addInstrument(plugin: string): Promise<NodeId | null> {
+    const before = new Set(this.#graph?.nodes.map((node) => node.id));
+    if (!(await this.#attempt(`add ${this.#pluginName(plugin)} as an instrument`, { type: "addInstrument", plugin }))) return null;
+    const added = this.#graph?.nodes.filter((node) => node.kind === "instrument" && !before.has(node.id));
+    return added?.at(-1)?.id ?? null;
+  }
+
+  /**
+   * Put the instrument `plugin` in the lane `node` in place of the one it has (an empty lane is filled). The lane keeps its
+   * node, its effects, its modulators, its range and its volume; the cables that drove the old instrument's parameters go with it.
+   * True if it was done (the page says why if it was not).
+   */
+  replaceInstrument(node: NodeId, plugin: string): Promise<boolean> {
+    return this.#attempt(`change the instrument of ${this.#name(node)} to ${this.#pluginName(plugin)}`, { type: "replaceInstrument", node, plugin });
   }
 
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */

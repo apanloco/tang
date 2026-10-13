@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import type { CatalogEntry, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, Edge, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
-import { builtinCatalog, builtinEffects, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, builtinInstruments, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 
@@ -1117,6 +1117,243 @@ describe("adding an effect", () => {
       expect(effect.name, id).toBe(builtinCatalog.find((entry) => entry.id === id)?.name);
       expect(effect.plugin.params.length, id).toBe(builtinCatalog.find((entry) => entry.id === id)?.params);
     }
+  });
+});
+
+describe("adding an instrument", () => {
+  const audioPath = (snapshot: Snapshot | null) => (snapshot?.graph.edges ?? []).filter((e) => e.kind !== "modulation").map((e) => `${e.kind} ${String(e.from.node)}→${String(e.to.node)}`);
+  const strip = (snapshot: Snapshot | null) => (snapshot?.graph.nodes ?? []).map((n) => `${String(n.id)} ${n.name}`);
+  const add = (plugin: string): Intent => ({ type: "addInstrument", plugin });
+  const nextSlot = (snapshot: Snapshot) => 1 + Math.max(...[...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].map((entry) => entry.slot));
+  const reach = reachFixture.snapshot;
+
+  test("puts a lane after the lanes there are and before the master, with the controller's own node, its link to the master after the others and no group", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(add("builtin:osc"));
+    const snapshot = client.state.snapshot;
+    expect(strip(snapshot)).toEqual(["0 Oscillator", "1 Filter", "2 LFO", "3 Oscillator", `${String(MASTER)} Master`]);
+    expect(audioPath(snapshot)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`, `audio 3→${String(MASTER)}`]);
+    // (The graph lists the links of the audio path first, and the modulation cables after them all.)
+    expect(snapshot?.graph.edges.map((e) => e.kind)).toEqual(["audio", "audio", "audio", "modulation"]);
+    // The node is what the controller made for an oscillator that is new: its plugin with its parameters at their defaults, full range, its volume 1.
+    const node = snapshot?.graph.nodes.find((n) => n.id === 3);
+    expect(node).toEqual({ id: 3, parent: null, ...builtinInstruments["builtin:osc"] });
+    expect(node).toMatchObject({ kind: "instrument", range: null, transpose: 0, volume: 1 });
+    // What was there is as it was, and the session has something to save.
+    expect(snapshot?.graph.edges.filter((e) => e.kind === "modulation")).toEqual(tracerSnapshot.graph.edges.filter((e) => e.kind === "modulation"));
+    expect(snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(snapshot);
+  });
+
+  test("gives the lane a peak and a clip count at the end of the meters, on slots that nothing has used, and a layout of a revision of its own", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const first = nextSlot(tracerSnapshot);
+    await client.request(add("builtin:osc"));
+    const { telemetry } = client.state.snapshot ?? tracerSnapshot;
+    expect(telemetry.meters.slice(0, -2)).toEqual(tracerSnapshot.telemetry.meters);
+    expect(telemetry.meters.slice(-2)).toEqual([
+      { slot: first, node: 3, port: { type: "audioOut" }, kind: "peak" },
+      { slot: first + 1, node: 3, port: { type: "audioOut" }, kind: "clips" },
+    ]);
+    expect(telemetry.modulation).toEqual(tracerSnapshot.telemetry.modulation);
+    expect(telemetry.rev).toBe(tracerSnapshot.telemetry.rev + 1);
+    // A second lane goes on from there, and the client reads frames by the layout it was told.
+    await client.request(add("builtin:osc"));
+    expect(client.state.snapshot?.telemetry.meters.slice(-2).map((entry) => entry.slot)).toEqual([first + 2, first + 3]);
+    expect(client.telemetry.values("meters")?.length).toBe(tracerSnapshot.telemetry.meters.length + 4);
+    expect(client.telemetry.find("meters", 3, { type: "audioOut" }, "peak")).toBeDefined();
+    expect(client.telemetry.find("meters", 4, { type: "audioOut" }, "clips")).toBeDefined();
+  });
+
+  test("goes after the last lane of a session with groups, in no group, and is the last of the audio path's links", async () => {
+    const server = new MockServer({ snapshot: reach });
+    const client = await open(server);
+    await client.request(add("builtin:osc"));
+    const nodes = strip(client.state.snapshot);
+    // (The lanes come after the groups, each with its effects and modulators; the last is the empty lane 14, with an LFO.)
+    expect(nodes.slice(-4)).toEqual(["14 (empty)", "17 LFO", "18 Oscillator", `${String(MASTER)} Master`]);
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 18)?.parent).toBeNull();
+    expect(audioPath(client.state.snapshot).at(-1)).toBe(`audio 18→${String(MASTER)}`);
+    // The links of the lanes that were there, and the groups', are where they were.
+    expect(audioPath(client.state.snapshot).slice(0, -1)).toEqual(audioPath(reach));
+  });
+
+  test("numbers the nodes after the ones that have been made, whatever has been taken out", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(add("builtin:osc")); // 3
+    await client.request({ type: "removeNode", node: lfo.id });
+    await client.request(add("builtin:osc"));
+    expect((client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "instrument").map((n) => n.id)).toEqual([0, 3, 4]);
+  });
+
+  test("is refused for a plugin the catalog does not name, an effect, or a plugin that cannot be loaded, and changes nothing", async () => {
+    const pianoteq = { id: "vst3:Pianoteq 8", name: "Pianoteq 8", format: "VST3", isInstrument: true, params: 300, presets: 12 };
+    const server = new MockServer({ catalog: { entries: [...builtinCatalog, pianoteq], scanning: false } });
+    const client = await open(server);
+    const refused = [
+      [add("./examples/plugin.clap"), "invalid", "./examples/plugin.clap is not a plugin that is installed"],
+      [add("clap:com.example.nothing"), "invalid", "clap:com.example.nothing is not a plugin that is installed"],
+      [add("builtin:reverb"), "invalid", "Reverb is an effect, not an instrument"],
+      [add(pianoteq.id), "invalid", "Pianoteq 8 could not be loaded"],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("is told to the other clients as a snapshot, as every change of structure is", async () => {
+    const server = new MockServer();
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(add("builtin:osc"));
+    await until(() => (second.state.snapshot?.graph.nodes.length ?? 0) === 5, "the second client's snapshot");
+    expect(second.state.snapshot).toEqual(first.state.snapshot);
+  });
+
+  test("has a node for each instrument the catalog of the mock names, and for no other", () => {
+    expect(Object.keys(builtinInstruments).sort()).toEqual(builtinCatalog.filter((entry) => entry.isInstrument).map((entry) => entry.id).sort());
+    for (const [id, instrument] of Object.entries(builtinInstruments)) {
+      expect(instrument.plugin.id, id).toBe(id);
+      expect(instrument.plugin.isInstrument, id).toBe(true);
+      expect(instrument.name, id).toBe(builtinCatalog.find((entry) => entry.id === id)?.name);
+      expect(instrument.plugin.params.length, id).toBe(builtinCatalog.find((entry) => entry.id === id)?.params);
+    }
+  });
+});
+
+describe("replacing an instrument", () => {
+  const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+  const replace = (node: number, plugin: string): Intent => ({ type: "replaceInstrument", node, plugin });
+  const detune = (builtinInstruments["builtin:osc"]?.plugin.params ?? []).find((p) => p.name === "detune")?.index ?? -1;
+  const cables = (snapshot: Snapshot | null) => (snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation");
+  const reach = reachFixture.snapshot;
+
+  /** The tracer with its instrument edited the way a person would have: a saw, a volume of 0.25 of its own, and a range, a transposition and a volume of the lane's. */
+  function edited(): Snapshot {
+    const nodes = tracerSnapshot.graph.nodes.map((node): Node => {
+      if (node.id !== oscillator.id || node.kind !== "instrument" || !node.plugin) return node;
+      const params = node.plugin.params.map((p) => (p.name === "waveform" ? { ...p, value: 3 } : p.name === "volume" ? { ...p, value: 0.25 } : p));
+      return { ...node, plugin: { ...node.plugin, params, currentPreset: "Pad" }, range: { low: 36, high: 59 }, transpose: 2, volume: 0.5 };
+    });
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  }
+
+  test("puts the new instrument in the lane under the same node: its name and its plugin with its own parameters, and the lane's range, transposition and volume as they were", async () => {
+    const server = new MockServer({ snapshot: edited() });
+    const client = await open(server);
+    await client.request(replace(oscillator.id, "builtin:osc"));
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id);
+    expect(node).toEqual({ id: oscillator.id, parent: null, ...builtinInstruments["builtin:osc"], range: { low: 36, high: 59 }, transpose: 2, volume: 0.5 });
+    // (The edits and the preset do not survive a swap.)
+    expect(node?.kind === "instrument" && node.plugin?.currentPreset).toBeNull();
+    // The rest of the session is as it was, and there is something to save.
+    expect(client.state.snapshot?.graph.nodes.map((n) => n.id)).toEqual(tracerSnapshot.graph.nodes.map((n) => n.id));
+    expect(client.state.snapshot?.graph.edges).toEqual(tracerSnapshot.graph.edges);
+    expect(client.state.snapshot?.telemetry).toEqual(tracerSnapshot.telemetry);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(server.snapshot).toEqual(client.state.snapshot);
+  });
+
+  test("takes the cables that drive the old instrument's parameters out, and the slot of the value they drove with them, and leaves the others", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    // The lane's LFO also drives the oscillator's detune: its own slot in the layout.
+    await client.request({ type: "addModEdge", modulator: lfo.id, to: { node: oscillator.id, port: { type: "param", index: detune } } });
+    expect(cables(client.state.snapshot)).toHaveLength(2);
+    const driven = client.state.snapshot?.telemetry.modulation.filter((e) => e.kind === "effective" && e.node === oscillator.id);
+    expect(driven).toHaveLength(1);
+    const before = client.state.snapshot?.telemetry;
+
+    await client.request(replace(oscillator.id, "builtin:osc"));
+    const snapshot = client.state.snapshot;
+    expect(cables(snapshot)).toEqual(tracerSnapshot.graph.edges.filter((e) => e.kind === "modulation"));
+    expect(snapshot?.telemetry.modulation.filter((e) => e.node === oscillator.id)).toEqual([]);
+    expect(snapshot?.telemetry.modulation).toEqual(tracerSnapshot.telemetry.modulation);
+    expect(snapshot?.telemetry.rev).toBe((before?.rev ?? 0) + 1);
+  });
+
+  test("takes the cables of a group's modulator to the member's instrument out too, and those that drive the depth of a cable that goes, and no other", async () => {
+    const volume = (builtinInstruments["builtin:osc"]?.plugin.params ?? []).find((p) => p.name === "volume")?.index ?? -1;
+    const draw = (modulator: number, node: number, param: number): Intent => ({ type: "addModEdge", modulator, to: { node, port: { type: "param", index: param } } });
+    // Lane 4 (a member of group 0, with a filter 5 and an LFO 6): its LFO drives the instrument's detune, the group's LFO (15) its volume, and
+    // a second modulator of the lane (18) the filter's cutoff.
+    const server = new MockServer({ snapshot: reach });
+    const first = await open(server);
+    await first.request({ type: "addModulator", parent: 4, kind: "lfo" });
+    await first.request(draw(6, 4, detune));
+    await first.request(draw(15, 4, volume));
+    await first.request(draw(18, 5, 0));
+    // (The graph lists the groups' cables first.)
+    const [fromTheGroup, fromTheLane, toTheFilter] = cables(first.state.snapshot);
+    if (fromTheGroup?.kind !== "modulation" || fromTheLane?.kind !== "modulation" || toTheFilter?.kind !== "modulation") throw new Error("the three cables were not drawn");
+    expect([fromTheGroup, fromTheLane, toTheFilter].map((e) => [e.from.node, e.to.node])).toEqual([
+      [15, 4],
+      [6, 4],
+      [18, 5],
+    ]);
+    // The depth of the lane's own cable to the detune is driven by the second modulator, which no intent draws: a session that has it is made by hand.
+    const snapshot = first.state.snapshot;
+    if (!snapshot) throw new Error("no session");
+    const drivesTheDepth: Edge = { kind: "modulation", id: 99, amount: 0.5, from: { node: 18, port: { type: "modOut" } }, to: { node: 6, port: { type: "depth", edge: fromTheLane.id } } };
+    const byHand: Snapshot = { ...snapshot, graph: { ...snapshot.graph, edges: [...snapshot.graph.edges, drivesTheDepth] } };
+    const client = await open(new MockServer({ snapshot: byHand }));
+
+    await client.request(replace(4, "builtin:osc"));
+    // What is left is the cable to the filter: the two to the instrument are gone, and the one that drove the depth of one of them.
+    expect(cables(client.state.snapshot).map((e) => [e.from.node, e.to.node])).toEqual([[18, 5]]);
+  });
+
+  test("fills a lane that has no instrument, which has a name then, and leaves its audio path and its meters as they were", async () => {
+    const server = new MockServer({ snapshot: reach });
+    const client = await open(server);
+    await client.request(replace(14, "builtin:osc"));
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === 14);
+    expect(node).toEqual({ id: 14, parent: null, ...builtinInstruments["builtin:osc"] });
+    expect(client.state.snapshot?.graph.edges).toEqual(reach.graph.edges);
+    expect(client.state.snapshot?.telemetry).toEqual(reach.telemetry);
+  });
+
+  test("is refused for what is not a lane, a plugin the catalog does not name, an effect, or a plugin that cannot be loaded, and changes nothing", async () => {
+    const pianoteq = { id: "vst3:Pianoteq 8", name: "Pianoteq 8", format: "VST3", isInstrument: true, params: 300, presets: 12 };
+    const server = new MockServer({ catalog: { entries: [...builtinCatalog, pianoteq], scanning: false } });
+    const client = await open(server);
+    const filterNode = nodeNamed(tracerSnapshot, "Filter");
+    const notALane = "an instrument goes in a lane";
+    const refused = [
+      [replace(filterNode.id, "builtin:osc"), "invalid", notALane],
+      [replace(lfo.id, "builtin:osc"), "invalid", notALane],
+      [replace(424242, "builtin:osc"), "notFound", "there is no node 424242"],
+      [replace(MASTER, "builtin:osc"), "notFound", `there is no node ${String(MASTER)}`],
+      [replace(oscillator.id, "./examples/plugin.clap"), "invalid", "./examples/plugin.clap is not a plugin that is installed"],
+      [replace(oscillator.id, "builtin:reverb"), "invalid", "Reverb is an effect, not an instrument"],
+      [replace(oscillator.id, pianoteq.id), "invalid", "Pianoteq 8 could not be loaded"],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("asks for the node first and the plugin after, as the controller does: a node that is not a lane is refused whatever the plugin", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const failure = (await client.request(replace(lfo.id, "./examples/plugin.clap")).catch((e: unknown) => e)) as RequestError;
+    expect(failure.message).toBe("an instrument goes in a lane");
+  });
+
+  test("is told to the other clients as a snapshot", async () => {
+    const server = new MockServer({ snapshot: edited() });
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(replace(oscillator.id, "builtin:osc"));
+    await until(() => second.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id)?.kind === "instrument" && second.state.snapshot.meta.dirty, "the second client's snapshot");
+    expect(second.state.snapshot).toEqual(first.state.snapshot);
   });
 });
 

@@ -29,7 +29,7 @@ import type {
   WireError,
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
-import { builtinCatalog, builtinEffects, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, builtinInstruments, tracerSnapshot } from "./fixtures";
 import { reachFrom } from "./reach";
 import { applyEvent } from "./reducers";
 
@@ -333,6 +333,72 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
   };
 }
 
+/**
+ * The instrument `plugin` as the controller makes a node of it (`load_from_catalog`): the plugin has to be one the catalog names
+ * (the mock's, `catalog`), an instrument and not an effect, and one the mock can make a node of (the built-ins: the controller's
+ * own nodes, as a fixture); or why not.
+ */
+function instrumentFor(plugin: string, catalog: readonly CatalogEntry[]): { made: (typeof builtinInstruments)[string] } | { error: Outcome } {
+  const entry = catalog.find((e) => e.id === plugin);
+  if (!entry) return { error: invalid(`${plugin} is not a plugin that is installed`) };
+  if (!entry.isInstrument) return { error: invalid(`${entry.name} is an effect, not an instrument`) };
+  const made = builtinInstruments[plugin];
+  if (!made) return { error: invalid(`${entry.name} could not be loaded`) };
+  return { made };
+}
+
+/**
+ * A lane added at the end with an instrument in it, as the controller does it (`Controller::add_instrument_lane`): full range, in no
+ * group. The graph lists the groups, then the lanes, then the master, so the lane goes before the master; its link to the master
+ * comes after the links the others have (the modulation cables come after all of them); and the layout of the telemetry gets its
+ * two meters, a peak and a clip count, after those of the lanes there are.
+ */
+function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
+  const found = instrumentFor(plugin, catalog);
+  if ("error" in found) return found.error;
+  const { made } = found;
+  const { nodes, edges } = snapshot.graph;
+  const master = nodes.find((n) => n.kind === "master");
+  if (!master) return invalid("the session has no master to hear a lane");
+
+  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume };
+  const atNode = nodes.indexOf(master);
+  const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
+  const firstCable = edges.findIndex(isModulation);
+  const atEdge = firstCable >= 0 ? firstCable : edges.length;
+  const meters: LayoutEntry[] = [
+    { slot: counters.slot(), node: added.id, port: { type: "audioOut" }, kind: "peak" },
+    { slot: counters.slot(), node: added.id, port: { type: "audioOut" }, kind: "clips" },
+  ];
+  return {
+    restructured: {
+      ...snapshot,
+      graph: { nodes: [...nodes.slice(0, atNode), added, ...nodes.slice(atNode)], edges: [...edges.slice(0, atEdge), link, ...edges.slice(atEdge)] },
+      telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, meters: [...snapshot.telemetry.meters, ...meters] },
+    },
+  };
+}
+
+/**
+ * An instrument put in a lane in place of the one it has (or in an empty lane), as the controller does it (`Controller::put_instrument`):
+ * the node stays, with its name and plugin the new instrument's and its range, transposition and volume as they were. The cables that
+ * drove the old plugin's parameters go first, a lane's and a group's, with what drove the depth of any of them: they name a parameter
+ * by the old plugin's own index.
+ */
+function replaceInstrumentOutcome(snapshot: Snapshot, lane: NodeId, plugin: string, catalog: readonly CatalogEntry[]): Outcome {
+  const target = snapshot.graph.nodes.find((n) => n.id === lane && n.kind !== "master");
+  if (!target) return noNode(lane);
+  if (target.kind !== "instrument") return invalid("an instrument goes in a lane");
+  const found = instrumentFor(plugin, catalog);
+  if ("error" in found) return found.error;
+  const { made } = found;
+
+  const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === lane).map((e) => e.id);
+  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set());
+  const replaced: Node = { ...target, name: made.name, plugin: made.plugin };
+  return { restructured: { ...taken, graph: { ...taken.graph, nodes: taken.graph.nodes.map((n) => (n.id === lane ? replaced : n)) } } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -343,6 +409,8 @@ function saveOutcome(snapshot: Snapshot): Outcome {
 function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
+  if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
+  if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);

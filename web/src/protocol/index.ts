@@ -17,6 +17,7 @@ export type { ModulatorKind } from "./generated/ModulatorKind";
 export type { ModulatorSource } from "./generated/ModulatorSource";
 export type { Node } from "./generated/Node";
 export type { NodeId } from "./generated/NodeId";
+export type { NoteRange } from "./generated/NoteRange";
 export type { Param } from "./generated/Param";
 export type { ParamValue } from "./generated/ParamValue";
 export type { Plugin } from "./generated/Plugin";

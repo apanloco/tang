@@ -418,6 +418,119 @@ async fn a_browser_puts_a_filter_in_the_chain_and_hears_it_in_the_meter_and_the_
     assert!(saved.contains("cutoff = 0.0"), "{saved}");
 }
 
+/// The answer to request `req_id`, and what was said before it (the snapshot a change of structure is told as comes first).
+async fn answer_with_what_came_before(client: &mut Client, req_id: u64) -> (Value, Vec<Value>) {
+    let mut said = Vec::new();
+    loop {
+        let message = next_json(client).await;
+        if message["reqId"] == req_id {
+            return (message, said);
+        }
+        said.push(message);
+    }
+}
+
+#[tokio::test]
+async fn a_browser_adds_a_lane_with_an_instrument_and_hears_it_in_the_meter_and_the_saved_file_has_both_lanes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    let before_meters = snapshot["snapshot"]["telemetry"]["meters"].as_array().unwrap().len();
+
+    // A note, and the level the tracer's one lane makes of it (quiet on purpose: its volume is 0.1).
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.01).await;
+    let before = peak_after(&mut client, at, Duration::from_millis(500)).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+    peak_until(&mut client, &tang, at, Duration::from_secs(15), "the note dying away", |peak| peak < 0.001).await;
+
+    // The browser adds a lane with an oscillator in it (the catalog names it: the built-ins are the first batch the scan finds):
+    // told by a snapshot, with the lane's meters in its layout, answered by the revision.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addInstrument", "plugin": "builtin:osc"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    let nodes = told["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    let names: Vec<_> = nodes.iter().map(|n| n["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Oscillator", "Filter", "LFO", "Oscillator", "Master"]);
+    assert_eq!(nodes[3]["parent"], json!(null), "a lane of its own, in no group");
+    assert_eq!(told["snapshot"]["telemetry"]["meters"].as_array().unwrap().len(), before_meters + 2, "a peak and a clip count for the lane");
+
+    // The next note is heard through it: the oscillator is at its own volume, ten times the tracer's lane.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    let after = peak_until(&mut client, &tang, at, SOON, "the note through the new lane", |peak| peak > 3.0 * before).await;
+    assert!(after > 3.0 * before, "{after} against {before}\n{}", tang.log());
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+
+    // And what is saved has both lanes.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(saved.matches("[[instrument]]").count(), 2, "{saved}");
+    assert_eq!(saved.matches("plugin = \"builtin:osc\"").count(), 2, "{saved}");
+}
+
+#[tokio::test]
+async fn a_browser_replaces_the_instrument_of_a_lane_and_what_was_set_on_the_old_one_is_gone_from_the_sound_the_cables_and_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    let (osc, volume) = param_of(&snapshot, "Oscillator", "volume");
+    let (_, detune) = param_of(&snapshot, "Oscillator", "detune");
+    let lfo = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "LFO").unwrap()["id"].as_u64().unwrap();
+
+    // The old instrument is turned down to nothing, and has a cable of the lane's LFO on its detune.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setParam", "node": osc, "param": volume, "value": 0.0}})).await;
+    assert_eq!(answer(&mut client, 1).await["type"], "ack");
+    let cable = json!({"type": "addModEdge", "modulator": lfo, "to": {"node": osc, "port": {"type": "param", "index": detune}}});
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": cable})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    // (The oscillator eases its volume over a few milliseconds.)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    let quiet_until = Instant::now() + Duration::from_millis(1000);
+    while Instant::now() < quiet_until {
+        if let Ok(Some(Ok(Message::Binary(frame)))) = tokio::time::timeout(Duration::from_millis(100), client.next()).await {
+            let peak = f32::from_le_bytes(frame[8 + 4 * at..12 + 4 * at].try_into().unwrap());
+            assert!(peak < 0.001, "the volume is 0 and the meter says {peak}");
+        }
+    }
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+
+    // The browser puts an oscillator in the lane, in place of that one: told by a snapshot, the lane's node the same,
+    // the cable on the old one's detune gone with it (the filter's cable is not the old instrument's), and the new
+    // instrument's parameters its own.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "replaceInstrument", "node": osc, "plugin": "builtin:osc"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 3).await;
+    // (The revisions: the volume 1, the cable 2 and the snapshot it was told as 3, the replacement 4.)
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(4)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    let lane = told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["id"] == json!(osc)).expect("the lane keeps its node");
+    let params: Vec<_> = lane["plugin"]["params"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["value"].as_f64().unwrap())).collect();
+    assert!(params.contains(&("volume", 1.0)) && params.contains(&("waveform", 0.0)), "{params:?}");
+    let cables = told["snapshot"]["graph"]["edges"].as_array().unwrap().iter().filter(|e| e["kind"] == "modulation").count();
+    assert_eq!(cables, 1, "the cable to the filter is left, and the one to the old detune is not");
+
+    // The same note is heard again: it was the old instrument that was silent.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the note through the new instrument", |peak| peak > 0.01).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+
+    // What is saved has no trace of the old instrument's edits or its cable, and the rest of the lane is as it was.
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(!saved.contains("[instrument.params]") && !saved.contains("waveform = 3"), "the saw and the volume of 0 are gone: {saved}");
+    assert!(!saved.contains("detune"), "the cable is gone: {saved}");
+    assert!(!saved.contains("volume = 0.0"), "{saved}");
+    assert!(saved.contains("plugin = \"builtin:filter\"") && saved.contains("cutoff"), "the lane has its filter and the LFO's cable to it: {saved}");
+    assert!(saved.contains("volume = 0.1"), "and its own volume: {saved}");
+}
+
 #[tokio::test]
 async fn a_second_browser_hears_what_the_first_one_changes() {
     let tang = Tang::start();

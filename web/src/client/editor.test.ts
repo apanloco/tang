@@ -146,6 +146,76 @@ describe("adding an effect", () => {
   });
 });
 
+describe("adding an instrument", () => {
+  test("resolves with the node of the lane it made, which is in the session then, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    const id = await editor.addInstrument("builtin:osc");
+    expect(id).toBe(3);
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === id);
+    expect(node).toMatchObject({ kind: "instrument", parent: null, name: "Oscillator" });
+    expect(said(notices)).toEqual([]);
+    // The next is the next.
+    expect(await editor.addInstrument("builtin:osc")).toBe(4);
+  });
+
+  test("takes the lane that is new to the session, which is its own, when another front-end added one just before", async () => {
+    const { server, editor } = await open();
+    server.apply({ type: "addInstrument", plugin: "builtin:osc" });
+    const id = await editor.addInstrument("builtin:osc");
+    expect(id).toBe(4);
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "instrument").map((n) => n.id)).toEqual([0, 3, 4]);
+  });
+
+  test("is refused for a plugin that is not installed or is not an instrument: it resolves with null, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addInstrument("./examples/plugin.clap")).toBeNull();
+    expect(await editor.addInstrument("builtin:reverb")).toBeNull();
+    expect(said(notices)).toEqual([
+      "Could not add ./examples/plugin.clap as an instrument: ./examples/plugin.clap is not a plugin that is installed",
+      "Could not add Reverb as an instrument: Reverb is an effect, not an instrument",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.addInstrument("builtin:osc")).toBeNull();
+    expect(said(notices)).toEqual(["Could not add Oscillator as an instrument: Not connected to the server."]);
+  });
+});
+
+describe("replacing an instrument", () => {
+  test("resolves true when the lane has the instrument, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(true);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a node that is not a lane, a plugin that is not installed and one that is not an instrument: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.replaceInstrument(filter.id, "builtin:osc")).toBe(false);
+    expect(await editor.replaceInstrument(oscillator.id, "./examples/plugin.clap")).toBe(false);
+    expect(await editor.replaceInstrument(oscillator.id, "builtin:reverb")).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not change the instrument of Filter to Oscillator: an instrument goes in a lane",
+      "Could not change the instrument of Oscillator to ./examples/plugin.clap: ./examples/plugin.clap is not a plugin that is installed",
+      "Could not change the instrument of Oscillator to Reverb: Reverb is an effect, not an instrument",
+    ]);
+    expect(await editor.replaceInstrument(MASTER, "builtin:osc")).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not change the instrument of Master to Oscillator: there is no node 4294967295");
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(false);
+    expect(said(notices)).toEqual(["Could not change the instrument of Oscillator to Oscillator: Not connected to the server."]);
+  });
+});
+
 describe("drawing a cable", () => {
   test("joins a modulator to a parameter, and says nothing", async () => {
     const { client, notices, editor } = await open();

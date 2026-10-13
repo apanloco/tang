@@ -45,6 +45,8 @@ impl Controller {
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
+            Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
+            Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
             Intent::Save => unreachable!("saving is done above"),
         };
         self.dirty = true;
@@ -252,6 +254,19 @@ impl Controller {
             NodePath::Group(group) => self.add_bus_effect(group, plugin)?,
             _ => return Err(invalid("an effect goes in a lane or in a group")),
         };
+        Ok(Done::Restructured)
+    }
+
+    fn add_instrument_intent(&mut self, plugin: &str) -> Result<Done, IntentError> {
+        self.add_instrument_lane(plugin)?;
+        Ok(Done::Restructured)
+    }
+
+    fn replace_instrument_intent(&mut self, node: NodeId, plugin: &str) -> Result<Done, IntentError> {
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            NodePath::Instrument(inst) => self.put_instrument(inst, plugin)?,
+            _ => return Err(invalid("an instrument goes in a lane")),
+        }
         Ok(Done::Restructured)
     }
 
@@ -1946,6 +1961,199 @@ type = "midi"
         assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
         assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    // -- AddInstrument and ReplaceInstrument --
+
+    fn add_instrument(ctl: &mut Controller, plugin: &str) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::AddInstrument { plugin: plugin.to_string() })
+    }
+
+    fn replace_instrument(ctl: &mut Controller, node: NodeId, plugin: &str) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::ReplaceInstrument { node, plugin: plugin.to_string() })
+    }
+
+    #[test]
+    fn add_instrument_adds_a_lane_at_the_end_with_the_instrument_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let applied = add_instrument(&mut ctl, "builtin:osc").unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["AddInstrument range=None", "SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false"]);
+        assert_eq!(ctl.model.instruments.len(), 3);
+        let lane = &ctl.model.instruments[2];
+        assert_eq!(lane.instrument.as_ref().map(|p| (p.node, p.name.as_str())), Some((lane.node, "Oscillator")));
+        assert_eq!((lane.range, lane.group, lane.volume), (None, None, 1.0));
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_graph_after_adding_an_instrument_has_its_node_its_audio_path_to_the_master_and_its_meter() {
+        use crate::app::graph::EdgeKind;
+        use crate::app::layout::SlotKind;
+        let (_engine, mut ctl) = controller_with_builtins();
+        let before = ctl.model.graph();
+        add_instrument(&mut ctl, "builtin:osc").unwrap();
+        let added = ctl.model.instruments[2].node;
+        let graph = ctl.model.graph();
+        // The node comes after the lanes there were, and the master is last.
+        let ids: Vec<_> = graph.nodes.iter().map(|n| n.id).collect();
+        let before_ids: Vec<_> = before.nodes.iter().map(|n| n.id).collect();
+        assert_eq!(ids[..ids.len() - 2], before_ids[..before_ids.len() - 1]);
+        assert_eq!(ids[ids.len() - 2..], [added, NodeId::MASTER]);
+        let node = graph.nodes.iter().find(|n| n.id == added).unwrap();
+        assert_eq!((node.parent, node.name.as_str()), (None, "Oscillator"));
+        assert!(
+            matches!(&node.kind, NodeKind::Instrument { plugin: Some(p), range: None, transpose: 0, volume } if p.id == "builtin:osc" && *volume == 1.0),
+            "{node:?}"
+        );
+        // Its audio goes to the master, after the links the others have.
+        let audio: Vec<_> = graph.edges.iter().filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. })).map(|e| (e.from.node, e.to.node)).collect();
+        assert_eq!(audio.last(), Some(&(added, NodeId::MASTER)));
+        assert_eq!(audio.len(), before.edges.iter().filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. })).count() + 1);
+        // Its meter is in the layout, after the others.
+        let meters = ctl.model.telemetry_layout().meters;
+        let mine: Vec<_> = meters.iter().filter(|m| m.node == added).map(|m| (m.port, m.kind)).collect();
+        assert_eq!(mine, [(Port::AudioOut, SlotKind::Peak), (Port::AudioOut, SlotKind::Clips)]);
+        assert_eq!(meters[meters.len() - 2].node, added, "the last two entries are the new lane's");
+    }
+
+    #[test]
+    fn a_lane_that_was_added_takes_a_modulator_and_a_cable_to_its_instrument_at_once() {
+        let (engine, mut ctl) = controller_with_builtins();
+        add_instrument(&mut ctl, "builtin:osc").unwrap();
+        let added = ctl.model.instruments[2].node;
+        ctl.apply(Intent::AddModulator { parent: added, kind: ModulatorKind::Lfo }).unwrap();
+        let lfo = ctl.model.instruments[2].modulators[0].node;
+        let (detune, _) = param(&ctl, NodePath::Instrument(2), "detune");
+        sent(&engine);
+        ctl.apply(cable_to(lfo, added, detune)).unwrap();
+        assert_eq!(
+            sent(&engine),
+            [command("AddModTarget inst=2 mod=0", &format!("PluginParam {{ slot: 0, param_index: {detune} }}"), &ctl, NodePath::Instrument(2), "detune")]
+        );
+    }
+
+    #[test]
+    fn replace_instrument_puts_the_instrument_in_the_lane_under_the_same_node_and_takes_the_cables_to_the_old_one_out() {
+        let (engine, mut ctl) = controller_with_builtins();
+        let (lane0, group_lfo) = (lane(&ctl), ctl.model.groups[0].modulators[0].node);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        ctl.apply(cable_to(group_lfo, lane0, detune)).unwrap();
+        ctl.apply(Intent::SetParam { node: lane0, param: detune, value: 3.0 }).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+
+        let applied = replace_instrument(&mut ctl, lane0, "builtin:osc").unwrap();
+        assert_eq!(applied, Applied::restructured(rev + 1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        // The group's cable to the old plugin goes first: it names the parameter by an index, and the new plugin has its own.
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+        assert!(ctl.model.groups[0].modulators[0].targets.is_empty());
+        assert_eq!(lane(&ctl), lane0, "the lane keeps its node");
+        let lane = &ctl.model.instruments[0];
+        assert_eq!((lane.group, lane.effects.len()), (Some(0), 1), "and what else it has");
+        assert_eq!(param(&ctl, NodePath::Instrument(0), "detune").1, 0.0, "the parameters are the new plugin's own");
+        // A client sees it in the graph: the same node, with no cable into it.
+        let graph = ctl.model.graph();
+        assert!(graph.nodes.iter().any(|n| n.id == lane0 && matches!(&n.kind, NodeKind::Instrument { plugin: Some(_), .. })));
+        assert!(!graph.edges.iter().any(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })), "no cable is left");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn replace_instrument_fills_a_lane_that_has_none() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        assert!(ctl.model.instruments[1].instrument.is_none());
+        replace_instrument(&mut ctl, empty, "builtin:osc").unwrap();
+        assert_eq!(sent(&engine), ["SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false"]);
+        assert_eq!(ctl.model.instruments[1].instrument.as_ref().map(|p| (p.node, p.name.as_str())), Some((empty, "Oscillator")));
+        let graph = ctl.model.graph();
+        assert_eq!(graph.nodes.iter().find(|n| n.id == empty).map(|n| n.name.as_str()), Some("Oscillator"), "the lane has a name now");
+    }
+
+    #[test]
+    fn the_instrument_intents_refuse_what_they_cannot_do_and_change_nothing() {
+        let (engine, mut ctl) = controller_with_builtins();
+        // A cable into the instrument that a refused replace must not take out.
+        let (lane0, group_lfo) = (lane(&ctl), ctl.model.groups[0].modulators[0].node);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        ctl.apply(cable_to(group_lfo, lane0, detune)).unwrap();
+        let (_other_engine, mut untouched) = controller_with_builtins();
+        untouched.apply(cable_to(group_lfo, lane0, detune)).unwrap();
+        sent(&engine);
+
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let group = node(&ctl, NodePath::Group(0));
+        let modulator = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let ghost = NodeId(9_999);
+        let not_a_lane = invalid("an instrument goes in a lane");
+        let not_an_instrument = invalid("Filter is an effect, not an instrument");
+        let not_installed = |what: &str| invalid(format!("{what} is not a plugin that is installed"));
+        let replaces = [
+            ("an effect", reverb, "builtin:osc", not_a_lane.clone()),
+            ("a bus effect", bus, "builtin:osc", not_a_lane.clone()),
+            ("a group", group, "builtin:osc", not_a_lane.clone()),
+            ("a modulator", modulator, "builtin:osc", not_a_lane),
+            ("a node that is not there", ghost, "builtin:osc", IntentError::NotFound(ghost)),
+            ("the master, which the model does not have", NodeId::MASTER, "builtin:osc", IntentError::NotFound(NodeId::MASTER)),
+            ("an effect for the instrument", lane0, "builtin:filter", not_an_instrument.clone()),
+            ("a path", lane0, "./examples/plugin.clap", not_installed("./examples/plugin.clap")),
+            ("an id the catalog does not have", lane0, "clap:com.example.nothing", not_installed("clap:com.example.nothing")),
+        ];
+        for (what, node, plugin, error) in replaces {
+            assert_eq!(replace_instrument(&mut ctl, node, plugin), Err(error), "replace: {what}");
+        }
+        let adds = [
+            ("an effect", "builtin:filter", not_an_instrument),
+            ("a path", "./examples/plugin.clap", not_installed("./examples/plugin.clap")),
+            ("an id the catalog does not have", "clap:com.example.nothing", not_installed("clap:com.example.nothing")),
+        ];
+        for (what, plugin, error) in adds {
+            assert_eq!(add_instrument(&mut ctl, plugin), Err(error), "add: {what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread: no lane, no cable taken out");
+        assert_eq!((ctl.rev, ctl.dirty), (1, true), "a refusal is not a revision (the cable was the one)");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched.model);
+    }
+
+    /// What the web client's mock engine makes of an instrument it is asked to add or to put in a lane, for each built-in
+    /// instrument: the node the controller makes for it, without the ids (the mock hands out its own): the file
+    /// `web/src/client/fixtures/builtins.instruments.json`, which this test keeps current.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_the_builtin_instruments_is_current() {
+        let mut instruments = serde_json::Map::new();
+        for info in plugin::builtin::enumerate_plugins().into_iter().filter(|p| p.is_instrument) {
+            let (_engine, mut ctl) = controller_with_builtins();
+            add_instrument(&mut ctl, &info.id).unwrap();
+            let added = ctl.model.instruments.last().unwrap().node;
+            let mut json = serde_json::to_value(ctl.model.graph().nodes.iter().find(|n| n.id == added).unwrap()).unwrap();
+            let object = json.as_object_mut().unwrap();
+            object.remove("id");
+            object.remove("parent");
+            instruments.insert(info.id.clone(), json);
+        }
+        let fresh = serde_json::to_string_pretty(&instruments).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/builtins.instruments.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the built-in instruments are now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 
     /// What the web client's mock engine makes of an effect it is asked to add, for each built-in effect: the

@@ -3407,6 +3407,45 @@ mod with_web {
     }
 
     #[test]
+    fn an_instrument_a_browser_puts_in_is_in_the_tuis_tree_at_once_and_the_browser_is_given_the_new_structure() {
+        let mut h = Harness::new(TRACER);
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        assert_eq!(h.s.ctl.model.instruments.len(), 1);
+        run(
+            &mut h,
+            |browser| async move {
+                let (mut client, snapshot) = browser.join().await;
+                let oscillator = node(&snapshot, "Oscillator")["id"].clone();
+                // A lane of its own: told as a snapshot, at the revision after the intent's, and the answer follows it.
+                tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addInstrument", "plugin": "builtin:osc"}})).await;
+                let told = said(&mut client).await;
+                assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(2)), "{told}");
+                let lanes = told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().filter(|n| n["kind"] == "instrument").count();
+                assert_eq!(lanes, 2, "{told}");
+                // Its meters (a peak and a clip count) are in the layout of the telemetry that the snapshot has.
+                let meters = |snapshot: &Value| snapshot["snapshot"]["telemetry"]["meters"].as_array().unwrap().len();
+                assert_eq!(meters(&told), meters(&snapshot) + 2, "{told}");
+                assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
+                // The lane there was gets another instrument.
+                tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "replaceInstrument", "node": oscillator, "plugin": "builtin:osc"}})).await;
+                let told = said(&mut client).await;
+                assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(4)), "{told}");
+                assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 2, "rev": 3}));
+                // An effect is not an instrument, and the controller's words say so.
+                tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "replaceInstrument", "node": oscillator, "plugin": "builtin:reverb"}})).await;
+                let refused = said(&mut client).await;
+                assert_eq!((refused["type"].clone(), refused["error"]["code"].clone()), (json!("rejected"), json!("invalid")), "{refused}");
+                assert_eq!(refused["error"]["message"], "Reverb is an effect, not an instrument", "{refused}");
+                browser.quit().await;
+            },
+            |h, _| {
+                assert_eq!(h.s.ctl.model.instruments.len(), 2, "the lane the browser added");
+                assert_eq!(h.tree().iter().filter(|line| line.contains("♪ Oscillator")).count(), 2, "{:#?}", h.tree());
+            },
+        );
+    }
+
+    #[test]
     fn a_server_that_has_stopped_does_not_make_the_loop_spin() {
         let mut h = Harness::new(TRACER);
         let mut web = start(&mut h);
@@ -3509,6 +3548,63 @@ rate = 3.0
         assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
         assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
         assert!(h.s.ctl.dirty);
+    }
+
+    #[test]
+    fn a_lane_a_browser_adds_is_at_the_end_of_the_tree_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(TWO_LANES);
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        let before = h.tree().len();
+        browser(&mut h, Intent::AddInstrument { plugin: "builtin:osc".to_string() });
+        assert_eq!(h.s.ctl.model.instruments.len(), 3);
+        assert_eq!(h.tree().len(), before + 1, "{:#?}", h.tree());
+        assert!(h.tree().last().is_some_and(|line| line.contains("Oscillator")), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+        assert!(h.s.ctl.dirty);
+        // A lane that came from a browser is a lane like any: the first `d` empties it, a second takes it out.
+        h.goto(TreeAddress::Instrument(2));
+        h.press(KeyCode::Char('d')).press(KeyCode::Char('d'));
+        assert_eq!(h.s.ctl.model.instruments.len(), 2);
+    }
+
+    #[test]
+    fn an_instrument_a_browser_puts_in_a_lane_takes_the_cable_to_the_old_one_out_of_the_tree_and_the_cursor_stays() {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        h.goto(TreeAddress::Instrument(0));
+        let lane = cursor_node(&h);
+        assert!(h.tree().iter().any(|line| line.contains("LFO 4.0Hz sine → ")), "{:#?}", h.tree());
+        browser(&mut h, Intent::ReplaceInstrument { node: lane, plugin: "builtin:osc".to_string() });
+        assert!(h.tree().iter().any(|line| line.contains("♪ Oscillator")), "{:#?}", h.tree());
+        assert!(h.tree().iter().any(|line| line.contains("LFO 4.0Hz sine") && !line.contains('→')), "the vibrato's cable went with the old instrument: {:#?}", h.tree());
+        assert!(h.tree().iter().any(|line| line.contains("LFO 7.0Hz sine → ")), "the other lane's stays: {:#?}", h.tree());
+        assert_eq!(cursor_node(&h), lane, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Instrument(0));
+    }
+
+    #[test]
+    fn a_row_on_the_cable_that_goes_with_a_replaced_instrument_is_not_left_selected() {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        // On the vibrato's own parameters, on the row of its cable (the last).
+        h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+        h.press(KeyCode::Enter);
+        let rows = h.s.param_state.len;
+        h.press_n(KeyCode::Down, rows - 1);
+        assert_eq!(h.s.param_state.selected, rows - 1, "the last row, which is the cable's");
+        let lane = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::ReplaceInstrument { node: lane, plugin: "builtin:osc".to_string() });
+        assert!(h.s.ctl.model.instruments[0].modulators[0].targets.is_empty());
+        // The pane has fewer rows, and the selection is on the last of them.
+        assert!(h.s.param_state.len < rows, "{} rows of {rows}", h.s.param_state.len);
+        assert_eq!(h.s.param_state.selected, h.s.param_state.len - 1);
+        // The frame is drawn from what is there, and the keys still do what they do.
+        assert!(!h.dump().is_empty());
+        h.press(KeyCode::Down).press(KeyCode::Up).press(KeyCode::Left).press(KeyCode::Right);
+        assert!(!h.dump().is_empty());
     }
 
     #[test]

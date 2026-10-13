@@ -4,9 +4,10 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Node, NodeId, Plugin, Snapshot } from "../protocol";
+import type { CatalogEntry, Node, NodeId, NoteRange, Plugin, Snapshot } from "../protocol";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
+import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
@@ -28,6 +29,16 @@ export const builtinCatalog = builtins as CatalogEntry[];
  * by Rust (`the_web_clients_fixture_of_the_builtin_effects_is_current`).
  */
 export const builtinEffects = builtinEffectNodes as unknown as Record<string, { name: string; kind: "effect"; plugin: Plugin; mix: number }>;
+
+/**
+ * What the controller makes of each built-in instrument that is added in a lane of its own, by the plugin's id: the node's
+ * name, the plugin with the parameters it has when it is new, and the lane's range, transposition and volume (full range,
+ * none, 1); the ids are the mock's to hand out. Written by Rust (`the_web_clients_fixture_of_the_builtin_instruments_is_current`).
+ */
+export const builtinInstruments = builtinInstrumentNodes as unknown as Record<
+  string,
+  { name: string; kind: "instrument"; plugin: Plugin; range: NoteRange | null; transpose: number; volume: number }
+>;
 
 /** The master's node id, as the server numbers it (`NodeId::MASTER`). */
 export const MASTER: NodeId = 4294967295;
