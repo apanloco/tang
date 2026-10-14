@@ -3469,6 +3469,7 @@ mod with_web {
                 // The browser turns the cutoff up; the TUI is looking at the filter.
                 tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setParam", "node": filter, "param": cutoff, "value": 0.9}})).await;
                 assert_eq!(said(&mut client).await["event"], json!({"rev": 1, "type": "paramSet", "node": filter, "param": cutoff, "value": 0.9}));
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "set cutoff", "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
 
                 // The TUI turns it down a step (Enter takes the parameters' pane; the cutoff is the first). The
@@ -3541,6 +3542,7 @@ mod with_web {
                 let group = node(&snapshot, "Pad")["id"].as_u64().unwrap();
                 tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setGain", "node": group, "gain": "groupVolume", "value": 2.5}})).await;
                 assert_eq!(said(&mut client).await["type"], "event");
+                assert_eq!(said(&mut client).await["type"], "history");
                 assert_eq!(said(&mut client).await["type"], "ack");
                 browser.quit().await;
             },
@@ -3563,6 +3565,7 @@ mod with_web {
                 tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setRange", "node": lane, "range": {"low": 48, "high": 71}}})).await;
                 let told = said(&mut client).await;
                 assert_eq!((told["type"].clone(), told["event"]["type"].clone()), (json!("event"), json!("rangeSet")), "{told}");
+                assert_eq!(said(&mut client).await["type"], "history");
                 assert_eq!(said(&mut client).await["type"], "ack");
                 browser.quit().await;
             },

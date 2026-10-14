@@ -151,6 +151,17 @@ pub enum Intent {
     /// session's own. Refused (`IntentError::Io`) if the session has no file or it cannot be written,
     /// and then nothing changes.
     Save,
+    /// Put back what the last step that can be undone did: a parameter, a gain, a modulator's setting, a cable's depth, the keys
+    /// of a lane, the place of a node, the knobs a node shows, a group's name, the scale or the lock of the piano, the place of
+    /// an effect. A change that goes on (a knob that is dragged) is one step. What it does is told as the intents it is made of
+    /// are (their events), and what Undo and Redo would do now is told to the clients as `History`. What cannot be undone yet
+    /// (what adds or takes out nodes or cables, a preset, an instrument that is replaced) empties the history. Refused, with nothing
+    /// changed and no revision, if there is nothing to undo, or if what the step names is not there any more (the step is
+    /// dropped, and the one before it is what Undo does next).
+    Undo,
+    /// Do again what the last step that was undone did. Refused if there is nothing to redo; a change made since an undo ended what
+    /// could be redone.
+    Redo,
 }
 
 /// What a new modulator is.
@@ -418,6 +429,8 @@ mod tests {
                 json!({"type": "replaceInstrument", "node": 2, "plugin": "builtin:osc"}),
             ),
             (Intent::Save, json!({"type": "save"})),
+            (Intent::Undo, json!({"type": "undo"})),
+            (Intent::Redo, json!({"type": "redo"})),
             (
                 Intent::SetRange { node: NodeId(2), range: Some(NoteRange { low: 36, high: 84 }) },
                 json!({"type": "setRange", "node": 2, "range": {"low": 36, "high": 84}}),

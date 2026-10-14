@@ -547,6 +547,52 @@ type = "envelope"
     }
 
     #[test]
+    fn what_undo_and_redo_do_is_events_a_client_applies_as_it_does_any_others() {
+        // A client that starts from a snapshot and applies what Undo and Redo bring ends up where the controller is: back at the
+        // start after as many undos as there were changes, and where it was after as many redos.
+        let mut ctl = controller(APPLY, None);
+        let start = ctl.snapshot();
+        let mut told = start.clone();
+        let n = nodes(&told);
+        let detune = param_named(&told, n.osc, "detune");
+        let cutoff = param_named(&told, n.bus, "cutoff");
+        let intents = [
+            Intent::SetParam { node: n.osc, param: detune, value: 3.0 },
+            Intent::SetParam { node: n.bus, param: cutoff, value: 0.125 },
+            Intent::SetGain { node: n.group, gain: Gain::GroupPan, value: -0.5 },
+            Intent::SetModulatorField { node: n.lane_lfo, field: ModulatorField::Waveform, value: 2.0 },
+            Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Sustain, value: 0.25 },
+            Intent::SetEdgeDepth { edge: cables(&told)[0], depth: -0.5 },
+            Intent::SetRange { node: n.osc, range: Some(NoteRange { low: 36, high: 84 }) },
+            Intent::SetScale { scale: "F# dorian".to_string() },
+            Intent::SetLocked { locked: true },
+            Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 120.0 }) },
+            Intent::SetPinned { node: n.osc, params: vec![detune] },
+            Intent::RenameGroup { node: n.group, name: "Strings".to_string() },
+        ];
+        let apply = |ctl: &mut Controller, told: &mut Snapshot, intent: Intent| {
+            let applied = ctl.apply(intent.clone()).unwrap_or_else(|e| panic!("{intent:?}: {e}"));
+            told.apply(&applied).unwrap_or_else(|e| panic!("{intent:?}: {e}"));
+            assert_eq!(*told, ctl.snapshot(), "after {intent:?}");
+        };
+        for intent in intents.clone() {
+            apply(&mut ctl, &mut told, intent);
+        }
+        let done = told.clone();
+        for _ in &intents {
+            apply(&mut ctl, &mut told, Intent::Undo);
+        }
+        assert_eq!(told.graph, start.graph, "everything is as it was");
+        assert_eq!(told.meta.piano, start.meta.piano);
+        assert_ne!(told.graph, done.graph);
+        for _ in &intents {
+            apply(&mut ctl, &mut told, Intent::Redo);
+        }
+        assert_eq!(told.graph, done.graph, "and everything is as it was done");
+        assert_eq!(told.meta.piano, done.meta.piano);
+    }
+
+    #[test]
     fn an_applied_event_leaves_the_session_dirty() {
         let mut ctl = controller(APPLY, None);
         let mut told = ctl.snapshot();

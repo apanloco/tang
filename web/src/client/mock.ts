@@ -750,6 +750,8 @@ function saveOutcome(snapshot: Snapshot): Outcome {
 /** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names. */
 function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
+  // (The history is the next part's: the mock refuses for now.)
+  if (intent.type === "undo" || intent.type === "redo") return invalid("the mock engine does not have a history yet");
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);

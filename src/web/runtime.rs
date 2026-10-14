@@ -239,8 +239,11 @@ depth = 0.5
         let event = said(&mut a).await;
         assert_eq!(event["type"], "event");
         assert_eq!(event["event"], json!({"rev": 1, "type": "paramSet", "node": filter, "param": cutoff, "value": 0.9}));
+        let history = json!({"type": "history", "undo": "set cutoff", "redo": null});
+        assert_eq!(said(&mut a).await, history, "what can be undone now, after the event");
         assert_eq!(said(&mut a).await, json!({"type": "ack", "reqId": 7, "rev": 1}));
         assert_eq!(said(&mut b).await, event);
+        assert_eq!(said(&mut b).await, history);
 
         // The engine has it too: the filter is the effect in slot 1 of lane 0.
         assert_eq!(live.commands(), ["SetParameter inst=0 slot=1 param=0 value=0.900"]);

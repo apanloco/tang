@@ -25,4 +25,4 @@ features: Array<string>,
 /**
  * The next message must be `Auth`.
  */
-needsToken: boolean, } | { "type": "snapshot", snapshot: Snapshot, } | { "type": "event", event: StampedEvent, } | { "type": "layout", layout: TelemetryLayout, } | { "type": "catalog", rev: number, scanning: boolean, entries: Array<CatalogEntry>, } | { "type": "ack", reqId: number, rev: number, } | { "type": "rejected", reqId: number, error: WireError, } | { "type": "closing", error: WireError, };
+needsToken: boolean, } | { "type": "snapshot", snapshot: Snapshot, } | { "type": "event", event: StampedEvent, } | { "type": "layout", layout: TelemetryLayout, } | { "type": "catalog", rev: number, scanning: boolean, entries: Array<CatalogEntry>, } | { "type": "history", undo: string | null, redo: string | null, } | { "type": "ack", reqId: number, rev: number, } | { "type": "rejected", reqId: number, error: WireError, } | { "type": "closing", error: WireError, };

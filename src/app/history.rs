@@ -7,8 +7,6 @@
 //! A change that goes on (a knob dragged turns it at every frame) is one step, not a hundred: a change of what the last step
 //! was of, soon enough after it, is merged into it, and the step goes back to before the first.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "Undo and Redo are not intents yet: the next part"))]
-
 use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
@@ -59,6 +57,7 @@ impl Step {
 }
 
 /// What the buttons need to say: what Undo and Redo would do, or nothing if they would not.
+#[cfg(any(test, feature = "web"))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryState {
     pub undo: Option<String>,
@@ -120,6 +119,7 @@ impl History {
     }
 
     /// What Undo and Redo would do.
+    #[cfg(any(test, feature = "web"))]
     pub fn state(&self) -> HistoryState {
         HistoryState { undo: self.undo.last().map(|step| step.label.clone()), redo: self.redo.last().map(|step| step.label.clone()) }
     }
@@ -147,6 +147,7 @@ pub(super) enum Plan {
 
 impl Controller {
     /// What Undo and Redo would do.
+    #[cfg(any(test, feature = "web"))]
     pub fn history_state(&self) -> HistoryState {
         self.history.state()
     }
@@ -196,7 +197,8 @@ impl Controller {
         let now = (self.clock)();
         let step = |label: String, undo: Intent, key: Option<Key>| Plan::Step(Step::new(label, undo, intent.clone(), key, now));
         match intent {
-            Intent::Save => Plan::Nothing,
+            // (Done before `plan_history` is asked, by `apply`: they are no steps of the history.)
+            Intent::Save | Intent::Undo | Intent::Redo => Plan::Nothing,
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
                 Some((name, old)) => step(format!("set {name}"), Intent::SetParam { node: *node, param: *param, value: old }, Some(Key::Param(*node, *param))),
                 None => Plan::Nothing,
@@ -976,6 +978,28 @@ plugin = "builtin:osc"
     }
 
     // -- what cannot be undone, and what cannot be undone any more --
+
+    #[test]
+    fn the_intents_undo_and_redo_do_what_the_methods_do_and_are_no_steps_of_the_history_themselves() {
+        let (engine, mut ctl, _clock) = controller();
+        let (detune_index, _) = detune(&ctl);
+        set_detune(&mut ctl, 3.0);
+        sent(&engine);
+        let undone = ctl.apply(Intent::Undo).unwrap();
+        assert_eq!(undone, Applied::of(2, vec![Event::ParamSet { node: lane(&ctl), param: detune_index, value: 0.0 }]));
+        assert_eq!(sent(&engine), [format!("SetParameter inst=0 slot=0 param={detune_index} value=0.000")]);
+        assert_eq!((undo_label(&ctl), redo_label(&ctl)), (None, Some("set detune".to_string())));
+        let redone = ctl.apply(Intent::Redo).unwrap();
+        assert_eq!(redone, Applied::of(3, vec![Event::ParamSet { node: lane(&ctl), param: detune_index, value: 3.0 }]));
+        assert_eq!((undo_label(&ctl), redo_label(&ctl)), (Some("set detune".to_string()), None));
+        // Nothing more to redo, and what is refused is no revision.
+        assert_eq!(ctl.apply(Intent::Redo), Err(IntentError::Invalid("there is nothing to redo".to_string())));
+        assert_eq!(ctl.rev, 3);
+        // The undo of the undo is the redo: it is the same step, which went back and forth, and not a new one.
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!(detune(&ctl).1, 0.0);
+        assert!(ctl.apply(Intent::Undo).is_err(), "there was only the one step");
+    }
 
     #[test]
     fn nothing_to_undo_and_nothing_to_redo_are_refused_in_words_and_cost_no_revision() {

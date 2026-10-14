@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use crossbeam_channel::Receiver;
 
 use crate::app::controller::Controller;
+use crate::app::history::HistoryState;
 use crate::app::intent::Applied;
 use crate::app::protocol::{ServerMessage, WireError};
 use crate::web::Shared;
@@ -30,6 +31,8 @@ pub struct Owner {
     requests: Receiver<OwnerRequest>,
     /// What the clients were last told of the plugin catalog: its revision, and whether the scan was still going.
     catalog_told: (u64, bool),
+    /// What the clients were last told Undo and Redo would do.
+    history_told: HistoryState,
 }
 
 impl Owner {
@@ -39,7 +42,8 @@ impl Owner {
     pub fn new(ctl: &mut Controller, hub: Arc<Hub>, shared: Arc<Shared>, requests: Receiver<OwnerRequest>) -> Owner {
         ctl.subscribe(Box::new(HubSink { hub: hub.clone(), shared: shared.clone() }));
         let catalog_told = (ctl.catalog.rev(), ctl.catalog.is_scanning());
-        Owner { hub, shared, requests, catalog_told }
+        let history_told = ctl.history_state();
+        Owner { hub, shared, requests, catalog_told, history_told }
     }
 
     /// Answer every request that is waiting, in the order they came. How many.
@@ -76,10 +80,11 @@ impl Owner {
         let applied = match request {
             OwnerRequest::Subscribe { client } => {
                 // Subscribed and sent the snapshot in one step: no event can come between. The
-                // catalog is not part of the session, and follows it.
+                // catalog and what can be undone are not part of the session, and follow it.
                 if self.hub.subscribe(client) {
                     self.send(client, &ServerMessage::Snapshot { snapshot: ctl.snapshot() });
                     self.send(client, &Self::catalog(ctl));
+                    self.send(client, &Self::history(ctl));
                 }
                 None
             }
@@ -90,6 +95,8 @@ impl Owner {
                     Ok(applied) => (ServerMessage::Ack { req_id, rev: applied.rev }, Some(applied)),
                     Err(e) => (ServerMessage::Rejected { req_id, error: WireError::from(&e) }, None),
                 };
+                // (What can be undone changes with an intent, and is told after its events and before its answer.)
+                self.tell_history(ctl);
                 self.send(client, &reply);
                 applied
             }
@@ -103,6 +110,21 @@ impl Owner {
         ServerMessage::Catalog { rev: ctl.catalog.rev(), scanning: ctl.catalog.is_scanning(), entries: ctl.catalog.entries() }
     }
 
+    /// What Undo and Redo would do, as a client is told of it.
+    fn history(ctl: &Controller) -> ServerMessage {
+        let HistoryState { undo, redo } = ctl.history_state();
+        ServerMessage::History { undo, redo }
+    }
+
+    /// Tell the subscribed clients what Undo and Redo would do, if it is not what they were told.
+    fn tell_history(&mut self, ctl: &Controller) {
+        let now = ctl.history_state();
+        if now != self.history_told {
+            self.history_told = now;
+            self.hub.broadcast(&Self::text(&Self::history(ctl)));
+        }
+    }
+
     /// Keep what the connections read current: the session's revision, and the
     /// meaning of the telemetry slots, which the clients are told when it changes, and
     /// the plugin catalog, as the scan finds more. Call it regularly (a few times a
@@ -114,6 +136,8 @@ impl Owner {
             self.catalog_told = catalog;
             self.hub.broadcast(&Self::text(&Self::catalog(ctl)));
         }
+        // (What the TUI does through the controller changes what can be undone too, with no request.)
+        self.tell_history(ctl);
         let layout = ctl.model.telemetry_layout();
         // (A snapshot carries the layout, and sets it in `shared` when it is sent: then
         // there is nothing to tell here.)
@@ -193,8 +217,9 @@ mod tests {
         rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
         assert_eq!(rig.owner.serve(&mut rig.ctl), 1);
         let first = said(&mut queue);
-        assert_eq!(types(&first), ["snapshot", "catalog"], "the snapshot, and what can be added to it");
+        assert_eq!(types(&first), ["snapshot", "catalog", "history"], "the snapshot, what can be added to it, and what can be undone");
         assert_eq!(first[1], json!({"type": "catalog", "rev": 0, "scanning": false, "entries": []}));
+        assert_eq!(first[2], json!({"type": "history", "undo": null, "redo": null}));
         assert_eq!(first[0]["snapshot"]["rev"], 0);
         assert_eq!(first[0]["snapshot"]["graph"]["nodes"].as_array().unwrap().len(), 3, "two lanes and the master");
 
@@ -202,9 +227,9 @@ mod tests {
         rig.tx.send(OwnerRequest::Apply { client, req_id: 1, intent }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let next = said(&mut queue);
-        assert_eq!(types(&next), ["event", "ack"], "the event, then the answer");
+        assert_eq!(types(&next), ["event", "history", "ack"], "the event, what can be undone now, then the answer");
         assert_eq!(next[0]["event"]["rev"], 1);
-        assert_eq!(next[1], json!({"type": "ack", "reqId": 1, "rev": 1}));
+        assert_eq!(next[2], json!({"type": "ack", "reqId": 1, "rev": 1}));
     }
 
     #[test]
@@ -227,9 +252,9 @@ mod tests {
         rig.tx.send(OwnerRequest::Apply { client: early, req_id: 9, intent }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let heard = said(&mut late_queue);
-        assert_eq!(types(&heard), ["snapshot", "catalog", "event"]);
+        assert_eq!(types(&heard), ["snapshot", "catalog", "history", "event"]);
         assert_eq!(heard[0]["snapshot"]["rev"], 3);
-        assert_eq!(heard[2]["event"]["rev"], 4);
+        assert_eq!(heard[3]["event"]["rev"], 4);
     }
 
     #[test]
@@ -245,7 +270,7 @@ mod tests {
         rig.tx.send(OwnerRequest::Apply { client: plain, req_id: 4, intent }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         assert_eq!(said(&mut plain_queue), [json!({"type": "ack", "reqId": 4, "rev": 1})]);
-        assert_eq!(types(&said(&mut subscribed_queue)), ["event"], "another front-end's change reaches the subscribed");
+        assert_eq!(types(&said(&mut subscribed_queue)), ["event", "history"], "another front-end's change reaches the subscribed");
     }
 
     #[test]
@@ -297,7 +322,8 @@ mod tests {
 
     #[test]
     fn a_client_that_does_not_keep_up_is_evicted_and_the_session_goes_on() {
-        let mut rig = rig_with(SESSION, 2);
+        // (A queue of the three that a client is sent when it subscribes: the snapshot, the catalog and what can be undone.)
+        let mut rig = rig_with(SESSION, 3);
         let (slow, mut slow_queue) = rig.hub.connect();
         let (quick, mut quick_queue) = rig.hub.connect();
         for client in [slow, quick] {
@@ -309,7 +335,9 @@ mod tests {
             let intent = volume(&rig, 0.1 * (n + 1) as f32);
             rig.tx.send(OwnerRequest::Apply { client: quick, req_id: n, intent }).unwrap();
             rig.owner.serve(&mut rig.ctl);
-            assert_eq!(types(&said(&mut quick_queue)), ["event", "ack"]);
+            let told = types(&said(&mut quick_queue)).join(" ");
+            // (The first change leaves something to undo, which is told with it; the rest are the same step.)
+            assert_eq!(told, if n == 0 { "event history ack" } else { "event ack" });
         }
         assert_eq!(rig.ctl.rev, 5);
         assert_eq!(rig.hub.client_count(), 1, "the slow one is gone");
@@ -419,7 +447,7 @@ mod tests {
         rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let first = said(&mut queue);
-        assert_eq!(types(&first), ["snapshot", "catalog"]);
+        assert_eq!(types(&first), ["snapshot", "catalog", "history"]);
         assert_eq!(first[1]["rev"], 1);
         assert_eq!(first[1]["scanning"], true, "the scan is not over");
         assert_eq!(first[1]["entries"], json!([{"id": "builtin:osc", "name": "Oscillator", "format": "Built-in", "isInstrument": true, "params": 4, "presets": 2}]));
@@ -448,6 +476,87 @@ mod tests {
         assert_eq!((told[0]["rev"].clone(), told[0]["scanning"].clone()), (json!(2), json!(false)));
         rig.owner.refresh(&rig.ctl);
         assert!(said(&mut queue).is_empty(), "once");
+    }
+
+    #[test]
+    fn what_undo_and_redo_would_do_is_told_to_the_subscribed_with_the_answer_when_it_changes_and_not_otherwise() {
+        let mut rig = rig();
+        let (client, mut queue) = rig.hub.connect();
+        let (_plain, mut plain_queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        said(&mut queue);
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty(), "nothing changed");
+
+        // A change leaves something to undo: told after the event and before the answer.
+        let intent = volume(&rig, 0.5);
+        rig.tx.send(OwnerRequest::Apply { client, req_id: 1, intent }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        let told = said(&mut queue);
+        assert_eq!(types(&told), ["event", "history", "ack"]);
+        assert_eq!(told[1], json!({"type": "history", "undo": "set volume", "redo": null}));
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty(), "told once");
+
+        // The same kind of change again is the same step, which is no news; Undo is: what it did can be redone.
+        let intent = volume(&rig, 0.6);
+        rig.tx.send(OwnerRequest::Apply { client, req_id: 2, intent }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        assert_eq!(types(&said(&mut queue)), ["event", "ack"]);
+        rig.tx.send(OwnerRequest::Apply { client, req_id: 3, intent: Intent::Undo }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        let told = said(&mut queue);
+        assert_eq!(types(&told), ["event", "history", "ack"], "what Undo did is an event like the others");
+        assert_eq!(told[0]["event"]["type"], "gainSet");
+        assert_eq!(told[1], json!({"type": "history", "undo": null, "redo": "set volume"}));
+        assert!(said(&mut plain_queue).is_empty(), "a client that has not subscribed is told nothing");
+
+        // What the TUI does through the controller is told by the refresh.
+        let intent = volume(&rig, 0.9);
+        rig.ctl.apply(intent).unwrap();
+        assert_eq!(types(&said(&mut queue)), ["event"]);
+        rig.owner.refresh(&rig.ctl);
+        assert_eq!(said(&mut queue), [json!({"type": "history", "undo": "set volume", "redo": null})]);
+    }
+
+    #[test]
+    fn an_owner_that_starts_when_something_can_be_undone_does_not_tell_it_again_to_the_first_client() {
+        // (The TUI starts the web interface on a session it has been changing.)
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(SESSION).model, handles, None);
+        let node = ctl.model.instruments[0].node;
+        ctl.apply(Intent::SetGain { node, gain: Gain::Volume, value: 0.5 }).unwrap();
+        let hub = Arc::new(Hub::new(64));
+        let shared = Arc::new(Shared::new(ctl.rev, ctl.model.telemetry_layout()));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut owner = Owner::new(&mut ctl, hub.clone(), shared, rx);
+        let (client, mut queue) = hub.connect();
+        tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        owner.serve(&mut ctl);
+        let told = said(&mut queue);
+        assert_eq!(told[2], json!({"type": "history", "undo": "set volume", "redo": null}));
+        owner.refresh(&ctl);
+        assert!(said(&mut queue).is_empty(), "it was told with the snapshot");
+    }
+
+    #[test]
+    fn a_client_that_subscribes_late_is_told_what_undo_would_do_then_and_nobody_is_told_it_twice() {
+        let mut rig = rig();
+        let (early, mut early_queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client: early }).unwrap();
+        let intent = volume(&rig, 0.5);
+        rig.tx.send(OwnerRequest::Apply { client: early, req_id: 1, intent }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        said(&mut early_queue);
+        let (late, mut late_queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client: late }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        let told = said(&mut late_queue);
+        assert_eq!(types(&told), ["snapshot", "catalog", "history"]);
+        assert_eq!(told[2], json!({"type": "history", "undo": "set volume", "redo": null}));
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut early_queue).is_empty() && said(&mut late_queue).is_empty());
     }
 
     #[test]

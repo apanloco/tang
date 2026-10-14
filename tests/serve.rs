@@ -296,6 +296,62 @@ async fn a_browser_saves_the_session_to_its_own_file_and_the_file_has_what_it_ch
 }
 
 #[tokio::test]
+async fn a_browser_undoes_and_redoes_what_it_turned_and_is_told_what_it_can_do_and_the_file_has_what_is_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, _, snapshot) = listening(&tang).await;
+    let (filter, resonance) = param_of(&snapshot, "Filter", "resonance");
+    let history = |said: &[Value]| said.iter().rfind(|m| m["type"] == "history").cloned().expect("a message of the history");
+
+    // Nothing has been done: nothing to undo or redo, in the words of the refusal, and what a client is told to begin with.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "undo"}})).await;
+    let (refused, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!((refused["type"].clone(), refused["error"]["code"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!("invalid"), json!("there is nothing to undo")), "{refused}");
+    assert_eq!(history(&said), json!({"type": "history", "undo": null, "redo": null}));
+
+    // A knob turned is something to undo, told with the change (after its event, before the answer).
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setParam", "node": filter, "param": resonance, "value": 7.5}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack");
+    let types: Vec<&str> = said.iter().map(|m| m["type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["event", "history"], "{said:?}");
+    assert_eq!(said[1], json!({"type": "history", "undo": "set resonance", "redo": null}));
+
+    // Undo puts it back, as an event like the others, and the file, saved now, does not have it.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "undo"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 3).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(2)), "{answered}");
+    let put_back = said.iter().find(|m| m["type"] == "event").expect("an event");
+    assert_eq!((put_back["event"]["type"].clone(), put_back["event"]["node"].clone(), put_back["event"]["param"].clone()), (json!("paramSet"), json!(filter), json!(resonance)));
+    assert_ne!(put_back["event"]["value"], json!(7.5), "{put_back}");
+    assert_eq!(history(&said), json!({"type": "history", "undo": null, "redo": "set resonance"}));
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("resonance = 7.5"));
+
+    // Redo does it again, and the file has it when it is saved.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "redo"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 5).await;
+    assert_eq!(answered["type"], "ack");
+    assert_eq!(said.iter().find(|m| m["type"] == "event").unwrap()["event"]["value"], json!(7.5));
+    assert_eq!(history(&said), json!({"type": "history", "undo": "set resonance", "redo": null}));
+    tell(&mut client, json!({"type": "request", "reqId": 6, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 6).await["type"], "ack");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("resonance = 7.5"));
+
+    // A browser that comes now is told what can be undone, after the snapshot and the catalog.
+    let mut late = connect(&tang).await;
+    assert_eq!(next_json(&mut late).await["type"], "hello");
+    tell(&mut late, json!({"type": "subscribe"})).await;
+    let first = [next_json(&mut late).await, next_json(&mut late).await, next_json(&mut late).await];
+    let types: Vec<&str> = first.iter().map(|m| m["type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["snapshot", "catalog", "history"]);
+    assert_eq!(first[2], json!({"type": "history", "undo": "set resonance", "redo": null}));
+}
+
+#[tokio::test]
 async fn a_browser_is_told_what_plugins_can_be_added_and_never_where_they_are_installed() {
     let tang = Tang::start();
     let mut client = connect(&tang).await;
@@ -309,6 +365,11 @@ async fn a_browser_is_told_what_plugins_can_be_added_and_never_where_they_are_in
     let mut told = Vec::new();
     let osc = loop {
         let message = next_json(&mut client).await;
+        // (What can be undone follows the first catalog: there is nothing yet.)
+        if message["type"] == "history" {
+            assert_eq!(message, json!({"type": "history", "undo": null, "redo": null}));
+            continue;
+        }
         assert_eq!(message["type"], "catalog", "nothing else is told to a client that only listens: {message}");
         let found = message["entries"].as_array().unwrap().iter().find(|entry| entry["id"] == "builtin:osc").cloned();
         told.push(message);

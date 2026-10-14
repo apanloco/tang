@@ -74,6 +74,11 @@ pub enum ServerMessage {
     /// after the snapshot, and again whenever the scan finds more or ends (`scanning` goes false).
     /// It replaces what the client had; `rev` goes up with it.
     Catalog { rev: u64, scanning: bool, entries: Vec<CatalogEntry> },
+    /// What Undo and Redo would do: the words of the step each would put back or do again ("set cutoff"), or nothing if it
+    /// would do nothing. Sent after the snapshot and the catalog, and again whenever it changes (after the events of the intent
+    /// that changed it, and before its answer). It is not part of the session: it has no revision, and a client that has been told
+    /// nothing has nothing to undo.
+    History { undo: Option<String>, redo: Option<String> },
     /// The intent of the request `req_id` was applied; the session is at `rev`.
     Ack { req_id: u32, rev: u64 },
     /// The intent of the request `req_id` was not applied.
@@ -265,6 +270,11 @@ mod message_tests {
                     "entries": [{"id": "builtin:osc", "name": "Oscillator", "format": "Built-in", "isInstrument": true, "params": 8, "presets": 0}],
                 }),
             ),
+            (
+                ServerMessage::History { undo: Some("set cutoff".to_string()), redo: None },
+                json!({"type": "history", "undo": "set cutoff", "redo": null}),
+            ),
+            (ServerMessage::History { undo: None, redo: Some("move an effect".to_string()) }, json!({"type": "history", "undo": null, "redo": "move an effect"})),
         ];
         for (message, json) in cases {
             assert_eq!(wire(&message), json, "{message:?}");

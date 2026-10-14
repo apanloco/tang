@@ -41,6 +41,8 @@ const DOING: Record<Intent["type"], string> = {
   removeNode: "remove a node",
   moveEffect: "move an effect along its chain",
   save: "save the session",
+  undo: "undo",
+  redo: "redo",
 };
 
 const whyNot = (error: unknown): string => (error instanceof Error ? error.message : String(error));

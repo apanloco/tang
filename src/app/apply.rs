@@ -35,8 +35,12 @@ impl Controller {
     /// Carry out `intent`, and keep what puts it back in the history (what it is, `app::history`).
     pub fn apply(&mut self, intent: Intent) -> Result<Applied, IntentError> {
         // (Saving is the one intent that leaves the session with nothing unsaved.)
-        if matches!(intent, Intent::Save) {
-            return self.save_intent();
+        match intent {
+            Intent::Save => return self.save_intent(),
+            // (What they do is carried out as any intent is, and is no step of the history.)
+            Intent::Undo => return self.undo(),
+            Intent::Redo => return self.redo(),
+            _ => {}
         }
         let plan = self.plan_history(&intent);
         let applied = self.carry_out(intent)?;
@@ -68,7 +72,7 @@ impl Controller {
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
-            Intent::Save => unreachable!("saving is done above"),
+            Intent::Save | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
         self.dirty = true;
         self.rev += 1;
