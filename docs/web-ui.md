@@ -444,8 +444,17 @@ resolves cursor → ids and then calls `apply`.
   taking one out loses an instrument and all it has). A refusal changes nothing and is no revision. `LearnMidi` is the
   rest of the list that is not.)
 - Patterns: `RecordPattern`, `ClearPattern`, `SetPatternField`.
-- Globals: `SetBpm`, `SetScale`, `SetPianoMode`, `Save`, `SaveAs`, `Undo`,
-  `Redo`. (`Save` is built, step 18: it writes the session to its own file, as the TUI's
+- Globals: `SetBpm`, `SetScale`, `SetLocked`, `Save`, `SaveAs`, `Undo`,
+  `Redo`. (`SetScale { scale }` and `SetLocked { locked }` are built, step 24 (the plan said
+  `SetPianoMode`; a boolean says what it is): the Piano tab's scale, as the session file writes it
+  (`C major`, `F# dorian`: the roots may be sharps or flats, the names of the kinds short or long, in
+  any case), and whether the piano is locked to it, so that a note outside the scale is dropped where it
+  is sent. `SetScale` is refused, with nothing changed, for text that is not a scale ("Cé" is not a
+  scale: a root and a kind of scale, like C major or F# dorian"); the events are `ScaleSet`, which has the
+  scale as the file writes it, its root, its kind and the pitch classes of its notes, so that a client
+  draws it knowing no scale, and `LockedSet`; `PianoMeta` in the snapshot has the same, and the reducer of
+  the page and `Snapshot::change` take the two events. The TUI's `k` and `l` ask them (choosing the
+  scale that is set is no change there, as before). Both are saved with the session. `Save` is built, step 18: it writes the session to its own file, as the TUI's
   `Ctrl+S` does, and nobody names a file; it is answered by a revision and the event
   `Saved { file }`, which leaves the session with nothing unsaved; a session with no file, or
   one that cannot be written, is refused with the code `io`, which is no revision and changes
@@ -539,7 +548,8 @@ master peak and clip. A scope ring can follow later.
 - **Wire.** WebSocket binary frames: `u8 kind | u8 flags | u16 n |
   u32 layout_rev | n × f32`, where value *i* belongs to layout entry *i*. About
   30 Hz per subscribed channel group (`mod`, `meters`); nothing is sent when
-  nobody subscribes. Held notes go as a 16-byte bitset, on change.
+  nobody subscribes. Held notes go as a 16-byte bitset, on change (as planned; as built they
+  are a third channel of 128 values, see step 24 below).
   **As built (step 10):** the channels are `meters` (kind 0) and `modulation`
   (kind 1), little endian, `flags` 0. `web::pusher` makes a frame per wanted
   channel every `Config::telemetry_period` (33 ms) from `Shared::layout()` and the
@@ -548,8 +558,16 @@ master peak and clip. A scope ring can follow later.
   before; `[]` stops). A clip count goes as a count in an `f32` (exact up to 2^24
   buffers). A frame names the `rev` of the layout it follows; the layout is in the
   snapshot, and a `layout` message tells the subscribed clients when it changes
-  (a frame of a revision the client has not been told of is to be ignored). The
-  held-notes channel is not built.
+  (a frame of a revision the client has not been told of is to be ignored).
+  **As built (step 24):** the held notes are a third channel, `held` (kind 2): 128 `f32` values, one for each
+  note at the place of its number, 1 for a note that is held (by whatever source: a MIDI keyboard, the
+  computer's keys of the TUI or of a page, the pointer on a page's piano) and 0 for the rest,
+  `layout_rev` 0 (it follows no layout, and a client takes it at any time), every tick like the other channels
+  (512 bytes at 30 Hz for each client that asks). They are read from the same `HeldNotes` bits the Piano tab
+  reads (`NoteInput::held`, which the server hands the pusher). The bitset on change that this section planned
+  is 16 bytes and fewer of them; it was not worth a second frame format and the bookkeeping of what each client
+  has been told (D27). A client forgets which notes are held when its connection is lost (the server ends the
+  notes of a connection that goes, and the first frame after it is back says what is held then).
 - **Visual vocabulary.** Knob = base value; ring = modulation extent (depth ×
   range); dot = effective value.
 
@@ -932,6 +950,42 @@ still fails for a frame that takes 25 ms. The commit count is React's Profiler, 
 a development build has, so the browser tests run on the Vite dev server (`Instrumented`,
 `window.tangCommits`).
 
+### 9.5 Piano
+
+**As built (step 24).** The TUI's Piano tab is on the page, below the canvas (`app/piano/`: `Piano`, `PianoBar`,
+`PianoKeys`; `client/pianoLayout.ts`, `client/pointerPiano.ts`, `client/holds.ts`). Its place is there from the start, empty
+until the session is, and as tall as it is with the keys in it (149 px): the canvas is fitted to the room it has when it is
+first drawn, and a piano that came a moment after took some of it (the Oscillator's node ended up partly under it).
+
+- **The keys.** The white and the black keys of as many whole octaves as the width has room for at 30 px a white key (`octavesFor`:
+  one to six; the width of the keys is watched by a `ResizeObserver`), starting where the notes that the keys of the computer play are
+  in the middle (`firstBlock`: they play 29 semitones from the C of the octave that the bar's `Keys: octave N` says, and `[` and `]`
+  move the window as they move the keys). The white keys are a row that shares the width; a black key is placed over the boundary
+  after as many white keys as come before it (`--after`, with `--whites` on the row). A key is a button named by its note as the TUI
+  names it (`C4` is 60), with the letter of a white key on it and the octave as well on a C; it is not a tab stop (the computer's
+  keys are the keyboard's way to play, and sixty-odd tab stops are no way to move through a page).
+- **Colours** are the TUI's. A stripe along the bottom of a key says what it is in the scale the server tells (`PianoMeta`'s root
+  and pitch classes: the page holds no table of scales and works none out): gold for the root, teal for another note of the scale,
+  none for the rest. A key that is held sinks a shade; one that is held and not in the scale goes red, the wrong note. When the
+  piano is locked a key that is not in the scale is dimmed: it is not played.
+- **Held keys** come from the `held` telemetry channel (§6). A callback on the page's frame loop writes `data-held` and
+  `aria-pressed` to the keys that changed, whoever holds the note (the page, a MIDI keyboard, the TUI's virtual piano, another
+  browser), and no frame makes the piano render again. What is lit is read off the elements when the keys are drawn again (React keeps
+  the element of a key that is in both windows when the octave moves, and a note that ended meanwhile must not stay lit).
+- **Playing.** A pointer plays the key it is on while it is down (`PointerPiano`): it slides from key to key as a glissando, the note
+  ends where it goes off the keys and plays again where it comes back to one, and several pointers play a chord. The keys' row asks to
+  keep the pointer (it plays on over the edge of the keys) and the page lets go of it wherever it goes up, when the window loses
+  the focus, when the page is hidden and when the piano is taken off. A press neither moves the focus nor selects, so a knob that has the
+  focus keeps the keys of the computer. The notes of the computer's keys and of the pointer go through one count of who holds each note
+  (`NoteHolds`, the provider's `useNotes`), so that a note both hold ends when the last lets go.
+- **Scale and lock.** The bar has the scale as two choices, a root and a kind (`SCALE_ROOTS` and `SCALE_KINDS` of the generated
+  constants), and a toggle, "Lock to scale". They ask `SetScale` and `SetLocked`; like the keys of a lane they show what was chosen until
+  the answer is in (the last choice while the earlier ones are answered), and after it what the session has. The lock is the sender's:
+  the server drops a note that is not in the scale from every source (a MIDI keyboard, the computer's keys, the pointer), so the page
+  only shows it. Both are saved with the session (`[piano]`), and the TUI's `k` and `l` ask the same intents, so each sees the other's.
+- *Not built:* a picker that filters as the TUI's does (two plain choices do), the notes of the scale named on the keys, the chord readout and
+  the scale strip of the TUI's tab, a velocity from where on the key the pointer is, the labels of the computer's keys on the piano.
+
 ## 10. Testing and CI
 
 - **TUI safety net first:** golden-render tests through ratatui's `TestBackend`
@@ -976,8 +1030,8 @@ implementations. The TUI golden tests are the regression net.
 2. **Piano parity:** scale / lock, held notes, chords, BPM. *Exit:* play from
    the browser keyboard; held notes and chords match the TUI. (The computer keyboard
    plays notes in the page since step 16, ahead of this phase, so that what is built
-   can be tried by ear without a MIDI keyboard; still to do: showing the scale and the
-   held notes, chords, BPM, an on-screen keyboard.)
+   can be tried by ear without a MIDI keyboard; step 24 built the scale and the lock, the
+   held notes and an on-screen keyboard, §9.5; still to do: chords, BPM.)
 3. **Modulation, groups, patterns, MIDI-learn on the canvas.** *Exit:*
    everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
    a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
@@ -2203,6 +2257,62 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 880 tests (875 before the step), 1029 with the `web` feature and 14 on the
     real program (13); web 938 (902); 41 in browsers (40).
 
+- [x] **24. The piano in the page (phase 2, ahead of phase 1's end).** The TUI's Piano tab was the one view of the
+  session the page did not have: the notes that are held, the scale, the lock. *Done when:* on the real program, a browser
+  plays notes with the pointer on a keyboard under the canvas, the keys show what is held (by the page, by a MIDI keyboard,
+  by another browser), the scale colours them and is chosen on the page, and a lock to the scale drops the notes outside it,
+  whoever plays them; the file the session is saved to has the scale and the lock. In parts, each its own commit: **24.1**
+  the held notes as a telemetry channel (the pusher, the client's buffers, the mock engine); **24.2** `SetScale` and
+  `SetLocked` as intents, which the TUI's `k` and `l` ask too, with the roots and the kinds of scale in the generated
+  constants; **24.3** the piano. *Not done (later steps):* groups (the TUI's `g` is not an intent yet), taking a lane or a
+  group out with a confirmation (there is no undo), the nodes' layout (`ui` tables, pinning), undo; and on the piano the
+  chord readout, the scale strip and BPM of the TUI's tab (§9.5).
+  - **24.1 as built.** §6 above: `TelemetryChannel::Held` (kind 2): 128 values, 1 for a held note, no layout, every tick, from
+    `NoteInput::held()` (the same bits the Piano tab reads); `web::pusher` makes a frame for each of three channels. The
+    client's `TelemetryBuffers` has a 128-value array from the start that a layout does not reset, takes a frame of it at
+    any time if it is 128 long, and says `isHeld(note)`; the mock engine tells the notes that any of its connections holds; the
+    page asks for the channel (`createConnection`). A real-program test has a browser hear a note that another holds.
+  - **24.2 as built.** §5 above: `Intent::SetScale { scale }`, `SetLocked { locked }`, `Event::ScaleSet { scale, root, kind,
+    notes }`, `LockedSet { locked }`; `PianoMeta` in the snapshot has `scale`, `root`, `kind`, `notes` and `locked`; the controller
+    sets the shared `PianoFilter` (what the note senders read) and the TUI's picker and lock key ask it (a revision and a change
+    to save, as every intent; the scale that is set chosen again is no change). `ScaleSetting` says its pitch classes
+    (`pitch_classes`, lowest first), its root name and its kind. `constants.ts` has `SCALE_ROOTS` and `SCALE_KINDS`
+    (the long name, the short name and the intervals of each kind). On the page: the reducer takes the two events, `Editor.setScale`
+    and `setLocked` (notices say what could not be done), and the mock engine reads a scale as the controller does
+    (`client/scales.ts`: flats, long names, any case), from the intervals of the constants. A real-program test sets a scale
+    and the lock from a browser, plays a note outside the scale (silent and never held) and one inside (heard and held), saves (the
+    file has `[piano]`, the scale and `locked = true`), unlocks, and is refused a text that is not a scale.
+  - **24.3 as built.** §9.5 above. Besides the piano: `NoteHolds` (`client/holds.ts`, the provider's `useNotes`), through which
+    the computer's keys and the pointer play, so that a note both hold ends when both let go; the client forgets which notes are
+    held when its connection is lost; the shared test rig has `holdable` (a connection whose answers can be held back), which the
+    keys cell's tests had of their own; the tests' jsdom has a hit test that finds nothing.
+  - **Tests.** Rust: 13 more tests (893 against 880; with the `web` feature 17 more, 1046 against 1029, and two more on the real
+    program, 16 against 14): four on the scale (text that is not a scale, the pitch classes of every root and kind, the names),
+    six on the controller (the two intents, what they refuse, the lock in the filter, the file), two on the TUI (the picker and the
+    lock key are intents), one on the note path's held bits; and with `web` two on the generated constants and two on the pusher's
+    held channel. The wire lists, the bad-input list and the snapshot invariant have the two intents and the two events. On the
+    real program: the held notes that one browser plays and another sees, and the scale, the lock and the note that is dropped.
+    37 mutations of the Rust (8 of the held channel, 29 of the scale and the lock), all caught against green baselines. Web: 100
+    more tests (938 before the step): the held notes in the buffers and through the mock, the reducer, the editor, the scale reader,
+    the layout, the pointer piano, the note holds, the provider, 33 of the component and 4 of the page; in a browser on the real
+    program one: the keys, a key by the mouse and a glissando, the computer's keys, the window, the scale, the lock (a note outside
+    the scale heard and lit unlocked, silent locked), and the file. 45 mutations of the held notes (15), their forgetting (5) and the
+    scale and the lock (25) on the page, and 59 of the piano, all caught in the end; four were not at first, and a test was made
+    for each: the revision in the header of the mock's held frame, the words the editor sends, the keys that are kept through a move
+    of the window, and the root chosen after the kind.
+  - **Found on the way.** `ScaleSetting::parse` panicked on text with a letter that is not ASCII where a root's name ends
+    (`"Cé"`: four of the eleven texts of the test did, measured by running the old slicing on each): a session file with it took the
+    program down at load, and `SetScale` would have let a browser do it (`fe14830`). The verification matrix found a dead-code
+    clippy error in the builds without `web` (`NoteInput::held`), fixed before it was committed. The page that lost its server kept
+    the keys lit that were down when it went (`c86944e`). The first screenshot of the piano showed the bottom of a node under it: the
+    piano came after the canvas had been fitted, which is why its place is reserved from the start (§9.5). In the
+    docs: §5 said `SetPianoMode` (built as `SetLocked`), §6 a bitset on change (built as 128 values, D27), and CLAUDE.md said the
+    TUI paints a held key red (magenta on the root) while the code sinks a held key in the scale and paints red only one that is
+    not in it; they say what the code does now, and so does a comment in `piano_view.rs`. A refactoring that is worth doing:
+    `client/notes.ts` keeps its own list of the twelve names (`LETTERS`) that `SCALE_ROOTS` of the generated constants is.
+  - **Numbers at the end of the step.** Rust 893 tests (880 at the end of step 23), 1046 with the `web` feature and 16 on the real
+    program (1029 and 14), 888 without the default plugin formats and 1039 with `web`; web 1038 (938); 42 in browsers (41).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2246,6 +2356,7 @@ mixer, delay, …) are the natural first increment.
 | D24 | A preset is chosen from a menu on the node of the plugin that has it, the one loaded last marked and the menu opening on it; the knobs take the values from the `PresetLoaded` event, which every client is told, and the page reads nothing of the preset itself (a plugin of the machine's is not the page's to open); a load must also move what the cables that drive the plugin are centred on, which is the engine's to do (f64); a bus effect is offered none until the audio thread can load a preset into a group's chain | Built (step 21) |
 | D25 | All the parameters of a plugin are reached through one panel docked beside the canvas, with a filter by name, and not by letting a node grow: the layout of the canvas stays a function of the graph (no node changes size by a click), a plugin with thousands of parameters costs a page of rows, and a row is the same session parameter as a knob (one `Control` for both: what was set shows until the engine has answered) | Built (step 22) |
 | D26 | A lane's keys are chosen in the page as two notes, `any` or a note each, and are never typed as text (`C0-B3`): the text is for the session file and the TUI, which have one parser; the intent carries numbers, a choice that would cross the other end pushes it along instead of being refused, and the whole keyboard is no range | Built (step 23) |
+| D27 | The piano of the page draws what the server tells and decides nothing: the scale arrives as its root and pitch classes (the page holds no table of scales), the held keys as a telemetry channel of 128 values at the telemetry rate rather than the bitset on change that §6 planned (one frame format to read, by the note's number, and no bookkeeping of what each client was told), and the lock is the sender's (the server drops a note outside the scale from every source, so the page cannot disagree with a MIDI keyboard about it) | Built (step 24) |
 
 Open questions
 

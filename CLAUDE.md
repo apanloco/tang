@@ -903,18 +903,22 @@ The keyboard auto-sizes to the terminal width — it tries 4 octaves and
 the widest white-key width that fits, falling back to narrower or fewer
 octaves as needed. The view is centered on `piano_view_octave`.
 
-Key colors (in order of priority):
-- **Held** → bright red (magenta if also root)
-- **Root** of current scale → amber/gold
-- **Scale tone** (non-root) → teal
-- **Off-scale** → plain white/black
+The keys are a natural piano (white and black bodies) with a stripe along the
+bottom of each for what it is in the scale: **gold** for the root, **teal** for
+the other scale tones, none for the rest. A key that is held sinks (its body
+goes a shade grayer, the stripe stays); one that is held and is **not in the
+scale** goes red, the "wrong note" (in Locked mode it never appears: off-scale
+notes cannot be held).
 
 | Key | Action |
 |-----|--------|
-| `k` | Open scale picker (root + scale type, filterable) |
-| `l` | Toggle Locked mode: off-scale notes are dropped at the sender (Highlight, the default, only colours them) |
+| `k` | Open scale picker (root + scale type, filterable); the choice is the `SetScale` intent |
+| `l` | Toggle Locked mode: off-scale notes are dropped at the sender (Highlight, the default, only colours them); it is the `SetLocked` intent |
 | `[` | Shift view octave down |
 | `]` | Shift view octave up |
+
+The browser page has the same piano under its canvas, with the same colours
+(see "Web UI"); a scale or a lock chosen in either is seen in the other.
 
 The scale persists in the session file under a top-level `[piano]`
 section:
@@ -987,7 +991,10 @@ stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
 waveform rounded to its index: sine, triangle, saw, square), `SetEdgeDepth` (a
 modulation cable's depth, -1 to 1) and `SetRange { node, range }` (the notes a lane takes, both
 ends included, or every note for none; refused for a node that is no lane, a note above 127 and a low
-note above the high one; the TUI's `R` popup asks it too); `Save` (the session's own file); and seven that change
+note above the high one; the TUI's `R` popup asks it too), `SetScale { scale }` (the Piano tab's scale, as
+the session file writes it, `F# dorian`, flats, long names and any case taken; refused for text that is
+not a scale; answered with `ScaleSet`, which has the root and the pitch classes a client draws from) and
+`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too); `Save` (the session's own file); and seven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1106,7 +1113,11 @@ change the octave (0 to 8) and the page's header says `Keys: octave 4`; a key wi
 Command or Alt is the browser's. A note ends with the key that began it, at the octave it began
 in, and what is held is let go when the window loses the focus or the page is hidden (the server
 ends a closed connection's notes too). The notes go to the server as `noteOn` and `noteOff`: the
-one note path, so the Piano tab's Locked mode applies to them.
+one note path, so the Piano tab's Locked mode applies to them. The page also draws a piano under its
+canvas (step 24; `web/src/app/piano/`): its keys are played with the pointer (`client/pointerPiano.ts`:
+a glissando, a chord for several pointers), a note that a key and the pointer both hold ends when both
+let go (`client/holds.ts`, the provider's `useNotes`), and the keys light for the notes the server says
+are held, whoever holds them (the `held` telemetry channel).
 
 ## Signal chain
 
@@ -1447,7 +1458,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   as the scan finds more (`catalog { rev, scanning, entries }`: ids and names, never where a
   plugin is installed; `tang serve` starts the scan, the TUI its own); the
   telemetry frames are made by `web::pusher` at 30 Hz for the channels a client
-  asked for. `NoteInput` (`src/note_input.rs`) is the one note path of hardware
+  asked for (`meters`, `modulation` and `held`: a value for each of the 128 notes, 1 for a note that
+  is held, from the same bits the Piano tab reads). `NoteInput` (`src/note_input.rs`) is the one note path of hardware
   MIDI, the virtual piano and the browser: the Piano tab's filter, the held-notes
   bits and the channel to the audio thread, with the notes a WebSocket holds ended
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
@@ -1493,7 +1505,11 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   page of forty rows at a time, turned like the knobs (`ParamPanel`, `ParamRow`, `client/paramSearch.ts`;
   Escape or the button again closes it). Step 23 added the keys of a lane: every lane has a "Keys" cell
   with a lowest and a highest key (or `any` at an open end) that asks `SetRange` (`RangeCell`; the notes are
-  named as in the TUI, `client/notes.ts`). What the controller
+  named as in the TUI, `client/notes.ts`). Step 24 added the piano: under the canvas, the keys of a
+  keyboard in the scale of the session (the root gold, the other notes teal), lit while a note is held
+  and played with the pointer, with the scale as two choices and a "Lock to scale" toggle
+  (`app/piano/`: `Piano`, `PianoBar`, `PianoKeys`; `client/pianoLayout.ts`; the intents `SetScale` and
+  `SetLocked`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1543,7 +1559,8 @@ first of phase 3 ahead of phase 1 (D18): a modulator's settings and a cable's de
 modulators and cables are added and taken out, in the browser and in the TUI. Step 16 made the keys
 of the computer a piano in the page, so that what is built can be tried by ear. Phase 1 (session
 parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
-page saves the session (18), puts effects (19) and instruments (20) in the chains and loads presets (21).
+page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
+parameter of a plugin (22), sets a lane's keys (23) and has the piano (24).
 TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
@@ -1570,8 +1587,7 @@ changes without an intent: until then connected browsers are given a snapshot
 (`Controller::resync`).
 TODO: the events of one intent share its revision, which a client takes for a repeat
 if there is more than one (every intent makes one event today).
-TODO: the held-notes telemetry channel (a 16-byte bitset, on change) and keep-alive
-pings for WebSockets.
+TODO: keep-alive pings for WebSockets.
 
 ## Platform
 
