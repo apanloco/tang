@@ -1,11 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP } from "../protocol";
-import type { Event, Intent, Snapshot } from "../protocol";
-import { historyFixture } from "./fixtures";
+import type { Event, Intent, Node, Snapshot } from "../protocol";
+import { builtinCatalog, historyFixture, shapeOf } from "./fixtures";
 import type { HistoryRow } from "./fixtures";
-import { History, planOf, stepOf } from "./history";
-import type { Key } from "./history";
+import { History, planOf, stepOf, takesOut } from "./history";
+import type { Key, Made } from "./history";
 import { MockServer } from "./mock";
 
 // The history of what a person turned and the way back (docs/web-ui.md §5, D35): the mock engine's, which has to be the controller's
@@ -141,8 +141,8 @@ describe("what the name of a group is put back to", () => {
   const rename = (node: number): Intent => ({ type: "renameGroup", node, name: "Strings" });
   /** The intents that put back what `intent` changes in `from`, or none if it is no step. */
   const undoOf = (from: Snapshot, intent: Intent): Intent[] => {
-    const plan = planOf(from, intent, 0);
-    return typeof plan === "object" ? plan.step.undo : [];
+    const plan = planOf(from, intent, 0, builtinCatalog);
+    return typeof plan === "object" && "step" in plan ? plan.step.undo : [];
   };
 
   test("is its name, for a group that has been given one", () => {
@@ -158,6 +158,252 @@ describe("what the name of a group is put back to", () => {
   test("is its name, for a group that was given the name that another place has by default", () => {
     const nodes = snapshot.graph.nodes.map((node) => (node.id === unnamed.id ? { ...node, name: "Group 1" } : node));
     expect(undoOf({ ...snapshot, graph: { ...snapshot.graph, nodes } }, rename(unnamed.id))).toEqual([{ type: "renameGroup", node: unnamed.id, name: "Group 1" }]);
+  });
+});
+
+describe("what an add is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const nodeOf = (name: string): number => {
+    const found = snapshot.graph.nodes.find((n) => n.name === name);
+    if (!found) throw new Error(`no node called ${name}`);
+    return found.id;
+  };
+  const [lane0, lane1] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n.id] : []));
+  const [pad, other] = snapshot.graph.nodes.flatMap((n) => (n.kind === "group" ? [n.id] : []));
+  if (lane0 === undefined || lane1 === undefined || pad === undefined || other === undefined) throw new Error("the fixture has two lanes and two groups");
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const labelOf = (intent: Intent): string | null => {
+    const planned = plan(intent);
+    if (typeof planned !== "object") return null;
+    return "added" in planned ? planned.added.label : planned.step.label;
+  };
+
+  test("is named in the words a button has for it", () => {
+    expect(labelOf({ type: "addEffect", parent: lane0, plugin: "builtin:reverb" })).toBe("add Reverb");
+    expect(labelOf({ type: "addInstrument", plugin: "builtin:osc" })).toBe("add Oscillator as an instrument");
+    expect(labelOf({ type: "addModulator", parent: lane0, kind: "lfo" })).toBe("add an LFO");
+    expect(labelOf({ type: "addModulator", parent: lane0, kind: "envelope" })).toBe("add an envelope");
+    expect(labelOf({ type: "addModulator", parent: lane0, kind: "midiLearn" })).toBe("add a MIDI control");
+    expect(labelOf({ type: "addModEdge", modulator: nodeOf("LFO"), to: { node: lane0, port: { type: "param", index: 1 } } })).toBe("draw a cable");
+    expect(labelOf({ type: "addGroup", members: [] })).toBe("add a group");
+    expect(labelOf({ type: "setLaneGroup", node: lane1, group: other })).toBe("put a lane in a group");
+    expect(labelOf({ type: "setLaneGroup", node: lane0, group: null })).toBe("take a lane out of its group");
+  });
+
+  test("is no step for a plugin that the catalog does not name, which is refused", () => {
+    expect(plan({ type: "addEffect", parent: lane0, plugin: "builtin:nothing" })).toBe("nothing");
+    expect(plan({ type: "addInstrument", plugin: "builtin:nothing" })).toBe("nothing");
+  });
+
+  test("is carried by its time, and an undo is made only once it is known what was made", () => {
+    const planned = plan({ type: "addGroup", members: [] });
+    expect(planned).toEqual({ added: { label: "add a group", intent: { type: "addGroup", members: [] }, at: 7 } });
+  });
+
+  test("of a group made of a lane that is in another is what cannot be undone, whatever else is in the list", () => {
+    expect(plan({ type: "addGroup", members: [lane0] })).toBe("barrier");
+    expect(plan({ type: "addGroup", members: [lane1, lane0] })).toBe("barrier");
+    expect(labelOf({ type: "addGroup", members: [lane1] })).toBe("add a group");
+  });
+
+  test("of a lane that is put in the group it is in, or taken out of none, is no change", () => {
+    expect(plan({ type: "setLaneGroup", node: lane0, group: pad })).toBe("nothing");
+    expect(plan({ type: "setLaneGroup", node: lane1, group: null })).toBe("nothing");
+  });
+
+  test("puts a lane back in the group it was in, and a lane that was in none in none", () => {
+    const undo = (intent: Intent): Intent[] => {
+      const planned = plan(intent);
+      return typeof planned === "object" && "step" in planned ? planned.step.undo : [];
+    };
+    expect(undo({ type: "setLaneGroup", node: lane1, group: other })).toEqual([{ type: "setLaneGroup", node: lane1, group: null }]);
+    expect(undo({ type: "setLaneGroup", node: lane0, group: other })).toEqual([{ type: "setLaneGroup", node: lane0, group: pad }]);
+    expect(undo({ type: "setLaneGroup", node: lane0, group: null })).toEqual([{ type: "setLaneGroup", node: lane0, group: pad }]);
+  });
+});
+
+describe("what takes out what an add made", () => {
+  const snapshot = historyFixture.snapshot;
+  const [lane0] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n.id] : []));
+  const lfo = snapshot.graph.nodes.find((n) => n.kind === "modulator");
+  const cable = snapshot.graph.edges.find((e) => e.kind === "modulation");
+  if (lane0 === undefined || !lfo || cable?.kind !== "modulation") throw new Error("the fixture has a lane, a modulator and a cable");
+  const addEffect: Intent = { type: "addEffect", parent: lane0, plugin: "builtin:reverb" };
+  const addCable: Intent = { type: "addModEdge", modulator: lfo.id, to: { node: lane0, port: { type: "param", index: 1 } } };
+  const nodes = (...ids: number[]): Made => ({ nodes: ids, edges: [] });
+  const edges = (...ids: number[]): Made => ({ nodes: [], edges: ids });
+
+  test("is the one node that was made, if it is there", () => {
+    expect(takesOut(snapshot, addEffect, nodes(lfo.id))).toEqual({ type: "removeNode", node: lfo.id });
+    expect(takesOut(snapshot, addEffect, nodes())).toBeNull();
+    expect(takesOut(snapshot, addEffect, nodes(lfo.id, lane0))).toBeNull();
+    expect(takesOut(snapshot, addEffect, nodes(9_999))).toBeNull();
+  });
+
+  test("is the one cable that was made, if it is there", () => {
+    expect(takesOut(snapshot, addCable, edges(cable.id))).toEqual({ type: "removeEdge", edge: cable.id });
+    expect(takesOut(snapshot, addCable, edges())).toBeNull();
+    expect(takesOut(snapshot, addCable, edges(cable.id, cable.id))).toBeNull();
+    expect(takesOut(snapshot, addCable, edges(9_999))).toBeNull();
+  });
+
+  test("is nothing when what was made is of the other kind, or both kinds", () => {
+    expect(takesOut(snapshot, addCable, nodes(lfo.id))).toBeNull();
+    expect(takesOut(snapshot, addCable, { nodes: [lfo.id], edges: [cable.id] })).toBeNull();
+    expect(takesOut(snapshot, addEffect, edges(cable.id))).toBeNull();
+    expect(takesOut(snapshot, addEffect, { nodes: [lfo.id], edges: [cable.id] })).toBeNull();
+  });
+});
+
+describe("the mock engine's undo of what is added", () => {
+  const fresh = (): MockServer => new MockServer({ snapshot: historyFixture.snapshot });
+  const lanes = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n.id] : []));
+  const groups = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "group" ? [n.id] : []));
+  const [lane0, lane1] = lanes;
+  const [pad, other] = groups;
+  if (lane0 === undefined || lane1 === undefined || pad === undefined || other === undefined) throw new Error("the fixture has two lanes and two groups");
+  /** The structure of the session without what the telemetry says (its slots are never given again). */
+  const graphOf = (server: MockServer): string => canonical(server.snapshot.graph);
+  const labels = (server: MockServer): [string | null, string | null] => [server.history.undo, server.history.redo];
+  /** Do `intent`, and say which node it made (the one the session did not have). */
+  const made = (server: MockServer, intent: Intent): Node => {
+    const had = new Set(server.snapshot.graph.nodes.map((n) => n.id));
+    server.apply(intent);
+    const added = server.snapshot.graph.nodes.find((n) => !had.has(n.id));
+    if (!added) throw new Error(`${JSON.stringify(intent)} made no node`);
+    return added;
+  };
+
+  test("takes an effect out by undo and puts it back by redo under the id it had, the session as it was each time", () => {
+    const server = fresh();
+    const before = graphOf(server);
+    server.apply({ type: "addEffect", parent: lane0, plugin: "builtin:reverb" });
+    const added = graphOf(server);
+    expect(labels(server)).toEqual(["add Reverb", null]);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    expect(labels(server)).toEqual([null, "add Reverb"]);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(added);
+    expect(labels(server)).toEqual(["add Reverb", null]);
+  });
+
+  test("puts back what was done to an effect that was added on the effect that comes back", () => {
+    const server = fresh();
+    const added = made(server, { type: "addEffect", parent: lane0, plugin: "builtin:reverb" });
+    server.apply({ type: "setGain", node: added.id, gain: "mix", value: 0.25 });
+    server.apply({ type: "undo" });
+    server.apply({ type: "undo" });
+    expect(server.snapshot.graph.nodes.some((n) => n.id === added.id)).toBe(false);
+    server.apply({ type: "redo" });
+    server.apply({ type: "redo" });
+    const back = server.snapshot.graph.nodes.find((n) => n.id === added.id);
+    expect(back?.kind === "effect" ? back.mix : null).toBe(0.25);
+  });
+
+  test("takes an effect on the bus of a group out and puts it back the same way", () => {
+    const server = fresh();
+    const before = graphOf(server);
+    server.apply({ type: "addEffect", parent: pad, plugin: "builtin:filter" });
+    const added = graphOf(server);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(added);
+  });
+
+  test("takes a modulator and a cable out one at a time, and puts them back under their ids", () => {
+    const server = fresh();
+    const filter = server.snapshot.graph.nodes.find((n) => n.name === "Filter" && n.parent === lane0);
+    if (!filter) throw new Error("no filter");
+    const before = graphOf(server);
+    const lfo = made(server, { type: "addModulator", parent: lane0, kind: "lfo" });
+    const withModulator = graphOf(server);
+    server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: filter.id, port: { type: "param", index: 1 } } });
+    const withCable = graphOf(server);
+    expect(labels(server)).toEqual(["draw a cable", null]);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(withModulator);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(withModulator);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(withCable);
+  });
+
+  test("takes an instrument out as a lane and puts it back with its id, though the telemetry gives it new slots", () => {
+    const server = fresh();
+    const before = graphOf(server);
+    server.apply({ type: "addInstrument", plugin: "builtin:osc" });
+    const added = graphOf(server);
+    const slots = JSON.stringify(server.snapshot.telemetry.meters);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(added);
+    expect(JSON.stringify(server.snapshot.telemetry.meters)).not.toBe(slots);
+  });
+
+  test("takes a group out with its lanes in none, and puts it back with them in it", () => {
+    const server = fresh();
+    const before = graphOf(server);
+    server.apply({ type: "addGroup", members: [lane1] });
+    const added = graphOf(server);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(added);
+  });
+
+  test("forgets what came before a group that took a lane out of another, as the controller does", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    expect(server.history.undo).not.toBeNull();
+    server.apply({ type: "addGroup", members: [lane0] });
+    expect(labels(server)).toEqual([null, null]);
+  });
+
+  test("moves a lane between groups and back, and forgets what came before a lane that leaves a group that drives it", () => {
+    const server = fresh();
+    const before = graphOf(server);
+    server.apply({ type: "setLaneGroup", node: lane1, group: other });
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    server.apply({ type: "setLaneGroup", node: lane0, group: other });
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    // A group's own modulator drives the lane: the cable goes when the lane leaves, and a step does not bring it back.
+    const lfo = made(server, { type: "addModulator", parent: pad, kind: "lfo" });
+    server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: lane0, port: { type: "param", index: 1 } } });
+    expect(server.history.undo).toBe("draw a cable");
+    server.apply({ type: "setLaneGroup", node: lane0, group: null });
+    expect(labels(server)).toEqual([null, null]);
+  });
+
+  test("leaves the history as it was for an add that is refused", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    const before = labels(server);
+    const refused: Intent[] = [
+      { type: "addEffect", parent: lane0, plugin: "builtin:nothing" },
+      { type: "addEffect", parent: 9_999, plugin: "builtin:reverb" },
+      { type: "addInstrument", plugin: "builtin:reverb" },
+      { type: "addModulator", parent: 9_999, kind: "lfo" },
+      { type: "addGroup", members: [9_999] },
+      { type: "setLaneGroup", node: 9_999, group: null },
+    ];
+    for (const intent of refused) expect(() => server.apply(intent), JSON.stringify(intent)).toThrow();
+    expect(labels(server)).toEqual(before);
+  });
+
+  test("does not give the id an undone add had to another node, and a change after the undo ends the redo", () => {
+    const server = fresh();
+    const first = made(server, { type: "addEffect", parent: lane0, plugin: "builtin:reverb" });
+    server.apply({ type: "undo" });
+    const second = made(server, { type: "addEffect", parent: lane0, plugin: "builtin:filter" });
+    expect(second.id).not.toBe(first.id);
+    expect(labels(server)).toEqual(["add Filter", null]);
   });
 });
 
@@ -201,6 +447,13 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
     } else {
       if (canonical(events) !== canonical(row.events)) wrong.push(`${what}: events ${canonical(events)}, not ${canonical(row.events)}`);
       if (restructured !== row.restructured) wrong.push(`${what}: restructured ${String(restructured)}, not ${String(row.restructured)}`);
+      else if (row.restructured) {
+        // What the session comes to: the nodes and the cables with their ids, and the layout of the telemetry.
+        const shape = shapeOf(server.snapshot);
+        for (const list of ["nodes", "audio", "cables", "meters", "modulation"] as const) {
+          if (JSON.stringify(shape[list]) !== JSON.stringify(row.shape[list])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list])}, not ${JSON.stringify(row.shape[list])}`);
+        }
+      }
     }
     if (canonical(server.history) !== canonical(row.history)) wrong.push(`${what}: history ${canonical(server.history)}, not ${canonical(row.history)}`);
   });
@@ -216,8 +469,26 @@ describe("the mock engine's history", () => {
   test("has been tried with every kind of change the history knows, with each of what it cannot undo yet, and with the refusals of Undo and Redo: the fixture is not thin", () => {
     const rows = historyFixture.scripts.flatMap((script) => script.rows);
     const intents = new Set(rows.flatMap((row) => ("intent" in row ? [row.intent.type] : [])));
-    const undoable: Intent["type"][] = ["setParam", "setGain", "setModulatorField", "setEdgeDepth", "setRange", "setNodeUi", "setPinned", "renameGroup", "setScale", "setLocked", "moveEffect"];
-    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "removeEdge", "removeNode", "replaceInstrument"];
+    const undoable: Intent["type"][] = [
+      "setParam",
+      "setGain",
+      "setModulatorField",
+      "setEdgeDepth",
+      "setRange",
+      "setNodeUi",
+      "setPinned",
+      "renameGroup",
+      "setScale",
+      "setLocked",
+      "moveEffect",
+      "addEffect",
+      "addInstrument",
+      "addModulator",
+      "addModEdge",
+      "addGroup",
+      "setLaneGroup",
+    ];
+    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeEdge", "removeNode", "replaceInstrument"];
     const kinds: Intent["type"][] = [...undoable, ...barriers, "undo", "redo"];
     for (const type of kinds) expect(intents.has(type), type).toBe(true);
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));

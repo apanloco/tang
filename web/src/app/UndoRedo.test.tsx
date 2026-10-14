@@ -137,8 +137,8 @@ describe("the buttons of Undo and Redo", () => {
     await waitFor(() => {
       expect(undoButton().disabled).toBe(false);
     });
-    // Something that cannot be undone, which empties the history without telling this page.
-    made.server.applyQuietly({ type: "addGroup", members: [] });
+    // Something that cannot be undone (another instrument in a lane), which empties the history without telling this page.
+    made.server.applyQuietly({ type: "replaceInstrument", node: oscillator.id, plugin: "builtin:osc" });
     fireEvent.click(undoButton());
     expect(await screen.findByText("Could not undo: there is nothing to undo")).toBeTruthy();
     expect(undoButton().disabled).toBe(false);

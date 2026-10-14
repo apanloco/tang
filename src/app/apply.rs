@@ -3325,50 +3325,9 @@ type = "midi"
         ctl.model.check_ids().unwrap();
     }
 
-    /// What a session comes to, for the fixture of what the intents of groups do: the nodes (their id, their parent and their name), the
-    /// audio path, the modulation cables, and the two lists of the layout of the telemetry (without its fingerprint), each entry as a
-    /// line of text the web client's tests make of its own copy by the same rules (`web/src/client/groups.test.ts`).
-    fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
-        use serde_json::Value;
-        let wire: Value = testutil::wire(snapshot);
-        let text = |value: &Value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
-        // A port: its kind, then its index or the cable it is about.
-        let port = |port: &Value| {
-            let index = port.get("index").map(|i| i.to_string()).unwrap_or_default();
-            let edge = port.get("edge").map(|e| format!("#{e}")).unwrap_or_default();
-            format!("{}{index}{edge}", text(&port["type"]))
-        };
-        let list = |values: &Value| values.as_array().unwrap().clone();
-        let nodes: Vec<String> = list(&wire["graph"]["nodes"])
-            .iter()
-            .map(|n| format!("{} {} {}", n["id"], if n["parent"].is_null() { "-".to_string() } else { n["parent"].to_string() }, text(&n["name"])))
-            .collect();
-        let edges = list(&wire["graph"]["edges"]);
-        let audio: Vec<String> = edges
-            .iter()
-            .filter(|e| text(&e["kind"]) != "modulation")
-            .map(|e| format!("{}>{} {}", e["from"]["node"], e["to"]["node"], text(&e["kind"])))
-            .collect();
-        let cables: Vec<String> = edges
-            .iter()
-            .filter(|e| text(&e["kind"]) == "modulation")
-            .map(|e| format!("#{} {}>{} {} @{}", e["id"], e["from"]["node"], e["to"]["node"], port(&e["to"]["port"]), e["amount"]))
-            .collect();
-        let slots = |entries: &Value| -> Vec<String> {
-            list(entries).iter().map(|e| format!("{} {} {} {}", e["slot"], e["node"], port(&e["port"]), text(&e["kind"]))).collect()
-        };
-        serde_json::json!({
-            "nodes": nodes,
-            "audio": audio,
-            "cables": cables,
-            "meters": slots(&wire["telemetry"]["meters"]),
-            "modulation": slots(&wire["telemetry"]["modulation"]),
-        })
-    }
-
     /// The session of `groups_scene()` and what the controller makes of the intents that add a group, put a lane in one, name one and take
     /// a lane or a group out, as the web client's tests read it (`web/src/client/fixtures/groups.json`): they pin the mock engine's to the
-    /// controller's, intent by intent. One that is taken gives what the session comes to (`shape_of`; for a name, the name the group has), one that is refused the
+    /// controller's, intent by intent. One that is taken gives what the session comes to (`testutil::shape_of`; for a name, the name the group has), one that is refused the
     /// controller's words. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
     #[test]
     fn the_web_clients_fixture_of_what_the_intents_of_groups_come_to_is_current() {
@@ -3449,7 +3408,7 @@ type = "midi"
                     [Event::GroupRenamed { name, .. }] => serde_json::json!({ "intent": intent, "name": name }),
                     [] => {
                         assert!(applied.restructured, "{intent:?}");
-                        serde_json::json!({ "intent": intent, "after": shape_of(&fresh.snapshot()) })
+                        serde_json::json!({ "intent": intent, "after": testutil::shape_of(&fresh.snapshot()) })
                     }
                     other => panic!("{intent:?}: {other:?}"),
                 },

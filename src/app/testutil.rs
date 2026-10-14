@@ -1136,6 +1136,47 @@ impl plugin::Plugin for DropProbe {
     }
 }
 
+/// What a session comes to, for the fixtures of what the intents of groups and the history do: the nodes (their id, their parent and their name), the
+/// audio path, the modulation cables, and the two lists of the layout of the telemetry (without its fingerprint), each entry as a
+/// line of text the web client's tests make of its own copy by the same rules (`shapeOf` in `web/src/client/fixtures.ts`).
+pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
+    use serde_json::Value;
+    let wire: Value = self::wire(snapshot);
+    let text = |value: &Value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+    // A port: its kind, then its index or the cable it is about.
+    let port = |port: &Value| {
+        let index = port.get("index").map(|i| i.to_string()).unwrap_or_default();
+        let edge = port.get("edge").map(|e| format!("#{e}")).unwrap_or_default();
+        format!("{}{index}{edge}", text(&port["type"]))
+    };
+    let list = |values: &Value| values.as_array().unwrap().clone();
+    let nodes: Vec<String> = list(&wire["graph"]["nodes"])
+        .iter()
+        .map(|n| format!("{} {} {}", n["id"], if n["parent"].is_null() { "-".to_string() } else { n["parent"].to_string() }, text(&n["name"])))
+        .collect();
+    let edges = list(&wire["graph"]["edges"]);
+    let audio: Vec<String> = edges
+        .iter()
+        .filter(|e| text(&e["kind"]) != "modulation")
+        .map(|e| format!("{}>{} {}", e["from"]["node"], e["to"]["node"], text(&e["kind"])))
+        .collect();
+    let cables: Vec<String> = edges
+        .iter()
+        .filter(|e| text(&e["kind"]) == "modulation")
+        .map(|e| format!("#{} {}>{} {} @{}", e["id"], e["from"]["node"], e["to"]["node"], port(&e["to"]["port"]), e["amount"]))
+        .collect();
+    let slots = |entries: &Value| -> Vec<String> {
+        list(entries).iter().map(|e| format!("{} {} {} {}", e["slot"], e["node"], port(&e["port"]), text(&e["kind"]))).collect()
+    };
+    serde_json::json!({
+        "nodes": nodes,
+        "audio": audio,
+        "cables": cables,
+        "meters": slots(&wire["telemetry"]["meters"]),
+        "modulation": slots(&wire["telemetry"]["modulation"]),
+    })
+}
+
 /// A value as the wire says it: what its JSON says, with the 32-bit numbers in the fewest digits that tell them. (`serde_json::to_value` writes
 /// them as the 64-bit numbers they widen to, 0.3 as 0.30000001192092896, which no client is sent: the fixtures the web client's tests read
 /// are written from this.)

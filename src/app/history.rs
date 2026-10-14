@@ -297,23 +297,16 @@ impl Controller {
                 if lanes.any(|inst| self.model.instruments[inst].group.is_some()) { Plan::Barrier } else { added("add a group".to_string()) }
             }
             Intent::SetLaneGroup { node, group } => {
+                // (A node that is no lane, and a group that is no group, are refused: no step is kept for them.)
                 let Some(inst) = self.lane_place(*node) else { return Plan::Nothing };
-                let wanted = match group {
-                    None => None,
-                    Some(group) => match self.model.locate(*group) {
-                        Some(NodePath::Group(index)) => Some(index),
-                        _ => return Plan::Nothing,
-                    },
-                };
-                let lane = &self.model.instruments[inst];
-                if lane.group == wanted {
+                let old = self.model.instruments[inst].group.map(|index| self.model.groups[index].node);
+                if old == *group {
                     Plan::Nothing
                 } else if !self.model.group_cables_into_lane(inst).is_empty() {
                     // The cables of the group it leaves are taken out, and a step does not bring them back.
                     Plan::Barrier
                 } else {
-                    let label = if wanted.is_some() { "put a lane in a group" } else { "take a lane out of its group" };
-                    let old = lane.group.map(|index| self.model.groups[index].node);
+                    let label = if group.is_some() { "put a lane in a group" } else { "take a lane out of its group" };
                     step(label.to_string(), Intent::SetLaneGroup { node: *node, group: old }, None)
                 }
             }
@@ -421,8 +414,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::app::controller::Controller;
-    use crate::app::graph::NoteRange;
-    use crate::app::intent::{Applied, Event, IntentError};
+    use crate::app::graph::{Endpoint, NoteRange, Port};
+    use crate::app::intent::{Applied, Event, IntentError, ModulatorKind};
     use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel};
     use crate::app::testutil::{self, StubEngine, described, load, wire};
     use crate::session::NodeUi;
@@ -1231,8 +1224,6 @@ rate = 3.0
 
     #[test]
     fn a_modulator_and_a_cable_that_were_added_are_taken_out_by_undo_and_come_back_under_their_ids_by_redo() {
-        use crate::app::graph::{Endpoint, Port};
-        use crate::app::intent::ModulatorKind;
         let (_engine, mut ctl, _clock) = controller_with_plugins();
         let (lane0, filter) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
         let (resonance, set) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
@@ -1262,7 +1253,6 @@ rate = 3.0
 
     #[test]
     fn an_envelope_and_a_midi_control_have_their_own_words() {
-        use crate::app::intent::ModulatorKind;
         let (_engine, mut ctl, clock) = controller_with_plugins();
         let lane0 = lane(&ctl);
         ctl.apply(Intent::AddModulator { parent: lane0, kind: ModulatorKind::Envelope }).unwrap();
@@ -1327,8 +1317,6 @@ rate = 3.0
 
     #[test]
     fn a_session_that_is_built_by_adds_goes_back_through_each_of_the_structures_it_had_and_forward_through_them_again() {
-        use crate::app::graph::{Endpoint, Port};
-        use crate::app::intent::ModulatorKind;
         let (_engine, mut ctl, _clock) = controller_with_plugins();
         let (lane0, lane1) = (lane(&ctl), node(&ctl, NodePath::Instrument(1)));
         let (g0, g1) = (node(&ctl, NodePath::Group(0)), node(&ctl, NodePath::Group(1)));
@@ -1517,7 +1505,6 @@ rate = 3.0
 
     #[test]
     fn a_step_that_draws_a_cable_that_is_there_already_is_refused_and_no_cable_has_two_ids() {
-        use crate::app::graph::{Endpoint, Port};
         let (_engine, mut ctl, _clock) = controller_with_plugins();
         let (lfo, filter) = (ctl.model.instruments[0].modulators[0].node, node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
         let (resonance, _) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
@@ -1714,7 +1701,6 @@ rate = 3.0
 
     #[test]
     fn what_an_add_made_is_what_takes_it_out_and_it_has_to_be_the_one_thing_and_be_there() {
-        use crate::app::graph::{Endpoint, Port};
         let (_engine, ctl, _clock) = controller_with_plugins();
         let lane0 = lane(&ctl);
         let (lfo, edge) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[0].targets[0].edge);
@@ -1806,6 +1792,12 @@ rate = 3.0
         let (bus_resonance, _) = param(&base, NodePath::GroupEffect { group: 0, index: 0 }, "resonance");
         assert_eq!((detune, resonance, bus_resonance), (1, 1, 1));
         let ghost = NodeId(9_999);
+        // The ids that are handed out go on from where the session's end: what an add makes first has the next one.
+        let first_node = base.model.nodes().map(|(id, _)| id.0).max().unwrap() + 1;
+        let cables = base.model.instruments.iter().flat_map(|lane| &lane.modulators).chain(base.model.groups.iter().flat_map(|group| &group.modulators));
+        let first_edge = cables.flat_map(|modulator| &modulator.targets).map(|target| target.edge.0).max().unwrap() + 1;
+        let fresh = |n: u32| NodeId(first_node + n);
+        let fresh_edge = |n: u32| EdgeId(first_edge + n);
 
         let set = |param: u32, value: f32| Op::Do(Intent::SetParam { node: lane0, param, value });
         let gain = |node: NodeId, gain: Gain, value: f32| Op::Do(Intent::SetGain { node, gain, value });
@@ -1816,6 +1808,12 @@ rate = 3.0
         // A change is a step of its own when a second has gone by since the last of its kind.
         let pause = || Op::Wait(5000);
         let n_of = |n: usize, op: fn() -> Op| (0..n).map(|_| op()).collect::<Vec<Op>>();
+        let add_effect = |parent: NodeId, plugin: &str| Op::Do(Intent::AddEffect { parent, plugin: plugin.to_string() });
+        let add_instrument = |plugin: &str| Op::Do(Intent::AddInstrument { plugin: plugin.to_string() });
+        let add_modulator = |parent: NodeId, kind: ModulatorKind| Op::Do(Intent::AddModulator { parent, kind });
+        let add_group = |members: Vec<NodeId>| Op::Do(Intent::AddGroup { members });
+        let cable = |modulator: NodeId, node: NodeId, index: u32| Op::Do(Intent::AddModEdge { modulator, to: Endpoint { node, port: Port::Param { index } } });
+        let put_in = |node: NodeId, group: Option<NodeId>| Op::Do(Intent::SetLaneGroup { node, group });
 
         let mut scripts: Vec<(&str, Vec<Op>)> = vec![
             ("a parameter that was set is put back and set again", vec![set(detune, 3.0), undo(), redo(), undo(), undo(), redo(), redo()]),
@@ -1929,6 +1927,147 @@ rate = 3.0
         cables.extend(n_of(3, undo));
         cables.extend(n_of(3, redo));
         scripts.push(("the depth of a cable is a step for each cable, and the same one again is the same step", cables));
+        // What is added is taken out by undo and put back by redo under the id it had, so that what was done to it goes on naming it.
+        scripts.push(("an effect that is added is taken out by undo and put back by redo, and so is what was done to it", vec![
+            add_effect(lane0, "builtin:reverb"),
+            gain(fresh(0), Gain::Mix, 0.25),
+            undo(),
+            undo(),
+            undo(),
+            redo(),
+            redo(),
+            redo(),
+            undo(),
+        ]));
+        scripts.push(("an effect on the bus of a group is added and taken out the same way", vec![add_effect(g0, "builtin:filter"), undo(), redo(), undo()]));
+        scripts.push((
+            "a modulator and its cables are taken out one at a time and put back under their ids",
+            vec![
+                add_modulator(lane0, ModulatorKind::Lfo),
+                cable(fresh(0), filter_fx, resonance),
+                Op::Do(Intent::SetEdgeDepth { edge: fresh_edge(0), depth: -0.25 }),
+                add_modulator(lane0, ModulatorKind::Envelope),
+                Op::Do(Intent::AddModEdge { modulator: fresh(1), to: Endpoint { node: fresh(0), port: Port::Rate } }),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a MIDI control, and a modulator of a group with cables to its bus and to a member",
+            vec![
+                add_modulator(lane1, ModulatorKind::MidiLearn),
+                add_modulator(g0, ModulatorKind::Lfo),
+                cable(fresh(1), bus, bus_resonance),
+                cable(fresh(1), lane0, detune),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "an instrument is added and taken out as a lane, and put back with its id",
+            vec![
+                add_instrument("builtin:osc"),
+                Op::Do(Intent::SetNodeUi { node: fresh(0), ui: Some(NodeUi { x: 5.0, y: 6.0 }) }),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a group is added with a lane that was in none, and taken out with the lane in none again",
+            vec![add_group(vec![lane1]), name(fresh(0), "Keys"), undo(), undo(), redo(), redo(), add_group(vec![]), undo(), undo(), undo()],
+        ));
+        scripts.push((
+            "a lane is put in a group, taken out of it, and moved from one to another, and each goes back",
+            vec![
+                put_in(lane1, Some(g1)),
+                put_in(lane1, None),
+                put_in(lane1, Some(g0)),
+                put_in(lane0, Some(g1)),
+                put_in(lane0, Some(g1)),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a lane that leaves a group whose modulator drives it cannot be put back, though one that is not driven can",
+            vec![
+                add_modulator(g0, ModulatorKind::Lfo),
+                cable(fresh(0), lane0, detune),
+                cable(fresh(0), bus, bus_resonance),
+                put_in(lane1, Some(g0)),
+                undo(),
+                redo(),
+                put_in(lane1, None),
+                undo(),
+                put_in(lane0, Some(g1)),
+                undo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a lane that leaves a group that drives it for none is as much a barrier",
+            vec![add_modulator(g0, ModulatorKind::Lfo), cable(fresh(0), lane0, detune), put_in(lane0, None), undo(), redo()],
+        ));
+        scripts.push((
+            "a group made of a lane that is in another is a barrier, whatever else is in the list",
+            vec![set(detune, 1.0), pause(), set(detune, 2.0), add_group(vec![lane1, lane0]), undo(), set(detune, 3.0), add_group(vec![lane0, lane1]), undo()],
+        ));
+        scripts.push((
+            "an add that is refused leaves the history as it was",
+            vec![
+                set(detune, 1.0),
+                add_effect(lane0, "builtin:nothing"),
+                add_effect(ghost, "builtin:reverb"),
+                add_effect(lfo, "builtin:reverb"),
+                add_effect(lane0, "builtin:osc"),
+                add_instrument("builtin:nothing"),
+                add_instrument("builtin:reverb"),
+                add_modulator(ghost, ModulatorKind::Lfo),
+                add_modulator(reverb, ModulatorKind::Lfo),
+                cable(ghost, lane0, detune),
+                cable(lfo, ghost, detune),
+                cable(lfo, lane0, 9_999),
+                cable(lfo, lane0, detune),
+                cable(lfo, lane1, detune),
+                add_group(vec![ghost]),
+                add_group(vec![lane1, reverb]),
+                put_in(ghost, None),
+                put_in(lane0, Some(ghost)),
+                put_in(lane0, Some(lane1)),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "what is added after an undo is a new node, and what could have been redone is gone",
+            vec![add_effect(lane0, "builtin:reverb"), undo(), add_effect(lane0, "builtin:filter"), gain(fresh(1), Gain::Mix, 0.5), redo(), undo(), undo(), undo()],
+        ));
         let preset = base.model.instruments[0].effects[0].presets[0].id.clone();
         let barriers = [
             // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
@@ -1962,7 +2101,14 @@ rate = 3.0
                         let history = serde_json::json!({ "undo": history.undo, "redo": history.redo });
                         rows.push(match state {
                             Err(error) => serde_json::json!({ "intent": wire(intent), "error": error.to_string(), "history": history }),
-                            Ok(applied) => serde_json::json!({ "intent": wire(intent), "events": wire(&applied.stamped()), "restructured": applied.restructured, "history": history }),
+                            Ok(applied) => {
+                                let mut row = serde_json::json!({ "intent": wire(intent), "events": wire(&applied.stamped()), "restructured": applied.restructured, "history": history });
+                                // What the session comes to, when the structure changed: the nodes and the cables, with their ids, and the layout of the telemetry.
+                                if applied.restructured {
+                                    row["shape"] = testutil::shape_of(&ctl.snapshot());
+                                }
+                                row
+                            }
                         });
                     }
                 }

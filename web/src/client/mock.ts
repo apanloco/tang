@@ -32,8 +32,10 @@ import type {
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
-import { History, planOf } from "./history";
-import type { HistoryState, Plan } from "./history";
+import { Counters } from "./counters";
+import { History, planOf, stepOf, takesOut } from "./history";
+import type { HistoryState, Made, Plan } from "./history";
+import { cablesIntoLaneFromItsGroup } from "./membership";
 import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
@@ -402,39 +404,6 @@ function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
   return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([node])) };
 }
 
-/**
- * What the controller hands out and does not hand out again, however much is taken out after: the ids of
- * nodes and the telemetry slots. They go on from what the session has.
- */
-class Counters {
-  #node: number;
-  #edge: number;
-  #slot: number;
-
-  constructor(snapshot: Snapshot) {
-    const { graph, telemetry } = snapshot;
-    // (The master is a node of the graph and not of the model: its id is not one the model has handed out.)
-    this.#node = 1 + Math.max(-1, ...graph.nodes.filter((n) => n.kind !== "master").map((n) => n.id));
-    this.#edge = 1 + Math.max(-1, ...graph.edges.filter(isModulation).map((e) => e.id));
-    this.#slot = 1 + Math.max(-1, ...[...telemetry.meters, ...telemetry.modulation].map((entry) => entry.slot));
-  }
-
-  node(): NodeId {
-    this.#node += 1;
-    return this.#node - 1;
-  }
-
-  edge(): EdgeId {
-    this.#edge += 1;
-    return this.#edge - 1;
-  }
-
-  slot(): number {
-    this.#slot += 1;
-    return this.#slot - 1;
-  }
-}
-
 /** What a node of each kind of modulator is called (`ModSourceSlot::node_name`), and what it is to begin with. */
 const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSource }> = {
   lfo: { name: "LFO", source: { type: "lfo", waveform: "sine", rate: 1 } },
@@ -673,13 +642,7 @@ function lanePutIn(snapshot: Snapshot, lane: NodeId, group: NodeId | null): Snap
   if (!found || !master || found.parent === group) return snapshot;
   const { nodes } = snapshot.graph;
   // The cables of the group it leaves that go into the lane: to its plugins, to its modulators' settings and to the depths of their cables.
-  const inside = new Set<NodeId>([lane, ...nodes.filter((n) => n.parent === lane).map((n) => n.id)]);
-  const leaving = found.parent;
-  const driven = snapshot.graph.edges
-    .filter(isModulation)
-    .filter((e) => leaving !== null && nodes.find((n) => n.id === e.from.node)?.parent === leaving && inside.has(e.to.node))
-    .map((e) => e.id);
-  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, driven), new Set());
+  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, cablesIntoLaneFromItsGroup(snapshot.graph, lane)), new Set());
   // The lane's node is a member of the group, and the last link of its chain, the one that leaves the chain, goes into the group (or the master).
   const chain = new Set<NodeId>([lane, ...nodes.filter((n) => n.parent === lane && n.kind === "effect").map((n) => n.id)]);
   const edges = taken.graph.edges.map((e): Edge => {
@@ -1037,11 +1000,13 @@ export class MockServer {
    */
   #carry(intent: Intent, tell: boolean): { rev: number; told: Told } | { error: WireError } {
     if (intent.type === "undo" || intent.type === "redo") return this.#backAndForth(intent.type, tell);
-    const plan = planOf(this.#snapshot, intent, this.now());
+    const plan = planOf(this.#snapshot, intent, this.now(), this.#catalog.entries);
+    this.#counters.begin();
     const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
+    const made = this.#counters.take();
     if ("error" in outcome) return outcome;
     const done = this.#commit(outcome, tell);
-    this.#keep(plan);
+    this.#keep(plan, made);
     return done;
   }
 
@@ -1051,24 +1016,41 @@ export class MockServer {
     if (!step) return { error: { code: "invalid", message: `there is nothing to ${which}` } };
     let rev = this.#snapshot.rev;
     const told: Told = { events: [], restructured: false };
-    // (A step whose intent cannot be done, a node that is not there any more, is dropped, and what was done of it stays.)
-    for (const intent of which === "undo" ? step.undo : step.redo) {
-      const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
-      if ("error" in outcome) return outcome;
-      const done = this.#commit(outcome, tell);
-      rev = done.rev;
-      told.events.push(...done.told.events);
-      told.restructured ||= done.told.restructured;
+    // What they make is made under the ids it was made under the first time (what is not made of them is not kept for what is made next).
+    this.#counters.reuse(which === "undo" ? step.undoMade : step.redoMade);
+    try {
+      // (A step whose intent cannot be done, a node that is not there any more, is dropped, and what was done of it stays.)
+      for (const intent of which === "undo" ? step.undo : step.redo) {
+        const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
+        if ("error" in outcome) return outcome;
+        const done = this.#commit(outcome, tell);
+        rev = done.rev;
+        told.events.push(...done.told.events);
+        told.restructured ||= done.told.restructured;
+      }
+    } finally {
+      this.#counters.dropReused();
     }
     if (which === "undo") this.#history.keptUndone(step);
     else this.#history.keptRedone(step);
     return { rev, told };
   }
 
-  /** An intent has been carried out: its step is kept, or the history is forgotten. */
-  #keep(plan: Plan): void {
-    if (plan === "barrier") this.#history.clear();
-    else if (plan !== "nothing") this.#history.record(plan.step);
+  /** An intent has been carried out, and made `made`: its step is kept, or the history is forgotten. */
+  #keep(plan: Plan, made: Made): void {
+    if (plan === "barrier") {
+      this.#history.clear();
+    } else if (plan !== "nothing") {
+      if ("step" in plan) {
+        this.#history.record(plan.step);
+        return;
+      }
+      const { label, intent, at } = plan.added;
+      const undo = takesOut(this.#snapshot, intent, made);
+      // (It made something that cannot be named, or what it made is not there: nothing puts it back.)
+      if (undo) this.#history.record({ ...stepOf(label, undo, intent, null, at), redoMade: made });
+      else this.#history.clear();
+    }
   }
 
   /**

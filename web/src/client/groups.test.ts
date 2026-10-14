@@ -1,28 +1,8 @@
 import { describe, expect, test } from "vitest";
 
-import type { Intent, Port, Snapshot } from "../protocol";
-import { groupsFixture } from "./fixtures";
-import type { Shape } from "./fixtures";
+import type { Intent, Snapshot } from "../protocol";
+import { groupsFixture, shapeOf } from "./fixtures";
 import { MockServer } from "./mock";
-
-const portKey = (port: Port): string => `${port.type}${"index" in port ? String(port.index) : ""}${"edge" in port ? `#${String(port.edge)}` : ""}`;
-
-/**
- * What a session comes to, as the fixture writes it (`shape_of` in `app/apply.rs`, by the same rules): a line for each node (its id, its
- * parent, its name), each link of the audio path (the node it leaves, the node it goes to, its kind), each cable (its id, the node it leaves
- * and the one it goes to, the port, its depth) and each entry of the two lists of the layout of the telemetry (the slot, the node, the port,
- * the kind); the fingerprint of the layout is not part of it.
- */
-export function shapeOf(snapshot: Snapshot): Shape {
-  const { nodes, edges } = snapshot.graph;
-  return {
-    nodes: nodes.map((n) => `${String(n.id)} ${n.parent === null ? "-" : String(n.parent)} ${n.name}`),
-    audio: edges.flatMap((e) => (e.kind === "modulation" ? [] : [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`])),
-    cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
-    meters: snapshot.telemetry.meters.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
-    modulation: snapshot.telemetry.modulation.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
-  };
-}
 
 /** What the mock engine makes of the intent: the session after, or the words it refused with. */
 function made(intent: Intent): { after: Snapshot } | { refused: string } {

@@ -1296,7 +1296,8 @@ describe("what Undo and Redo would do", () => {
     send({ type: "request", reqId: 1, intent: cutoff(0.3) });
     await quiet();
     const seen = heard.length;
-    send({ type: "request", reqId: 2, intent: { type: "addEffect", parent: nodeNamed(tracerSnapshot, "Oscillator").id, plugin: "builtin:reverb" } });
+    // (Another instrument in a lane: nothing puts that back yet.)
+    send({ type: "request", reqId: 2, intent: { type: "replaceInstrument", node: nodeNamed(tracerSnapshot, "Oscillator").id, plugin: "builtin:osc" } });
     await quiet();
     expect(heard.slice(seen)).toEqual(["snapshot", "history null/null", "ack"]);
     close();

@@ -63,7 +63,7 @@ export const pinsFixture = pins as unknown as {
  * in none), and what the controller makes of the intents that add a group, put a
  * lane in one, name one and take a lane or a group out: for one that is refused its words, for a name the name the group has, and for the others what the session comes
  * to: its nodes (the id, the parent and the name of each), the audio path, the modulation cables and the two lists of the layout of the
- * telemetry, a line of text for each entry, made by the rules of `shapeOf` in `groups.test.ts`; and, for the tracer's one lane, what the
+ * telemetry, a line of text for each entry, made by the rules of `shapeOf` (below); and, for the tracer's one lane, what the
  * controller says to taking it out, since a session keeps a lane. Written by the controller
  * (`the_web_clients_fixture_of_what_the_intents_of_groups_come_to_is_current`).
  */
@@ -73,10 +73,17 @@ export const groupsFixture = groups as unknown as {
   lastLane: { node: NodeId; error: string };
 };
 
-/** One op of a script of the history fixture: time going by (in milliseconds), or an intent and what the controller made of it. */
+/**
+ * One op of a script of the history fixture: time going by (in milliseconds), or an intent and what the controller made of it: its words if it
+ * was refused, else the events it made, whether it changed the structure and, if it did, what the session comes to then (`shapeOf`).
+ */
 export type HistoryRow =
   | { wait: number }
-  | ({ intent: Intent; history: { undo: string | null; redo: string | null } } & ({ error: string } | { events: StampedEvent[]; restructured: boolean }));
+  | ({ intent: Intent; history: { undo: string | null; redo: string | null } } & (
+      | { error: string }
+      | { events: StampedEvent[]; restructured: false }
+      | { events: StampedEvent[]; restructured: true; shape: Shape }
+    ));
 
 /**
  * A session (a group with a bus filter, another with nothing and no name, a lane with a reverb, a filter, an LFO and an envelope with a cable
@@ -93,6 +100,25 @@ export interface Shape {
   cables: string[];
   meters: string[];
   modulation: string[];
+}
+
+const portKey = (port: Port): string => `${port.type}${"index" in port ? String(port.index) : ""}${"edge" in port ? `#${String(port.edge)}` : ""}`;
+
+/**
+ * What a session comes to, as the fixtures write it (`shape_of` in `app/testutil.rs`, by the same rules): a line for each node (its id, its
+ * parent, its name), each link of the audio path (the node it leaves, the node it goes to, its kind), each cable (its id, the node it leaves
+ * and the one it goes to, the port, its depth) and each entry of the two lists of the layout of the telemetry (the slot, the node, the port,
+ * the kind); the fingerprint of the layout is not part of it.
+ */
+export function shapeOf(snapshot: Snapshot): Shape {
+  const { nodes, edges } = snapshot.graph;
+  return {
+    nodes: nodes.map((n) => `${String(n.id)} ${n.parent === null ? "-" : String(n.parent)} ${n.name}`),
+    audio: edges.flatMap((e) => (e.kind === "modulation" ? [] : [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`])),
+    cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
+    meters: snapshot.telemetry.meters.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
+    modulation: snapshot.telemetry.modulation.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
+  };
 }
 
 /** The built-in plugins as the server lists them in its catalog, which the mock engine serves: written by Rust (`the_web_clients_fixture_of_the_builtins_is_current`). */
