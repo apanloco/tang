@@ -4146,10 +4146,12 @@ plugin = "builtin:reverb"
 rate = 2.0
 "#;
 
-    #[test]
-    fn every_popup_that_holds_a_place_is_closed_when_a_browser_moves_the_places() {
-        type IsOpen = fn(&State) -> bool;
-        let cases: [(&str, TreeAddress, &[KeyCode], IsOpen); 7] = [
+    type IsOpen = fn(&State) -> bool;
+
+    /// Every popup that holds a place in the tree of `GROUP_AND_LANE`: what it is, where the cursor is when it is opened, the keys that open it
+    /// and how to tell that it is open.
+    fn popups_that_hold_a_place() -> [(&'static str, TreeAddress, &'static [KeyCode], IsOpen); 7] {
+        [
             ("the range of a lane", TreeAddress::Instrument(1), &[KeyCode::Char('R')], |s| s.range_edit.is_some()),
             ("the name of a group", TreeAddress::Group(0), &[KeyCode::Char('R')], |s| s.rename_group.is_some()),
             ("the selector of a plugin", TreeAddress::Instrument(1), &[KeyCode::Char('a')], |s| s.selector.is_some()),
@@ -4157,8 +4159,12 @@ rate = 2.0
             ("the choice of a modulator", TreeAddress::Effect { inst: 1, index: 0 }, &[KeyCode::Enter, KeyCode::Char('m')], |s| s.modulate.is_some()),
             ("the group of a lane", TreeAddress::Instrument(1), &[KeyCode::Char('g')], |s| s.group_assign.is_some()),
             ("the presets of a plugin", TreeAddress::Effect { inst: 1, index: 0 }, &[KeyCode::Char('p')], |s| s.preset_selector.is_some()),
-        ];
-        for (what, at, keys, is_open) in cases {
+        ]
+    }
+
+    #[test]
+    fn every_popup_that_holds_a_place_is_closed_when_a_browser_moves_the_places() {
+        for (what, at, keys, is_open) in popups_that_hold_a_place() {
             let mut h = Harness::new(GROUP_AND_LANE);
             h.goto(at);
             for key in keys {
@@ -4168,6 +4174,29 @@ rate = 2.0
             let in_the_group = h.s.ctl.model.instruments[0].node;
             browser(&mut h, Intent::AddModulator { parent: in_the_group, kind: ModulatorKind::Lfo });
             assert!(!is_open(&h.s), "{what} is for a place that has moved");
+        }
+    }
+
+    #[test]
+    fn every_popup_that_holds_a_place_is_closed_when_a_browser_adds_a_group_and_when_it_takes_one_out() {
+        type Mover = fn(&Harness) -> Intent;
+        let movers: [(&str, Mover); 3] = [
+            ("adds a group", |_| Intent::AddGroup { members: vec![] }),
+            ("adds a group with the lane in it", |h| Intent::AddGroup { members: vec![h.s.ctl.model.instruments[1].node] }),
+            ("takes the group out", |h| Intent::RemoveNode { node: h.s.ctl.model.groups[0].node }),
+        ];
+        for (move_, mover) in movers {
+            for (what, at, keys, is_open) in popups_that_hold_a_place() {
+                let mut h = Harness::new(GROUP_AND_LANE);
+                h.goto(at);
+                for key in keys {
+                    h.press(*key);
+                }
+                assert!(is_open(&h.s), "{what} is open to begin with");
+                let intent = mover(&h);
+                browser(&mut h, intent);
+                assert!(!is_open(&h.s), "{what} is for a place that has moved when a browser {move_}");
+            }
         }
     }
 
@@ -4202,5 +4231,169 @@ velocity = 0
         browser(&mut h, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo });
         assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Pattern(1), "{:#?}", h.tree());
     }
-}
 
+    // -- what a browser does to groups, as the TUI shows it --
+
+    /// A group with a lane in it, another that is empty, and a lane in none.
+    const TWO_GROUPS_AND_LANE: &str = r#"
+[[group]]
+name = "Pad"
+
+[[group]]
+name = "Lead"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#;
+
+    /// The lines of the tree that are a group's header.
+    fn headers(h: &Harness) -> Vec<&str> {
+        h.tree().into_iter().filter(|line| line.starts_with('▦')).collect()
+    }
+
+    /// The lines of the tree that are a lane's instrument and in no group (a member of a group is indented under its header).
+    fn ungrouped_lanes(h: &Harness) -> usize {
+        h.tree().iter().filter(|line| line.starts_with('♪')).count()
+    }
+
+    #[test]
+    fn a_group_a_browser_adds_is_in_the_tree_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(TWO_LANES);
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        assert!(headers(&h).is_empty(), "{:#?}", h.tree());
+        browser(&mut h, Intent::AddGroup { members: vec![] });
+        assert_eq!(h.s.ctl.model.groups.len(), 1);
+        assert_eq!(headers(&h).len(), 1, "{:#?}", h.tree());
+        assert!(headers(&h)[0].contains("Group 1"), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+        assert!(h.s.ctl.dirty);
+        // A group that came from a browser is a group like any: `R` names it in the TUI and `d` takes it out.
+        h.goto(TreeAddress::Group(0));
+        h.press(KeyCode::Char('R')).type_chars("Pad").press(KeyCode::Enter);
+        // (The field starts with the name the group was given, and a group that has none starts with nothing.)
+        assert_eq!(h.s.ctl.model.groups[0].name.as_deref(), Some("Pad"));
+        h.press(KeyCode::Char('d'));
+        assert!(h.s.ctl.model.groups.is_empty(), "{:#?}", h.tree());
+        assert!(headers(&h).is_empty(), "{:#?}", h.tree());
+    }
+
+    #[test]
+    fn a_group_a_browser_makes_with_a_lane_in_it_has_the_lane_under_its_header_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(TWO_LANES);
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        assert_eq!(ungrouped_lanes(&h), 2, "{:#?}", h.tree());
+        let lane = h.s.ctl.model.instruments[1].node;
+        browser(&mut h, Intent::AddGroup { members: vec![lane] });
+        assert_eq!(h.s.ctl.model.instruments[1].group, Some(0));
+        let tree = h.tree();
+        // The header, and under it the lane with its reverb; the lane that is in no group is after.
+        let header = tree.iter().position(|line| line.starts_with('▦')).expect("a header");
+        assert!(tree[header + 1].contains("♪ Oscillator") && tree[header + 1].starts_with("  "), "{tree:#?}");
+        assert!(tree[header + 2].contains("fx Reverb"), "{tree:#?}");
+        assert_eq!(ungrouped_lanes(&h), 1, "{tree:#?}");
+        assert_eq!(cursor_node(&h), reverb, "{tree:#?}");
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+    }
+
+    #[test]
+    fn a_lane_a_browser_takes_out_of_its_group_is_under_no_header_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(GROUP_AND_LANE);
+        h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+        let lfo = cursor_node(&h);
+        assert_eq!(ungrouped_lanes(&h), 1, "{:#?}", h.tree());
+        let lane = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::SetLaneGroup { node: lane, group: None });
+        assert_eq!(h.s.ctl.model.instruments[0].group, None);
+        // The group is still there, empty, and both lanes are in none.
+        assert_eq!(headers(&h).len(), 1, "{:#?}", h.tree());
+        assert_eq!(ungrouped_lanes(&h), 2, "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), lfo, "{:#?}", h.tree());
+        assert!(h.s.ctl.dirty);
+    }
+
+    #[test]
+    fn a_name_a_browser_gives_a_group_is_in_the_tree_and_in_the_title_of_its_pane_and_a_name_of_nothing_gives_the_default_back() {
+        let mut h = Harness::new(GROUP_AND_LANE);
+        h.goto(TreeAddress::Group(0));
+        let pad = cursor_node(&h);
+        assert!(h.dump().contains("┌ Pad "), "{}", h.dump());
+        browser(&mut h, Intent::RenameGroup { node: pad, name: "  Strings  ".to_string() });
+        assert!(headers(&h)[0].contains("Strings") && !headers(&h)[0].contains("Pad"), "{:#?}", h.tree());
+        let frame = h.dump();
+        assert!(frame.contains("┌ Strings ") && !frame.contains("┌ Pad "), "{frame}");
+        assert!(h.s.ctl.dirty);
+        browser(&mut h, Intent::RenameGroup { node: pad, name: " ".to_string() });
+        assert!(headers(&h)[0].contains("Group 1"), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), pad);
+    }
+
+    #[test]
+    fn a_name_typed_in_the_tui_is_for_its_group_when_a_browser_names_another() {
+        let mut h = Harness::new(TWO_GROUPS_AND_LANE);
+        // The TUI is naming the second group, and a browser names the first.
+        h.goto(TreeAddress::Group(1));
+        h.press(KeyCode::Char('R')).type_chars("!");
+        assert_eq!(h.s.rename_group.as_ref().map(|rg| rg.input.value.as_str()), Some("Lead!"));
+        let pad = h.s.ctl.model.groups[0].node;
+        browser(&mut h, Intent::RenameGroup { node: pad, name: "Keys".to_string() });
+        // A name changes no place: what is being typed stays, and goes to the group it was typed for.
+        assert_eq!(h.s.rename_group.as_ref().map(|rg| rg.input.value.as_str()), Some("Lead!"));
+        h.press(KeyCode::Enter);
+        let names: Vec<_> = h.s.ctl.model.groups.iter().map(|g| g.name.clone()).collect();
+        assert_eq!(names, [Some("Keys".to_string()), Some("Lead!".to_string())]);
+    }
+
+    #[test]
+    fn a_group_a_browser_takes_out_leaves_its_lanes_in_the_tree_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(GROUP_AND_LANE);
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        let pad = h.s.ctl.model.groups[0].node;
+        browser(&mut h, Intent::RemoveNode { node: pad });
+        assert!(h.s.ctl.model.groups.is_empty());
+        assert_eq!(h.s.ctl.model.instruments.len(), 2, "the lanes stay");
+        assert!(h.s.ctl.model.instruments.iter().all(|lane| lane.group.is_none()));
+        assert!(headers(&h).is_empty(), "{:#?}", h.tree());
+        assert_eq!(ungrouped_lanes(&h), 2, "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 1, index: 0 });
+    }
+
+    #[test]
+    fn the_cursor_is_on_a_node_of_the_tree_when_a_browser_takes_out_the_group_it_was_on() {
+        let mut h = Harness::new(GROUP_AND_LANE);
+        h.goto(TreeAddress::Group(0));
+        let pad = cursor_node(&h);
+        browser(&mut h, Intent::RemoveNode { node: pad });
+        assert!(h.s.chain_state.selected < h.s.tree_entries.len(), "{:#?}", h.tree());
+        assert_ne!(cursor_node(&h), pad);
+        // The frame is drawn from what is there, and the keys still do what they do.
+        assert!(!h.dump().is_empty());
+        h.press(KeyCode::Down).press(KeyCode::Up).press(KeyCode::Enter).press(KeyCode::Esc);
+        assert!(h.s.chain_state.selected < h.s.tree_entries.len());
+    }
+
+    #[test]
+    fn a_lane_a_browser_takes_out_is_gone_from_the_tree_and_the_cursor_stays_on_its_node() {
+        let mut h = Harness::new(GROUP_AND_LANE);
+        h.goto(TreeAddress::Effect { inst: 1, index: 0 });
+        let reverb = cursor_node(&h);
+        let lane = h.s.ctl.model.instruments[0].node;
+        browser(&mut h, Intent::RemoveNode { node: lane });
+        assert_eq!(h.s.ctl.model.instruments.len(), 1);
+        // The lane that was in the group is gone with its modulator, and the group is empty.
+        assert_eq!(headers(&h).len(), 1, "{:#?}", h.tree());
+        assert!(!h.tree().iter().any(|line| line.contains("LFO 1.0Hz")), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 0, index: 0 });
+    }
+}
