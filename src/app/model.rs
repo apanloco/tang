@@ -515,6 +515,34 @@ impl SessionModel {
         targets
     }
 
+    /// The fields of other modulators that the modulator at `mod_index` of the rack at `at` can drive: a rate, the stages of an
+    /// envelope and the depths of cables (a cable that pulls a parameter, or a field, pulls it by a depth another modulator can
+    /// drive), in the order a person is offered them. A lane's modulator drives those of the others in its own rack, a group's
+    /// those of its members' modulators (member by member in lane order, each modulator's settings and then its cables) and then
+    /// those of the others in its own rack. Never its own (a modulator does not drive itself), and a rack that is not there
+    /// drives nothing. (An index that is not in the rack leaves none out.)
+    pub fn field_targets(&self, at: ModulatorLocation, mod_index: usize) -> Vec<FieldTarget> {
+        let mut targets = Vec::new();
+        match at {
+            ModulatorLocation::Lane(inst) => {
+                if let Some(lane) = self.instruments.get(inst) {
+                    push_siblings(&mut targets, &lane.modulators, mod_index);
+                }
+            }
+            ModulatorLocation::Group(group) => {
+                let Some(bus) = self.groups.get(group) else { return targets };
+                for (member, lane) in self.instruments.iter().filter(|lane| lane.group == Some(group)).enumerate() {
+                    for (index, modulator) in lane.modulators.iter().enumerate() {
+                        let owner = format!("M{member} Mod{index}");
+                        push_fields(&mut targets, modulator, owner, |field| ModTargetKind::GroupMemberMod { member, mod_index: index, field });
+                    }
+                }
+                push_siblings(&mut targets, &bus.modulators, mod_index);
+            }
+        }
+        targets
+    }
+
     /// Take the effect at `index` out of lane `inst`'s chain, the way the audio
     /// thread's `RemoveEffect` does: the modulator targets on it go with it, and
     /// the ones on later plugins of the chain move down a slot so that they keep
@@ -895,6 +923,74 @@ pub struct ParamTarget {
     pub base_value: f32,
     pub param_min: f32,
     pub param_max: f32,
+}
+
+/// A field of a modulator that another modulator can drive (`SessionModel::field_targets`): its rate, a stage of its envelope or the
+/// depth of one of its cables, with what it takes to bind it (`Controller::add_target`) and to say what it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldTarget {
+    /// The node of the modulator whose field it is.
+    pub node: NodeId,
+    /// Which field it is.
+    pub field: CrossModField,
+    /// The cable, when the field is the depth of one (`Port::Depth` names it by this).
+    pub edge: Option<EdgeId>,
+    /// How the driving modulator's rack addresses it.
+    pub kind: ModTargetKind,
+    /// Whose field it is, as a person is told: `Mod 1` for the modulator at index 1 of the rack, `M0 Mod1` for the one at index 1
+    /// of the first member of a group.
+    pub owner: String,
+    /// What the field is called: `rate`, `attack`, ..., or, for a cable's depth, `detune depth`.
+    pub field_name: String,
+    /// What the target is labelled with once it is bound: the owner and the name.
+    pub label: String,
+    /// What the field is set to now, where its modulation is centred.
+    pub base_value: f32,
+    pub param_min: f32,
+    pub param_max: f32,
+}
+
+/// The fields of the modulators of `rack` but the one at `except`, which a modulator of the same rack addresses as its siblings'.
+fn push_siblings(targets: &mut Vec<FieldTarget>, rack: &[ModulatorSlot], except: usize) {
+    for (index, modulator) in rack.iter().enumerate().filter(|(index, _)| *index != except) {
+        push_fields(targets, modulator, format!("Mod {index}"), |field| sibling_kind(index, field));
+    }
+}
+
+/// The fields of `modulator`: the settings its source has, in the order of the pane (the rate; the four stages), and then the depth
+/// of each of its cables. `kind` says how the rack that drives them addresses a field.
+fn push_fields(targets: &mut Vec<FieldTarget>, modulator: &ModulatorSlot, owner: String, kind: impl Fn(CrossModField) -> ModTargetKind) {
+    let mut push = |field: CrossModField, name: String, edge: Option<EdgeId>, base_value: f32, (param_min, param_max): (f32, f32)| {
+        let (node, kind, label, owner) = (modulator.node, kind(field), format!("{owner} {name}"), owner.clone());
+        targets.push(FieldTarget { node, field, edge, kind, owner, field_name: name, label, base_value, param_min, param_max });
+    };
+    const SETTINGS: [(CrossModField, ModulatorField, &str); 5] = [
+        (CrossModField::Rate, ModulatorField::Rate, "rate"),
+        (CrossModField::Attack, ModulatorField::Attack, "attack"),
+        (CrossModField::Decay, ModulatorField::Decay, "decay"),
+        (CrossModField::Sustain, ModulatorField::Sustain, "sustain"),
+        (CrossModField::Release, ModulatorField::Release, "release"),
+    ];
+    for (field, setting, name) in SETTINGS {
+        if let Some(value) = modulator.source.setting(setting) {
+            push(field, name.to_string(), None, value, setting.range());
+        }
+    }
+    for (index, cable) in modulator.targets.iter().enumerate() {
+        push(CrossModField::Depth(index), format!("{} depth", cable.param_name), Some(cable.edge), cable.depth, (DEPTH_MIN, DEPTH_MAX));
+    }
+}
+
+/// How a rack addresses the field `field` of its own modulator at `mod_index`: the other way round of `sibling_field`.
+fn sibling_kind(mod_index: usize, field: CrossModField) -> ModTargetKind {
+    match field {
+        CrossModField::Rate => ModTargetKind::ModulatorRate { mod_index },
+        CrossModField::Attack => ModTargetKind::ModulatorAttack { mod_index },
+        CrossModField::Decay => ModTargetKind::ModulatorDecay { mod_index },
+        CrossModField::Sustain => ModTargetKind::ModulatorSustain { mod_index },
+        CrossModField::Release => ModTargetKind::ModulatorRelease { mod_index },
+        CrossModField::Depth(target_index) => ModTargetKind::ModulatorDepth { mod_index, target_index },
+    }
 }
 
 /// The parameters of every plugin in `lane`'s chain, the instrument first. `kind` makes the
@@ -1758,6 +1854,131 @@ group = 1
         // A lane that says it is in a group that is not there makes no members of one.
         model.instruments[0].group = Some(7);
         assert!(model.param_targets(ModulatorLocation::Group(7)).is_empty());
+    }
+
+    // -- What a modulator can drive of the others' --
+
+    /// What a list of field targets says, one row each: whose, what it is called, how the rack addresses it, its range and where it is centred.
+    fn field_rows(targets: &[FieldTarget]) -> Vec<(String, String, K, f32, f32, f32)> {
+        targets.iter().map(|t| (t.owner.clone(), t.field_name.clone(), t.kind.clone(), t.param_min, t.param_max, t.base_value)).collect()
+    }
+
+    #[test]
+    fn a_lane_modulator_can_drive_the_settings_of_the_others_in_its_rack_and_the_depths_of_their_cables_and_not_its_own() {
+        use crate::app::testutil::CROSS_MOD_RACKS;
+        let model = load(CROSS_MOD_RACKS).model;
+        let rack = &model.instruments[0].modulators;
+        let mut expected = vec![];
+        let row = |owner: &str, name: &str, kind: K, min: f32, max: f32, base: f32| (owner.to_string(), name.to_string(), kind, min, max, base);
+        // The envelope (1) has four stages, which an LFO does not; the MIDI control (2) has no settings, only the depth of its cable.
+        expected.push(row("Mod 1", "attack", K::ModulatorAttack { mod_index: 1 }, 0.001, 10.0, 0.01));
+        expected.push(row("Mod 1", "decay", K::ModulatorDecay { mod_index: 1 }, 0.001, 10.0, 0.3));
+        expected.push(row("Mod 1", "sustain", K::ModulatorSustain { mod_index: 1 }, 0.0, 1.0, 0.4));
+        expected.push(row("Mod 1", "release", K::ModulatorRelease { mod_index: 1 }, 0.001, 10.0, 0.5));
+        expected.push(row("Mod 1", "volume depth", K::ModulatorDepth { mod_index: 1, target_index: 0 }, -1.0, 1.0, 0.2));
+        expected.push(row("Mod 1", "detune depth", K::ModulatorDepth { mod_index: 1, target_index: 1 }, -1.0, 1.0, 0.7));
+        expected.push(row("Mod 2", "pan depth", K::ModulatorDepth { mod_index: 2, target_index: 0 }, -1.0, 1.0, 0.3));
+        let targets = model.field_targets(ModulatorLocation::Lane(0), 0);
+        assert_eq!(field_rows(&targets), expected);
+        // Each is the field of the modulator it says, by its node; a depth names its cable.
+        let nodes: Vec<NodeId> = targets.iter().map(|t| t.node).collect();
+        assert_eq!(nodes, [rack[1].node, rack[1].node, rack[1].node, rack[1].node, rack[1].node, rack[1].node, rack[2].node]);
+        let fields: Vec<(CrossModField, Option<EdgeId>)> = targets.iter().map(|t| (t.field, t.edge)).collect();
+        assert_eq!(
+            fields,
+            [
+                (CrossModField::Attack, None),
+                (CrossModField::Decay, None),
+                (CrossModField::Sustain, None),
+                (CrossModField::Release, None),
+                (CrossModField::Depth(0), Some(rack[1].targets[0].edge)),
+                (CrossModField::Depth(1), Some(rack[1].targets[1].edge)),
+                (CrossModField::Depth(0), Some(rack[2].targets[0].edge)),
+            ]
+        );
+        // And what it is called when it is bound: the owner and the name.
+        assert_eq!(targets[0].label, "Mod 1 attack");
+        assert_eq!(targets[4].label, "Mod 1 volume depth");
+        assert_eq!(targets[5].label, "Mod 1 detune depth");
+    }
+
+    #[test]
+    fn what_a_lane_modulator_can_drive_depends_on_which_it_is() {
+        use crate::app::testutil::CROSS_MOD_RACKS;
+        let model = load(CROSS_MOD_RACKS).model;
+        // The envelope (1) can drive the LFO's rate and the depth of its cable, and the MIDI control's cable.
+        let rows = field_rows(&model.field_targets(ModulatorLocation::Lane(0), 1));
+        let names: Vec<(&str, &str)> = rows.iter().map(|r| (r.0.as_str(), r.1.as_str())).collect();
+        assert_eq!(names, [("Mod 0", "rate"), ("Mod 0", "detune depth"), ("Mod 2", "pan depth")]);
+        assert_eq!(rows[0].2, K::ModulatorRate { mod_index: 0 });
+        // The MIDI control (2) can drive all of the others'.
+        let names: Vec<String> = field_rows(&model.field_targets(ModulatorLocation::Lane(0), 2)).iter().map(|r| format!("{} {}", r.0, r.1)).collect();
+        assert_eq!(
+            names,
+            ["Mod 0 rate", "Mod 0 detune depth", "Mod 1 attack", "Mod 1 decay", "Mod 1 sustain", "Mod 1 release", "Mod 1 volume depth", "Mod 1 detune depth"]
+        );
+        // A lane with one modulator has nothing to drive of the others'.
+        assert!(model.field_targets(ModulatorLocation::Lane(1), 0).is_empty());
+    }
+
+    #[test]
+    fn a_group_modulator_can_drive_the_settings_of_its_members_modulators_and_then_those_of_the_others_in_its_rack() {
+        use crate::app::testutil::CROSS_MOD_RACKS;
+        let model = load(CROSS_MOD_RACKS).model;
+        let targets = model.field_targets(ModulatorLocation::Group(0), 0);
+        let names: Vec<String> = field_rows(&targets).iter().map(|r| format!("{} {}", r.0, r.1)).collect();
+        assert_eq!(
+            names,
+            [
+                "M0 Mod0 rate",
+                "M0 Mod0 detune depth",
+                "M0 Mod1 attack",
+                "M0 Mod1 decay",
+                "M0 Mod1 sustain",
+                "M0 Mod1 release",
+                "M0 Mod1 volume depth",
+                "M0 Mod1 detune depth",
+                "M0 Mod2 pan depth",
+                "M1 Mod0 rate",
+                "Mod 1 attack",
+                "Mod 1 decay",
+                "Mod 1 sustain",
+                "Mod 1 release",
+                "Mod 1 damping depth",
+                "Mod 2 volume depth",
+            ]
+        );
+        // A member's modulator is addressed by the member's place in the group and its own in the lane's rack; the group's
+        // own are addressed as a lane's are.
+        assert_eq!(targets[0].kind, K::GroupMemberMod { member: 0, mod_index: 0, field: CrossModField::Rate });
+        assert_eq!(targets[9].kind, K::GroupMemberMod { member: 1, mod_index: 0, field: CrossModField::Rate });
+        assert_eq!(targets[10].kind, K::ModulatorAttack { mod_index: 1 });
+        // A depth is of the cable at its place in the modulator.
+        assert_eq!(targets[6].kind, K::GroupMemberMod { member: 0, mod_index: 1, field: CrossModField::Depth(0) });
+        assert_eq!(targets[7].kind, K::GroupMemberMod { member: 0, mod_index: 1, field: CrossModField::Depth(1) });
+        // The node of each is the modulator that has the field: the lane's own for a member's, the group's for the rest.
+        assert_eq!(targets[0].node, model.instruments[0].modulators[0].node);
+        assert_eq!(targets[9].node, model.instruments[1].modulators[0].node);
+        assert_eq!(targets[10].node, model.groups[0].modulators[1].node);
+        // The depth of a member's cable and of the group's own name the cable.
+        assert_eq!(targets[1].edge, Some(model.instruments[0].modulators[0].targets[0].edge));
+        assert_eq!(targets[14].edge, Some(model.groups[0].modulators[1].targets[0].edge));
+        // The lanes that are in no group, or in another, are not the group's: the second group's own member is its first.
+        let second: Vec<String> = field_rows(&model.field_targets(ModulatorLocation::Group(1), 0)).iter().map(|r| format!("{} {}", r.0, r.1)).collect();
+        assert_eq!(second, ["M0 Mod0 rate"]);
+        assert_eq!(model.field_targets(ModulatorLocation::Group(1), 0)[0].node, model.instruments[3].modulators[0].node);
+    }
+
+    #[test]
+    fn a_rack_that_is_not_there_drives_no_settings_and_an_index_that_is_not_in_it_leaves_none_out() {
+        use crate::app::testutil::CROSS_MOD_RACKS;
+        let model = load(CROSS_MOD_RACKS).model;
+        assert!(model.field_targets(ModulatorLocation::Lane(9), 0).is_empty());
+        assert!(model.field_targets(ModulatorLocation::Group(9), 0).is_empty());
+        // (A modulator that is not there is none of them: the others are all there is.)
+        let all = model.field_targets(ModulatorLocation::Lane(0), 99);
+        let each = [0, 1, 2].map(|i| model.field_targets(ModulatorLocation::Lane(0), i).len());
+        assert!(all.len() > each[0] && all.len() > each[1] && all.len() > each[2]);
     }
 
     // -- Taking a cable out --

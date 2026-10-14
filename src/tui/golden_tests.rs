@@ -1819,6 +1819,86 @@ fn an_engine_that_clips_lights_the_clip_light_and_one_that_does_not_leaves_it_da
 // modulate popup (`m` on a parameter), the target selector (`t` on a modulator)
 // and MIDI-learn (`l` on a parameter).
 
+/// What the target selector lists, one line for each row: the cells the list shows, then the label the target is given, the way the
+/// rack addresses it, and its range and where it is centred. A run of plugin parameters (a chain's) is one line, with its first.
+fn selector_rows(h: &Harness) -> Vec<String> {
+    let selector = h.s.target_selector.as_ref().expect("the selector is open");
+    let mut rows: Vec<String> = Vec::new();
+    for (item, entry) in selector.items.iter().zip(&selector.entries) {
+        let is_param = matches!(
+            entry.kind,
+            crate::plugin::chain::ModTargetKind::PluginParam { .. }
+                | crate::plugin::chain::ModTargetKind::GroupMember { .. }
+                | crate::plugin::chain::ModTargetKind::GroupBus { .. }
+        );
+        let row = if is_param {
+            format!("params of {}", item.cells[0])
+        } else {
+            format!(
+                "{} | {:?} | {} | {:?} | {}..{} at {}",
+                item.cells.join(" | "),
+                entry.slot,
+                entry.label,
+                entry.kind,
+                entry.param_min,
+                entry.param_max,
+                entry.base_value
+            )
+        };
+        if !(is_param && rows.last() == Some(&row)) {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+#[test]
+fn the_target_selector_of_a_lane_modulator_lists_the_chain_and_the_siblings_settings_and_cable_depths() {
+    let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    h.press(KeyCode::Char('t'));
+    let expected: Vec<&str> = vec![
+        "params of Oscillator",
+        "Mod | Mod 1 attack | 0 | Mod 1 attack | ModulatorAttack { mod_index: 1 } | 0.001..10 at 0.01",
+        "Mod | Mod 1 decay | 0 | Mod 1 decay | ModulatorDecay { mod_index: 1 } | 0.001..10 at 0.3",
+        "Mod | Mod 1 sustain | 0 | Mod 1 sustain | ModulatorSustain { mod_index: 1 } | 0..1 at 0.4",
+        "Mod | Mod 1 release | 0 | Mod 1 release | ModulatorRelease { mod_index: 1 } | 0.001..10 at 0.5",
+        "Mod | Mod 1 volume depth | 0 | Mod 1 volume depth | ModulatorDepth { mod_index: 1, target_index: 0 } | -1..1 at 0.2",
+        "Mod | Mod 1 detune depth | 0 | Mod 1 detune depth | ModulatorDepth { mod_index: 1, target_index: 1 } | -1..1 at 0.7",
+        "Mod | Mod 2 pan depth | 0 | Mod 2 pan depth | ModulatorDepth { mod_index: 2, target_index: 0 } | -1..1 at 0.3",
+    ];
+    assert_eq!(selector_rows(&h), expected);
+}
+
+#[test]
+fn the_target_selector_of_a_group_modulator_lists_the_members_the_members_modulators_the_bus_and_the_siblings() {
+    let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
+    h.goto(TreeAddress::GroupModulator { group: 0, index: 0 });
+    h.press(KeyCode::Char('t'));
+    let expected: Vec<&str> = vec![
+        "params of M0 Oscillator",
+        "params of M1 Oscillator",
+        "M0 Mod0 | rate | 0 | M0 Mod0 rate | GroupMemberMod { member: 0, mod_index: 0, field: Rate } | 0.01..50 at 3",
+        "M0 Mod0 | detune depth | 0 | M0 Mod0 detune depth | GroupMemberMod { member: 0, mod_index: 0, field: Depth(0) } | -1..1 at 0.1",
+        "M0 Mod1 | attack | 0 | M0 Mod1 attack | GroupMemberMod { member: 0, mod_index: 1, field: Attack } | 0.001..10 at 0.01",
+        "M0 Mod1 | decay | 0 | M0 Mod1 decay | GroupMemberMod { member: 0, mod_index: 1, field: Decay } | 0.001..10 at 0.3",
+        "M0 Mod1 | sustain | 0 | M0 Mod1 sustain | GroupMemberMod { member: 0, mod_index: 1, field: Sustain } | 0..1 at 0.4",
+        "M0 Mod1 | release | 0 | M0 Mod1 release | GroupMemberMod { member: 0, mod_index: 1, field: Release } | 0.001..10 at 0.5",
+        "M0 Mod1 | volume depth | 0 | M0 Mod1 volume depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) } | -1..1 at 0.2",
+        "M0 Mod1 | detune depth | 0 | M0 Mod1 detune depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(1) } | -1..1 at 0.7",
+        "M0 Mod2 | pan depth | 0 | M0 Mod2 pan depth | GroupMemberMod { member: 0, mod_index: 2, field: Depth(0) } | -1..1 at 0.3",
+        "M1 Mod0 | rate | 0 | M1 Mod0 rate | GroupMemberMod { member: 1, mod_index: 0, field: Rate } | 0.01..50 at 1",
+        "params of Bus Reverb",
+        "Mod | Mod 1 attack | 0 | Mod 1 attack | ModulatorAttack { mod_index: 1 } | 0.001..10 at 0.2",
+        "Mod | Mod 1 decay | 0 | Mod 1 decay | ModulatorDecay { mod_index: 1 } | 0.001..10 at 0.3",
+        "Mod | Mod 1 sustain | 0 | Mod 1 sustain | ModulatorSustain { mod_index: 1 } | 0..1 at 0.7",
+        "Mod | Mod 1 release | 0 | Mod 1 release | ModulatorRelease { mod_index: 1 } | 0.001..10 at 0.5",
+        "Mod | Mod 1 damping depth | 0 | Mod 1 damping depth | ModulatorDepth { mod_index: 1, target_index: 0 } | -1..1 at 0.25",
+        "Mod | Mod 2 volume depth | 0 | Mod 2 volume depth | ModulatorDepth { mod_index: 2, target_index: 0 } | -1..1 at 1",
+    ];
+    assert_eq!(selector_rows(&h), expected);
+}
+
 /// `(slot, param_name, kind, depth, min, max)` of every target of a modulator.
 fn target_fields(targets: &[crate::app::model::ModTargetSlot]) -> Vec<(usize, String, String, f32, f32, f32)> {
     targets

@@ -385,6 +385,81 @@ ui = { x = 376, y = -200 }
 plugin = "builtin:osc"
 "#;
 
+/// A group whose members have modulators of every kind with cables of their own (an envelope with two), and a rack of three of the
+/// group's own; a lane in no group and a lane of a second group, each with an LFO that the first group does not drive: for the lists
+/// of what a modulator can drive of the others'.
+pub const CROSS_MOD_RACKS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.4
+
+[[group.modulator]]
+type = "envelope"
+attack = 0.2
+[[group.modulator.target]]
+bus = 0
+param = "damping"
+depth = 0.25
+
+[[group.modulator]]
+type = "midi"
+midi_cc = 74
+[[group.modulator.target]]
+member = 1
+param = "volume"
+depth = 1.0
+
+[[group]]
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 3.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.1
+[[instrument.modulator]]
+type = "envelope"
+sustain = 0.4
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.2
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.7
+[[instrument.modulator]]
+type = "midi"
+midi_cc = 1
+[[instrument.modulator.target]]
+param = "pan"
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 2.0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+[[instrument.modulator]]
+rate = 4.0
+"#;
+
 pub const LEGACY: &str = r#"
 [[instrument]]
 plugin = "builtin:osc"

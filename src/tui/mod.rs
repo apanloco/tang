@@ -804,10 +804,9 @@ impl State {
     }
 
     fn open_target_selector(&mut self, inst: usize, mod_index: usize) {
-        let inst_node = match self.ctl.model.instruments.get(inst) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.ctl.model.instruments.get(inst).is_none() {
+            return;
+        }
 
         let mut entries = Vec::new();
         let mut items = Vec::new();
@@ -829,40 +828,18 @@ impl State {
             });
         }
 
-        // Sibling lane modulators (cross-mod).
-        for (sib_idx, sib) in inst_node.modulators.iter().enumerate() {
-            if sib_idx == mod_index {
-                continue; // Skip self.
-            }
-            let prefix = format!("Mod {sib_idx} ");
-            let push = |entries: &mut Vec<TargetEntry>, items: &mut Vec<FilterListItem>, label: String, kind, min, max, base| {
-                let idx = entries.len();
-                entries.push(TargetEntry { label: label.clone(), slot: 0, kind, param_min: min, param_max: max, base_value: base });
-                items.push(FilterListItem { cells: vec!["Mod".into(), label], index: idx });
-            };
-            match &sib.source {
-                ModSourceSlot::Lfo { rate, .. } => {
-                    push(&mut entries, &mut items, format!("{prefix}rate"),
-                        crate::plugin::chain::ModTargetKind::ModulatorRate { mod_index: sib_idx }, 0.01, 50.0, *rate);
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    push(&mut entries, &mut items, format!("{prefix}attack"),
-                        crate::plugin::chain::ModTargetKind::ModulatorAttack { mod_index: sib_idx }, 0.001, 10.0, *attack);
-                    push(&mut entries, &mut items, format!("{prefix}decay"),
-                        crate::plugin::chain::ModTargetKind::ModulatorDecay { mod_index: sib_idx }, 0.001, 10.0, *decay);
-                    push(&mut entries, &mut items, format!("{prefix}sustain"),
-                        crate::plugin::chain::ModTargetKind::ModulatorSustain { mod_index: sib_idx }, 0.0, 1.0, *sustain);
-                    push(&mut entries, &mut items, format!("{prefix}release"),
-                        crate::plugin::chain::ModTargetKind::ModulatorRelease { mod_index: sib_idx }, 0.001, 10.0, *release);
-                }
-                // MidiLearn has no editable source params — only its target
-                // depths (added below) can be cross-modded.
-                ModSourceSlot::MidiLearn { .. } => {}
-            }
-            for (tgt_idx, tgt) in sib.targets.iter().enumerate() {
-                push(&mut entries, &mut items, format!("{prefix}{} depth", tgt.param_name),
-                    crate::plugin::chain::ModTargetKind::ModulatorDepth { mod_index: sib_idx, target_index: tgt_idx }, DEPTH_MIN, DEPTH_MAX, tgt.depth);
-            }
+        // The settings of the sibling lane modulators and the depths of their cables (cross-mod): the model says which.
+        for t in self.ctl.model.field_targets(ModulatorLocation::Lane(inst), mod_index) {
+            let idx = entries.len();
+            items.push(FilterListItem { cells: vec!["Mod".into(), t.label.clone()], index: idx });
+            entries.push(TargetEntry {
+                label: t.label,
+                slot: 0,
+                kind: t.kind,
+                param_min: t.param_min,
+                param_max: t.param_max,
+                base_value: t.base_value,
+            });
         }
 
         let mut filter = FilterListState::new();
@@ -1075,10 +1052,9 @@ impl State {
     /// group's own bus effects (`GroupBus`), and sibling group modulators.
     fn open_group_target_selector(&mut self, group: usize, mod_index: usize) {
         use crate::plugin::chain::ModTargetKind;
-        let group_node = match self.ctl.model.groups.get(group) {
-            Some(g) => g,
-            None => return,
-        };
+        if self.ctl.model.groups.get(group).is_none() {
+            return;
+        }
         let mut entries = Vec::new();
         let mut items = Vec::new();
 
@@ -1098,49 +1074,20 @@ impl State {
             });
             items.push(FilterListItem { cells: vec![format!("M{member} {}", t.plugin_name), t.param_name.clone()], index: idx });
         }
-        let members: Vec<&InstrumentNode> =
-            self.ctl.model.instruments.iter().filter(|n| n.group == Some(group)).collect();
-
-        // Member instruments' modulators (cross-mod a member's LFO/envelope).
-        for (ord, member) in members.iter().enumerate() {
-            for (mk, mm) in member.modulators.iter().enumerate() {
-                let prefix = format!("M{ord} Mod{mk}");
-                let mut push_mm = |fname: &str,
-                                   field: crate::plugin::chain::CrossModField,
-                                   min: f32,
-                                   max: f32,
-                                   base: f32| {
-                    let idx = entries.len();
-                    entries.push(TargetEntry {
-                        label: format!("{prefix} {fname}"),
-                        slot: 0,
-                        kind: ModTargetKind::GroupMemberMod { member: ord, mod_index: mk, field },
-                        param_min: min,
-                        param_max: max,
-                        base_value: base,
-                    });
-                    items.push(FilterListItem {
-                        cells: vec![prefix.clone(), fname.to_string()],
-                        index: idx,
-                    });
-                };
-                use crate::plugin::chain::CrossModField;
-                match &mm.source {
-                    ModSourceSlot::Lfo { rate, .. } => {
-                        push_mm("rate", CrossModField::Rate, 0.01, 50.0, *rate);
-                    }
-                    ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                        push_mm("attack", CrossModField::Attack, 0.001, 10.0, *attack);
-                        push_mm("decay", CrossModField::Decay, 0.001, 10.0, *decay);
-                        push_mm("sustain", CrossModField::Sustain, 0.0, 1.0, *sustain);
-                        push_mm("release", CrossModField::Release, 0.001, 10.0, *release);
-                    }
-                    ModSourceSlot::MidiLearn { .. } => {} // only its target depths below
-                }
-                for (ti, t) in mm.targets.iter().enumerate() {
-                    push_mm(&format!("{} depth", t.param_name), CrossModField::Depth(ti), DEPTH_MIN, DEPTH_MAX, t.depth);
-                }
-            }
+        // The settings of the member instruments' modulators and the depths of their cables (cross-mod a member's LFO/envelope),
+        // labelled by member ordinal and modulator; the model says which.
+        let fields = self.ctl.model.field_targets(ModulatorLocation::Group(group), mod_index);
+        for t in fields.iter().filter(|t| matches!(t.kind, ModTargetKind::GroupMemberMod { .. })) {
+            let idx = entries.len();
+            entries.push(TargetEntry {
+                label: t.label.clone(),
+                slot: 0,
+                kind: t.kind.clone(),
+                param_min: t.param_min,
+                param_max: t.param_max,
+                base_value: t.base_value,
+            });
+            items.push(FilterListItem { cells: vec![t.owner.clone(), t.field_name.clone()], index: idx });
         }
 
         // The group's own bus effects.
@@ -1157,38 +1104,18 @@ impl State {
             items.push(FilterListItem { cells: vec![format!("Bus {}", t.plugin_name), t.param_name.clone()], index: idx });
         }
 
-        // Sibling group modulators (cross-mod).
-        for (sib_idx, sib) in group_node.modulators.iter().enumerate() {
-            if sib_idx == mod_index {
-                continue;
-            }
-            let prefix = format!("Mod {sib_idx} ");
-            let push = |entries: &mut Vec<TargetEntry>, items: &mut Vec<FilterListItem>, label: String, kind, min, max, base| {
-                let idx = entries.len();
-                entries.push(TargetEntry { label: label.clone(), slot: 0, kind, param_min: min, param_max: max, base_value: base });
-                items.push(FilterListItem { cells: vec!["Mod".into(), label], index: idx });
-            };
-            match &sib.source {
-                ModSourceSlot::Lfo { rate, .. } => {
-                    push(&mut entries, &mut items, format!("{prefix}rate"),
-                        ModTargetKind::ModulatorRate { mod_index: sib_idx }, 0.01, 50.0, *rate);
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    push(&mut entries, &mut items, format!("{prefix}attack"),
-                        ModTargetKind::ModulatorAttack { mod_index: sib_idx }, 0.001, 10.0, *attack);
-                    push(&mut entries, &mut items, format!("{prefix}decay"),
-                        ModTargetKind::ModulatorDecay { mod_index: sib_idx }, 0.001, 10.0, *decay);
-                    push(&mut entries, &mut items, format!("{prefix}sustain"),
-                        ModTargetKind::ModulatorSustain { mod_index: sib_idx }, 0.0, 1.0, *sustain);
-                    push(&mut entries, &mut items, format!("{prefix}release"),
-                        ModTargetKind::ModulatorRelease { mod_index: sib_idx }, 0.001, 10.0, *release);
-                }
-                ModSourceSlot::MidiLearn { .. } => {} // only its target depths below
-            }
-            for (tgt_idx, tgt) in sib.targets.iter().enumerate() {
-                push(&mut entries, &mut items, format!("{prefix}{} depth", tgt.param_name),
-                    ModTargetKind::ModulatorDepth { mod_index: sib_idx, target_index: tgt_idx }, DEPTH_MIN, DEPTH_MAX, tgt.depth);
-            }
+        // The settings of the sibling group modulators and the depths of their cables (cross-mod).
+        for t in fields.into_iter().filter(|t| !matches!(t.kind, ModTargetKind::GroupMemberMod { .. })) {
+            let idx = entries.len();
+            items.push(FilterListItem { cells: vec!["Mod".into(), t.label.clone()], index: idx });
+            entries.push(TargetEntry {
+                label: t.label,
+                slot: 0,
+                kind: t.kind,
+                param_min: t.param_min,
+                param_max: t.param_max,
+                base_value: t.base_value,
+            });
         }
 
         let mut filter = FilterListState::new();
