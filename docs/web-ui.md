@@ -390,6 +390,19 @@ node's position goes in a top-level `[ui]` table. `pinned` lists the parameters
 shown as knobs and ports on the node (plugins can have hundreds; the inspector
 lists all of them). Attaching a cable pins its target automatically.
 
+**As built (step 25).** The positions are built; `pinned` is not (a TODO in `CLAUDE.md`). A node's table has `ui = { x, y }`
+for each kind of node (a lane, an effect, a modulator, a group, a bus effect, a group's modulator) and the master's is
+`master = { x, y }` in the top-level `[ui]`; `CLAUDE.md` ("Node positions") has the format as a person reads it. The numbers are
+pixels on the page's canvas, finite, whole (written without a point) or with decimals (as typed: an f32 widened to f64 would
+print `12.300000190734863`); a `ui` that is not a pair of numbers is ignored with a log line (a layout is not worth refusing a
+session for), while `nan` and `inf` are refused like every number. In the model the places are a side table, `SessionModel.ui`,
+by `NodeId` (the master's under `NodeId::MASTER`): `app::load` fills it (a modulator that an older session nested under an effect
+keeps its place when it migrates into the lane), `app::save::to_save` and `session::to_toml` write it, and the place of a node
+that is taken out stays in the table (ids are not reused, so nothing reads it) and is not written. The graph has them as
+`Node.ui`, left out of the JSON of a node that has none, so that a session with no places is the JSON it was. The TUI shows
+nothing of them and keeps them through a load, an edit and a save. A node with no place is where the page's layout puts it, and
+the layout of the others does not leave room for one that was moved: a node dragged away leaves its space to whatever comes.
+
 ## 5. Intents and events
 
 `Intent` is everything a front-end can ask for, addressed by `NodeId`. The TUI
@@ -459,7 +472,15 @@ resolves cursor → ids and then calls `apply`.
   `Saved { file }`, which leaves the session with nothing unsaved; a session with no file, or
   one that cannot be written, is refused with the code `io`, which is no revision and changes
   nothing. `SaveAs` waits for the one validated file name, §8.)
-- Layout: `SetNodeUi` (not undoable; marks the session dirty).
+- Layout: `SetNodeUi` (not undoable; marks the session dirty). (`SetNodeUi { node, ui }` is built, step 25: `ui` is
+  `{ x, y }`, in the pixels of the canvas, or `null` to give the node back to the page's layout; `node` is any node of the
+  graph, the master (`NodeId::MASTER`) too, which the controller finds though it is not a node of the model. The controller
+  keeps a place to a tenth of a pixel (half away from zero), within 100 000 either way, and never `-0` (`NodeUi::tidy`; the
+  limit and the tenth are in `constants.ts`, `NODE_UI_LIMIT` and `NODE_UI_PARTS`, which the mock engine reads). Refused, with
+  nothing changed, for a node that is not there (`NotFound`, for `null` too) and for numbers that are not numbers (`Invalid`:
+  "(NaN, 1) is not a place"; over a WebSocket they are `null` and do not decode at all). Answered by `NodeUiSet { node, ui }`, an
+  event and not a snapshot, with the place as it is kept. The engine hears nothing, and the TUI ignores it. The page asks it
+  as `Editor.moveNode`; `Editor.resetLayout` gives every node that has a place back to the layout, one request after the other.)
 
 `apply` returns `Applied { rev, events, undo }` or an `IntentError` (`NotFound`,
 `Invalid`, `Busy`, `Io`, …); today `Applied` has no `undo` and the errors are
@@ -799,9 +820,8 @@ has a port on its top edge, quiet until a cable ends at it. An audio cable is gr
 modulation cable magenta, dashed and thicker the deeper it is; a cable that would end at a
 modulator's rate, stage or depth has no handle yet and is not drawn. The canvas is laid out
 again when the structure of the session changes (`sameStructure`: nodes, their places in the
-tree, names, the parameters of their plugins, cables) and not for a value. Nodes cannot be
-moved, selected or cabled by hand: that is for the steps that persist layout and edit the
-graph. React Flow gives a node that can be neither dragged nor selected
+tree, names, the parameters of their plugins, cables, and where the session has placed a node) and not for a value.
+Nodes cannot be selected or cabled by hand; they can be moved since step 25 (below). React Flow gives a node that can be neither dragged nor selected
 `pointer-events: none`, which put its pane over every knob; `patch.css` takes the pointer
 back for the nodes (a browser found that; jsdom has no CSS).
 
@@ -905,6 +925,23 @@ along, so that a choice is never refused for crossing; `any` at both ends is eve
 leave out the note that is any already (C-1 as a low end, G9 as a high one). What was chosen shows until the answer is in,
 the last choice while earlier ones are answered, and then what the session has. The cell counts among a node's controls
 for its height (`controlCount`: an instrument's are its parameters, its volume and its keys).
+
+**As built (step 25).** A node is moved by dragging it by what is not a control (the controls, the menus and the
+buttons are `nodrag`, as they were for the canvas not to pan under a knob): the header in practice, which has a hand for a
+cursor. The drag begins when the pointer has gone three pixels (`nodeDragThreshold`; React Flow begins it where the pointer
+is by then, so the node is a little behind it), a click is not a move, and a drag that is put down where it began says
+nothing. The canvas holds the nodes it shows in a state of its own (`useMovableNodes`, over `applyNodeChanges`) and is told where a node is put down
+(`onNodeDragStop`): the page sends `setNodeUi` once, at the end, with the node's position, and the cables follow the nodes as
+they are dragged, as React Flow draws them. The session is laid out again whenever its structure changes, and a node must not
+be taken out of a hand when that happens (a modulator added by another browser): `keepHeld` (`app/patch/moving.ts`) keeps the
+nodes in hand, and those put down that the server has not answered for yet, where they are on the canvas, a count of drags
+for each (`held`), and when the answer is in (or it is refused: the page says why, and the node goes back) the canvas takes
+the session's place. The place is the server's: the event comes back with it tidied to a tenth, every other page draws the
+node there, and a page that is opened again does. `toFlow` draws a node where the session says (`Node.ui`) and the others where
+the layout puts them; `sameStructure` compares the places, so that a move from another page lays the canvas out again. A control
+among those of the canvas, "Arrange the nodes again" (a `ControlButton` under the zoom's, disabled while no node has a place),
+gives every node that has one back to the layout. Not built: moving a node with the keyboard (React Flow's own needs a node to
+be selected, which they are not), snapping, a grid, a minimap, and several nodes at once.
 
 ### 9.4 Performance rules
 
@@ -1031,7 +1068,8 @@ implementations. The TUI golden tests are the regression net.
    the browser keyboard; held notes and chords match the TUI. (The computer keyboard
    plays notes in the page since step 16, ahead of this phase, so that what is built
    can be tried by ear without a MIDI keyboard; step 24 built the scale and the lock, the
-   held notes and an on-screen keyboard, §9.5; still to do: chords, BPM.)
+   held notes and an on-screen keyboard, §9.5; still to do: chords, BPM.) (Moving the nodes of the canvas and
+   keeping where they are in the session, §4.4, was done in step 25, ahead of the rest of phase 1.)
 3. **Modulation, groups, patterns, MIDI-learn on the canvas.** *Exit:*
    everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
    a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
@@ -2313,6 +2351,64 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 893 tests (880 at the end of step 23), 1046 with the `web` feature and 16 on the real
     program (1029 and 14), 888 without the default plugin formats and 1039 with `web`; web 1038 (938); 42 in browsers (41).
 
+- [x] **25. Moving nodes (phase 1, ahead of the rest of it).** The canvas laid itself out, and a person who wanted a node
+  elsewhere could not put it there. *Done when:* on the real program a browser drags a node and it stays; a second browser sees
+  it where it was put, and so does a page that is opened again; the file the session is saved to has it as `ui = { x, y }` on the
+  node's table; a program started on that file draws every node where it was left; and the TUI loads the places, shows nothing of
+  them and keeps them through an edit and a save. In parts, each its own commit: **25.1** the places in the session file and in
+  the model (Rust only); **25.2** `SetNodeUi` as an intent, with `Node.ui` in the graph, the reducer, the mock engine and
+  `Editor.moveNode`; **25.3** the canvas: nodes that are dragged, the places that come from the session, and a control that
+  arranges them again. *Not done (later steps):* pinning (`pinned`, §4.4), groups (the TUI's `g` is not an intent yet), taking a
+  lane or a group out with a confirmation (there is no undo), cables to a modulator's own settings, undo; moving a node with the
+  keyboard.
+  - **25.1 as built.** §4.4 above. `session::NodeUi { x, y }` (f32, serde, ts-rs), read by `parse` into the config structs
+    (`ui` on a group, a lane, an effect and a modulator, `master_ui` on the session) and written by `to_toml`, one inline line
+    on the node's table (`inline_ui_tables`: the tables the serializer writes are made inline, and the key told to forget it was
+    a header); a whole number is written without a point and a decimal as typed (`coordinate`). The model's `ui` is a side table
+    by `NodeId`, `app::load` fills it, `to_save(&SessionModel)` (it took the lanes and the groups before) writes it, and
+    `Controller::save_to` gives `session::save` the master's place. A bad `ui` is ignored with a log line; a number that is not
+    a number is refused like every number.
+  - **25.2 as built.** §5 above. `Intent::SetNodeUi { node, ui: Option<NodeUi> }`, `Event::NodeUiSet`, `Node.ui` (absent on
+    the wire for a node with no place, so no fixture changed; `ui?: NodeUi` in the TypeScript), `Snapshot::change` takes the
+    event, the controller's rule is `NodeUi::tidy` (a tenth of a pixel, half away from zero, within 100 000, never `-0`;
+    the limits are in `constants.ts`) and nothing goes to the engine. On the page: the reducer (a place given back leaves no
+    `ui`), the mock engine (the same rounding, in 64 bits as the controller does it) and `Editor.moveNode`.
+  - **25.3 as built.** §9.3 above. `toFlow` puts a node at its `ui`, nodes are `draggable`, `sameStructure` compares the places;
+    `useMovableNodes` (with `keepHeld`) is the canvas's state of the nodes, which keeps a node in hand while the session is laid
+    out again, sends the place once at the end of a drag and takes what the session has when the answer is in; "Arrange the nodes
+    again" is a control of the canvas (`Editor.resetLayout`).
+  - **Tests.** Rust: 21 more tests (914 against 893; with the `web` feature 22 more, 1068 against 1046, and one more on the real
+    program, 17 against 16): five on the file (reading a place on every kind of node, a bad one ignored, what is written, a node
+    with none written as it always was, decimals as typed), one on rounding, two on the loader, three on the saver, one on the
+    controller's save, one on the TUI (it shows nothing of the places and keeps them through a delete and Ctrl+S), six on the
+    controller's intent, two on the graph, and with `web` one on the generated constants; the wire lists, the bad-input list
+    and the snapshot invariant have the intent and the event. On the real program: a browser places the filter and the master,
+    a second browser is told as an event, a third is given them in its snapshot, a node that is not there is refused in the
+    controller's words, Save writes them, a program started on that file draws them, and a place given back is gone from the
+    file at the next save. 49 mutations of the Rust, 48 caught at once; the one that survived was a branch no saved session
+    reaches, and it is gone. Web: 42 more tests (1080 against 1038, in two more files): the reducer, the mock engine (rounding,
+    limits, `-0`), the editor, `toFlow` and `sameStructure`, `keepHeld`, and eleven on the canvas in jsdom, with real pointer
+    events through React Flow's own drag (a drop sends the place and the node stays; sideways and up-and-down moves; a node that
+    another browser moves; a node in hand through a new layout; two drags of one node while the first is unanswered, with the
+    answers held back; a refused move goes back; nothing is sent for a click; the control); in a browser on the real program one
+    more of the 43: a filter is dragged, a second page and a reloaded page have it there, a move on the first page is drawn on the
+    second, Save writes the two places, arranging again removes them. 61 mutations of the page, 57 caught at once; four were not,
+    and a test was made for each: `-0` (it cannot be seen through JSON, so the test looks at the mock server's own copy), the
+    editor stopping at the first node it cannot give back, a drag along one axis, and the count of overlapping drags.
+  - **Found on the way.** A dead branch in `inline_ui_tables` (a recursion into plain child tables: no saved session has a `ui`
+    below one) showed up as the one mutant that survived, and was taken out rather than tested. My first test of "no place is
+    written" looked for `ui` in the text, which `builtin:osc` has. React Flow begins a drag where the pointer is when it has
+    gone `nodeDragThreshold` pixels, so a node lags the pointer by that much, which a test that moves the pointer 15 pixels in its
+    first step sees; and in jsdom a canvas has no size, so every point is at its edge, where React Flow pans while a node is
+    dragged: the tests give the canvas a size (a faked `getBoundingClientRect`), and set the `view` of a pointer event by hand,
+    since jsdom takes no window of Vitest's as one. Vitest prints no `console.log` here, so tracing a test was done through a file.
+    In the docs: §4.4 planned `pinned` inside `ui` (not built, a TODO), and CLAUDE.md said the layout "is to be stored".
+    A refactoring that is worth doing: the `Save*` structs have no `Default`, so one more field (`ui`) was 41 edits in test
+    literals; a `Default` (or a constructor for a lane) would make the next one cheap. A node that is placed by hand is a pin:
+    the layout does not make room around it, so a node added later can land on one.
+  - **Numbers at the end of the step.** Rust 914 tests (893 at the end of step 24), 1068 with the `web` feature and 17 on the real
+    program (1046 and 16), 909 without the default plugin formats and 1061 with `web`; web 1080 (1038); 43 in browsers (42).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2357,6 +2453,7 @@ mixer, delay, …) are the natural first increment.
 | D25 | All the parameters of a plugin are reached through one panel docked beside the canvas, with a filter by name, and not by letting a node grow: the layout of the canvas stays a function of the graph (no node changes size by a click), a plugin with thousands of parameters costs a page of rows, and a row is the same session parameter as a knob (one `Control` for both: what was set shows until the engine has answered) | Built (step 22) |
 | D26 | A lane's keys are chosen in the page as two notes, `any` or a note each, and are never typed as text (`C0-B3`): the text is for the session file and the TUI, which have one parser; the intent carries numbers, a choice that would cross the other end pushes it along instead of being refused, and the whole keyboard is no range | Built (step 23) |
 | D27 | The piano of the page draws what the server tells and decides nothing: the scale arrives as its root and pitch classes (the page holds no table of scales), the held keys as a telemetry channel of 128 values at the telemetry rate rather than the bitset on change that §6 planned (one frame format to read, by the note's number, and no bookkeeping of what each client was told), and the lock is the sender's (the server drops a note outside the scale from every source, so the page cannot disagree with a MIDI keyboard about it) | Built (step 24) |
+| D28 | Where a node is drawn belongs to the session, not to a page: a page asks `SetNodeUi` once, when a node is put down (not a stream of moves), the controller keeps the place tidy (a tenth of a pixel and within a limit, so that a file is read by people and a node cannot be lost beyond the edge), every other page draws what the server tells, and a node that has no place is where the layout puts it, with no room left for one that was moved: a place is a pin, not a hint. The places are a side table of the model by `NodeId` and not a field of each node, so that the engine's types and the TUI do not carry what they do not use | Built (step 25) |
 
 Open questions
 

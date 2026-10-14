@@ -1035,7 +1035,10 @@ ends included, or every note for none; refused for a node that is no lane, a not
 note above the high one; the TUI's `R` popup asks it too), `SetScale { scale }` (the Piano tab's scale, as
 the session file writes it, `F# dorian`, flats, long names and any case taken; refused for text that is
 not a scale; answered with `ScaleSet`, which has the root and the pitch classes a client draws from) and
-`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too); `Save` (the session's own file); and seven that change
+`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetNodeUi { node, ui }` (where a front-end
+draws a node, `{ x, y }` in the pixels of its canvas or none for the front-end's own layout; any node, the master included;
+kept to a tenth of a pixel and within 100 000 either way, `NodeUi::tidy`; told as `NodeUiSet`; the engine and the TUI have no
+use for it, the session file keeps it, see "Node positions (`ui`)"); `Save` (the session's own file); and seven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1446,7 +1449,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
-  `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
+  `SetNodeUi`, `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1467,8 +1470,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   with the target's depth as `amount`), and `Controller::snapshot()`
   (`src/app/snapshot.rs`) is that plus the revision, the telemetry layout and
   what belongs to the session as a whole (dirty, file name, tempo, piano). Node
-  layout is to be stored in the session TOML as optional `ui = { x, y, pinned }`
-  tables that the engine and the TUI ignore.
+  layout is stored in the session TOML as optional `ui = { x, y }` tables that the
+  engine and the TUI ignore (`Node.ui` in the graph; see "Node positions (`ui`)";
+  the planned `pinned` list is not built).
 - **Telemetry**: the audio thread publishes modulator outputs, effective
   (modulated) parameter values and meters through lock-free slots; the web
   runtime streams them to the browser as binary frames. The slots, the engine
@@ -1550,7 +1554,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   keyboard in the scale of the session (the root gold, the other notes teal), lit while a note is held
   and played with the pointer, with the scale as two choices and a "Lock to scale" toggle
   (`app/piano/`: `Piano`, `PianoBar`, `PianoKeys`; `client/pianoLayout.ts`; the intents `SetScale` and
-  `SetLocked`). What the controller
+  `SetLocked`). Step 25 made the nodes movable: a node is dragged by its header (the controls are
+  `nodrag`), the page sends `SetNodeUi` once, when it is put down, every browser draws the node there,
+  the session saves it, and a control on the canvas arranges the nodes again (`Editor.moveNode`,
+  `resetLayout`; `useMovableNodes` and `app/patch/moving.ts` keep a node in hand while the session is laid out again). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1601,8 +1608,10 @@ modulators and cables are added and taken out, in the browser and in the TUI. St
 of the computer a piano in the page, so that what is built can be tried by ear. Phase 1 (session
 parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
-parameter of a plugin (22), sets a lane's keys (23) and has the piano (24).
-TODO: `ui` layout fields in the session format (the canvas lays itself out until then; nodes cannot be moved).
+parameter of a plugin (22), sets a lane's keys (23), has the piano (24) and moves the nodes of the canvas, keeping where
+they are in the session (25).
+TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
+and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
 the browser (`AddModEdge` takes a parameter port only; `RemoveEdge` takes any cable out).
@@ -1612,15 +1621,15 @@ oscillator): a cable would have to be drawn again with the new plugin's index.
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
 TODO: pin a parameter to its node as a knob from the panel of parameters (a node shows the first eight, and every one a
-cable drives): kept in the session as the `ui` layout's `pinned` list (docs/web-ui.md §4.4).
+cable drives): to be kept in the session as the `ui` layout's `pinned` list (docs/web-ui.md §4.4; `ui` has the places only, so far).
 TODO: the panel's sliders ignore what a parameter says of its steps (`stepCount`) and of its group (`group`): a stepped
 parameter is turned as if it were continuous, and the filter looks at names only. (The plugins of this machine report neither.)
 TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at
 its own defaults (or at a preset the page then loads): groups and taking a lane out (waits for an undo)
 are not in the page yet.
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
-edge, and two cables with the same middle put theirs over each other; user-placed nodes and
-sliders that move along the cable would settle it.
+edge, and two cables with the same middle put theirs over each other; sliders that move along the
+cable would settle it (nodes can be placed since step 25, which helps but does not settle it).
 TODO: patterns as graph nodes (they have no `NodeId` yet).
 TODO: events of their own for what the audio thread reports to the controller (a
 finished pattern recording, a captured MIDI-learn control) and for what the TUI
