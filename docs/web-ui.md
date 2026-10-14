@@ -308,7 +308,9 @@ structure into it on demand and translates edge edits back into intents.
 | pattern | Pattern | display only in track A |
 
 - Ports: `in` / `out` (audio), `out` (modulation) on modulators, `Param(u32)`
-  on plugin nodes, `ModField(rate | attack | …)` on modulators (cross-mod).
+  on plugin nodes, and, for cross-mod, on modulators `rate`, `attack`, `decay`, `sustain` and
+  `release` (a setting of the modulator) and `depth { edge }` (the depth of one of its cables);
+  as built, `app::graph::Port`, a cable to any of them since step 26.
 - Edge kinds: `audio` and `member` are derived; `modulation` is user-editable,
   with `amount` = target depth (−1…1).
 - Containment (`parent`) lets the outline derive the TUI's tree.
@@ -448,9 +450,15 @@ resolves cursor → ids and then calls `apply`.
   drive whichever one is put there next), `AddModulator { parent, kind }` (an LFO, an
   envelope or an armed MIDI control at the end of the rack of a lane, whose node is its
   instrument's, or of a group; any other parent is refused), `AddModEdge { modulator, to }`
-  (a cable to a plugin parameter, `to` a node and a `param` port, at depth 0.5; the controller
-  decides where it may end, D21; the cables that drive a modulator's own rate, stages or depths
-  are refused, for now) and `RemoveNode { node }` (a modulator, with its cables and the cables
+  (a cable at depth 0.5, `to` a node and a port of it: a plugin's `param`, where the controller
+  decides where it may end, D21; or, since step 26, a modulator's `rate`, `attack`, `decay`,
+  `sustain` or `release`, or the `depth` of one of that modulator's cables, where it decides by
+  `SessionModel::modulators_in_reach` and `field_targets` (D29) and refuses, with nothing changed
+  and in this order, a node that is not there, the modulator itself (`a modulator cannot drive its
+  own settings`), a node that is no modulator, one out of reach, a setting its kind lacks (`that
+  modulator has no rate`; a depth that is not one of that node's cables is `EdgeNotFound`) and one
+  the modulator drives already; a cable to a setting has no telemetry slot of its own, since a
+  target that drives a modulator's own field has none) and `RemoveNode { node }` (a modulator, with its cables and the cables
   of the others that drove its settings; since step 19 also an effect or a bus effect, with the
   cables that drive its parameters, a lane's and a group's, and what drove their depths, the audio
   path closing up round it; a lane or a group is refused until the page can take it back, for
@@ -817,8 +825,9 @@ with the middle of its members, and the master at the end in the middle of it al
 `patch.css` keeps to them. A node shows its plugin's first eight parameters and every one a
 cable ends at ("pinned" until the session keeps pinning), then its own gain; each control
 has a port on its top edge, quiet until a cable ends at it. An audio cable is grey, a
-modulation cable magenta, dashed and thicker the deeper it is; a cable that would end at a
-modulator's rate, stage or depth has no handle yet and is not drawn. The canvas is laid out
+modulation cable magenta, dashed and thicker the deeper it is; (a cable that ends at a
+modulator's rate or stage has had a handle since step 26, below; one that ends at the depth of a cable has none and is
+not drawn). The canvas is laid out
 again when the structure of the session changes (`sameStructure`: nodes, their places in the
 tree, names, the parameters of their plugins, cables, and where the session has placed a node) and not for a value.
 Nodes cannot be selected or cabled by hand; they can be moved since step 25 (below). React Flow gives a node that can be neither dragged nor selected
@@ -942,6 +951,31 @@ the layout puts them; `sameStructure` compares the places, so that a move from a
 among those of the canvas, "Arrange the nodes again" (a `ControlButton` under the zoom's, disabled while no node has a place),
 gives every node that has one back to the layout. Not built: moving a node with the keyboard (React Flow's own needs a node to
 be selected, which they are not), snapping, a grid, a minimap, and several nodes at once.
+
+**As built (step 26).** A modulator's numbers take a cable, from another modulator, at a port on the top edge of their knob, as a
+plugin's parameters do (`CablePort`, which `ParamCell` uses too): an LFO's rate and the four stages of an envelope; not the
+waveform, which is a choice, and not a MIDI control, which has no settings. The handle is named after the port (`rate`, `attack`,
+`decay`, `sustain`, `release`; `handleOf`, `paramHandle` for a parameter's `param-N`), a cable to one is drawn from the
+modulator's output to it and labelled for what it joins (`ADSR 2 → LFO 2: rate`, `portName`), and `drivenSettings` in the node's
+data says which of a modulator's settings a cable ends at, for their ports to say so. A cable is dragged to one as to a parameter:
+`cableOf` reads the connection into a modulator, a node and a `Port` (`param-N`, or a setting's name, and nothing else), and
+`drawableFrom` says which ports take it, from `Drivable` in the data of the modulator's node (what it can still be drawn to, plugin by
+plugin, `params`, then modulator by modulator, `fields`): the settings of the modulators it reaches and does not drive already, so
+not its own, not another lane's (nor, for a lane's modulator, its group's), and the ports are marked while the cable is dragged.
+The list at the foot of a modulator offers the same, after the parameters, under a heading for each modulator, and
+`Editor.addCable(modulator, node, port)` takes a port, not a parameter's index. The rule is read from the graph by
+`fieldsOf` and `modulatorsInReach` (`client/reach.ts`), pinned to the controller's by a fixture the controller writes
+(`fixtures/fields.json`, as `reach.json` is for the parameters), and the mock engine draws a cable by it, with the controller's
+refusals in its order and its words. The depth of a cable has no port on the canvas: the controller accepts a cable to one (the
+TUI's `t` makes them), and the page neither draws such a cable nor offers it (a TODO). **Layout.** A modulator that drives a
+setting of another is a row above it, so that a cable always runs down, from the bottom of a node to the top of the one it
+drives (`tiersOf`): a modulator is as many rows above its strip as the longest chain of modulators it drives (the cables the canvas
+draws, within its rack); one that drives no other is in the row nearest the strip, over the plugin it drives, as ever; the
+rows are placed from the nearest up, each modulator over the first column it drives that is free in its row, a row as tall as
+the tallest in it, with room for the cables between the rows as there is between the rows and the strip. A rack in which none
+drives another is one row, laid out as it was; a cycle is cut where it is first met, in the order of the graph; a cable to
+a modulator of another strip (a group's to a member lane's) makes no row. A long chain is a tall canvas: the cascade is as
+tall as it is long.
 
 ### 9.4 Performance rules
 
@@ -1073,8 +1107,8 @@ implementations. The TUI golden tests are the regression net.
 3. **Modulation, groups, patterns, MIDI-learn on the canvas.** *Exit:*
    everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
    a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
-   D18, and adding and removing modulators and cables in step 15; still to do: cables to a
-   modulator's own rate, stages and depths, groups, patterns, MIDI-learn.)
+   D18, and adding and removing modulators and cables in step 15, and cables between modulators, to the rate and
+   the stages, in step 26; still to do: cables to the depth of a cable, groups, patterns, MIDI-learn.)
 4. **Extras:** mixer view, session browser (needs runtime session loading),
    Web MIDI, touch layout.
 5. **Engine track B** (separate, §13).
@@ -2409,6 +2443,71 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 914 tests (893 at the end of step 24), 1068 with the `web` feature and 17 on the real
     program (1046 and 16), 909 without the default plugin formats and 1061 with `web`; web 1080 (1038); 43 in browsers (42).
 
+- [x] **26. Cables between modulators (phase 3, ahead of the rest of it).** A modulator can drive the rate of an LFO, a stage of an
+  envelope or the depth of a cable (the TUI's `m` on a field of a modulator and its `t`), and the page could draw cables to
+  plugins' parameters only: such a cable that the TUI had made was in the session and not on the canvas. *Done when:* on the real
+  program a browser drags a cable from one modulator's output to another's rate or stage, or picks it from the list at the foot of
+  the modulator; it is in the server's session, the saved file has it (`mod_rate = 0`), a program started on the file draws it and
+  a second browser sees it; it has a depth to turn and a button to take it out; the ports that take it are marked while it is dragged;
+  the modulators that drive others are drawn above them; and the TUI's target selectors and the page's choice of what may be drawn
+  are one rule. In parts, each its own commit: **26.1** what a modulator can drive of the others' is the model's to say, and the
+  TUI's two selectors ask it (a refactoring, Rust only); **26.2** `AddModEdge` takes a rate, a stage or a depth as its port;
+  **26.3** the page's rule, the mock engine and the editor; **26.4** the canvas: ports, the cable dragged, the list; **26.5** the
+  layout. *Not done (later steps):* the depth of a cable on the canvas (the controller takes a cable to one; the page has no port for
+  it, and neither draws such a cable nor offers it), groups (the TUI's `g` is not an intent yet), taking a lane or a group out
+  with a confirmation (there is no undo), pinning, undo, moving a node with the keyboard.
+  - **26.1 as built.** `SessionModel::field_targets(at, mod_index)` lists what the modulator at `mod_index` of the rack at `at` can
+    drive of the others': for each modulator in reach, its settings (an LFO's rate, an envelope's four stages), then the depths of
+    its cables, as `FieldTarget { node, field, edge, kind, owner, field_name, label, base_value, param_min, param_max }`. The
+    TUI had three near-duplicate loops that said the same, with the ranges written out again (for a lane's modulator, for a group's
+    members' modulators and for a group's siblings), which are one function now; two golden tests of the selectors, written first
+    against the old code, pinned what they list.
+  - **26.2 as built.** §5 above. `modulators_in_reach(at, mod_index)` (a lane's: the others of its rack; a group's: its members'
+    modulators, member by member, then the others of its own rack; never itself), `FieldTarget::port()` (`app::graph`), and
+    `add_mod_edge_intent`, which goes by the port: `add_param_cable` (as it was) or `add_field_cable`. The cable is made by
+    `add_target` like the TUI's; taking it out gives the setting the value the user set. A fixture the controller writes,
+    `web/src/client/fixtures/fields.json` (a session of groups and lanes in and out of them, and for each of its nine modulators
+    the node and port it was let to draw to).
+  - **26.3 as built.** §9.3 below. `client/reach.ts`: `modulatorsInReach`, `fieldsOf`, `samePort`, and `drivablesOf` with `fields`
+    for the modulators; the mock engine's `addModEdge` by the port (`addParamCable`, `addFieldCable`, `withCable`); `portName`
+    (`client/names.ts`), which the editor's notices and `describeCable` use (each had a lookup of a parameter's name of its own);
+    `Editor.addCable(modulator, node, port)`.
+  - **26.4 as built.** §9.3 below. `CablePort`, the setting cells' ports, `drivenSettings`, `cableOf` / `keyOf` / `drawableFrom` /
+    `canDraw` by port, and the list's settings; `e2e/canvas.ts` has what the tests of the canvas have in common.
+  - **26.5 as built.** §9.3 below. `tiersOf`, `modulatorColumns` by row, `aboveOf` and `placeStrip` by rows.
+  - **Tests.** Rust: 15 more tests (929 against 914; with the `web` feature 15 more, 1083 against 1068, and one more on the real
+    program, 18 against 17): four on `field_targets` and two on the selectors it came out of (the old code's goldens); on
+    `modulators_in_reach` one; on the controller's intent four (a lane's modulator to a sibling and to the depth of a cable of
+    its own; a group's to its members' modulators and its siblings; both ways between two modulators; the table of what is refused
+    and why) and two more (a setting driven already; taking the cable out), one on the controller's snapshot, and the fixture's;
+    on the real program a browser draws a cable between two modulators, is refused the rest, saves it, and a program started on the
+    file draws it. 47 mutations of the Rust (27 of `field_targets` and the selectors, 20 of the intent and the reach), all caught;
+    three of the first 27 were not until the shared scene (`testutil::CROSS_MOD_RACKS`) was made richer (a second group, a lane in
+    no group, an envelope with two cables). Web: 64 more tests (1144 against 1080,
+    in one more file): the rule on the page against the controller's fixture, the mock engine against it (every modulator asked
+    about every setting and every cable's depth: it allows exactly what the controller listed), the editor, `portName`, the ports of
+    the controls (`ports.test.tsx`: a canvas of one node), the canvas (ports, driven, the list by modulator, a cable chosen, a
+    refusal in words, a cable taken out), `cableOf` and `canDraw`, and the layout (a pair, a chain, two that drive one, two
+    heights, a cycle, a control above an envelope, a group's rack, a cable that makes no row); in browsers 11 more tests (54
+    against 43): a cable dragged to a rate and to a stage, the marks while it is dragged, drops that are refused, from the keyboard,
+    taken out, on the real program, and a cascade of three with no node on another. 82 mutations of the page (38 of the rule,
+    mock, names and editor; 23 of the canvas, 3 of its handlers by the browser tests; 18 of the layout), all caught in the end;
+    two survived the first run of the layout's, a check that nothing read (taken out: the `drives` map is made from the rack's
+    own modulators now) and a test whose driver came before what it drove.
+  - **Found on the way.** The page's notices keep the last three (`MAX_NOTICES`), which my first test of six refusals did not
+    know. The mock engine's telemetry bookkeeping (`without`, `paramKey`) needed no change for a cable that ends at no parameter;
+    the test that asks every setting of every modulator looks at the layout of the telemetry after each cable it draws and takes
+    out. Three conditions of the layout that looked needed were not (a modulator driving itself is cut by the cycle guard, the
+    cables of a modulator are modulation cables, a cable from outside the rack is never looked up): the mutation run said so and
+    they went. In the docs: §4.2 called the ports
+    `ModField(...)` (built as `Port::Rate`... and `Depth { edge }`), §5 said a cable to a modulator's settings is refused "for now",
+    §9.3 said the canvas has no handle for one, §11 had the cables to a modulator's rate and stages still to do, and CLAUDE.md had it
+    as a TODO; they say what is built now. A refactoring that is worth doing: a node's data has `modulated` (a plugin's driven
+    parameters, as numbers) and `drivenSettings` (a modulator's, as handle names), and `Drivable` has `params` and `fields`: two
+    lists for what one list of ports and names would say.
+  - **Numbers at the end of the step.** Rust 929 tests (914 at the end of step 25), 1083 with the `web` feature and 18 on the real
+    program (1068 and 17), 924 without the default plugin formats and 1076 with `web`; web 1144 (1080); 54 in browsers (43).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2454,6 +2553,7 @@ mixer, delay, …) are the natural first increment.
 | D26 | A lane's keys are chosen in the page as two notes, `any` or a note each, and are never typed as text (`C0-B3`): the text is for the session file and the TUI, which have one parser; the intent carries numbers, a choice that would cross the other end pushes it along instead of being refused, and the whole keyboard is no range | Built (step 23) |
 | D27 | The piano of the page draws what the server tells and decides nothing: the scale arrives as its root and pitch classes (the page holds no table of scales), the held keys as a telemetry channel of 128 values at the telemetry rate rather than the bitset on change that §6 planned (one frame format to read, by the note's number, and no bookkeeping of what each client was told), and the lock is the sender's (the server drops a note outside the scale from every source, so the page cannot disagree with a MIDI keyboard about it) | Built (step 24) |
 | D28 | Where a node is drawn belongs to the session, not to a page: a page asks `SetNodeUi` once, when a node is put down (not a stream of moves), the controller keeps the place tidy (a tenth of a pixel and within a limit, so that a file is read by people and a node cannot be lost beyond the edge), every other page draws what the server tells, and a node that has no place is where the layout puts it, with no room left for one that was moved: a place is a pin, not a hint. The places are a side table of the model by `NodeId` and not a field of each node, so that the engine's types and the TUI do not carry what they do not use | Built (step 25) |
+| D29 | A cable between modulators is the model's rule read from both sides, as a cable to a parameter is (D21): `SessionModel::modulators_in_reach` and `field_targets` decide, in the controller and for the TUI's selectors, and the page reads the same rule from the graph (`modulatorsInReach`, `fieldsOf`) to mark the ports that take the cable that is dragged, pinned to the controller's by a fixture it writes (`fields.json`) and mirrored by the mock engine in the controller's order of refusals and words. The depth of a cable is a port of the controller and not of the canvas: no cable to one is drawn or offered by the page until a node has a place where such a cable could end. A modulator that drives another is drawn above it, so that a cable runs down, and a rack in which none does is laid out as it always was | Built (step 26) |
 
 Open questions
 

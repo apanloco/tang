@@ -1042,11 +1042,17 @@ use for it, the session file keeps it, see "Node positions (`ui`)"); `Save` (the
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
-lane's node, or of a group), `AddModEdge { modulator, to }` (a cable to a plugin parameter at
-depth `NEW_CABLE_DEPTH`, 0.5: where it may end is `SessionModel::param_targets`, a lane's
-modulator reaching its lane's chain and a group's its members' chains and its bus effects;
-refused for a port that is not a parameter, a plugin out of reach, a parameter it drives
-already), `AddEffect { parent, plugin }` (a plugin of the catalog, loaded by the controller
+lane's node, or of a group), `AddModEdge { modulator, to }` (a cable at depth
+`NEW_CABLE_DEPTH`, 0.5, to a plugin parameter or to a modulator's setting: where a cable to a
+parameter may end is `SessionModel::param_targets`, a lane's modulator reaching its lane's
+chain and a group's its members' chains and its bus effects; a cable to a `rate`, `attack`,
+`decay`, `sustain` or `release` port of a modulator, or to the `depth` port of one of that
+modulator's cables, is as `SessionModel::modulators_in_reach` and `field_targets` say (what the
+TUI's `m` on a modulator's field and its `t` offer), a lane's modulator reaching the others of
+its rack and a group's its members' modulators and the others of its own, never itself; refused
+for a port that is not one of these, a node or a plugin out of reach, a modulator that has no
+such setting, a parameter or setting it drives already; a cable to a setting has no telemetry
+slot), `AddEffect { parent, plugin }` (a plugin of the catalog, loaded by the controller
 and nothing else, at the end of the chain of a lane, `parent` being the lane's node, or of a
 group's bus: see `Controller::add_effect`), `AddInstrument { plugin }` (a lane at the end of
 the session, full range and in no group, with an instrument of the catalog in it: see
@@ -1070,7 +1076,7 @@ place in the TUI; the Type row, which turns an LFO into an envelope, is still th
 own edit). Its other edits still change the model and send the command
 themselves, until their intents exist (but the TUI's `d` on a modulator, its `m` and
 `l` keys and its target selectors use `Controller::remove_modulator`, `add_modulator` and
-`add_target`, which the intents are made of, and `SessionModel::param_targets`); for deleting and moving an effect they
+`add_target`, which the intents are made of, and `SessionModel::param_targets` and `field_targets`); for deleting and moving an effect they
 use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
 targets of the lane and of its group pointing at the same plugins, as the audio
 thread does.
@@ -1557,7 +1563,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `SetLocked`). Step 25 made the nodes movable: a node is dragged by its header (the controls are
   `nodrag`), the page sends `SetNodeUi` once, when it is put down, every browser draws the node there,
   the session saves it, and a control on the canvas arranges the nodes again (`Editor.moveNode`,
-  `resetLayout`; `useMovableNodes` and `app/patch/moving.ts` keep a node in hand while the session is laid out again). What the controller
+  `resetLayout`; `useMovableNodes` and `app/patch/moving.ts` keep a node in hand while the session is laid out again). Step 26 drew
+  the cables between modulators: an LFO's rate and the stages of an envelope have a port on the top edge of their knob as a plugin's
+  parameters have, a cable is dragged to one from another modulator's output (or chosen from the list at the foot of the
+  modulator, which lists those settings after the parameters, under a heading for each modulator), and a modulator that
+  drives the setting of another is drawn a row above it, so that a cable runs down (`app/patch/toFlow.ts`: `tiersOf`;
+  `client/reach.ts`: `fieldsOf`, pinned to the controller's rule by `fixtures/fields.json`; `Editor.addCable` takes a port). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1577,7 +1588,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   that says so). `web/dist/` keeps a `.gitkeep` so that the program builds without
   Node. The tracer's snapshot in `web/src/client/fixtures/` is generated:
   `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types (and
-  `reach.json`, next to it, which says where the controller let a cable be drawn, and
+  `reach.json`, next to it, which says where the controller let a cable be drawn, `fields.json`, which says
+  which settings and cable depths of other modulators it let a cable be drawn to, and
   `builtins.catalog.json`, the built-in plugins as the catalog lists them, which the mock serves).
 - **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
   runs the TUI and the web interface on one controller, on the main thread. The loop
@@ -1608,13 +1620,14 @@ modulators and cables are added and taken out, in the browser and in the TUI. St
 of the computer a piano in the page, so that what is built can be tried by ear. Phase 1 (session
 parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
-parameter of a plugin (22), sets a lane's keys (23), has the piano (24) and moves the nodes of the canvas, keeping where
-they are in the session (25).
+parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
+they are in the session (25), and draws cables between modulators (26).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
-for it (`Controller::resync`). Draw cables that drive a modulator's rate, stages or depths from
-the browser (`AddModEdge` takes a parameter port only; `RemoveEdge` takes any cable out).
+for it (`Controller::resync`).
+TODO: the page has no port for the depth of a cable: the controller takes a cable to one (`AddModEdge` with a `depth` port;
+the TUI's `t` makes them), and the page neither draws such a cable (`handleOf` has no handle for it) nor offers it.
 TODO: replacing an instrument takes out every cable that drove the old one; keep the ones whose
 parameter the new plugin has under the same name (a vibrato on `detune` could survive a change of
 oscillator): a cable would have to be drawn again with the new plugin's index.
