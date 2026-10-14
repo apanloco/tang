@@ -21,6 +21,7 @@ import { sameStructure, toFlow } from "./toFlow";
 import type { Flow } from "./toFlow";
 import { useMovableNodes } from "./useMovableNodes";
 import { rectOf, viewToShow } from "./view";
+import type { View } from "./view";
 import "@xyflow/react/dist/style.css";
 import "./patch.css";
 
@@ -64,21 +65,29 @@ function ShowWhatWasAdded({ graph, flow }: { graph: Graph | null; flow: Flow }) 
   const minZoom = useStore((state) => state.minZoom);
   const latest = useRef({ graph, flow });
   const wanted = useRef<{ node: NodeId; until: number } | null>(null);
+  // Where the canvas is on its way to, until it has had the time to get there: where it looks meanwhile is a point on the way, and a
+  // node that is all in the view there may be out of the view the canvas ends in (a node that moved while it was going).
+  const going = useRef<{ view: View; until: number } | null>(null);
 
   const show = useCallback(() => {
     const want = wanted.current;
     if (!want) return;
-    if (Date.now() > want.until) {
+    const now = Date.now();
+    if (now > want.until) {
       wanted.current = null;
       return;
     }
-    const { graph: now, flow: laidOut } = latest.current;
-    const rect = now ? rectOf(now, laidOut, want.node) : null;
+    const { graph: current, flow: laidOut } = latest.current;
+    const rect = current ? rectOf(current, laidOut, want.node) : null;
     // (Not laid out yet: when the next layout is.)
     if (!rect) return;
     wanted.current = null;
-    const next = viewToShow(rect, canvas.getViewport(), { width, height }, minZoom);
-    if (next) void canvas.setViewport(next, { duration: MOVE_MS });
+    const moving = going.current;
+    const looking = moving && now < moving.until ? moving.view : canvas.getViewport();
+    const next = viewToShow(rect, looking, { width, height }, minZoom);
+    if (!next) return;
+    going.current = { view: next, until: now + MOVE_MS };
+    void canvas.setViewport(next, { duration: MOVE_MS });
   }, [canvas, width, height, minZoom]);
 
   useEffect(() => {

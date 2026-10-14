@@ -12,6 +12,7 @@ import { rig } from "../testing";
 import { PatchView } from "./PatchView";
 import { toFlow } from "./toFlow";
 import { rectOf, viewToShow } from "./view";
+import type { View } from "./view";
 
 // What the canvas says of itself: set by each test. (Made before the imports, which is when the mock below is made.)
 const canvas = vi.hoisted(() => ({
@@ -138,6 +139,68 @@ describe("showing a node the page added", () => {
     });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+  });
+
+  test("judges a node against the view the canvas is moving to, and not against the one it is passing on the way", async () => {
+    // (The canvas looks at the first lane, all of it, and the lane that is added below is out of the view.)
+    canvas.view = { x: 60, y: -100, zoom: 1 };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { server, show, rectFor } = await open();
+    addLane(server);
+    await waitFor(() => {
+      expect(rectFor(3)).not.toBeNull();
+    });
+    act(() => {
+      show.show(3);
+    });
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+    });
+    const going = canvas.setViewport.mock.calls[0]?.[0] as View;
+    // (The canvas has not left yet, as it has not a moment after it is told to: the first lane is all in the view it has, and not in the one it is going to.)
+    const first = rectFor(0);
+    if (!first) throw new Error("no rectangle");
+    expect(viewToShow(first, canvas.view, { width: 1000, height: 700 }, 0.2)).toBeNull();
+    const there = viewToShow(first, going, { width: 1000, height: 700 }, 0.2);
+    expect(there).not.toBeNull();
+    // Most of the move is still to go.
+    vi.setSystemTime(Date.now() + 200);
+    act(() => {
+      show.show(0);
+    });
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(2);
+    });
+    expect(canvas.setViewport).toHaveBeenLastCalledWith(there, { duration: 250 });
+  });
+
+  test("judges a node against where the canvas is looking once the move has had its time: a person who moved it since is not moved back", async () => {
+    canvas.view = { x: 60, y: -100, zoom: 1 };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { server, show, rectFor } = await open();
+    addLane(server);
+    await waitFor(() => {
+      expect(rectFor(3)).not.toBeNull();
+    });
+    act(() => {
+      show.show(3);
+    });
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+    });
+    const going = canvas.setViewport.mock.calls[0]?.[0] as View;
+    const first = rectFor(0);
+    if (!first) throw new Error("no rectangle");
+    expect(viewToShow(first, going, { width: 1000, height: 700 }, 0.2)).not.toBeNull();
+    // The move is over, and the person has put the canvas back where the first lane is all in the view.
+    vi.setSystemTime(Date.now() + 300);
+    act(() => {
+      show.show(0);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
     });
     expect(canvas.setViewport).toHaveBeenCalledTimes(1);
   });
