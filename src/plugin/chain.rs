@@ -3298,15 +3298,15 @@ impl AudioGraph {
         lanes.chain(groups).collect()
     }
 
-    /// Every modulator as it is, for a test: its source, what it drives (each cable's kind, depth, centre and telemetry slot) and the slot it publishes to; the
-    /// lanes' racks, then the groups'.
+    /// Every modulator as it is, for a test: its source, what it drives (each cable's kind, depth and telemetry slot; what each is centred on is
+    /// `cable_bases`) and the slot it publishes to; the lanes' racks, then the groups'.
     #[cfg(test)]
     pub fn modulator_dump(&self) -> Vec<String> {
         let lanes = self.instruments.iter().flat_map(|lane| lane.modulators.iter());
         let groups = self.groups.iter().flat_map(|group| group.modulators.iter());
         lanes
             .chain(groups)
-            .map(|m| format!("{:?} -> {:?} @{:?}", m.source, m.targets.iter().map(|t| (&t.kind, t.depth, t.base_value, t.effective)).collect::<Vec<_>>(), m.output))
+            .map(|m| format!("{:?} -> {:?} @{:?}", m.source, m.targets.iter().map(|t| (&t.kind, t.depth, t.effective)).collect::<Vec<_>>(), m.output))
             .collect()
     }
 
@@ -8406,9 +8406,11 @@ mod tests {
     // What drove the modulator that went was taken out first, and what the modulator drove goes with it and comes back with it: the cables
     // that are put back after it find it where they left it.
 
-    /// What every modulator is, in order: its source and what it drives (each cable's kind, depth, centre and slot); the lanes' racks, then the groups'.
-    fn all_modulators(graph: &AudioGraph) -> Vec<String> {
-        graph.modulator_dump()
+    /// What every modulator is, in order: its source and what it drives (each cable's kind, depth and slot), where it publishes, and what each cable is
+    /// centred on; the lanes' racks, then the groups'.
+    #[allow(clippy::type_complexity, reason = "a pair that tests compare, and say nothing else of")]
+    fn all_modulators(graph: &AudioGraph) -> (Vec<String>, Vec<(ModulatorLocation, usize, ModTargetKind, f32)>) {
+        (graph.modulator_dump(), graph.cable_bases())
     }
 
     /// A lane's modulator with the rate `rate`, which tells it from the others.

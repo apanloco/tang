@@ -188,6 +188,15 @@ impl ModulatorKind {
         }
     }
 
+    /// The kind that a modulator with `source` is.
+    pub fn of(source: &ModSourceSlot) -> ModulatorKind {
+        match source {
+            ModSourceSlot::Lfo { .. } => ModulatorKind::Lfo,
+            ModSourceSlot::Envelope { .. } => ModulatorKind::Envelope,
+            ModSourceSlot::MidiLearn { .. } => ModulatorKind::MidiLearn,
+        }
+    }
+
     /// What a button that adds one says it adds: "an LFO".
     pub fn label(self) -> &'static str {
         match self {

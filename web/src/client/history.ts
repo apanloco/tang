@@ -312,9 +312,18 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       if (drivesRoundToItself(snapshot.graph.edges, cablesThatGo(snapshot.graph.edges, [intent.edge]))) return "barrier";
       return { removed: { label: "remove a cable", intent, at: now } };
     }
+    case "removeNode": {
+      const node = nodeOf(intent.node);
+      if (node?.kind !== "modulator") return node ? "barrier" : "nothing";
+      // The cables that go with it: its own, those that drive its settings and those that drive the depth of any of them (`removeNodeOutcome`).
+      const { edges } = snapshot.graph;
+      const touching = edges.flatMap((e) => (isModulation(e) && (e.from.node === node.id || e.to.node === node.id) ? [e.id] : []));
+      // Cables that drive each other's depths are not put back, as for a cable (`RemovedCable::still_driven` of the controller).
+      if (drivesRoundToItself(edges, cablesThatGo(edges, touching))) return "barrier";
+      return { removed: { label: `remove ${MODULATOR_LABELS[node.source.type]}`, intent, at: now } };
+    }
     // Nothing puts these back yet.
     case "loadPreset":
-    case "removeNode":
     case "replaceInstrument":
       return "barrier";
   }

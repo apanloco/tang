@@ -584,7 +584,6 @@ impl SessionModel {
     /// (`fixup_cross_mod_after_remove`); for a lane that is a member of a group, so are the group's cables to the lane's modulators
     /// (`fixup_group_member_mod_after_remove`). (The controller takes out the cables that address it first, so none is dropped there.) `None`, and
     /// nothing changed, if there is no such modulator.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
     pub fn remove_modulator_at(&mut self, at: ModulatorLocation, index: usize) -> Option<ModulatorSlot> {
         let member_of = self.member_of_rack(at);
         let rack = self.modulators_mut(at)?;
@@ -605,7 +604,6 @@ impl SessionModel {
     /// took out, put back. If it goes in before others, the cables of its siblings that address a modulator at that place or after it, and the group's to
     /// the lane's modulators when the lane is a member, are told the place that modulator has now, before it goes in (its own cables say the places that
     /// there are by then); one that goes in at the end moves nothing. The place it went to; `None`, and nothing changed, if there is no such rack.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
     pub fn insert_modulator_at(&mut self, at: ModulatorLocation, index: usize, modulator: ModulatorSlot) -> Option<usize> {
         let member_of = self.member_of_rack(at);
         let rack = self.modulators_mut(at)?;
@@ -625,7 +623,6 @@ impl SessionModel {
     }
 
     /// The group, and the lane's place among its members, when the rack at `at` is the rack of a lane that is a member of a group.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
     fn member_of_rack(&self, at: ModulatorLocation) -> Option<(usize, usize)> {
         match at {
             ModulatorLocation::Lane(inst) => lane_member_ordinal(&self.instruments, inst),
@@ -1107,7 +1104,6 @@ pub struct ModulatorSlot {
     pub targets: Vec<ModTargetSlot>,
     /// Where the audio thread publishes the modulator's output (telemetry);
     /// `None` if the slots had run out.
-    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which only the web runtime sends"))]
     pub output: Option<Slot>,
 }
 
@@ -1534,7 +1530,6 @@ fn fixup_member_depth_cables_after_remove(modulators: &mut [ModulatorSlot], memb
 
 /// The inverse of `fixup_cross_mod_after_remove`, mirror of the audio thread's `shift_cross_mod_after_insert`: after a modulator goes into a rack at
 /// `inserted`, the cross-mod cables of its siblings that address a modulator at that place or after it are told the place that modulator has now.
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
 fn shift_cross_mod_after_insert(modulators: &mut [ModulatorSlot], inserted: usize) {
     use crate::plugin::chain::ModTargetKind;
     for m in modulators.iter_mut() {
@@ -1560,7 +1555,6 @@ fn shift_cross_mod_after_insert(modulators: &mut [ModulatorSlot], inserted: usiz
 
 /// The inverse of `fixup_group_member_mod_after_remove`, mirror of the audio thread's `shift_group_member_mod_after_insert`: after member `member`'s lane
 /// modulator goes in at `inserted`, the group's cables to that member's modulators at that place or after it are told the place they have now.
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
 fn shift_group_member_mod_after_insert(modulators: &mut [ModulatorSlot], member: usize, inserted: usize) {
     use crate::plugin::chain::ModTargetKind;
     for m in modulators.iter_mut() {

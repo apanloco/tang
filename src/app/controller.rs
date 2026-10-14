@@ -42,7 +42,7 @@ use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
     Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
-    PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
+    PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -705,10 +705,13 @@ impl Controller {
     /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
     /// thread drops it and the model with it, and its own cables with it. The cables of the
     /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
-    /// and a group's when the lane is one of its members) go first, each by `remove_edge`, so
+    /// and a group's when the lane is one of its members) go first, each by `take_out`, so
     /// that what drove the depth of any of these goes as well and nothing is left pointing at a
     /// cable that is not there. The cables that drove later modulators of the rack move down an
-    /// index with them. False, sending nothing, if there is no such modulator.
+    /// index with them. What its own cables drove has the value the user set again. When an
+    /// intent is being carried out the modulator is written down for the history as it goes, with
+    /// what each of its cables was centred on (`Inverse::Modulator`). False, sending nothing, if
+    /// there is no such modulator.
     pub fn remove_modulator(&mut self, at: ModulatorLocation, index: usize) -> bool {
         if self.model.modulators_mut(at).is_none_or(|rack| index >= rack.len()) {
             return false;
@@ -720,33 +723,23 @@ impl Controller {
             // there is nothing left of what they drove to give anything back to.)
             self.take_out(edge);
         }
-        // What its own cables drive, told before they go, and given back when it has gone.
-        let driven: Vec<Driven> = match self.model.modulators(at).and_then(|rack| rack.get(index)) {
-            Some(modulator) => modulator.targets.iter().filter_map(|t| self.model.driven_by(at, index, &t.kind)).collect(),
-            None => Vec::new(),
-        };
-        match at {
-            ModulatorLocation::Lane(inst) => {
-                let member_of = lane_member_ordinal(&self.model.instruments, inst);
-                let _ = self.cmd_tx.send(GraphCommand::RemoveModulator { inst, index });
-                if let Some(lane) = self.model.instruments.get_mut(inst) {
-                    lane.modulators.remove(index);
-                    fixup_cross_mod_after_remove(&mut lane.modulators, index);
-                }
-                // The group's modulators may have driven this lane's.
-                if let Some((group, member)) = member_of {
-                    if let Some(group) = self.model.groups.get_mut(group) {
-                        fixup_group_member_mod_after_remove(&mut group.modulators, member, index);
-                    }
-                }
+        // What its own cables drive, told before they go and given back when it has gone, and what each is centred on (what the user has set what it
+        // drives to), which is what puts it back as it was.
+        let (mut driven, mut bases): (Vec<Driven>, Vec<f32>) = (Vec::new(), Vec::new());
+        if let Some(modulator) = self.model.modulators(at).and_then(|rack| rack.get(index)) {
+            for target in &modulator.targets {
+                driven.extend(self.model.driven_by(at, index, &target.kind));
+                bases.push(self.model.centre_of(at, index, &target.kind).unwrap_or(target.param_min));
             }
-            ModulatorLocation::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::RemoveGroupModulator { group, index });
-                if let Some(group) = self.model.groups.get_mut(group) {
-                    group.modulators.remove(index);
-                    fixup_cross_mod_after_remove(&mut group.modulators, index);
-                }
-            }
+        }
+        let _ = self.cmd_tx.send(match at {
+            ModulatorLocation::Lane(inst) => GraphCommand::RemoveModulator { inst, index },
+            ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModulator { group, index },
+        });
+        // The model does what the audio thread does: the cables of the modulators after it are told the places they have now, and a lane's that is a member
+        // of a group tells the group's cables to its modulators.
+        if let Some(modulator) = self.model.remove_modulator_at(at, index) {
+            self.took_out(Inverse::Modulator { at, index, modulator, bases });
         }
         self.give_back(driven);
         true

@@ -889,7 +889,7 @@
             "undo": null
           },
           "intent": {
-            "node": 7,
+            "node": 4,
             "type": "removeNode"
           },
           "restructured": true,
@@ -898,13 +898,13 @@
               "0>1 audio",
               "1>4294967295 audio",
               "2>4294967295 audio",
-              "3>4 audio",
-              "4>5 audio",
+              "3>5 audio",
               "5>0 member",
               "8>4294967295 audio"
             ],
             "cables": [
-              "#0 6>3 param1 @0.5"
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -920,17 +920,19 @@
             ],
             "modulation": [
               "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
               "14 9 modOut modOutput",
-              "9 3 param1 effective"
+              "9 3 param1 effective",
+              "11 3 param2 effective"
             ],
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
               "2 - Group 2",
               "3 0 Oscillator",
-              "4 3 Reverb",
               "5 3 Filter",
               "6 3 LFO",
+              "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
               "4294967295 - Master"
@@ -960,7 +962,7 @@
       ]
     },
     {
-      "name": "taking a node out is one of them",
+      "name": "taking an effect out is one of them",
       "rows": [
         {
           "events": [
@@ -991,7 +993,7 @@
             "undo": null
           },
           "intent": {
-            "node": 7,
+            "node": 4,
             "type": "removeNode"
           },
           "restructured": true,
@@ -1000,13 +1002,13 @@
               "0>1 audio",
               "1>4294967295 audio",
               "2>4294967295 audio",
-              "3>4 audio",
-              "4>5 audio",
+              "3>5 audio",
               "5>0 member",
               "8>4294967295 audio"
             ],
             "cables": [
-              "#0 6>3 param1 @0.5"
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -1022,17 +1024,19 @@
             ],
             "modulation": [
               "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
               "14 9 modOut modOutput",
-              "9 3 param1 effective"
+              "9 3 param1 effective",
+              "11 3 param2 effective"
             ],
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
               "2 - Group 2",
               "3 0 Oscillator",
-              "4 3 Reverb",
               "5 3 Filter",
               "6 3 LFO",
+              "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
               "4294967295 - Master"
@@ -10524,6 +10528,2774 @@
       ]
     },
     {
+      "name": "a modulator that is taken out is put back by undo with its cable and taken out again by redo, and what was done before it is still to be undone",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "node": 6,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 6,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 7,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "the cables that drive a modulator's settings go with it and come back with it",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "modulator": 7,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "rate"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 7>6 rate @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "node": 6,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 7>6 rate @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 7>6 rate @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw a cable",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 7>6 rate @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a modulator that is not the last of its rack goes and comes back with the cables of the ones after it told their places",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "add an LFO"
+          },
+          "intent": {
+            "kind": "lfo",
+            "parent": 3,
+            "type": "addModulator"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "modulator": 10,
+            "to": {
+              "node": 7,
+              "port": {
+                "type": "attack"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 10>7 attack @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "node": 6,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>3 param2 @0.25",
+              "#2 10>7 attack @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 10>7 attack @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an envelope"
+          },
+          "intent": {
+            "node": 7,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an envelope",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 10>7 attack @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw a cable",
+            "undo": "add an LFO"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 3 LFO",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add an LFO",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "add an LFO",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a modulator of a group, with cables to its bus and to a member, and a member's that the group drives, are put back each by its own rack",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "add an LFO"
+          },
+          "intent": {
+            "kind": "lfo",
+            "parent": 0,
+            "type": "addModulator"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "modulator": 10,
+            "to": {
+              "node": 1,
+              "port": {
+                "index": 1,
+                "type": "param"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "modulator": 10,
+            "to": {
+              "node": 3,
+              "port": {
+                "index": 7,
+                "type": "param"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "modulator": 10,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "rate"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#4 10>6 rate @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "node": 6,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#4 10>6 rate @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "node": 10,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#4 10>6 rate @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove an LFO"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove an LFO",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#4 10>6 rate @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw a cable",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#3 10>3 param7 @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective",
+              "17 3 param7 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw a cable",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#2 10>1 param1 @0.5",
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw a cable",
+            "undo": "add an LFO"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "15 10 modOut modOutput",
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "10 0 LFO",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add an LFO",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a MIDI control with a cable is taken out and put back in the words of its own",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "add a MIDI control"
+          },
+          "intent": {
+            "kind": "midiLearn",
+            "parent": 8,
+            "type": "addModulator"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 8 MIDI (learning…)",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "modulator": 10,
+            "to": {
+              "node": 8,
+              "port": {
+                "index": 1,
+                "type": "param"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 10>8 param1 @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 8 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 8 MIDI (learning…)",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove a MIDI control"
+          },
+          "intent": {
+            "node": 10,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove a MIDI control",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 10>8 param1 @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 8 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 8 MIDI (learning…)",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove a MIDI control"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove a MIDI control",
+            "undo": "draw a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25",
+              "#2 10>8 param1 @0.5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective",
+              "16 8 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 8 MIDI (learning…)",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw a cable",
+            "undo": "add a MIDI control"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 8 MIDI (learning…)",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add a MIDI control",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "a change after an undo of a removal ends what could be redone",
       "rows": [
         {
@@ -11612,7 +14384,7 @@
             "undo": null
           },
           "intent": {
-            "node": 7,
+            "node": 5,
             "type": "removeNode"
           },
           "restructured": true,
@@ -11623,12 +14395,12 @@
               "2>4294967295 audio",
               "10>4294967295 audio",
               "3>4 audio",
-              "4>5 audio",
-              "5>10 member",
+              "4>10 member",
               "8>4294967295 audio"
             ],
             "cables": [
-              "#0 6>3 param1 @0.5"
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -11646,8 +14418,10 @@
             ],
             "modulation": [
               "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
               "14 9 modOut modOutput",
-              "9 3 param1 effective"
+              "9 3 param1 effective",
+              "11 3 param2 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11656,8 +14430,8 @@
               "10 - Group 3",
               "3 10 Oscillator",
               "4 3 Reverb",
-              "5 3 Filter",
               "6 3 LFO",
+              "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
               "4294967295 - Master"
@@ -11769,12 +14543,12 @@
               "2>4294967295 audio",
               "10>4294967295 audio",
               "3>4 audio",
-              "4>5 audio",
-              "5>10 member",
+              "4>10 member",
               "8>4294967295 audio"
             ],
             "cables": [
-              "#0 6>3 param1 @0.5"
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -11792,8 +14566,10 @@
             ],
             "modulation": [
               "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
               "14 9 modOut modOutput",
-              "9 3 param1 effective"
+              "9 3 param1 effective",
+              "11 3 param2 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11802,8 +14578,8 @@
               "10 - Group 3",
               "3 10 Oscillator",
               "4 3 Reverb",
-              "5 3 Filter",
               "6 3 LFO",
+              "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
               "4294967295 - Master"
@@ -12040,6 +14816,406 @@
             "nodes": [
               "0 - Oscillator",
               "1 0 LFO",
+              "2 0 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        }
+      ],
+      "snapshot": {
+        "graph": {
+          "edges": [
+            {
+              "from": {
+                "node": 0,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4294967295,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "amount": 0.1,
+              "from": {
+                "node": 1,
+                "port": {
+                  "type": "modOut"
+                }
+              },
+              "id": 0,
+              "kind": "modulation",
+              "to": {
+                "node": 2,
+                "port": {
+                  "edge": 2,
+                  "type": "depth"
+                }
+              }
+            },
+            {
+              "amount": 0.2,
+              "from": {
+                "node": 1,
+                "port": {
+                  "type": "modOut"
+                }
+              },
+              "id": 1,
+              "kind": "modulation",
+              "to": {
+                "node": 0,
+                "port": {
+                  "index": 1,
+                  "type": "param"
+                }
+              }
+            },
+            {
+              "amount": 0.3,
+              "from": {
+                "node": 2,
+                "port": {
+                  "type": "modOut"
+                }
+              },
+              "id": 2,
+              "kind": "modulation",
+              "to": {
+                "node": 1,
+                "port": {
+                  "edge": 0,
+                  "type": "depth"
+                }
+              }
+            }
+          ],
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "instrument",
+              "name": "Oscillator",
+              "parent": null,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:osc",
+                "isInstrument": true,
+                "params": [
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": [
+                      "sine",
+                      "triangle",
+                      "square",
+                      "saw"
+                    ],
+                    "max": 3.0,
+                    "min": 0.0,
+                    "name": "waveform",
+                    "stepCount": 3,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 24.0,
+                    "min": -24.0,
+                    "name": "detune",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "volume",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.004,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "attack",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.004
+                  },
+                  {
+                    "default": 0.1,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 4,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.1
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sustain",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.012,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "release",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.012
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": -1.0,
+                    "name": "pan",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              },
+              "range": null,
+              "transpose": 0,
+              "volume": 1.0
+            },
+            {
+              "id": 1,
+              "kind": "modulator",
+              "name": "LFO",
+              "parent": 0,
+              "source": {
+                "rate": 1.0,
+                "type": "lfo",
+                "waveform": "sine"
+              }
+            },
+            {
+              "id": 2,
+              "kind": "modulator",
+              "name": "LFO",
+              "parent": 0,
+              "source": {
+                "rate": 2.0,
+                "type": "lfo",
+                "waveform": "sine"
+              }
+            },
+            {
+              "id": 4294967295,
+              "kind": "master",
+              "name": "Master",
+              "parent": null
+            }
+          ]
+        },
+        "meta": {
+          "bpm": 120.0,
+          "dirty": false,
+          "file": null,
+          "piano": {
+            "kind": "major",
+            "locked": false,
+            "notes": [
+              0,
+              2,
+              4,
+              5,
+              7,
+              9,
+              11
+            ],
+            "root": 0,
+            "scale": "C major"
+          }
+        },
+        "rev": 0,
+        "telemetry": {
+          "meters": [
+            {
+              "kind": "peak",
+              "node": 4294967295,
+              "port": {
+                "type": "audioIn"
+              },
+              "slot": 0
+            },
+            {
+              "kind": "clips",
+              "node": 4294967295,
+              "port": {
+                "type": "audioIn"
+              },
+              "slot": 1
+            },
+            {
+              "kind": "peak",
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 2
+            },
+            {
+              "kind": "clips",
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 3
+            }
+          ],
+          "modulation": [
+            {
+              "kind": "modOutput",
+              "node": 1,
+              "port": {
+                "type": "modOut"
+              },
+              "slot": 4
+            },
+            {
+              "kind": "modOutput",
+              "node": 2,
+              "port": {
+                "type": "modOut"
+              },
+              "slot": 6
+            },
+            {
+              "kind": "effective",
+              "node": 0,
+              "port": {
+                "index": 1,
+                "type": "param"
+              },
+              "slot": 5
+            }
+          ],
+          "rev": 1
+        }
+      }
+    },
+    {
+      "name": "a modulator whose cables drive the depth of another's cable and are driven by it is not put back either",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 0,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 0,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "node": 1,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips"
+            ],
+            "modulation": [
+              "6 2 modOut modOutput"
+            ],
+            "nodes": [
+              "0 - Oscillator",
               "2 0 LFO",
               "4294967295 - Master"
             ]

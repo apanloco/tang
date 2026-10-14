@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
-use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField};
+use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind};
 use crate::app::journal::Journal;
 use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
@@ -430,8 +430,19 @@ impl Controller {
             }
             // (A cable that is not there is refused, and the plan is not looked at.)
             Intent::RemoveEdge { .. } => Plan::Removed { label: "remove a cable".to_string(), intent: intent.clone(), at: now },
+            Intent::RemoveNode { node } => match self.model.locate(*node) {
+                // A modulator goes with its own cables and those that address it, and comes back with them (a step of the words of the button that adds one).
+                Some(NodePath::Modulator { at, index }) => {
+                    let kind = self.model.modulators(at).and_then(|rack| rack.get(index)).map(|modulator| ModulatorKind::of(&modulator.source));
+                    kind.map_or(Plan::Nothing, |kind| Plan::Removed { label: format!("remove {}", kind.label()), intent: intent.clone(), at: now })
+                }
+                // Nothing puts these back yet.
+                Some(_) => Plan::Barrier,
+                // (A node that is not there is refused, and the plan is not looked at.)
+                None => Plan::Nothing,
+            },
             // Nothing puts these back yet.
-            Intent::LoadPreset { .. } | Intent::RemoveNode { .. } | Intent::ReplaceInstrument { .. } => Plan::Barrier,
+            Intent::LoadPreset { .. } | Intent::ReplaceInstrument { .. } => Plan::Barrier,
         }
     }
 
@@ -1259,9 +1270,9 @@ rate = 3.0
         set_detune(&mut ctl, 2.0);
         ctl.undo().unwrap();
         assert_eq!((undo_label(&ctl).is_some(), redo_label(&ctl).is_some()), (true, true));
-        // A modulator is taken out: nothing puts that back yet, and what was before it cannot be undone past it.
-        let lfo = ctl.model.instruments[0].modulators[0].node;
-        ctl.apply(Intent::RemoveNode { node: lfo }).unwrap();
+        // An effect is taken out: nothing puts that back yet, and what was before it cannot be undone past it.
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        ctl.apply(Intent::RemoveNode { node: reverb }).unwrap();
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
         assert!(ctl.undo().is_err() && ctl.redo().is_err());
     }
@@ -1686,9 +1697,9 @@ rate = 3.0
     fn every_intent_that_cannot_be_undone_yet_empties_the_history() {
         let (_engine, mut ctl, clock) = controller();
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
-        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
         let intents = [
-            ("take a node out", Intent::RemoveNode { node: lfo }),
+            ("take an effect out", Intent::RemoveNode { node: reverb }),
             ("replace an instrument", Intent::ReplaceInstrument { node: node(&ctl, NodePath::Instrument(1)), plugin: "builtin:osc".to_string() }),
             // A group made of a lane that is in one: the cables of the group that has it go, and a step would not bring them back.
             ("add a group of a lane that is in another", Intent::AddGroup { members: vec![lane(&ctl)] }),
@@ -2496,6 +2507,369 @@ plugin = "builtin:osc"
         }
     }
 
+    // -- a modulator that is taken out is put back --
+
+    /// A lane with a filter and five modulators. (0) An LFO whose cables go to the oscillator's detune and the filter's cutoff. (1) An envelope whose cables go
+    /// to the oscillator's volume and to the rate of the first LFO. (2) An LFO whose cables drive the envelope's attack and the depth of the envelope's first
+    /// cable. (3) A MIDI control that is waiting for the next to come in, with a cable to the oscillator's pan. (4) A MIDI control that is bound to CC 74, with a
+    /// cable to the filter's resonance.
+    const MODULATORS: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.1
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.3
+
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.02
+decay = 0.4
+sustain = 0.6
+release = 0.8
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.5
+[[instrument.modulator.target]]
+mod_rate = 0
+depth = 0.2
+
+[[instrument.modulator]]
+rate = 3.0
+[[instrument.modulator.target]]
+mod_attack = 1
+depth = 0.3
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+depth = 0.4
+
+[[instrument.modulator]]
+type = "midi"
+[[instrument.modulator.target]]
+param = "pan"
+depth = 0.7
+
+[[instrument.modulator]]
+type = "midi"
+midi_cc = 74
+[[instrument.modulator.target]]
+slot = 1
+param = "resonance"
+depth = 0.9
+"#;
+
+    /// A controller over `session` and an audio thread that is given what the controller sends it, and says what it has when it is asked.
+    fn controller_over_an_audio_thread(session: &str) -> (Controller, crate::plugin::chain::AudioGraph) {
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(session, &handles.cmd_tx);
+        let mut graph = crate::plugin::chain::AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        graph.set_telemetry(handles.telemetry.clone());
+        let ctl = Controller::new(model, handles, None);
+        graph.drain_commands();
+        (ctl, graph)
+    }
+
+    /// What `modulators_as_they_are` says: the picture, the file, and the audio thread's modulators and what their cables are centred on.
+    type Modulators = (
+        (crate::app::graph::Graph, crate::app::layout::TelemetryLayout),
+        String,
+        Vec<String>,
+        Vec<(crate::plugin::chain::ModulatorLocation, usize, crate::plugin::chain::ModTargetKind, Option<f32>)>,
+    );
+
+    /// What the modulators are, as each place that says so tells it: the picture a client is given (the nodes and cables with their ids, and the layout of
+    /// the telemetry), what `Ctrl+S` would write, and the audio thread's own: every modulator with what it drives and where it publishes, and what each cable
+    /// is centred on.
+    fn modulators_as_they_are(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Modulators {
+        // (What a cable that drives nothing is centred on does not matter: a file can have one, to the depth of a cable that is not there, and the loader says
+        // one thing of it and the controller another. What it was is not kept; the centre of every other cable is.)
+        let centres = graph
+            .cable_bases()
+            .into_iter()
+            .map(|(at, modulator, kind, centre)| {
+                let drives_something = ctl.model.driven_by(at, modulator, &kind).is_some();
+                (at, modulator, kind, drives_something.then_some(centre))
+            })
+            .collect();
+        (picture(ctl), written(ctl), graph.modulator_dump(), centres)
+    }
+
+    /// The same places say the same: each of them on its own, so that a failure says which.
+    fn assert_same_modulators(now: &Modulators, then: &Modulators, what: &str) {
+        assert_eq!(now.0 .0, then.0 .0, "{what}: the nodes and cables of the picture");
+        assert_eq!(now.0 .1, then.0 .1, "{what}: the layout of the telemetry");
+        assert_eq!(now.1, then.1, "{what}: the file");
+        assert_eq!(now.2, then.2, "{what}: the modulators of the audio thread");
+        assert_eq!(now.3, then.3, "{what}: what the cables of the audio thread are centred on");
+    }
+
+    /// The nodes of the modulators of the session, in the order the model lists them.
+    fn modulator_nodes(ctl: &Controller) -> Vec<NodeId> {
+        ctl.model.nodes().filter(|(_, path)| matches!(path, NodePath::Modulator { .. })).map(|(id, _)| id).collect()
+    }
+
+    /// Every modulator of `session`, one at a time (each in a controller of its own, after a step of another kind): taken out by an intent, put back by undo,
+    /// taken out again by redo and put back again. Each time the model, the picture a client is given, the file and the audio thread are as they were (or as
+    /// they were when it was taken out). How many were put back, and how many were not (cables that drive each other's depths went with them, so that nothing
+    /// can be put back and the history is forgotten).
+    fn every_modulator_is_put_back(name: &str, session: &str) -> (usize, usize) {
+        let count = modulator_nodes(&controller_over_an_audio_thread(session).0).len();
+        let (mut put_back, mut forgotten) = (0, 0);
+        for n in 0..count {
+            let (mut ctl, mut graph) = controller_over_an_audio_thread(session);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let node = modulator_nodes(&ctl)[n];
+            let before = modulators_as_they_are(&ctl, &graph);
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            graph.drain_commands();
+            let taken = modulators_as_they_are(&ctl, &graph);
+            assert_ne!(taken.0, before.0, "modulator {n} of {name}: it is gone from the picture");
+            assert!(ctl.model.locate(node).is_none(), "modulator {n}: it is gone from the model");
+            if ctl.history_state() == (HistoryState { undo: None, redo: None }) {
+                assert!(ctl.undo().is_err(), "modulator {n}: nothing to undo");
+                forgotten += 1;
+                continue;
+            }
+            assert!(undo_label(&ctl).is_some_and(|label| label.starts_with("remove ")), "modulator {n}: {:?}", undo_label(&ctl));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &before, &format!("modulator {n} of {name} put back"));
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &taken, &format!("modulator {n} of {name} taken out again"));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &before, &format!("modulator {n} of {name} put back again"));
+            ctl.model.check_ids().unwrap();
+            put_back += 1;
+        }
+        (put_back, forgotten)
+    }
+
+    #[test]
+    fn every_modulator_of_every_session_is_put_back_by_undo_in_the_model_the_picture_the_file_and_on_the_audio_thread() {
+        let mut total = 0;
+        let sessions = [
+            ("MODULATORS", MODULATORS),
+            ("GROUP_CABLES", GROUP_CABLES),
+            ("CABLES", CABLES),
+            ("GROUPS", testutil::GROUPS),
+            ("CROSS_MOD", testutil::CROSS_MOD),
+            ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
+            ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
+            ("CABLES_THAT_DRIVE_CABLES", testutil::CABLES_THAT_DRIVE_CABLES),
+        ];
+        for (name, session) in sessions {
+            let (put_back, forgotten) = every_modulator_is_put_back(name, session);
+            assert_eq!(forgotten, 0, "{name}");
+            total += put_back;
+        }
+        assert!(total > 20, "{total} modulators is not enough to say much");
+    }
+
+    #[test]
+    fn modulators_whose_cables_drive_each_others_depths_are_not_put_back_and_the_history_is_forgotten_as_it_is_for_what_cannot_be_undone() {
+        // (Only a file can make them: a cable is made to drive a cable that is there already.)
+        assert_eq!(every_modulator_is_put_back("CABLES_THAT_DRIVE_EACH_OTHER", testutil::CABLES_THAT_DRIVE_EACH_OTHER), (0, 2));
+    }
+
+    #[test]
+    fn a_modulator_that_is_taken_out_is_a_step_in_the_words_of_the_button_that_adds_one_like_it() {
+        let (_engine, mut ctl, _clock) = controller_over(load(MODULATORS).model);
+        let nodes = modulator_nodes(&ctl);
+        let words = ["remove an LFO", "remove an envelope", "remove an LFO", "remove a MIDI control", "remove a MIDI control"];
+        assert_eq!(nodes.len(), words.len());
+        for (node, words) in nodes.into_iter().zip(words) {
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(words));
+        }
+        // Each of them is put back, the last first.
+        for words in words.into_iter().rev() {
+            assert_eq!(undo_label(&ctl).as_deref(), Some(words));
+            ctl.undo().unwrap();
+        }
+        assert_eq!(undo_label(&ctl), None);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("remove an LFO"), "the first that was taken out is the last that was put back");
+    }
+
+    #[test]
+    fn what_a_modulator_drove_has_the_value_that_was_set_when_it_goes_and_it_is_centred_on_it_when_it_comes_back() {
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(MODULATORS);
+        let (detune_index, _) = detune(&ctl);
+        ctl.apply(Intent::SetParam { node: lane(&ctl), param: detune_index, value: 3.0 }).unwrap();
+        let first_lfo = ctl.model.instruments[0].modulators[0].node;
+        ctl.apply(Intent::RemoveNode { node: first_lfo }).unwrap();
+        graph.drain_commands();
+        // The cable of the envelope to the rate of that LFO went with it, and what the LFO drove stays where the user put it.
+        assert_eq!(detune(&ctl).1, 3.0);
+        ctl.undo().unwrap();
+        graph.drain_commands();
+        let centre = |kind: crate::plugin::chain::ModTargetKind| graph.cable_bases().into_iter().find(|(_, _, k, _)| *k == kind).map(|(.., base)| base);
+        assert_eq!(centre(crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: detune_index }), Some(3.0), "the value that was set when it went");
+    }
+
+    #[test]
+    fn a_modulator_is_taken_out_after_the_cables_that_address_it_and_put_back_before_them_with_its_own_cables_after_it() {
+        let (engine, mut ctl, _clock) = controller_over(load(MODULATORS).model);
+        let (volume, _) = param(&ctl, NodePath::Instrument(0), "volume");
+        let (envelope, output) = (ctl.model.instruments[0].modulators[1].node, ctl.model.instruments[0].modulators[1].output.unwrap());
+        engine.drain();
+        ctl.apply(Intent::RemoveNode { node: envelope }).unwrap();
+        let (commands, slots) = engine.drain();
+        // The second LFO's cables to the envelope's attack and to the depth of its first cable go first (the second is the first by then), then the envelope,
+        // and what it drove has the value that was set again.
+        assert_eq!(commands[..3], ["RemoveModTarget inst=0 mod=2 target=0", "RemoveModTarget inst=0 mod=2 target=0", "RemoveModulator inst=0 index=1"]);
+        assert_eq!(commands.len(), 5, "{commands:?}");
+        assert!(commands[3].starts_with(&format!("SetParameter inst=0 slot=0 param={volume} ")), "{commands:?}");
+        assert_eq!(commands[4], "SetModulatorRate inst=0 mod=0 rate=1.000");
+        assert!(slots.is_empty());
+
+        ctl.undo().unwrap();
+        let (commands, slots) = engine.drain();
+        // The envelope, the place where it publishes, its own two cables in the order they had, and then the cables that went before it, the last first.
+        assert_eq!(slots, [format!("SetModulatorOutput Lane(0) index=1 slot={}", output.index())]);
+        assert_eq!(commands.len(), 5, "{commands:?}");
+        assert!(commands[0].starts_with("InsertModulator inst=0 index=1 source=Envelope { attack: 0.02, decay: 0.4, sustain: 0.6, release: 0.8,"), "{commands:?}");
+        assert!(commands[1].starts_with(&format!("AddModTarget inst=0 mod=1 kind=PluginParam {{ slot: 0, param_index: {volume} }}")), "{commands:?}");
+        assert!(commands[2].starts_with("AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
+        assert!(commands[3].starts_with("InsertModTarget inst=0 mod=2 target=0 kind=ModulatorDepth { mod_index: 1, target_index: 0 }"), "{commands:?}");
+        assert!(commands[4].starts_with("InsertModTarget inst=0 mod=2 target=0 kind=ModulatorAttack { mod_index: 1 }"), "{commands:?}");
+    }
+
+    #[test]
+    fn a_modulator_of_a_group_is_put_back_by_the_groups_commands_and_a_members_with_the_cable_of_the_group_to_it_after_it() {
+        let (engine, mut ctl, _clock) = controller_over(load(GROUP_CABLES).model);
+        let (second_group_modulator, member_modulator) = (ctl.model.groups[0].modulators[1].node, ctl.model.instruments[0].modulators[0].node);
+        let output = ctl.model.groups[0].modulators[1].output.unwrap();
+        engine.drain();
+        ctl.apply(Intent::RemoveNode { node: second_group_modulator }).unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands[0], "RemoveGroupModulator group=0 index=1");
+        // Its cable drove the depth of the member's cable, which has the depth that was set again.
+        assert_eq!(commands[1], "SetModTargetDepth inst=0 mod=0 target=1 depth=0.500");
+        ctl.undo().unwrap();
+        let (commands, slots) = engine.drain();
+        assert_eq!(slots, [format!("SetModulatorOutput Group(0) index=1 slot={}", output.index())]);
+        assert!(commands[0].starts_with("InsertGroupModulator group=0 index=1 source=Lfo { waveform: Sine, rate: 2.0,"), "{commands:?}");
+        assert!(commands[1].starts_with("AddGroupModTarget group=0 mod=1 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }"), "{commands:?}");
+        assert_eq!(commands.len(), 2);
+
+        // The member's own modulator: the group's cable to the depth of its cable goes first, by the group's command, and comes back last.
+        ctl.apply(Intent::RemoveNode { node: member_modulator }).unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands[..2], ["RemoveGroupModTarget group=0 mod=1 target=0", "RemoveModulator inst=0 index=0"]);
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert!(commands[0].starts_with("InsertModulator inst=0 index=0 source=Lfo {"), "{commands:?}");
+        assert!(commands.last().unwrap().starts_with("InsertGroupModTarget group=0 mod=1 target=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }"), "{commands:?}");
+    }
+
+    #[test]
+    fn a_modulator_that_is_put_back_publishes_what_it_puts_out_into_the_slot_it_had() {
+        use crate::plugin::chain::LfoWaveform;
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(MODULATORS);
+        // The second LFO, a 3 Hz sine.
+        let (node, slot) = (ctl.model.instruments[0].modulators[2].node, ctl.model.instruments[0].modulators[2].output.expect("it has a slot"));
+        ctl.apply(Intent::RemoveNode { node }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators[2].output, Some(slot), "the model has the slot it had");
+        ctl.telemetry.store(slot, f32::NAN);
+        graph.drain_commands();
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        graph.process(&[], &mut out).unwrap();
+        let published = ctl.telemetry.load(slot);
+        let output = LfoWaveform::Sine.eval(3.0 * 64.0 / 48_000.0);
+        assert!((published - output).abs() < 1e-3, "{published} for an LFO output of {output}");
+    }
+
+    #[test]
+    fn a_modulator_that_is_there_already_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        for (what, own_cable) in [("the modulator", false), ("a cable of it", true)] {
+            let (_engine, mut ctl, _clock) = controller_over(load(MODULATORS).model);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            // The control that is bound to CC 74, and its one cable.
+            let (node, cable) = (ctl.model.instruments[0].modulators[4].node, &ctl.model.instruments[0].modulators[4].targets[0]);
+            let copy = crate::app::model::ModTargetSlot {
+                edge: cable.edge,
+                slot: cable.slot,
+                param_name: cable.param_name.clone(),
+                kind: cable.kind.clone(),
+                depth: cable.depth,
+                param_min: cable.param_min,
+                param_max: cable.param_max,
+                effective: cable.effective,
+            };
+            let edge = cable.edge;
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            // Something puts it there without the history (as a front-end that edits the model by itself could): the node, or another modulator with the cable.
+            let other = ctl.model.alloc_node();
+            let spare = if own_cable {
+                crate::app::model::ModulatorSlot { node: other, source: ModSourceSlot::new_lfo(), targets: vec![copy], output: None }
+            } else {
+                crate::app::model::ModulatorSlot { node, source: ModSourceSlot::new_lfo(), targets: Vec::new(), output: None }
+            };
+            ctl.model.insert_modulator_at(crate::plugin::chain::ModulatorLocation::Lane(0), 4, spare).unwrap();
+            let before = picture(&ctl);
+            let error = ctl.undo().unwrap_err();
+            let reason = if own_cable { format!("cable {} is there already", edge.0) } else { format!("node {} is there already", node.0) };
+            assert_eq!(error, IntentError::Invalid(reason), "{what}");
+            assert_eq!(picture(&ctl), before, "{what}");
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "{what}: the step is gone, the one before it is next");
+        }
+    }
+
+    #[test]
+    fn a_modulator_that_was_taken_out_by_the_controller_and_not_by_an_intent_leaves_nothing_to_put_back_and_forgets_the_history() {
+        let (_engine, mut ctl, _clock) = controller_over(load(MODULATORS).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        assert!(ctl.remove_modulator(crate::plugin::chain::ModulatorLocation::Lane(0), 4));
+        assert!(ctl.journal.is_none(), "nothing is written down unless an intent is being carried out");
+        // (The places of the others may have moved: a step that took something out would put it back by the places it had.)
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+    }
+
+    #[test]
+    fn a_modulator_that_was_added_and_taken_out_comes_back_under_its_id_and_what_was_done_to_it_goes_on_naming_it() {
+        let (_engine, mut ctl, _clock) = controller();
+        let (lane0, filter) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
+        let (resonance, _) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
+        let start = picture(&ctl);
+        ctl.apply(Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo }).unwrap();
+        let lfo = ctl.last_made().nodes[0];
+        ctl.apply(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: filter, port: Port::Param { index: resonance } } }).unwrap();
+        let edge = ctl.last_made().edges[0];
+        let (with_cable, saved) = (picture(&ctl), written(&ctl));
+        ctl.apply(Intent::RemoveNode { node: lfo }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove an LFO"));
+        ctl.undo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (with_cable.clone(), saved));
+        // What was done to it before is undone by the ids it has again: the cable is taken out by its id, and then the LFO by its.
+        ctl.undo().unwrap();
+        assert!(ctl.model.locate_edge(edge).is_none());
+        ctl.undo().unwrap();
+        assert_eq!(picture(&ctl), start);
+        // And forwards: both are added again, under the ids they had (the telemetry slots they publish to are new), and the LFO is taken out again by the
+        // id it has had all along.
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!(picture(&ctl).0, with_cable.0);
+        let again = picture(&ctl);
+        ctl.redo().unwrap();
+        assert!(ctl.model.locate(lfo).is_none());
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove an LFO"));
+        ctl.undo().unwrap();
+        assert_eq!(picture(&ctl), again);
+        ctl.model.check_ids().unwrap();
+    }
+
     /// A step of a script: an intent, or time going by (in milliseconds).
     enum Op {
         Do(Intent),
@@ -2560,8 +2934,8 @@ plugin = "builtin:osc"
             ("a change after an undo ends what could be redone", vec![set(detune, 1.0), pause(), undo(), set(volume, 0.5), redo(), undo(), undo()]),
             ("an intent that is refused changes nothing in the history", vec![set(detune, 1.0), set(9_999, 1.0), gain(g0, Gain::Mix, 0.5), field(lane0, ModulatorField::Rate, 1.0), Op::Do(Intent::RemoveNode { node: ghost }), undo()]),
             ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
-            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::RemoveNode { node: envelope }), undo(), redo()]),
-            ("taking a node out is one of them", vec![set(detune, 1.0), Op::Do(Intent::RemoveNode { node: envelope }), undo()]),
+            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::RemoveNode { node: reverb }), undo(), redo()]),
+            ("taking an effect out is one of them", vec![set(detune, 1.0), Op::Do(Intent::RemoveNode { node: reverb }), undo()]),
         ];
         let mut gains = vec![gain(lane0, Gain::Volume, 2.5), pause(), gain(reverb, Gain::Mix, 0.125), pause(), gain(bus, Gain::Mix, 0.75), pause(), gain(g0, Gain::GroupVolume, 0.5), pause(), gain(g0, Gain::GroupPan, -0.5)];
         gains.extend(n_of(5, undo));
@@ -2799,6 +3173,63 @@ plugin = "builtin:osc"
                 undo(),
             ],
         ));
+        // A modulator goes with its own cables and the cables that address it, and comes back with them, each where it was and under the ids it had.
+        let remove_node = |node: NodeId| Op::Do(Intent::RemoveNode { node });
+        scripts.push((
+            "a modulator that is taken out is put back by undo with its cable and taken out again by redo, and what was done before it is still to be undone",
+            vec![set(detune, 1.0), pause(), remove_node(lfo), undo(), undo(), redo(), redo(), undo(), redo(), undo()],
+        ));
+        scripts.push((
+            "the cables that drive a modulator's settings go with it and come back with it",
+            vec![
+                Op::Do(Intent::AddModEdge { modulator: envelope, to: Endpoint { node: lfo, port: Port::Rate } }),
+                remove_node(lfo),
+                undo(),
+                redo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a modulator that is not the last of its rack goes and comes back with the cables of the ones after it told their places",
+            vec![
+                add_modulator(lane0, ModulatorKind::Lfo),
+                Op::Do(Intent::AddModEdge { modulator: fresh(0), to: Endpoint { node: envelope, port: Port::Attack } }),
+                remove_node(lfo),
+                undo(),
+                remove_node(envelope),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "a modulator of a group, with cables to its bus and to a member, and a member's that the group drives, are put back each by its own rack",
+            vec![
+                add_modulator(g0, ModulatorKind::Lfo),
+                cable(fresh(0), bus, bus_resonance),
+                // (Not the detune, which the lane's LFO drives: of two cables that drive one parameter the layout of the telemetry names the first.)
+                cable(fresh(0), lane0, pan),
+                Op::Do(Intent::AddModEdge { modulator: fresh(0), to: Endpoint { node: lfo, port: Port::Rate } }),
+                remove_node(lfo),
+                undo(),
+                remove_node(fresh(0)),
+                undo(),
+                redo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "a MIDI control with a cable is taken out and put back in the words of its own",
+            vec![add_modulator(lane1, ModulatorKind::MidiLearn), cable(fresh(0), lane1, detune), remove_node(fresh(0)), undo(), redo(), undo(), undo(), undo()],
+        ));
         scripts.push((
             "a change after an undo of a removal ends what could be redone",
             vec![remove_cable(edge), undo(), Op::Do(Intent::SetLocked { locked: true }), redo(), undo(), undo()],
@@ -2841,7 +3272,7 @@ plugin = "builtin:osc"
         let barriers = [
             // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
             Intent::AddGroup { members: vec![lane0] },
-            Intent::RemoveNode { node: envelope },
+            Intent::RemoveNode { node: filter_fx },
             Intent::ReplaceInstrument { node: lane1, plugin: "builtin:osc".to_string() },
             Intent::LoadPreset { node: reverb, preset },
         ];
@@ -2857,11 +3288,19 @@ plugin = "builtin:osc"
         let (cycle_lane, cycle_edge) = (node(&cycle, NodePath::Instrument(0)), cycle.model.instruments[0].modulators[0].targets[0].edge);
         let (cycle_detune, _) = param(&cycle, NodePath::Instrument(0), "detune");
         let cycle_set = |value: f32| Op::Do(Intent::SetParam { node: cycle_lane, param: cycle_detune, value });
-        let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![(
-            "cables that drive each other's depths are not put back, and what came before them is forgotten",
-            testutil::CABLES_THAT_DRIVE_EACH_OTHER,
-            vec![cycle_set(1.0), pause(), Op::Do(Intent::RemoveEdge { edge: cycle_edge }), undo(), redo()],
-        )];
+        let cycle_modulator = cycle.model.instruments[0].modulators[0].node;
+        let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![
+            (
+                "cables that drive each other's depths are not put back, and what came before them is forgotten",
+                testutil::CABLES_THAT_DRIVE_EACH_OTHER,
+                vec![cycle_set(1.0), pause(), Op::Do(Intent::RemoveEdge { edge: cycle_edge }), undo(), redo()],
+            ),
+            (
+                "a modulator whose cables drive the depth of another's cable and are driven by it is not put back either",
+                testutil::CABLES_THAT_DRIVE_EACH_OTHER,
+                vec![cycle_set(1.0), pause(), Op::Do(Intent::RemoveNode { node: cycle_modulator }), undo(), redo()],
+            ),
+        ];
 
         let mut written = Vec::new();
         let sessions: Vec<(&str, Option<&str>, &Vec<Op>)> = scripts

@@ -4760,14 +4760,42 @@ mod undo_and_redo {
     }
 
     #[test]
+    fn d_takes_a_modulator_out_as_a_step_that_ctrl_z_puts_back_with_its_cable_and_ctrl_y_takes_out_again() {
+        let cases = [
+            (scene_two_effects().to_string(), TreeAddress::Modulator { inst: 0, index: 0 }, "a lane's modulator", "InsertModulator inst=0 index=0 "),
+            (scene_bus_pair().to_string(), TreeAddress::GroupModulator { group: 0, index: 0 }, "a group's modulator", "InsertGroupModulator group=0 index=0 "),
+        ];
+        for (scene, address, what, insert) in cases {
+            let mut h = Harness::new(scene);
+            h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let shape = |h: &Harness| {
+                let racks = h.s.ctl.model.instruments.iter().map(|lane| &lane.modulators).chain(h.s.ctl.model.groups.iter().map(|group| &group.modulators));
+                racks.map(|rack| rack.iter().map(|m| (m.node, m.targets.iter().map(|t| (t.edge, t.depth)).collect::<Vec<_>>())).collect::<Vec<_>>()).collect::<Vec<_>>()
+            };
+            let before = shape(&h);
+            h.commands();
+            h.goto(address).press(KeyCode::Char('d'));
+            assert_ne!(shape(&h), before, "{what} is gone");
+            assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("remove an LFO"), "{what}");
+            h.commands();
+            ctrl_z(&mut h);
+            let commands = h.commands();
+            assert!(commands[0].starts_with(insert), "{what}: {commands:?}");
+            assert_eq!(shape(&h), before, "{what} is back where it was, with its cable and the ids they had");
+            ctrl_y(&mut h);
+            assert_ne!(shape(&h), before, "{what} is taken out again");
+            ctrl_z(&mut h);
+            assert_eq!(shape(&h), before);
+        }
+    }
+
+    #[test]
     fn d_takes_a_node_out_and_forgets_the_history_as_the_browsers_remove_does() {
         use crate::app::history::HistoryState;
-        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one.
+        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator is put back: a test of its own.)
         let cases = [
             (scene_two_effects().to_string(), TreeAddress::Effect { inst: 0, index: 0 }, "an effect"),
-            (scene_two_effects().to_string(), TreeAddress::Modulator { inst: 0, index: 0 }, "a modulator"),
             (scene_bus_pair().to_string(), TreeAddress::GroupEffect { group: 0, index: 0 }, "a bus effect"),
-            (scene_bus_pair().to_string(), TreeAddress::GroupModulator { group: 0, index: 0 }, "a group modulator"),
             (scene_bus_pair().to_string(), TreeAddress::Group(0), "a group"),
             (scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied"),
         ];

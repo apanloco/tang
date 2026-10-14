@@ -255,6 +255,49 @@ describe("what a removal is to the history", () => {
     const chain = { ...cycle, graph: { ...cycle.graph, edges: edges.map((e) => (e.kind === "modulation" && e.id === other.id ? { ...e, to: first.to } : e)) } };
     expect(plan({ type: "removeEdge", edge: first.id }, chain)).toEqual({ removed: { label: "remove a cable", intent: { type: "removeEdge", edge: first.id }, at: 7 } });
   });
+
+  describe("of a modulator", () => {
+    const modulators = snapshot.graph.nodes.flatMap((n) => (n.kind === "modulator" ? [n] : []));
+    const lfo = modulators.find((m) => m.source.type === "lfo");
+    const envelope = modulators.find((m) => m.source.type === "envelope");
+    const [lane0] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!lfo || !envelope || !lane0 || !effect || !group) throw new Error("the fixture has an LFO, an envelope, a lane, an effect and a group");
+
+    test("is a step that is made when it is carried out, in the words of a button for the kind it is", () => {
+      expect(plan({ type: "removeNode", node: lfo.id })).toEqual({ removed: { label: "remove an LFO", intent: { type: "removeNode", node: lfo.id }, at: 7 } });
+      expect(plan({ type: "removeNode", node: envelope.id })).toEqual({ removed: { label: "remove an envelope", intent: { type: "removeNode", node: envelope.id }, at: 7 } });
+      const control: Node = { id: 9_000, parent: lane0.id, name: "MIDI", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } };
+      const withControl = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, control] } };
+      expect(plan({ type: "removeNode", node: control.id }, withControl)).toEqual({ removed: { label: "remove a MIDI control", intent: { type: "removeNode", node: control.id }, at: 7 } });
+    });
+
+    test("is no step for a node that is not there, which is refused, and what cannot be put back yet for the other kinds of node", () => {
+      expect(plan({ type: "removeNode", node: 9_999 })).toBe("nothing");
+      expect(plan({ type: "removeNode", node: effect.id })).toBe("barrier");
+      expect(plan({ type: "removeNode", node: lane0.id })).toBe("barrier");
+      expect(plan({ type: "removeNode", node: group.id })).toBe("barrier");
+    });
+
+    test("is what cannot be put back when a cable of it, or one that drives its settings, is one of cables that drive each other's depths", () => {
+      const own = snapshot.graph.edges.flatMap((e) => (e.kind === "modulation" && e.from.node === lfo.id ? [e] : []));
+      const theirs = snapshot.graph.edges.flatMap((e) => (e.kind === "modulation" && e.from.node === envelope.id ? [e] : []));
+      const [mine] = own;
+      const [that] = theirs;
+      if (!mine || !that) throw new Error("the fixture has a cable of each");
+      // The LFO's cable drives the depth of the envelope's, and the envelope's drives the depth of the LFO's.
+      const edges = snapshot.graph.edges.map((e) => {
+        if (e.kind !== "modulation") return e;
+        if (e.id === mine.id) return { ...e, to: { node: envelope.id, port: { type: "depth" as const, edge: that.id } } };
+        if (e.id === that.id) return { ...e, to: { node: lfo.id, port: { type: "depth" as const, edge: mine.id } } };
+        return e;
+      });
+      const cycle = { ...snapshot, graph: { ...snapshot.graph, edges } };
+      expect(plan({ type: "removeNode", node: lfo.id }, cycle)).toBe("barrier");
+      expect(plan({ type: "removeNode", node: envelope.id }, cycle)).toBe("barrier");
+    });
+  });
 });
 
 describe("what takes out what an add made", () => {
@@ -522,6 +565,48 @@ describe("the mock engine's undo of what is taken out", () => {
     const before = labels(server);
     expect(() => server.apply({ type: "removeEdge", edge: 9_999 })).toThrow();
     expect(labels(server)).toEqual(before);
+  });
+
+  test("puts a modulator back with its cables and the layout of the telemetry it had, by undo, and takes it out again by redo", () => {
+    const server = fresh();
+    const before = pieces(server);
+    server.apply({ type: "removeNode", node: lfo.id });
+    const after = pieces(server);
+    expect(after).not.toBe(before);
+    expect(server.snapshot.graph.nodes.some((n) => n.id === lfo.id)).toBe(false);
+    expect(labels(server)).toEqual(["remove an LFO", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    expect(labels(server)).toEqual([null, "remove an LFO"]);
+    server.apply({ type: "redo" });
+    expect(pieces(server)).toBe(after);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+  });
+
+  test("puts back a modulator and the cable that drove the depth of its cable, each where it was, and says what it was in its words", () => {
+    const server = fresh();
+    const driven = cableOf(server, lfo.id);
+    server.apply({ type: "addModEdge", modulator: envelope.id, to: { node: lfo.id, port: { type: "depth", edge: driven } } });
+    const before = pieces(server);
+    server.apply({ type: "removeNode", node: lfo.id });
+    expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation" && (e.from.node === lfo.id || e.to.node === lfo.id))).toEqual([]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    // The envelope has words of its own.
+    server.apply({ type: "removeNode", node: envelope.id });
+    expect(labels(server)).toEqual(["remove an envelope", null]);
+  });
+
+  test("leaves what was done before a removal of a modulator still to be undone, and keeps nothing for a node that is not there", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    server.apply({ type: "removeNode", node: envelope.id });
+    expect(labels(server)).toEqual(["remove an envelope", null]);
+    server.apply({ type: "undo" });
+    expect(labels(server)).toEqual(["lock the piano to its scale", "remove an envelope"]);
+    expect(() => server.apply({ type: "removeNode", node: 9_999 })).toThrow();
+    expect(labels(server)).toEqual(["lock the piano to its scale", "remove an envelope"]);
   });
 });
 
