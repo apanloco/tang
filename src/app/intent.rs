@@ -53,13 +53,17 @@ pub enum Intent {
     /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
     /// refused. It drives nothing yet.
     AddModulator { parent: NodeId, kind: ModulatorKind },
-    /// Draw a modulation cable from the modulator `modulator` to the parameter `to` of a plugin, which
-    /// has to be one that modulator reaches: a lane's modulator reaches the plugins in its lane (the
-    /// instrument and its effects), a group's reaches those of the lanes that are its members and its own
-    /// bus effects. The cable starts at half depth (`NEW_CABLE_DEPTH`; `SetEdgeDepth` changes it).
-    /// Refused, with nothing changed, for a port that is not a parameter (the cables that drive a
-    /// modulator's rate, stages or depths are not drawn by intent yet), a parameter or a plugin that
-    /// is out of reach or not there, and a modulator that drives that parameter already.
+    /// Draw a modulation cable from the modulator `modulator` to the port `to` of a node: a plugin's parameter,
+    /// or a setting of another modulator. A parameter has to be one that modulator reaches: a lane's modulator
+    /// reaches the plugins in its lane (the instrument and its effects), a group's reaches those of the lanes
+    /// that are its members and its own bus effects. A setting (`rate` of an LFO, `attack`, `decay`, `sustain` or
+    /// `release` of an envelope) or the `depth` of one of the cables of a modulator has to be that of a modulator
+    /// in reach: a lane's modulator reaches the others of its lane, a group's its members' modulators and the
+    /// others of its own, and none reaches itself. The cable starts at half depth (`NEW_CABLE_DEPTH`;
+    /// `SetEdgeDepth` changes it). Refused, with nothing changed, for a port that is none of these (an output, an
+    /// audio port), a node or a plugin that is not there or out of reach, a node that is no modulator when the port
+    /// is a modulator's, a setting its modulator does not have, a depth that is not one of its cables, and a
+    /// modulator that drives that port already.
     AddModEdge { modulator: NodeId, to: Endpoint },
     /// Put a plugin at the end of the effect chain of a lane or of a group's bus: `parent` is the node of the lane
     /// (its instrument's, which an empty lane has too) or of the group, and `plugin` the `id` of an entry of the
