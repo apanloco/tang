@@ -430,7 +430,8 @@ resolves cursor → ids and then calls `apply`.
   nothing changed, for a node that has no plugin, a lane with no instrument, a preset the plugin does not have, and a
   bus effect (`a bus effect has no presets to load`: the audio thread's command addresses a lane's slot).)
 - Structure: `AddInstrument`, `ReplaceInstrument`, `AddEffect { parent, plugin }`,
-  `RemoveNode`, `MoveEffect`, `SetRange`, `AssignGroup`, `AddGroup`,
+  `RemoveNode`, `MoveEffect`, `SetRange`, `SetLaneGroup` (planned as `AssignGroup`: the intent says what
+  changes, the group a lane is in, and none takes it out), `AddGroup`,
   `RenameGroup`. (`AddEffect` is built, step 19: `parent` is the node of a lane (an empty lane has
   one too) or of a group, and `plugin` the `id` of an entry of the catalog the server told (§7). The
   server loads it, puts it at the end of the chain (a lane's, or a group's bus) in a node of its own, and
@@ -457,6 +458,24 @@ resolves cursor → ids and then calls `apply`.
   node that is no effect (`only an effect can be moved`: a lane, a group, a modulator), a place the chain has not (`the chain has
   no place 3`) and the place the effect is at (`that effect is at that place already`). A change of structure, told by a
   snapshot; the TUI's Shift+Up and Shift+Down are the same two controller methods, one place at a time.)
+  (`AddGroup { members }`, `SetLaneGroup { node, group }` and `RenameGroup { node, name }` are built, step 31. `AddGroup` makes a
+  group at the end of the session, with no effects and no modulators, volume 1 and pan 0, and puts the lanes of `members` in it in the
+  same intent, each as `SetLaneGroup` would (the members are all looked at before anything is made, so a refusal leaves no group
+  behind); none makes an empty group. `SetLaneGroup` puts the lane `node` (an empty lane's too) in the group `group`, or, for `null`,
+  takes it out of its group; a lane is in one group at most, so one that is in another leaves it. What a lane leaves is no longer
+  driven by it: the cables of the group it leaves, to the lane's plugins and to its modulators, are taken out (with the cables that
+  drive their depths, as `RemoveEdge` does it) and what they drove has the value that was set again, and the cables of the group to
+  the members after the lane are told the places they have now (`member_moves`) and keep driving the same plugins. A lane put in the
+  group it is in is as it was. Refused, with nothing changed and no revision, for a node that is no lane (`only a lane can be put in a
+  group`) and a group that is no group (`that node is not a group`). Both change the structure and are told by a snapshot (D20); the
+  group `AddGroup` made is the last group the client did not have before (`Editor.addGroup` resolves with its node). `RenameGroup`
+  names a group: the name is trimmed, at most `MAX_NAME` (64) characters and none a control character (`NAME_LIMIT` in `constants.ts`),
+  and a name of nothing gives the group the name it has by default, "Group" and its place, counting from one. Refused for a node
+  that is no group (`only a group has a name to change`), a name that is too long (`a name is at most 64 characters`) and one with
+  a control character (`a name has no control characters`). It is answered by `GroupRenamed { node, name }`, an event and not a snapshot,
+  and the name it carries is the one the group has now, so that a client never works out a default name: a group that is called
+  nothing is called by its place, which a client that has the event does not need to know. The TUI's `g` and `R` ask them, so that what
+  they do reaches the browsers.)
 - Modulation: `AddModulator`, `SetModulatorField`, `AddModEdge`, `RemoveEdge`,
   `SetEdgeDepth`, `LearnMidi`. (`SetModulatorField` and `SetEdgeDepth` are built, step
   14: an LFO's rate and waveform and an envelope's four stages, in a lane's modulator or
@@ -481,8 +500,11 @@ resolves cursor → ids and then calls `apply`.
   target that drives a modulator's own field has none) and `RemoveNode { node }` (a modulator, with its cables and the cables
   of the others that drove its settings; since step 19 also an effect or a bus effect, with the
   cables that drive its parameters, a lane's and a group's, and what drove their depths, the audio
-  path closing up round it; a lane or a group is refused until the page can take it back, for
-  taking one out loses an instrument and all it has). A refusal changes nothing and is no revision. `LearnMidi` is the
+  path closing up round it; since step 31 also a lane, with its instrument, its effects, its modulators and the cables of its
+  group to it, and a group, with its bus effects, its modulators and every cable of it, its members staying in no group, with what its
+  cables drove in them given back (`Controller::remove_lane` / `remove_group`). Taking one out loses an instrument and all it has, and
+  there is no undo yet, so a front-end asks a person first (the page does, D34); the controller refuses the last lane of a session,
+  which keeps one: `a session keeps its last lane`). A refusal changes nothing and is no revision. `LearnMidi` is the
   rest of the list that is not.)
 - Patterns: `RecordPattern`, `ClearPattern`, `SetPatternField`.
 - Globals: `SetBpm`, `SetScale`, `SetLocked`, `Save`, `SaveAs`, `Undo`,
@@ -930,7 +952,9 @@ the instruments that are installed (`ChangeInstrumentMenu`: `instrumentItems`, t
 effects'), which asks for `ReplaceInstrument`; and the bar of the page has a "+ Instrument" that asks for
 `AddInstrument`. The canvas moves to a node the page has just added when it is not all in the view (`Reveals`,
 `app/patch/view.ts`, `ShowWhatWasAdded`): the node in the middle, at the zoom the person has or lower if it does not
-fit, animated over 250 ms; a node that another front-end adds is not shown this way.
+fit, animated over 250 ms; a node that another front-end adds is not shown this way. (Step 31: while a move is going the next
+node is judged against the view the canvas is moving to, which is remembered for the 250 ms the move takes, and not against the
+point it is passing, where a node that the layout has moved since was "all in the view" and the canvas ended where it was not.)
 
 **As built (step 21).** On an instrument, after the "♪", and on an effect of a lane, before the "×", a "≡" opens a menu of
 the plugin's presets by name, in the plugin's order (`PresetMenu`: `presetsOf`, `client/selectors.ts`), which asks for
@@ -1088,6 +1112,29 @@ parameter and open when it does not (`isKnob`, read from the session, so a pin a
 the count, `Show the first eight again`, gives the node back to them (`hasPins`). Not built: a node with no knobs at all (an empty list is the
 default, as D33 says), pinning from a knob on the node itself, and ordering the pins by dragging.
 
+**As built (step 31).** The groups are in the page. *The group of a lane* is a cell on its node after its keys (`GroupCell`): a native
+`select` (the keyboard and the screen readers have it for nothing) of none, each group of the session by the name the canvas gives it
+(`groupChoicesOf`: the lane's group and the groups in the order of the graph; `sameGroupChoices` keeps the cell from rendering for what it
+does not show), and a new group. What is chosen is shown until the server has answered, as the keys are, and goes back to what the
+session says if it was refused (the page says why, among its notices); the tooltip says which group the lane is in by its whole name, which the
+narrow choice may cut. None asks `SetLaneGroup` with null, a group asks it with the group's node, and a new group asks `AddGroup` with the lane
+as its only member, so that a group is made and filled by one intent. A group that a lane is put in is shown to the canvas
+(`Editor.setLaneGroup`, `Reveals`), since the layout moves a group to where its members are. *"+ Group"* in the bar (`AddGroupButton`) asks
+`AddGroup` for an empty one and shows it. *Naming*: the ✎ of a group turns its name in the header into a text field (`GroupNameField`), with the
+name selected and as long as `NAME_LIMIT` allows; Enter and leaving the field ask `RenameGroup` (nothing, if the name is the one it was), Escape
+asks nothing, and Enter and Escape give the focus back to the ✎. The field takes the Enter itself (`preventDefault`): the focus goes to the button
+while the key is being handled, and a browser gives the rest of the key, its keypress, which presses a button that has the focus, to whatever has
+the focus then, which opened the field again; a test in jsdom cannot see that, and the browser test found it. *Taking out*: a "×" on every lane and
+every group, but not on the only lane of a session (`RemoveLaneOrGroupMenu`), opens a menu of two items, "Keep X", where the focus starts, and
+"Remove X for good: its 2 effects and 1 modulator go with it, and its 3 lanes stay, in no group" (`removalOf` counts the children of the node
+in the graph; `removalWords` says it). There is no undo, so the server is asked nothing before the second is chosen, and afterwards the focus goes
+to "+ Instrument" or "+ Group", which is what is left to do. The mock engine does all of it as the controller does (`addGroupOutcome`,
+`setLaneGroupOutcome`, `renameGroupOutcome`, `removeLaneOutcome` and `removeGroupOutcome`, pinned by `fixtures/groups.json`); the one place it
+works by a rule of its own is the default name of the groups after one that is taken out ("Group 3" becomes "Group 2"): it renumbers the groups
+that are called by their place, and one that was given the name "Group 2" at its place is renumbered with them, since the page's graph has the
+name and not whether it was ever set (the controller knows). Not built: undo, putting a lane in a group by drawing its audio to it (the menu is
+what every keyboard has; a cable is for the mouse), and taking a lane out of its group by dragging.
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -1224,7 +1271,8 @@ implementations. The TUI golden tests are the regression net.
    everything the TUI's `t` / `m` / `g` / `l` flows do, by drawing cables. (Turning
    a modulator's settings and a cable's depth was done ahead of this phase, in step 14,
    D18, and adding and removing modulators and cables in step 15, and cables between modulators, to the rate and
-   the stages, in step 26; still to do: cables to the depth of a cable, groups, patterns, MIDI-learn.)
+   the stages, in step 26, and groups (adding, naming, putting a lane in one and taking one out, from the page) in step 31; still to do:
+   cables to the depth of a cable, an audio cable that puts a lane in a group, patterns, MIDI-learn.)
 4. **Extras:** mixer view, session browser (needs runtime session loading),
    Web MIDI, touch layout.
 5. **Engine track B** (separate, §13).
@@ -2808,6 +2856,83 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 972 tests, 1126 with the `web` feature and 20 on the real program, 967 without the default plugin
     formats and 1119 with `web`; web 1325 in 66 files; 61 in browsers.
 
+- [x] **31. Groups from the page (phase 1).** A browser could not make a group, put a lane in one, name one or take a lane or a group out: the
+  TUI could (`g`, `R` and `d`), with code of its own. *Done when:* a person can, from the page, add a group, put a lane in a group and take it
+  out of its group (a choice on the lane), name a group in place, and take a lane or a group out after the page has asked whether to; every
+  browser and the TUI see it, the saved file has the groups, their names and which lane is in which, and the TUI does the same things through
+  the same intents; and a lane that leaves a group lets go of what the group's cables drove. In parts, each its own commit: **31.1** the move of a
+  lane between groups is the controller's (`set_lane_group`), a refactoring; **31.2** the fix for what a lane leaves when it leaves; **31.3** the
+  intents `AddGroup`, `SetLaneGroup` and `RenameGroup`, the event `GroupRenamed`, the wire and the TUI's `g` and `R` onto them; **31.4** the page's
+  mock engine, the editor and the fixture that pins the mock to the controller; **31.5** `RemoveNode` for a lane and a group; **31.6** the page;
+  **31.7** the TUI's side of what a browser does to groups, as tests. Two commits of their own for what was found on the way: the program
+  crashing on the way out, and the canvas's reveal of a node. *Not done (later steps):* undo, putting a lane in a group by drawing its audio to the
+  group (the menu is what every keyboard has; a cable is for the mouse), and the TUI's `d` on a lane or a group asking `RemoveNode`.
+  - **31.1 as built.** `SessionModel::set_lane_group` and `Controller::set_lane_group` (the command to the audio thread and the repair of the group
+    modulators' cables in the model, which name a member by its place among the group's lanes: one that leaves takes its place with it and one that
+    joins takes one, as the audio thread does it); the TUI's `g` popup asks it, and its three imports of the helpers are gone.
+  - **31.2 as built.** §5 above and D34. `Controller::set_lane_group` takes the group's cables to the lane's plugins and modulators out first, each by
+    `take_out` with the cables that drive their depths, and then moves the lane, and what they drove has the value that was set (`give_back`: unless a
+    cable of the lane's own still drives it); a lane put in the group it is in has nothing taken out. Until then the TUI's "Ungroup" left what the
+    group's LFO had driven where it had put it, for good (f65, open since step 15 for exactly this: it waited for the TUI's `g` to ask the controller).
+  - **Found on the way, 0017d00 (f95).** The test of the real program that sends it Ctrl+C failed once with a segmentation fault: the program had
+    been interrupted a moment after it started, while its scan of the plugins was still going in the native code of the plugins, and the process's
+    ordinary exit ran what those libraries run at exit while that thread was in them (3 runs of 60 ended with signal 11). `main` calls `run()` and
+    ends the process itself (`libc::_exit` on Unix), after flushing and after printing an error as returning it would (`tests/cli.rs`, 3 tests; the
+    interrupt, 40 runs in `tests/serve.rs`, failed 3 times of 3 before and never after; 150 interrupted runs ended 150 times with status 0).
+  - **31.3 as built.** §5 above. `Intent::AddGroup { members }`, `SetLaneGroup { node, group }`, `RenameGroup { node, name }` and `Event::GroupRenamed`
+    (`app::apply`, `app::snapshot`), `MAX_NAME` and `NAME_LIMIT` (the page reads the limit and does not copy it), the generated types, the page's reducer
+    and the editor's words for the three; the TUI's `g` is `SetLaneGroup` or `AddGroup` with the lane in it, `R` on a group is `RenameGroup`, the tree is
+    drawn again when a group is renamed, by the TUI or by a browser, and the name popup takes no more than the longest name there is.
+  - **31.4 as built.** §9.3 above. The mock engine's `addGroupOutcome`, `setLaneGroupOutcome` (with `lanePutIn`) and `renameGroupOutcome`, pinned to the
+    controller by `fixtures/groups.json`, which the Rust test `the_web_clients_fixture_of_what_the_intents_of_groups_come_to_is_current` writes
+    (a scene with two groups and four lanes, a third group, empty, being put in by 31.5, and 66 intents: a group added with no member, with each lane, with a lane that is in a group, with
+    one twice and with what is no lane; each lane put in each group and in none; names with spaces round them, of nothing, at the limit and one past
+    it, in letters with accents and in characters outside the first plane, with a line break, a tab, a bell and the spaces of other scripts); the
+    mock matched every row the first time it ran. `Editor.addGroup`, `setLaneGroup` and `renameGroup`, each saying what it could not do in the
+    words the canvas uses for the nodes.
+  - **31.5 as built.** §5 above. `RemoveNode` takes a lane (`remove_lane`) or a group (`remove_group`, which the TUI's `d` has always called) and
+    refuses the last lane (`a session keeps its last lane`); the mock's `removeLaneOutcome` and `removeGroupOutcome` renumber the groups that are
+    called by their places, 13 more rows of the fixture (79) and `lastLane`.
+  - **31.6 as built.** §9.3 above. `GroupCell` (`groupChoicesOf`, `sameGroupChoices`), `AddGroupButton`, `GroupNameField` and the ✎ button, and
+    `RemoveLaneOrGroupMenu` (`removalOf`, `sameRemoval`, `removalWords`), `Editor.setLaneGroup` shows the canvas the group a lane is put in; browser
+    tests (`e2e/groups.spec.ts`: on the mock engine, with a lane that is put in a group, named, and a group that is taken out after the menu has
+    asked; the second lane that is added and taken out and the last that cannot be; and on the real program, with a second page and the saved file).
+  - **Found on the way, 65edd7b (f96).** The browser test of 31.6 could not click the ✎ of a group it had just put a lane in: "element is outside of
+    the viewport", for good. `ShowWhatWasAdded` judged a node it was asked to show against `getViewport()`, which while a move is going (250 ms) is a
+    point on the way: the group had been added and, at once, a lane put in it, which moves the group's node; the second request found the node all
+    in the view at the point the canvas was passing, did nothing, and the first move ended at a view worked out from the layout before. The canvas
+    remembers the view it is moving to for the 250 ms the move takes and judges against that (two tests; 7 mutations).
+  - **31.7 as built.** `browser_changes_structure` in `src/tui/golden_tests.rs`: 9 tests of what the TUI shows of what a browser does to groups (a
+    header for a group that is added, a lane under its header or under none, a name in the tree and in the title of the pane, the name being typed in
+    the TUI, a group taken out, the cursor, and every popup that holds a place closed by the group's intents). Eight were green when they were
+    written (the TUI did what it should: no code changed); 7 mutations of the TUI, all caught.
+  - **Tests.** Rust: 34 more than at the end of step 30 in each configuration (1006 against 972 with the default features), 3 of the shell's in
+    `tests/cli.rs` and one more on the real program: the controller (31.1: 6; 31.2: 4 and the TUI's 1; 31.3: 8 of `apply` and 2 of the TUI, with cases
+    in the wire shapes and the property test of every intent against the snapshot; 31.4: the fixture's; 31.5: 3), and 31.7's 9. Web: 58 more tests
+    (1383 against 1325, in two more files): the reducer (4), the mock against the fixture and the editor (14 in 31.4), 1 in 31.5, the reveal (2),
+    and 31.6's 37 (the selectors 10, the editor 1, the page 4 and the groups of the canvas, 22); in browsers 3 more (64 against 61). 184 mutations
+    in all (31.1: 9; 31.2: 6; the exit: 5; 31.3: 15 of the Rust and 4 of the reducer; 31.4: 29; 31.5: 20; the reveal: 7; 31.6: 82; 31.7: 7). All were
+    caught in the end but four that make no difference (31.5: a check of the cables that start in a lane, which all end in it as well, and a
+    renumbering that starts at the place that is taken out; 31.6: a condition that is always true, since a lane has no lanes, which was taken out
+    of the code, and an id that one function makes for both of its ends); some only after a test was written, and 31.6's 16 survivors of the
+    first run are what its tests were strengthened for.
+  - **Found on the way, in the page (not in code that was committed).** The Enter that ends the name of a group opened the field again in a real
+    browser: the focus goes to the ✎ button while the key is being handled, and the browser gives the rest of the key, which presses a button that
+    has the focus, to it. jsdom cannot see that, and the browser test did; the field takes the key itself (`preventDefault`), and a test says it was
+    taken. A test of the page asserted that nothing had been asked of the server before a request could have left (a request leaves a moment
+    after the click), and let a mutation that removed a group on "Keep" pass (f97): it and four like it say it after the page has had its turn. The
+    message of 31.6 was written with counts that were not measured (three of the survivors were said to be of one kind, and seven of another: it
+    was one, and five) and was amended (f98). A browser test found the node of the group by its name, which is not there while the name is a field.
+    The list of the structure intents in §5 of this document called the intent that puts a lane in a group `AssignGroup`, which it was planned as
+    and was not built as (`SetLaneGroup`: the intent says what changes, and none takes the lane out), and it and CLAUDE.md said that `RemoveNode`
+    refuses a lane and a group; both say what is built now.
+  - **Looked at.** The page on the real program on the null audio device, in a browser (screenshots of a flow like the browser test's): a group made
+    from a lane's choice, the name field, the menus that ask before a group and before a lane are taken out, the page after a lane is taken out and
+    after "+ Group". A group's choice on a lane is as wide as its cell (64 px) and cuts "Group 2" to "Group :": the tooltip says it whole; a wider
+    choice is a layout of the node's controls that was not changed here.
+  - **Numbers at the end of the step.** Rust 1006 tests, 1160 with the `web` feature and 21 on the real program, 1001 without the default plugin
+    formats and 1153 with `web`, and 3 of the shell's in each; web 1383 in 68 files; 64 in browsers; 276 commits on the branch.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2876,6 +3001,7 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D31 | An effect is moved by a place in its chain (`MoveEffect { node, index }`), not by a step: a client that offers steps (the page's buttons, the TUI's Shift+Up and Shift+Down) asks for `index ± 1`, one that drags asks for any place, and the controller answers both alike, a lane's chain and a group's bus by one intent and two controller methods that do the model and the audio thread together. A refusal is a refusal of the intent (a place the chain has not, the place it is at), never a silent no-op, so that a client's notice can say why. The page keeps the focus on the button that was pressed by asking for it again when a browser lets it go (`keepFocus`), rather than by keeping the DOM order of the nodes fixed, which would have left the Tab order different from what is drawn | Built (step 28) |
 | D32 | An envelope's dot is placed from what the telemetry already carries, the level the envelope puts out, read with which way it was going (`courseAfter`), and not from a phase that the engine would publish: nothing is added to the wire or to the audio thread (as for the traces, D30). The page infers the stage, and is wrong in a few places that the next reading mends: the first reading of a note is a rise whichever stage it is on, a note that ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place alone. A channel for the stage would make it exact; it is not worth one yet. The telemetry is slower than the page's frames, so a frame that finds the level where it was is no news and the level goes on the way it was going, until a rise has stood still for three readings (100 ms). A stage's width is on a logarithmic scale of its time (a stage is 1 ms to 10 s), and the sustain, which has no time, has the mean of the others | Built (step 29) |
 | D33 | Which parameters of a plugin its node shows as knobs is the session's, kept as a list on the plugin (`pinned = ["cutoff", ...]`, by name, a key of the plugin's table beside `ui`; in the model `PluginSlot::pinned`, the plugin's own indices; on the wire `Plugin.pinned`), not the page's and not inside `ui` as §4.4 first planned: it follows its plugin wherever the plugin goes (an effect that is moved takes it along, an instrument that is replaced has none, with nothing to remember), a node can be pinned without being placed, and `NodeUi` stays a `Copy` pair of numbers that some forty places copy. One intent, `SetPinned { node, params }`, replaces the whole list: simple, idempotent, one event, and the last list wins (two pages that pin in the same moment can lose one of the pins; a pair of intents to pin and to unpin would not, and the page works out the list from what it shows, `pinnedWith`). An empty list is the front-end's own choice, the first eight, so there is no way to ask for a node with no knobs at all, which nobody needs yet; and the first pin of a node keeps the first eight, since a node that lost them at its first pin would be a surprise. A cable's target is shown for as long as the cable is there and is not a pin (§4.4 planned that attaching a cable pins its target: a pin that appeared with a cable would have been written into the session file) | Built (step 30) |
+| D34 | A group is made and filled by what a front-end means, not by the steps of the TUI's popup: `AddGroup { members }` makes it with its lanes in one intent (every member is looked at before anything is made, so a refusal leaves no group and a client has no half-made state to undo), `SetLaneGroup { node, group }` puts a lane in a group or, for none, takes it out (planned as `AssignGroup`: the intent says what changes), and a lane that leaves a group lets go of it as a node that is taken out does: the group's cables to it are taken out (`take_out`, with what drives their depths) and what they drove has the value the user set (the model used to drop the targets and leave the parameters where the cable had put them, f65). A name is `RenameGroup`, which answers with an event that carries the name the group has *now* (a name of nothing is the default, "Group" and its place), so that no client works out a default. A lane or a group is taken out by `RemoveNode` (the controller keeps one lane: `a session keeps its last lane`), and since there is no undo the page asks first, in a menu that opens on "Keep" and says in words what goes and what stays, and does not offer it on the only lane; the controller does not ask, since a client that is not a person (a script, a test) has no one to ask | Built (step 31) |
 
 Open questions
 

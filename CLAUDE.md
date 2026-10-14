@@ -272,7 +272,11 @@ depth = 0.3
 - Member ordinals are maintained as membership changes: a member leaving the
   group drops targets that pointed at it (higher ordinals shift down); a
   member joining bumps ordinals at/after its slot. The file stores ordinals,
-  not global lane indices, so it stays readable.
+  not global lane indices, so it stays readable. A lane that leaves its group
+  (or goes to another) has the group's cables to it taken out as `RemoveEdge`
+  takes a cable out, and what they drove has the value the user set again
+  (`Controller::set_lane_group`; before step 31 a parameter stayed at the
+  value a cable of the group had last put there).
 - **Envelope trigger:** a group envelope modulator is triggered by the union
   of its members' note ranges — it opens whenever any member would sound a
   note.
@@ -1072,7 +1076,11 @@ plugin has not, a separator, a parameter twice and more than `MAX_PINNED`; told 
 it, the session file keeps it, see "Pinned parameters (`pinned`)"), `SetNodeUi { node, ui }` (where a front-end
 draws a node, `{ x, y }` in the pixels of its canvas or none for the front-end's own layout; any node, the master included;
 kept to a tenth of a pixel and within 100 000 either way, `NodeUi::tidy`; told as `NodeUiSet`; the engine and the TUI have no
-use for it, the session file keeps it, see "Node positions (`ui`)"); `Save` (the session's own file); and eight that change
+use for it, the session file keeps it, see "Node positions (`ui`)"), `RenameGroup { node, name }` (what a group is called: the name
+without the spaces round it, at most `MAX_NAME` (64) characters and none of them a control character, and nothing gives the group back the
+name it has by default, "Group" and its number; refused, with nothing changed, for a node that is no group and for a name that is not one;
+told as `GroupRenamed`, which carries the name the group has now; the engine has no use for it, the session file keeps it, and the TUI's `R`
+on a group header asks it); `Save` (the session's own file); and ten that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1096,11 +1104,20 @@ the old plugin's parameters are taken out: see `Controller::put_instrument`), `M
 (an effect of a lane's chain or of a group's bus put at place `index` of its chain, 0 being the first: the effects
 between move one place the other way, the audio path goes through them in the new order and every cable stays
 on the plugin it drove; refused for a node that is no effect, a place the chain has not and the place the
-effect is at: see `Controller::move_effect` / `move_bus_effect`) and
+effect is at: see `Controller::move_effect` / `move_bus_effect`), `AddGroup { members }` (a group at the end, with no effects and
+no modulators, full volume and a centred pan, and the lanes in `members` put in it at once, as `SetLaneGroup` does for each; none
+makes an empty group; refused, with no group made, for a member that is no lane), `SetLaneGroup { node, group }` (a lane put in a
+group, or taken out of the one it is in for none: the group it leaves lets go of it, its cables to the lane's plugins and
+modulators go, with the cables that drive their depths, what they drove has the value that was set, and the cables to the members
+after it are told their new ordinals; a lane put in the group it is in is as it was; refused for a node that is no lane and a group
+that is no group: `Controller::set_lane_group`, which the TUI's `g` asks too) and
 `RemoveNode` (a modulator, with its cables and
 those of the others that drove its settings; an effect or a bus effect, with the cables that
-drive its parameters and what drove their depths, the audio path closing up; a lane or a
-group is refused for now, since there is no undo). An intent that changes the
+drive its parameters and what drove their depths, the audio path closing up; a lane, with its
+instrument, its effects and its modulators and the cables of its group to it, but not the last
+lane of a session (`a session keeps its last lane`); a group, with its bus effects, its modulators and every cable of it, its
+members staying in no group, and what the cables drove in them given back: `Controller::remove_lane` / `remove_group`. There is
+no undo, which is why the page asks first). An intent that changes the
 structure has no event for a client to apply: `Applied::restructured` is set, `apply` calls
 `resync` at once, and the subscribers are given a snapshot at the revision after the
 intent's. Every applied intent bumps `Controller::rev`;
@@ -1119,6 +1136,8 @@ use `Controller::remove_effect` / `move_effect` (a lane's chain) and `remove_bus
 group's bus), which change the model (`SessionModel::remove_effect` / `move_effect` and the bus's, which keep the
 modulator targets of the lane and of its group pointing at the same plugins, as the audio thread does) and tell
 the audio thread together.
+TODO: the TUI's `d` on a lane or a group calls `Controller::remove_lane` / `remove_group` itself; it could ask `RemoveNode`, as the page
+does, and have one way to take a node out.
 
 Whoever mirrors the session (the web runtime, for its browsers) subscribes an
 `EventSink` (`app::subscribers`). The controller tells each about every applied
@@ -1504,7 +1523,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
-  `SetNodeUi`, `SetPinned`, `MoveEffect`, `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
+  `SetNodeUi`, `SetPinned`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
+  or a group) and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1632,7 +1652,13 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   the parameter to the node or takes it off (`client/pinning.ts`: a node shows what is pinned to its plugin, or the first eight, and the
   target of a cable while the cable is there; `Editor.pinParam` keeps the other knobs as they were, `SetPinned` replaces the list), and a
   button under the count gives the node back to the first eight; the pins are the session's, so every page has them and the saved file
-  has them by name. What the controller
+  has them by name. Step 31 brought the groups into the page: every lane has a "Group" cell, a choice of none, each group by its name or
+  a new group with the lane in it (`GroupCell`; `Editor.setLaneGroup` and `addGroup`, which show the canvas the group, since the layout
+  moves it to where its members are), the bar has "+ Group" (`app/AddGroup.tsx`), the name of a group is changed in place (a ✎ button
+  turns it into a field: Enter or leaving the field asks `RenameGroup`, Escape asks nothing; `GroupNameField`), and a lane or a group is
+  taken out by a "×" that opens a menu that asks first, in words that say what goes with it and what stays (`RemoveLaneOrGroupMenu`,
+  `removalOf`; the only lane of a session has none, and there is no undo). The mock engine does all of it as the controller does
+  (`fixtures/groups.json`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1654,7 +1680,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types (and
   `reach.json`, next to it, which says where the controller let a cable be drawn, `fields.json`, which says
   which settings and cable depths of other modulators it let a cable be drawn to, `moves.json`, which says what
-  it makes of moving each effect of a session to each of some places, and
+  it makes of moving each effect of a session to each of some places, `groups.json`, which says what it makes of adding a group,
+  putting a lane in one, naming one and taking a lane or a group out, and
   `builtins.catalog.json`, the built-in plugins as the catalog lists them, which the mock serves).
 - **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
   runs the TUI and the web interface on one controller, on the main thread. The loop
@@ -1708,9 +1735,9 @@ TODO: pinning from a knob on the node itself (a pin is set in the panel only), o
 were pinned), and a node with no knobs at all (an empty `pinned` list is the front-end's own choice, the first eight; docs/web-ui.md D33).
 TODO: the panel's sliders ignore what a parameter says of its steps (`stepCount`) and of its group (`group`): a stepped
 parameter is turned as if it were continuous, and the filter looks at names only. (The plugins of this machine report neither.)
-TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at
-its own defaults (or at a preset the page then loads): groups and taking a lane out (waits for an undo)
-are not in the page yet.
+TODO: a lane added from the browser is full range and in no group (its own choice of group puts it in one; drawing its audio to a group is
+not built), and an instrument put in from it starts at its own defaults (or at a preset the page then loads): taking a lane or a group out
+asks first, since there is no undo.
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
 edge, and two cables with the same middle put theirs over each other; sliders that move along the
 cable would settle it (nodes can be placed since step 25, which helps but does not settle it).
