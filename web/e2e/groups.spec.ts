@@ -1,0 +1,137 @@
+import { readFileSync } from "node:fs";
+
+import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+
+import { node, open } from "./canvas";
+import { test as own } from "./own";
+
+// Groups, from the page: one is added from the bar and from a lane's own choice of group, a lane is put in one and taken out of it, a group is
+// named in place, and a lane or a group is taken out for good after the page has asked whether to. What the page does is the program's: a second
+// page sees it, and the saved file has it.
+
+const groupChoice = (page: Page, lane: string) => page.getByRole("combobox", { name: `Group of ${lane}` });
+
+test("a group is added from the bar, a lane is put in it and taken out of it, the group is named in place and taken out after the page has asked", async ({ page }) => {
+  await open(page);
+  // The tracer has one lane, which has no group, and a session keeps its last lane: nothing takes it out.
+  await expect(groupChoice(page, "Oscillator")).toHaveValue("");
+  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(0);
+
+  // A group from the bar: it is on the canvas, empty and with its own buttons, and the lane can be put in it.
+  await page.getByRole("button", { name: "Add a group" }).click();
+  const group = node(page, "Group 1");
+  await expect(group).toBeVisible();
+  await expect(group.getByRole("button", { name: "Add an effect to Group 1" })).toBeVisible();
+  await groupChoice(page, "Oscillator").selectOption({ label: "Group 1" });
+  await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 1");
+  // The lane's last link, from its filter, goes into the group now and the group's goes to the master.
+  await expect(page.locator('[id^="audio:"]')).toHaveCount(3);
+  await expect(page.locator(`[id="audio:${await filterId(page)}>${await idOf(page, "Group 1")}"]`)).toHaveCount(1);
+
+  // Named in place, with the keyboard: the button turns the name into a field, Enter takes it, and the focus goes back to the button.
+  await group.getByRole("button", { name: "Rename Group 1" }).click();
+  // (Found from the page: while the name is a field the node has no name to be found by.)
+  const field = page.getByRole("textbox", { name: "Name of Group 1" });
+  await expect(field).toBeFocused();
+  await field.fill("Pad");
+  await field.press("Enter");
+  await expect(node(page, "Pad")).toBeVisible();
+  await expect(node(page, "Pad").getByRole("button", { name: "Rename Pad" })).toBeFocused();
+  await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Pad");
+  // Escape leaves the name as it was.
+  await node(page, "Pad").getByRole("button", { name: "Rename Pad" }).click();
+  await page.getByRole("textbox", { name: "Name of Pad" }).fill("Nothing");
+  await page.keyboard.press("Escape");
+  await expect(node(page, "Pad")).toBeVisible();
+
+  // A group that is taken out asks first: keeping it asks nothing, and removing it says what goes and what stays.
+  await node(page, "Pad").getByRole("button", { name: "Remove Pad" }).click();
+  const menu = page.getByRole("menu", { name: "Remove Pad" });
+  await expect(menu.getByRole("menuitem", { name: "Keep Pad" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: /^Remove Pad for good: its 1 lane stays, in no group$/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(node(page, "Pad")).toBeVisible();
+  await node(page, "Pad").getByRole("button", { name: "Remove Pad" }).click();
+  await page.getByRole("menuitem", { name: /^Remove Pad for good/ }).click();
+  await expect(node(page, "Pad")).toHaveCount(0);
+  await expect(groupChoice(page, "Oscillator")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Add a group" })).toBeFocused();
+});
+
+test("a group is made from a lane's choice, a second lane is added and taken out again, and the last one cannot be", async ({ page }) => {
+  await open(page);
+  await groupChoice(page, "Oscillator").selectOption("new");
+  await expect(node(page, "Group 1")).toBeVisible();
+  await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 1");
+
+  // A second lane: both can be taken out now, by a menu that asks; the new one, which has nothing in it, says only that it goes.
+  await page.getByRole("button", { name: "Add an instrument" }).click();
+  await page.getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(groupChoice(page, "Oscillator 2")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(2);
+  await page.getByRole("button", { name: "Remove the lane of Oscillator 2" }).click();
+  await expect(page.getByRole("menuitem", { name: "Remove the lane of Oscillator 2 for good" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Remove the lane of Oscillator 2 for good" }).click();
+  await expect(groupChoice(page, "Oscillator")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add an instrument" })).toBeFocused();
+});
+
+own("what is done to groups is the program's: a second page sees it, and the saved file has the groups, their names and which lane is in which", async ({ page, browser, own: tang }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(tang.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+
+  // A group made from the lane's choice, named; an empty one from the bar.
+  await groupChoice(page, "Oscillator").selectOption("new");
+  await node(page, "Group 1").getByRole("button", { name: "Rename Group 1" }).click();
+  await page.getByRole("textbox", { name: "Name of Group 1" }).fill("Pad");
+  await page.keyboard.press("Enter");
+  await expect(node(page, "Pad")).toBeVisible();
+  await page.getByRole("button", { name: "Add a group" }).click();
+  await expect(node(page, "Group 2")).toBeVisible();
+
+  // A second page has all of it, and what it does shows on the first: the lane goes to the other group.
+  const other = await browser.newPage();
+  await other.setViewportSize({ width: 1600, height: 1000 });
+  await other.goto(tang.url);
+  await expect(other.getByRole("status")).toHaveText("Connected");
+  await expect(node(other, "Pad")).toBeVisible();
+  await expect(node(other, "Group 2")).toBeVisible();
+  await expect(groupChoice(other, "Oscillator").locator("option:checked")).toHaveText("Pad");
+  await groupChoice(other, "Oscillator").selectOption({ label: "Group 2" });
+  await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 2");
+
+  // The saved file has both groups, the first by its name and the second with none (it is called by its place), and the lane in the second.
+  await page.getByRole("button", { name: /^Save/ }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  const saved = readFileSync(tang.file, "utf8");
+  expect(saved.match(/^\[\[group\]\]/gm), saved).toHaveLength(2);
+  expect(saved).toMatch(/\[\[group\]\]\s*\nname = "Pad"/);
+  expect(saved).toMatch(/^group = 1$/m);
+
+  // Taken out by the second page, the first group is gone from the first page and from the file, and the lane is in the group that is the first now.
+  await node(other, "Pad").getByRole("button", { name: "Remove Pad" }).click();
+  await other.getByRole("menuitem", { name: /^Remove Pad for good/ }).click();
+  await expect(node(page, "Pad")).toHaveCount(0);
+  await expect(node(page, "Group 1")).toBeVisible();
+  await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 1");
+  await page.getByRole("button", { name: /^Save/ }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  const after = readFileSync(tang.file, "utf8");
+  expect(after.match(/^\[\[group\]\]/gm), after).toHaveLength(1);
+  expect(after).not.toContain('name = "Pad"');
+  expect(after).toMatch(/^group = 0$/m);
+  await other.close();
+});
+
+/** The id of the node called `name`, which the canvas names an audio link by the nodes it joins with. */
+async function idOf(page: Page, name: string): Promise<string> {
+  const id = await node(page, name).getAttribute("data-id");
+  if (id === null) throw new Error(`${name} has no id`);
+  return id;
+}
+
+/** The tracer's filter, which ends the lane's chain. */
+const filterId = (page: Page): Promise<string> => idOf(page, "Filter");

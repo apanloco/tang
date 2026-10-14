@@ -70,9 +70,9 @@ describe("the patch", () => {
     expect(within(await nodeOf(4294967295)).getByText("Master")).toBeTruthy();
   });
 
-  test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys after that)", async () => {
+  test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys and its group after that)", async () => {
     await rig(<PatchView />);
-    expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator", "Highest key of Oscillator"]);
+    expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator", "Highest key of Oscillator", "Group of Oscillator"]);
     expect(controlsIn(await nodeOf(filter.id))).toEqual(["cutoff", "resonance", "type", "drive", "Mix"]);
   });
 
@@ -634,7 +634,7 @@ describe("the patch", () => {
       });
       expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 5" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
-      expect(controlsIn(await nodeOf(14))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator 5", "Highest key of Oscillator 5"]);
+      expect(controlsIn(await nodeOf(14))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator 5", "Highest key of Oscillator 5", "Group of Oscillator 5"]);
     });
 
     test("takes the cables that drove the old instrument off the canvas, and leaves the others", async () => {
@@ -1025,13 +1025,17 @@ describe("the patch", () => {
   describe("taking a modulator or a cable out", () => {
     test("is offered on every modulator and every effect, by a button that names it, and on no other node", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      const names = (await screen.findAllByRole("button", { name: /^Remove / })).map((button) => button.getAttribute("aria-label")).filter((name) => !name?.startsWith("Remove cable"));
+      // (A lane and a group are taken out by a menu that asks: `PatchView.groups.test.tsx`.)
+      const names = (await screen.findAllByRole("button", { name: /^Remove / }))
+        .map((button) => button.getAttribute("aria-label"))
+        .filter((name) => !name?.startsWith("Remove cable") && !name?.startsWith("Remove the lane of ") && !/^Remove Group \d+$/.test(name ?? ""));
       // The fixture's modulators: two LFOs of lanes and one of a group (numbered), two envelopes, a control; and its effects: three filters (one on a bus), two reverbs (one on a bus).
       expect(names.sort()).toEqual(
         ["Remove ADSR 1", "Remove ADSR 2", "Remove LFO 1", "Remove LFO 2", "Remove LFO 3", "Remove MIDI (learning…)", "Remove Filter 1", "Remove Filter 2", "Remove Filter 3", "Remove Reverb 1", "Remove Reverb 2"].sort(),
       );
-      // None on a lane, a group or the master: they cannot be taken out from here yet.
-      for (const id of [0, 2, 4, 7, 14, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove / })).toBeNull();
+      // None on the master. A lane and a group have a menu that asks, which is not the button of an effect or a modulator.
+      expect(within(await nodeOf(MASTER)).queryByRole("button", { name: /^Remove / })).toBeNull();
+      for (const id of [0, 2, 4, 7, 14]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove (the lane of .+|Group \d+)$/ }), `node ${String(id)}`).toBeTruthy();
     });
 
     test("takes an effect out when its button is pressed, with the cable that drives it, and the focus goes to the button that adds one to its lane", async () => {

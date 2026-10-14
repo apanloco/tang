@@ -35,6 +35,8 @@
   display: flex;
   flex-direction: column;
   min-width: 140px;
+  /* (An item that says a lot, as the one that asks to be sure of taking a group out, goes on a second line.) */
+  max-width: min(360px, 90vw);
   padding: var(--tang-space-1);
   border: 1px solid var(--tang-border);
   border-radius: var(--tang-radius);
@@ -68,6 +70,7 @@
 }
 
 .tang-menu__item {
+  overflow-wrap: anywhere;
   padding: 5px var(--tang-space-3);
   border: 0;
   border-radius: 4px;

@@ -104,6 +104,68 @@ export function rangeOf(state: ClientState, id: NodeId): NoteRange | null | unde
   return node?.kind === "instrument" ? node.range : undefined;
 }
 
+/** The group a lane is in and the groups there are, for the lane's choice of group: each by the name the canvas gives it. */
+export interface GroupChoices {
+  /** The group the lane is in, or null for none. */
+  current: NodeId | null;
+  /** Every group of the session, in the order of the graph. */
+  groups: readonly { id: NodeId; name: string }[];
+}
+
+/** The group of the lane `id` and the groups it can be put in; undefined if the node is not a lane (an empty lane is one). */
+export function groupChoicesOf(state: ClientState, id: NodeId): GroupChoices | undefined {
+  const graph = state.snapshot?.graph;
+  const lane = graph?.nodes.find((node) => node.id === id);
+  if (!graph || lane?.kind !== "instrument") return undefined;
+  const names = displayNames(graph);
+  return { current: lane.parent, groups: graph.nodes.filter((node) => node.kind === "group").map((node) => ({ id: node.id, name: names.get(node.id) ?? node.name })) };
+}
+
+/** Whether two answers of `groupChoicesOf` are the same group and the same groups by the same names. */
+export function sameGroupChoices(a: GroupChoices | undefined, b: GroupChoices | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.current === b.current && a.groups.length === b.groups.length && a.groups.every((group, i) => group.id === b.groups[i]?.id && group.name === b.groups[i].name);
+}
+
+/** What goes when a lane or a group is taken out, and what stays, for the words that ask a person to be sure of it. */
+export interface Removal {
+  kind: "lane" | "group";
+  /** What the node is called on the canvas. */
+  name: string;
+  /** The effects of the lane's chain, or of the group's bus: they go with it. */
+  effects: number;
+  /** Its modulators: they go with it. */
+  modulators: number;
+  /** For a group, the lanes that are members of it: they stay, in no group. (None for a lane.) */
+  lanes: number;
+  /** The only lane of the session, which a session keeps. */
+  last: boolean;
+}
+
+/** What taking out the lane or the group `id` comes to; undefined if the node is neither. */
+export function removalOf(state: ClientState, id: NodeId): Removal | undefined {
+  const graph = state.snapshot?.graph;
+  const found = graph?.nodes.find((node) => node.id === id);
+  if (!graph || (found?.kind !== "instrument" && found?.kind !== "group")) return undefined;
+  const children = graph.nodes.filter((node) => node.parent === id);
+  return {
+    kind: found.kind === "group" ? "group" : "lane",
+    name: displayNames(graph).get(id) ?? found.name,
+    effects: children.filter((node) => node.kind === "effect").length,
+    modulators: children.filter((node) => node.kind === "modulator").length,
+    lanes: children.filter((node) => node.kind === "instrument").length,
+    last: found.kind === "instrument" && graph.nodes.filter((node) => node.kind === "instrument").length < 2,
+  };
+}
+
+/** Whether two answers of `removalOf` say the same. */
+export function sameRemoval(a: Removal | undefined, b: Removal | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.kind === b.kind && a.name === b.name && a.effects === b.effects && a.modulators === b.modulators && a.lanes === b.lanes && a.last === b.last;
+}
+
 /** The value of a host-side gain of a node, if the node has that gain (`withGain` in reducers.ts is the other way round). */
 export function gainOf(state: ClientState, id: NodeId, gain: Gain): number | undefined {
   const node = nodeById(state, id);

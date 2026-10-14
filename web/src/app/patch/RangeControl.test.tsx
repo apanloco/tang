@@ -56,10 +56,11 @@ describe("the keys of a lane", () => {
     const node = (await lowest()).closest(".tang-node");
     expect(node?.classList.contains("tang-node--instrument")).toBe(true);
     const cells = Array.from(node?.querySelectorAll(".tang-node__controls > .tang-cell") ?? []);
-    expect(cells).toHaveLength(10); // eight parameters, the volume, the keys
-    const last = cells.at(-1);
-    expect(last?.textContent).toContain("Keys");
-    expect(within(last as HTMLElement).getAllByRole("combobox")).toHaveLength(2);
+    expect(cells).toHaveLength(11); // eight parameters, the volume, the keys and the group
+    const keys = cells.at(-2);
+    expect(keys?.textContent).toContain("Keys");
+    expect(within(keys as HTMLElement).getAllByRole("combobox")).toHaveLength(2);
+    expect(cells.at(-1)?.textContent).toContain("Group");
   });
 
   test("are not on an effect, a modulator or the master", async () => {

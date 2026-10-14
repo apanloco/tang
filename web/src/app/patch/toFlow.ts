@@ -137,11 +137,11 @@ function drivenSettings(graph: Graph): Map<NodeId, SettingHandle[]> {
   return new Map([...driven].map(([node, settings]) => [node, SETTING_HANDLES.filter((handle) => settings.has(handle))]));
 }
 
-/** How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys too) or a group's two. */
+/** How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys and its group too) or a group's two. */
 export function controlCount(node: Node, knobs: number): number {
   switch (node.kind) {
     case "instrument":
-      return knobs + 2;
+      return knobs + 3;
     case "effect":
       return knobs + 1;
     case "group":

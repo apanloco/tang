@@ -1,9 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
-import { MASTER, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, chainPlaceOf, envelopeStagesOf, gainOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameChainPlace, sameParamList, sameStages } from "./selectors";
+import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { cableDepthOf, chainPlaceOf, envelopeStagesOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
+import type { Removal } from "./selectors";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
 
@@ -411,5 +412,109 @@ describe("which parameters a node shows as knobs", () => {
     expect(hasPins(state, lfo.id)).toBe(false);
     expect(hasPins(state, 12345)).toBe(false);
     expect(hasPins(stateOf(null), filter.id)).toBe(false);
+  });
+});
+
+// The session of the groups fixture: three groups (0, 1 and 2, the last empty and called Lead; the first has two modulators and no effect, the second one
+// modulator), four lanes (3 and 10 in the first group, 9 in the second, 5 in none, which has a filter and two modulators of its own).
+describe("which group a lane is in, and which there are to choose from", () => {
+  const groups = stateOf(groupsFixture.snapshot);
+  const everyGroup = [
+    { id: 0, name: "Group 1" },
+    { id: 1, name: "Group 2" },
+    { id: 2, name: "Lead" },
+  ];
+
+  test("the group a lane is in, and every group of the session in the order of the graph", () => {
+    expect(groupChoicesOf(groups, 3)).toEqual({ current: 0, groups: everyGroup });
+    expect(groupChoicesOf(groups, 9)).toEqual({ current: 1, groups: everyGroup });
+    expect(groupChoicesOf(groups, 10)).toEqual({ current: 0, groups: everyGroup });
+  });
+
+  test("none, for a lane that is in no group", () => {
+    expect(groupChoicesOf(groups, 5)).toEqual({ current: null, groups: everyGroup });
+    expect(groupChoicesOf(state, oscillator.id)).toEqual({ current: null, groups: [] });
+  });
+
+  test("nothing for what is no lane: a group, an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
+    for (const node of [0, 6, 4, 13, MASTER, 9999]) expect(groupChoicesOf(groups, node), `node ${String(node)}`).toBeUndefined();
+    expect(groupChoicesOf(stateOf(null), 3)).toBeUndefined();
+  });
+
+  test("says what a group is called now: the name it was given, or the one it has by default", () => {
+    const named: Snapshot = {
+      ...groupsFixture.snapshot,
+      graph: { ...groupsFixture.snapshot.graph, nodes: groupsFixture.snapshot.graph.nodes.map((n) => (n.id === 1 ? { ...n, name: "Strings" } : n)) },
+    };
+    expect(groupChoicesOf(stateOf(named), 5)?.groups.map((g) => g.name)).toEqual(["Group 1", "Strings", "Lead"]);
+  });
+
+  test("is the same choice when it is the same group and the same groups by the same names, and not otherwise", () => {
+    const a = groupChoicesOf(groups, 3);
+    const b = groupChoicesOf(groups, 3);
+    expect(a).not.toBe(b);
+    expect(sameGroupChoices(a, b)).toBe(true);
+    expect(sameGroupChoices(a, groupChoicesOf(groups, 10))).toBe(true);
+    expect(sameGroupChoices(a, groupChoicesOf(groups, 9))).toBe(false);
+    expect(sameGroupChoices(a, groupChoicesOf(groups, 5))).toBe(false);
+    expect(sameGroupChoices(a, { current: 0, groups: everyGroup.slice(0, 2) })).toBe(false);
+    expect(sameGroupChoices(a, { current: 0, groups: everyGroup.map((g) => ({ ...g, name: g.id === 2 ? "Pad" : g.name })) })).toBe(false);
+    // The same names at the same places, but other nodes: an option's value is its node, so the choice that was drawn is stale.
+    expect(sameGroupChoices(a, { current: 0, groups: everyGroup.map((g) => ({ ...g, id: g.id + 100 })) })).toBe(false);
+    expect(sameGroupChoices(undefined, undefined)).toBe(true);
+    expect(sameGroupChoices(a, undefined)).toBe(false);
+    expect(sameGroupChoices(undefined, a)).toBe(false);
+  });
+});
+
+describe("what goes when a lane or a group is taken out", () => {
+  const groups = stateOf(groupsFixture.snapshot);
+
+  test("for a group: what it is called, the effects of its bus and its modulators that go with it, and the lanes that stay", () => {
+    expect(removalOf(groups, 0)).toEqual({ kind: "group", name: "Group 1", effects: 0, modulators: 2, lanes: 2, last: false });
+    expect(removalOf(groups, 1)).toEqual({ kind: "group", name: "Group 2", effects: 0, modulators: 1, lanes: 1, last: false });
+    expect(removalOf(groups, 2)).toEqual({ kind: "group", name: "Lead", effects: 0, modulators: 0, lanes: 0, last: false });
+  });
+
+  test("for a lane: what it is called, its effects and its modulators that go with it, whether it is in a group, and whether it is the last", () => {
+    expect(removalOf(groups, 5)).toEqual({ kind: "lane", name: "Oscillator 2", effects: 1, modulators: 2, lanes: 0, last: false });
+    expect(removalOf(groups, 10)).toEqual({ kind: "lane", name: "Oscillator 4", effects: 1, modulators: 1, lanes: 0, last: false });
+    expect(removalOf(state, oscillator.id)).toEqual({ kind: "lane", name: "Oscillator", effects: 1, modulators: 1, lanes: 0, last: true });
+  });
+
+  test("nothing for what is neither: an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
+    for (const node of [6, 4, 13, MASTER, 9999]) expect(removalOf(groups, node), `node ${String(node)}`).toBeUndefined();
+    expect(removalOf(stateOf(null), 0)).toBeUndefined();
+  });
+
+  test("a lane is the last when it is the only one, whatever else the session has, and a group never is", () => {
+    // (The tracer with a second lane: neither is the last. And with a group: the group is not a lane, and the lane is still the last.)
+    const second: Node = { ...oscillator, id: 9000, parent: null };
+    const twoLanes = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, second] } });
+    expect([removalOf(twoLanes, oscillator.id)?.last, removalOf(twoLanes, second.id)?.last]).toEqual([false, false]);
+    const found = groupsFixture.snapshot.graph.nodes.find((node) => node.id === 2);
+    if (found?.kind !== "group") throw new Error("no group Lead");
+    const lead: Node = { ...found, id: 9001 };
+    const withGroup = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, lead] } });
+    expect([removalOf(withGroup, oscillator.id)?.last, removalOf(withGroup, lead.id)?.last]).toEqual([true, false]);
+  });
+
+  test("is the same removal when it says the same, and not when any one thing it says is different", () => {
+    const a = removalOf(groups, 0);
+    if (!a) throw new Error("no removal");
+    expect(sameRemoval(a, removalOf(groups, 0))).toBe(true);
+    expect(sameRemoval(a, removalOf(groups, 1))).toBe(false);
+    const differing: Removal[] = [
+      { ...a, kind: "lane" },
+      { ...a, name: "Pad" },
+      { ...a, effects: a.effects + 1 },
+      { ...a, modulators: a.modulators + 1 },
+      { ...a, lanes: a.lanes + 1 },
+      { ...a, last: !a.last },
+    ];
+    for (const other of differing) expect(sameRemoval(a, other), JSON.stringify(other)).toBe(false);
+    expect(sameRemoval(undefined, undefined)).toBe(true);
+    expect(sameRemoval(a, undefined)).toBe(false);
+    expect(sameRemoval(undefined, a)).toBe(false);
   });
 });

@@ -97,6 +97,41 @@
   min-width: 26px;
 }
 
+/* (The one that renames a group: a glyph too.) */
+.tang-menu-button.tang-node__rename {
+  min-width: 26px;
+}
+
+/* (The one that takes a lane or a group out, by a menu that asks: quiet until it is looked at, and then the colour of what it does.) */
+.tang-menu-button.tang-node__remove-menu {
+  color: var(--tang-text-muted);
+}
+
+.tang-menu-button.tang-node__remove-menu:hover:not(:disabled),
+.tang-menu-button.tang-node__remove-menu[aria-expanded="true"] {
+  border-color: var(--tang-danger);
+  color: var(--tang-text);
+}
+
+/* The name of a group, in a field in place of the name in its header. */
+.tang-node__name-field {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-modulation);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-weight: 600;
+}
+
+.tang-node__name-field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
 /* (The one that loads a preset: a glyph too.) */
 .tang-menu-button.tang-node__presets {
   min-width: 26px;

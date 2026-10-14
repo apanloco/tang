@@ -4,7 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
 import type { ClientOptions } from "../client/connection";
-import { nodeNamed, tracerSnapshot } from "../client/fixtures";
+import { groupsFixture, nodeNamed, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
 import type { Notices } from "../client/notices";
@@ -169,6 +169,66 @@ describe("the page", () => {
     // The menu has gone, and the focus is back on the button that opened it.
     expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an instrument" }));
+  });
+
+  test("has a button in the bar that adds a group, and the group is on the canvas when the server has made it, with the buttons a group has", async () => {
+    const { server } = page();
+    const patch = await screen.findByTestId("patch");
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(4);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add a group" }));
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(5);
+    });
+    expect(server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []))).toEqual([{ type: "addGroup", members: [] }]);
+    expect(await screen.findByRole("button", { name: "Add an effect to Group 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rename Group 1" })).toBeTruthy();
+    // The lane of the session can be put in it.
+    const choice = screen.getByRole<HTMLSelectElement>("combobox", { name: "Group of Oscillator" });
+    expect(Array.from(choice.options).map((option) => option.textContent)).toEqual(["none", "Group 1", "new group"]);
+  });
+
+  test("says why a group could not be added, among the notices", async () => {
+    const { server } = page({}, { reconnectDelay: () => 60_000 });
+    await screen.findByText("Connected");
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add a group" }));
+    expect(await screen.findByText("Could not add a group: Not connected to the server.")).toBeTruthy();
+  });
+
+  test("gives the focus to the button that adds a group when a group is taken out, and to the one that adds an instrument when a lane is", async () => {
+    page({ snapshot: groupsFixture.snapshot });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Lead" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove Lead for good" }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a group" }));
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator 2" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove the lane of Oscillator 2 for good/ }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an instrument" }));
+    });
+  });
+
+  test("does not give the focus to the button that adds a group when the group could not be taken out", async () => {
+    const { server } = page({ snapshot: groupsFixture.snapshot }, { reconnectDelay: () => 60_000 });
+    await screen.findByText("Connected");
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Lead" }));
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove Lead for good" }));
+    expect(await screen.findByText("Could not remove Lead: Not connected to the server.")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Add a group" }));
+    expect(screen.getByRole("button", { name: "Remove Lead" })).toBeTruthy();
   });
 
   test("has nothing to open until the server has said what is installed, or when nothing that is can be an instrument", async () => {

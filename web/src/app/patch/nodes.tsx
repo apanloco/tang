@@ -3,12 +3,14 @@
 // values, so that a value that changes renders its control and nothing else.
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { useContext, useMemo } from "react";
+import { useContext, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
-import { chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, sameChainPlace, sameStages } from "../../client/selectors";
+import { chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, removalOf, sameChainPlace, sameRemoval, sameStages } from "../../client/selectors";
+import type { Removal } from "../../client/selectors";
+import { NAME_LIMIT } from "../../protocol";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
 import { formatValue } from "../../ui/Knob";
 import { LiveEnvelope } from "../../ui/LiveEnvelope";
@@ -18,17 +20,20 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
+import { DrivePicker, GainCell, GroupCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { PatchNode } from "./toFlow";
 
-function Header({ name, badge, children }: { name: string; badge?: string | null; children?: ReactNode }) {
+/** The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. */
+function Header({ name, badge, children, field }: { name: string; badge?: string | null; children?: ReactNode; field?: ReactNode }) {
   return (
     <header className="tang-node__header">
-      <span className="tang-node__name" title={name}>
-        {name}
-      </span>
+      {field ?? (
+        <span className="tang-node__name" title={name}>
+          {name}
+        </span>
+      )}
       {badge ? <span className="tang-node__badge">{badge}</span> : null}
       {children}
     </header>
@@ -242,6 +247,107 @@ function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name:
   );
 }
 
+/** "1 effect", "2 effects". */
+const counted = (n: number, word: string): string => `${String(n)} ${word}${n === 1 ? "" : "s"}`;
+
+/** What taking out a lane or a group comes to, in words: what goes with it, and, for a group, what stays. */
+function removalWords(removal: Removal): string {
+  const goes = [removal.effects > 0 ? counted(removal.effects, "effect") : null, removal.modulators > 0 ? counted(removal.modulators, "modulator") : null].filter((part) => part !== null);
+  const stays = removal.lanes > 0 ? `its ${counted(removal.lanes, "lane")} ${removal.lanes === 1 ? "stays" : "stay"}, in no group` : null;
+  const parts = [goes.length > 0 ? `its ${goes.join(" and ")} go${goes.length === 1 && removal.effects + removal.modulators === 1 ? "es" : ""} with it` : null, stays].filter((part) => part !== null);
+  return parts.length > 0 ? `: ${parts.join(", and ")}` : "";
+}
+
+/**
+ * The button of a lane or a group that takes it out of the session, for good: there is no undo, so it opens a menu that asks, first for keeping
+ * (where the focus starts), and then for removing it with the words of what goes with it and what stays. Nothing for the only lane of a session (a
+ * session keeps a lane) and for any other node. The focus goes to the button of the bar that adds a lane or a group, which is what is left to do.
+ */
+function RemoveLaneOrGroupMenu({ node }: { node: NodeId }) {
+  const editor = useEditor();
+  const removal = useClientSelection((state) => removalOf(state, node), sameRemoval);
+  if (!removal || removal.last) return null;
+  const what = removal.kind === "lane" ? `the lane of ${removal.name}` : removal.name;
+  const items: MenuItem<"keep" | "remove">[] = [
+    { id: "keep", label: `Keep ${removal.name}` },
+    { id: "remove", label: `Remove ${what} for good${removalWords(removal)}` },
+  ];
+  return (
+    <MenuButton
+      id={`remove-${String(node)}`}
+      label={`Remove ${what}`}
+      className="tang-node__remove-menu"
+      items={items}
+      onChoose={(choice) => {
+        if (choice !== "remove") return;
+        // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        void editor.removeNode(node).then((removed) => {
+          if (removed) focusWhenPossible(removal.kind === "lane" ? "add-instrument" : "add-group");
+        });
+      }}
+    >
+      ×
+    </MenuButton>
+  );
+}
+
+/** The `id` of the button that turns the name of the group `node` into a field. */
+const renameGroupId = (node: NodeId): string => `rename-group-${String(node)}`;
+
+/**
+ * The name of a group, in a field, in place of the name in its header: Enter (or leaving the field) asks the server for it, Escape leaves it as it
+ * was, and a name that is the one it was asks nothing. The server takes the spaces off, and gives a name of nothing the name the group has by
+ * default. `done` is called once, with whether the focus goes back to the button that opened the field (it does, for Enter and Escape: the
+ * person is still there).
+ */
+function GroupNameField({ node, name, done }: { node: NodeId; name: string; done: (focusBack: boolean) => void }) {
+  const editor = useEditor();
+  const finished = useRef(false);
+  const [text, setText] = useState(name);
+  const finish = (ask: boolean, focusBack: boolean): void => {
+    if (finished.current) return;
+    finished.current = true;
+    // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+    if (ask && text !== name) void editor.renameGroup(node, text);
+    done(focusBack);
+  };
+  return (
+    <input
+      className="tang-node__name-field nodrag nopan"
+      type="text"
+      aria-label={`Name of ${name}`}
+      maxLength={NAME_LIMIT}
+      value={text}
+      autoFocus
+      onFocus={(event) => {
+        event.currentTarget.select();
+      }}
+      onChange={(event) => {
+        setText(event.target.value);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== "Escape") return;
+        // The key is taken here: the focus goes to the button at once, and a browser gives an Enter that was left alone to whatever has the
+        // focus when it comes to act on it, which would press the button and open the field again.
+        event.preventDefault();
+        finish(event.key === "Enter", true);
+      }}
+      onBlur={() => {
+        finish(true, false);
+      }}
+    />
+  );
+}
+
+/** The button of a group that turns its name into a field. */
+function RenameGroupButton({ node, name, onEdit }: { node: NodeId; name: string; onEdit: () => void }) {
+  return (
+    <button type="button" id={renameGroupId(node)} className="tang-menu-button tang-node__rename nodrag nopan" aria-label={`Rename ${name}`} title={`Rename ${name}`} onClick={onEdit}>
+      ✎
+    </button>
+  );
+}
+
 /** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain. */
 export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const effect = type === "effect";
@@ -266,6 +372,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
             <ParamsButton node={data.node} name={data.name} />
             <AddEffectMenu node={data.node} name={data.name} />
             <AddModulatorMenu node={data.node} name={data.name} />
+            <RemoveLaneOrGroupMenu node={data.node} />
           </span>
         )}
       </Header>
@@ -275,6 +382,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         ))}
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />
         <RangeCell node={data.node} name={data.name} />
+        <GroupCell node={data.node} name={data.name} />
       </div>
     </div>
   );
@@ -339,16 +447,40 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   );
 }
 
-/** A submix group: its volume and its pan, between its members and the master. */
+/** A submix group: its volume and its pan, between its members and the master; its name is changed in place, and it can be taken out. */
 export function GroupNode({ data }: NodeProps<PatchNode>) {
+  const [editing, setEditing] = useState(false);
   return (
     <div className="tang-node tang-node--group">
       <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
-      <Header name={data.name} badge="Group">
+      <Header
+        name={data.name}
+        badge="Group"
+        field={
+          editing ? (
+            <GroupNameField
+              node={data.node}
+              name={data.name}
+              done={(focusBack) => {
+                setEditing(false);
+                if (focusBack) focusWhenPossible(renameGroupId(data.node));
+              }}
+            />
+          ) : undefined
+        }
+      >
         <span className="tang-node__actions">
+          <RenameGroupButton
+            node={data.node}
+            name={data.name}
+            onEdit={() => {
+              setEditing(true);
+            }}
+          />
           <AddEffectMenu node={data.node} name={data.name} />
           <AddModulatorMenu node={data.node} name={data.name} />
+          <RemoveLaneOrGroupMenu node={data.node} />
         </span>
       </Header>
       <div className="tang-node__controls nodrag nopan nowheel">

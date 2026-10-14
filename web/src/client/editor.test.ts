@@ -262,6 +262,16 @@ describe("putting a lane in a group", () => {
     expect(said(notices)).toEqual([]);
   });
 
+  test("asks the canvas to show the group the lane was put in, which moves with it, and nothing when the lane is taken out of its group or the lane was refused", async () => {
+    const { shown, editor } = await open(groups);
+    expect(await editor.setLaneGroup(5, 1)).toBe(true);
+    expect(shown).toEqual([1]);
+    expect(await editor.setLaneGroup(5, null)).toBe(true);
+    expect(await editor.setLaneGroup(5, 5)).toBe(false);
+    expect(await editor.setLaneGroup(5, 9999)).toBe(false);
+    expect(shown).toEqual([1]);
+  });
+
   test("takes the group's cables to a lane that leaves it out of the session, and the cable that drives the depth of one of them", async () => {
     const { client, editor } = await open(groups);
     const cables = () => client.state.snapshot?.graph.edges.flatMap((e) => (e.kind === "modulation" ? [e.id] : []));

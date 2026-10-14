@@ -114,11 +114,14 @@ export class Editor {
 
   /**
    * Put the lane `node` in the group `group`, or, for null, take it out of its group. The group it leaves lets go of it: its cables to the
-   * lane go, and what they drove has the value that was set. True if it was done (the page says why if it was not).
+   * lane go, and what they drove has the value that was set. A group the lane is put in is shown to the canvas, since the layout moves it
+   * to where its members are. True if it was done (the page says why if it was not).
    */
-  setLaneGroup(node: NodeId, group: NodeId | null): Promise<boolean> {
+  async setLaneGroup(node: NodeId, group: NodeId | null): Promise<boolean> {
     const what = group === null ? `take ${this.#name(node)} out of its group` : `put ${this.#name(node)} in ${this.#name(group)}`;
-    return this.#attempt(what, { type: "setLaneGroup", node, group });
+    const done = await this.#attempt(what, { type: "setLaneGroup", node, group });
+    if (done && group !== null) this.#shown(group);
+    return done;
   }
 
   /**

@@ -10,7 +10,7 @@ import type { Modulation } from "../../client/modulation";
 import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
-import { cableDepthOf, gainOf, isKnob, modulatorFieldOf, paramOf, rangeOf } from "../../client/selectors";
+import { cableDepthOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameGroupChoices } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -333,6 +333,55 @@ export const RangeCell = memo(function RangeCell({ node, name }: { node: NodeId;
               {label}
             </option>
           ))}
+        </select>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * The group a lane is in, as a choice in a cell of its node: none, a group of the session by the name it has, or a new group with the lane in
+ * it (the controller's `AddGroup` with the lane as its member). A group it leaves lets go of it: its cables to the lane go, and what they drove
+ * has the value that was set. What is chosen is shown until the server has answered; if it was refused (the page says why) the group the session
+ * has comes back. A node that is no lane has no group, and nothing is drawn for it.
+ */
+export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const stored = useClientSelection((state) => groupChoicesOf(state, node), sameGroupChoices);
+  const [pending, setPending] = useState<string | undefined>(undefined);
+  const latest = useRef(0);
+  if (stored === undefined) return null;
+  const value = pending ?? (stored.current === null ? "" : String(stored.current));
+  // (The choice is narrow and cuts a long name: the tooltip has all of it.)
+  const inGroup = value === "new" ? "a new group" : (stored.groups.find((group) => String(group.id) === value)?.name ?? "no group");
+  const choose = (next: string): void => {
+    const mine = (latest.current += 1);
+    setPending(next);
+    const done = next === "new" ? editor.addGroup([node]) : editor.setLaneGroup(node, next === "" ? null : Number(next));
+    void done.finally(() => {
+      if (latest.current === mine) setPending(undefined);
+    });
+  };
+  return (
+    <div className="tang-cell">
+      <div className="tang-keys">
+        <span className="tang-keys__label">Group</span>
+        <select
+          className="tang-keys__select"
+          aria-label={`Group of ${name}`}
+          title={`${name} is in ${inGroup}`}
+          value={value}
+          onChange={(event) => {
+            choose(event.target.value);
+          }}
+        >
+          <option value="">none</option>
+          {stored.groups.map((group) => (
+            <option key={group.id} value={String(group.id)}>
+              {group.name}
+            </option>
+          ))}
+          <option value="new">new group</option>
         </select>
       </div>
     </div>
