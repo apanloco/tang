@@ -8,7 +8,7 @@
 use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
-use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -284,32 +284,71 @@ impl Controller {
         let NodePath::Modulator { at, index } = self.model.locate(modulator).ok_or(IntentError::NotFound(modulator))? else {
             return Err(invalid("a cable starts at a modulator"));
         };
-        let Port::Param { index: param } = to.port else {
-            return Err(invalid("a cable can only end at a plugin's parameter so far"));
-        };
+        match to.port {
+            Port::Param { index: param } => self.add_param_cable(at, index, to.node, param)?,
+            Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.add_field_cable(at, index, &to)?,
+            Port::ModOut | Port::AudioIn | Port::AudioOut => {
+                return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
+            }
+        }
+        Ok(Done::Restructured)
+    }
+
+    /// A cable from the modulator at `index` of the rack at `at` to the parameter `param` of the plugin in `node`.
+    fn add_param_cable(&mut self, at: ModulatorLocation, index: usize, node: NodeId, param: u32) -> Result<(), IntentError> {
         // The plugin has to be there, and in reach of the modulator (`param_targets`: the rule is the model's).
-        let plugin = self.locate_plugin(to.node)?;
+        let plugin = self.locate_plugin(node)?;
         if self.plugin_at(&plugin).is_none() {
             return Err(invalid("that instrument has no plugin"));
         }
         let reachable = self.model.param_targets(at);
-        if !reachable.iter().any(|t| t.node == to.node) {
-            let owner = match at {
-                ModulatorLocation::Lane(_) => "lane",
-                ModulatorLocation::Group(_) => "group",
-            };
-            return Err(invalid(format!("a modulator of this {owner} cannot reach that plugin")));
+        if !reachable.iter().any(|t| t.node == node) {
+            return Err(invalid(format!("a modulator of this {} cannot reach that plugin", owner_name(at))));
         }
         let target = reachable
             .into_iter()
-            .find(|t| t.node == to.node && t.param == param)
+            .find(|t| t.node == node && t.param == param)
             .ok_or_else(|| invalid(format!("the plugin has no parameter {param}")))?;
         let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.kind == target.kind));
         if drives_it_already {
             return Err(invalid("that modulator drives that parameter already"));
         }
         self.add_target(at, index, NewTarget::to_param(&target, NEW_CABLE_DEPTH));
-        Ok(Done::Restructured)
+        Ok(())
+    }
+
+    /// A cable from the modulator at `index` of the rack at `at` to a setting of another modulator (its rate, a stage of its
+    /// envelope) or to the depth of one of that modulator's cables: which are in reach, and which a modulator has, is the model's
+    /// (`modulators_in_reach`, `field_targets`). A modulator does not drive itself.
+    fn add_field_cable(&mut self, at: ModulatorLocation, index: usize, to: &Endpoint) -> Result<(), IntentError> {
+        match self.model.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+            NodePath::Modulator { at: there, index: place } if (there, place) == (at, index) => {
+                return Err(invalid("a modulator cannot drive its own settings"));
+            }
+            NodePath::Modulator { .. } => {}
+            _ => return Err(invalid("a cable ends at the settings of a modulator, and that is not one")),
+        }
+        if !self.model.modulators_in_reach(at, index).contains(&to.node) {
+            return Err(invalid(format!("a modulator of this {} cannot reach that modulator", owner_name(at))));
+        }
+        let Some(target) = self.model.field_targets(at, index).into_iter().find(|t| t.node == to.node && t.port() == to.port) else {
+            return Err(match to.port {
+                Port::Depth { edge } => IntentError::EdgeNotFound(edge),
+                Port::Rate => invalid("that modulator has no rate"),
+                Port::Attack => invalid("that modulator has no attack"),
+                Port::Decay => invalid("that modulator has no decay"),
+                Port::Sustain => invalid("that modulator has no sustain"),
+                Port::Release => invalid("that modulator has no release"),
+                Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioOut => invalid("that is not a setting of a modulator"),
+            });
+        };
+        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.kind == target.kind));
+        if drives_it_already {
+            return Err(invalid("that modulator drives that setting already"));
+        }
+        let FieldTarget { kind, label, base_value, param_min, param_max, .. } = target;
+        self.add_target(at, index, NewTarget { kind, slot: 0, param_name: label, depth: NEW_CABLE_DEPTH, base_value, param_min, param_max });
+        Ok(())
     }
 
     fn add_effect_intent(&mut self, parent: NodeId, plugin: &str) -> Result<Done, IntentError> {
@@ -431,6 +470,14 @@ fn mirror_values(rows: &mut [ParamSlot], values: &[(u32, f32)]) -> Vec<ParamValu
         }
     }
     set
+}
+
+/// What a rack belongs to, in the words of a refusal.
+fn owner_name(at: ModulatorLocation) -> &'static str {
+    match at {
+        ModulatorLocation::Lane(_) => "lane",
+        ModulatorLocation::Group(_) => "group",
+    }
 }
 
 fn invalid(why: impl Into<String>) -> IntentError {
@@ -1824,7 +1871,7 @@ type = "midi"
         let heading = ctl.model.instruments[0].instrument.as_ref().unwrap().params[1].index;
         ctl.model.instruments[0].instrument.as_mut().unwrap().params[1].kind = ParamKind::Separator;
 
-        let not_a_parameter = invalid("a cable can only end at a plugin's parameter so far");
+        let not_a_parameter = invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth");
         let from_a_modulator = invalid("a cable starts at a modulator");
         let cases = [
             ("a modulator that is not there", cable_to(ghost, osc, detune), IntentError::NotFound(ghost)),
@@ -1847,11 +1894,15 @@ type = "midi"
         for (what, intent, error) in cases {
             assert_eq!(ctl.apply(intent), Err(error), "{what}");
         }
-        // The ports that are not parameters (the cables that drive a modulator's own settings are not drawn by intent yet).
-        let others = [Port::ModOut, Port::AudioIn, Port::AudioOut, Port::Rate, Port::Attack, Port::Sustain, Port::Depth { edge: EdgeId(0) }];
-        for port in others {
+        // The ports that are neither a parameter nor a modulator's setting.
+        for port in [Port::ModOut, Port::AudioIn, Port::AudioOut] {
             let intent = Intent::AddModEdge { modulator: lfo, to: Endpoint { node: osc, port } };
             assert_eq!(ctl.apply(intent), Err(not_a_parameter.clone()), "{port:?}");
+        }
+        // A setting of a node that is not a modulator (a plugin's node is not).
+        for port in [Port::Rate, Port::Attack, Port::Sustain, Port::Depth { edge: EdgeId(0) }] {
+            let intent = Intent::AddModEdge { modulator: lfo, to: Endpoint { node: osc, port } };
+            assert_eq!(ctl.apply(intent), Err(invalid("a cable ends at the settings of a modulator, and that is not one")), "{port:?}");
         }
 
         assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
@@ -1891,6 +1942,287 @@ type = "midi"
         assert_eq!(ctl.model.instruments[0].modulators[1].targets.len(), 1);
         assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1);
         ctl.model.check_ids().unwrap();
+    }
+
+    // -- Cables from one modulator to the settings of another --
+
+    /// `CROSS_MOD_RACKS` over the stub engine: a group of three modulators, whose first member has three modulators of its own (the
+    /// second an envelope with two cables), a second member with an LFO, a lane in no group and a lane in a second group.
+    fn racks() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(testutil::CROSS_MOD_RACKS).model, handles, None))
+    }
+
+    fn rack_mod(ctl: &Controller, inst: usize, index: usize) -> NodeId {
+        ctl.model.instruments[inst].modulators[index].node
+    }
+
+    fn in_group(ctl: &Controller, group: usize, index: usize) -> NodeId {
+        ctl.model.groups[group].modulators[index].node
+    }
+
+    fn cable_to_field(modulator: NodeId, node: NodeId, port: Port) -> Intent {
+        Intent::AddModEdge { modulator, to: Endpoint { node, port } }
+    }
+
+    #[test]
+    fn add_mod_edge_draws_a_cable_from_a_lane_modulator_to_the_settings_of_a_sibling_and_to_the_depth_of_a_cable_of_its() {
+        let (engine, mut ctl) = racks();
+        sent(&engine);
+        let (lfo, envelope) = (rack_mod(&ctl, 0, 0), rack_mod(&ctl, 0, 1));
+
+        let applied = ctl.apply(cable_to_field(lfo, envelope, Port::Attack)).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["AddModTarget inst=0 mod=0 kind=ModulatorAttack { mod_index: 1 } depth=0.500 base=0.010 range=[0.001, 10.000]"]);
+        for (port, text) in [
+            (Port::Decay, "kind=ModulatorDecay { mod_index: 1 } depth=0.500 base=0.300 range=[0.001, 10.000]"),
+            (Port::Sustain, "kind=ModulatorSustain { mod_index: 1 } depth=0.500 base=0.400 range=[0.000, 1.000]"),
+            (Port::Release, "kind=ModulatorRelease { mod_index: 1 } depth=0.500 base=0.500 range=[0.001, 10.000]"),
+        ] {
+            ctl.apply(cable_to_field(lfo, envelope, port)).unwrap_or_else(|e| panic!("{port:?}: {e}"));
+            assert_eq!(sent(&engine), [format!("AddModTarget inst=0 mod=0 {text}")]);
+        }
+        // The depth of the envelope's second cable, which is named by the cable.
+        let edge = ctl.model.instruments[0].modulators[1].targets[1].edge;
+        ctl.apply(cable_to_field(lfo, envelope, Port::Depth { edge })).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["AddModTarget inst=0 mod=0 kind=ModulatorDepth { mod_index: 1, target_index: 1 } depth=0.500 base=0.700 range=[-1.000, 1.000]"]
+        );
+        // And the rate of the sibling that is an LFO, from the envelope: the other way.
+        ctl.apply(cable_to_field(envelope, lfo, Port::Rate)).unwrap();
+        assert_eq!(sent(&engine), ["AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.500 base=3.000 range=[0.010, 50.000]"]);
+
+        // The model has them, as the TUI's selector binds them: the label says whose, the depth is the new cable's.
+        let targets = &ctl.model.instruments[0].modulators[0].targets;
+        assert_eq!(
+            targets.iter().map(|t| (t.param_name.as_str(), t.depth, t.slot)).collect::<Vec<_>>(),
+            [("detune", 0.1, 0), ("Mod 1 attack", 0.5, 0), ("Mod 1 decay", 0.5, 0), ("Mod 1 sustain", 0.5, 0), ("Mod 1 release", 0.5, 0), ("Mod 1 detune depth", 0.5, 0)]
+        );
+        assert_eq!(
+            targets.iter().skip(1).map(|t| (t.param_min, t.param_max)).collect::<Vec<_>>(),
+            [(0.001, 10.0), (0.001, 10.0), (0.0, 1.0), (0.001, 10.0), (-1.0, 1.0)]
+        );
+        assert!(targets.iter().skip(1).all(|t| t.effective.is_none()), "a cable that drives a modulator's own field has no effective-value slot");
+        // The graph draws each as a cable from the modulator's output to the port of the setting.
+        let graph = ctl.model.graph();
+        let cable = |from: NodeId, to: NodeId, port: Port| {
+            graph.edges.iter().any(|e| e.from.node == from && e.to == Endpoint { node: to, port } && matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. }))
+        };
+        assert!(cable(lfo, envelope, Port::Attack) && cable(lfo, envelope, Port::Release) && cable(lfo, envelope, Port::Depth { edge }) && cable(envelope, lfo, Port::Rate));
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_mod_edge_draws_a_cable_from_a_group_modulator_to_the_settings_of_its_members_modulators_and_of_its_siblings() {
+        let (engine, mut ctl) = racks();
+        sent(&engine);
+        let group_lfo = in_group(&ctl, 0, 0);
+        let (first_lfo, first_envelope, second_lfo) = (rack_mod(&ctl, 0, 0), rack_mod(&ctl, 0, 1), rack_mod(&ctl, 1, 0));
+        let sibling_envelope = in_group(&ctl, 0, 1);
+
+        ctl.apply(cable_to_field(group_lfo, first_lfo, Port::Rate)).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Rate } depth=0.500 base=3.000 range=[0.010, 50.000]"]
+        );
+        ctl.apply(cable_to_field(group_lfo, second_lfo, Port::Rate)).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 1, mod_index: 0, field: Rate } depth=0.500 base=1.000 range=[0.010, 50.000]"]
+        );
+        let edge = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        ctl.apply(cable_to_field(group_lfo, first_envelope, Port::Depth { edge })).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) } depth=0.500 base=0.200 range=[-1.000, 1.000]"]
+        );
+        // The group's own siblings are addressed as a lane's are.
+        ctl.apply(cable_to_field(group_lfo, sibling_envelope, Port::Decay)).unwrap();
+        assert_eq!(sent(&engine), ["AddGroupModTarget group=0 mod=0 kind=ModulatorDecay { mod_index: 1 } depth=0.500 base=0.300 range=[0.001, 10.000]"]);
+
+        let targets = &ctl.model.groups[0].modulators[0].targets;
+        assert_eq!(
+            targets.iter().map(|t| t.param_name.as_str()).collect::<Vec<_>>(),
+            ["detune", "M0 Mod0 rate", "M1 Mod0 rate", "M0 Mod1 volume depth", "Mod 1 decay"]
+        );
+        // None of it is a lane's own: the members' modulators have no new cables.
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_mod_edge_draws_cables_between_two_modulators_both_ways_as_the_tui_does() {
+        let (_engine, mut ctl) = racks();
+        let (lfo, envelope) = (rack_mod(&ctl, 0, 0), rack_mod(&ctl, 0, 1));
+        ctl.apply(cable_to_field(lfo, envelope, Port::Sustain)).unwrap();
+        ctl.apply(cable_to_field(envelope, lfo, Port::Rate)).unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2);
+        assert_eq!(ctl.model.instruments[0].modulators[1].targets.len(), 3);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_mod_edge_refuses_the_settings_it_cannot_reach_and_changes_nothing() {
+        let (engine, mut ctl) = racks();
+        sent(&engine);
+        let slots = ctl.model.slots.high_water();
+        let (lfo, envelope, midi) = (rack_mod(&ctl, 0, 0), rack_mod(&ctl, 0, 1), rack_mod(&ctl, 0, 2));
+        let (member_lfo, ungrouped_lfo, other_group_lfo) = (rack_mod(&ctl, 1, 0), rack_mod(&ctl, 2, 0), rack_mod(&ctl, 3, 0));
+        let (group_lfo, group_envelope) = (in_group(&ctl, 0, 0), in_group(&ctl, 0, 1));
+        let (lane, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        let ghost = NodeId(9_999);
+        let own_cable = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let envelope_cable = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        let other_cable = ctl.model.instruments[2].modulators[0].targets.first().map(|t| t.edge);
+        assert!(other_cable.is_none(), "(the lane in no group has no cable)");
+
+        let own = invalid("a modulator cannot drive its own settings");
+        let lane_reach = invalid("a modulator of this lane cannot reach that modulator");
+        let group_reach = invalid("a modulator of this group cannot reach that modulator");
+        let not_a_modulator = invalid("a cable ends at the settings of a modulator, and that is not one");
+        let cases = [
+            ("its own rate", cable_to_field(lfo, lfo, Port::Rate), own.clone()),
+            ("the depth of its own cable", cable_to_field(lfo, lfo, Port::Depth { edge: own_cable }), own.clone()),
+            ("a group modulator's own stage", cable_to_field(group_envelope, group_envelope, Port::Attack), own),
+            ("a modulator of another lane", cable_to_field(lfo, ungrouped_lfo, Port::Rate), lane_reach.clone()),
+            ("a member's modulator, from a lane's", cable_to_field(lfo, member_lfo, Port::Rate), lane_reach.clone()),
+            ("a group's modulator, from a lane's", cable_to_field(lfo, group_lfo, Port::Rate), lane_reach.clone()),
+            ("a modulator of a lane in no group, from a group's", cable_to_field(group_lfo, ungrouped_lfo, Port::Rate), group_reach.clone()),
+            ("a modulator of another group's member", cable_to_field(group_lfo, other_group_lfo, Port::Rate), group_reach),
+            ("a node that is not there", cable_to_field(lfo, ghost, Port::Rate), IntentError::NotFound(ghost)),
+            ("the master", cable_to_field(lfo, NodeId::MASTER, Port::Rate), IntentError::NotFound(NodeId::MASTER)),
+            ("a lane", cable_to_field(lfo, lane, Port::Rate), not_a_modulator.clone()),
+            ("a group", cable_to_field(group_lfo, group, Port::Rate), not_a_modulator),
+            ("an attack an LFO has not", cable_to_field(envelope, lfo, Port::Attack), invalid("that modulator has no attack")),
+            ("a rate an envelope has not", cable_to_field(lfo, envelope, Port::Rate), invalid("that modulator has no rate")),
+            ("a setting of a MIDI control", cable_to_field(lfo, midi, Port::Rate), invalid("that modulator has no rate")),
+            ("a sustain of a MIDI control", cable_to_field(lfo, midi, Port::Sustain), invalid("that modulator has no sustain")),
+            ("the depth of a cable that is not there", cable_to_field(lfo, envelope, Port::Depth { edge: EdgeId(9_999) }), IntentError::EdgeNotFound(EdgeId(9_999))),
+            ("the depth of another modulator's cable", cable_to_field(lfo, envelope, Port::Depth { edge: own_cable }), IntentError::EdgeNotFound(own_cable)),
+            ("the depth of the MIDI control's cable, named as the envelope's", cable_to_field(lfo, midi, Port::Depth { edge: envelope_cable }), IntentError::EdgeNotFound(envelope_cable)),
+        ];
+        for (what, intent, error) in cases {
+            assert_eq!(ctl.apply(intent), Err(error), "{what}");
+        }
+        // The ports that are neither a parameter nor a setting.
+        for port in [Port::ModOut, Port::AudioIn, Port::AudioOut] {
+            let intent = cable_to_field(lfo, envelope, port);
+            assert_eq!(ctl.apply(intent), Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth")), "{port:?}");
+        }
+
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.model.slots.high_water(), slots, "no telemetry slot is used up for nothing");
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1, "nothing was bound");
+    }
+
+    /// The settings and the cable depths the controller lets `modulator` draw a cable to, on the session of `racks()`: a cable to each
+    /// is tried on a session of its own, and the ones that are drawn are (the node of the modulator that has it, and the port).
+    fn fields_reached_by_the_controller(modulator: NodeId, ports: &[(NodeId, Port)]) -> Vec<(NodeId, Port)> {
+        ports
+            .iter()
+            .copied()
+            .filter(|&(node, port)| {
+                let (_engine, mut fresh) = racks();
+                fresh.apply(cable_to_field(modulator, node, port)).is_ok()
+            })
+            .collect()
+    }
+
+    /// Every setting and every cable depth of every modulator of the session of `racks()`, that a cable could be tried to.
+    fn every_field_to_try(ctl: &Controller) -> Vec<(NodeId, Port)> {
+        let mut ports = Vec::new();
+        for (node, path) in ctl.model.nodes() {
+            let NodePath::Modulator { at, index } = path else { continue };
+            let modulator = match at {
+                ModulatorLocation::Lane(inst) => &ctl.model.instruments[inst].modulators[index],
+                ModulatorLocation::Group(group) => &ctl.model.groups[group].modulators[index],
+            };
+            ports.extend([Port::Rate, Port::Attack, Port::Decay, Port::Sustain, Port::Release].map(|port| (node, port)));
+            ports.extend(modulator.targets.iter().map(|t| (node, Port::Depth { edge: t.edge })));
+        }
+        ports
+    }
+
+    /// The session of `racks()`, and which settings and cable depths the controller lets each of its modulators draw a cable to, as the
+    /// web client's tests read it (`web/src/client/fixtures/fields.json`): they pin the rule the client draws its valid targets by
+    /// (`fieldsOf`) to the controller's. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_modulator_reaches_of_the_others_is_current() {
+        let (_engine, ctl) = racks();
+        let to_try = every_field_to_try(&ctl);
+        let modulators: Vec<NodeId> = ctl.model.nodes().filter(|(_, path)| matches!(path, NodePath::Modulator { .. })).map(|(id, _)| id).collect();
+        assert_eq!(modulators.len(), 9, "three in the group, three and one in the first group's lanes, one in each of the others");
+        let fields: std::collections::BTreeMap<String, Vec<serde_json::Value>> = modulators
+            .into_iter()
+            .map(|modulator| {
+                let reached = fields_reached_by_the_controller(modulator, &to_try);
+                let wire = reached.into_iter().map(|(node, port)| serde_json::json!({ "node": node, "port": port })).collect();
+                (modulator.0.to_string(), wire)
+            })
+            .collect();
+        let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "fields": fields });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/fields.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the session reaches now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn add_mod_edge_refuses_a_cable_to_a_setting_that_the_modulator_drives_already() {
+        let (engine, mut ctl) = racks();
+        let (lfo, envelope) = (rack_mod(&ctl, 0, 0), rack_mod(&ctl, 0, 1));
+        ctl.apply(cable_to_field(lfo, envelope, Port::Release)).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        assert_eq!(ctl.apply(cable_to_field(lfo, envelope, Port::Release)), Err(invalid("that modulator drives that setting already")));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, rev, "a refusal is not a revision");
+        // Another setting of the same modulator, or the same setting from another modulator, is another cable.
+        ctl.apply(cable_to_field(lfo, envelope, Port::Attack)).unwrap();
+        let midi = rack_mod(&ctl, 0, 2);
+        ctl.apply(cable_to_field(midi, envelope, Port::Release)).unwrap();
+        let group_lfo = in_group(&ctl, 0, 0);
+        let edge = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        ctl.apply(cable_to_field(group_lfo, envelope, Port::Depth { edge })).unwrap();
+        assert_eq!(ctl.apply(cable_to_field(group_lfo, envelope, Port::Depth { edge })), Err(invalid("that modulator drives that setting already")));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_to_a_setting_is_taken_out_and_gives_the_setting_back_what_the_user_set() {
+        let (engine, mut ctl) = racks();
+        let (lfo, envelope) = (rack_mod(&ctl, 0, 0), rack_mod(&ctl, 0, 1));
+        ctl.apply(cable_to_field(lfo, envelope, Port::Sustain)).unwrap();
+        let edge = ctl.model.instruments[0].modulators[0].targets[1].edge;
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetEdgeDepth { edge, depth: -0.25 }).unwrap();
+        assert_eq!(applied.events, [Event::EdgeDepthSet { edge, depth: -0.25 }]);
+        assert_eq!(sent(&engine), ["SetModTargetDepth inst=0 mod=0 target=1 depth=-0.250"]);
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        let commands = sent(&engine);
+        assert_eq!(
+            commands,
+            ["RemoveModTarget inst=0 mod=0 target=1", "SetModulatorEnvelopeParam inst=0 mod=1 attack=0.010 decay=0.300 sustain=0.400 release=0.500"],
+            "and the envelope has the stages the user set"
+        );
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1);
     }
 
     #[test]

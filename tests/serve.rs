@@ -798,6 +798,86 @@ async fn a_second_browser_hears_what_the_first_one_changes() {
     }
 }
 
+/// The modulation cables of a snapshot message, as (the node that drives, the node it ends at, the port it ends at).
+fn cables_of(snapshot: &Value) -> Vec<(u64, u64, Value)> {
+    let edges = snapshot["snapshot"]["graph"]["edges"].as_array().unwrap();
+    edges
+        .iter()
+        .filter(|e| e["kind"] == "modulation")
+        .map(|e| (e["from"]["node"].as_u64().unwrap(), e["to"]["node"].as_u64().unwrap(), e["to"]["port"].clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_the_saved_file_has_it_and_a_program_started_on_it_draws_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, _, snapshot) = listening(&tang).await;
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    let lfo = nodes.iter().find(|n| n["name"] == "LFO").unwrap()["id"].as_u64().unwrap();
+
+    // A second LFO in the lane: told as a snapshot, since a node came.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addModulator", "parent": osc, "kind": "lfo"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the structure is told as a snapshot");
+    let second = told["snapshot"]["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["kind"] == "modulator" && n["parent"] == osc && n["id"] != lfo)
+        .expect("the new modulator")["id"]
+        .as_u64()
+        .unwrap();
+
+    // The new one drives the rate of the first: a cable to a setting of a modulator, which is the node's own port.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addModEdge", "modulator": second, "to": {"node": lfo, "port": {"type": "rate"}}}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the cable is told as a snapshot");
+    assert!(cables_of(told).contains(&(second, lfo, json!({"type": "rate"}))), "{:?}", cables_of(told));
+
+    // A modulator does not drive itself, and the first LFO has no attack: refused in the controller's words.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "addModEdge", "modulator": second, "to": {"node": second, "port": {"type": "rate"}}}})).await;
+    let refused = answer(&mut client, 3).await;
+    assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!("a modulator cannot drive its own settings")), "{refused}");
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "addModEdge", "modulator": second, "to": {"node": lfo, "port": {"type": "attack"}}}})).await;
+    let refused = answer(&mut client, 4).await;
+    assert_eq!(refused["error"]["message"], "that modulator has no attack", "{refused}");
+
+    // What is saved has the cable on the modulator that drives, as the TUI writes it: the index of the one it drives.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("mod_rate = 0"), "{saved}");
+
+    // A program started on that file draws it: the first LFO is the first of the lane, and the second is after it.
+    drop(client);
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (_, _, snapshot) = listening(&again).await;
+    assert!(cables_of(&snapshot).contains(&(second, lfo, json!({"type": "rate"}))), "{:?}", cables_of(&snapshot));
+
+    // And the cable is taken out by the intent that takes any cable out, the rate going back to what the file has.
+    let edge = snapshot["snapshot"]["graph"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["to"]["port"]["type"] == "rate")
+        .expect("the cable")["id"]
+        .as_u64()
+        .unwrap();
+    let (mut browser, _, _) = listening(&again).await;
+    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "removeEdge", "edge": edge}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut browser, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("told as a snapshot");
+    assert!(!cables_of(told).iter().any(|(_, to, port)| *to == lfo && port["type"] == "rate"), "{:?}", cables_of(told));
+}
+
 /// The place a snapshot gives a node, by the node's id: its `ui`, or `None` if it has none (a node that is not placed has no `ui` at all).
 fn place_of(snapshot: &Value, node: u64) -> Option<Value> {
     let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();

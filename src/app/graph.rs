@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::{EdgeId, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PluginSlot, SessionModel};
+use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PluginSlot, SessionModel};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::NodeUi;
 
@@ -210,6 +210,22 @@ pub enum Port {
     Release,
     /// The depth of a modulation edge that starts at this modulator.
     Depth { edge: EdgeId },
+}
+
+impl FieldTarget {
+    /// The port of its modulator's node that a cable to it ends at.
+    pub fn port(&self) -> Port {
+        match (self.field, self.edge) {
+            (CrossModField::Rate, _) => Port::Rate,
+            (CrossModField::Attack, _) => Port::Attack,
+            (CrossModField::Decay, _) => Port::Decay,
+            (CrossModField::Sustain, _) => Port::Sustain,
+            (CrossModField::Release, _) => Port::Release,
+            (CrossModField::Depth(_), Some(edge)) => Port::Depth { edge },
+            // (`field_targets` names the cable of every depth.)
+            (CrossModField::Depth(_), None) => unreachable!("the depth of a cable names the cable"),
+        }
+    }
 }
 
 impl From<LfoWaveform> for Waveform {

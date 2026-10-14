@@ -1551,6 +1551,32 @@ plugin = "builtin:reverb"
     }
 
     #[test]
+    fn a_cable_to_a_modulators_setting_drawn_by_an_intent_is_in_the_snapshot_the_subscribers_are_given_ending_at_the_port_of_the_setting() {
+        use crate::app::graph::{Endpoint, Port};
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        let mirror = Mirror::join(&mut ctl);
+        // The group's LFO drives the rate of the LFO of the member that has one.
+        let (group_lfo, lane_lfo) = (ctl.model.groups[0].modulators[0].node, ctl.model.instruments[0].modulators[0].node);
+
+        let to = Endpoint { node: lane_lfo, port: Port::Rate };
+        let applied = ctl.apply(Intent::AddModEdge { modulator: group_lfo, to }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        let told = mirror.copy();
+        let cables: Vec<_> = told.graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).collect();
+        assert_eq!(cables.len(), 1);
+        assert_eq!((cables[0].from, cables[0].to), (Endpoint { node: group_lfo, port: Port::ModOut }, to));
+        assert!(matches!(cables[0].kind, crate::app::graph::EdgeKind::Modulation { amount, .. } if amount == 0.5));
+        // What it drives is a setting of a modulator, not a parameter: no value of it is published.
+        assert!(
+            !told.telemetry.modulation.iter().any(|e| e.kind == crate::app::layout::SlotKind::Effective && e.node == lane_lfo),
+            "a cable to a modulator's own field has no effective-value slot"
+        );
+        assert!(mirror.copy().meta.dirty);
+    }
+
+    #[test]
     fn a_modulator_taken_out_by_an_intent_is_gone_from_the_snapshot_the_subscribers_are_given() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
         assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));

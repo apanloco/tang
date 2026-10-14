@@ -543,6 +543,25 @@ impl SessionModel {
         targets
     }
 
+    /// The modulators whose settings the modulator at `mod_index` of the rack at `at` can be drawn to, in the order of
+    /// `field_targets`: the others of its own rack, and for a group's those of its members first. A modulator in reach may have
+    /// nothing to drive (a MIDI control that has no cable has no setting and no depth), and so is not in `field_targets`.
+    pub fn modulators_in_reach(&self, at: ModulatorLocation, mod_index: usize) -> Vec<NodeId> {
+        let others = |rack: &[ModulatorSlot]| -> Vec<NodeId> {
+            rack.iter().enumerate().filter(|(index, _)| *index != mod_index).map(|(_, modulator)| modulator.node).collect()
+        };
+        match at {
+            ModulatorLocation::Lane(inst) => self.instruments.get(inst).map(|lane| others(&lane.modulators)).unwrap_or_default(),
+            ModulatorLocation::Group(group) => {
+                let Some(bus) = self.groups.get(group) else { return Vec::new() };
+                let members = self.instruments.iter().filter(|lane| lane.group == Some(group));
+                let mut reach: Vec<NodeId> = members.flat_map(|lane| lane.modulators.iter().map(|modulator| modulator.node)).collect();
+                reach.extend(others(&bus.modulators));
+                reach
+            }
+        }
+    }
+
     /// Take the effect at `index` out of lane `inst`'s chain, the way the audio
     /// thread's `RemoveEffect` does: the modulator targets on it go with it, and
     /// the ones on later plugins of the chain move down a slot so that they keep
@@ -1967,6 +1986,34 @@ group = 1
         let second: Vec<String> = field_rows(&model.field_targets(ModulatorLocation::Group(1), 0)).iter().map(|r| format!("{} {}", r.0, r.1)).collect();
         assert_eq!(second, ["M0 Mod0 rate"]);
         assert_eq!(model.field_targets(ModulatorLocation::Group(1), 0)[0].node, model.instruments[3].modulators[0].node);
+    }
+
+    #[test]
+    fn the_modulators_in_a_modulators_reach_are_the_others_of_its_rack_and_for_a_group_its_members() {
+        use crate::app::testutil::CROSS_MOD_RACKS;
+        let model = load(CROSS_MOD_RACKS).model;
+        let lane = |inst: usize, index: usize| model.instruments[inst].modulators[index].node;
+        let group = |index: usize| model.groups[0].modulators[index].node;
+        // A lane's modulator reaches the others of its lane, whatever kind they are (a MIDI control with no cable has no field to
+        // drive, and is in reach all the same).
+        assert_eq!(model.modulators_in_reach(ModulatorLocation::Lane(0), 0), [lane(0, 1), lane(0, 2)]);
+        assert_eq!(model.modulators_in_reach(ModulatorLocation::Lane(0), 2), [lane(0, 0), lane(0, 1)]);
+        assert!(model.modulators_in_reach(ModulatorLocation::Lane(1), 0).is_empty(), "the lane has the one");
+        // A group's reaches its members' modulators, member by member, and then the others of its own rack.
+        assert_eq!(
+            model.modulators_in_reach(ModulatorLocation::Group(0), 0),
+            [lane(0, 0), lane(0, 1), lane(0, 2), lane(1, 0), group(1), group(2)]
+        );
+        assert_eq!(model.modulators_in_reach(ModulatorLocation::Group(0), 2), [lane(0, 0), lane(0, 1), lane(0, 2), lane(1, 0), group(0), group(1)]);
+        // The lane in no group and the lane of the other group are not the first group's.
+        assert_eq!(model.modulators_in_reach(ModulatorLocation::Group(1), 0), [lane(3, 0)]);
+        // A rack that is not there reaches none, and every modulator that has a field to drive is in reach.
+        assert!(model.modulators_in_reach(ModulatorLocation::Lane(9), 0).is_empty());
+        assert!(model.modulators_in_reach(ModulatorLocation::Group(9), 0).is_empty());
+        for (at, index) in [(ModulatorLocation::Lane(0), 0), (ModulatorLocation::Lane(0), 2), (ModulatorLocation::Group(0), 1), (ModulatorLocation::Group(1), 0)] {
+            let reach = model.modulators_in_reach(at, index);
+            assert!(model.field_targets(at, index).iter().all(|t| reach.contains(&t.node)), "{at:?} {index}");
+        }
     }
 
     #[test]
