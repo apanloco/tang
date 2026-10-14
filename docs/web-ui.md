@@ -275,7 +275,7 @@ and a tick together.
 
 `app::Session` holds the instruments, groups, global BPM and a mirror of the
 piano scale/mode, plus `next_id`. Every node gets a `NodeId(u32)`: allocated by
-the session, never reused during a run, not persisted. Modulation edges get
+the session, never reused during a run but for what undo gives back (D36), not persisted. Modulation edges get
 stable `EdgeId`s too. The audio thread keeps addressing by position (inst /
 slot / index); the controller resolves an id to a position per intent, and the
 TUI's index fix-ups (`fixup_tui_*`, `shift_tui_*`) move into the model so they
@@ -401,7 +401,7 @@ print `12.300000190734863`); a `ui` that is not a pair of numbers is ignored wit
 session for), while `nan` and `inf` are refused like every number. In the model the places are a side table, `SessionModel.ui`,
 by `NodeId` (the master's under `NodeId::MASTER`): `app::load` fills it (a modulator that an older session nested under an effect
 keeps its place when it migrates into the lane), `app::save::to_save` and `session::to_toml` write it, and the place of a node
-that is taken out stays in the table (ids are not reused, so nothing reads it) and is not written. The graph has them as
+that is taken out stays in the table (ids are not reused but for what undo gives back, so nothing else reads it) and is not written. The graph has them as
 `Node.ui`, left out of the JSON of a node that has none, so that a session with no places is the JSON it was. The TUI shows
 nothing of them and keeps them through a load, an edit and a save. A node with no place is where the page's layout puts it, and
 the layout of the others does not leave room for one that was moved: a node dragged away leaves its space to whatever comes.
@@ -567,11 +567,15 @@ the nodes or the layout of the telemetry from events would be a second. What a c
 added a node needs to know, the id of the node, is in that snapshot: it is the last
 modulator of the parent that it did not have before the request (`Editor.addModulator`).)
 
-**Undo / redo** (step 32, D35). The controller keeps a history of what a person set (`src/app/history.rs`): for each
+**Undo / redo** (steps 32 and 33, D35 and D36). The controller keeps a history of what a person did (`src/app/history.rs`): for each
 intent that has an inverse, the intents that put back what it overwrites (read from the model before it is applied) and the intents
-that do it again, in the words of a button for it (`set cutoff`, `move a node`, `rename a group`). The intents that have one are
-`SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`, `SetPinned`, `RenameGroup`, `SetScale`,
-`SetLocked` and `MoveEffect`. A change of one thing (the same parameter, gain, setting or cable, `Key`) a second or less after the
+that do it again, in the words of a button for it (`set cutoff`, `move a node`, `rename a group`, `add Reverb`, `draw a cable`). The intents
+that have one are `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`, `SetPinned`, `RenameGroup`, `SetScale`,
+`SetLocked` and `MoveEffect` (step 32), and what is added (step 33): `AddEffect`, `AddInstrument`, `AddModulator`, `AddModEdge`, `AddGroup` of lanes
+that are in no group, and `SetLaneGroup` of a lane that its old group does not drive. What is added is taken out by `RemoveNode` and `RemoveEdge`
+and put back by redo **under the ids it had** (D36): the controller writes down the ids that an intent hands out (`Made`), the step keeps them
+(`redo_made`), and `carry_out_all` says them to the allocator before the intents are carried out, so that a step from after the add (a gain set on the
+effect that was added) finds the effect when it is redone; ids that are in use are refused, and ids the intents did not use are dropped. A change of one thing (the same parameter, gain, setting or cable, `Key`) a second or less after the
 last of it is one step, so that a drag is one (`SAME_STEP`; a pause of more than a second makes a step of its own, and exactly a
 second does not), 200 steps are kept (`MAX_STEPS`; the oldest go), a change after an undo ends what could be redone, an intent that is
 refused leaves no step, and `Save` is no change. `SetNodeUi`, `SetRange`, `SetPinned`, `RenameGroup`, `SetScale`, `SetLocked` and
@@ -579,10 +583,12 @@ refused leaves no step, and `Save` is no change. `SetNodeUi`, `SetRange`, `SetPi
 intent by intent, each a revision of its own, answered with the events of all of them (and `restructured` if one was), and neither
 is a step; with nothing to undo (`there is nothing to undo`, `... to redo`) it is refused and is no revision; a step whose node has
 gone (a front-end took it out without an intent) is dropped, with the reason, and what it did before it failed stays. What has no
-inverse yet, `LoadPreset`, `AddGroup`, `SetLaneGroup`, `RemoveEdge`, `AddModulator`, `AddModEdge`, `RemoveNode`, `AddEffect`,
-`AddInstrument`, `ReplaceInstrument` and the TUI's `Controller::set_instrument`, **empties the history**: a step from before it would
-be put back over what it changed. The structure comes later: a removal will carry the removed subtree and the plugin instance
-recovered from the engine's return channel, so that undoing it is instant and does not load the plugin again (D8). What Undo and Redo
+inverse yet, `LoadPreset`, `RemoveEdge`, `RemoveNode`, `ReplaceInstrument`, a group made of a lane that is in another group (the lane leaves
+it and the cables of that group to it go: nothing brings them back), a lane put in a group or out of one whose modulators drive it, and the TUI's
+`Controller::set_instrument` and `clear_instrument`, **empties the history**: a step from before it would be put back over what it changed. The
+removals come later: a removal will carry the removed subtree and the plugin instance recovered from the engine's return channel, so that
+undoing it is instant and does not load the plugin again (D8), and the node will come back under its id as an add that is undone and redone does.
+What Undo and Redo
 would do is told to the clients as the message `History { undo, redo }` (§7), which is not an event.
 
 **Continuous controls.** Clients send at most one `SetParam` per frame per
@@ -3038,6 +3044,74 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 1066 tests, 1224 with the `web` feature and 22 on the real program, 1061 without the default plugin
     formats and 1217 with `web`, and 3 of the shell's in each; web 1457 in 70 files; 67 in browsers; 286 commits on the branch.
 
+- [x] **33. Undo, what is added (phase 1).** The history of step 32 forgot everything at an add, so a click on "+ Reverb" could not be taken back and
+  stopped the Undo of what was done before it. *Done when:* an effect (a lane's or a bus's), an instrument, a modulator, a cable, a group and a lane's
+  group that were added or changed are put back by Undo, from the page and from the TUI, and done again by Redo **under the ids they had**, so that
+  what was done to them in between (a gain on an effect that was added) is put back on them; the TUI asks by intents for what has them, so that what
+  it does is in the history too; the mock engine does what the controller does, after every undo and redo, as far as the ids and the slots of its
+  telemetry. In parts, each its own commit: **33.1** the controller (57bd956); **33.2** the mock engine and its fixture (a3be1e5); **33.3** the
+  browser tests (47756e3); **33.4** the TUI's plugin selector and `d` (a6636da); **33.5** its moves, modulate popup, learn and target selector
+  (fecdd32); **33.6** its `n` (43d9575). Two commits of their own for what was found on the way (a fix of the mock, 59ce606, and the Help tab,
+  e59d8c4). *Not done (later steps):* undo of what is taken out (`RemoveEdge`, `RemoveNode`), of a preset, of another instrument in a lane, of a group
+  made of a lane that is in another and of a lane that leaves a group that drives it (each empties the history), and a line in the TUI that says there
+  is nothing to undo.
+  - **33.1 as built (57bd956).** §5 above and D36. `NodeIds` has a queue of ids to hand out first (`reuse`, `drop_ids_to_put_back`) and a log of what it
+    handed out (`begin_log`, `take_log`, `Made`); `Controller::carry_out` writes the log down (`made_last`, which a test reads as `last_made`); a
+    `Plan::Added` becomes a step once the ids are known (`takes_out`: the one node or the one cable that was made, if it is there); `Step` has
+    `undo_made` and `redo_made`; `carry_out_all` says them to the allocator, refuses ids in use (`node 7 is there already`, `cable 3 is there
+    already`) and drops what was not used. `AddGroup` of lanes that are in no group and `SetLaneGroup` of a lane that its group does not drive
+    (`group_cables_into_lane`) are steps, and the rest of the barriers stay; the instrument of a new lane no longer empties the history
+    (`install_instrument`: nothing in it names the lane); `ModulatorKind::label` is the word of the button. 29 tests (7 of the allocator, 22 of the
+    history, among them a session built by 14 adds that is undone through each structure it had and done again, graph for graph), 43 mutations and 8
+    more for the plan of a lane's group, all caught. The fixture of the web client's tests kept to the barriers that are left (the mock was not
+    changed yet).
+  - **Found on the way, 59ce606 (f106).** Comparing the shape of the session after each op of the new fixture found that the mock engine took no
+    telemetry slot for a cable to a parameter that another cable drives, where the controller's `add_target` takes one before it looks (the layout names
+    the parameter once, but the slot is used): everything the mock made after one had a slot one lower. A test of the controller pins the rule (a
+    target that takes none and one that takes two are caught), and one of the mock was red before the fix.
+  - **33.2 as built (a3be1e5).** `client/counters.ts` (`Counters`, taken out of `mock.ts`: the ids that come next, the log; 8 tests),
+    `client/membership.ts` (`cablesIntoLaneFromItsGroup`, which `lanePutIn` uses too; 5 tests), `planOf` with the catalog and `takesOut` in
+    `client/history.ts`, `Step.undoMade` / `redoMade`; `shape_of` moved to `testutil` and `shapeOf` to `fixtures.ts`. The fixture of the history is 33
+    scripts (it was 21) of 349 intents and 27 waits, 60 refusals, and each of the 81 ops that changed the structure says what the session comes to
+    (the nodes with their ids, the audio path, the cables, the layout of the telemetry), so the mock's ids and slots are the controller's after every undo and
+    redo. 32 more tests in Vitest (19 of the history), 52 mutations, all caught. Two web tests that used an add as the thing that cannot be undone use
+    `replaceInstrument`.
+  - **Found on the way, in 33.3 (f105).** The browser test of step 32 that used an effect that is added as its barrier was out of date from 57bd956 (the
+    controller keeps an add as a step) and was not run until the browser suite was: the commits 57bd956 to a3be1e5 have one browser test that fails
+    against the program. It is `e2e/undo.spec.ts` in 33.3.
+  - **33.3 as built (47756e3).** `e2e/undo.spec.ts`: the test that adds an effect and takes it out with its "×" (the barrier that is left); a new one
+    on the real program that adds an effect, turns a knob of it, undoes both by the button and by the keys (the file saved between has no reverb), and
+    redoes both, the knob where it was turned, which needs the id; the mock's test adds an effect and takes it out and puts it back. 68 in browsers.
+  - **33.4 as built (a6636da).** The TUI's plugin selector asks `AddEffect` (a lane's, a bus's) and `ReplaceInstrument`, and `d` asks `RemoveNode` (every
+    kind of node but a lane's instrument, which `clear_instrument` empties, and that now forgets the history, as putting another in does). 5 tests,
+    10 mutations, 9 caught (the one that is not drops the early return after a refusal).
+  - **33.5 as built (fecdd32).** Shift+Up and Shift+Down on an effect are `MoveEffect`; the modulate popup, learn and the target selector draw their
+    cables by `AddModulator`, `AddModEdge` and `SetEdgeDepth`; `m` on a node is `AddModulator`. Everything of this and the last part goes through
+    `State::apply`, which brings the tree up to date. `Controller::history_mark` and `join_steps_since` make one step of what one key made ("modulate
+    cutoff", "learn cutoff"); `SessionModel::endpoint_of` turns the positional kind that a popup lists into the port `AddModEdge` names (tested against
+    every cable of five sessions). Two things differ from before, as in the browser: a second cable from a modulator to a parameter it drives already is
+    refused, and a learned control's cable is drawn at 0.5 and set to 1.0 a command later. 18 tests, 24 mutations, 22 caught and 2 that make no
+    difference (what the undo of a joined step makes, which nothing makes yet).
+  - **33.6 as built (43d9575).** `n` asks `AddInstrument` for a lane with the oscillator in it (the catalog has to name it, as the scan has long before a key
+    is pressed, and with none there is no lane and no selector: a lane with nothing in it would be silent); `Controller::load_plugin`, which was the TUI's
+    loader, is for the tests. 2 tests, 4 mutations.
+  - **Looked at.** The real program in a pseudo-terminal on the null audio device (a script): an effect added from the selector is saved (1 effect in the
+    file, then 2), Ctrl+Z and a save (1), Ctrl+Y and a save (2), and the program ends with status 0; the page's words for an add ("Undo add Reverb", "Redo
+    set damping") in the browser tests above. The page was not looked at in screenshots: no layout changed.
+  - **Limits, as built.** A modulator that is put back lands last in its rack, whatever place it had (an add is always last, so none of the adds
+    shows it; the removals will). A node that comes back has new slots of the telemetry, and each undo and redo of a modulator or a cable uses some of
+    the 4,096. `n` and then a choice in its selector is an add and a replacement, and the replacement empties the history, so the lane cannot be
+    undone after it. A joined step is the TUI's: a browser draws a cable to a modulator it has just added with two clicks and has two steps. The TUI's
+    own edits that have no intent (the order of the lanes, the pattern, the tempo, the Type row) are not in the history and do not empty it. A step
+    that was undone and whose node the TUI's `clear_instrument` or a front-end's direct call took out is dropped, with the reason.
+  - **Tests.** Rust: 55 more than at the end of step 32 in the default configuration (1121 against 1066): 29 in 33.1, 1 pin of the slot, 5 in 33.4 (4 of the
+    TUI's, 1 of the controller's), 18 in 33.5 (11 of the TUI's, 6 of the join, 1 of `endpoint_of`) and 2 in 33.6; the same 55 in each of the others (1279
+    with `web`, 1116 and 1272 without the default plugin formats); the real program's, 22 as before. Web: 1491 in 73 files (1457 in 70): the slots (2), the counters (8), the cables of a group (5) and the
+    history (19); 68 in browsers (67 + 1). 149 mutations in all (33.1: 51, the slot: 2, 33.2: 52, 33.4: 10, 33.5: 30, 33.6: 4): 145 caught and 4 that make no
+    difference.
+  - **Numbers at the end of the step.** Rust 1121 tests, 1279 with the `web` feature and 22 on the real program, 1116 without the default plugin
+    formats and 1272 with `web`, and 3 of the shell's in each; web 1491 in 73 files; 68 in browsers; 295 commits on the branch.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -3107,7 +3181,8 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D32 | An envelope's dot is placed from what the telemetry already carries, the level the envelope puts out, read with which way it was going (`courseAfter`), and not from a phase that the engine would publish: nothing is added to the wire or to the audio thread (as for the traces, D30). The page infers the stage, and is wrong in a few places that the next reading mends: the first reading of a note is a rise whichever stage it is on, a note that ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place alone. A channel for the stage would make it exact; it is not worth one yet. The telemetry is slower than the page's frames, so a frame that finds the level where it was is no news and the level goes on the way it was going, until a rise has stood still for three readings (100 ms). A stage's width is on a logarithmic scale of its time (a stage is 1 ms to 10 s), and the sustain, which has no time, has the mean of the others | Built (step 29) |
 | D33 | Which parameters of a plugin its node shows as knobs is the session's, kept as a list on the plugin (`pinned = ["cutoff", ...]`, by name, a key of the plugin's table beside `ui`; in the model `PluginSlot::pinned`, the plugin's own indices; on the wire `Plugin.pinned`), not the page's and not inside `ui` as §4.4 first planned: it follows its plugin wherever the plugin goes (an effect that is moved takes it along, an instrument that is replaced has none, with nothing to remember), a node can be pinned without being placed, and `NodeUi` stays a `Copy` pair of numbers that some forty places copy. One intent, `SetPinned { node, params }`, replaces the whole list: simple, idempotent, one event, and the last list wins (two pages that pin in the same moment can lose one of the pins; a pair of intents to pin and to unpin would not, and the page works out the list from what it shows, `pinnedWith`). An empty list is the front-end's own choice, the first eight, so there is no way to ask for a node with no knobs at all, which nobody needs yet; and the first pin of a node keeps the first eight, since a node that lost them at its first pin would be a surprise. A cable's target is shown for as long as the cable is there and is not a pin (§4.4 planned that attaching a cable pins its target: a pin that appeared with a cable would have been written into the session file) | Built (step 30) |
 | D34 | A group is made and filled by what a front-end means, not by the steps of the TUI's popup: `AddGroup { members }` makes it with its lanes in one intent (every member is looked at before anything is made, so a refusal leaves no group and a client has no half-made state to undo), `SetLaneGroup { node, group }` puts a lane in a group or, for none, takes it out (planned as `AssignGroup`: the intent says what changes), and a lane that leaves a group lets go of it as a node that is taken out does: the group's cables to it are taken out (`take_out`, with what drives their depths) and what they drove has the value the user set (the model used to drop the targets and leave the parameters where the cable had put them, f65). A name is `RenameGroup`, which answers with an event that carries the name the group has *now* (a name of nothing is the default, "Group" and its place), so that no client works out a default. A lane or a group is taken out by `RemoveNode` (the controller keeps one lane: `a session keeps its last lane`), and since there is no undo the page asks first, in a menu that opens on "Keep" and says in words what goes and what stays, and does not offer it on the only lane; the controller does not ask, since a client that is not a person (a script, a test) has no one to ask | Built (step 31) |
-| D35 | Undo is a history that the controller keeps, not an `undo` on every answer: for each intent that has an inverse the controller reads from the model what the intent will overwrite, before it is applied, and keeps (in a list of 200) the intents that put it back and the intents that do it again, with the words of a button for the step. `Undo` and `Redo` are intents like the rest, each intent of a step a revision of its own, so that every front-end (a page, the TUI, a script) uses the one history and what was set in one can be put back from another. A change of one thing a second or less after the last of it is one step, so that a drag is one; a change after an undo ends the redo; what has no inverse yet (the structure, presets, the instrument of a lane, a lane's group) empties the history, so that Undo never does something other than the last thing that was done. The history is the program's, so what Undo and Redo would do is told as a message of its own, `History { undo, redo }`, when a client subscribes and when it changes, before the answer to the request that changed it, and not as an event (a second event at one revision is taken for a repeat). The mock engine keeps the same history, pinned to the controller's by a fixture the controller writes, and the limits (200, a second) are generated into `constants.ts`, not copied | Built (step 32); the structure's later |
+| D35 | Undo is a history that the controller keeps, not an `undo` on every answer: for each intent that has an inverse the controller reads from the model what the intent will overwrite, before it is applied, and keeps (in a list of 200) the intents that put it back and the intents that do it again, with the words of a button for the step. `Undo` and `Redo` are intents like the rest, each intent of a step a revision of its own, so that every front-end (a page, the TUI, a script) uses the one history and what was set in one can be put back from another. A change of one thing a second or less after the last of it is one step, so that a drag is one; a change after an undo ends the redo; what has no inverse yet (the structure, presets, the instrument of a lane, a lane's group) empties the history, so that Undo never does something other than the last thing that was done. The history is the program's, so what Undo and Redo would do is told as a message of its own, `History { undo, redo }`, when a client subscribes and when it changes, before the answer to the request that changed it, and not as an event (a second event at one revision is taken for a repeat). The mock engine keeps the same history, pinned to the controller's by a fixture the controller writes, and the limits (200, a second) are generated into `constants.ts`, not copied | Built (step 32); what is added, step 33; what is taken out and replaced, later |
+| D36 | What undo takes out and redo makes again has the ids it had. A step names the nodes and the cables of what came before it by id (a gain set on an effect that was added, the depth of a cable that was drawn), so an add that is undone and done again as a new node would leave every later step naming a node that is not there, and a step that cannot find its node is dropped. The alternatives were to rewrite the later steps with the new ids (the history is a list that every undo and redo walks, and a rewrite would have to reach each of them, in the mock engine as well) and to give a step names that are looked up when it is carried out (which a person's own changes of the structure would break): both are more than to give the ids back. So `NodeIds` has a queue of ids to hand out before new ones (`reuse`), the controller writes down the ids an intent hands out (`Made`, `made_last`) and a step keeps them (`undo_made`, `redo_made`), refused if one is in use and dropped if unused; the mock engine does the same (`client/counters.ts`) and the fixture records the shape of the session after every change of structure, so the two are the same after every undo and redo. A telemetry slot is not given again, as everywhere (§6): a node that comes back has new ones, and each undo and redo of a modulator or a cable uses some of the 4,096. Several intents that one key asks for are one step in the TUI (`Controller::history_mark`, `join_steps_since`) | Built (step 33) |
 
 Open questions
 

@@ -519,8 +519,8 @@ ui = { x = 376, y = -200 }
   number.
 - The places are in the model as a side table (`SessionModel.ui`, by `NodeId`; the master's under
   `NodeId::MASTER`), read by the loader (`app::load`) and written by `app::save::to_save` and `session::to_toml`.
-  The place of a node that is taken out stays in the table (ids are not reused, so nothing reads it) and is not
-  written.
+  The place of a node that is taken out stays in the table (ids are not reused but for what undo gives back, so nothing
+  else reads it) and is not written.
 - Older sessions nested `[[instrument.effect.modulator]]`: such a modulator keeps its `ui` when it migrates into the
   lane's rack.
 
@@ -810,12 +810,12 @@ numeric `params` values (the index into the label list).
 | `Down` / `Up` | Move selection in focused pane |
 | `PageDown` / `PageUp` | Jump selection by a page |
 | `Shift+Down` / `Shift+Up` | Move selected effect down/up (reorder, focus follows) |
-| `n` | Add a new instrument (defaults to `builtin:osc`, opens the plugin selector to replace it; full range until set with `R`) |
+| `n` | Add a new instrument (defaults to `builtin:osc`, opens the plugin selector to replace it; full range until set with `R`; a step of the history, which the replacement that follows empties; needs the plugin catalog to name the oscillator, which the startup scan does at once) |
 | `i` | Replace instrument (opens instrument selector popup). The lane keeps its effects, modulators, range, volume and group; the cables that drove the old plugin's parameters are taken out (the new plugin has parameters of its own), and a note remap goes with the old plugin |
 | `R` | Set the selected instrument's key range (opens range popup, prefilled) — or, on a group header, rename the group (opens rename popup, prefilled) |
 | `v` | Set the output volume of the selected instrument or group (host-side gain, opens value popup) |
 | `a` | Add effect to the selected instrument, or — on a group/group-effect node — to the group's bus chain (opens effect selector popup). New effects default to 0.5 mix (half-wet); `builtin:filter` defaults to 1.0 (fully wet, since a half-wet filter barely filters) |
-| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO/envelope) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod) |
+| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO/envelope) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod; a new modulator and its cable are one step of the history, and a modulator that drives the parameter already is not attached again) |
 | `l` | Param focus: MIDI-learn the selected parameter — arms a MIDI modulator and binds the next incoming CC / pitch-bend / aftertouch to it (works on plugin params and modulator fields) |
 | `x` | Set the dry/wet mix of the selected effect or group bus effect (host-side blend, opens value popup) |
 | `g` | Assign the selected instrument to a submix group (new / existing / ungroup, opens popup) |
@@ -832,7 +832,7 @@ numeric `params` values (the index into the label list).
 | `b` | Set global BPM (opens value entry popup) |
 | `Ctrl+S` | Save session (to the file it was loaded from) |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves in the current session's directory) |
-| `Ctrl+Z` | Undo the last thing set (the history of the controller, which the browser's Undo has too; not heard while a popup is open) |
+| `Ctrl+Z` | Undo the last thing done (the history of the controller, which the browser's Undo has too; not heard while a popup is open) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 
 Mouse: click to select, drag a parameter bar to set its value, drag the
@@ -1052,8 +1052,8 @@ captured MIDI-learn control) into the model, and `poll` tells the TUI what
 changed. It also saves the session (`Controller::save`, `save_as`).
 
 Every node of the model (an instrument lane, an effect, a group, a bus effect, a
-modulator) has a `NodeId`: allocated by the model, never reused during a run,
-not saved. The engine and the tree address nodes by position, which shifts when
+modulator) has a `NodeId`: allocated by the model, never reused during a run
+but for what undo gives back (see "Undo and redo"), not saved. The engine and the tree address nodes by position, which shifts when
 others come and go; an id stays with its node. A lane's instrument plugin sits in
 the lane's node. `SessionModel::locate` turns an id back into a position.
 
@@ -1130,29 +1130,38 @@ modulator's parameter pane is comes from one table, `modulator_row` in
 makes; the pane is drawn (`modulator_pane`) and the value popup opened
 (`modulator_edit_state`) from it too, so a row's label, range and default are in one
 place in the TUI; the Type row, which turns an LFO into an envelope, is still the TUI's
-own edit). Its other edits still change the model and send the command
-themselves, until their intents exist (but the TUI's `d` on a modulator, its `m` and
-`l` keys and its target selectors use `Controller::remove_modulator`, `add_modulator` and
-`add_target`, which the intents are made of, and `SessionModel::param_targets` and `field_targets`); for deleting and moving an effect they
-use `Controller::remove_effect` / `move_effect` (a lane's chain) and `remove_bus_effect` / `move_bus_effect` (a
-group's bus), which change the model (`SessionModel::remove_effect` / `move_effect` and the bus's, which keep the
-modulator targets of the lane and of its group pointing at the same plugins, as the audio thread does) and tell
-the audio thread together.
-TODO: the TUI's `d` on a lane or a group calls `Controller::remove_lane` / `remove_group` itself; it could ask `RemoveNode`, as the page
-does, and have one way to take a node out.
+own edit). Step 33 moved the TUI's structure edits that have intents onto them: its plugin selector (`AddEffect`,
+`ReplaceInstrument`), `d` (`RemoveNode`), `n` (`AddInstrument`), `g` (`AddGroup`, `SetLaneGroup`), Shift+Up and Shift+Down on an effect
+(`MoveEffect`), `m`, `l` and `t` (`AddModulator`, `AddModEdge`, `SetEdgeDepth`; the target that a popup lists is a positional kind, which
+`SessionModel::endpoint_of` turns into the node and port that `AddModEdge` names) all go through `State::apply`, as the browser's requests
+go through the controller, so that they are in the history, and `Controller::remove_effect`, `move_effect`, `remove_lane` and the others are
+the intents' own (`SessionModel::remove_effect` / `move_effect` and the bus's keep the modulator targets of the lane and of its group
+pointing at the same plugins, as the audio thread does). What the TUI still edits itself, for want of an intent: the order of the lanes
+(`Controller::swap_lanes`), the pattern, the tempo, the Type row and emptying a lane (`Controller::clear_instrument`).
 
-**Undo and redo** (`src/app/history.rs`, `docs/web-ui.md` §5 and D35). The controller keeps a history of what a person set: a
+**Undo and redo** (`src/app/history.rs`, `docs/web-ui.md` §5, D35 and D36). The controller keeps a history of what a person did: a
 step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
-`SetPinned`, `RenameGroup`, `SetScale`, `SetLocked` and `MoveEffect`, made of the intents that put it back and the intents that do it again
-(read from the model before the change, so that it puts back what the change overwrote and does again what was asked) and the words of a
-button for it (`set cutoff`). Changes of one thing (one parameter, gain, setting or cable) a second or less apart are one step, so that a drag
+`SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
+`AddModulator`, `AddModEdge`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
+intents that put it back and the intents that do it again (read from the model before the change, so that it puts back what the change
+overwrote and does again what was asked) and the words of a button for it (`set cutoff`, `add Reverb`, `draw a cable`). **What is added is
+taken out by undo (`RemoveNode`, `RemoveEdge`) and made again by redo under the ids it had**: `NodeIds::reuse` says which ids come next
+before any new one, `Controller::carry_out` writes down the ids it hands out (`made_last`, `Made`), a `Plan::Added` becomes a step once they are
+known (`Step::redo_made`), and `carry_out_all` says them to the allocator, refuses ids that are in use (`node 7 is there already`) and drops those
+the intents did not use, so every step that names the node or the cable goes on naming it, whatever is undone and redone around it. (A telemetry
+slot is not given again: a node that comes back has new slots, and they are never reused, 4,096 of them.) One thing a key asks for that takes
+several intents is one step for the TUI: `Controller::history_mark` and `join_steps_since` join the steps recorded since a mark, so that a new
+modulator and the cable to it ("modulate cutoff") or a learned control and its depth ("learn cutoff") are one Ctrl+Z; a browser makes them with
+two clicks and has two steps. Changes of one thing (one parameter, gain, setting or cable) a second or less apart are one step, so that a drag
 is one (`SAME_STEP`; 200 steps are kept, `MAX_STEPS`; both are generated into `constants.ts`), a change after an undo ends what could be
 redone, and an intent that is refused leaves no step. `Undo` and `Redo` are intents, answered as any are: each intent of the step is a
 revision of its own (`Controller::undo` / `redo`), neither is a step, and one with nothing to do is refused (`there is nothing to undo`) and
 is no revision; a step whose node has gone (a front-end took it out without an intent) is dropped, with the reason. What cannot be undone yet
-(`LoadPreset`, `AddGroup`, `SetLaneGroup`, `RemoveEdge`, `AddModulator`, `AddModEdge`, `RemoveNode`, `AddEffect`, `AddInstrument`,
-`ReplaceInstrument`, and the TUI's `Controller::set_instrument`) empties the history, since a step from before it would be put back over what
-it changed; `Save` is no change. The TUI's other edits do not go through `apply` and are not in the history. What Undo and Redo would do is
+(`LoadPreset`, `RemoveEdge`, `RemoveNode`, `ReplaceInstrument`, a group made of a lane that is in another (the lane leaves it, and the cables
+of that group to it go), a lane put in a group or out of one that its old group drives, and `Controller::set_instrument` and `clear_instrument`
+for the TUI's `i` and `d`) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
+asks by intents for what has them (the plugin selector, `d`, `n`, `g`, Shift+Up and Shift+Down on an effect, `m`, `l` and `t`), so they are in the
+history; what has none is not (the order of the lanes, the pattern, the tempo, the Type row) and does not empty it. What Undo and Redo would do is
 told to every browser as a message of its own, `History { undo, redo }` (the words of a button, or null), after the snapshot and the catalog
 and after every change of it, before the answer to the request that made it (`web::owner`): it is no event, since a second event of one
 revision is taken for a repeat. The page's buttons and keys ask for them (`ClientState.history`, `app/UndoRedo.tsx`) and so do the TUI's
@@ -1683,7 +1692,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`fixtures/groups.json`). Step 32 gave the page Undo and Redo: two buttons in the bar of the session that say what they would put
   back or do again (`app/UndoRedo.tsx`, from `ClientState.history`; `Editor.undo` and `redo`) and the keys Control or Command+Z,
   Control or Command+Shift+Z and Control+Y (not in a field that takes text, which has its own undo, and not when there is nothing to
-  do); the mock engine keeps the controller's history (`client/history.ts`, `fixtures/history.json`). What the controller
+  do); the mock engine keeps the controller's history (`client/history.ts`, `fixtures/history.json`). Step 33 put what is added in it
+  (effects, instruments, modulators, cables, groups and the group of a lane: the page's "Undo add Reverb" takes the effect out and "Redo add
+  Reverb" makes it again under the id it had), with the mock's ids and slots pinned to the controller's after every undo and redo by the shape
+  of the session that the fixture records for each change of structure (`client/counters.ts`, `client/membership.ts`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1775,12 +1787,15 @@ changes without an intent: until then connected browsers are given a snapshot
 (`Controller::resync`).
 TODO: the events of one intent share its revision, which a client takes for a repeat
 if there is more than one (every intent makes one event today).
-TODO: undo of the structure: adding and taking out nodes (a removal gives the plugin back from the audio thread, so that undoing it
-does not load it again), presets, putting another instrument in a lane and a lane's group each empty the history until their steps exist
-(`Plan::Barrier` in `src/app/history.rs`, `planOf` in `web/src/client/history.ts`).
-TODO: the TUI's edits that do not go through `apply` (adding, replacing and taking out nodes, `Shift+Up` / `Shift+Down`, the pattern, the
-tempo, the Type row, MIDI learn) are not in the history, and do not empty it but for `Controller::set_instrument`: a step whose node they
-took out is dropped when it is undone. Each that becomes an intent is in it.
+TODO: undo of what is taken out and what is replaced: taking out a node (a removal gives the plugin back from the audio thread, so that undoing
+it does not load it again, and the node comes back under its id as an add that is undone and redone does), presets, putting another instrument
+in a lane, and a group made of a lane that is in another, each empty the history until their steps exist (`Plan::Barrier` in
+`src/app/history.rs`, `planOf` in `web/src/client/history.ts`). A modulator that comes back lands last in its rack, whatever place it had.
+TODO: the TUI's edits that have no intent (the order of the lanes with Shift+Up / Shift+Down on a lane, the pattern, the tempo, the Type row,
+`Controller::clear_instrument`) are not in the history: they do not empty it, but for `clear_instrument`, and a step whose node they took out is
+dropped when it is undone.
+TODO: the TUI's `n` and then a choice from its selector is an add and a replacement, and the replacement empties the history: the lane
+that `n` made cannot be undone after it.
 TODO: keep-alive pings for WebSockets.
 
 ## Platform
