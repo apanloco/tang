@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, NODE_UI_PARTS, PROTOCOL } from "../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -31,7 +31,7 @@ import type {
   WireError,
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
-import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
+import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
@@ -559,6 +559,25 @@ function placeOutcome(snapshot: Snapshot, node: NodeId, ui: NodeUi | null): Outc
   return { event: { type: "nodeUiSet", node, ui: { x: tidyCoordinate(ui.x), y: tidyCoordinate(ui.y) } } };
 }
 
+/**
+ * Parameters pinned to a node's plugin, as the controller's `set_pinned` does it: a node that has a plugin (the master is no node of the
+ * model, as far as the controller goes), a list that is not longer than a node may have, of parameters the plugin has, each once. The
+ * controller refuses a separator too, which the page's graph does not have.
+ */
+function pinnedOutcome(snapshot: Snapshot, node: NodeId, params: readonly number[]): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node);
+  if (!found || node === MASTER) return noNode(node);
+  if (found.kind !== "instrument" && found.kind !== "effect") return invalid("that node has no plugin");
+  const plugin = found.plugin;
+  if (!plugin) return invalid("that instrument has no plugin");
+  if (params.length > PINNED_LIMIT) return invalid(`at most ${PINNED_LIMIT} parameters can be pinned to a node`);
+  for (const [i, param] of params.entries()) {
+    if (plugin.params.every((p) => p.index !== param)) return invalid(`the plugin has no parameter ${param}`);
+    if (params.indexOf(param) < i) return invalid(`parameter ${param} is listed twice`);
+  }
+  return { event: { type: "pinnedSet", node, params: [...params] } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -571,6 +590,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
+  if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);

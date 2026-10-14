@@ -30,6 +30,7 @@ const DOING: Record<Intent["type"], string> = {
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
   setNodeUi: "move a node",
+  setPinned: "choose the knobs of a node",
   removeNode: "remove a node",
   moveEffect: "move an effect along its chain",
   save: "save the session",
@@ -137,6 +138,15 @@ export class Editor {
   moveNode(node: NodeId, ui: NodeUi | null): Promise<boolean> {
     const what = ui === null ? `give ${this.#name(node)} back to the layout` : `move ${this.#name(node)}`;
     return this.#attempt(what, { type: "setNodeUi", node, ui });
+  }
+
+  /**
+   * Choose which parameters of the plugin of the node `node` its node shows as knobs: `params` are the plugin's own indices (`Param.index`),
+   * in the order they are to be shown; none gives the node back to the page's own choice (the first few). It is kept with the session.
+   * True if it was done (the page says why if it was not).
+   */
+  setPinned(node: NodeId, params: readonly number[]): Promise<boolean> {
+    return this.#attempt(`choose the knobs of ${this.#name(node)}`, { type: "setPinned", node, params: [...params] });
   }
 
   /**

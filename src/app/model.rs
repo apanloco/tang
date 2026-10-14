@@ -1115,6 +1115,9 @@ pub const DEPTH_MIN: f32 = -1.0;
 pub const DEPTH_MAX: f32 = 1.0;
 /// How deep a cable pulls when it is first drawn: half way, which a person can hear and turn either way.
 pub const NEW_CABLE_DEPTH: f32 = 0.5;
+/// How many parameters of a plugin can be pinned to its node: a node that shows more is taller than a canvas has room for, and a plugin of
+/// hundreds has its other parameters in the panel.
+pub const MAX_PINNED: usize = 64;
 
 /// What a row of a modulator's parameter pane is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

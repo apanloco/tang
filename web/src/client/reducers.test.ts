@@ -107,6 +107,7 @@ describe("any event", () => {
     ["a preset loaded", { rev: 1, type: "presetLoaded", node: filter.id, preset: "Dark", values: [{ param: 0, value: 0.2 }] }],
     ["a range set", { rev: 1, type: "rangeSet", node: oscillator.id, range: { low: 36, high: 84 } }],
     ["a node's place set", { rev: 1, type: "nodeUiSet", node: oscillator.id, ui: { x: 80, y: 120 } }],
+    ["pinned parameters set", { rev: 1, type: "pinnedSet", node: filter.id, params: [1] }],
     ["a modulator field set", { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "rate", value: 4 }],
     ["an edge depth set", { rev: 1, type: "edgeDepthSet", edge: CABLE, depth: -0.5 }],
   ];
@@ -270,6 +271,57 @@ describe("a range set", () => {
     }
     const result = applyEvent(tracerSnapshot, { rev: 1, type: "rangeSet", node: 4242, range: null });
     expect(result).toEqual({ ok: false, reason: "there is no node 4242" });
+  });
+});
+
+describe("pinned parameters set", () => {
+  const pinnedOf = (snapshot: Snapshot, node: Node) => {
+    const found = snapshot.graph.nodes.find((n) => n.id === node.id);
+    if (found?.kind !== "instrument" && found?.kind !== "effect") throw new Error("no plugin");
+    return found.plugin?.pinned;
+  };
+  const pin = (node: number, params: number[], rev = 1): StampedEvent => ({ rev, type: "pinnedSet", node, params });
+
+  test("pins the parameters of the node's plugin in the order the event gives, and a list with none gives the node back to the front-end", () => {
+    expect(pinnedOf(tracerSnapshot, filter)).toEqual([]);
+    const after = applied(tracerSnapshot, pin(filter.id, [1, 0]));
+    expect(pinnedOf(after, filter)).toEqual([1, 0]);
+    const replaced = applied(after, pin(filter.id, [3], 2));
+    expect(pinnedOf(replaced, filter)).toEqual([3]);
+    expect(pinnedOf(applied(replaced, pin(filter.id, [], 3)), filter)).toEqual([]);
+  });
+
+  test("is for an instrument as it is for an effect", () => {
+    const after = applied(tracerSnapshot, pin(oscillator.id, [2, 1]));
+    expect(pinnedOf(after, oscillator)).toEqual([2, 1]);
+    expect(pinnedOf(after, filter)).toEqual([]);
+  });
+
+  test("changes that node and nothing else: every other node is the object it was, and so is the plugin's own list of parameters", () => {
+    const after = applied(tracerSnapshot, pin(filter.id, [0]));
+    for (const node of tracerSnapshot.graph.nodes) {
+      if (node.id === filter.id) continue;
+      expect(after.graph.nodes.find((n) => n.id === node.id), `node ${node.id}`).toBe(node);
+    }
+    const before = tracerSnapshot.graph.nodes.find((n) => n.id === filter.id);
+    const now = after.graph.nodes.find((n) => n.id === filter.id);
+    if (before?.kind !== "effect" || now?.kind !== "effect") throw new Error("no filter");
+    expect(now.plugin.params).toBe(before.plugin.params);
+    expect(now.plugin.presets).toBe(before.plugin.presets);
+  });
+
+  test("does not fit a node that is not there, a node that has no plugin or a parameter the plugin has not, and changes nothing", () => {
+    const cases: [string, StampedEvent, string][] = [
+      ["a node that is not there", pin(9999, []), "there is no node 9999"],
+      ["a modulator", pin(lfo.id, []), `node ${lfo.id} has no plugin`],
+      ["the master", pin(MASTER, []), `node ${MASTER} has no plugin`],
+      ["a parameter the plugin has not", pin(filter.id, [0, 4000]), `node ${filter.id} has no parameter 4000`],
+    ];
+    for (const [what, event, why] of cases) {
+      const result = applyEvent(tracerSnapshot, event);
+      expect(result.ok, what).toBe(false);
+      expect(!result.ok && result.reason, what).toContain(why);
+    }
   });
 });
 

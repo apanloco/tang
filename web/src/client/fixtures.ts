@@ -11,6 +11,7 @@ import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
 import fields from "./fixtures/fields.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
+import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
@@ -41,6 +42,17 @@ export const fieldsFixture = fields as unknown as { snapshot: Snapshot; fields: 
 export const movesFixture = moves as unknown as {
   snapshot: Snapshot;
   moves: ({ node: NodeId; index: number } & ({ error: string } | { nodes: NodeId[]; audio: [NodeId, NodeId, "audio" | "member"][] }))[];
+};
+
+/**
+ * A session with a group whose bus has an effect, a lane in it with an instrument and an effect, and an empty lane, and what the controller
+ * makes of pinning some parameters to each of its nodes (the master and one that is not there too): for a list that is taken the
+ * parameters pinned to the node's plugin afterwards, for one that is refused its words. Written by the controller
+ * (`the_web_clients_fixture_of_what_pinning_comes_to_is_current`).
+ */
+export const pinsFixture = pins as unknown as {
+  snapshot: Snapshot;
+  pins: ({ node: NodeId; params: number[] } & ({ error: string } | { pinned: number[] }))[];
 };
 
 /** The built-in plugins as the server lists them in its catalog, which the mock engine serves: written by Rust (`the_web_clients_fixture_of_the_builtins_is_current`). */

@@ -97,6 +97,9 @@ pub struct Plugin {
     pub presets: Vec<Preset>,
     /// The name of the preset last loaded, if any.
     pub current_preset: Option<String>,
+    /// The `index` of the parameters a front-end shows as knobs on the node, in order; none is left to the front-end (the page shows the
+    /// first few). Kept in the session; the engine does not use it.
+    pub pinned: Vec<u32>,
 }
 
 /// A parameter of a plugin, with the value the user set (modulation is not in it:
@@ -431,6 +434,7 @@ fn plugin(slot: &PluginSlot) -> Plugin {
         params: slot.params.iter().filter_map(param).collect(),
         presets: slot.presets.iter().map(|p| Preset { id: p.id.clone(), name: p.name.clone() }).collect(),
         current_preset: slot.current_preset.clone(),
+        pinned: slot.pinned.clone(),
     }
 }
 
@@ -462,7 +466,7 @@ mod tests {
 
     use super::*;
     use crate::app::model::ModTargetSlot;
-    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PLACED, SETTINGS, load};
+    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, SETTINGS, load};
 
     const OSC: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n";
 
@@ -507,6 +511,25 @@ mod tests {
 
     fn the_param<'a>(plugin: &'a Plugin, name: &str) -> &'a Param {
         plugin.params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no parameter {name}"))
+    }
+
+    #[test]
+    fn the_plugin_of_a_node_says_which_of_its_parameters_are_pinned_to_it_in_order() {
+        let model = load(PINNED).model;
+        let graph = model.graph();
+        let (group, lane, plain) = (&model.groups[0], &model.instruments[0], &model.instruments[1]);
+        let osc = plugin_of(node(&graph, lane.node));
+        let index = |plugin: &Plugin, name: &str| the_param(plugin, name).index;
+        assert_eq!(osc.pinned, [index(osc, "sustain"), index(osc, "detune"), index(osc, "waveform")]);
+        let filter = plugin_of(node(&graph, lane.effects[0].node));
+        assert_eq!(filter.pinned, [index(filter, "resonance"), index(filter, "cutoff")]);
+        let bus = plugin_of(node(&graph, group.effects[0].node));
+        assert_eq!(bus.pinned, [index(bus, "drive"), index(bus, "cutoff")]);
+        assert!(plugin_of(node(&graph, plain.node)).pinned.is_empty());
+        // (And on the wire it is `pinned`, a list, for every plugin.)
+        let json = serde_json::to_value(osc).unwrap();
+        assert_eq!(json["pinned"], json!([index(osc, "sustain"), index(osc, "detune"), index(osc, "waveform")]));
+        assert_eq!(serde_json::to_value(plugin_of(node(&graph, plain.node))).unwrap()["pinned"], json!([]));
     }
 
     // -- Nodes --
@@ -1355,6 +1378,7 @@ depth = 0.2
                     id: "builtin:reverb".to_string(),
                     format: "Built-in".to_string(),
                     is_instrument: false,
+                    pinned: vec![2],
                     params: vec![Param {
                         index: 2,
                         name: "decay".to_string(),
@@ -1390,6 +1414,7 @@ depth = 0.2
                     }],
                     "presets": [{"id": "room", "name": "Small Room"}],
                     "currentPreset": null,
+                    "pinned": [2],
                 },
                 "mix": 0.5,
             })

@@ -38,7 +38,7 @@ function params(count: number): Param[] {
   }));
 }
 
-const plugin = (count: number, id = "builtin:osc"): Plugin => ({ id, format: "Built-in", isInstrument: true, params: params(count), presets: [], currentPreset: null });
+const plugin = (count: number, id = "builtin:osc"): Plugin => ({ id, format: "Built-in", isInstrument: true, params: params(count), presets: [], currentPreset: null, pinned: [] });
 
 const instrumentOf = (id: NodeId, withPlugin: Plugin | null, parent: NodeId | null = null): Node => ({
   id,

@@ -106,6 +106,14 @@ pub enum Intent {
     /// told to every client. Refused, with nothing changed, for a node that is not there and for numbers that are not
     /// numbers.
     SetNodeUi { node: NodeId, ui: Option<NodeUi> },
+    /// Say which parameters of a plugin a front-end shows as knobs on its node: `node` is the node of an instrument (a lane's) or of an
+    /// effect or a bus effect, and `params` the plugin's own indices of the parameters (`Param::index`), in the order the front-end shows
+    /// them; none gives the node back to the front-end's own choice (the page shows the first few). It replaces the list there was. The
+    /// engine has no use for it, and the TUI does not show it, but it is saved with the session (the plugin's `pinned`, by name) and told
+    /// to every client. It belongs to the plugin: an effect that is moved takes it along, and an instrument that is replaced has none.
+    /// Refused, with nothing changed, for a node that has no plugin, a parameter the plugin does not have, a separator, a parameter
+    /// listed twice and more than `MAX_PINNED` of them.
+    SetPinned { node: NodeId, params: Vec<u32> },
     /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
     /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
     /// effect, with the cables that drive its parameters (and what drove their depths): what they were
@@ -231,6 +239,8 @@ pub enum Event {
     LockedSet { locked: bool },
     /// A node is now drawn at `ui` (after rounding and clamping), or wherever the front-end lays it out if it is `None`.
     NodeUiSet { node: NodeId, ui: Option<NodeUi> },
+    /// The parameters now pinned to the node's plugin, in order.
+    PinnedSet { node: NodeId, params: Vec<u32> },
     /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
@@ -377,6 +387,8 @@ mod tests {
                 json!({"type": "setNodeUi", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),
             ),
             (Intent::SetNodeUi { node: NodeId(2), ui: None }, json!({"type": "setNodeUi", "node": 2, "ui": null})),
+            (Intent::SetPinned { node: NodeId(2), params: vec![3, 1] }, json!({"type": "setPinned", "node": 2, "params": [3, 1]})),
+            (Intent::SetPinned { node: NodeId(2), params: vec![] }, json!({"type": "setPinned", "node": 2, "params": []})),
             (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
@@ -422,6 +434,8 @@ mod tests {
                 json!({"type": "nodeUiSet", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),
             ),
             (Event::NodeUiSet { node: NodeId(2), ui: None }, json!({"type": "nodeUiSet", "node": 2, "ui": null})),
+            (Event::PinnedSet { node: NodeId(2), params: vec![3, 1] }, json!({"type": "pinnedSet", "node": 2, "params": [3, 1]})),
+            (Event::PinnedSet { node: NodeId(2), params: vec![] }, json!({"type": "pinnedSet", "node": 2, "params": []})),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]
@@ -481,6 +495,11 @@ mod tests {
             ("a place that is a number", json!({"type": "setNodeUi", "node": 3, "ui": 5})),
             ("a place whose x is a string", json!({"type": "setNodeUi", "node": 3, "ui": {"x": "1", "y": 2.0}})),
             ("a place whose x is null (what NaN becomes)", json!({"type": "setNodeUi", "node": 3, "ui": {"x": null, "y": 2.0}})),
+            ("pinned parameters with no list", json!({"type": "setPinned", "node": 3})),
+            ("pinned parameters that are names", json!({"type": "setPinned", "node": 3, "params": ["cutoff"]})),
+            ("a pinned parameter that is negative", json!({"type": "setPinned", "node": 3, "params": [-1]})),
+            ("a pinned parameter that is not whole", json!({"type": "setPinned", "node": 3, "params": [1.5]})),
+            ("a list of pinned parameters that is a number", json!({"type": "setPinned", "node": 3, "params": 4})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<Intent>(json).is_err(), "{what}");

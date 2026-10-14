@@ -8,7 +8,7 @@
 use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
-use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -47,6 +47,7 @@ impl Controller {
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::SetNodeUi { node, ui } => Done::Event(self.set_node_ui(node, ui)?),
+            Intent::SetPinned { node, params } => Done::Event(self.set_pinned(node, params)?),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
@@ -159,6 +160,27 @@ impl Controller {
             }
         }
         Ok(Event::NodeUiSet { node, ui })
+    }
+
+    /// Which parameters a front-end shows as knobs on a plugin's node: in the model only (the session file keeps them; the audio thread
+    /// has no use for them). The list is looked at whole before anything is changed.
+    fn set_pinned(&mut self, node: NodeId, params: Vec<u32>) -> Result<Event, IntentError> {
+        let at = self.locate_plugin(node)?;
+        let plugin = self.plugin_at(&at).ok_or_else(|| invalid("that instrument has no plugin"))?;
+        if params.len() > MAX_PINNED {
+            return Err(invalid(format!("at most {MAX_PINNED} parameters can be pinned to a node")));
+        }
+        for (i, param) in params.iter().enumerate() {
+            let row = plugin.params.iter().find(|p| p.index == *param).ok_or_else(|| invalid(format!("the plugin has no parameter {param}")))?;
+            if matches!(row.kind, ParamKind::Separator) {
+                return Err(invalid(format!("{} is a separator, not a control", row.name)));
+            }
+            if params[..i].contains(param) {
+                return Err(invalid(format!("parameter {param} is listed twice")));
+            }
+        }
+        plugin.pinned = params.clone();
+        Ok(Event::PinnedSet { node, params })
     }
 
     /// The keys of a lane: in the model and, as `SetInstrumentRange`, in the audio thread (which lets go of the notes it
@@ -2720,6 +2742,224 @@ type = "midi"
         assert_eq!(ctl.model.slots.high_water(), slots, "no telemetry slot is used up for nothing");
         assert!(ctl.model.instruments[0].modulators.is_empty());
         assert_eq!(ctl.model.groups[0].modulators.len(), 1);
+    }
+
+    // -- SetPinned --
+
+    fn pin(ctl: &mut Controller, node: NodeId, params: &[u32]) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SetPinned { node, params: params.to_vec() })
+    }
+
+    /// The plugin slot a plugin node of the model has.
+    fn slot_of(ctl: &Controller, path: NodePath) -> &PluginSlot {
+        match path {
+            NodePath::Instrument(i) => ctl.model.instruments[i].instrument.as_ref().unwrap(),
+            NodePath::Effect { inst, index } => &ctl.model.instruments[inst].effects[index],
+            NodePath::GroupEffect { group, index } => &ctl.model.groups[group].effects[index],
+            _ => panic!("{path:?} has no plugin"),
+        }
+    }
+
+    fn pinned_of(ctl: &Controller, path: NodePath) -> Vec<u32> {
+        slot_of(ctl, path).pinned.clone()
+    }
+
+    #[test]
+    fn set_pinned_keeps_which_parameters_a_node_shows_in_the_order_given_and_the_engine_hears_nothing_of_it() {
+        let (engine, mut ctl) = controller();
+        let osc = lane(&ctl);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let (sustain, _) = param(&ctl, NodePath::Instrument(0), "sustain");
+        let applied = pin(&mut ctl, osc, &[sustain, detune]).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::PinnedSet { node: osc, params: vec![sustain, detune] }]));
+        assert_eq!(pinned_of(&ctl, NodePath::Instrument(0)), [sustain, detune]);
+        assert_eq!(sent(&engine), Vec::<String>::new(), "the audio thread has no use for which knobs a node has");
+        assert!(ctl.dirty, "it is in the file when the session is saved");
+        // Saying another list replaces it, and none gives the node back to the front-end's own choice.
+        pin(&mut ctl, osc, &[detune]).unwrap();
+        assert_eq!(pinned_of(&ctl, NodePath::Instrument(0)), [detune]);
+        let applied = pin(&mut ctl, osc, &[]).unwrap();
+        assert_eq!(applied, Applied::of(3, vec![Event::PinnedSet { node: osc, params: vec![] }]));
+        assert!(pinned_of(&ctl, NodePath::Instrument(0)).is_empty());
+        // (A list that is the one there is is told all the same: a page may be behind.)
+        assert!(pin(&mut ctl, osc, &[]).is_ok());
+    }
+
+    #[test]
+    fn set_pinned_is_for_an_instrument_an_effect_and_a_bus_effect_and_changes_only_the_plugin_it_names() {
+        let (_engine, mut ctl) = controller();
+        let paths = [NodePath::Instrument(0), NodePath::Effect { inst: 0, index: 0 }, NodePath::GroupEffect { group: 0, index: 0 }];
+        for (i, path) in paths.into_iter().enumerate() {
+            let node = node(&ctl, path);
+            let indices: Vec<u32> = slot_of(&ctl, path).params.iter().take(2).map(|p| p.index).rev().collect();
+            let applied = pin(&mut ctl, node, &indices).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            assert_eq!(applied.events, [Event::PinnedSet { node, params: indices.clone() }]);
+            assert_eq!(pinned_of(&ctl, path), indices, "{path:?}");
+            // (Those after it have nothing yet, and those before it have what they had.)
+            for (j, other) in paths.into_iter().enumerate() {
+                assert_eq!(pinned_of(&ctl, other).len(), if j <= i { 2 } else { 0 }, "{path:?} then {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn set_pinned_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (engine, mut ctl) = controller();
+        let osc = lane(&ctl);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let group = node(&ctl, NodePath::Group(0));
+        let lfo = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let empty_lane = node(&ctl, NodePath::Instrument(1));
+        let ghost = NodeId(9_999);
+        // A separator is a row of the TUI's parameter pane: the model has it, and a client has no such parameter.
+        ctl.model.instruments[0].instrument.as_mut().unwrap().params.push(ParamSlot {
+            name: "Envelope".into(),
+            index: 99,
+            kind: ParamKind::Separator,
+            ..Default::default()
+        });
+        let cases = [
+            ("a node that is not there", ghost, vec![detune], IntentError::NotFound(ghost)),
+            ("a group", group, vec![0], invalid("that node has no plugin")),
+            ("a modulator", lfo, vec![0], invalid("that node has no plugin")),
+            ("a lane without an instrument", empty_lane, vec![0], invalid("that instrument has no plugin")),
+            ("a parameter the plugin lacks", osc, vec![detune, 999], invalid("the plugin has no parameter 999")),
+            ("a separator", osc, vec![99], invalid("Envelope is a separator, not a control")),
+            ("a parameter twice", osc, vec![detune, detune], invalid(format!("parameter {detune} is listed twice"))),
+        ];
+        for (what, node, params, error) in cases {
+            assert_eq!(pin(&mut ctl, node, &params), Err(error), "{what}");
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new(), "nothing reached the audio thread");
+        assert_eq!(ctl.rev, 0, "a refusal is not a revision");
+        assert!(!ctl.dirty);
+        assert!(pinned_of(&ctl, NodePath::Instrument(0)).is_empty());
+        // And a refusal leaves what was pinned as it was.
+        pin(&mut ctl, osc, &[detune]).unwrap();
+        assert!(pin(&mut ctl, osc, &[detune, 999]).is_err());
+        assert_eq!(pinned_of(&ctl, NodePath::Instrument(0)), [detune]);
+    }
+
+    #[test]
+    fn set_pinned_takes_as_many_parameters_as_a_node_may_have_and_no_more() {
+        let (_engine, mut ctl) = controller();
+        let osc = lane(&ctl);
+        // (No plugin of the built-in ones has so many parameters: the model's rows are made up, as a plugin of hundreds has them.)
+        ctl.model.instruments[0].instrument.as_mut().unwrap().params =
+            (0..70).map(|i| ParamSlot { name: format!("p{i}"), index: i, ..Default::default() }).collect();
+        let all: Vec<u32> = (0..70).collect();
+        pin(&mut ctl, osc, &all[..MAX_PINNED]).unwrap();
+        assert_eq!(pinned_of(&ctl, NodePath::Instrument(0)).len(), MAX_PINNED);
+        let refused = pin(&mut ctl, osc, &all[..=MAX_PINNED]);
+        assert_eq!(refused, Err(invalid(format!("at most {MAX_PINNED} parameters can be pinned to a node"))));
+        assert_eq!(pinned_of(&ctl, NodePath::Instrument(0)), all[..MAX_PINNED], "as it was");
+        // (Counted before anything else is looked at: a list that is too long is refused for being long, not for what is in it.)
+        assert_eq!(pin(&mut ctl, osc, &vec![999; MAX_PINNED + 1]), Err(invalid(format!("at most {MAX_PINNED} parameters can be pinned to a node"))));
+    }
+
+    #[test]
+    fn what_is_pinned_is_what_a_session_saves() {
+        let (_engine, mut ctl) = controller();
+        let osc = lane(&ctl);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let (sustain, _) = param(&ctl, NodePath::Instrument(0), "sustain");
+        let saved = |ctl: &Controller| {
+            let (instruments, groups) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, None, None).unwrap()
+        };
+        assert!(!saved(&ctl).contains("pinned"), "{}", saved(&ctl));
+        pin(&mut ctl, osc, &[sustain, detune]).unwrap();
+        assert!(saved(&ctl).contains("pinned = [\"sustain\", \"detune\"]"), "{}", saved(&ctl));
+        pin(&mut ctl, osc, &[]).unwrap();
+        assert!(!saved(&ctl).contains("pinned"), "{}", saved(&ctl));
+    }
+
+    #[test]
+    fn an_instrument_that_is_replaced_has_nothing_pinned_and_a_preset_that_is_loaded_keeps_the_pins() {
+        let (_engine, mut ctl) = controller_with_builtins();
+        let osc = lane(&ctl);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let (size, _) = param(&ctl, NodePath::Effect { inst: 0, index: 0 }, "size");
+        pin(&mut ctl, osc, &[detune]).unwrap();
+        pin(&mut ctl, reverb, &[size]).unwrap();
+        // A preset sets values and leaves the parameters as they are.
+        ctl.apply(Intent::LoadPreset { node: reverb, preset: "cathedral".to_string() }).unwrap();
+        assert_eq!(pinned_of(&ctl, NodePath::Effect { inst: 0, index: 0 }), [size]);
+        // A new plugin has parameters of its own, and the pins were for the old one's.
+        replace_instrument(&mut ctl, osc, "builtin:osc").unwrap();
+        assert!(pinned_of(&ctl, NodePath::Instrument(0)).is_empty());
+        assert_eq!(pinned_of(&ctl, NodePath::Effect { inst: 0, index: 0 }), [size], "the effects of the lane are as they were");
+    }
+
+    #[test]
+    fn an_effect_that_is_moved_along_its_chain_takes_its_pins_with_it() {
+        let (_engine, mut ctl) = long_chains();
+        let bus: Vec<NodeId> = ctl.model.groups[0].effects.iter().map(|fx| fx.node).collect();
+        let cutoff = ctl.model.groups[0].effects[0].params.iter().find(|p| p.name == "cutoff").unwrap().index;
+        pin(&mut ctl, bus[0], &[cutoff]).unwrap();
+        ctl.apply(Intent::MoveEffect { node: bus[0], index: 2 }).unwrap();
+        let after: Vec<(NodeId, Vec<u32>)> = ctl.model.groups[0].effects.iter().map(|fx| (fx.node, fx.pinned.clone())).collect();
+        assert_eq!(after[2], (bus[0], vec![cutoff]), "it is at its new place, with its pin");
+        assert!(after.iter().filter(|(node, _)| *node != bus[0]).all(|(_, pins)| pins.is_empty()), "{after:?}");
+    }
+
+    /// The session of `controller()`, and what the controller makes of pinning some parameters to each of its nodes, as the web client's
+    /// tests read it (`web/src/client/fixtures/pins.json`): they pin the mock engine's pins to the controller's, node by node and list by
+    /// list. A list that is taken gives the parameters pinned to the node's plugin afterwards, one that is refused gives the controller's
+    /// words. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_pinning_comes_to_is_current() {
+        let (_engine, ctl) = controller();
+        let before = ctl.snapshot();
+        let plugin_of = |snapshot: &crate::app::snapshot::Snapshot, node: NodeId| -> Option<crate::app::graph::Plugin> {
+            match &snapshot.graph.nodes.iter().find(|n| n.id == node)?.kind {
+                NodeKind::Instrument { plugin, .. } => plugin.clone(),
+                NodeKind::Effect { plugin, .. } => Some(plugin.clone()),
+                _ => None,
+            }
+        };
+        // Every node of the session, the master, and one that is not there; each with lists made of its own first parameters (the first two
+        // numbers for a node that has none), one that is as long as a node may have and one that is longer.
+        let mut nodes: Vec<NodeId> = ctl.model.nodes().map(|(id, _)| id).collect();
+        nodes.extend([NodeId::MASTER, NodeId(9_999)]);
+        let mut pins = Vec::new();
+        for node in nodes {
+            let own: Vec<u32> = plugin_of(&before, node).map(|p| p.params.iter().take(2).map(|param| param.index).collect()).unwrap_or_default();
+            let (a, b) = (own.first().copied().unwrap_or(0), own.get(1).copied().unwrap_or(1));
+            let lists: Vec<Vec<u32>> =
+                vec![vec![], vec![a], vec![a, b], vec![b, a], vec![a, a], vec![999], vec![a, 999], (0..MAX_PINNED as u32).collect(), (0..=MAX_PINNED as u32).collect()];
+            for params in lists {
+                let (_engine, mut fresh) = controller();
+                let row = match fresh.apply(Intent::SetPinned { node, params: params.clone() }) {
+                    Err(error) => serde_json::json!({ "node": node, "params": params, "error": error.to_string() }),
+                    Ok(_) => {
+                        let pinned = plugin_of(&fresh.snapshot(), node).map(|p| p.pinned).unwrap();
+                        assert_eq!(pinned, params, "what the node has pinned is what was asked");
+                        serde_json::json!({ "node": node, "params": params, "pinned": pinned })
+                    }
+                };
+                pins.push(row);
+            }
+        }
+        let wire = serde_json::to_string(&before).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "pins": pins });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/pins.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what pinning comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 
     // -- AddEffect --

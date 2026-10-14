@@ -3864,6 +3864,21 @@ group = 0
     }
 
     #[test]
+    fn what_a_browser_pins_to_a_node_leaves_the_tree_as_it_is_and_the_session_unsaved() {
+        let mut h = Harness::new(TWO_CHAINS);
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        let filter = cursor_node(&h);
+        let before: Vec<String> = h.tree().iter().map(|line| line.to_string()).collect();
+        let cutoff = h.s.ctl.model.instruments[0].effects[0].params.iter().find(|p| p.name == "cutoff").unwrap().index;
+        browser(&mut h, Intent::SetPinned { node: filter, params: vec![cutoff] });
+        assert_eq!(h.s.ctl.model.instruments[0].effects[0].pinned, [cutoff]);
+        let after: Vec<String> = h.tree().iter().map(|line| line.to_string()).collect();
+        assert_eq!(after, before, "the TUI does not draw which knobs a node has");
+        assert_eq!(cursor_node(&h), filter);
+        assert!(h.s.ctl.dirty, "it is in the file when the session is saved");
+    }
+
+    #[test]
     fn the_cursor_is_left_where_it_was_by_a_move_of_an_effect_it_is_not_on() {
         let mut h = Harness::new(TWO_CHAINS);
         h.goto(TreeAddress::Instrument(0));

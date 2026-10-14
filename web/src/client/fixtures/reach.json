@@ -286,6 +286,7 @@
                 "value": 1.0
               }
             ],
+            "pinned": [],
             "presets": []
           }
         },
@@ -445,6 +446,7 @@
                 "value": 1.0
               }
             ],
+            "pinned": [],
             "presets": [
               {
                 "id": "arcadia",
@@ -603,6 +605,7 @@
                 "value": 0.0
               }
             ],
+            "pinned": [],
             "presets": []
           },
           "range": null,
@@ -678,6 +681,7 @@
                 "value": 1.0
               }
             ],
+            "pinned": [],
             "presets": []
           }
         },
@@ -813,6 +817,7 @@
                 "value": 0.0
               }
             ],
+            "pinned": [],
             "presets": []
           },
           "range": null,
@@ -953,6 +958,7 @@
                 "value": 0.0
               }
             ],
+            "pinned": [],
             "presets": []
           },
           "range": null,
@@ -1096,6 +1102,7 @@
                 "value": 1.0
               }
             ],
+            "pinned": [],
             "presets": [
               {
                 "id": "arcadia",
@@ -1241,6 +1248,7 @@
                 "value": 0.0
               }
             ],
+            "pinned": [],
             "presets": []
           },
           "range": null,
@@ -1316,6 +1324,7 @@
                 "value": 1.0
               }
             ],
+            "pinned": [],
             "presets": []
           }
         },

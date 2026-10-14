@@ -176,6 +176,7 @@ expression: tracer_json()
               "value": 0.0
             }
           ],
+          "pinned": [],
           "presets": []
         },
         "range": null,
@@ -251,6 +252,7 @@ expression: tracer_json()
               "value": 1.0
             }
           ],
+          "pinned": [],
           "presets": []
         }
       },

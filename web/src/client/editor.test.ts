@@ -379,6 +379,47 @@ describe("moving a node", () => {
   });
 });
 
+describe("pinning parameters to a node", () => {
+  const pinnedOf = (client: Client, node: number) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" || found?.kind === "effect" ? found.plugin?.pinned : undefined;
+  };
+
+  test("resolves true when the plugin has them pinned, in the order given, which the session shows, and says nothing; none gives the node back to the page's choice", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setPinned(filter.id, [param(filter, "resonance"), param(filter, "cutoff")])).toBe(true);
+    expect(pinnedOf(client, filter.id)).toEqual([param(filter, "resonance"), param(filter, "cutoff")]);
+    expect(await editor.setPinned(oscillator.id, [param(oscillator, "detune")])).toBe(true);
+    expect(pinnedOf(client, oscillator.id)).toEqual([param(oscillator, "detune")]);
+    expect(await editor.setPinned(filter.id, [])).toBe(true);
+    expect(pinnedOf(client, filter.id)).toEqual([]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused as the controller refuses it: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    // (Each is read as it is said: the page keeps the last few notices only.)
+    const refusals: [number, number[], string][] = [
+      [424242, [], "Could not choose the knobs of that node: there is no node 424242"],
+      [lfo.id, [0], "Could not choose the knobs of LFO: that node has no plugin"],
+      [filter.id, [0, 0], "Could not choose the knobs of Filter: parameter 0 is listed twice"],
+      [filter.id, [4000], "Could not choose the knobs of Filter: the plugin has no parameter 4000"],
+    ];
+    for (const [node, params, notice] of refusals) {
+      expect(await editor.setPinned(node, params), notice).toBe(false);
+      expect(said(notices).at(-1)).toBe(notice);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setPinned(filter.id, [0])).toBe(false);
+    expect(said(notices)).toEqual(["Could not choose the knobs of Filter: Not connected to the server."]);
+  });
+});
+
 describe("arranging the nodes again", () => {
   const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
 

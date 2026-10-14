@@ -1084,6 +1084,85 @@ async fn a_browser_places_a_node_and_a_second_one_sees_it_and_the_saved_file_has
     assert!(saved.contains("[ui]\nmaster = { x = 1200, y = 300 }"), "{saved}");
 }
 
+/// The parameters a snapshot says are pinned to a node's plugin, by the node's id (the plugin's `pinned`).
+fn pinned_of(snapshot: &Value, node: u64) -> Value {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    let node = nodes.iter().find(|n| n["id"] == node).unwrap_or_else(|| panic!("no node {node}"));
+    node["plugin"]["pinned"].clone()
+}
+
+#[tokio::test]
+async fn a_browser_pins_parameters_to_a_node_and_a_second_one_sees_it_and_the_saved_file_has_them_and_a_program_started_on_the_file_shows_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut first, _, snapshot) = listening(&tang).await;
+    let (mut second, _, _) = listening(&tang).await;
+    let (filter, resonance) = param_of(&snapshot, "Filter", "resonance");
+    let (_, cutoff) = param_of(&snapshot, "Filter", "cutoff");
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+    assert_eq!((pinned_of(&snapshot, filter), pinned_of(&snapshot, osc)), (json!([]), json!([])), "the tracer has nothing pinned");
+
+    // The first browser pins two parameters of the filter, in an order of its own: told as an event to the other browser, and answered by
+    // the revision.
+    tell(&mut first, json!({"type": "request", "reqId": 1, "intent": {"type": "setPinned", "node": filter, "params": [resonance, cutoff]}})).await;
+    let (answered, _) = answer_with_what_came_before(&mut first, 1).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    let told = loop {
+        let message = next_json(&mut second).await;
+        if message["type"] == "event" {
+            break message;
+        }
+    };
+    assert_eq!(
+        (told["event"]["type"].clone(), told["event"]["node"].clone(), told["event"]["params"].clone(), told["event"]["rev"].clone()),
+        (json!("pinnedSet"), json!(filter), json!([resonance, cutoff]), json!(1)),
+        "{told}"
+    );
+
+    // A browser that arrives now is given what is pinned, and a plugin nobody pinned anything to has none.
+    let (_, _, now) = listening(&tang).await;
+    assert_eq!(pinned_of(&now, filter), json!([resonance, cutoff]));
+    assert_eq!(pinned_of(&now, osc), json!([]));
+    assert_eq!(now["snapshot"]["meta"]["dirty"], true, "pinning is a change the session has not saved");
+
+    // What the controller refuses it refuses in its own words, and the session is as it was.
+    let refusals = [
+        (json!({"type": "setPinned", "node": filter, "params": [resonance, resonance]}), format!("parameter {resonance} is listed twice")),
+        (json!({"type": "setPinned", "node": filter, "params": [4000]}), "the plugin has no parameter 4000".to_string()),
+        (json!({"type": "setPinned", "node": 9999, "params": []}), "there is no node 9999".to_string()),
+    ];
+    for (i, (intent, why)) in refusals.into_iter().enumerate() {
+        let id = 10 + i as u64;
+        tell(&mut first, json!({"type": "request", "reqId": id, "intent": intent})).await;
+        let refused = answer(&mut first, id).await;
+        assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!(why)), "{refused}");
+    }
+
+    // What is saved has them by name, in the order they were pinned, and on the plugin that has them.
+    tell(&mut first, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut first, 4).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("pinned = [\"resonance\", \"cutoff\"]"), "{saved}");
+    assert_eq!(saved.matches("pinned = ").count(), 1, "only the filter has pins: {saved}");
+
+    // A program started on that file shows them again, on the same node.
+    drop((first, second));
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, _, snapshot) = listening(&again).await;
+    assert_eq!(pinned_of(&snapshot, filter), json!([resonance, cutoff]), "the filter has the same node id: it is the same lane");
+    assert_eq!(snapshot["snapshot"]["meta"]["dirty"], false);
+
+    // And a node given back to the front-end's choice is gone from the file the next time it is saved.
+    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "setPinned", "node": filter, "params": []}})).await;
+    assert_eq!(answer(&mut browser, 1).await["type"], "ack");
+    tell(&mut browser, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut browser, 2).await["type"], "ack");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("pinned"));
+}
+
 #[tokio::test]
 async fn a_browser_that_vanishes_with_a_key_held_does_not_leave_the_note_sounding() {
     let tang = Tang::start();

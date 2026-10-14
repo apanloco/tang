@@ -142,6 +142,13 @@ impl Snapshot {
             Event::NodeUiSet { node, ui } => {
                 self.node_mut(*node)?.ui = *ui;
             }
+            Event::PinnedSet { node, params } => {
+                let plugin = self.plugin_mut(*node)?;
+                if let Some(missing) = params.iter().find(|index| plugin.params.iter().all(|p| p.index != **index)) {
+                    return Err(DoesNotFit(format!("node {} has no parameter {missing}", node.0)));
+                }
+                plugin.pinned = params.clone();
+            }
             Event::PresetLoaded { node, preset, values } => {
                 let plugin = self.plugin_mut(*node)?;
                 // All of it or none: look before changing anything.
@@ -514,6 +521,11 @@ type = "envelope"
             Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 140.0 }) },
             Intent::SetNodeUi { node: n.reverb, ui: Some(NodeUi { x: 1.0e9, y: 0.0 }) },
             Intent::SetNodeUi { node: n.osc, ui: None },
+            Intent::SetPinned { node: n.osc, params: vec![detune, waveform] },
+            Intent::SetPinned { node: n.reverb, params: vec![size] },
+            Intent::SetPinned { node: n.bus, params: vec![cutoff] },
+            Intent::SetPinned { node: n.osc, params: vec![waveform, detune] },
+            Intent::SetPinned { node: n.osc, params: vec![] },
         ];
         for intent in intents {
             let before = told.clone();
@@ -522,7 +534,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 33);
+        assert_eq!(told.rev, 38);
     }
 
     #[test]
@@ -655,6 +667,10 @@ type = "envelope"
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: -1.0 }, "-1 is not a waveform"),
             (Event::EdgeDepthSet { edge: EdgeId(9_999), depth: 0.5 }, "there is no cable 9999"),
             (Event::NodeUiSet { node: ghost, ui: Some(NodeUi { x: 1.0, y: 2.0 }) }, "there is no node 9999"),
+            (Event::PinnedSet { node: ghost, params: vec![] }, "there is no node 9999"),
+            (Event::PinnedSet { node: n.empty, params: vec![] }, "has no plugin"),
+            (Event::PinnedSet { node: n.group, params: vec![] }, "has no plugin"),
+            (Event::PinnedSet { node: n.osc, params: vec![4_000] }, "has no parameter 4000"),
         ];
         for (event, why) in refused {
             let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();

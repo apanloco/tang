@@ -71,6 +71,13 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
       return node.kind === "instrument" ? { ...node, range: event.range } : `node ${node.id} is not a lane`;
     case "nodeUiSet":
       return withPlace(node, event.ui);
+    case "pinnedSet": {
+      const plugin = pluginOf(node);
+      if (!plugin) return `node ${node.id} has no plugin`;
+      const missing = event.params.find((index) => plugin.params.every((param) => param.index !== index));
+      if (missing !== undefined) return `node ${node.id} has no parameter ${missing}`;
+      return withPlugin(node, { ...plugin, pinned: event.params });
+    }
     case "modulatorFieldSet":
       return withSetting(node, event.field, event.value);
   }

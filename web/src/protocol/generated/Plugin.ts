@@ -17,4 +17,9 @@ format: string, isInstrument: boolean, params: Array<Param>, presets: Array<Pres
 /**
  * The name of the preset last loaded, if any.
  */
-currentPreset: string | null, };
+currentPreset: string | null, 
+/**
+ * The `index` of the parameters a front-end shows as knobs on the node, in order; none is left to the front-end (the page shows the
+ * first few). Kept in the session; the engine does not use it.
+ */
+pinned: Array<number>, };

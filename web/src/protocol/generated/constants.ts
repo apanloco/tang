@@ -70,3 +70,6 @@ export const NODE_UI_LIMIT = 100000;
 
 /** A place is kept to this many parts of a pixel: a tenth (`NodeUi::PARTS`). */
 export const NODE_UI_PARTS = 10;
+
+/** How many parameters of a plugin can be pinned to its node: what the controller refuses more than (`MAX_PINNED`). */
+export const PINNED_LIMIT = 64;
