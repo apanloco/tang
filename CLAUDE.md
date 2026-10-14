@@ -1522,14 +1522,14 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16, 18 and 19): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 29): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
   catches up, one intent a frame), the engine's modulation laws for the knobs' rings, and
   the mock engine, which speaks the protocol in the page), generated protocol types,
   design tokens as CSS variables (`web/src/ui/tokens.css`), the controls
-  (`web/src/ui/`: `Knob`, `Choice`, `LiveBar`, `LiveTrace`, `Meter`, which draw live values by
+  (`web/src/ui/`: `Knob`, `Choice`, `LiveBar`, `LiveTrace`, `LiveEnvelope`, `Meter`, which draw live values by
   writing to the DOM or a canvas, never through React state) and the patch canvas
   (`web/src/app/patch/`: `toFlow`, a pure layout of the graph, drawn with React Flow:
   a strip for each instrument, its modulators above it, cables, a node's knobs bound to
@@ -1582,7 +1582,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   dimmed (`MoveEffectButtons` in `app/patch/nodes.tsx`, `chainPlaceOf`; `Editor.moveEffect` asks the intent `MoveEffect`, which the
   mock engine does as the controller does, pinned to it by `fixtures/moves.json`), and the canvas lays the chain out in the new
   order; a browser lets go of the focus of an element that the page moves in the DOM, so the button that was pressed is given it
-  again (`keepFocus` in `app/focus.ts`). What the controller
+  again (`keepFocus` in `app/focus.ts`). Step 29 drew the shape of an envelope on its node: the line its four stages make, with a dot where
+  the envelope is while notes are played (`ui/LiveEnvelope.tsx`, `client/envelope.ts`: a stage's width is the logarithm of its time, and the
+  dot's stage is told from the level and which way it was last going, since the telemetry carries no phase: `courseAfter`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1636,8 +1638,8 @@ of the computer a piano in the page, so that what is built can be tried by ear. 
 parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
-they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27) and moves
-effects along their chains (28).
+they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27), moves
+effects along their chains (28) and draws the shape of an envelope (29).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot

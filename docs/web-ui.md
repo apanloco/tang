@@ -788,7 +788,7 @@ which Vite names by their content, are kept for ever.
 cables that end at a parameter), `selectors.ts` (a node, a parameter or a gain of the
 session by id) and `stress.ts` (the big session of the performance test). `ui/` has
 `Knob`, `Choice` (a native select: it stands where this section said `EnumStepper`),
-`LiveBar`, `LiveTrace` (step 27), `Meter` and `ClipLight`, each a function of its props that draws what changes
+`LiveBar`, `LiveTrace` (step 27), `LiveEnvelope` (step 29), `Meter` and `ClipLight`, each a function of its props that draws what changes
 every frame by writing to the DOM (or to a canvas); what was listed here as `Slider`, `Node`, `Port` and
 `Cable` is in `app/patch/` (`nodes.tsx`, `edges.tsx`), since it is made of React Flow;
 `PianoKey` is not built. `app/` has `PatchView`, `controls.tsx` (the controls of a node,
@@ -1019,6 +1019,37 @@ found by a browser test, since jsdom keeps the focus). The canvas numbers the no
 is moved past one of its name changes name with its place (the TODO in CLAUDE.md). Not built: dragging an effect to a place, a move that
 reaches across lanes or from a lane to a bus, and moving a lane or a group.
 
+**As built (step 29).** An envelope's node draws the shape its four settings make, between its knobs and the trace of what it puts out:
+a line from nothing up to the top (the attack), down to the sustain (the decay), along it (the hold, which has no time: it lasts as long
+as the key does) and down to nothing (the release), the area under it faintly filled (`LiveEnvelope`, `client/envelope.ts`). A stage's width
+is a share of the shape by the logarithm of its time (`stageWeight`: log10 of the milliseconds plus one), since the controller lets a stage be
+1 ms or 10 s and on a linear scale the short one would be a hair next to the long; the hold has the mean width of the three stages and never
+less than one weight. React draws it from the four settings (`envelopeStagesOf`, `sameStages`: a knob that is turned draws the shape again
+and nothing else of the node), and it is an image named for the node and its settings (`ADSR 2 shape: attack 10 ms, decay 300 ms, sustain
+0.7, release 500 ms`). The node is 66 px taller for it (measured in a browser: 315 against an LFO's 249; the layout assumes 320:
+`ENVELOPE_EXTRA` and `ENVELOPE_NODE_HEIGHT` in `toFlow.ts`).
+
+A dot is on the shape where the envelope is while notes are played (D32). It is not React's: the frame loop moves it, on the frames its
+level moves in, writing to the DOM only then, and hiding it while there is no level to follow. (A write is a change of the DOM and a test's
+`waitFor` runs its callback again on every change, so a dot written on every frame, in a callback that ticks frames and whose assertion keeps
+failing, never times out: the first version did, and a test run hung at 100% CPU.) The level alone does not say which stage that is (the same
+level is on the attack, the decay and the release), so it is read with a course (`courseAfter`): which way it was last going, the level that
+settled that, and the time. The telemetry comes thirty times a second and the page draws sixty, so every other frame finds the level exactly where
+the frame before did, and that is no news: the level goes on the way it was going. (The first version took it for the level standing still,
+which below the sustain is by its place the release: a slow attack was drawn on the attack on one frame and on the release on the next, thirty
+times a second, until a browser test that asserted the attack found it: f90.) `envelopeDot` takes the level and whether it is rising: rising is
+the attack, through the level of the sustain too (the attack goes through it on its way up, and a note that comes while the envelope is dying away
+goes on from where it is); not rising, the level at the sustain is the hold, at the top the top of the attack, above the sustain the decay and
+below it the release; at rest the start. The level is at the sustain when it is within a hair of it (1e-3) and not only when it is it, since the
+telemetry holds 32 bits and the sustain of the session does not (f91); for a sustain of 1 the attack ends in the hold. A rise that has stood
+still for 100 ms, three readings, is steady and no longer a rise: the mock's envelope, and a pluck whose attack and decay took less than a reading,
+come to the sustain in one step and are in the hold. A move is more than a rounding (1e-5) from the level that settled the course. The course
+survives a change of the settings (the next frame is not a rise that begins again) and is forgotten across a gap in the telemetry, after which the
+first level is told by itself alone. Not exact: the first reading of a note is a rise whichever stage it is on (the next reading says), a note that
+ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place. Not built:
+dragging the corners of the shape to set the stages, and the exact stage (the telemetry has the level and no phase: a channel for it would put the
+dot exactly where the engine is).
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -1034,7 +1065,7 @@ reaches across lanes or from a lane to a bus, and moving a lane or a group.
   frame plus a loopback round trip; zero React renders caused by telemetry.
 
 **As built (step 12).** One `FrameLoop` (`client/frameloop.ts`) serves everything that
-draws a live value: a knob's dot, a modulator's bar (a trace since step 27), the master's meter and CLIP light
+draws a live value: a knob's dot, a modulator's bar (a trace since step 27, and the dot on an envelope's shape since step 29), the master's meter and CLIP light
 subscribe a callback, which reads its slot (`slotReader` finds the slot once for each
 layout, not for each frame) and writes SVG attributes or CSS variables; it writes only when
 the value moved, and no React state is involved (tests count React's commits over a
@@ -2648,6 +2679,46 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 950 tests, 1104 with the `web` feature and 19 on the real program, 945 without the default
     plugin formats and 1097 with `web`; web 1225; 57 in browsers.
 
+- [x] **29. Envelopes you can see (phase 3, ahead of the rest of it).** An envelope's node showed a trace of what it has put out, which is a
+  flat line until a note is played, and its four stages had to be read off four knobs. *Done when:* on the real program an envelope's node
+  draws the shape its stages make, draws it again when a knob is turned, and a dot follows the envelope round it while a note is held (up the
+  attack, down the decay, along the hold, down the release) with nothing rendering in React for the dot. In parts, each its own commit: **29.1**
+  the shape and the dot as pure functions (`client/envelope.ts`); **29.2** `LiveEnvelope`; **29.3** the node uses it and the layout makes room;
+  **29.4** browser tests; **29.5** a fix that the browser test led to, the dot staying on the attack between two readings of the telemetry.
+  *Not done (later steps):* dragging the corners to set the stages; a telemetry channel for the stage the engine is in.
+  - **29.1 as built.** §9.3 above. `stageWeight`, `shapeOf`, `envelopePath`, `envelopeAreaPath`, `placeIn` (the one mapping from a share and a
+    level to a place), `envelopeDot` (which took the level before it, until 29.5).
+  - **29.2 as built.** §9.3 above. `ui/LiveEnvelope.tsx` with a story (a new envelope, one at rest, slow stages, a pluck, a pad, nothing to
+    follow); the line and fill are React's, the dot is the frame loop's.
+  - **29.3 as built.** §9.3 above. `EnvelopeShape` in `nodes.tsx`, `envelopeStagesOf` / `sameStages`, `ENVELOPE_NODE_HEIGHT`.
+  - **29.4 as built.** `e2e/envelope.spec.ts`: on the mock, the shape, that it fits in its node and the node is not taller than the layout assumes,
+    and a longer attack making a wider one; on the real program, a sampler in the page on every frame sees the dot on the decay, the hold
+    (more than ten frames) and the release, in that order, and at rest after. The test was named for the attack too and did not assert it: 29.5.
+  - **29.5 as built.** §9.3 above: `courseAfter` and `envelopeDot(shape, level, rising)`. The real-program test turns the attack up first, with
+    the keyboard as a person would (a page key on the knob is ten steps, about two and a half times as long, until the shape's words say a quarter
+    of a second or more), and sees the dot on the attack, the decay, the hold and the release, in that order.
+  - **Tests.** Rust unchanged. Web: 54 more tests (1279 against 1225, in three more files): the shape and the dot (23, and 10 more with 29.5 for the
+    course and the dot), the component (11, and 4 more), the selector (3) and the node (3); in browsers two more (59 against 57). 105 mutations of the
+    page: 57 for 29.1 to 29.3 (30 of `client/envelope.ts`, and 27 of the component (15), the node (5), the selector (3) and the layout (4)) and 48 for
+    29.5 (the course, the dot and the component). 100 were caught, six of them only after a test was made sharper (a time without an end, the rounding,
+    the release's direction at a point that is not the middle, a new subscription that assumed the dot is hidden, and the two edges of a move). Five
+    cannot be told: a weight of nothing for no time (it is nothing either way), a level before that is not a number (it compares false with everything,
+    so the guard was redundant, and went with the argument), the shape asked of every modulator (it draws nothing for one that is no envelope), and two
+    pieces of code that 29.5 had left dead (the guard for a sustain of 1 on the decay, which the hold's test makes unreachable, and the reset of "placed"
+    after a gap, which a new course makes no difference to), which are gone.
+  - **Found on the way.** The real-program test was named for the attack, the decay, the hold and the release and asserted the last three: the
+    attack of a new envelope is 10 ms and the readings of the telemetry are 33 ms apart, so a sampler seldom sees the dot on it. Made to see the
+    attack (by turning it up), it went red, and a probe of the dot's place on every frame showed that it flickered between the attack and the release
+    thirty times a second (f90: the unit tests had fed a new level to every frame, and the frames between two readings find the level where it was).
+    The probe showed a second thing, one frame at the start of the release at the end of every decay (f91: the telemetry's 32-bit sustain is a hair
+    under the session's). The first fix, a course that never expired, was wrong for an envelope that comes to the sustain in one step (the mock's, and
+    a fast pluck's), which the test of the node with the mock's envelope found at once: a rise that has stood still for three readings is steady.
+    A test run hung at 100% CPU while the dot was written on every frame (f92: §9.3); the component writes only when the dot moves now, and the tests
+    turn the frames by hand outside `waitFor` and compare floats to three digits. A time limit that kills `npx` (`perl -e alarm`) leaves vitest's
+    workers spinning: the runner has to kill the process group.
+  - **Numbers at the end of the step.** Rust 950 tests, 1104 with the `web` feature and 19 on the real program, 945 without the default plugin
+    formats and 1097 with `web` (unchanged); web 1279 in 64 files; 59 in browsers.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2714,6 +2785,7 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D29 | A cable between modulators is the model's rule read from both sides, as a cable to a parameter is (D21): `SessionModel::modulators_in_reach` and `field_targets` decide, in the controller and for the TUI's selectors, and the page reads the same rule from the graph (`modulatorsInReach`, `fieldsOf`) to mark the ports that take the cable that is dragged, pinned to the controller's by a fixture it writes (`fields.json`) and mirrored by the mock engine in the controller's order of refusals and words. The depth of a cable is a port of the controller and not of the canvas: no cable to one is drawn or offered by the page until a node has a place where such a cable could end. A modulator that drives another is drawn above it, so that a cable runs down, and a rack in which none does is laid out as it always was | Built (step 26) |
 | D30 | What a modulator has put out is the page's own record, not the server's: a `TraceBuffer` of the samples a node's frames took of the telemetry slot it reads anyway (the past of a page is from when it was opened), so that nothing is added to the wire, nothing is kept for a client that is not there, and what is drawn is exactly what the telemetry carries (30 values a second, which aliases an LFO faster than 15 Hz: f85). A trace is a canvas drawn on the frame loop and a cable's brightness is a CSS variable, so that telemetry still does not pass through React; a value that has not moved for as long as the trace shows is drawn once | Built (step 27) |
 | D31 | An effect is moved by a place in its chain (`MoveEffect { node, index }`), not by a step: a client that offers steps (the page's buttons, the TUI's Shift+Up and Shift+Down) asks for `index ± 1`, one that drags asks for any place, and the controller answers both alike, a lane's chain and a group's bus by one intent and two controller methods that do the model and the audio thread together. A refusal is a refusal of the intent (a place the chain has not, the place it is at), never a silent no-op, so that a client's notice can say why. The page keeps the focus on the button that was pressed by asking for it again when a browser lets it go (`keepFocus`), rather than by keeping the DOM order of the nodes fixed, which would have left the Tab order different from what is drawn | Built (step 28) |
+| D32 | An envelope's dot is placed from what the telemetry already carries, the level the envelope puts out, read with which way it was going (`courseAfter`), and not from a phase that the engine would publish: nothing is added to the wire or to the audio thread (as for the traces, D30). The page infers the stage, and is wrong in a few places that the next reading mends: the first reading of a note is a rise whichever stage it is on, a note that ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place alone. A channel for the stage would make it exact; it is not worth one yet. The telemetry is slower than the page's frames, so a frame that finds the level where it was is no news and the level goes on the way it was going, until a rise has stood still for three readings (100 ms). A stage's width is on a logarithmic scale of its time (a stage is 1 ms to 10 s), and the sustain, which has no time, has the mean of the others | Built (step 29) |
 
 Open questions
 
