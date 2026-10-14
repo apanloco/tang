@@ -138,7 +138,7 @@ function rectangles(graph: Graph) {
 }
 
 describe("the nodes on the canvas", () => {
-  test("are one for each node of the session, named by its id, of its kind, all the same width and fixed", () => {
+  test("are one for each node of the session, named by its id, of its kind, all the same width, which can be moved and not taken out", () => {
     const flow = toFlow(tracerSnapshot.graph);
     expect(flow.nodes.map((node) => [node.id, node.type])).toEqual([
       ["0", "instrument"],
@@ -148,7 +148,7 @@ describe("the nodes on the canvas", () => {
     ]);
     for (const node of flow.nodes) {
       expect(node.width).toBe(NODE_WIDTH);
-      expect(node.draggable).toBe(false);
+      expect(node.draggable).toBe(true);
       expect(node.deletable).toBe(false);
       expect(node.data.node).toBe(Number(node.id));
     }
@@ -472,6 +472,53 @@ describe("the nodes on the canvas", () => {
   });
 });
 
+describe("where the nodes are", () => {
+  /** `graph` with the places in `places` on the nodes they are for. */
+  const placed = (graph: Graph, places: Record<number, { x: number; y: number }>): Graph => ({
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const ui = places[node.id];
+      return ui ? { ...node, ui } : node;
+    }),
+  });
+
+  test("a node the session has placed is drawn there, and one it has not is where the layout puts it", () => {
+    const auto = toFlow(twoLanes);
+    const flow = toFlow(placed(twoLanes, { 3: { x: 1234, y: -567.5 }, [MASTER]: { x: 9, y: 8 } }));
+    expect(at(flow, 3).position).toEqual({ x: 1234, y: -567.5 });
+    expect(at(flow, MASTER).position).toEqual({ x: 9, y: 8 });
+    for (const id of [1, 2, 4, 5, 6]) expect(at(flow, id).position, `node ${String(id)}`).toEqual(at(auto, id).position);
+  });
+
+  test("a place that is the origin is a place, and not none", () => {
+    const flow = toFlow(placed(twoLanes, { 2: { x: 0, y: 0 } }));
+    expect(at(flow, 2).position).toEqual({ x: 0, y: 0 });
+    expect(at(toFlow(twoLanes), 2).position).not.toEqual({ x: 0, y: 0 });
+  });
+
+  test("every kind of node can be placed: a lane, an effect, a modulator, a group, a bus effect, the master", () => {
+    const places: Record<number, { x: number; y: number }> = {};
+    for (const node of grouped.nodes) places[node.id] = { x: node.id * 10, y: -node.id };
+    const flow = toFlow(placed(grouped, places));
+    for (const node of grouped.nodes) expect(at(flow, node.id).position, `node ${String(node.id)}`).toEqual({ x: node.id * 10, y: -node.id });
+  });
+
+  test("the layout of the nodes that are not placed does not leave room for one that was: they are where they would be", () => {
+    // (A person who drags a lane away has the others stay, and the space it leaves is theirs to use.)
+    const auto = toFlow(grouped);
+    const flow = toFlow(placed(grouped, { 4: { x: 5000, y: 5000 } }));
+    for (const node of grouped.nodes) {
+      if (node.id !== 4) expect(at(flow, node.id).position, `node ${String(node.id)}`).toEqual(at(auto, node.id).position);
+    }
+  });
+
+  test("the place on the canvas is a copy: the graph's own is not the canvas's to change", () => {
+    const graph = placed(twoLanes, { 2: { x: 1, y: 2 } });
+    const flow = toFlow(graph);
+    expect(at(flow, 2).position).not.toBe(nodeOf(graph, 2).ui);
+  });
+});
+
 describe("what a modulator's node can be drawn to", () => {
   test("is what it can still drive: the plugins it reaches and their parameters, but for those it drives already", () => {
     const flow = toFlow(tracerSnapshot.graph);
@@ -743,6 +790,15 @@ describe("whether two graphs are laid out the same", () => {
   test("they are when only an unrelated part of an unchanged node is a new object", () => {
     const copy: Graph = { nodes: base.nodes.map((node) => ({ ...node })), edges: [...base.edges] };
     expect(sameStructure(base, copy)).toBe(true);
+  });
+
+  test("they are not when a node is placed, moved or given back to the layout, and they are when a place is the same in another object", () => {
+    const placedAt = (x: number, y: number): Graph => ({ nodes: base.nodes.map((node, i) => (i === 1 ? { ...node, ui: { x, y } } : node)), edges: base.edges });
+    expect(sameStructure(base, placedAt(1, 2))).toBe(false);
+    expect(sameStructure(placedAt(1, 2), base)).toBe(false);
+    expect(sameStructure(placedAt(1, 2), placedAt(1, 3))).toBe(false);
+    expect(sameStructure(placedAt(1, 2), placedAt(2, 2))).toBe(false);
+    expect(sameStructure(placedAt(1, 2), placedAt(1, 2))).toBe(true);
   });
 
   test("they are not when a node is added, removed or renamed", () => {

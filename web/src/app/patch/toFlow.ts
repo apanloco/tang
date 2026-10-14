@@ -2,14 +2,15 @@
 // (docs/web-ui.md §9.3). A pure function of the graph the server sends: the layout is a
 // lane strip for each instrument (the instrument, then its effects, left to right), its
 // modulators above the strip, over the plugin each one drives, the groups to the right of
-// the lanes that feed them, and the master at the end. The positions are the layout's own
-// for now; the ones a user chooses are kept in the session in a later step (§4.4).
+// the lanes that feed them, and the master at the end. That is where a node is unless the
+// session says otherwise: a node that has been moved has a place (`Node.ui`, kept in the
+// session file, §4.4), and is drawn there; the layout of the others does not leave room for it.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { cableLabel, displayNames } from "../../client/names";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
-import type { Edge, EdgeId, Graph, Node, NodeId, Plugin, Port } from "../../protocol";
+import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port } from "../../protocol";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
 export const NODE_WIDTH = 304;
@@ -256,7 +257,7 @@ export function toFlow(graph: Graph): Flow {
   const nodes: PatchNode[] = graph.nodes.map((node) => ({
     id: String(node.id),
     type: node.kind,
-    position: positions.get(node.id) ?? { x: 0, y: 0 },
+    position: node.ui ? { x: node.ui.x, y: node.ui.y } : (positions.get(node.id) ?? { x: 0, y: 0 }),
     width: NODE_WIDTH,
     // (React Flow makes a node a group of this name for a screen reader.)
     ariaLabel: names.get(node.id) ?? node.name,
@@ -268,7 +269,7 @@ export function toFlow(graph: Graph): Flow {
       modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
       targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
     },
-    draggable: false,
+    draggable: true,
     deletable: false,
   }));
 
@@ -322,9 +323,15 @@ export function sameStructure(a: Graph, b: Graph): boolean {
   return true;
 }
 
+/** Whether two nodes are placed alike: both left to the layout, or at the same place. */
+function samePlace(x: NodeUi | undefined, y: NodeUi | undefined): boolean {
+  // (A place that is missing is neither coordinate: it equals no place that there is.)
+  return x === y || (x?.x === y?.x && x?.y === y?.y);
+}
+
 function sameNodeStructure(x: Node, y: Node): boolean {
   if (x === y) return true;
-  if (x.id !== y.id || x.kind !== y.kind || x.parent !== y.parent || x.name !== y.name) return false;
+  if (x.id !== y.id || x.kind !== y.kind || x.parent !== y.parent || x.name !== y.name || !samePlace(x.ui, y.ui)) return false;
   if ((x.kind === "instrument" || x.kind === "effect") && (y.kind === "instrument" || y.kind === "effect")) {
     return samePluginStructure(x.plugin, y.plugin);
   }

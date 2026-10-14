@@ -138,6 +138,19 @@ export class Editor {
     return this.#attempt(what, { type: "setNodeUi", node, ui });
   }
 
+  /**
+   * Give every node that has a place back to the layout (the master too), one after the other. True if they all went; the page says why
+   * if one did not, and goes on with the rest. With no node placed there is nothing to ask.
+   */
+  async resetLayout(): Promise<boolean> {
+    const placed = this.#graph?.nodes.filter((node) => node.ui !== undefined) ?? [];
+    let all = true;
+    for (const node of placed) {
+      if (!(await this.moveNode(node.id, null))) all = false;
+    }
+    return all;
+  }
+
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */
   addCable(modulator: NodeId, node: NodeId, param: number): Promise<boolean> {
     const words = cableLabel(this.#name(modulator), this.#name(node), this.#paramName(node, param));

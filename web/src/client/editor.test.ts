@@ -326,6 +326,44 @@ describe("moving a node", () => {
   });
 });
 
+describe("arranging the nodes again", () => {
+  const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
+
+  test("gives every node that has a place back to the layout, the master too, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    await editor.moveNode(filter.id, { x: 1, y: 2 });
+    await editor.moveNode(MASTER, { x: 3, y: 4 });
+    await editor.moveNode(lfo.id, { x: 5, y: 6 });
+    expect(await editor.resetLayout()).toBe(true);
+    for (const node of client.state.snapshot?.graph.nodes ?? []) expect(placeOf(client, node.id), `node ${String(node.id)}`).toBeUndefined();
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("leaves the nodes that have no place alone: a request for each that has one, and none when there is none", async () => {
+    const { server, editor } = await open();
+    const sent = (): number => server.received.filter((message) => message.type === "request").length;
+    expect(await editor.resetLayout()).toBe(true);
+    expect(sent()).toBe(0);
+    await editor.moveNode(filter.id, { x: 1, y: 2 });
+    expect(sent()).toBe(1);
+    await editor.resetLayout();
+    expect(sent()).toBe(2);
+    expect(server.received.at(-1)).toMatchObject({ type: "request", intent: { type: "setNodeUi", node: filter.id, ui: null } });
+  });
+
+  test("with no connection says so, for each node it could not give back (it goes on with the rest), and resolves false", async () => {
+    const { client, notices, editor } = await open();
+    await editor.moveNode(filter.id, { x: 1, y: 2 });
+    await editor.moveNode(lfo.id, { x: 3, y: 4 });
+    client.stop();
+    expect(await editor.resetLayout()).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not give Filter back to the layout: Not connected to the server.",
+      "Could not give LFO back to the layout: Not connected to the server.",
+    ]);
+  });
+});
+
 describe("setting the scale of the piano", () => {
   const piano = (client: Client) => client.state.snapshot?.meta.piano;
 

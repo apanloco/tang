@@ -1,10 +1,11 @@
 // The canvas (docs/web-ui.md §9.3): the session as nodes and cables, drawn by React Flow.
-// The nodes cannot be moved yet (their places are the layout's own; the places a user chooses are
-// kept in the session in a later step); what can be done on the canvas is to turn the controls on
-// the nodes, to add a modulator to a lane or a group, to take a modulator or a cable out, and to
-// draw a cable by dragging it from a modulator's output to a parameter's port.
-import { Background, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
-import type { Connection, Edge, EdgeTypes, NodeTypes, OnConnectStart } from "@xyflow/react";
+// What can be done on the canvas is to turn the controls on the nodes, to add a modulator to a
+// lane or a group, to take a modulator or a cable out, to draw a cable by dragging it from a
+// modulator's output to a parameter's port, and to move a node by dragging it (by what is not a
+// control): where it is put down goes to the server, which keeps it with the session (§4.4), and
+// every browser draws the node there. The nodes that are not moved are where the layout puts them.
+import { applyNodeChanges, Background, ControlButton, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
+import type { Connection, Edge, EdgeTypes, NodeChange, NodeTypes, OnConnectStart, OnNodeDrag } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Graph, NodeId } from "../../protocol";
@@ -14,10 +15,11 @@ import { cableOf, canDraw, ConnectingContext, drawableFrom } from "./connection"
 import { AudioEdge, ModulationEdge } from "./edges";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
+import { keepHeld } from "./moving";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
 import { sameStructure, toFlow } from "./toFlow";
-import type { Flow } from "./toFlow";
+import type { Flow, PatchNode } from "./toFlow";
 import { rectOf, viewToShow } from "./view";
 import "@xyflow/react/dist/style.css";
 import "./patch.css";
@@ -44,6 +46,9 @@ const SHOW_WITHIN_MS = 3000;
 
 /** How long the canvas takes to move to a node. */
 const MOVE_MS = 250;
+
+/** How far (in pixels) the pointer has to go with a node before it is a drag: a click on a node's header is not a move. */
+const DRAG_THRESHOLD = 3;
 
 /**
  * Moves the canvas to a node the page has just added, if it is not all in the view (a lane goes below the others, an effect
@@ -97,6 +102,40 @@ export function PatchView() {
   const graph = useClientSelection((state) => state.snapshot?.graph ?? null, sameGraphStructure);
   const flow = useMemo(() => (graph ? toFlow(graph) : { nodes: [], edges: [] }), [graph]);
   const editor = useEditor();
+  // Whether any node has been moved: what there is to arrange again.
+  const anyMoved = graph?.nodes.some((node) => node.ui !== undefined) ?? false;
+  // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
+  const [nodes, setNodes] = useState<PatchNode[]>(flow.nodes);
+  // The nodes in hand, or put down and not answered for yet, by id on the canvas, and how many drags of each are: the session is
+  // laid out again whenever its structure changes, and must not take a node out of a hand.
+  const held = useRef(new Map<string, number>());
+  const latestNodes = useRef(flow.nodes);
+  useEffect(() => {
+    latestNodes.current = flow.nodes;
+    setNodes((current) => keepHeld(flow.nodes, current, new Set(held.current.keys())));
+  }, [flow.nodes]);
+  const onNodesChange = useCallback((changes: NodeChange<PatchNode>[]) => {
+    setNodes((current) => applyNodeChanges(changes, current));
+  }, []);
+  const onNodeDragStart = useCallback<OnNodeDrag<PatchNode>>((_event, node) => {
+    held.current.set(node.id, (held.current.get(node.id) ?? 0) + 1);
+  }, []);
+  const onNodeDragStop = useCallback<OnNodeDrag<PatchNode>>(
+    (_event, node) => {
+      const { x, y } = node.position;
+      const before = latestNodes.current.find((candidate) => candidate.id === node.id)?.position;
+      // Put down is where it was picked up, say: nothing to tell (and a node that was not placed stays that).
+      const moved = before?.x !== x || before.y !== y;
+      void (moved ? editor.moveNode(node.data.node, { x, y }) : Promise.resolve(true)).finally(() => {
+        const left = (held.current.get(node.id) ?? 1) - 1;
+        if (left > 0) held.current.set(node.id, left);
+        else held.current.delete(node.id);
+        // The server has said where the node is by now (or refused: the page says why, and the node goes back).
+        setNodes((current) => keepHeld(latestNodes.current, current, new Set(held.current.keys())));
+      });
+    },
+    [editor],
+  );
   // The parameters that take the cable being dragged, for their ports to say so.
   const [connecting, setConnecting] = useState<ReadonlySet<string> | null>(null);
   // The plugin whose parameters are in the panel, if the panel is open.
@@ -149,8 +188,12 @@ export function PatchView() {
         <div className="tang-patch__canvas">
           <ConnectingContext.Provider value={connecting}>
             <ReactFlow
-              nodes={flow.nodes}
+              nodes={nodes}
               edges={flow.edges}
+              onNodesChange={onNodesChange}
+              onNodeDragStart={onNodeDragStart}
+              onNodeDragStop={onNodeDragStop}
+              nodeDragThreshold={DRAG_THRESHOLD}
               nodeTypes={NODE_TYPES}
               edgeTypes={EDGE_TYPES}
               colorMode="dark"
@@ -169,7 +212,19 @@ export function PatchView() {
               deleteKeyCode={null}
             >
               <Background gap={24} />
-              <Controls showInteractive={false} />
+              <Controls showInteractive={false}>
+                <ControlButton
+                  title="Arrange the nodes again"
+                  aria-label="Arrange the nodes again"
+                  disabled={!anyMoved}
+                  onClick={() => {
+                    // (If one is refused the page says so: `Editor` puts the reason among the notices.)
+                    void editor.resetLayout();
+                  }}
+                >
+                  <span aria-hidden="true">↺</span>
+                </ControlButton>
+              </Controls>
               <ShowWhatWasAdded graph={graph} flow={flow} />
             </ReactFlow>
           </ConnectingContext.Provider>

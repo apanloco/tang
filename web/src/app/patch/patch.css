@@ -62,6 +62,12 @@
   gap: var(--tang-space-2);
   height: 40px;
   padding: 0 var(--tang-space-3);
+  /* A node is moved by what is not a control (the controls are `nodrag`): the header, mostly. */
+  cursor: grab;
+}
+
+.react-flow__node.dragging .tang-node__header {
+  cursor: grabbing;
 }
 
 .tang-node__name {

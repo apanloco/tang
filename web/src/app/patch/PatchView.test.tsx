@@ -314,11 +314,11 @@ describe("the patch", () => {
     expect(new Set(ports)).toEqual(new Set(["top"]));
   });
 
-  test("cannot be rearranged or selected, and takes a cable only at a modulator's output (to start one) and at a parameter's port (to end one)", async () => {
+  test("can be moved but not selected, and takes a cable only at a modulator's output (to start one) and at a parameter's port (to end one)", async () => {
     const { view } = await rig(<PatchView />);
     await nodeOf(filter.id);
     for (const node of Array.from(view.container.querySelectorAll(".react-flow__node"))) {
-      expect(node.classList.contains("draggable")).toBe(false);
+      expect(node.classList.contains("draggable")).toBe(true);
       expect(node.classList.contains("selectable")).toBe(false);
     }
     const connectable = Array.from(view.container.querySelectorAll(".react-flow__handle.connectable"));
