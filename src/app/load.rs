@@ -6,7 +6,7 @@
 //! progress through a callback instead of drawing anything, which is how the TUI
 //! splash follows along.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crossbeam_channel::Sender;
@@ -16,6 +16,7 @@ use crate::app::model::{
     ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
 };
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
+use crate::session::NodeUi;
 use crate::telemetry::SlotAllocator;
 use crate::{plugin, session};
 
@@ -164,11 +165,20 @@ fn send(cmd_tx: &Sender<GraphCommand>, cmd: GraphCommand) -> anyhow::Result<()> 
     cmd_tx.send(cmd).map_err(|_| anyhow::anyhow!("command channel closed"))
 }
 
-/// What the loader hands out as it builds nodes: their ids, and the telemetry
-/// slots modulators and their targets publish into.
+/// What the loader hands out as it builds nodes: their ids, the telemetry
+/// slots modulators and their targets publish into, and where the session says
+/// the nodes are drawn.
 struct Allocators<'a> {
     ids: &'a mut NodeIds,
     slots: &'a mut SlotAllocator,
+    ui: &'a mut BTreeMap<NodeId, NodeUi>,
+}
+
+/// Note where a node is drawn, if the session says.
+fn place(ui: &mut BTreeMap<NodeId, NodeUi>, node: NodeId, position: Option<NodeUi>) {
+    if let Some(position) = position {
+        ui.insert(node, position);
+    }
 }
 
 /// Load `config`: instantiate every plugin, send the audio thread the commands
@@ -189,6 +199,8 @@ pub fn load_session(
     let mut loaded_slots = 0usize;
     let mut ids = NodeIds::default();
     let mut slots = SlotAllocator::default();
+    let mut ui: BTreeMap<NodeId, NodeUi> = BTreeMap::new();
+    place(&mut ui, NodeId::MASTER, config.master_ui);
     // The parameter lists modulator targets resolve names against: per lane (slot 0 =
     // the instrument, then its effects) and per group bus effect.
     let mut lane_params: Vec<Vec<Vec<plugin::ParameterInfo>>> = Vec::new();
@@ -198,6 +210,7 @@ pub fn load_session(
     let mut groups: Vec<GroupNode> = Vec::new();
     for (g_idx, group_config) in config.groups.iter().enumerate() {
         let group_node = ids.alloc();
+        place(&mut ui, group_node, group_config.ui);
         send(cmd_tx, GraphCommand::AddGroup)?;
         let meter = slots.meter();
         if let Some(slots) = meter {
@@ -238,8 +251,10 @@ pub fn load_session(
                 });
                 Ok(())
             })?;
+            let effect_node = ids.alloc();
+            place(&mut ui, effect_node, effect_config.ui);
             group_effects.push(plugin_slot(
-                ids.alloc(),
+                effect_node,
                 name,
                 effect_source,
                 false,
@@ -269,6 +284,7 @@ pub fn load_session(
     let mut instruments: Vec<InstrumentNode> = Vec::new();
     for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
         let lane_node = ids.alloc();
+        place(&mut ui, lane_node, inst_config.ui);
         send(cmd_tx, GraphCommand::AddInstrument { range: inst_config.range })?;
         let lane_meter = slots.meter();
         if let Some(slots) = lane_meter {
@@ -438,8 +454,10 @@ pub fn load_session(
             }
 
             chain_params.push(params.for_targets());
+            let effect_node = ids.alloc();
+            place(&mut ui, effect_node, effect_config.ui);
             effects.push(plugin_slot(
-                ids.alloc(),
+                effect_node,
                 name,
                 effect_source,
                 false,
@@ -453,7 +471,7 @@ pub fn load_session(
         // Build the lane's modulators now that every plugin (and its params)
         // is loaded, so targets can resolve against any slot in the chain.
         let modulators =
-            load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut Allocators { ids: &mut ids, slots: &mut slots })?;
+            load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui })?;
 
         // Apply instrument transpose.
         if inst_config.transpose != 0 {
@@ -565,12 +583,12 @@ pub fn load_session(
             &member_mods,
             &bus_params[g_idx],
             cmd_tx,
-            &mut Allocators { ids: &mut ids, slots: &mut slots },
+            &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui },
         )?;
         groups[g_idx].modulators = mods;
     }
 
-    Ok(SessionModel { instruments, groups, ids, slots })
+    Ok(SessionModel { instruments, groups, ids, slots, ui })
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
@@ -728,8 +746,10 @@ fn load_lane_modulators(
             log::info!("Modulator {mod_idx} target: '{label}' (slot {slot}) depth={}", target_config.depth);
         }
 
+        let node = alloc.ids.alloc();
+        place(alloc.ui, node, mod_config.ui);
         loaded.push(ModulatorSlot {
-            node: alloc.ids.alloc(),
+            node,
             source: source_slot,
             targets: loaded_targets,
             output,
@@ -1029,8 +1049,10 @@ fn load_group_modulators(
             });
         }
 
+        let node = alloc.ids.alloc();
+        place(alloc.ui, node, mod_config.ui);
         loaded.push(ModulatorSlot {
-            node: alloc.ids.alloc(),
+            node,
             source: source_slot,
             targets: loaded_targets,
             output,
@@ -1043,7 +1065,7 @@ fn load_group_modulators(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, SETTINGS, load, try_load};
+    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PLACED, SETTINGS, load, try_load};
 
     #[test]
     fn plugin_slots_hide_locked_parameters_and_turn_labelled_ones_into_enums() {
@@ -1606,6 +1628,42 @@ plugin = "builtin:filter"
         let lane = &run.model.instruments[0];
         assert_eq!(lane.modulators.len(), 3);
         assert_eq!(lane.modulators[1].targets[0].slot, 1);
+    }
+
+    #[test]
+    fn a_position_in_the_session_is_the_place_of_the_node_it_is_on() {
+        let model = load(PLACED).model;
+        let at = |x: f32, y: f32| Some(NodeUi { x, y });
+        let place = |node: NodeId| model.ui.get(&node).copied();
+        let (group, lane) = (&model.groups[0], &model.instruments[0]);
+        assert_eq!(model.master_ui(), at(1200.0, 300.5));
+        assert_eq!(place(group.node), at(800.0, 40.0));
+        assert_eq!(place(group.effects[0].node), at(1100.0, 40.0));
+        assert_eq!(place(group.modulators[0].node), at(800.0, -120.0));
+        assert_eq!(place(lane.node), at(0.0, 0.0));
+        assert_eq!(place(lane.effects[0].node), at(376.0, 0.25));
+        assert_eq!(place(lane.modulators[0].node), at(376.0, -200.0));
+        // The lane the session says nothing of has none, and nothing else is in the table.
+        assert_eq!(place(model.instruments[1].node), None);
+        assert_eq!(model.ui.len(), 7);
+        // A session with no positions has no places.
+        assert!(load(GROUPS).model.ui.is_empty());
+    }
+
+    #[test]
+    fn a_position_on_a_modulator_that_an_older_session_nested_under_an_effect_is_kept() {
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect.modulator]]
+ui = { x = 5, y = 6 }
+"#,
+        );
+        let lane = &run.model.instruments[0];
+        assert_eq!(run.model.ui.get(&lane.modulators[0].node), Some(&NodeUi { x: 5.0, y: 6.0 }));
     }
 
     #[test]

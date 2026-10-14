@@ -2569,6 +2569,35 @@ fn ctrl_s_writes_the_session_to_its_file_and_clears_the_mark() {
 }
 
 #[test]
+fn the_tui_does_not_show_where_a_session_draws_its_nodes_but_keeps_it_through_an_edit_and_a_save() {
+    use crate::app::testutil::PLACED;
+    let unplaced: String = PLACED
+        .lines()
+        .filter(|line| !line.starts_with("ui = ") && !line.starts_with("master = ") && *line != "[ui]")
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(Harness::new(PLACED).tree(), Harness::new(&unplaced).tree(), "the tree is the same with the places and without");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("song.toml");
+    let mut h = Harness::new(PLACED);
+    h.s.ctl.session_path = Some(path.clone());
+    // The filter goes, and its place with it; every other node is where the file put it.
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 }).press(KeyCode::Char('d'));
+    h.press_with(KeyCode::Char('s'), KeyModifiers::CONTROL);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let config = session::parse(&text).unwrap();
+    let at = |x: f32, y: f32| Some(session::NodeUi { x, y });
+    assert_eq!(config.master_ui, at(1200.0, 300.5), "{text}");
+    assert_eq!(config.groups[0].ui, at(800.0, 40.0), "{text}");
+    assert_eq!(config.instruments[0].ui, at(0.0, 0.0), "{text}");
+    assert_eq!(config.instruments[0].modulators[0].ui, at(376.0, -200.0), "{text}");
+    assert!(config.instruments[0].effects.is_empty(), "{text}");
+    assert!(!text.contains("y = 0.25"), "{text}");
+}
+
+#[test]
 fn ctrl_s_without_a_session_file_leaves_the_mark() {
     let mut h = Harness::new(scene_split());
     assert_eq!(h.s.ctl.session_path, None);
@@ -2896,7 +2925,7 @@ fn a_loaded_preset_is_saved_by_name_with_no_parameter_overrides() {
     let mut h = Harness::new(PRESET_SCENE);
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('p')).type_chars("ambient").press(KeyCode::Enter);
-    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model.instruments, &h.s.ctl.model.groups);
+    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model);
     let reverb = &lanes[0].effects[0];
     assert_eq!(reverb.preset.as_deref(), Some("Ambient Wash"));
     assert!(reverb.params.is_empty(), "the preset's values are the baseline, not edits: {:?}", reverb.params);
@@ -2904,7 +2933,7 @@ fn a_loaded_preset_is_saved_by_name_with_no_parameter_overrides() {
     // A tweak afterwards is an edit on top of the preset, and the only one.
     h.press(KeyCode::Enter).press(KeyCode::Right);
     h.commands();
-    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model.instruments, &h.s.ctl.model.groups);
+    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model);
     assert_eq!(lanes[0].effects[0].params.len(), 1);
 }
 

@@ -479,6 +479,47 @@ Cross-mod target fields (`mod_rate`, `mod_depth`, `mod_attack`, `mod_decay`,
 `mod_sustain`, `mod_release`) are mutually exclusive with `param`. Self-
 modulation (targeting own index) is prevented.
 
+### Node positions (`ui`)
+
+A front-end that draws the session as a canvas (the browser, see "Web UI") keeps where each node is in the session
+file, as a `ui` table on the node's own table. The engine and the TUI do not use them: the TUI does not show them,
+and keeps them through a load, an edit and a save.
+
+```toml
+[ui]
+master = { x = 1200, y = 300 }  # the master mix has no table of its own: its place is here
+
+[[group]]
+ui = { x = 800, y = 40 }
+
+[[group.effect]]
+plugin = "builtin:reverb"
+ui = { x = 1100, y = 40 }
+
+[[instrument]]
+plugin = "builtin:osc"
+ui = { x = 0, y = 0 }
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+ui = { x = 376, y = 0 }
+
+[[instrument.modulator]]
+ui = { x = 376, y = -200 }
+```
+
+- `x` and `y` are pixels on the page's canvas: finite numbers, whole or with decimals (saved as typed: a whole
+  number has no point, `12.3` is not `12.300000190734863`). A node without `ui` is laid out by the page.
+- A `ui` that is not a pair of numbers (`ui = 5`, `ui = { x = 1 }`, a `[ui]` that is not a table) is ignored, with
+  a log line: a layout is not worth refusing a session for. A number that is `nan` or `inf` is refused like every
+  number.
+- The places are in the model as a side table (`SessionModel.ui`, by `NodeId`; the master's under
+  `NodeId::MASTER`), read by the loader (`app::load`) and written by `app::save::to_save` and `session::to_toml`.
+  The place of a node that is taken out stays in the table (ids are not reused, so nothing reads it) and is not
+  written.
+- Older sessions nested `[[instrument.effect.modulator]]`: such a modulator keeps its `ui` when it migrates into the
+  lane's rack.
+
 ### MIDI routing
 
 - Note-on/note-off: filtered by instrument's key range (inclusive)

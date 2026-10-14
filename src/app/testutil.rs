@@ -352,6 +352,39 @@ rate = 3.0
 plugin = "builtin:osc"
 "#;
 
+/// Every kind of node has a place on the canvas, the master too; the second lane has none.
+pub const PLACED: &str = r#"
+[ui]
+master = { x = 1200, y = 300.5 }
+
+[[group]]
+name = "Pad"
+ui = { x = 800, y = 40 }
+
+[[group.effect]]
+plugin = "builtin:reverb"
+ui = { x = 1100, y = 40 }
+
+[[group.modulator]]
+ui = { x = 800, y = -120 }
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+ui = { x = 0, y = 0 }
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+ui = { x = 376, y = 0.25 }
+
+[[instrument.modulator]]
+type = "envelope"
+ui = { x = 376, y = -200 }
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
 pub const LEGACY: &str = r#"
 [[instrument]]
 plugin = "builtin:osc"

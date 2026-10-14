@@ -859,12 +859,12 @@ impl Controller {
     /// Write the session, with the Piano tab's scale and mode, to `path`. Does
     /// not touch `session_path`: callers decide what a failed save means for it.
     fn save_to(&mut self, path: &Path) -> anyhow::Result<()> {
-        let (instruments, groups) = to_save(&self.model.instruments, &self.model.groups);
+        let (instruments, groups) = to_save(&self.model);
         let piano = PianoConfig {
             scale: Some(self.piano_filter.scale().short()),
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
-        session::save(path, &instruments, &groups, Some(&piano))?;
+        session::save(path, &instruments, &groups, Some(&piano), self.model.master_ui())?;
         self.dirty = false;
         log::info!("Session saved to {}", path.display());
         Ok(())
@@ -1824,6 +1824,22 @@ type = "lfo"
         let text = std::fs::read_to_string(&path).unwrap();
         let piano = session::parse(&text).unwrap().piano.expect("the piano settings are saved");
         assert_eq!((piano.scale.as_deref(), piano.locked), (Some("D dorian"), true));
+        testutil::assert_same_model("the saved file", &ctl.model, &load(&text).model);
+    }
+
+    #[test]
+    fn save_writes_where_the_nodes_are_drawn_the_master_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(testutil::PLACED).model, handles, Some(path.clone()));
+        ctl.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let config = session::parse(&text).unwrap();
+        assert_eq!(config.master_ui, Some(session::NodeUi { x: 1200.0, y: 300.5 }), "{text}");
+        assert_eq!(config.instruments[0].effects[0].ui, Some(session::NodeUi { x: 376.0, y: 0.25 }), "{text}");
+        assert_eq!(config.instruments[1].ui, None, "{text}");
         testutil::assert_same_model("the saved file", &ctl.model, &load(&text).model);
     }
 
@@ -3115,7 +3131,7 @@ rate = 2.0
         ctl.put_instrument(0, "builtin:osc").unwrap();
         assert!(ctl.model.instruments[0].remap.is_empty());
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0, "a plugin of its own has the usual range until it is told otherwise");
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model.instruments, &ctl.model.groups).0, &[], None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 
@@ -3127,7 +3143,7 @@ rate = 2.0
         assert!(ctl.clear_instrument(0));
         assert!(ctl.model.instruments[0].remap.is_empty(), "the audio thread drops the remapper with the plugin");
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0);
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model.instruments, &ctl.model.groups).0, &[], None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 

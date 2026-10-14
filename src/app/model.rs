@@ -14,7 +14,9 @@
 use crate::app::intent::{Intent, ModulatorField};
 use crate::plugin;
 use crate::plugin::chain::{CrossModField, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
+use crate::session::NodeUi;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
+use std::collections::BTreeMap;
 
 /// Names a node of the session (an instrument, an effect, a group, a bus effect
 /// or a modulator) for as long as it exists. The engine and the tree address
@@ -109,9 +111,19 @@ pub struct SessionModel {
     pub ids: NodeIds,
     /// Hands out the telemetry slots the nodes publish into.
     pub slots: SlotAllocator,
+    /// Where a front-end draws the nodes it has been told a place for, by node: a side table, since the engine and the
+    /// TUI have no use for it and a node does not need one. The master is under `NodeId::MASTER`. An id is never
+    /// reused, so what is left here of a node that has gone is never read: `graph()` and the save look up the nodes
+    /// there are.
+    pub ui: BTreeMap<NodeId, NodeUi>,
 }
 
 impl SessionModel {
+    /// Where the master mix is drawn, if it has been placed.
+    pub fn master_ui(&self) -> Option<NodeUi> {
+        self.ui.get(&NodeId::MASTER).copied()
+    }
+
     /// A `NodeId` no other node has had.
     pub fn alloc_node(&mut self) -> NodeId {
         self.ids.alloc()

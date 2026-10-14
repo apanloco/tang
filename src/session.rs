@@ -11,6 +11,43 @@ pub struct RemapTarget {
     pub detune: f64,
 }
 
+/// Where a front-end draws a node, in the pixels of its canvas. The engine and the TUI do not use it, and it is kept when
+/// a session is saved: `ui = { x = 80, y = 120 }` on the node's table, the master's in a top-level `[ui]` table.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+pub struct NodeUi {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// A node's `ui`, read leniently: a layout is not worth refusing a session for, so one that is not a pair of numbers
+/// is left out (and logged) and the rest of the session loads.
+fn lenient_ui<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<NodeUi>, D::Error> {
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(node_ui_of(value))
+}
+
+fn node_ui_of(value: toml::Value) -> Option<NodeUi> {
+    match value.try_into::<NodeUi>() {
+        Ok(ui) => Some(ui),
+        Err(error) => {
+            log::warn!("ignoring a position that is not {{ x, y }} numbers: {error}");
+            None
+        }
+    }
+}
+
+/// The top-level `[ui]` table, read leniently like a node's.
+fn lenient_table<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<toml::Table>, D::Error> {
+    Ok(match toml::Value::deserialize(deserializer)? {
+        toml::Value::Table(table) => Some(table),
+        _ => {
+            log::warn!("ignoring a [ui] that is not a table");
+            None
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Instrument-centric config
 // ---------------------------------------------------------------------------
@@ -21,6 +58,8 @@ pub struct SessionConfig {
     pub instruments: Vec<InstrumentSlotConfig>,
     pub groups: Vec<GroupConfig>,
     pub piano: Option<PianoConfig>,
+    /// Where the master mix is drawn (`[ui] master = { x, y }`).
+    pub master_ui: Option<NodeUi>,
 }
 
 /// A submix group: members are the instruments whose `group` index points here.
@@ -33,6 +72,8 @@ pub struct GroupConfig {
     /// (`member` + optional `slot`), bus effects (`bus`), or sibling
     /// group modulators (`mod_*`).
     pub modulators: Vec<ModulatorConfig>,
+    /// Where the group is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Optional `[piano]` section of the session TOML.
@@ -58,6 +99,8 @@ pub struct InstrumentSlotConfig {
     pub pattern: Option<PatternConfig>,
     /// Submix group membership: index into the session's groups, or None.
     pub group: Option<usize>,
+    /// Where the lane is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Parsed pattern config for an instrument slot.
@@ -103,6 +146,9 @@ pub struct ModulatorConfig {
     pub midi_aftertouch: bool,
     #[serde(default, rename = "target")]
     pub targets: Vec<ModTargetConfig>,
+    /// Where the modulator is drawn.
+    #[serde(default, deserialize_with = "lenient_ui")]
+    pub ui: Option<NodeUi>,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +222,9 @@ pub struct EffectConfig {
     pub params: HashMap<String, f64>,
     #[serde(default, rename = "modulator")]
     pub modulators: Vec<ModulatorConfig>,
+    /// Where the effect is drawn.
+    #[serde(default, deserialize_with = "lenient_ui")]
+    pub ui: Option<NodeUi>,
 }
 
 fn default_mix() -> f64 {
@@ -196,6 +245,8 @@ struct SessionRaw {
     groups: Vec<GroupRaw>,
     #[serde(default)]
     piano: Option<PianoConfig>,
+    #[serde(default, deserialize_with = "lenient_table")]
+    ui: Option<toml::Table>,
 }
 
 #[derive(Deserialize)]
@@ -210,6 +261,8 @@ struct GroupRaw {
     effects: Vec<EffectConfig>,
     #[serde(default, rename = "modulator")]
     modulators: Vec<ModulatorConfig>,
+    #[serde(default, deserialize_with = "lenient_ui")]
+    ui: Option<NodeUi>,
 }
 
 #[derive(Deserialize)]
@@ -239,6 +292,8 @@ struct InstrumentSlotRaw {
     effects: Vec<EffectConfig>,
     #[serde(default)]
     pattern: Option<PatternRaw>,
+    #[serde(default, deserialize_with = "lenient_ui")]
+    ui: Option<NodeUi>,
 }
 
 #[derive(Deserialize)]
@@ -353,6 +408,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             pan: (g.pan as f32).clamp(-1.0, 1.0),
             effects: g.effects,
             modulators: g.modulators,
+            ui: g.ui,
         })
         .collect();
     let mut instruments = Vec::new();
@@ -377,9 +433,11 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             modulators: slot.modulators,
             pattern,
             group,
+            ui: slot.ui,
         });
     }
-    Ok(SessionConfig { instruments, groups, piano: raw.piano })
+    let master_ui = raw.ui.and_then(|mut table| table.remove("master")).and_then(node_ui_of);
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui })
 }
 
 /// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
@@ -591,6 +649,8 @@ pub struct SaveInstrumentSlot {
     pub pattern: Option<SavePattern>,
     /// Submix group membership: index into the saved groups, or None.
     pub group: Option<usize>,
+    /// Where the lane is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Data needed to serialize a submix group for saving.
@@ -601,6 +661,8 @@ pub struct SaveGroup {
     pub effects: Vec<SaveEffect>,
     /// Group-scoped modulators (targets address members / bus effects).
     pub modulators: Vec<SaveModulator>,
+    /// Where the group is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Data needed to serialize a pattern for saving.
@@ -627,6 +689,8 @@ pub enum SaveModSource {
 pub struct SaveModulator {
     pub source: SaveModSource,
     pub targets: Vec<SaveModTarget>,
+    /// Where the modulator is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Data needed to serialize a modulation target for saving.
@@ -654,6 +718,8 @@ pub struct SaveEffect {
     pub mix: f32,
     pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
+    /// Where the effect is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Serialization output: flat [[instrument]] format.
@@ -665,6 +731,39 @@ struct SessionOut {
     groups: Vec<GroupOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     piano: Option<PianoOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<UiOut>,
+}
+
+/// The top-level `[ui]` table: where the master mix is drawn.
+#[derive(Serialize)]
+struct UiOut {
+    master: NodeUiOut,
+}
+
+/// A position as it is written: `x` and `y`, a whole number without a point.
+#[derive(Serialize)]
+struct NodeUiOut {
+    #[serde(serialize_with = "coordinate")]
+    x: f32,
+    #[serde(serialize_with = "coordinate")]
+    y: f32,
+}
+
+impl From<NodeUi> for NodeUiOut {
+    fn from(ui: NodeUi) -> Self {
+        NodeUiOut { x: ui.x, y: ui.y }
+    }
+}
+
+/// A coordinate the way a person writes it: a whole number without a point, anything else as it was typed
+/// (an f32 widened to f64 would print `0.10000000149011612`).
+fn coordinate<S: serde::Serializer>(v: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    if v.fract() == 0.0 && v.abs() < 1e9 {
+        serializer.serialize_i64(*v as i64)
+    } else {
+        serializer.serialize_f64(clean_f64(*v))
+    }
 }
 
 #[derive(Serialize)]
@@ -679,6 +778,8 @@ struct GroupOut {
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
     modulators: Vec<ModulatorOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
 }
 
 fn is_default_volume_f32(v: &f32) -> bool {
@@ -740,6 +841,8 @@ struct InstrumentSlotOut {
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pattern: Option<PatternOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
 }
 
 #[derive(Serialize)]
@@ -793,6 +896,8 @@ struct ModulatorOut {
     midi_aftertouch: bool,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "target")]
     targets: Vec<ModTargetOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
 }
 
 fn is_lfo_type(s: &String) -> bool {
@@ -836,6 +941,8 @@ struct EffectOut {
     preset: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     params: BTreeMap<String, f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
 }
 
 fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
@@ -946,6 +1053,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                 .iter()
                 .map(save_mod_target_to_out)
                 .collect();
+            let ui = m.ui.map(NodeUiOut::from);
             match &m.source {
                 SaveModSource::Lfo { waveform, rate } => ModulatorOut {
                     mod_type: "lfo".into(),
@@ -959,6 +1067,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
                     targets,
+                    ui,
                 },
                 SaveModSource::Envelope { attack, decay, sustain, release } => ModulatorOut {
                     mod_type: "envelope".into(),
@@ -972,6 +1081,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
                     targets,
+                    ui,
                 },
                 SaveModSource::MidiLearn { cc, pitch_bend, aftertouch } => ModulatorOut {
                     mod_type: "midi".into(),
@@ -985,6 +1095,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_pitch_bend: *pitch_bend,
                     midi_aftertouch: *aftertouch,
                     targets,
+                    ui,
                 },
             }
         })
@@ -997,6 +1108,7 @@ fn effect_to_out(fx: &SaveEffect) -> EffectOut {
         mix: fx.mix,
         preset: fx.preset.clone(),
         params: fx.params.iter().map(|(k, v)| (k.clone(), clean_f64(*v))).collect(),
+        ui: fx.ui.map(NodeUiOut::from),
     }
 }
 
@@ -1005,9 +1117,11 @@ pub fn to_toml(
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
+    master_ui: Option<NodeUi>,
 ) -> anyhow::Result<String> {
     let session = SessionOut {
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
+        ui: master_ui.map(|ui| UiOut { master: ui.into() }),
         groups: groups
             .iter()
             .map(|g| GroupOut {
@@ -1016,6 +1130,7 @@ pub fn to_toml(
                 pan: g.pan,
                 effects: g.effects.iter().map(effect_to_out).collect(),
                 modulators: mods_to_out(&g.modulators),
+                ui: g.ui.map(NodeUiOut::from),
             })
             .collect(),
         instruments: instruments
@@ -1083,6 +1198,7 @@ pub fn to_toml(
                             enabled: p.enabled,
                         }
                     }),
+                    ui: slot.ui.map(NodeUiOut::from),
                 }
             })
             .collect(),
@@ -1091,6 +1207,57 @@ pub fn to_toml(
     // Not `to_string_pretty`: it writes arrays one element per line.
     let content = toml::to_string(&session)?;
     inline_remap_entries(&content)
+}
+
+/// The key of the master mix in the top-level `[ui]` table.
+const MASTER_KEY: &str = "master";
+
+/// Rewrite every node's `ui` table as an inline one, `ui = { x = 80, y = 120 }` on the node's own table rather than a
+/// table of its own below it, and the master's in the top-level `[ui]` as `master = { x, y }`.
+fn inline_ui_tables(table: &mut toml_edit::Table, root: bool) {
+    use toml_edit::{InlineTable, Item, Value};
+
+    fn inlined(table: &toml_edit::Table) -> Item {
+        let mut inline = InlineTable::new();
+        for (key, value) in table.iter() {
+            if let Some(value) = value.as_value() {
+                inline.insert(key, value.clone());
+            }
+        }
+        inline.fmt();
+        Item::Value(Value::InlineTable(inline))
+    }
+
+    let keys: Vec<String> = table.iter().map(|(key, _)| key.to_string()).collect();
+    for key in keys {
+        let Some(item) = table.get_mut(&key) else { continue };
+        match item {
+            // (The master's position is one level down, in the table of the session's own settings.)
+            Item::Table(child) if key == "ui" && root => {
+                if let Some(Item::Table(position)) = child.get(MASTER_KEY) {
+                    let inline = inlined(position);
+                    child.insert(MASTER_KEY, inline);
+                    // (A key that was a table's header is not written as `key = value` until it is told to be.)
+                    if let Some(mut key) = child.key_mut(MASTER_KEY) {
+                        key.fmt();
+                    }
+                }
+            }
+            Item::Table(child) if key == "ui" => {
+                *item = inlined(child);
+                if let Some(mut key) = table.key_mut(&key) {
+                    key.fmt();
+                }
+            }
+            // (Every node is an element of an array of tables, the instruments and what is under them.)
+            Item::ArrayOfTables(array) => {
+                for child in array.iter_mut() {
+                    inline_ui_tables(child, false);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Where the session given as `given` on the command line is, as a path that keeps pointing there. A
@@ -1107,8 +1274,9 @@ pub fn save(
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
+    master_ui: Option<NodeUi>,
 ) -> anyhow::Result<()> {
-    let content = to_toml(instruments, groups, piano)?;
+    let content = to_toml(instruments, groups, piano, master_ui)?;
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
@@ -1126,6 +1294,7 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
     use toml_edit::{DocumentMut, InlineTable, Item, Value};
 
     let mut doc: DocumentMut = input.parse()?;
+    inline_ui_tables(doc.as_table_mut(), true);
     if let Some(Item::ArrayOfTables(arr)) = doc.get_mut("instrument") {
         for inst in arr.iter_mut() {
             if let Some(Item::Table(remap)) = inst.get_mut("remap") {
@@ -1329,8 +1498,10 @@ range = "C4-C8"
                     mix: 0.5,
                     preset: None,
                     params: vec![],
+                    ui: None,
                 }],
                 pattern: None,
+                ui: None,
             },
             SaveInstrumentSlot {
                 range: None,
@@ -1347,10 +1518,11 @@ range = "C4-C8"
                 }),
                 effects: vec![],
                 pattern: None,
+                ui: None,
             },
         ];
 
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
 
         // Reload and verify
         let config = load(path.to_str().unwrap()).unwrap();
@@ -1387,11 +1559,13 @@ range = "C4-C8"
                 mix: 0.4,
                 preset: Some("Arcadia Dream Hall".into()),
                 params: vec![],
+                ui: None,
             }],
             pattern: None,
+            ui: None,
         }];
 
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1424,6 +1598,7 @@ range = "C4-C8"
                     depth: 0.75,
                     slot: 0,
                 }],
+                ui: None,
             }],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:sine".into(),
@@ -1435,9 +1610,10 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         }];
 
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1472,6 +1648,7 @@ range = "C4-C8"
                     depth: 1.0,
                     slot: 0,
                 }],
+                ui: None,
             }],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:filter".into(),
@@ -1483,9 +1660,10 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         }];
 
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("type = \"midi\""), "expected midi modulator:\n{raw}");
         assert!(raw.contains("midi_cc = 74"), "expected bound CC:\n{raw}");
@@ -1520,6 +1698,7 @@ range = "C4-C8"
                     depth: 1.0,
                     slot: 0,
                 }],
+                ui: None,
             }],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:filter".into(),
@@ -1531,9 +1710,10 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         }];
 
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("midi_aftertouch = true"), "expected aftertouch binding:\n{raw}");
 
@@ -1563,6 +1743,7 @@ range = "C4-C8"
                     depth: 0.5,
                     slot: 1,
                 }],
+                ui: None,
             }],
             instrument: Some(SaveInstrument {
                 plugin: "builtin:osc".into(),
@@ -1577,10 +1758,12 @@ range = "C4-C8"
                 mix: 1.0,
                 preset: None,
                 params: vec![],
+                ui: None,
             }],
             pattern: None,
+            ui: None,
         }];
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("slot = 1"), "saved target should record its slot:\n{raw}");
@@ -1614,6 +1797,7 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         };
         let instruments = vec![member(Some(0)), member(Some(0)), member(None)];
         let groups = vec![SaveGroup {
@@ -1625,10 +1809,12 @@ range = "C4-C8"
                 mix: 1.0,
                 preset: None,
                 params: vec![],
+                ui: None,
             }],
             modulators: vec![],
+            ui: None,
         }];
-        save(&path, &instruments, &groups, None).unwrap();
+        save(&path, &instruments, &groups, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[[group]]"), "expected a [[group]] section:\n{raw}");
@@ -1669,6 +1855,7 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         };
         let groups = vec![SaveGroup {
             name: None,
@@ -1679,6 +1866,7 @@ range = "C4-C8"
                 mix: 1.0,
                 preset: None,
                 params: vec![],
+                ui: None,
             }],
             modulators: vec![SaveModulator {
                 source: SaveModSource::Lfo { waveform: "sine".into(), rate: 2.0 },
@@ -1707,9 +1895,11 @@ range = "C4-C8"
                         slot: 0,
                     },
                 ],
+                ui: None,
             }],
+            ui: None,
         }];
-        save(&path, &[member], &groups, None).unwrap();
+        save(&path, &[member], &groups, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[[group.modulator]]"), "expected group modulator:\n{raw}");
@@ -1766,9 +1956,10 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         }];
 
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
 
         // Output should use inline tables and stable alphabetical ordering.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -1794,6 +1985,128 @@ range = "C4-C8"
         assert_eq!(inst.remap["G#6"].note, "G6");
     }
 
+    /// A session with a position on every kind of node, as a person or the page writes them: whole numbers or decimals.
+    const PLACED: &str = r#"
+[ui]
+master = { x = 1200, y = 300.5 }
+
+[[group]]
+name = "Pad"
+ui = { x = 800, y = 40 }
+
+[[group.effect]]
+plugin = "builtin:reverb"
+ui = { x = 1100, y = 40 }
+
+[[group.modulator]]
+ui = { x = 800, y = -120 }
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+ui = { x = 0, y = 0 }
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+ui = { x = 376, y = 0.25 }
+
+[[instrument.modulator]]
+type = "envelope"
+ui = { x = 376, y = -200 }
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    #[test]
+    fn a_position_is_read_on_every_kind_of_node_and_a_node_without_one_has_none() {
+        let config = parse(PLACED).unwrap();
+        let at = |x: f32, y: f32| Some(NodeUi { x, y });
+        assert_eq!(config.master_ui, at(1200.0, 300.5));
+        assert_eq!(config.groups[0].ui, at(800.0, 40.0));
+        assert_eq!(config.groups[0].effects[0].ui, at(1100.0, 40.0));
+        assert_eq!(config.groups[0].modulators[0].ui, at(800.0, -120.0));
+        assert_eq!(config.instruments[0].ui, at(0.0, 0.0));
+        assert_eq!(config.instruments[0].effects[0].ui, at(376.0, 0.25));
+        assert_eq!(config.instruments[0].modulators[0].ui, at(376.0, -200.0));
+        assert_eq!(config.instruments[1].ui, None);
+        // (A session from before there were positions has none.)
+        let old = parse("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").unwrap();
+        assert_eq!((old.master_ui, old.instruments[0].ui, old.instruments[0].effects[0].ui), (None, None, None));
+    }
+
+    #[test]
+    fn a_position_that_is_not_a_pair_of_numbers_is_ignored_and_the_rest_of_the_session_loads() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        for text in ["ui = { x = 1 }", "ui = 5", "ui = { x = \"a\", y = 2 }", "ui = []", "ui = {}"] {
+            let config = parse(&format!("{osc}{text}\n")).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert_eq!((config.instruments.len(), config.instruments[0].ui), (1, None), "{text}");
+        }
+        let config = parse(&format!("{osc}[[instrument.effect]]\nplugin = \"builtin:filter\"\nui = \"here\"\n[ui]\nmaster = 3\n")).unwrap();
+        assert_eq!((config.instruments[0].effects[0].ui, config.master_ui), (None, None));
+        // (Numbers that are not numbers are refused wherever they are, as every number is.)
+        assert!(parse(&format!("{osc}ui = {{ x = nan, y = 1 }}\n")).is_err());
+    }
+
+    /// A lane with an effect and a modulator, each with this position, for the tests of what is written.
+    fn placed_lane(ui: Option<NodeUi>) -> SaveInstrumentSlot {
+        SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: None,
+            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 }, targets: vec![], ui }],
+            instrument: Some(SaveInstrument { plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
+            effects: vec![SaveEffect { plugin: "builtin:filter".into(), mix: 1.0, preset: None, params: vec![], ui }],
+            pattern: None,
+            ui,
+        }
+    }
+
+    #[test]
+    fn positions_are_written_on_their_nodes_as_inline_tables_the_master_in_a_table_of_its_own_and_read_back() {
+        let at = |x: f32, y: f32| Some(NodeUi { x, y });
+        let group = SaveGroup {
+            name: None,
+            volume: 1.0,
+            pan: 0.0,
+            effects: vec![SaveEffect { plugin: "builtin:reverb".into(), mix: 1.0, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
+            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 }, targets: vec![], ui: at(800.0, -120.5) }],
+            ui: at(800.0, 40.0),
+        };
+        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], None, at(1200.0, 300.0)).unwrap();
+        // Whole numbers are written without a point, and it is one line for a node, in the table of the node.
+        assert!(text.contains("ui = { x = 80, y = 120 }"), "{text}");
+        assert_eq!(text.matches("ui = { x = 80, y = 120 }").count(), 3, "the lane, its effect and its modulator: {text}");
+        assert!(text.contains("ui = { x = 800, y = -120.5 }"), "{text}");
+        assert!(text.contains("[ui]\nmaster = { x = 1200, y = 300 }"), "the master has a table of its own: {text}");
+        // And what is written is read back, where it was.
+        let config = parse(&text).unwrap();
+        assert_eq!(config.master_ui, at(1200.0, 300.0));
+        assert_eq!(config.groups[0].ui, at(800.0, 40.0));
+        assert_eq!(config.groups[0].effects[0].ui, at(1100.0, 40.0));
+        assert_eq!(config.groups[0].modulators[0].ui, at(800.0, -120.5));
+        assert_eq!(config.instruments[0].ui, at(80.0, 120.0));
+        assert_eq!(config.instruments[0].effects[0].ui, at(80.0, 120.0));
+        assert_eq!(config.instruments[0].modulators[0].ui, at(80.0, 120.0));
+    }
+
+    #[test]
+    fn a_node_without_a_position_is_written_as_it_always_was() {
+        let text = to_toml(&[placed_lane(None)], &[], None, None).unwrap();
+        assert!(!text.lines().any(|line| line.starts_with("ui ") || line == "[ui]"), "{text}");
+        // (The same session with positions has the same lines besides the positions.)
+        let placed = to_toml(&[placed_lane(Some(NodeUi { x: 1.0, y: 2.0 }))], &[], None, None).unwrap();
+        let without: Vec<&str> = placed.lines().filter(|line| !line.starts_with("ui = ")).collect();
+        assert_eq!(without.join("\n") + "\n", text);
+    }
+
+    #[test]
+    fn a_position_with_decimals_is_written_the_way_it_was_typed() {
+        // (Not `0.10000000149011612`: an f32 is written as the shortest number that is it.)
+        let text = to_toml(&[placed_lane(Some(NodeUi { x: 12.3, y: -0.1 }))], &[], None, None).unwrap();
+        assert!(text.contains("ui = { x = 12.3, y = -0.1 }"), "{text}");
+    }
+
     #[test]
     fn save_and_reload_with_piano_scale() {
         let dir = tempfile::tempdir().unwrap();
@@ -1814,9 +2127,10 @@ range = "C4-C8"
             }),
             effects: vec![],
             pattern: None,
+            ui: None,
         }];
         let piano = PianoConfig { scale: Some("F# dorian".into()), locked: false };
-        save(&path, &instruments, &[], Some(&piano)).unwrap();
+        save(&path, &instruments, &[], Some(&piano), None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[piano]"));
@@ -1840,8 +2154,9 @@ range = "C4-C8"
             instrument: None,
             effects: vec![],
             pattern: None,
+            ui: None,
         };
-        save(&path, &[lane], &[], None).unwrap();
+        save(&path, &[lane], &[], None, None).unwrap();
         assert_eq!(load(path.to_str().unwrap()).unwrap().instruments.len(), 1);
     }
 
@@ -1867,17 +2182,18 @@ range = "C4-C8"
                 }),
                 effects: vec![],
                 pattern: None,
+                ui: None,
             }]
         };
 
         let locked = PianoConfig { scale: Some("C major".into()), locked: true };
-        save(&path, &instruments(), &[], Some(&locked)).unwrap();
+        save(&path, &instruments(), &[], Some(&locked), None).unwrap();
         let config = load(path.to_str().unwrap()).unwrap();
         assert!(config.piano.expect("piano section").locked);
 
         // Highlight mode is the default and stays out of the file.
         let open = PianoConfig { scale: Some("C major".into()), locked: false };
-        save(&path, &instruments(), &[], Some(&open)).unwrap();
+        save(&path, &instruments(), &[], Some(&open), None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("locked"), "{raw}");
         assert!(!load(path.to_str().unwrap()).unwrap().piano.expect("piano section").locked);
@@ -1911,8 +2227,9 @@ range = "C4-C8"
                 enabled: true,
                 in_key: true,
             }),
+            ui: None,
         }];
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("transpose = \"in_key\""));
@@ -1924,7 +2241,7 @@ range = "C4-C8"
         // Chromatic (default) round-trips without writing the field.
         let mut instruments = instruments;
         instruments[0].pattern.as_mut().unwrap().in_key = false;
-        save(&path, &instruments, &[], None).unwrap();
+        save(&path, &instruments, &[], None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("transpose"));
         let config = load(path.to_str().unwrap()).unwrap();

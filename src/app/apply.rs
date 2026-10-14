@@ -764,7 +764,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller();
         let instrument = lane(&ctl);
         range(&mut ctl, instrument, 40, 90).unwrap();
-        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model.instruments, &ctl.model.groups).0, &[], None).unwrap();
+        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None).unwrap();
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));

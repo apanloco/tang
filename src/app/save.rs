@@ -5,33 +5,38 @@
 //! touches the disk or the terminal, so any front-end (and a test) can serialize
 //! a session.
 
-use crate::app::model::{GroupNode, InstrumentNode, ModSourceSlot, ModulatorSlot, ParamSlot, PluginSlot};
+use crate::app::model::{ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel};
 use crate::plugin::chain::MidiBindSource;
 use crate::session::{
-    SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveModSource, SaveModTarget, SaveModulator,
+    NodeUi, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveModSource, SaveModTarget, SaveModulator,
     SavePattern,
 };
+use std::collections::BTreeMap;
 
-/// The lanes and groups of a session as `session::save` writes them. The piano
-/// scale is not part of the model; it goes to `save` separately.
-pub fn to_save(instruments: &[InstrumentNode], groups: &[GroupNode]) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>) {
-    let save_groups = groups
+/// The lanes and groups of a session as `session::save` writes them, with where each node is drawn. The piano
+/// scale is not part of the model; it goes to `save` separately, and the master's place is `SessionModel::master_ui`.
+pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>) {
+    let ui = &model.ui;
+    let save_groups = model
+        .groups
         .iter()
         .map(|g| SaveGroup {
             name: g.name.clone(),
             volume: g.volume,
             pan: g.pan,
-            effects: g.effects.iter().map(effect_to_save).collect(),
-            modulators: modulators_to_save(&g.modulators),
+            effects: g.effects.iter().map(|fx| effect_to_save(fx, ui)).collect(),
+            modulators: modulators_to_save(&g.modulators, ui),
+            ui: ui.get(&g.node).copied(),
         })
         .collect();
-    let save_instruments = instruments
+    let save_instruments = model
+        .instruments
         .iter()
         .map(|lane| SaveInstrumentSlot {
             range: lane.range,
             transpose: lane.transpose,
             group: lane.group,
-            modulators: modulators_to_save(&lane.modulators),
+            modulators: modulators_to_save(&lane.modulators, ui),
             instrument: lane.instrument.as_ref().map(|inst| SaveInstrument {
                 plugin: inst.id.clone(),
                 volume: lane.volume,
@@ -40,7 +45,8 @@ pub fn to_save(instruments: &[InstrumentNode], groups: &[GroupNode]) -> (Vec<Sav
                 pitch_bend_range: lane.pitch_bend_range,
                 remap: lane.remap.clone(),
             }),
-            effects: lane.effects.iter().map(effect_to_save).collect(),
+            effects: lane.effects.iter().map(|fx| effect_to_save(fx, ui)).collect(),
+            ui: ui.get(&lane.node).copied(),
             pattern: lane.pattern.as_ref().map(|p| SavePattern {
                 bpm: p.bpm,
                 length_beats: p.length_beats,
@@ -65,16 +71,17 @@ fn overrides(params: &[ParamSlot]) -> Vec<(String, f32)> {
         .collect()
 }
 
-fn effect_to_save(fx: &PluginSlot) -> SaveEffect {
+fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect {
     SaveEffect {
         plugin: fx.id.clone(),
         mix: fx.mix,
         preset: fx.current_preset.clone(),
         params: overrides(&fx.params),
+        ui: ui.get(&fx.node).copied(),
     }
 }
 
-fn modulators_to_save(mods: &[ModulatorSlot]) -> Vec<SaveModulator> {
+fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> Vec<SaveModulator> {
     mods.iter()
         .map(|m| {
             let source = match &m.source {
@@ -108,6 +115,7 @@ fn modulators_to_save(mods: &[ModulatorSlot]) -> Vec<SaveModulator> {
                         slot: t.slot,
                     })
                     .collect(),
+                ui: ui.get(&m.node).copied(),
             }
         })
         .collect()
@@ -118,7 +126,7 @@ mod tests {
     use super::*;
     use crate::app::model::{ModSourceSlot, SessionModel};
     use crate::app::testutil::{
-        CROSS_MOD, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, SETTINGS, assert_same_model, load, try_load,
+        CROSS_MOD, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PLACED, SETTINGS, assert_same_model, load, try_load,
     };
     use crate::plugin::chain::MidiBindSource;
     use crate::session;
@@ -152,12 +160,13 @@ velocity = 100
         ("cross-mod", CROSS_MOD),
         ("disabled-pattern", DISABLED_PATTERN),
         ("odd-tempo", ODD_TEMPO),
+        ("placed", PLACED),
     ];
 
     /// The file a save of this model writes.
     fn saved(model: &SessionModel) -> String {
-        let (instruments, groups) = to_save(&model.instruments, &model.groups);
-        session::to_toml(&instruments, &groups, None).unwrap()
+        let (instruments, groups) = to_save(model);
+        session::to_toml(&instruments, &groups, None, model.master_ui()).unwrap()
     }
 
     #[test]
@@ -245,6 +254,48 @@ depth = 0.4
         assert!(second.model.instruments[0].instrument.is_none());
         assert_eq!(second.model.instruments[0].effects.len(), 1);
         assert_eq!(file, saved(&second.model), "and saving it again gives the same file");
+    }
+
+    #[test]
+    fn the_places_of_the_nodes_are_saved_on_the_nodes_they_are_for() {
+        let file = saved(&load(PLACED).model);
+        let lines = |prefix: &str| file.lines().filter(|l| l.starts_with(prefix)).collect::<Vec<_>>();
+        assert_eq!(lines("master = "), ["master = { x = 1200, y = 300.5 }"], "{file}");
+        assert_eq!(
+            lines("ui = "),
+            [
+                "ui = { x = 0, y = 0 }",
+                "ui = { x = 376, y = -200 }",
+                "ui = { x = 376, y = 0.25 }",
+                "ui = { x = 800, y = 40 }",
+                "ui = { x = 1100, y = 40 }",
+                "ui = { x = 800, y = -120 }",
+            ],
+            "the lane, its modulator and its effect, then the group, its effect and its modulator:\n{file}"
+        );
+    }
+
+    #[test]
+    fn the_place_of_a_node_that_has_gone_is_not_saved() {
+        let mut run = load(PLACED);
+        let gone = run.model.instruments[0].effects.remove(0).node;
+        assert!(run.model.ui.contains_key(&gone), "(ids are not reused, so the table is not tidied)");
+        let file = saved(&run.model);
+        assert!(!file.contains("y = 0.25"), "{file}");
+        assert_eq!(file.lines().filter(|l| l.starts_with("ui = ")).count(), 5, "{file}");
+        // And the master stays, with nothing else changed in the file.
+        assert!(file.contains("master = { x = 1200, y = 300.5 }"), "{file}");
+    }
+
+    #[test]
+    fn a_session_with_no_places_saves_none() {
+        for (name, text) in SCENES {
+            if *name == "placed" {
+                continue;
+            }
+            let file = saved(&load(text).model);
+            assert!(!file.lines().any(|l| l.starts_with("ui = ") || l == "[ui]"), "{name}:\n{file}");
+        }
     }
 
     #[test]
