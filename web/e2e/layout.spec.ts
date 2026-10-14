@@ -15,6 +15,9 @@ async function placeOf(node: Locator): Promise<{ x: number; y: number }> {
   return { x: Number(found[1]), y: Number(found[2]) };
 }
 
+/** A place as the server keeps it, to a tenth of a pixel (`NodeUi::tidy`): what the canvas takes when the server's answer is in. */
+const tidy = (n: number): number => Math.round(n * 10) / 10;
+
 /** The node of the canvas with this name in its header. */
 const nodeNamed = (page: Page, name: string): Locator => page.locator(".react-flow__node", { has: page.locator(".tang-node__name", { hasText: new RegExp(`^${name}$`) }) });
 
@@ -36,8 +39,17 @@ test("a node dragged on the canvas stays where it is put down, a page that is op
   await page.mouse.move(from.x + 220, from.y + 90, { steps: 12 });
   await page.mouse.up();
 
-  // It stays: the session has the place, which the page is told, and what is unsaved is said.
-  await expect.poll(async () => (await placeOf(filter)).x, { message: "the filter has moved to the right" }).toBeGreaterThan(laidOut.x + 100);
+  // It stays: the session has the place, which the page is told, and what is unsaved is said. (Where the pointer put it down is where the node is
+  // until the server's answer is in, a moment later, and then it is where the server kept it, to a tenth of a pixel: that is the place to compare.)
+  await expect
+    .poll(
+      async () => {
+        const place = await placeOf(filter);
+        return place.x > laidOut.x + 100 && place.x === tidy(place.x) && place.y === tidy(place.y);
+      },
+      { message: "the filter has moved to the right, and the server's answer is in" },
+    )
+    .toBe(true);
   const moved = await placeOf(filter);
   expect(moved.y).toBeGreaterThan(laidOut.y + 40);
   await expect(page.getByText("Unsaved changes")).toBeVisible();
