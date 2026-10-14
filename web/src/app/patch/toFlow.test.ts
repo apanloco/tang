@@ -262,6 +262,192 @@ describe("the nodes on the canvas", () => {
     expect(at(toFlow(graph), 4).position.x).toBe(COLUMN);
   });
 
+  describe("when a modulator drives the settings of another", () => {
+    const H = MODULATOR_SETTINGS_HEIGHT + CABLE_GAP;
+    /** A cable from the modulator `from` to a setting of the modulator `to`. */
+    const drives = (id: number, from: NodeId, to: NodeId, setting: "rate" | "attack" = "rate"): Edge => ({
+      kind: "modulation",
+      id,
+      amount: 0.5,
+      from: { node: from, port: { type: "modOut" } },
+      to: { node: to, port: { type: setting } },
+    });
+    /** No two nodes of the canvas overlap. */
+    const noOverlap = (graph: Graph): void => {
+      const rects = rectangles(graph);
+      for (const a of rects) {
+        for (const b of rects) {
+          if (a.id >= b.id) continue;
+          const apart = a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+          expect(apart, `${String(a.id)} and ${String(b.id)} overlap`).toBe(true);
+        }
+      }
+    };
+
+    test("is above the one it drives, in its column, with room for the cable, and the strip's row is below both", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 4, 2, 1), drives(1, 3, 4)],
+      };
+      const flow = toFlow(graph);
+      // 4 drives the effect (column 1) and is just above the row, as it was; 3 drives 4, and is above it, over the same column.
+      expect(at(flow, 4).position.x).toBe(COLUMN);
+      expect(at(flow, 3).position.x).toBe(COLUMN);
+      expect(at(flow, 3).position.y).toBe(0);
+      expect(at(flow, 4).position.y).toBe(H);
+      expect(at(flow, 1).position.y).toBe(2 * H);
+      noOverlap(graph);
+    });
+
+    test("has a row for each step of a chain, the one that drives nothing of the others' the nearest the strip", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), envelope(4, 1), modulator(5, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 5, 2, 1), drives(1, 4, 5), drives(2, 3, 4, "attack")],
+      };
+      const flow = toFlow(graph);
+      expect([3, 4, 5].map((id) => at(flow, id).position.y)).toEqual([0, H, 2 * H]);
+      expect(at(flow, 1).position.y).toBe(3 * H);
+      expect(new Set([3, 4, 5].map((id) => at(flow, id).position.x))).toEqual(new Set([COLUMN]));
+      noOverlap(graph);
+    });
+
+    test("has the ones that drive the same modulator side by side, in the row above it", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), modulator(5, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 5, 2, 1), drives(1, 3, 5), drives(2, 4, 5)],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 5).position).toEqual({ x: COLUMN, y: H });
+      // Both would be over the column of the one they drive: the first has it, the second the next that is free.
+      expect(at(flow, 3).position).toEqual({ x: COLUMN, y: 0 });
+      expect(at(flow, 4).position).toEqual({ x: 2 * COLUMN, y: 0 });
+      noOverlap(graph);
+    });
+
+    test("is above all the ones it drives, however far above the strip the highest of them is", () => {
+      // 3 drives 4 and 5, and 4 drives 5: 5 is nearest the strip, 4 above it, and 3 above both (whichever of the two it drives last).
+      const graph: Graph = {
+        nodes: [instrument(1), modulator(3, 1), modulator(4, 1), modulator(5, 1), master],
+        edges: [audio(1, MASTER), drives(0, 3, 4), drives(1, 3, 5), drives(2, 4, 5)],
+      };
+      const flow = toFlow(graph);
+      expect([3, 4, 5].map((id) => at(flow, id).position.y)).toEqual([0, H, 2 * H]);
+      const reversed: Graph = { ...graph, edges: [audio(1, MASTER), drives(1, 3, 5), drives(0, 3, 4), drives(2, 4, 5)] };
+      expect([3, 4, 5].map((id) => at(toFlow(reversed), id).position.y)).toEqual([0, H, 2 * H]);
+      noOverlap(graph);
+    });
+
+    test("is above the one it drives even if it drives a plugin too, over the first of what it drives", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 3, 1, 1), cable(1, 4, 2, 1), drives(2, 3, 4)],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 4).position).toEqual({ x: COLUMN, y: H });
+      // (3 drives the instrument, in column 0, and the modulator 4, in column 1: it is over the first.)
+      expect(at(flow, 3).position).toEqual({ x: 0, y: 0 });
+      noOverlap(graph);
+    });
+
+    test("with nothing else to drive is over the one it drives, wherever that is", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), effect(3, 1), modulator(4, 1), modulator(5, 1), master],
+        edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), cable(0, 5, 3, 1), drives(1, 4, 5)],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 5).position.x).toBe(2 * COLUMN);
+      expect(at(flow, 4).position.x).toBe(2 * COLUMN);
+    });
+
+    test("is laid out, one above the other, when each drives the other: the first in the order of the graph is above", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), modulator(3, 1), modulator(4, 1), master],
+        edges: [audio(1, MASTER), drives(0, 3, 4), drives(1, 4, 3)],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 3).position.y).toBeLessThan(at(flow, 4).position.y);
+      expect(at(flow, 4).position.y + H).toBe(at(flow, 1).position.y);
+      noOverlap(graph);
+    });
+
+    test("is laid out when it drives itself, by a cable that the controller does not allow", () => {
+      const graph: Graph = { nodes: [instrument(1), modulator(3, 1), master], edges: [audio(1, MASTER), drives(0, 3, 3)] };
+      expect(at(toFlow(graph), 3).position.y).toBe(0);
+      expect(at(toFlow(graph), 1).position.y).toBe(H);
+    });
+
+    test("is as tall as the tallest in its row: a MIDI control above an envelope takes the room it needs", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), control(3, 1), envelope(4, 1), master],
+        edges: [audio(1, MASTER), drives(0, 3, 4, "attack")],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 4).position.y).toBe(MODULATOR_HEIGHT + CABLE_GAP);
+      expect(at(flow, 3).position.y).toBe(0);
+      expect(at(flow, 1).position.y).toBe(MODULATOR_HEIGHT + CABLE_GAP + MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
+      noOverlap(graph);
+    });
+
+    test("is not a row of its own when the cable ends where the canvas draws none: the depth of a cable", () => {
+      // 3 drives the effect; 4, which comes after it, drives the depth of that cable.
+      const depth: Edge = { kind: "modulation", id: 1, amount: 0.5, from: { node: 4, port: { type: "modOut" } }, to: { node: 3, port: { type: "depth", edge: 0 } } };
+      const base: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 3, 2, 1)],
+      };
+      const withDepth: Graph = { ...base, edges: [...base.edges, depth] };
+      for (const id of [1, 2, 3, 4, MASTER]) expect(at(toFlow(withDepth), id).position, `node ${String(id)}`).toEqual(at(toFlow(base), id).position);
+    });
+
+    test("lays a rack out as it always was while none of its modulators drives another", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), modulator(5, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 4, 2, 1)],
+      };
+      const flow = toFlow(graph);
+      expect([3, 4, 5].map((id) => at(flow, id).position)).toEqual([
+        { x: 0, y: 0 },
+        { x: COLUMN, y: 0 },
+        { x: 2 * COLUMN, y: 0 },
+      ]);
+      expect(at(flow, 1).position.y).toBe(H);
+    });
+
+    test("is above the one it drives in a group's rack, over the group's row", () => {
+      const graph: Graph = {
+        nodes: [group(10), modulator(11, 10), modulator(12, 10), instrument(1, 3, 10), master],
+        edges: [member(1, 10), audio(10, MASTER), drives(0, 11, 12)],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - H);
+      expect(at(flow, 11).position.y).toBe(at(flow, 12).position.y - H);
+      expect(at(flow, 11).position.y).toBeGreaterThanOrEqual(0);
+      expect(at(flow, 11).position.x).toBe(at(flow, 12).position.x);
+      noOverlap(graph);
+    });
+
+    test("is not a row of its own when it drives a modulator of another strip: a group's of a member lane's", () => {
+      const base: Graph = {
+        nodes: [group(10), modulator(11, 10), instrument(1, 3, 10), modulator(12, 1), master],
+        edges: [member(1, 10), audio(10, MASTER)],
+      };
+      const across: Graph = { ...base, edges: [...base.edges, drives(0, 11, 12)] };
+      for (const id of [10, 11, 1, 12, MASTER]) expect(at(toFlow(across), id).position, `node ${String(id)}`).toEqual(at(toFlow(base), id).position);
+    });
+
+    test("keeps the lanes below one another with room for the rows above each, and no node on another", () => {
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), instrument(5), modulator(6, 5), master],
+        edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER), cable(0, 4, 2, 1), drives(1, 3, 4)],
+      };
+      const flow = toFlow(graph);
+      // The second lane's row is below the first's, which has two rows of modulators above it; its own modulator is above it.
+      expect(at(flow, 1).position.y).toBe(2 * H);
+      expect(at(flow, 6).position.y).toBeGreaterThan(at(flow, 1).position.y);
+      noOverlap(graph);
+    });
+  });
+
   test("have the master to the right of everything, level with the middle of the lanes", () => {
     const flow = toFlow(twoLanes);
     const rects = rectangles(twoLanes);

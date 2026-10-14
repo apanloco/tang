@@ -1,8 +1,9 @@
 // The session as a canvas: which node goes where, and which cable joins which two ports
 // (docs/web-ui.md §9.3). A pure function of the graph the server sends: the layout is a
 // lane strip for each instrument (the instrument, then its effects, left to right), its
-// modulators above the strip, over the plugin each one drives, the groups to the right of
-// the lanes that feed them, and the master at the end. That is where a node is unless the
+// modulators above the strip, over the plugin each one drives (and a modulator that drives
+// the settings of another above that one), the groups to the right of the lanes that feed
+// them, and the master at the end. That is where a node is unless the
 // session says otherwise: a node that has been moved has a place (`Node.ui`, kept in the
 // session file, §4.4), and is drawn there; the layout of the others does not leave room for it.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
@@ -172,7 +173,8 @@ interface Strip {
   head: Node;
   /** The nodes in the row, the head first. */
   row: Node[];
-  modulators: Node[];
+  /** The rows of modulators above the strip's row, the nearest first (`tiersOf`). */
+  tiers: Node[][];
   /** The column of each modulator, from the strip's first. */
   columns: Map<Node, number>;
 }
@@ -181,8 +183,43 @@ interface Strip {
 function stripOf(graph: Graph, head: Node): Strip {
   const children = graph.nodes.filter((node) => node.parent === head.id);
   const row = [head, ...children.filter((node) => node.kind === "effect")];
-  const modulators = children.filter((node) => node.kind === "modulator");
-  return { head, row, modulators, columns: modulatorColumns(graph, row, modulators) };
+  const tiers = tiersOf(graph, children.filter((node) => node.kind === "modulator"));
+  return { head, row, tiers, columns: modulatorColumns(graph, row, tiers) };
+}
+
+/**
+ * The modulators of a rack in rows above its strip, the nearest the strip first. A cable runs from the bottom of a node to the
+ * top of what it drives, so a modulator that drives a setting of another (that the canvas draws a cable to) is a row above it:
+ * a modulator's row is as many above the strip's as the longest chain of modulators it drives (none for one that drives no
+ * other). A rack in which none drives another is one row. A cycle is cut where it is first met, in the order of the graph.
+ */
+function tiersOf(graph: Graph, modulators: readonly Node[]): Node[][] {
+  const drives = new Map<NodeId, NodeId[]>(modulators.map((node) => [node.id, []]));
+  for (const edge of graph.edges) {
+    // (Only the cables of the rack, from one of its modulators to another, that the canvas draws.)
+    if (drives.has(edge.to.node) && handleOf(edge.to.port) !== null) drives.get(edge.from.node)?.push(edge.to.node);
+  }
+  const heights = new Map<NodeId, number>();
+  const visiting = new Set<NodeId>();
+  const heightOf = (id: NodeId): number => {
+    const known = heights.get(id);
+    if (known !== undefined) return known;
+    visiting.add(id);
+    let height = 0;
+    for (const driven of drives.get(id) ?? []) {
+      if (!visiting.has(driven)) height = Math.max(height, heightOf(driven) + 1);
+    }
+    visiting.delete(id);
+    heights.set(id, height);
+    return height;
+  };
+  const tiers: Node[][] = [];
+  for (const modulator of modulators) {
+    const tier = heightOf(modulator.id);
+    tiers[tier] = [...(tiers[tier] ?? []), modulator];
+  }
+  // (A modulator's row is one above the highest of those it drives, so no row between the first and the last is empty.)
+  return tiers;
 }
 
 /**
@@ -193,20 +230,27 @@ function widthOf(strip: Strip): number {
   return Math.max(strip.row.length, ...[...strip.columns.values()].map((column) => column + 1));
 }
 
-/** Where the modulators of a strip go, as columns from its first: above the node each drives, or the first column that is free. */
-function modulatorColumns(graph: Graph, row: readonly Node[], modulators: readonly Node[]): Map<Node, number> {
-  const columnOf = new Map(row.map((node, column) => [node.id, column]));
-  const taken = new Set<number>();
+/**
+ * Where the modulators of a strip go, as columns from its first: above the node each drives (the first of them, if it drives
+ * more than one), or the first column that is free in its row. The rows are placed from the nearest the strip, so that what
+ * a modulator drives of the others is placed before it.
+ */
+function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly Node[][]): Map<Node, number> {
+  const columnOf = new Map<NodeId, number>(row.map((node, column) => [node.id, column]));
   const placed = new Map<Node, number>();
-  for (const modulator of modulators) {
-    const aimed = graph.edges
-      .filter((edge) => edge.from.node === modulator.id)
-      .map((edge) => columnOf.get(edge.to.node))
-      .filter((column): column is number => column !== undefined);
-    let column = aimed.length > 0 ? Math.min(...aimed) : 0;
-    while (taken.has(column)) column += 1;
-    taken.add(column);
-    placed.set(modulator, column);
+  for (const tier of tiers) {
+    const taken = new Set<number>();
+    for (const modulator of tier) {
+      const aimed = graph.edges
+        .filter((edge) => edge.from.node === modulator.id && handleOf(edge.to.port) !== null)
+        .map((edge) => columnOf.get(edge.to.node))
+        .filter((column): column is number => column !== undefined);
+      let column = aimed.length > 0 ? Math.min(...aimed) : 0;
+      while (taken.has(column)) column += 1;
+      taken.add(column);
+      columnOf.set(modulator.id, column);
+      placed.set(modulator, column);
+    }
   }
   return placed;
 }
@@ -219,15 +263,22 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
     placed.set(node.id, { x: column * COLUMN, y });
   };
 
-  /** The room a strip's modulators need above its row: the tallest of them, and the room for a cable. */
-  const aboveOf = (strip: Strip): number => (strip.modulators.length > 0 ? Math.max(...strip.modulators.map(heightOfNode)) + CABLE_GAP : 0);
+  /** The room a row of modulators needs: the tallest of them, and the room for a cable to arrive below it. */
+  const roomOf = (tier: readonly Node[]): number => Math.max(...tier.map(heightOfNode)) + CABLE_GAP;
 
-  /** Put a strip's row from `column` on, its top at `rowTop`, its modulators above it; the y at the bottom of it. */
+  /** The room a strip's modulators need above its row: a row of them for each step of what drives what. */
+  const aboveOf = (strip: Strip): number => strip.tiers.reduce((room, tier) => room + roomOf(tier), 0);
+
+  /** Put a strip's row from `column` on, its top at `rowTop`, its modulators above it, the rows of them from the nearest; the y at the bottom of it. */
   const placeStrip = (strip: Strip, column: number, rowTop: number): number => {
     strip.row.forEach((node, offset) => {
       place(node, column + offset, rowTop);
     });
-    for (const [modulator, offset] of strip.columns) place(modulator, column + offset, rowTop - aboveOf(strip));
+    let below = rowTop;
+    for (const tier of strip.tiers) {
+      below -= roomOf(tier);
+      for (const modulator of tier) place(modulator, column + (strip.columns.get(modulator) ?? 0), below);
+    }
     return rowTop + Math.max(...strip.row.map(heightOfNode)) + ROW_GAP;
   };
 
