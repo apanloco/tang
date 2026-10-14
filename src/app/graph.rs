@@ -330,6 +330,12 @@ impl SessionModel {
         }
     }
 
+    /// Where a target of kind `kind` of a modulator in the rack at `at` points, as a port of a node: how `AddModEdge` names it. `None` if there
+    /// is no such rack, or what the target points at is not there.
+    pub fn endpoint_of(&self, at: ModulatorLocation, kind: &ModTargetKind) -> Option<Endpoint> {
+        self.aim(at, self.modulators(at)?, kind)
+    }
+
     /// Where a target of a modulator in the rack `rack` at `at` points, as a port;
     /// `None` if what it points at is not there (or is not something that rack can
     /// drive).
@@ -839,6 +845,32 @@ depth = 0.1
             modulation(env, at(env, Port::Sustain), env_edges[2], 0.1),
         ];
         assert_eq!(modulation_edges, expected.iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_target_is_named_by_the_endpoint_that_the_graph_draws_its_cable_to_and_what_is_not_there_is_not_named() {
+        use crate::app::testutil::{CABLES_THAT_DRIVE_CABLES, CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS};
+        use crate::plugin::chain::{ModTargetKind, ModulatorLocation};
+        let mut checked = 0;
+        for text in [GROUPS, CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS, CABLES_THAT_DRIVE_CABLES] {
+            let model = load(text).model;
+            let graph = model.graph();
+            let groups = model.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
+            let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
+            for (at, rack) in groups.chain(lanes) {
+                for target in rack.iter().flat_map(|modulator| &modulator.targets) {
+                    let drawn = graph.edges.iter().find(|edge| matches!(edge.kind, EdgeKind::Modulation { id, .. } if id == target.edge)).map(|edge| edge.to);
+                    // (A target that has nothing to drive is not drawn, and is not named either.)
+                    assert_eq!(model.endpoint_of(at, &target.kind), drawn, "{at:?} {:?}", target.kind);
+                    checked += usize::from(drawn.is_some());
+                }
+            }
+        }
+        assert!(checked > 20, "the sessions have cables enough to say something: {checked}");
+        let model = load(GROUPS).model;
+        let param = ModTargetKind::PluginParam { slot: 0, param_index: 0 };
+        assert_eq!(model.endpoint_of(ModulatorLocation::Lane(99), &param), None, "no such rack");
+        assert_eq!(model.endpoint_of(ModulatorLocation::Lane(0), &ModTargetKind::PluginParam { slot: 99, param_index: 0 }), None, "no such plugin");
     }
 
     #[test]

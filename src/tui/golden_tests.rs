@@ -1905,12 +1905,12 @@ fn an_engine_that_clips_lights_the_clip_light_and_one_that_does_not_leaves_it_da
 }
 
 // The ways the TUI makes a modulator or binds a target, pinned command for
-// command and field for field before they move into the controller: the
-// modulate popup (`m` on a parameter), the target selector (`t` on a modulator)
-// and MIDI-learn (`l` on a parameter).
+// command: the modulate popup (`m` on a parameter), the target selector (`t` on a
+// modulator) and MIDI-learn (`l` on a parameter). It asks the controller by the
+// intents a browser asks by (`AddModulator`, `AddModEdge`, `SetEdgeDepth`).
 
-/// What the target selector lists, one line for each row: the cells the list shows, then the label the target is given, the way the
-/// rack addresses it, and its range and where it is centred. A run of plugin parameters (a chain's) is one line, with its first.
+/// What the target selector lists, one line for each row: the cells the list shows, then the label the target is given and the way the
+/// rack addresses it. A run of plugin parameters (a chain's) is one line, with its first.
 fn selector_rows(h: &Harness) -> Vec<String> {
     let selector = h.s.target_selector.as_ref().expect("the selector is open");
     let mut rows: Vec<String> = Vec::new();
@@ -1924,16 +1924,7 @@ fn selector_rows(h: &Harness) -> Vec<String> {
         let row = if is_param {
             format!("params of {}", item.cells[0])
         } else {
-            format!(
-                "{} | {:?} | {} | {:?} | {}..{} at {}",
-                item.cells.join(" | "),
-                entry.slot,
-                entry.label,
-                entry.kind,
-                entry.param_min,
-                entry.param_max,
-                entry.base_value
-            )
+            format!("{} | {} | {:?}", item.cells.join(" | "), entry.label, entry.kind)
         };
         if !(is_param && rows.last() == Some(&row)) {
             rows.push(row);
@@ -1949,13 +1940,13 @@ fn the_target_selector_of_a_lane_modulator_lists_the_chain_and_the_siblings_sett
     h.press(KeyCode::Char('t'));
     let expected: Vec<&str> = vec![
         "params of Oscillator",
-        "Mod | Mod 1 attack | 0 | Mod 1 attack | ModulatorAttack { mod_index: 1 } | 0.001..10 at 0.01",
-        "Mod | Mod 1 decay | 0 | Mod 1 decay | ModulatorDecay { mod_index: 1 } | 0.001..10 at 0.3",
-        "Mod | Mod 1 sustain | 0 | Mod 1 sustain | ModulatorSustain { mod_index: 1 } | 0..1 at 0.4",
-        "Mod | Mod 1 release | 0 | Mod 1 release | ModulatorRelease { mod_index: 1 } | 0.001..10 at 0.5",
-        "Mod | Mod 1 volume depth | 0 | Mod 1 volume depth | ModulatorDepth { mod_index: 1, target_index: 0 } | -1..1 at 0.2",
-        "Mod | Mod 1 detune depth | 0 | Mod 1 detune depth | ModulatorDepth { mod_index: 1, target_index: 1 } | -1..1 at 0.7",
-        "Mod | Mod 2 pan depth | 0 | Mod 2 pan depth | ModulatorDepth { mod_index: 2, target_index: 0 } | -1..1 at 0.3",
+        "Mod | Mod 1 attack | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
+        "Mod | Mod 1 decay | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
+        "Mod | Mod 1 sustain | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
+        "Mod | Mod 1 release | Mod 1 release | ModulatorRelease { mod_index: 1 }",
+        "Mod | Mod 1 volume depth | Mod 1 volume depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
+        "Mod | Mod 1 detune depth | Mod 1 detune depth | ModulatorDepth { mod_index: 1, target_index: 1 }",
+        "Mod | Mod 2 pan depth | Mod 2 pan depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
     ];
     assert_eq!(selector_rows(&h), expected);
 }
@@ -1968,23 +1959,23 @@ fn the_target_selector_of_a_group_modulator_lists_the_members_the_members_modula
     let expected: Vec<&str> = vec![
         "params of M0 Oscillator",
         "params of M1 Oscillator",
-        "M0 Mod0 | rate | 0 | M0 Mod0 rate | GroupMemberMod { member: 0, mod_index: 0, field: Rate } | 0.01..50 at 3",
-        "M0 Mod0 | detune depth | 0 | M0 Mod0 detune depth | GroupMemberMod { member: 0, mod_index: 0, field: Depth(0) } | -1..1 at 0.1",
-        "M0 Mod1 | attack | 0 | M0 Mod1 attack | GroupMemberMod { member: 0, mod_index: 1, field: Attack } | 0.001..10 at 0.01",
-        "M0 Mod1 | decay | 0 | M0 Mod1 decay | GroupMemberMod { member: 0, mod_index: 1, field: Decay } | 0.001..10 at 0.3",
-        "M0 Mod1 | sustain | 0 | M0 Mod1 sustain | GroupMemberMod { member: 0, mod_index: 1, field: Sustain } | 0..1 at 0.4",
-        "M0 Mod1 | release | 0 | M0 Mod1 release | GroupMemberMod { member: 0, mod_index: 1, field: Release } | 0.001..10 at 0.5",
-        "M0 Mod1 | volume depth | 0 | M0 Mod1 volume depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) } | -1..1 at 0.2",
-        "M0 Mod1 | detune depth | 0 | M0 Mod1 detune depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(1) } | -1..1 at 0.7",
-        "M0 Mod2 | pan depth | 0 | M0 Mod2 pan depth | GroupMemberMod { member: 0, mod_index: 2, field: Depth(0) } | -1..1 at 0.3",
-        "M1 Mod0 | rate | 0 | M1 Mod0 rate | GroupMemberMod { member: 1, mod_index: 0, field: Rate } | 0.01..50 at 1",
+        "M0 Mod0 | rate | M0 Mod0 rate | GroupMemberMod { member: 0, mod_index: 0, field: Rate }",
+        "M0 Mod0 | detune depth | M0 Mod0 detune depth | GroupMemberMod { member: 0, mod_index: 0, field: Depth(0) }",
+        "M0 Mod1 | attack | M0 Mod1 attack | GroupMemberMod { member: 0, mod_index: 1, field: Attack }",
+        "M0 Mod1 | decay | M0 Mod1 decay | GroupMemberMod { member: 0, mod_index: 1, field: Decay }",
+        "M0 Mod1 | sustain | M0 Mod1 sustain | GroupMemberMod { member: 0, mod_index: 1, field: Sustain }",
+        "M0 Mod1 | release | M0 Mod1 release | GroupMemberMod { member: 0, mod_index: 1, field: Release }",
+        "M0 Mod1 | volume depth | M0 Mod1 volume depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) }",
+        "M0 Mod1 | detune depth | M0 Mod1 detune depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(1) }",
+        "M0 Mod2 | pan depth | M0 Mod2 pan depth | GroupMemberMod { member: 0, mod_index: 2, field: Depth(0) }",
+        "M1 Mod0 | rate | M1 Mod0 rate | GroupMemberMod { member: 1, mod_index: 0, field: Rate }",
         "params of Bus Reverb",
-        "Mod | Mod 1 attack | 0 | Mod 1 attack | ModulatorAttack { mod_index: 1 } | 0.001..10 at 0.2",
-        "Mod | Mod 1 decay | 0 | Mod 1 decay | ModulatorDecay { mod_index: 1 } | 0.001..10 at 0.3",
-        "Mod | Mod 1 sustain | 0 | Mod 1 sustain | ModulatorSustain { mod_index: 1 } | 0..1 at 0.7",
-        "Mod | Mod 1 release | 0 | Mod 1 release | ModulatorRelease { mod_index: 1 } | 0.001..10 at 0.5",
-        "Mod | Mod 1 damping depth | 0 | Mod 1 damping depth | ModulatorDepth { mod_index: 1, target_index: 0 } | -1..1 at 0.25",
-        "Mod | Mod 2 volume depth | 0 | Mod 2 volume depth | ModulatorDepth { mod_index: 2, target_index: 0 } | -1..1 at 1",
+        "Mod | Mod 1 attack | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
+        "Mod | Mod 1 decay | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
+        "Mod | Mod 1 sustain | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
+        "Mod | Mod 1 release | Mod 1 release | ModulatorRelease { mod_index: 1 }",
+        "Mod | Mod 1 damping depth | Mod 1 damping depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
+        "Mod | Mod 2 volume depth | Mod 2 volume depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
     ];
     assert_eq!(selector_rows(&h), expected);
 }
@@ -2052,16 +2043,27 @@ fn the_modulate_popup_can_make_an_envelope_instead() {
 #[test]
 fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Down); // the filter's resonance, which the bass's LFO does not drive
     h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]"],
+        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"],
         "no new modulator, a second target on the bass's LFO"
     );
     let modulators = &h.s.ctl.model.instruments[2].modulators;
     assert_eq!(modulators.len(), 1);
     assert_eq!(target_fields(&modulators[0].targets).len(), 2);
-    assert_eq!(target_fields(&modulators[0].targets)[1].1, "cutoff");
+    assert_eq!(target_fields(&modulators[0].targets)[1].1, "resonance");
+}
+
+#[test]
+fn the_modulate_popup_does_not_attach_a_parameter_to_a_modulator_that_drives_it_already() {
+    // (The controller refuses the second cable between the two, in the browser as here.)
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+    assert!(h.commands().is_empty());
+    assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the LFO's cable to the cutoff, and no more");
+    assert_eq!(h.s.ctl.history_state().undo, None);
 }
 
 #[test]
@@ -2102,18 +2104,18 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
     );
 
     // Further down the list are the lane's effects: the oscillator's eight
-    // parameters, then the filter's `cutoff` (chain slot 1).
+    // parameters, then the filter's `cutoff` (which the LFO drives already: the controller refuses a second cable) and its `resonance` (chain slot 1).
     h.goto(TreeAddress::Modulator { inst: 2, index: 0 });
-    h.press(KeyCode::Char('t')).press_n(KeyCode::Down, 8).press(KeyCode::Enter);
+    h.press(KeyCode::Char('t')).press_n(KeyCode::Down, 9).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]"]
+        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"]
     );
     let bound = target_fields(&h.s.ctl.model.instruments[2].modulators[0].targets);
     assert_eq!(bound.len(), 3);
     assert_eq!(
         bound[2],
-        (1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 0.5, 0.0, 1.0),
+        (1, "resonance".to_string(), "PluginParam { slot: 1, param_index: 1 }".to_string(), 0.5, 0.5, 10.0),
         "the chain slot of a filter's parameter is 1"
     );
 
@@ -2132,6 +2134,32 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
 }
 
 #[test]
+fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_it_has_in_its_rack() {
+    // The envelope, the second of three in the first lane of the session.
+    let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
+    h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+    h.press(KeyCode::Char('t')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
+    );
+    assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
+}
+
+#[test]
+fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_whichever_place_it_has_in_its_rack() {
+    // The envelope again: the popup lists a new LFO, a new envelope, and then the three that are there.
+    let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
+    );
+    assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
+}
+
+#[test]
 fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
     let mut h = on_the_bass_filters_cutoff();
     h.press(KeyCode::Char('l'));
@@ -2139,7 +2167,8 @@ fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
         h.commands(),
         [
             "InsertModulator inst=2 index=1 source=MidiLearn { source: None, value: 0.0, learning: true }",
-            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=1.000 base=0.350 range=[0.000, 1.000]",
+            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
+            "SetModTargetDepth inst=2 mod=1 target=0 depth=1.000",
         ]
     );
     let armed = &h.s.ctl.model.instruments[2].modulators[1];
@@ -2157,7 +2186,8 @@ fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
         h.commands(),
         [
             "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
-            "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=1.000 base=0.880 range=[0.100, 0.990]",
+            "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
+            "SetGroupModTargetDepth group=0 mod=2 target=0 depth=1.000",
         ]
     );
     assert_eq!(h.s.ctl.model.groups[0].modulators[2].targets.len(), 1);
@@ -4581,6 +4611,120 @@ mod undo_and_redo {
         h.press(KeyCode::Esc).goto(TreeAddress::Group(0));
         h.press(KeyCode::Char('a')).type_chars("vanish").press(KeyCode::Enter);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("set cutoff"), "no step for what was refused, and nothing forgotten");
+    }
+
+    #[test]
+    fn the_modulate_popup_with_a_new_lfo_is_one_step_that_ctrl_z_takes_out_whole_and_ctrl_y_puts_back() {
+        let mut h = on_the_bass_filters_cutoff();
+        let before = h.s.ctl.model.graph();
+        h.press(KeyCode::Char('m')).press(KeyCode::Enter);
+        let after = h.s.ctl.model.graph();
+        assert_ne!(before, after);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the LFO and the cable to it are one thing");
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(h.s.ctl.model.graph(), before);
+        assert_eq!(h.s.ctl.model.instruments[2].modulators.len(), 1, "the LFO the scene has");
+        assert_eq!(h.commands().len(), 2, "the cable goes, and the LFO");
+        ctrl_y(&mut h);
+        assert_eq!(h.s.ctl.model.graph(), after);
+        assert_eq!(h.commands().len(), 2, "the LFO is made again, and the cable to it");
+    }
+
+    #[test]
+    fn the_modulate_popup_with_a_modulator_that_is_there_is_a_step_of_a_cable() {
+        let mut h = on_the_bass_filters_cutoff();
+        h.press(KeyCode::Down); // the filter's resonance
+        h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("draw a cable"));
+        ctrl_z(&mut h);
+        assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the cable of the LFO that was there");
+    }
+
+    #[test]
+    fn learning_a_parameter_is_one_step_and_ctrl_z_takes_the_armed_modulator_out_with_its_cable() {
+        let mut h = on_the_bass_filters_cutoff();
+        let before = h.s.ctl.model.graph();
+        h.press(KeyCode::Char('l'));
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("learn cutoff"));
+        let after = h.s.ctl.model.graph();
+        ctrl_z(&mut h);
+        assert_eq!(h.s.ctl.model.graph(), before);
+        ctrl_y(&mut h);
+        assert_eq!(h.s.ctl.model.graph(), after);
+        let armed = &h.s.ctl.model.instruments[2].modulators[1];
+        assert_eq!(armed.targets[0].depth, 1.0, "at full depth, as it was learned");
+    }
+
+    #[test]
+    fn the_target_selector_makes_a_step_of_the_cable_it_draws() {
+        let mut h = Harness::new(scene_group());
+        h.goto(TreeAddress::Modulator { inst: 2, index: 0 });
+        let before = h.s.ctl.model.instruments[2].modulators[0].targets.len();
+        h.press(KeyCode::Char('t')).press(KeyCode::Enter);
+        assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), before + 1);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("draw a cable"));
+        ctrl_z(&mut h);
+        assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), before);
+    }
+
+    #[test]
+    fn m_on_an_instrument_adds_an_lfo_that_ctrl_z_takes_out() {
+        let mut h = Harness::new(scene_split());
+        h.goto(TreeAddress::Instrument(1));
+        let before = h.s.ctl.model.instruments[1].modulators.len();
+        h.press(KeyCode::Char('m'));
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add an LFO"));
+        ctrl_z(&mut h);
+        assert_eq!(h.s.ctl.model.instruments[1].modulators.len(), before);
+    }
+
+    #[test]
+    fn shift_down_on_an_effect_is_a_step_that_ctrl_z_puts_back_and_ctrl_y_does_again() {
+        let mut h = Harness::new(scene_two_effects());
+        let names = |h: &Harness| h.s.ctl.model.instruments[0].effects.iter().map(|fx| fx.name.clone()).collect::<Vec<_>>();
+        let before = names(&h);
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+        let moved = names(&h);
+        assert_ne!(moved, before, "the effects are in the other order");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("move an effect"));
+        ctrl_z(&mut h);
+        assert_eq!(names(&h), before);
+        ctrl_y(&mut h);
+        assert_eq!(names(&h), moved);
+    }
+
+    #[test]
+    fn shift_up_on_a_bus_effect_is_a_step_too() {
+        let mut h = Harness::new(scene_bus_pair());
+        // A third effect on the bus, so that one place up is not the first place.
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        let group = h.s.ctl.model.groups[0].node;
+        h.s.ctl.apply(Intent::AddEffect { parent: group, plugin: "builtin:reverb".to_string() }).unwrap();
+        h.s.rebuild_tree();
+        let order = |h: &Harness| h.s.ctl.model.groups[0].effects.iter().map(|fx| fx.node).collect::<Vec<_>>();
+        let before = order(&h);
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 2 });
+        h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+        let moved = order(&h);
+        assert_eq!(moved, [before[0], before[2], before[1]], "one place up");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("move an effect"));
+        ctrl_z(&mut h);
+        assert_eq!(order(&h), before);
+        ctrl_y(&mut h);
+        assert_eq!(order(&h), moved);
+    }
+
+    #[test]
+    fn shift_up_on_the_first_effect_and_shift_down_on_the_last_move_nothing_and_leave_no_step() {
+        let mut h = Harness::new(scene_two_effects());
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+        h.goto(TreeAddress::Effect { inst: 0, index: 1 });
+        h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+        assert_eq!(h.s.ctl.history_state().undo, None);
+        assert!(h.commands().is_empty());
     }
 
     #[test]

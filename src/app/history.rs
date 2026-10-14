@@ -130,6 +130,34 @@ impl History {
         had
     }
 
+    /// How many steps can be undone.
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// The steps that were recorded after the first `mark` become one step, `label`: it goes back through them in the reverse order and does
+    /// them again in the order they were done, the nodes and the cables that they make under the ids they made them under. Nothing is joined
+    /// unless there are two or more of them.
+    pub fn join_above(&mut self, mark: usize, label: &str) {
+        if self.undo.len() < mark + 2 {
+            return;
+        }
+        let steps = self.undo.split_off(mark);
+        let Some(last) = steps.last().map(|step| step.last) else { return };
+        let mut joined = Step { label: label.to_string(), undo: Vec::new(), redo: Vec::new(), key: None, last, undo_made: Made::default(), redo_made: Made::default() };
+        for step in &steps {
+            joined.redo.extend(step.redo.iter().cloned());
+            joined.redo_made.nodes.extend(&step.redo_made.nodes);
+            joined.redo_made.edges.extend(&step.redo_made.edges);
+        }
+        for step in steps.iter().rev() {
+            joined.undo.extend(step.undo.iter().cloned());
+            joined.undo_made.nodes.extend(&step.undo_made.nodes);
+            joined.undo_made.edges.extend(&step.undo_made.edges);
+        }
+        self.undo.push(joined);
+    }
+
     /// What Undo and Redo would do.
     #[cfg(any(test, feature = "web"))]
     pub fn state(&self) -> HistoryState {
@@ -164,6 +192,19 @@ impl Controller {
     #[cfg(any(test, feature = "web"))]
     pub fn history_state(&self) -> HistoryState {
         self.history.state()
+    }
+
+    /// Where the history is now, for `join_steps_since`: how many steps can be undone.
+    pub fn history_mark(&self) -> usize {
+        self.history.undo_len()
+    }
+
+    /// Make one step, `label`, of the steps that were recorded since `mark`, so that one thing a person asks for that takes several intents (a new
+    /// modulator and a cable to it) is one thing to undo: it goes back through them in the reverse order and does them again in the order they were
+    /// done. A step that was merged into one before the mark stays in that one, and what cannot be undone has forgotten the history as it does
+    /// anywhere (there is nothing to join then). One step, or none, is left as it is.
+    pub fn join_steps_since(&mut self, mark: usize, label: &str) {
+        self.history.join_above(mark, label);
     }
 
     /// Put back what the last step that can be undone did. Refused if there is none, or if what it names is not there any more
@@ -1616,6 +1657,120 @@ rate = 3.0
         set_detune(&mut ctl, 1.0);
         ctl.put_instrument(0, "builtin:osc").unwrap();
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+    }
+
+    /// Run `f` and make one step of what it did, as a front-end does.
+    fn as_one_step<T>(ctl: &mut Controller, label: &str, f: impl FnOnce(&mut Controller) -> T) -> T {
+        let mark = ctl.history_mark();
+        let answer = f(ctl);
+        ctl.join_steps_since(mark, label);
+        answer
+    }
+
+    /// A modulator for lane 0 and a cable from it to the filter's resonance: two intents, made one step by the caller.
+    fn modulate_the_filter(ctl: &mut Controller) {
+        use crate::app::graph::{Endpoint, Port};
+        use crate::app::intent::ModulatorKind;
+        let (lane0, filter) = (lane(ctl), node(ctl, NodePath::Effect { inst: 0, index: 1 }));
+        let (resonance, _) = param(ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
+        ctl.apply(Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo }).unwrap();
+        let lfo = ctl.last_made().nodes[0];
+        ctl.apply(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: filter, port: Port::Param { index: resonance } } }).unwrap();
+    }
+
+    #[test]
+    fn what_is_done_as_one_step_is_undone_and_redone_at_once_each_in_its_order_and_under_its_ids() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let before = ctl.model.graph();
+        as_one_step(&mut ctl, "modulate the resonance", modulate_the_filter);
+        let after = ctl.model.graph();
+        assert_ne!(before, after);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("modulate the resonance"));
+
+        // One undo takes out the cable and then the modulator, and what came before is next.
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.graph(), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("set detune"), Some("modulate the resonance")));
+        // One redo puts the modulator back and then the cable to it, under the ids they had.
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.graph(), after);
+        ctl.model.check_ids().unwrap();
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(detune(&ctl).1, 0.0, "and what was done before it is put back after");
+    }
+
+    #[test]
+    fn what_is_done_as_one_step_leaves_one_step_even_when_it_made_three_and_hands_back_what_it_returns() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let answer = as_one_step(&mut ctl, "three things", |ctl| {
+            set_detune(ctl, 1.0);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            modulate_the_filter(ctl);
+            42
+        });
+        assert_eq!(answer, 42);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("three things"));
+        ctl.undo().unwrap();
+        assert_eq!(undo_label(&ctl), None, "all of them were in it");
+        assert_eq!(detune(&ctl).1, 0.0);
+        assert_eq!(ctl.piano_filter.mode(), crate::piano_filter::PianoMode::Highlight);
+        assert!(ctl.model.instruments[0].modulators.len() == 2);
+    }
+
+    #[test]
+    fn what_is_done_as_one_step_that_made_one_step_or_none_is_left_as_it_is() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        as_one_step(&mut ctl, "nothing", |_| {});
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+        as_one_step(&mut ctl, "one thing", |ctl| {
+            set_detune(ctl, 1.0);
+        });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "one step keeps its own words");
+    }
+
+    #[test]
+    fn what_is_done_as_one_step_leaves_the_steps_before_it_alone_and_a_barrier_in_it_forgets_all() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        as_one_step(&mut ctl, "modulate, and take out", |ctl| {
+            modulate_the_filter(ctl);
+            let edge = ctl.model.instruments[0].modulators.last().unwrap().targets[0].edge;
+            ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        });
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "the barrier forgot what came before it, and what was done as one step with it");
+    }
+
+    #[test]
+    fn a_step_that_was_made_of_several_is_never_merged_with_what_is_done_after_it() {
+        let (_engine, mut ctl, _clock) = controller();
+        as_one_step(&mut ctl, "two things", |ctl| {
+            set_detune(ctl, 1.0);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        });
+        // The same knob again, soon after: a step of its own, and not part of the step that has the first change of it among others.
+        set_detune(&mut ctl, 2.0);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"));
+        ctl.undo().unwrap();
+        assert_eq!(detune(&ctl).1, 1.0);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("two things"));
+    }
+
+    #[test]
+    fn what_was_merged_into_an_older_step_stays_in_it_when_the_rest_is_made_one_step() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        set_detune(&mut ctl, 1.0);
+        as_one_step(&mut ctl, "modulate", |ctl| {
+            set_detune(ctl, 2.0); // (the same knob a moment later: merged into the step that is there, which is not part of this one)
+            modulate_the_filter(ctl);
+        });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("modulate"));
+        ctl.undo().unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"));
+        assert_eq!(detune(&ctl).1, 2.0, "the second turn of the knob is in the step it was merged into");
     }
 
     #[test]

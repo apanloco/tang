@@ -32,12 +32,12 @@ use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
-use crate::app::controller::{Controller, NewTarget};
+use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
-use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
+use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind};
 use crate::app::model::{
-    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
+    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
@@ -260,13 +260,7 @@ impl GainEditState {
 /// One entry in the target selector popup.
 struct TargetEntry {
     label: String,
-    /// Chain slot for plugin-param entries (0 = instrument, 1..N = effect);
-    /// 0 and unused for cross-mod entries.
-    slot: usize,
     kind: crate::plugin::chain::ModTargetKind,
-    param_min: f32,
-    param_max: f32,
-    base_value: f32,
 }
 
 struct TargetSelectorState {
@@ -288,20 +282,20 @@ enum ModulateChoice {
     Existing(usize),
 }
 
+/// The modulator that drives something: one that is made for it, or one that is there (its place in its rack).
+#[derive(Clone, Copy)]
+enum Driver {
+    New(ModulatorKind),
+    Existing(usize),
+}
+
 /// State for the "modulate <param>" popup.
 struct ModulateState {
     /// Which modulator rack a created/attached modulator lives in.
     scope: ModulatorLocation,
-    /// Chain slot the parameter lives on (0 = instrument, 1..N = effect);
-    /// used for the model's display label only.
-    slot: usize,
     /// The target kind to bind (PluginParam for lanes, GroupBus for groups).
     target_kind: crate::plugin::chain::ModTargetKind,
     param_name: String,
-    param_min: f32,
-    param_max: f32,
-    /// Current value of the parameter, used as the modulation base.
-    base_value: f32,
     choices: Vec<ModulateChoice>,
     filter: FilterListState,
     items: Vec<FilterListItem>,
@@ -773,35 +767,36 @@ impl State {
         // the chain's, leaves the session as it was: the controller says why.)
         let source = entry.id.clone();
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
-        let (intent, refusal) = match sel.mode {
+        let intent = match sel.mode {
             SelectorMode::Instrument => {
                 let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
-                (Intent::ReplaceInstrument { node: lane.node, plugin: source.clone() }, format!("Cannot put '{source}' in the lane"))
+                Intent::ReplaceInstrument { node: lane.node, plugin: source }
             }
             SelectorMode::Effect => {
                 let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
-                (Intent::AddEffect { parent: lane.node, plugin: source.clone() }, format!("Cannot add '{source}'"))
+                Intent::AddEffect { parent: lane.node, plugin: source }
             }
             SelectorMode::GroupEffect(group) => {
                 let Some(bus) = self.ctl.model.groups.get(group) else { return };
-                (Intent::AddEffect { parent: bus.node, plugin: source.clone() }, format!("Cannot add '{source}' to the bus"))
+                Intent::AddEffect { parent: bus.node, plugin: source }
             }
         };
-        if let Err(e) = self.ctl.apply(intent) {
-            log::error!("{refusal}: {e}");
-            return;
-        }
+        self.apply(intent);
+    }
 
-        self.rebuild_tree();
+    /// Move an effect to place `to` of its chain (a lane's or a group's bus), by the intent that a browser's buttons ask for: a step of the
+    /// history. The cursor follows the effect it was on.
+    fn move_effect_to(&mut self, node: Option<NodeId>, to: usize) {
+        if let Some(node) = node {
+            self.apply(Intent::MoveEffect { node, index: to as u32 });
+        }
     }
 
     /// Take a node out, by the intent that a browser's "x" asks for: nothing puts it back yet, so the history is forgotten. (A
     /// session keeps a lane: the last one is refused.)
     fn remove_node(&mut self, node: Option<NodeId>) {
-        let Some(node) = node else { return };
-        match self.ctl.apply(Intent::RemoveNode { node }) {
-            Ok(_) => self.rebuild_tree(),
-            Err(e) => log::warn!("Cannot take the node out: {e}"),
+        if let Some(node) = node {
+            self.apply(Intent::RemoveNode { node });
         }
     }
 
@@ -827,11 +822,7 @@ impl State {
             items.push(FilterListItem { cells: vec![t.plugin_name, t.param_name.clone()], index: idx });
             entries.push(TargetEntry {
                 label: t.param_name,
-                slot: t.slot,
                 kind: t.kind,
-                param_min: t.param_min,
-                param_max: t.param_max,
-                base_value: t.base_value,
             });
         }
 
@@ -841,11 +832,7 @@ impl State {
             items.push(FilterListItem { cells: vec!["Mod".into(), t.label.clone()], index: idx });
             entries.push(TargetEntry {
                 label: t.label,
-                slot: 0,
                 kind: t.kind,
-                param_min: t.param_min,
-                param_max: t.param_max,
-                base_value: t.base_value,
             });
         }
 
@@ -871,22 +858,8 @@ impl State {
             None => return,
         };
         let entry = &ts.entries[chosen];
-
-        self.ctl.add_target(
-            ts.scope,
-            ts.mod_index,
-            NewTarget {
-                kind: entry.kind.clone(),
-                slot: entry.slot,
-                param_name: entry.label.clone(),
-                depth: NEW_CABLE_DEPTH,
-                base_value: entry.base_value,
-                param_min: entry.param_min,
-                param_max: entry.param_max,
-            },
-        );
-        self.ctl.dirty = true;
-        self.rebuild_tree();
+        let label = format!("modulate {}", entry.label);
+        self.bind(ts.scope, Driver::Existing(ts.mod_index), &entry.kind, None, &label);
     }
 
     /// Open the "modulate <param>" popup for the parameter currently selected
@@ -910,8 +883,7 @@ impl State {
             Some(p) => p,
             None => return,
         };
-        let (param_index, param_name, param_min, param_max, base_value) =
-            (param.index, param.name.clone(), param.min, param.max, param.value);
+        let (param_index, param_name) = (param.index, param.name.clone());
 
         // Choices: new LFO, new envelope, then each existing lane modulator.
         let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
@@ -932,15 +904,11 @@ impl State {
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
             scope: ModulatorLocation::Lane(inst),
-            slot,
             target_kind: crate::plugin::chain::ModTargetKind::PluginParam {
                 slot,
                 param_index,
             },
             param_name,
-            param_min,
-            param_max,
-            base_value,
             choices,
             filter,
             items,
@@ -971,7 +939,7 @@ impl State {
             };
             m.and_then(|m| modulator_row_to_cross_mod(m, mod_index, pa))
         };
-        let Some((kind, param_min, param_max, base_value, param_name)) = resolved else {
+        let Some((kind, _, _, _, param_name)) = resolved else {
             return;
         };
 
@@ -1005,12 +973,8 @@ impl State {
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
             scope,
-            slot: 0, // unused for cross-mod target kinds
             target_kind: kind,
             param_name,
-            param_min,
-            param_max,
-            base_value,
             choices,
             filter,
             items,
@@ -1027,31 +991,59 @@ impl State {
             None => return,
         };
 
-        // Resolve the target modulator index, creating one in the right rack if
-        // requested.
-        let created = match choice {
-            ModulateChoice::NewLfo => self.ctl.add_modulator(ms.scope, ModSourceSlot::new_lfo()),
-            ModulateChoice::NewEnvelope => self.ctl.add_modulator(ms.scope, ModSourceSlot::new_envelope()),
-            ModulateChoice::Existing(i) => Some(i),
+        // The modulator that drives the parameter: a new one in the right rack, or one that is there.
+        let driver = match choice {
+            ModulateChoice::NewLfo => Driver::New(ModulatorKind::Lfo),
+            ModulateChoice::NewEnvelope => Driver::New(ModulatorKind::Envelope),
+            ModulateChoice::Existing(i) => Driver::Existing(i),
         };
-        let Some(mod_index) = created else { return };
+        let label = format!("modulate {}", ms.param_name);
+        self.bind(ms.scope, driver, &ms.target_kind, None, &label);
+    }
 
-        // Bind the parameter as a target of that modulator.
-        self.ctl.add_target(
-            ms.scope,
-            mod_index,
-            NewTarget {
-                kind: ms.target_kind,
-                slot: ms.slot,
-                param_name: ms.param_name,
-                depth: NEW_CABLE_DEPTH,
-                base_value: ms.base_value,
-                param_min: ms.param_min,
-                param_max: ms.param_max,
-            },
-        );
-        self.ctl.dirty = true;
-        self.rebuild_tree();
+    /// A modulator of the rack at `scope`, a new one or one that is there, drives what `kind` names (the parameter of a plugin, or the setting of
+    /// another modulator): by the intents a browser asks for, a new modulator and the cable to it being one thing to undo (`label`). `depth` is the
+    /// depth the cable has if it is not the one a new cable has.
+    fn bind(&mut self, scope: ModulatorLocation, driver: Driver, kind: &crate::plugin::chain::ModTargetKind, depth: Option<f32>, label: &str) {
+        let Some(to) = self.ctl.model.endpoint_of(scope, kind) else { return };
+        let owner = match scope {
+            ModulatorLocation::Lane(inst) => self.ctl.model.instruments.get(inst).map(|lane| lane.node),
+            ModulatorLocation::Group(group) => self.ctl.model.groups.get(group).map(|bus| bus.node),
+        };
+        let Some(owner) = owner else { return };
+        self.as_one_step(label, |s| {
+            let index = match driver {
+                Driver::Existing(index) => index,
+                Driver::New(kind) => {
+                    if s.apply(Intent::AddModulator { parent: owner, kind }).is_none() {
+                        return;
+                    }
+                    // (A new modulator is the last of its rack.)
+                    match s.ctl.model.modulators(scope).map(|rack| rack.len()) {
+                        Some(len) if len > 0 => len - 1,
+                        _ => return,
+                    }
+                }
+            };
+            let Some(modulator) = s.ctl.model.modulators(scope).and_then(|rack| rack.get(index)).map(|m| m.node) else { return };
+            if s.apply(Intent::AddModEdge { modulator, to }).is_none() {
+                return;
+            }
+            if let Some(depth) = depth {
+                // (The cable that was just drawn is the last of its modulator.)
+                let edge = s.ctl.model.modulators(scope).and_then(|rack| rack.get(index)).and_then(|m| m.targets.last()).map(|target| target.edge);
+                if let Some(edge) = edge {
+                    s.apply(Intent::SetEdgeDepth { edge, depth });
+                }
+            }
+        });
+    }
+
+    /// Run `f`, and make one step of the history of what it did: one thing that a key asks for that takes several intents is one thing to undo.
+    fn as_one_step(&mut self, label: &str, f: impl FnOnce(&mut State)) {
+        let mark = self.ctl.history_mark();
+        f(self);
+        self.ctl.join_steps_since(mark, label);
     }
 
     /// Open the target selector for a group modulator. Candidate targets span
@@ -1073,11 +1065,7 @@ impl State {
             let idx = entries.len();
             entries.push(TargetEntry {
                 label: t.param_name.clone(),
-                slot: t.slot,
                 kind: t.kind.clone(),
-                param_min: t.param_min,
-                param_max: t.param_max,
-                base_value: t.base_value,
             });
             items.push(FilterListItem { cells: vec![format!("M{member} {}", t.plugin_name), t.param_name.clone()], index: idx });
         }
@@ -1088,11 +1076,7 @@ impl State {
             let idx = entries.len();
             entries.push(TargetEntry {
                 label: t.label.clone(),
-                slot: 0,
                 kind: t.kind.clone(),
-                param_min: t.param_min,
-                param_max: t.param_max,
-                base_value: t.base_value,
             });
             items.push(FilterListItem { cells: vec![t.owner.clone(), t.field_name.clone()], index: idx });
         }
@@ -1102,11 +1086,7 @@ impl State {
             let idx = entries.len();
             entries.push(TargetEntry {
                 label: t.param_name.clone(),
-                slot: t.slot,
                 kind: t.kind.clone(),
-                param_min: t.param_min,
-                param_max: t.param_max,
-                base_value: t.base_value,
             });
             items.push(FilterListItem { cells: vec![format!("Bus {}", t.plugin_name), t.param_name.clone()], index: idx });
         }
@@ -1117,11 +1097,7 @@ impl State {
             items.push(FilterListItem { cells: vec!["Mod".into(), t.label.clone()], index: idx });
             entries.push(TargetEntry {
                 label: t.label,
-                slot: 0,
                 kind: t.kind,
-                param_min: t.param_min,
-                param_max: t.param_max,
-                base_value: t.base_value,
             });
         }
 
@@ -1156,8 +1132,7 @@ impl State {
             Some(p) => p,
             None => return,
         };
-        let (param_index, param_name, param_min, param_max, base_value) =
-            (param.index, param.name.clone(), param.min, param.max, param.value);
+        let (param_index, param_name) = (param.index, param.name.clone());
 
         let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
         let mut items = vec![
@@ -1177,15 +1152,11 @@ impl State {
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
             scope: ModulatorLocation::Group(group),
-            slot: 0,
             target_kind: crate::plugin::chain::ModTargetKind::GroupBus {
                 effect_index: eff_idx,
                 param_index,
             },
             param_name,
-            param_min,
-            param_max,
-            base_value,
             choices,
             filter,
             items,
@@ -1205,8 +1176,8 @@ impl State {
         }
         let addr = self.tree_entries[sel].address;
 
-        // (scope, target kind, min, max, base value, label)
-        let (scope, kind, min, max, base, label): (ModulatorLocation, ModTargetKind, f32, f32, f32, String) =
+        // (scope, target kind, label)
+        let (scope, kind, label): (ModulatorLocation, ModTargetKind, String) =
             match addr {
                 TreeAddress::Instrument(inst) | TreeAddress::Effect { inst, .. } => {
                     let pa = match self.real_param_index() {
@@ -1219,7 +1190,7 @@ impl State {
                     (
                         ModulatorLocation::Lane(inst),
                         ModTargetKind::PluginParam { slot: addr.slot(), param_index: p.index },
-                        p.min, p.max, p.value, p.name.clone(),
+                        p.name.clone(),
                     )
                 }
                 TreeAddress::GroupEffect { group, index } => {
@@ -1233,49 +1204,33 @@ impl State {
                     (
                         ModulatorLocation::Group(group),
                         ModTargetKind::GroupBus { effect_index: index, param_index: p.index },
-                        p.min, p.max, p.value, p.name.clone(),
+                        p.name.clone(),
                     )
                 }
                 TreeAddress::Modulator { inst, index } => {
                     let Some(m) = self.modulator(inst, index) else { return };
-                    let Some((kind, min, max, base, label)) =
+                    let Some((kind, _, _, _, label)) =
                         modulator_row_to_cross_mod(m, index, self.param_state.selected)
                     else {
                         return;
                     };
-                    (ModulatorLocation::Lane(inst), kind, min, max, base, label)
+                    (ModulatorLocation::Lane(inst), kind, label)
                 }
                 TreeAddress::GroupModulator { group, index } => {
                     let Some(m) = self.group_modulator(group, index) else { return };
-                    let Some((kind, min, max, base, label)) =
+                    let Some((kind, _, _, _, label)) =
                         modulator_row_to_cross_mod(m, index, self.param_state.selected)
                     else {
                         return;
                     };
-                    (ModulatorLocation::Group(group), kind, min, max, base, label)
+                    (ModulatorLocation::Group(group), kind, label)
                 }
                 _ => return,
             };
 
-        // Create an armed MidiLearn modulator in the right rack.
-        let Some(mod_index) = self.ctl.add_modulator(scope, ModSourceSlot::new_midi_learn()) else { return };
-
-        // Bind the target (depth 1.0 = full-range absolute control).
-        self.ctl.add_target(
-            scope,
-            mod_index,
-            NewTarget {
-                kind,
-                slot: addr.slot(),
-                param_name: label,
-                depth: 1.0,
-                base_value: base,
-                param_min: min,
-                param_max: max,
-            },
-        );
-        self.ctl.dirty = true;
-        self.rebuild_tree();
+        // An armed MidiLearn modulator in the right rack, bound to the target (depth 1.0 = full-range absolute control).
+        let step = format!("learn {label}");
+        self.bind(scope, Driver::New(ModulatorKind::MidiLearn), &kind, Some(1.0), &step);
     }
 
     /// Open the "assign to group" popup for instrument `inst`.
@@ -2504,11 +2459,13 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 (None, Some(inst)) => Some(ModulatorLocation::Lane(inst)),
                 (None, None) => None,
             };
-            if let Some(rack) = rack {
-                if s.ctl.add_modulator(rack, ModSourceSlot::new_lfo()).is_some() {
-                    s.ctl.dirty = true;
-                    s.rebuild_tree();
-                }
+            let owner = match rack {
+                Some(ModulatorLocation::Lane(inst)) => s.ctl.model.instruments.get(inst).map(|lane| lane.node),
+                Some(ModulatorLocation::Group(group)) => s.ctl.model.groups.get(group).map(|bus| bus.node),
+                None => None,
+            };
+            if let Some(parent) = owner {
+                s.apply(Intent::AddModulator { parent, kind: ModulatorKind::Lfo });
             }
         }
 
@@ -2821,10 +2778,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
                     TreeAddress::Effect { inst, index } if index > 0 => {
-                        s.ctl.move_effect(inst, index, index - 1);
-                        s.ctl.dirty = true;
-                        // (The cursor follows the effect it was on.)
-                        s.rebuild_tree();
+                        let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)).map(|fx| fx.node);
+                        s.move_effect_to(node, index - 1);
                     }
                     TreeAddress::Instrument(inst) if inst > 0 => {
                         s.ctl.swap_lanes(inst, inst - 1);
@@ -2854,9 +2809,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::GroupEffect { group, index } if index > 0 => {
-                        s.ctl.move_bus_effect(group, index, index - 1);
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.groups.get(group).and_then(|bus| bus.effects.get(index)).map(|fx| fx.node);
+                        s.move_effect_to(node, index - 1);
                     }
                     _ => {}
                 }
@@ -2874,9 +2828,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         let effect_count = s.ctl.model.instruments.get(inst)
                             .map_or(0, |n| n.effects.len());
                         if index + 1 < effect_count {
-                            s.ctl.move_effect(inst, index, index + 1);
-                            s.ctl.dirty = true;
-                            s.rebuild_tree();
+                            let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)).map(|fx| fx.node);
+                            s.move_effect_to(node, index + 1);
                         }
                     }
                     TreeAddress::Instrument(inst) if inst + 1 < s.ctl.model.instruments.len() => {
@@ -2909,9 +2862,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                     TreeAddress::GroupEffect { group, index } => {
                         let count = s.ctl.model.groups.get(group).map_or(0, |g| g.effects.len());
                         if index + 1 < count {
-                            s.ctl.move_bus_effect(group, index, index + 1);
-                            s.ctl.dirty = true;
-                            s.rebuild_tree();
+                            let node = s.ctl.model.groups.get(group).and_then(|bus| bus.effects.get(index)).map(|fx| fx.node);
+                            s.move_effect_to(node, index + 1);
                         }
                     }
                     _ => {}
