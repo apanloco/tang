@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 // Moving nodes: a node is dragged by the pointer, stays where it is put down, and the place goes to the server, which keeps it with
 // the session and tells every browser.
-import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { Client } from "../../client/connection";
 import { nodeNamed, tracerSnapshot } from "../../client/fixtures";
-import { rig } from "../testing";
+import { MockServer } from "../../client/mock";
+import { ClientProvider } from "../ClientProvider";
+import { holdable, rig } from "../testing";
 import { PatchView } from "./PatchView";
 import { toFlow } from "./toFlow";
 
@@ -188,6 +191,74 @@ describe("moving a node", () => {
     await waitFor(() => {
       expect(placeOf(node)).toEqual(before);
     });
+  });
+
+  test("a node that is moved only sideways, or only up or down, is sent too", async () => {
+    const { requests } = await rig(<PatchView />);
+    const { header } = await headerOf(filter.id);
+    drag(header, 70, 0);
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    drag(header, 0, 70);
+    await waitFor(() => {
+      expect(requests()).toHaveLength(2);
+    });
+    const [sideways, vertical] = intents(requests);
+    const start = laidOut(filter.id);
+    expect(sideways?.ui?.x).toBeGreaterThan(start.x + 20);
+    expect(sideways?.ui?.y).toBeCloseTo(start.y, 6);
+    expect(vertical?.ui?.y).toBeGreaterThan(start.y + 20);
+  });
+
+  test("a node picked up again before the answer to the first move is in stays in the hand when it comes", async () => {
+    const server = new MockServer();
+    const connection = holdable(server);
+    const client = new Client({ transport: connection.transport, reconnectDelay: () => 60_000 });
+    render(
+      <ClientProvider client={client}>
+        <PatchView />
+      </ClientProvider>,
+    );
+    await waitFor(() => {
+      expect(client.state.status).toBe("open");
+    });
+    const { node, header } = await headerOf(filter.id);
+    connection.hold();
+    // The first move is put down, and its answer (an event and an answer) is on its way ...
+    drag(header, 60, 30);
+    await waitFor(() => {
+      expect(connection.waiting()).toBe(2);
+    });
+    // ... and the node is picked up again.
+    pull(header, 40, 40);
+    const inHand = placeOf(node);
+    act(() => {
+      connection.release(2);
+    });
+    await waitFor(() => {
+      expect(client.state.snapshot?.graph.nodes.find((n) => n.id === filter.id)?.ui).toBeDefined();
+    });
+    // (The answer is in a moment after the event: the canvas has been told by then too.)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // The session has the first place by now, and the node is where the hand has it.
+    expect(placeOf(node)).toEqual(inHand);
+    release(40, 40);
+    await waitFor(() => {
+      expect(connection.waiting()).toBe(2);
+    });
+    act(() => {
+      connection.release(2);
+    });
+    await waitFor(() => {
+      // (The second move is answered: the session's place is the one it was put down at, and the node is there.)
+      const place = client.state.snapshot?.graph.nodes.find((n) => n.id === filter.id)?.ui;
+      expect(place).toEqual(server.snapshot.graph.nodes.find((n) => n.id === filter.id)?.ui);
+      expect(placeOf(node).x).toBeCloseTo(place?.x ?? Number.NaN, 6);
+    });
+    client.stop();
   });
 
   test("a node in hand stays in the hand when the session is laid out again, and is put down where the pointer lets go", async () => {

@@ -4,22 +4,22 @@
 // modulator's output to a parameter's port, and to move a node by dragging it (by what is not a
 // control): where it is put down goes to the server, which keeps it with the session (§4.4), and
 // every browser draws the node there. The nodes that are not moved are where the layout puts them.
-import { applyNodeChanges, Background, ControlButton, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
-import type { Connection, Edge, EdgeTypes, NodeChange, NodeTypes, OnConnectStart, OnNodeDrag } from "@xyflow/react";
+import { Background, ControlButton, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
+import type { Connection, Edge, EdgeTypes, NodeTypes, OnConnectStart } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { Graph, NodeId } from "../../protocol";
+import type { Graph, NodeId, NodeUi } from "../../protocol";
 import { useClientSelection, useEditor, useReveals } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { cableOf, canDraw, ConnectingContext, drawableFrom } from "./connection";
 import { AudioEdge, ModulationEdge } from "./edges";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
-import { keepHeld } from "./moving";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
 import { sameStructure, toFlow } from "./toFlow";
-import type { Flow, PatchNode } from "./toFlow";
+import type { Flow } from "./toFlow";
+import { useMovableNodes } from "./useMovableNodes";
 import { rectOf, viewToShow } from "./view";
 import "@xyflow/react/dist/style.css";
 import "./patch.css";
@@ -105,37 +105,8 @@ export function PatchView() {
   // Whether any node has been moved: what there is to arrange again.
   const anyMoved = graph?.nodes.some((node) => node.ui !== undefined) ?? false;
   // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
-  const [nodes, setNodes] = useState<PatchNode[]>(flow.nodes);
-  // The nodes in hand, or put down and not answered for yet, by id on the canvas, and how many drags of each are: the session is
-  // laid out again whenever its structure changes, and must not take a node out of a hand.
-  const held = useRef(new Map<string, number>());
-  const latestNodes = useRef(flow.nodes);
-  useEffect(() => {
-    latestNodes.current = flow.nodes;
-    setNodes((current) => keepHeld(flow.nodes, current, new Set(held.current.keys())));
-  }, [flow.nodes]);
-  const onNodesChange = useCallback((changes: NodeChange<PatchNode>[]) => {
-    setNodes((current) => applyNodeChanges(changes, current));
-  }, []);
-  const onNodeDragStart = useCallback<OnNodeDrag<PatchNode>>((_event, node) => {
-    held.current.set(node.id, (held.current.get(node.id) ?? 0) + 1);
-  }, []);
-  const onNodeDragStop = useCallback<OnNodeDrag<PatchNode>>(
-    (_event, node) => {
-      const { x, y } = node.position;
-      const before = latestNodes.current.find((candidate) => candidate.id === node.id)?.position;
-      // Put down is where it was picked up, say: nothing to tell (and a node that was not placed stays that).
-      const moved = before?.x !== x || before.y !== y;
-      void (moved ? editor.moveNode(node.data.node, { x, y }) : Promise.resolve(true)).finally(() => {
-        const left = (held.current.get(node.id) ?? 1) - 1;
-        if (left > 0) held.current.set(node.id, left);
-        else held.current.delete(node.id);
-        // The server has said where the node is by now (or refused: the page says why, and the node goes back).
-        setNodes((current) => keepHeld(latestNodes.current, current, new Set(held.current.keys())));
-      });
-    },
-    [editor],
-  );
+  const moveNode = useCallback((node: NodeId, ui: NodeUi) => editor.moveNode(node, ui), [editor]);
+  const { nodes, onNodesChange, onNodeDragStart, onNodeDragStop } = useMovableNodes(flow.nodes, moveNode);
   // The parameters that take the cable being dragged, for their ports to say so.
   const [connecting, setConnecting] = useState<ReadonlySet<string> | null>(null);
   // The plugin whose parameters are in the panel, if the panel is open.
