@@ -579,6 +579,60 @@ impl SessionModel {
         Some(place)
     }
 
+    /// Take the modulator at `index` out of the rack at `at`, with its own cables, as the audio thread's `RemoveModulator` and `RemoveGroupModulator`
+    /// do: the cables of its siblings that address it are dropped, and those that address a later modulator are told the place it has now
+    /// (`fixup_cross_mod_after_remove`); for a lane that is a member of a group, so are the group's cables to the lane's modulators
+    /// (`fixup_group_member_mod_after_remove`). (The controller takes out the cables that address it first, so none is dropped there.) `None`, and
+    /// nothing changed, if there is no such modulator.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
+    pub fn remove_modulator_at(&mut self, at: ModulatorLocation, index: usize) -> Option<ModulatorSlot> {
+        let member_of = self.member_of_rack(at);
+        let rack = self.modulators_mut(at)?;
+        if index >= rack.len() {
+            return None;
+        }
+        let removed = rack.remove(index);
+        fixup_cross_mod_after_remove(rack, index);
+        if let Some((group, member)) = member_of {
+            if let Some(g) = self.groups.get_mut(group) {
+                fixup_group_member_mod_after_remove(&mut g.modulators, member, index);
+            }
+        }
+        Some(removed)
+    }
+
+    /// Put a modulator, with its own cables, into the rack at `at` at place `index` (the last, for a place past the end): what `remove_modulator_at`
+    /// took out, put back. If it goes in before others, the cables of its siblings that address a modulator at that place or after it, and the group's to
+    /// the lane's modulators when the lane is a member, are told the place that modulator has now, before it goes in (its own cables say the places that
+    /// there are by then); one that goes in at the end moves nothing. The place it went to; `None`, and nothing changed, if there is no such rack.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
+    pub fn insert_modulator_at(&mut self, at: ModulatorLocation, index: usize, modulator: ModulatorSlot) -> Option<usize> {
+        let member_of = self.member_of_rack(at);
+        let rack = self.modulators_mut(at)?;
+        let place = index.min(rack.len());
+        // (One that goes in at the end moves nothing: the audio thread is loaded a modulator at a time, with cables to ones that come later, and does the same.)
+        let in_front = place < rack.len();
+        if in_front {
+            shift_cross_mod_after_insert(rack, place);
+        }
+        rack.insert(place, modulator);
+        if let Some((group, member)) = member_of.filter(|_| in_front) {
+            if let Some(g) = self.groups.get_mut(group) {
+                shift_group_member_mod_after_insert(&mut g.modulators, member, place);
+            }
+        }
+        Some(place)
+    }
+
+    /// The group, and the lane's place among its members, when the rack at `at` is the rack of a lane that is a member of a group.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
+    fn member_of_rack(&self, at: ModulatorLocation) -> Option<(usize, usize)> {
+        match at {
+            ModulatorLocation::Lane(inst) => lane_member_ordinal(&self.instruments, inst),
+            ModulatorLocation::Group(_) => None,
+        }
+    }
+
     /// The plugin parameters a modulator in the rack at `at` can drive, in the order a
     /// person is offered them. A lane's modulator drives its lane's chain: the instrument,
     /// then each effect. A group's drives its members' chains, member by member in lane
@@ -1472,6 +1526,48 @@ fn fixup_member_depth_cables_after_remove(modulators: &mut [ModulatorSlot], memb
             if let ModTargetKind::GroupMemberMod { member: of, mod_index: at, field: CrossModField::Depth(target) } = &mut t.kind {
                 if *of == member && *at == mod_index && *target > removed {
                     *target -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// The inverse of `fixup_cross_mod_after_remove`, mirror of the audio thread's `shift_cross_mod_after_insert`: after a modulator goes into a rack at
+/// `inserted`, the cross-mod cables of its siblings that address a modulator at that place or after it are told the place that modulator has now.
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
+fn shift_cross_mod_after_insert(modulators: &mut [ModulatorSlot], inserted: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            let idx = match &mut t.kind {
+                ModTargetKind::PluginParam { .. }
+                | ModTargetKind::GroupMember { .. }
+                | ModTargetKind::GroupBus { .. }
+                | ModTargetKind::GroupMemberMod { .. } => continue,
+                ModTargetKind::ModulatorRate { mod_index }
+                | ModTargetKind::ModulatorAttack { mod_index }
+                | ModTargetKind::ModulatorDecay { mod_index }
+                | ModTargetKind::ModulatorSustain { mod_index }
+                | ModTargetKind::ModulatorRelease { mod_index }
+                | ModTargetKind::ModulatorDepth { mod_index, .. } => mod_index,
+            };
+            if *idx >= inserted {
+                *idx += 1;
+            }
+        }
+    }
+}
+
+/// The inverse of `fixup_group_member_mod_after_remove`, mirror of the audio thread's `shift_group_member_mod_after_insert`: after member `member`'s lane
+/// modulator goes in at `inserted`, the group's cables to that member's modulators at that place or after it are told the place they have now.
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller takes a modulator out and puts it back with these, built next"))]
+fn shift_group_member_mod_after_insert(modulators: &mut [ModulatorSlot], member: usize, inserted: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMemberMod { member: tm, mod_index, .. } = &mut t.kind {
+                if *tm == member && *mod_index >= inserted {
+                    *mod_index += 1;
                 }
             }
         }
@@ -2730,6 +2826,161 @@ param = "pan"
         // A cable of another modulator of the member is another's: the group's cables to the first's are where they were.
         assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 2, 0, spare_cable(901)), Some(0));
         assert_eq!(in_the_group(&model), after);
+    }
+
+    // -- Putting a modulator back --
+
+    /// Every modulator of the model as it is written down (its node, source, cables and the slot it publishes to): the lanes', then the groups'.
+    fn modulators_of(model: &SessionModel) -> Vec<String> {
+        let lanes = model.instruments.iter().flat_map(|lane| lane.modulators.iter());
+        let groups = model.groups.iter().flat_map(|group| group.modulators.iter());
+        lanes.chain(groups).map(|modulator| format!("{modulator:?}")).collect()
+    }
+
+    /// Take modulator `index` of the rack at `at` out as the controller does (the cables that address it first, each with the cables that drive its
+    /// depth, and then the modulator with its own cables) and put everything back in the reverse order. False, and not put back, if cables that drive
+    /// each other's depths went (`RemovedCable::still_driven`).
+    fn modulator_out_and_back(model: &mut SessionModel, at: ModulatorLocation, index: usize) -> bool {
+        let mut cables = Vec::new();
+        for edge in model.cables_into(at, index) {
+            // (One that an earlier cascade took with it is not there any more.)
+            cables.extend(model.remove_edge(edge).into_iter().flatten());
+        }
+        let modulator = model.remove_modulator_at(at, index).unwrap();
+        if cables.iter().any(|cable| cable.still_driven) {
+            return false;
+        }
+        assert_eq!(model.insert_modulator_at(at, index, modulator), Some(index));
+        for cable in cables.into_iter().rev() {
+            assert!(model.insert_target_at(cable.at, cable.mod_index, cable.target_index, cable.slot).is_some());
+        }
+        true
+    }
+
+    #[test]
+    fn every_modulator_of_every_session_is_put_back_where_it_was_with_what_drove_it_and_what_it_drove() {
+        use crate::app::testutil::{CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS};
+        let sessions = [CABLES_THAT_DRIVE_CABLES, CABLES_THAT_DRIVE_EACH_OTHER, CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS];
+        let (mut tried, mut cycles) = (0, 0);
+        for (n, session) in sessions.into_iter().enumerate() {
+            let model = load(session).model;
+            let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), lane.modulators.len()));
+            let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), group.modulators.len()));
+            for (at, count) in lanes.chain(groups).collect::<Vec<_>>() {
+                for index in 0..count {
+                    // (A session of its own for each: what goes and is not put back would leave the next without it.)
+                    let mut model = load(session).model;
+                    let before = modulators_of(&model);
+                    if !modulator_out_and_back(&mut model, at, index) {
+                        cycles += 1;
+                        continue;
+                    }
+                    assert_eq!(modulators_of(&model), before, "session {n}: modulator {index} of {at:?} taken out and put back");
+                    model.check_ids().unwrap();
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried > 20, "{tried} modulators is not enough to say much");
+        assert_eq!(cycles, 2, "the two modulators whose cables drive each other's depths are the only ones that are not put back");
+    }
+
+    #[test]
+    fn a_modulator_that_is_taken_out_is_handed_back_and_the_cables_that_address_the_others_are_told_their_places() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        let first = model.instruments[0].modulators[0].node;
+        // (Nothing took out the cables that address it: the second modulator's two cables to the depths of the first's go with it.)
+        let removed = model.remove_modulator_at(ModulatorLocation::Lane(0), 0).unwrap();
+        assert_eq!((removed.node, removed.targets.len()), (first, 3));
+        let rack = &model.instruments[0].modulators;
+        assert_eq!(rack.len(), 2);
+        assert_eq!(cables(rack)[0], [], "the second modulator drove only the first's cables, and is the first now");
+        assert_eq!(cables(rack)[1], [(depth_of(0, 0), 0.6)], "the third drove the second's first cable: it is the first modulator's now");
+        assert!(model.remove_modulator_at(ModulatorLocation::Lane(0), 2).is_none(), "it has two now");
+        assert!(model.remove_modulator_at(ModulatorLocation::Lane(0), 5).is_none());
+        assert!(model.remove_modulator_at(ModulatorLocation::Lane(3), 0).is_none());
+        assert!(model.remove_modulator_at(ModulatorLocation::Group(0), 0).is_none());
+    }
+
+    /// A modulator to put in, told apart by its node, with one cable to the rate of the modulator at index 0.
+    fn spare_modulator(node: u32) -> ModulatorSlot {
+        let mut cable = spare_cable(900 + node);
+        cable.kind = K::ModulatorRate { mod_index: 0 };
+        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0 }, targets: vec![cable], output: None }
+    }
+
+    #[test]
+    fn a_modulator_is_put_in_at_the_place_it_is_given_or_the_last_and_not_at_all_where_there_is_no_rack() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 1, spare_modulator(800)), Some(1));
+        let nodes = |model: &SessionModel| model.instruments[0].modulators.iter().map(|m| m.node.0).collect::<Vec<_>>();
+        assert_eq!(nodes(&model)[1], 800);
+        assert_eq!(nodes(&model).len(), 4);
+        // The old second is the third now, and what drove its cables' depths (the old third's) addresses it there.
+        assert_eq!(cables(&model.instruments[0].modulators)[3], [(depth_of(2, 0), 0.6)]);
+        // What drove the first modulator still does.
+        assert_eq!(cables(&model.instruments[0].modulators)[2], [(depth_of(0, 0), 0.4), (depth_of(0, 2), 0.5)]);
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 99, spare_modulator(801)), Some(4), "past the end is the last place");
+        assert_eq!(nodes(&model).last(), Some(&801));
+        assert_eq!(cables(&model.instruments[0].modulators)[3], [(depth_of(2, 0), 0.6)], "and moves nothing");
+        for at in [ModulatorLocation::Lane(5), ModulatorLocation::Group(0)] {
+            assert_eq!(model.insert_modulator_at(at, 0, spare_modulator(802)), None, "{at:?}");
+        }
+        assert_eq!(nodes(&model).len(), 5);
+    }
+
+    #[test]
+    fn a_modulator_that_goes_in_at_the_end_moves_nothing_whatever_the_cables_address_as_the_audio_thread_does() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        // (A cable to a modulator that is not there: what is filled a modulator at a time has, and the audio thread is loaded that way.)
+        model.instruments[0].modulators[0].targets[0].kind = K::ModulatorRate { mod_index: 3 };
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 3, spare_modulator(800)), Some(3));
+        assert_eq!(model.instruments[0].modulators[0].targets[0].kind, K::ModulatorRate { mod_index: 3 }, "it addresses the one that came");
+        // One that goes in before the one it addresses moves it.
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 3, spare_modulator(801)), Some(3));
+        assert_eq!(model.instruments[0].modulators[0].targets[0].kind, K::ModulatorRate { mod_index: 4 });
+        // The same goes for the cables of a group to the modulators of a member that is not there yet.
+        let mut model = load(crate::app::testutil::CROSS_MOD).model;
+        let count = model.instruments[0].modulators.len();
+        let to_come = K::GroupMemberMod { member: 0, mod_index: count, field: CrossModField::Rate };
+        model.groups[0].modulators[1].targets[0].kind = to_come.clone();
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), count, spare_modulator(802)), Some(count));
+        assert_eq!(model.groups[0].modulators[1].targets[0].kind, to_come);
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 0, spare_modulator(803)), Some(0));
+        assert_eq!(model.groups[0].modulators[1].targets[0].kind, K::GroupMemberMod { member: 0, mod_index: count + 1, field: CrossModField::Rate });
+    }
+
+    #[test]
+    fn a_modulator_that_goes_in_keeps_the_cables_it_has_though_they_address_places_of_its_rack() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        // Its cable is to the rate of the modulator at index 0: the one that is at index 0 once it has gone in is its own sibling, and the cable is not told.
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 0, spare_modulator(800)), Some(0));
+        assert_eq!(model.instruments[0].modulators[0].targets[0].kind, K::ModulatorRate { mod_index: 0 }, "it is not told a place it was not at");
+        assert_eq!(cables(&model.instruments[0].modulators)[2], [(depth_of(1, 0), 0.4), (depth_of(1, 2), 0.5)], "the others are");
+    }
+
+    #[test]
+    fn a_members_modulator_that_goes_in_tells_the_groups_cables_to_the_modulators_of_that_member_after_it_and_no_others() {
+        use crate::app::testutil::CROSS_MOD;
+        use crate::plugin::chain::CrossModField as F;
+        let mut model = load(CROSS_MOD).model;
+        let drive = |mod_index, field| K::GroupMemberMod { member: 0, mod_index, field };
+        let in_the_group = |model: &SessionModel| model.groups[0].modulators[1].targets.iter().map(|t| t.kind.clone()).collect::<Vec<_>>();
+        // A cable to a modulator of another member (this session has one member: the model does not mind) is not what the first member's modulators move.
+        let other_members = K::GroupMemberMod { member: 1, mod_index: 1, field: F::Rate };
+        model.groups[0].modulators[1].targets[1].kind = other_members.clone();
+        let before = in_the_group(&model);
+        assert!(before.contains(&drive(0, F::Rate)) && before.contains(&drive(1, F::Attack)) && before.contains(&drive(0, F::Depth(0))), "{before:?}");
+        // The member (lane 0) gets a modulator at its second place: the one that was the second is the third.
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Lane(0), 1, spare_modulator(800)), Some(1));
+        let after = in_the_group(&model);
+        assert!(after.contains(&drive(0, F::Rate)) && after.contains(&drive(0, F::Depth(0))), "what drove the first is as it was: {after:?}");
+        assert!(after.contains(&drive(2, F::Attack)) && !after.contains(&drive(1, F::Attack)), "what drove the second drives the third: {after:?}");
+        assert!(after.contains(&other_members), "what drove another member's second modulator still does: {after:?}");
+        // A group's modulator that goes in tells the cables of the group's own modulators to their siblings: the LFO drove the attack of the envelope before it,
+        // which is the second modulator now, and the LFO is the third.
+        assert_eq!(model.insert_modulator_at(ModulatorLocation::Group(0), 0, spare_modulator(801)), Some(0));
+        assert_eq!(model.groups[0].modulators[2].targets[0].kind, K::ModulatorAttack { mod_index: 1 });
     }
 
     #[test]
