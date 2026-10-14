@@ -270,7 +270,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         )}
       </Header>
       <div className="tang-node__controls nodrag nopan nowheel">
-        {data.pinned.map((index) => (
+        {data.knobs.map((index) => (
           <ParamCell key={index} node={data.node} index={index} driven={data.modulated.includes(index)} />
         ))}
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />

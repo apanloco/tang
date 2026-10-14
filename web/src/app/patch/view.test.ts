@@ -88,7 +88,7 @@ describe("where a node is on the canvas", () => {
     const flow = toFlow(graph);
     for (const node of graph.nodes) {
       const placed = flow.nodes.find((n) => n.id === String(node.id));
-      const pinned = placed?.data.pinned.length ?? 0;
+      const pinned = placed?.data.knobs.length ?? 0;
       expect(rectOf(graph, flow, node.id), node.name).toEqual({ x: placed?.position.x, y: placed?.position.y, width: NODE_WIDTH, height: nodeHeight(node, pinned) });
     }
   });

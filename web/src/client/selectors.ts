@@ -5,6 +5,7 @@ import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, Pres
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
 import { displayNames } from "./names";
+import { shownParams } from "./pinning";
 
 /** The node of the session with this id, if the client has a session and it has one. */
 export function nodeById(state: ClientState, id: NodeId): Node | undefined {
@@ -148,4 +149,16 @@ export const sameStages = (a: Stages | null, b: Stages | null): boolean =>
 export function cableDepthOf(state: ClientState, id: EdgeId): number | undefined {
   const cable = state.snapshot?.graph.edges.find((edge) => edge.kind === "modulation" && edge.id === id);
   return cable?.kind === "modulation" ? cable.amount : undefined;
+}
+
+/** Whether the parameter `index` is one that node `id` shows as a knob for its plugin: pinned to it, or among the first few if none are pinned (`shownParams`). */
+export function isKnob(state: ClientState, id: NodeId, index: number): boolean {
+  const node = nodeById(state, id);
+  return (node?.kind === "instrument" || node?.kind === "effect") && node.plugin ? shownParams(node.plugin).includes(index) : false;
+}
+
+/** Whether any parameter is pinned to the plugin of node `id`, which is what makes the first few no longer the ones it shows. */
+export function hasPins(state: ClientState, id: NodeId): boolean {
+  const node = nodeById(state, id);
+  return (node?.kind === "instrument" || node?.kind === "effect") && node.plugin ? node.plugin.pinned.length > 0 : false;
 }

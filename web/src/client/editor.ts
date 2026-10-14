@@ -4,11 +4,12 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, Port } from "../protocol";
+import type { EdgeId, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, Plugin, Port } from "../protocol";
 import type { Client } from "./connection";
 import { cableLabel, displayNames, portName } from "./names";
 import { rangeLabel } from "./notes";
 import type { Notices } from "./notices";
+import { pinnedWith } from "./pinning";
 import type { Reveals } from "./reveals";
 
 const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
@@ -150,6 +151,25 @@ export class Editor {
   }
 
   /**
+   * Show the parameter `index` of the plugin of `node` as a knob on its node (`pinned`), or stop showing it. The node's other knobs are as
+   * they were: with nothing pinned it shows the first few, and pinning one more keeps them (`pinnedWith`). True if it is so now, which it
+   * may be without asking the server; the page says why if it could not be done.
+   */
+  async pinParam(node: NodeId, index: number, pinned: boolean): Promise<boolean> {
+    const plugin = this.#plugin(node);
+    const what = `${pinned ? "pin" : "unpin"} ${this.#paramName(plugin, index)} ${pinned ? "to" : "from"} ${this.#name(node)}`;
+    // (A node that has no plugin, or is not there, is for the server to refuse, in its words.)
+    if (!plugin) return this.#attempt(what, { type: "setPinned", node, params: [index] });
+    const result = pinnedWith(plugin, index, pinned);
+    if ("unchanged" in result) return true;
+    if ("refused" in result) {
+      this.#notices.say(`Could not ${what}: ${result.refused}`);
+      return false;
+    }
+    return this.#attempt(what, { type: "setPinned", node, params: result.list });
+  }
+
+  /**
    * Give every node that has a place back to the layout (the master too), one after the other. True if they all went; the page says why
    * if one did not, and goes on with the rest. With no node placed there is nothing to ask.
    */
@@ -217,6 +237,17 @@ export class Editor {
     const found = this.#graph?.nodes.find((n) => n.id === node);
     const plugin = found?.kind === "instrument" || found?.kind === "effect" ? found.plugin : null;
     return plugin?.presets.find((preset) => preset.id === id)?.name ?? id;
+  }
+
+  /** The plugin of an instrument or an effect, if the session has the node. */
+  #plugin(node: NodeId): Plugin | null {
+    const found = this.#graph?.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" || found?.kind === "effect" ? found.plugin : null;
+  }
+
+  /** What a parameter of a plugin is called, or "parameter 3" if the plugin is not known or has none of that index. */
+  #paramName(plugin: Plugin | null, index: number): string {
+    return plugin?.params.find((param) => param.index === index)?.name ?? `parameter ${String(index)}`;
   }
 
   #name(node: NodeId): string {

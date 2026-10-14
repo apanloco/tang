@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, chainPlaceOf, envelopeStagesOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameChainPlace, sameParamList, sameStages } from "./selectors";
+import { cableDepthOf, chainPlaceOf, envelopeStagesOf, gainOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameChainPlace, sameParamList, sameStages } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
@@ -371,5 +371,45 @@ describe("finding the keys of a lane", () => {
     expect(rangeOf(reach, 0)).toBeUndefined(); // a group
     expect(rangeOf(state, 424242)).toBeUndefined();
     expect(rangeOf(stateOf(null), oscillator.id)).toBeUndefined();
+  });
+});
+
+describe("which parameters a node shows as knobs", () => {
+  /** The tracer with these parameters pinned to the plugin of the node. */
+  const pinned = (node: Node, params: number[]): ClientState => {
+    const nodes = tracerSnapshot.graph.nodes.map((n) => {
+      if (n.id !== node.id || (n.kind !== "instrument" && n.kind !== "effect") || !n.plugin) return n;
+      return { ...n, plugin: { ...n.plugin, pinned: params } };
+    });
+    return stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } });
+  };
+
+  test("a parameter is one when it is among the first few and nothing is pinned, or when it is pinned", () => {
+    expect(isKnob(state, filter.id, 0)).toBe(true);
+    expect(isKnob(state, oscillator.id, 7)).toBe(true);
+    // (The first eight: the tracer's plugins have no more.)
+    const some = pinned(filter, [2, 0]);
+    expect(isKnob(some, filter.id, 2)).toBe(true);
+    expect(isKnob(some, filter.id, 0)).toBe(true);
+    expect(isKnob(some, filter.id, 1)).toBe(false);
+    expect(isKnob(some, filter.id, 3)).toBe(false);
+    expect(isKnob(some, oscillator.id, 1)).toBe(true);
+  });
+
+  test("a parameter the plugin has not, a node that has no plugin and a session that is not there have none", () => {
+    expect(isKnob(state, filter.id, 99)).toBe(false);
+    expect(isKnob(state, lfo.id, 0)).toBe(false);
+    expect(isKnob(state, MASTER, 0)).toBe(false);
+    expect(isKnob(state, 12345, 0)).toBe(false);
+    expect(isKnob(stateOf(null), filter.id, 0)).toBe(false);
+  });
+
+  test("a node has pins when its plugin has a list that is not empty", () => {
+    expect(hasPins(state, filter.id)).toBe(false);
+    expect(hasPins(pinned(filter, [1]), filter.id)).toBe(true);
+    expect(hasPins(pinned(filter, [1]), oscillator.id)).toBe(false);
+    expect(hasPins(state, lfo.id)).toBe(false);
+    expect(hasPins(state, 12345)).toBe(false);
+    expect(hasPins(stateOf(null), filter.id)).toBe(false);
   });
 });

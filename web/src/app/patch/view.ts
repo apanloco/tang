@@ -36,7 +36,7 @@ export function rectOf(graph: Graph, flow: Flow, id: NodeId): Rect | null {
   const placed = flow.nodes.find((node) => node.id === String(id));
   const node = graph.nodes.find((n) => n.id === id);
   if (!placed || !node) return null;
-  return { x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height: nodeHeight(node, placed.data.pinned.length) };
+  return { x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height: nodeHeight(node, placed.data.knobs.length) };
 }
 
 /**

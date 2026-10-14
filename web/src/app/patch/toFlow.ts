@@ -9,6 +9,7 @@
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { cableLabel, displayNames, portName } from "../../client/names";
+import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
 import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port } from "../../protocol";
@@ -20,9 +21,6 @@ export const COLUMN = NODE_WIDTH + 72;
 /** Room for a cable to arrive, between the modulators above a strip and the strip. */
 export const CABLE_GAP = 72;
 export const ROW_GAP = 56;
-
-/** How many of a plugin's parameters a node shows as controls, besides those that are modulated. */
-export const MAX_PINNED = 8;
 
 // What the layout assumes about the size of a node: the components' CSS is built to these.
 const HEADER_HEIGHT = 44;
@@ -52,8 +50,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   name: string;
   /** What kind of plugin it has (`Built-in`, `LV2`, `CLAP`, `VST3`), if it has one. */
   format: string | null;
-  /** The parameters of its plugin it shows as controls, by the plugin's own index. */
-  pinned: readonly number[];
+  /** The parameters of its plugin it shows as knobs, by the plugin's own index: the ones pinned to it or the first few (`knobsOf`), and every one a cable ends at. */
+  knobs: readonly number[];
   /** Those of them that a modulator drives (a cable ends at them). */
   modulated: readonly number[];
   /** For a modulator: what it can still be drawn to, plugin by plugin and modulator by modulator (`drivablesOf`); nothing for the other nodes. */
@@ -116,12 +114,6 @@ export function handleOf(port: Port): string | null {
   }
 }
 
-/** The parameters of `plugin` a node shows: the first few, and every one a modulator drives. */
-export function pinnedParams(plugin: Plugin | null, modulated: ReadonlySet<number>): number[] {
-  if (!plugin) return [];
-  return plugin.params.filter((param, position) => position < MAX_PINNED || modulated.has(param.index)).map((param) => param.index);
-}
-
 /** The parameters that a modulation cable ends at, for each node. */
 function modulatedParams(graph: Graph): Map<NodeId, Set<number>> {
   const modulated = new Map<NodeId, Set<number>>();
@@ -146,12 +138,12 @@ function drivenSettings(graph: Graph): Map<NodeId, SettingHandle[]> {
 }
 
 /** How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys too) or a group's two. */
-export function controlCount(node: Node, pinned: number): number {
+export function controlCount(node: Node, knobs: number): number {
   switch (node.kind) {
     case "instrument":
-      return pinned + 2;
+      return knobs + 2;
     case "effect":
-      return pinned + 1;
+      return knobs + 1;
     case "group":
       return 2;
     default:
@@ -160,7 +152,7 @@ export function controlCount(node: Node, pinned: number): number {
 }
 
 /** How tall a node is, as the layout assumes it (the components' styles keep to it). */
-export function nodeHeight(node: Node, pinned: number): number {
+export function nodeHeight(node: Node, knobs: number): number {
   switch (node.kind) {
     case "modulator":
       if (node.source.type === "midiLearn") return MODULATOR_HEIGHT;
@@ -168,7 +160,7 @@ export function nodeHeight(node: Node, pinned: number): number {
     case "master":
       return MASTER_HEIGHT;
     default: {
-      const rows = Math.max(1, Math.ceil(controlCount(node, pinned) / CONTROLS_PER_ROW));
+      const rows = Math.max(1, Math.ceil(controlCount(node, knobs) / CONTROLS_PER_ROW));
       return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING;
     }
   }
@@ -263,9 +255,9 @@ function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly No
 }
 
 /** Where each node of the graph goes on the canvas. */
-function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<NodeId, { x: number; y: number }> {
+function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>): Map<NodeId, { x: number; y: number }> {
   const placed = new Map<NodeId, { x: number; y: number }>();
-  const heightOfNode = (node: Node): number => nodeHeight(node, pinnedCounts.get(node.id) ?? 0);
+  const heightOfNode = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0);
   const place = (node: Node, column: number, y: number): void => {
     placed.set(node.id, { x: column * COLUMN, y });
   };
@@ -334,12 +326,12 @@ export function toFlow(graph: Graph): Flow {
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);
-  const pinned = new Map<NodeId, number[]>();
+  const knobs = new Map<NodeId, number[]>();
   for (const node of graph.nodes) {
     const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
-    pinned.set(node.id, pinnedParams(plugin, modulated.get(node.id) ?? new Set()));
+    knobs.set(node.id, knobsOf(plugin, modulated.get(node.id) ?? new Set()));
   }
-  const positions = layout(graph, new Map([...pinned].map(([id, params]) => [id, params.length])));
+  const positions = layout(graph, new Map([...knobs].map(([id, params]) => [id, params.length])));
 
   const nodes: PatchNode[] = graph.nodes.map((node) => ({
     id: String(node.id),
@@ -352,7 +344,7 @@ export function toFlow(graph: Graph): Flow {
       node: node.id,
       name: names.get(node.id) ?? node.name,
       format: node.kind === "instrument" || node.kind === "effect" ? (node.plugin?.format ?? null) : null,
-      pinned: pinned.get(node.id) ?? [],
+      knobs: knobs.get(node.id) ?? [],
       modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
       targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
       drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
@@ -426,5 +418,11 @@ function sameNodeStructure(x: Node, y: Node): boolean {
 function samePluginStructure(x: Plugin | null, y: Plugin | null): boolean {
   if (x === y) return true;
   if (x === null || y === null) return false;
-  return x.id === y.id && x.params.length === y.params.length && x.params.every((param, i) => param.index === y.params[i]?.index);
+  return (
+    x.id === y.id &&
+    x.params.length === y.params.length &&
+    x.params.every((param, i) => param.index === y.params[i]?.index) &&
+    x.pinned.length === y.pinned.length &&
+    x.pinned.every((index, i) => index === y.pinned[i])
+  );
 }

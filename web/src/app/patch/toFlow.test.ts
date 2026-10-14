@@ -2,19 +2,18 @@ import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
 import { MASTER, tracerSnapshot } from "../../client/fixtures";
+import { DEFAULT_KNOBS } from "../../client/pinning";
 import {
   CABLE_GAP,
   COLUMN,
   controlCount,
   handleOf,
   MASTER_HEIGHT,
-  MAX_PINNED,
   ENVELOPE_NODE_HEIGHT,
   MODULATOR_HEIGHT,
   MODULATOR_SETTINGS_HEIGHT,
   NODE_WIDTH,
   nodeHeight,
-  pinnedParams,
   ROW_GAP,
   sameStructure,
   toFlow,
@@ -134,7 +133,7 @@ function rectangles(graph: Graph) {
   return flow.nodes.map((placed) => {
     const node = graph.nodes.find((candidate) => String(candidate.id) === placed.id);
     if (!node) throw new Error("a node of the canvas that the graph does not have");
-    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.pinned.length) };
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length) };
   });
 }
 
@@ -185,7 +184,7 @@ describe("the nodes on the canvas", () => {
     const first = at(flow, 1).position.y;
     const second = at(flow, 5).position.y;
     // Room for the modulators above the first, then the tallest of its row, then the gap.
-    const tallest = Math.max(...[1, 2, 3].map((id) => nodeHeight(nodeOf(twoLanes, id), at(flow, id).data.pinned.length)));
+    const tallest = Math.max(...[1, 2, 3].map((id) => nodeHeight(nodeOf(twoLanes, id), at(flow, id).data.knobs.length)));
     expect(first).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
     expect(second).toBe(first + tallest + ROW_GAP);
   });
@@ -196,7 +195,7 @@ describe("the nodes on the canvas", () => {
       edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(4, MASTER)],
     };
     const flow = toFlow(graph);
-    const heights = [1, 2, 3].map((id) => nodeHeight(nodeOf(graph, id), at(flow, id).data.pinned.length));
+    const heights = [1, 2, 3].map((id) => nodeHeight(nodeOf(graph, id), at(flow, id).data.knobs.length));
     expect(heights[1]).toBeGreaterThan(heights[0] ?? 0);
     expect(heights[1]).toBeGreaterThan(heights[2] ?? 0);
     expect(at(flow, 4).position.y).toBe(at(flow, 1).position.y + (heights[1] ?? 0) + ROW_GAP);
@@ -804,38 +803,15 @@ describe("what the nodes are called", () => {
 });
 
 describe("the parameters a node shows", () => {
-  test("are the first few of the plugin's, by position and not by the plugin's own index", () => {
-    const many = plugin(12);
-    const shown = pinnedParams(many, new Set());
-    expect(shown).toHaveLength(MAX_PINNED);
-    expect(shown).toEqual(many.params.slice(0, MAX_PINNED).map((param) => param.index));
-  });
-
-  test("and every one a modulator drives, wherever it is", () => {
-    const many = plugin(12);
-    const last = many.params[11]?.index ?? -1;
-    const shown = pinnedParams(many, new Set([last]));
-    expect(shown).toHaveLength(MAX_PINNED + 1);
-    expect(shown.at(-1)).toBe(last);
-    // In the plugin's order, and not twice.
-    const early = many.params[2]?.index ?? -1;
-    expect(pinnedParams(many, new Set([early, last]))).toEqual([...many.params.slice(0, MAX_PINNED).map((param) => param.index), last]);
-  });
-
-  test("are none for a node without a plugin, and a few for a small plugin", () => {
-    expect(pinnedParams(null, new Set([1]))).toEqual([]);
-    expect(pinnedParams(plugin(2), new Set())).toEqual([1, 3]);
-  });
-
   test("are what the canvas gives each node, with the cable's target among them", () => {
     const flow = toFlow(twoLanes);
-    expect(at(flow, 1).data.pinned).toEqual([1, 3, 5]);
-    expect(at(flow, 5).data.pinned).toHaveLength(8);
-    expect(at(flow, 6).data.pinned).toHaveLength(MAX_PINNED);
+    expect(at(flow, 1).data.knobs).toEqual([1, 3, 5]);
+    expect(at(flow, 5).data.knobs).toHaveLength(8);
+    expect(at(flow, 6).data.knobs).toHaveLength(DEFAULT_KNOBS);
     // The tracer's LFO drives the filter's cutoff, which it shows.
-    expect(at(toFlow(tracerSnapshot.graph), 1).data.pinned).toContain(0);
-    expect(at(flow, 4).data.pinned).toEqual([]);
-    expect(at(flow, MASTER).data.pinned).toEqual([]);
+    expect(at(toFlow(tracerSnapshot.graph), 1).data.knobs).toContain(0);
+    expect(at(flow, 4).data.knobs).toEqual([]);
+    expect(at(flow, MASTER).data.knobs).toEqual([]);
   });
 
   test("say which of them a cable ends at, in order", () => {
@@ -853,6 +829,17 @@ describe("the parameters a node shows", () => {
     expect(at(toFlow(tracerSnapshot.graph), 0).data.modulated).toEqual([]);
   });
 
+  test("are the ones pinned to the plugin when it has some, in order, with a cable's target after them", () => {
+    const pinned: Plugin = { ...plugin(12), pinned: [23, 3] };
+    const graph: Graph = {
+      nodes: [instrumentOf(1, pinned), modulator(2, 1), master],
+      edges: [audio(1, MASTER), cable(0, 2, 1, 9)],
+    };
+    expect(at(toFlow(graph), 1).data.knobs).toEqual([23, 3, 9]);
+    // (And a node is as tall as it has knobs.)
+    expect(nodeHeight(nodeOf(graph, 1), at(toFlow(graph), 1).data.knobs.length)).toBeLessThan(nodeHeight(nodeOf(graph, 1), DEFAULT_KNOBS));
+  });
+
   test("include a parameter that is beyond the first few when a cable ends at it", () => {
     const wide = plugin(12);
     const last = wide.params[11]?.index ?? -1;
@@ -860,7 +847,7 @@ describe("the parameters a node shows", () => {
       nodes: [instrumentOf(1, wide), modulator(2, 1), master],
       edges: [audio(1, MASTER), cable(0, 2, 1, last)],
     };
-    expect(at(toFlow(graph), 1).data.pinned).toContain(last);
+    expect(at(toFlow(graph), 1).data.knobs).toContain(last);
   });
 
   test("are counted with the node's own gain, so that the layout knows how tall it is", () => {
@@ -1039,6 +1026,19 @@ describe("whether two graphs are laid out the same", () => {
     expect(sameStructure(placedAt(1, 2), placedAt(1, 3))).toBe(false);
     expect(sameStructure(placedAt(1, 2), placedAt(2, 2))).toBe(false);
     expect(sameStructure(placedAt(1, 2), placedAt(1, 2))).toBe(true);
+  });
+
+  test("they are not when the parameters pinned to a plugin differ (the node's knobs, and so its height), and they are when the list is the same in another object", () => {
+    const pinnedTo = (params: number[]): Graph => ({
+      nodes: base.nodes.map((node) => (node.kind === "effect" ? { ...node, plugin: { ...node.plugin, pinned: [...params] } } : node)),
+      edges: base.edges,
+    });
+    expect(sameStructure(base, pinnedTo([1]))).toBe(false);
+    expect(sameStructure(pinnedTo([1]), base)).toBe(false);
+    expect(sameStructure(pinnedTo([1]), pinnedTo([0]))).toBe(false);
+    expect(sameStructure(pinnedTo([1, 0]), pinnedTo([0, 1]))).toBe(false);
+    expect(sameStructure(pinnedTo([1]), pinnedTo([1, 2]))).toBe(false);
+    expect(sameStructure(pinnedTo([1, 0]), pinnedTo([1, 0]))).toBe(true);
   });
 
   test("they are not when a node is added, removed or renamed", () => {

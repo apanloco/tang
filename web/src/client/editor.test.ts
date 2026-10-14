@@ -420,6 +420,92 @@ describe("pinning parameters to a node", () => {
   });
 });
 
+describe("showing a parameter as a knob on its node, or not", () => {
+  /** The tracer with eight more parameters (indices 100 to 107) on the oscillator, which has eight: so that there are some the node does not show. */
+  const wide = () => {
+    const nodes = tracerSnapshot.graph.nodes.map((node) => {
+      if (node.id !== oscillator.id || node.kind !== "instrument" || !node.plugin) return node;
+      const more = Array.from({ length: 8 }, (_, i) => ({ ...(node.plugin?.params[0] ?? ({} as never)), index: 100 + i, name: `extra ${String(i)}` }));
+      return { ...node, plugin: { ...node.plugin, params: [...node.plugin.params, ...more] } };
+    });
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  };
+  const first = Array.from({ length: 8 }, (_, i) => i);
+  const pinnedOf = (client: Client, node: number) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" || found?.kind === "effect" ? found.plugin?.pinned : undefined;
+  };
+
+  test("pins one that is not shown after what is shown: the first eight stay, and the next is after them", async () => {
+    const { client, notices, editor } = await open({ snapshot: wide() });
+    expect(pinnedOf(client, oscillator.id)).toEqual([]);
+    expect(await editor.pinParam(oscillator.id, 100, true)).toBe(true);
+    expect(pinnedOf(client, oscillator.id)).toEqual([...first, 100]);
+    expect(await editor.pinParam(oscillator.id, 105, true)).toBe(true);
+    expect(pinnedOf(client, oscillator.id)).toEqual([...first, 100, 105]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("takes one off what is shown: with none pinned that is the first eight less that one, and the last one off gives the node back to the first eight", async () => {
+    const { client, editor } = await open({ snapshot: wide() });
+    expect(await editor.pinParam(oscillator.id, 3, false)).toBe(true);
+    expect(pinnedOf(client, oscillator.id)).toEqual(first.filter((i) => i !== 3));
+    await editor.setPinned(oscillator.id, [101]);
+    expect(await editor.pinParam(oscillator.id, 101, false)).toBe(true);
+    expect(pinnedOf(client, oscillator.id)).toEqual([]);
+  });
+
+  test("resolves true and asks nothing when it is so already", async () => {
+    const { client, notices, editor } = await open({ snapshot: wide() });
+    const before = client.state.snapshot?.rev;
+    expect(await editor.pinParam(oscillator.id, 2, true)).toBe(true); // shown already
+    expect(await editor.pinParam(oscillator.id, 104, false)).toBe(true); // not shown
+    expect(await editor.pinParam(oscillator.id, 999, false)).toBe(true); // not there
+    expect(client.state.snapshot?.rev).toBe(before);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("says what it could not do, and why, for a parameter the plugin has not, a node with no plugin and a node that is not there", async () => {
+    const { client, notices, editor } = await open({ snapshot: wide() });
+    const refusals: [number, number, string][] = [
+      [oscillator.id, 999, "Could not pin parameter 999 to Oscillator: the plugin has no parameter 999"],
+      [lfo.id, 0, "Could not pin parameter 0 to LFO: that node has no plugin"],
+      [424242, 0, "Could not pin parameter 0 to that node: there is no node 424242"],
+    ];
+    for (const [node, index, notice] of refusals) {
+      expect(await editor.pinParam(node, index, true), notice).toBe(false);
+      expect(said(notices).at(-1)).toBe(notice);
+    }
+    expect(client.state.snapshot).toEqual(wide());
+  });
+
+  test("names the parameter, and where it is pinned to or taken off, in what it says", async () => {
+    const { notices, editor, client } = await open({ snapshot: wide() });
+    client.stop();
+    expect(await editor.pinParam(oscillator.id, 101, true)).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not pin extra 1 to Oscillator: Not connected to the server.");
+    expect(await editor.pinParam(oscillator.id, 3, false)).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not unpin attack from Oscillator: Not connected to the server.");
+  });
+
+  test("says a node can show only so many, without asking the server, when it shows that many", async () => {
+    const huge = (() => {
+      const base = wide();
+      const nodes = base.graph.nodes.map((node) => {
+        if (node.id !== oscillator.id || node.kind !== "instrument" || !node.plugin) return node;
+        const params = Array.from({ length: 70 }, (_, i) => ({ ...(node.plugin?.params[0] ?? ({} as never)), index: i, name: `p${String(i)}` }));
+        return { ...node, plugin: { ...node.plugin, params, pinned: Array.from({ length: 64 }, (_, i) => i) } };
+      });
+      return { ...base, graph: { ...base.graph, nodes } };
+    })();
+    const { client, notices, editor } = await open({ snapshot: huge });
+    const before = client.state.snapshot?.rev;
+    expect(await editor.pinParam(oscillator.id, 65, true)).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not pin p65 to Oscillator: a node can show at most 64 parameters");
+    expect(client.state.snapshot?.rev).toBe(before);
+  });
+});
+
 describe("arranging the nodes again", () => {
   const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
 
