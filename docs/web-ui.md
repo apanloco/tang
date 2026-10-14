@@ -436,7 +436,15 @@ resolves cursor → ids and then calls `apply`.
   every note for `null`; `node` is a lane's (an empty lane's too). Refused, with nothing changed, for a node that is no
   lane, for a note above 127 and for a low note above the high one ("the range goes from F#6 down to E2: its low note has
   to be the lower"); answered by `RangeSet`, an event and not a snapshot, since no node or cable comes or goes. The TUI's
-  `R` popup asks it, so that what it sets reaches the browsers.)
+  `R` popup asks it, so that what it sets reaches the browsers.) (`MoveEffect { node, index }` is built, step 28: `node` is
+  an effect of a lane's chain or of a group's bus, and `index` the place it is to have among that chain's effects, from 0
+  (the first, nearest the instrument or the group) to one less than they are. The effects between its old place and the new
+  move one place the other way, the audio path goes through them in the new order, and every cable stays on the plugin it
+  drove (`Controller::move_effect` / `move_bus_effect` change the model, which re-numbers the slots of the cables, and tell
+  the audio thread, together). Refused, with nothing changed and no revision, in this order, for a node that is not there, a
+  node that is no effect (`only an effect can be moved`: a lane, a group, a modulator), a place the chain has not (`the chain has
+  no place 3`) and the place the effect is at (`that effect is at that place already`). A change of structure, told by a
+  snapshot; the TUI's Shift+Up and Shift+Down are the same two controller methods, one place at a time.)
 - Modulation: `AddModulator`, `SetModulatorField`, `AddModEdge`, `RemoveEdge`,
   `SetEdgeDepth`, `LearnMidi`. (`SetModulatorField` and `SetEdgeDepth` are built, step
   14: an LFO's rate and waveform and an envelope's four stages, in a lane's modulator or
@@ -995,6 +1003,21 @@ to 1 for an LFO, 0 to 1 for the rest) to `--signal` on a group around the cable,
 be for a cable with no output to read). Not built: an envelope's curve drawn from its four stages (the trace shows the envelope
 while notes are played; at rest it is a line at nothing), a trace of what a plugin's parameter is as modulated (its dot and ring
 are the knob's own), the span to choose, and a trace that does not alias an LFO faster than half the rate of the telemetry (f85).
+
+**As built (step 28).** Every effect, a lane's and a bus's, has two buttons in its header, before the preset menu: `‹` moves it one
+place earlier in its chain (towards the instrument or the group) and `›` one place later (towards the master), each named for the
+effect and the direction (`Move Filter 3 later in its chain`). The first effect of a chain has no place earlier and the last none later:
+that button is dimmed and is `aria-disabled` and not `disabled`, so that it does nothing and keeps the focus a disabled button would
+lose. Pressing one asks `MoveEffect` (`Editor.moveEffect(node, index)`, the place counted from 1 in the notice that says why it could not);
+the answer is a snapshot, and the layout, which is a function of the graph's order, puts the chain out in the new order, the modulators
+above it following the plugins they drive, and the cables, which name plugins and not places, still on the same ones. Where an effect is in
+its chain is `chainPlaceOf(state, node)` (`{ index, count }`, null for what is no effect). A browser lets go of the focus of an element
+whose node the page moves among its siblings (React moves the node of the effect that goes later, not the one it passes), so a button
+that was pressed with the focus on it is given the focus again when the move is done (`keepFocus`, `app/focus.ts`: for twenty frames,
+whenever the focus is found on the page itself; what a person has moved it to is left alone, and the latest request replaces the earlier;
+found by a browser test, since jsdom keeps the focus). The canvas numbers the nodes of one name in the order of the graph, so an effect that
+is moved past one of its name changes name with its place (the TODO in CLAUDE.md). Not built: dragging an effect to a place, a move that
+reaches across lanes or from a lane to a bus, and moving a lane or a group.
 
 ### 9.4 Performance rules
 
@@ -2577,6 +2600,54 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 929 tests (the same as at the end of step 26), 1083 with the `web` feature and 18 on the
     real program, 924 without the default plugin formats and 1076 with `web`; web 1197 (1144); 55 in browsers (54).
 
+- [x] **28. Reordering effects (phase 1).** The page could add an effect to the end of a chain and take one out, and nothing else: the
+  order of the effects, which is the order of the sound, could only be changed in the TUI (Shift+Up and Shift+Down), by code of the
+  TUI's own for a bus and a controller method for a lane that nothing in the page reached. *Done when:* on the real program an effect
+  moves one place along its lane's chain, or a bus's, from a button in the page, the canvas and a second browser show the new
+  order, the note is still heard, and the saved file has the effects in that order with the cables on the same plugins; and the TUI
+  goes on doing it the same way, by the same two controller methods. In parts, each its own commit: **28.1** `Controller::move_effect`
+  for a lane's chain, which the TUI's two sites call; **28.2** `Controller::move_bus_effect` (and `SessionModel::move_bus_effect`),
+  which the TUI's two sites for a bus call in place of their own; **28.3** the intent `MoveEffect` in the controller, the mock engine
+  and the editor, with a fixture; **28.4** the buttons, and keeping the focus on one. *Not done (later steps):* dragging an effect to a
+  place and a move across chains; lanes and groups still cannot be moved or taken out from the page.
+  - **28.1 and 28.2 as built.** §5. The TUI moved a bus's effects by its own code (it sent `ReorderGroupEffect`, swapped the two in the
+    model and remapped the group's cables), which the intent could not have reached without a second implementation of the move:
+    the controller's `move_bus_effect` does it, to the model first and to the audio thread only if the model did it, for any two places
+    and not only neighbours (`SessionModel::move_bus_effect`, with `remap_group_bus_after_reorder`), and the TUI's sites call it.
+  - **28.3 as built.** §5 and `app::apply` (`move_effect_intent`, `place_to_move_to`). The mock engine's `moveEffectOutcome` does what the
+    controller does: the effects of the chain change places among themselves in the list of nodes, the links of the audio path are
+    made again in the places of the old ones, the last of the kind it was (`member` into a group, `audio` into the master), and the
+    cables and the layout of the telemetry are as they were. `fixtures/moves.json` is what the controller makes of it (a session with a bus
+    of four effects, a lane in its group with four and a lane in none with three; each node, and each effect at each of six places: 74 rows,
+    30 moves done and 44 refused), and the mock is tested against every row; writing it asserts that a move leaves the cables and the
+    telemetry layout as they were.
+  - **28.4 as built.** §9.3 above. `MoveEffectButtons`, `chainPlaceOf` / `sameChainPlace`, `keepFocus`, the style.
+  - **Tests.** Rust: 18 more than at the end of step 27, in each configuration (950 against 932 with the default features), and one more on
+    the real program: the model (a bus effect moves its cables, nowhere moves nothing, and a property test of every move of a chain of four, in
+    a lane's chain and on a bus, that every cable still drives the plugin it drove), the controller (what the audio thread is told, the
+    refusals, model and audio thread the same on a real graph, a move in the second of two groups, the snapshot the subscribers are given),
+    the intent (a lane's chain and a bus, there and back, the refusals), the TUI (a browser's move: the cursor follows its effect and is left
+    alone otherwise, a bus effect, a typed value goes on to the same effect, a selector that holds a place is closed; and Shift+Up and
+    Shift+Down mark the session unsaved and the last effect does nothing) and `tests/serve.rs` (the real binary: a second browser told, the note
+    still heard, the refusals with no revision used, the saved file in the new order and the cable on the new slot, a program started on it
+    drawing that order). Web: 28 more tests (1225 against 1197, in two more files): the mock against the controller's fixture (5), the editor (4),
+    the place in a chain (4), the buttons (10: on every effect and no other node, the ends dimmed, nothing asked by a dimmed one, one place
+    later and earlier, a bus, the focus kept through three moves, given back when the browser lets it go and not given to a button that did not
+    have it, a notice when it could not) and the focus helper (5); in browsers two more (57 against 55): on the mock the order, the cable, the
+    buttons fitting the node and the keyboard, and on the real program the order after a reload and in the saved file, with the note heard
+    through the reordered chain. Mutations: 29 of the Rust (18 of the two controller methods and the TUI, 11 of the intent), 17 of the mock and
+    the editor, 16 of the buttons and the selector and 10 of the focus: all caught but one that cannot be told (the buttons rendered for an
+    instrument too: the selector says it has no place, so nothing is drawn).
+  - **Found on the way.** The TUI's bus reorder was its own code (above). A test I wrote for the mock engine's refusals read five notices
+    and found three: the notices keep the last `MAX_NOTICES`, so each is read as it is said. The mutation of a test whose baseline was red
+    "caught" everything: the check that the baseline is green comes first (a loop that keeps the focus was alive across two tests that
+    have buttons of the same id). The first browser test went red where the unit test had been green: jsdom keeps the focus of an element
+    that is moved among its siblings and Chromium does not, and React moves the node of the effect that goes later; the second try of the
+    helper lost to the first, whose loop was alive when the second button was pressed (the latest request replaces the earlier now).
+    A moved effect is renamed when it passes a namesake (the canvas numbers by the order of the graph): a TODO in CLAUDE.md.
+  - **Numbers at the end of the step.** Rust 950 tests, 1104 with the `web` feature and 19 on the real program, 945 without the default
+    plugin formats and 1097 with `web`; web 1225; 57 in browsers.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2589,6 +2660,24 @@ parameters to the host, so lane modulators and the TUI can drive it. The canvas
 edits its inner graph, reusing the node / edge shapes from §4.2. Scope it after
 the phase 0 tracer shows what the canvas wants; richer builtins (noise, VCA,
 mixer, delay, …) are the natural first increment.
+
+### Sources as nodes (ideas)
+
+Two ideas for after the canvas can build what the engine has now; neither is started.
+
+**A keyboard as a node.** Today every note goes to every lane (`NoteInput`: hardware MIDI, the virtual piano and the browser's keys are one
+path) and each lane filters it by its own key range (`InstrumentLane.range`, `SetRange`). A keyboard node (the computer's keys, an on-screen
+piano, a MIDI device) with a *MIDI cable* to a lane would take the range off the lane and put it on the keyboard, so that several keyboards
+with ranges of their own (a split, a layer, one keyboard to two synths) are several nodes, and anything that sends notes can be a node as well:
+a pattern, an arpeggiator, Web MIDI from the browser, a MIDI file. In the model it is a node kind and a port kind next to audio and modulation
+(`NodeKind::Keyboard`, `Port::MidiOut` / `MidiIn`, `EdgeKind::Midi`); in the engine the global fan-out and range filter become a routing table
+per lane (the channel-based routing of per-note expression stays as it is).
+
+**Audio input as a source.** The engine has an output stream and no input. A lane whose chain starts at an input of the sound card (a
+microphone, a line in) in place of an instrument would run through the same effects, groups, modulators and meters; an envelope follower is
+the modulator that goes with it (what the input puts out, as an LFO's output is). From there, Tang as a plugin (VST3 or CLAP) whose buffer
+comes from the DAW: `audio::Renderer` is already the one piece of code that the sound card's callback and the null backend run, so a plugin's
+`process` would be a third thing that drives it, with the input as the source node's buffer.
 
 ## 14. Decisions and open questions
 
@@ -2624,6 +2713,7 @@ mixer, delay, …) are the natural first increment.
 | D28 | Where a node is drawn belongs to the session, not to a page: a page asks `SetNodeUi` once, when a node is put down (not a stream of moves), the controller keeps the place tidy (a tenth of a pixel and within a limit, so that a file is read by people and a node cannot be lost beyond the edge), every other page draws what the server tells, and a node that has no place is where the layout puts it, with no room left for one that was moved: a place is a pin, not a hint. The places are a side table of the model by `NodeId` and not a field of each node, so that the engine's types and the TUI do not carry what they do not use | Built (step 25) |
 | D29 | A cable between modulators is the model's rule read from both sides, as a cable to a parameter is (D21): `SessionModel::modulators_in_reach` and `field_targets` decide, in the controller and for the TUI's selectors, and the page reads the same rule from the graph (`modulatorsInReach`, `fieldsOf`) to mark the ports that take the cable that is dragged, pinned to the controller's by a fixture it writes (`fields.json`) and mirrored by the mock engine in the controller's order of refusals and words. The depth of a cable is a port of the controller and not of the canvas: no cable to one is drawn or offered by the page until a node has a place where such a cable could end. A modulator that drives another is drawn above it, so that a cable runs down, and a rack in which none does is laid out as it always was | Built (step 26) |
 | D30 | What a modulator has put out is the page's own record, not the server's: a `TraceBuffer` of the samples a node's frames took of the telemetry slot it reads anyway (the past of a page is from when it was opened), so that nothing is added to the wire, nothing is kept for a client that is not there, and what is drawn is exactly what the telemetry carries (30 values a second, which aliases an LFO faster than 15 Hz: f85). A trace is a canvas drawn on the frame loop and a cable's brightness is a CSS variable, so that telemetry still does not pass through React; a value that has not moved for as long as the trace shows is drawn once | Built (step 27) |
+| D31 | An effect is moved by a place in its chain (`MoveEffect { node, index }`), not by a step: a client that offers steps (the page's buttons, the TUI's Shift+Up and Shift+Down) asks for `index ± 1`, one that drags asks for any place, and the controller answers both alike, a lane's chain and a group's bus by one intent and two controller methods that do the model and the audio thread together. A refusal is a refusal of the intent (a place the chain has not, the place it is at), never a silent no-op, so that a client's notice can say why. The page keeps the focus on the button that was pressed by asking for it again when a browser lets it go (`keepFocus`), rather than by keeping the DOM order of the nodes fixed, which would have left the Tab order different from what is drawn | Built (step 28) |
 
 Open questions
 

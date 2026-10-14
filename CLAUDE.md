@@ -1038,7 +1038,7 @@ not a scale; answered with `ScaleSet`, which has the root and the pitch classes 
 `SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetNodeUi { node, ui }` (where a front-end
 draws a node, `{ x, y }` in the pixels of its canvas or none for the front-end's own layout; any node, the master included;
 kept to a tenth of a pixel and within 100 000 either way, `NodeUi::tidy`; told as `NodeUiSet`; the engine and the TUI have no
-use for it, the session file keeps it, see "Node positions (`ui`)"); `Save` (the session's own file); and seven that change
+use for it, the session file keeps it, see "Node positions (`ui`)"); `Save` (the session's own file); and eight that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1058,7 +1058,11 @@ group's bus: see `Controller::add_effect`), `AddInstrument { plugin }` (a lane a
 the session, full range and in no group, with an instrument of the catalog in it: see
 `Controller::add_instrument_lane`), `ReplaceInstrument { node, plugin }` (the instrument of
 the lane `node`, or an empty lane's, replaced by one of the catalog; the cables that drove
-the old plugin's parameters are taken out: see `Controller::put_instrument`) and
+the old plugin's parameters are taken out: see `Controller::put_instrument`), `MoveEffect { node, index }`
+(an effect of a lane's chain or of a group's bus put at place `index` of its chain, 0 being the first: the effects
+between move one place the other way, the audio path goes through them in the new order and every cable stays
+on the plugin it drove; refused for a node that is no effect, a place the chain has not and the place the
+effect is at: see `Controller::move_effect` / `move_bus_effect`) and
 `RemoveNode` (a modulator, with its cables and
 those of the others that drove its settings; an effect or a bus effect, with the cables that
 drive its parameters and what drove their depths, the audio path closing up; a lane or a
@@ -1077,9 +1081,10 @@ own edit). Its other edits still change the model and send the command
 themselves, until their intents exist (but the TUI's `d` on a modulator, its `m` and
 `l` keys and its target selectors use `Controller::remove_modulator`, `add_modulator` and
 `add_target`, which the intents are made of, and `SessionModel::param_targets` and `field_targets`); for deleting and moving an effect they
-use `SessionModel::remove_effect` / `move_effect`, which keep the modulator
-targets of the lane and of its group pointing at the same plugins, as the audio
-thread does.
+use `Controller::remove_effect` / `move_effect` (a lane's chain) and `remove_bus_effect` / `move_bus_effect` (a
+group's bus), which change the model (`SessionModel::remove_effect` / `move_effect` and the bus's, which keep the
+modulator targets of the lane and of its group pointing at the same plugins, as the audio thread does) and tell
+the audio thread together.
 
 Whoever mirrors the session (the web runtime, for its browsers) subscribes an
 `EventSink` (`app::subscribers`). The controller tells each about every applied
@@ -1229,7 +1234,8 @@ new plugin has there. A note remap goes with the plugin too, since the audio thr
 with it (`InstrumentNode::forget_remap`).
 
 Effects can be reordered within an instrument (or a group bus) in the Session
-tab. Instrument volume is applied after the instrument's output and before its
+tab (`Shift+Up` / `Shift+Down`; `Controller::move_effect` / `move_bus_effect`, which the page's
+buttons reach by the intent `MoveEffect`). Instrument volume is applied after the instrument's output and before its
 first effect; group volume is applied to the member sum before the group's
 first bus effect.
 
@@ -1455,7 +1461,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
-  `SetNodeUi`, `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
+  `SetNodeUi`, `MoveEffect`, `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1571,7 +1577,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `client/reach.ts`: `fieldsOf`, pinned to the controller's rule by `fixtures/fields.json`; `Editor.addCable` takes a port). Step 27 made
   the modulation visible: a modulator's node draws what it has put out for the last four seconds as a line that scrolls (`ui/LiveTrace.tsx`,
   from the page's own samples of the telemetry, `client/trace.ts`: a rate that another modulator drives is seen to wander), and a cable is as
-  bright as the output of its modulator is high (`app/patch/cableLight.ts`). What the controller
+  bright as the output of its modulator is high (`app/patch/cableLight.ts`). Step 28 put the effects in order: every effect has
+  two buttons that move it one place earlier or later in its chain, a lane's and a bus's alike, the one that cannot go that way
+  dimmed (`MoveEffectButtons` in `app/patch/nodes.tsx`, `chainPlaceOf`; `Editor.moveEffect` asks the intent `MoveEffect`, which the
+  mock engine does as the controller does, pinned to it by `fixtures/moves.json`), and the canvas lays the chain out in the new
+  order; a browser lets go of the focus of an element that the page moves in the DOM, so the button that was pressed is given it
+  again (`keepFocus` in `app/focus.ts`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1592,7 +1603,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   Node. The tracer's snapshot in `web/src/client/fixtures/` is generated:
   `TANG_UPDATE_TYPES=1 cargo test --features web` rewrites it along with the types (and
   `reach.json`, next to it, which says where the controller let a cable be drawn, `fields.json`, which says
-  which settings and cable depths of other modulators it let a cable be drawn to, and
+  which settings and cable depths of other modulators it let a cable be drawn to, `moves.json`, which says what
+  it makes of moving each effect of a session to each of some places, and
   `builtins.catalog.json`, the built-in plugins as the catalog lists them, which the mock serves).
 - **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
   runs the TUI and the web interface on one controller, on the main thread. The loop
@@ -1624,11 +1636,15 @@ of the computer a piano in the page, so that what is built can be tried by ear. 
 parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
-they are in the session (25), draws cables between modulators (26) and shows what a modulator puts out (27).
+they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27) and moves
+effects along their chains (28).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`).
+TODO: the canvas numbers the nodes of one name in the order of the graph (`displayNames`), so an effect that is moved past one
+of its name changes name with its place (Filter 3 becomes Filter 4, and the one it passed Filter 3): a number that stays with
+the node, by its id, would keep it, but would number a loaded session's nodes out of the order they are drawn in.
 TODO: a trace of an LFO faster than 15 Hz aliases: the telemetry is 30 values a second (the engine's blocks are much shorter); a telemetry
 channel of the lowest and highest output of each block, or a faster one, would draw it.
 TODO: the page has no port for the depth of a cable: the controller takes a cable to one (`AddModEdge` with a `depth` port;
@@ -1703,6 +1719,14 @@ generated TypeScript is current.
 - In-app volume control
 - MIDI device selection tab
 - Audio device selection tab
+- A keyboard as a node: the notes of the computer's keys, an on-screen piano or a MIDI device as a node with a "MIDI cable" to a
+  lane, in place of the lane's own key range, so that there can be several keyboards with ranges of their own (a split, a
+  layer) and other sources of notes (a pattern, an arpeggiator, Web MIDI) are nodes as well (a port kind next to audio and
+  modulation; today every note goes to every lane through `NoteInput` and each lane filters it by its range)
+- Audio input as a source: a lane whose chain starts at an input of the sound card (a microphone, a line) in place of an
+  instrument, through the same effects, groups and modulators (an envelope follower is a modulator to come with it); and
+  from there Tang as a plugin (VST3 / CLAP) whose buffer comes from the DAW: `audio::Renderer` is already the one code the
+  sound card's callback and the null backend run, so a plugin's `process` would be a third thing to drive it
 
 ## Notes for Claude
 
