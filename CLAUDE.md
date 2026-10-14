@@ -1150,7 +1150,8 @@ before any new one, `Controller::carry_out` writes down the ids it hands out (`m
 known (`Step::redo_made`), and `carry_out_all` says them to the allocator, refuses ids that are in use (`node 7 is there already`) and drops those
 the intents did not use, so every step that names the node or the cable goes on naming it, whatever is undone and redone around it. (A telemetry
 slot is not given again: a node that comes back has new slots, and they are never reused, 4,096 of them.) One thing a key asks for that takes
-several intents is one step for the TUI: `Controller::history_mark` and `join_steps_since` join the steps recorded since a mark, so that a new
+several intents is one step for the TUI: `Controller::history_mark` and `join_steps_since` join the steps recorded since a mark (one from before the
+history was forgotten joins nothing), so that a new
 modulator and the cable to it ("modulate cutoff") or a learned control and its depth ("learn cutoff") are one Ctrl+Z; a browser makes them with
 two clicks and has two steps. Changes of one thing (one parameter, gain, setting or cable) a second or less apart are one step, so that a drag
 is one (`SAME_STEP`; 200 steps are kept, `MAX_STEPS`; both are generated into `constants.ts`), a change after an undo ends what could be

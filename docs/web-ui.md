@@ -3051,8 +3051,8 @@ Each step is a reviewable change; the TUI must not regress at any point.
   it does is in the history too; the mock engine does what the controller does, after every undo and redo, as far as the ids and the slots of its
   telemetry. In parts, each its own commit: **33.1** the controller (57bd956); **33.2** the mock engine and its fixture (a3be1e5); **33.3** the
   browser tests (47756e3); **33.4** the TUI's plugin selector and `d` (a6636da); **33.5** its moves, modulate popup, learn and target selector
-  (fecdd32); **33.6** its `n` (43d9575). Two commits of their own for what was found on the way (a fix of the mock, 59ce606, and the Help tab,
-  e59d8c4). *Not done (later steps):* undo of what is taken out (`RemoveEdge`, `RemoveNode`), of a preset, of another instrument in a lane, of a group
+  (fecdd32); **33.6** its `n` (43d9575). Three commits of their own for what was found on the way (a fix of the mock, 59ce606, the Help tab,
+  e59d8c4, and the mark of a join, 9697bb4). *Not done (later steps):* undo of what is taken out (`RemoveEdge`, `RemoveNode`), of a preset, of another instrument in a lane, of a group
   made of a lane that is in another and of a lane that leaves a group that drives it (each empties the history), and a line in the TUI that says there
   is nothing to undo.
   - **33.1 as built (57bd956).** §5 above and D36. `NodeIds` has a queue of ids to hand out first (`reuse`, `drop_ids_to_put_back`) and a log of what it
@@ -3079,6 +3079,10 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Found on the way, in 33.3 (f105).** The browser test of step 32 that used an effect that is added as its barrier was out of date from 57bd956 (the
     controller keeps an add as a step) and was not run until the browser suite was: the commits 57bd956 to a3be1e5 have one browser test that fails
     against the program. It is `e2e/undo.spec.ts` in 33.3.
+  - **Found on the way, 9697bb4 (f108).** On a second look at `join_steps_since`: its mark was the number of steps there were, so a barrier in the middle
+    of what is done as one step (which forgets the history) left a mark of a history that is gone, and with enough steps after it the join took the last two of
+    them for the ones made as one. The mark knows how often the history was forgotten, and one from before a forgetting joins nothing. No key of the TUI has a
+    barrier among its steps; it was a trap for the next caller. One test, red before; 4 mutations.
   - **33.3 as built (47756e3).** `e2e/undo.spec.ts`: the test that adds an effect and takes it out with its "×" (the barrier that is left); a new one
     on the real program that adds an effect, turns a knob of it, undoes both by the button and by the keys (the file saved between has no reverb), and
     redoes both, the knob where it was turned, which needs the id; the mock's test adds an effect and takes it out and puts it back. 68 in browsers.
@@ -3088,7 +3092,8 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **33.5 as built (fecdd32).** Shift+Up and Shift+Down on an effect are `MoveEffect`; the modulate popup, learn and the target selector draw their
     cables by `AddModulator`, `AddModEdge` and `SetEdgeDepth`; `m` on a node is `AddModulator`. Everything of this and the last part goes through
     `State::apply`, which brings the tree up to date. `Controller::history_mark` and `join_steps_since` make one step of what one key made ("modulate
-    cutoff", "learn cutoff"); `SessionModel::endpoint_of` turns the positional kind that a popup lists into the port `AddModEdge` names (tested against
+    cutoff", "learn cutoff"; a mark knows how often the history was forgotten, so a barrier in the middle joins nothing: found on a second look at the
+    code, with its own commit); `SessionModel::endpoint_of` turns the positional kind that a popup lists into the port `AddModEdge` names (tested against
     every cable of five sessions). Two things differ from before, as in the browser: a second cable from a modulator to a parameter it drives already is
     refused, and a learned control's cable is drawn at 0.5 and set to 1.0 a command later. 18 tests, 24 mutations, 22 caught and 2 that make no
     difference (what the undo of a joined step makes, which nothing makes yet).
@@ -3098,19 +3103,20 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Looked at.** The real program in a pseudo-terminal on the null audio device (a script): an effect added from the selector is saved (1 effect in the
     file, then 2), Ctrl+Z and a save (1), Ctrl+Y and a save (2), and the program ends with status 0; the page's words for an add ("Undo add Reverb", "Redo
     set damping") in the browser tests above. The page was not looked at in screenshots: no layout changed.
-  - **Limits, as built.** A modulator that is put back lands last in its rack, whatever place it had (an add is always last, so none of the adds
-    shows it; the removals will). A node that comes back has new slots of the telemetry, and each undo and redo of a modulator or a cable uses some of
+  - **Limits, as built.** Redo of an add loads the plugin again from the catalog (at once for the built-ins; a pause for a heavy plugin, on the thread
+    that asked: the TUI's loop or the owner's). A modulator that is put back lands last in its rack, whatever place it had (an add is always last, so none
+    of the adds shows it; the removals will). A node that comes back has new slots of the telemetry, and each undo and redo of a modulator or a cable uses some of
     the 4,096. `n` and then a choice in its selector is an add and a replacement, and the replacement empties the history, so the lane cannot be
     undone after it. A joined step is the TUI's: a browser draws a cable to a modulator it has just added with two clicks and has two steps. The TUI's
     own edits that have no intent (the order of the lanes, the pattern, the tempo, the Type row) are not in the history and do not empty it. A step
     that was undone and whose node the TUI's `clear_instrument` or a front-end's direct call took out is dropped, with the reason.
-  - **Tests.** Rust: 55 more than at the end of step 32 in the default configuration (1121 against 1066): 29 in 33.1, 1 pin of the slot, 5 in 33.4 (4 of the
-    TUI's, 1 of the controller's), 18 in 33.5 (11 of the TUI's, 6 of the join, 1 of `endpoint_of`) and 2 in 33.6; the same 55 in each of the others (1279
-    with `web`, 1116 and 1272 without the default plugin formats); the real program's, 22 as before. Web: 1491 in 73 files (1457 in 70): the slots (2), the counters (8), the cables of a group (5) and the
-    history (19); 68 in browsers (67 + 1). 149 mutations in all (33.1: 51, the slot: 2, 33.2: 52, 33.4: 10, 33.5: 30, 33.6: 4): 145 caught and 4 that make no
+  - **Tests.** Rust: 56 more than at the end of step 32 in the default configuration (1122 against 1066): 29 in 33.1, 1 pin of the slot, 5 in 33.4 (4 of the
+    TUI's, 1 of the controller's), 18 in 33.5 (11 of the TUI's, 6 of the join, 1 of `endpoint_of`), 2 in 33.6 and 1 of the mark; the same 56 in each of the
+    others (1280 with `web`, 1117 and 1273 without the default plugin formats); the real program's, 22 as before. Web: 1491 in 73 files (1457 in 70): the slots (2), the counters (8), the cables of a group (5) and the
+    history (19); 68 in browsers (67 + 1). 153 mutations in all (33.1: 51, the slot: 2, 33.2: 52, 33.4: 10, 33.5: 30, 33.6: 4, the mark: 4): 149 caught and 4 that make no
     difference.
-  - **Numbers at the end of the step.** Rust 1121 tests, 1279 with the `web` feature and 22 on the real program, 1116 without the default plugin
-    formats and 1272 with `web`, and 3 of the shell's in each; web 1491 in 73 files; 68 in browsers; 295 commits on the branch.
+  - **Numbers at the end of the step.** Rust 1122 tests, 1280 with the `web` feature and 22 on the real program, 1117 without the default plugin
+    formats and 1273 with `web`, and 3 of the shell's in each; web 1491 in 73 files; 68 in browsers; 297 commits on the branch.
 
 ## 13. Later: track B (`builtin:patch`)
 
