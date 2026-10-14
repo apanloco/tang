@@ -4,9 +4,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { matchParams } from "../../client/paramSearch";
-import { paramListOf, sameParamList } from "../../client/selectors";
+import { hasPins, paramListOf, sameParamList } from "../../client/selectors";
 import type { NodeId } from "../../protocol";
-import { useClientSelection } from "../ClientProvider";
+import { useClientSelection, useClientState, useEditor } from "../ClientProvider";
 import { ParamRow } from "./controls";
 import "./ParamPanel.css";
 
@@ -19,6 +19,8 @@ const PAGE = 40;
  */
 export function ParamPanel({ node, onClose }: { node: NodeId; onClose: (focusBack: boolean) => void }) {
   const list = useClientSelection((state) => paramListOf(state, node), sameParamList);
+  const pinned = useClientState((state) => hasPins(state, node));
+  const editor = useEditor();
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
   const search = useRef<HTMLInputElement>(null);
@@ -78,6 +80,18 @@ export function ParamPanel({ node, onClose }: { node: NodeId; onClose: (focusBac
       <p className="tang-panel__count">
         {filtered ? `${String(matches.length)} of ${String(total)} parameters` : `${String(total)} ${total === 1 ? "parameter" : "parameters"}`}
       </p>
+      {pinned ? (
+        <button
+          type="button"
+          className="tang-panel__reset"
+          aria-label={`Show the first eight parameters of ${list.name} again`}
+          onClick={() => {
+            void editor.setPinned(node, []);
+          }}
+        >
+          Show the first eight again
+        </button>
+      ) : null}
       <div className="tang-panel__rows">
         {shown.map((index) => (
           <ParamRow key={index} node={node} index={index} />

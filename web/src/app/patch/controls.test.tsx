@@ -983,3 +983,93 @@ describe("a parameter of a plugin as a row", () => {
     });
   });
 });
+
+/** The tracer with eight more parameters (indices 100 to 107, "extra 0" to "extra 7") on the oscillator, which has eight: its node shows the first eight. */
+function wide(): Snapshot {
+  const snapshot = structuredClone(tracerSnapshot);
+  const node = snapshot.graph.nodes.find((n) => n.id === oscillator.id);
+  if (node?.kind !== "instrument" || !node.plugin) throw new Error("no oscillator");
+  const template = node.plugin.params[1];
+  if (!template) throw new Error("no parameter");
+  node.plugin.params.push(...Array.from({ length: 8 }, (_, i): Param => ({ ...template, index: 100 + i, name: `extra ${String(i)}` })));
+  return snapshot;
+}
+
+describe("the pin of a row of the parameters of a plugin", () => {
+  const pin = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name: `Show ${name} on the node` });
+  const FIRST_EIGHT = [0, 1, 2, 3, 4, 5, 6, 7];
+
+  test("is a button named for the parameter, pressed when its node shows it: the first eight when nothing is pinned, and not the others", async () => {
+    await rig(
+      <>
+        <ParamRow node={oscillator.id} index={1} />
+        <ParamRow node={oscillator.id} index={7} />
+        <ParamRow node={oscillator.id} index={100} />
+      </>,
+      { snapshot: wide() },
+    );
+    expect(pin("detune").getAttribute("aria-pressed")).toBe("true");
+    expect(pin("pan").getAttribute("aria-pressed")).toBe("true");
+    expect(pin("extra 0").getAttribute("aria-pressed")).toBe("false");
+    expect(pin("extra 0").getAttribute("title")).toBe("Show as a knob on the node");
+    // (What a person sees of it: filled when the node shows the parameter, open when it does not.)
+    expect([pin("detune").textContent, pin("extra 0").textContent]).toEqual(["●", "○"]);
+  });
+
+  test("is on a choice as it is on a slider", async () => {
+    await rig(<ParamRow node={oscillator.id} index={0} />, { snapshot: wide() });
+    expect(pin("waveform").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByRole("slider")).toBeNull();
+  });
+
+  test("pins the parameter when it is pressed and the node does not show it: the first eight stay and it is the ninth", async () => {
+    const { requests } = await rig(<ParamRow node={oscillator.id} index={100} />, { snapshot: wide() });
+    fireEvent.click(pin("extra 0"));
+    await waitFor(() => {
+      expect(pin("extra 0").getAttribute("aria-pressed")).toBe("true");
+    });
+    expect(requests()).toEqual([{ intent: { type: "setPinned", node: oscillator.id, params: [...FIRST_EIGHT, 100] } }]);
+  });
+
+  test("takes it off when it is pressed and the node shows it: the other seven stay", async () => {
+    const { requests } = await rig(<ParamRow node={oscillator.id} index={3} />, { snapshot: wide() });
+    fireEvent.click(pin("attack"));
+    await waitFor(() => {
+      expect(pin("attack").getAttribute("aria-pressed")).toBe("false");
+    });
+    expect(requests()).toEqual([{ intent: { type: "setPinned", node: oscillator.id, params: FIRST_EIGHT.filter((i) => i !== 3) } }]);
+  });
+
+  test("follows a pin that somebody else makes, in either direction", async () => {
+    const { server } = await rig(
+      <>
+        <ParamRow node={oscillator.id} index={1} />
+        <ParamRow node={oscillator.id} index={101} />
+      </>,
+      { snapshot: wide() },
+    );
+    act(() => {
+      server.apply({ type: "setPinned", node: oscillator.id, params: [101, 5] });
+    });
+    await waitFor(() => {
+      expect(pin("extra 1").getAttribute("aria-pressed")).toBe("true");
+    });
+    expect(pin("detune").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("says why when the node cannot show another, and the press changes nothing", async () => {
+    const full = wide();
+    const node = full.graph.nodes.find((n) => n.id === oscillator.id);
+    if (node?.kind !== "instrument" || !node.plugin) throw new Error("no oscillator");
+    const template = node.plugin.params[1];
+    if (!template) throw new Error("no parameter");
+    node.plugin.params = Array.from({ length: 70 }, (_, i): Param => ({ ...template, index: i, name: `p${String(i)}` }));
+    node.plugin.pinned = Array.from({ length: 64 }, (_, i) => i);
+    const { requests, client } = await rig(<ParamRow node={oscillator.id} index={65} />, { snapshot: full });
+    fireEvent.click(pin("p65"));
+    await settle();
+    expect(requests()).toEqual([]);
+    expect(pin("p65").getAttribute("aria-pressed")).toBe("false");
+    expect(client.state.snapshot?.rev).toBe(full.rev);
+  });
+});

@@ -10,7 +10,7 @@ import type { Modulation } from "../../client/modulation";
 import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
-import { cableDepthOf, gainOf, modulatorFieldOf, paramOf, rangeOf } from "../../client/selectors";
+import { cableDepthOf, gainOf, isKnob, modulatorFieldOf, paramOf, rangeOf } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -124,6 +124,29 @@ export const ParamControl = memo(function ParamControl({ node, index }: { node: 
 });
 
 /**
+ * The pin of a row of the panel: pressed when the parameter is one of the knobs its node shows, and the way to make it one or not
+ * (`Editor.pinParam`: a node that has nothing pinned shows the first eight, and pinning one more keeps them).
+ */
+function PinButton({ node, index, name }: { node: NodeId; index: number; name: string }) {
+  const editor = useEditor();
+  const pinned = useClientState((state) => isKnob(state, node, index));
+  return (
+    <button
+      type="button"
+      className="tang-row__pin"
+      aria-pressed={pinned}
+      aria-label={`Show ${name} on the node`}
+      title="Show as a knob on the node"
+      onClick={() => {
+        void editor.pinParam(node, index, !pinned);
+      }}
+    >
+      {pinned ? "●" : "○"}
+    </button>
+  );
+}
+
+/**
  * A parameter of the plugin in `node` as a row of a list: its whole name, a slider, its value; a choice if its values have
  * names; and, while a cable drives it, a bar of what the engine makes of it. For a list to look through (a plugin can have
  * thousands of parameters, and a knob has room for a few letters). It is turned like a knob: shown as set until the engine
@@ -140,9 +163,12 @@ export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; 
   if (!facts || shown === undefined) return null;
 
   const name = (
-    <label className="tang-row__name" htmlFor={id} title={facts.name}>
-      {facts.name}
-    </label>
+    <>
+      <label className="tang-row__name" htmlFor={id} title={facts.name}>
+        {facts.name}
+      </label>
+      <PinButton node={node} index={index} name={facts.name} />
+    </>
   );
   if (facts.labels) {
     return (

@@ -328,3 +328,87 @@ describe("a panel whose node is not there", () => {
     expect(closed).toEqual([true]);
   });
 });
+
+describe("pinning parameters to a node from its panel", () => {
+  const pinOf = (panel: HTMLElement, name: string) => within(panel).getByRole<HTMLButtonElement>("button", { name: `Show ${name} on the node` });
+  const resetButton = () => screen.queryByRole("button", { name: "Show the first eight parameters of Filter again" });
+
+  test("puts a knob on the node for a parameter it does not show, keeping the first eight, and takes it off again when the pin is pressed again", async () => {
+    await rig(<PatchView />, { snapshot: withManyParams() });
+    fireEvent.click(await buttonOf("Filter"));
+    const panel = await panelOf("Filter");
+    const node = await nodeOf(filter.id);
+    expect(within(node).queryByRole("slider", { name: "Param 50" })).toBeNull();
+    fireEvent.change(await searchOf("Filter"), { target: { value: "Param 50" } });
+    fireEvent.click(pinOf(panel, "Param 50"));
+    await waitFor(() => {
+      expect(within(node).getByRole("slider", { name: "Param 50" })).toBeTruthy();
+    });
+    expect(within(node).getByRole("slider", { name: "Param 0" })).toBeTruthy();
+    expect(within(node).getByRole("slider", { name: "Param 7" })).toBeTruthy();
+    expect(pinOf(panel, "Param 50").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(pinOf(panel, "Param 50"));
+    await waitFor(() => {
+      expect(within(node).queryByRole("slider", { name: "Param 50" })).toBeNull();
+    });
+    expect(within(node).getByRole("slider", { name: "Param 0" })).toBeTruthy();
+  });
+
+  test("takes a knob off the node that is among the first eight, and leaves the other seven", async () => {
+    await rig(<PatchView />, { snapshot: withManyParams() });
+    fireEvent.click(await buttonOf("Filter"));
+    const panel = await panelOf("Filter");
+    const node = await nodeOf(filter.id);
+    expect(within(node).getByRole("slider", { name: "Param 3" })).toBeTruthy();
+    fireEvent.change(await searchOf("Filter"), { target: { value: "Param 3" } });
+    fireEvent.click(pinOf(panel, "Param 3"));
+    await waitFor(() => {
+      expect(within(node).queryByRole("slider", { name: "Param 3" })).toBeNull();
+    });
+    for (const kept of ["Param 0", "Param 2", "Param 4", "Param 7"]) expect(within(node).getByRole("slider", { name: kept })).toBeTruthy();
+  });
+
+  test("has a button that gives the node back to the first eight, while something is pinned and not before", async () => {
+    const { requests } = await rig(<PatchView />, { snapshot: withManyParams() });
+    fireEvent.click(await buttonOf("Filter"));
+    const panel = await panelOf("Filter");
+    const node = await nodeOf(filter.id);
+    expect(resetButton()).toBeNull();
+    fireEvent.change(await searchOf("Filter"), { target: { value: "Param 50" } });
+    fireEvent.click(pinOf(panel, "Param 50"));
+    await waitFor(() => {
+      expect(resetButton()).toBeTruthy();
+    });
+    const reset = resetButton();
+    if (!reset) throw new Error("no button to give the node back to the first eight");
+    fireEvent.click(reset);
+    await waitFor(() => {
+      expect(resetButton()).toBeNull();
+    });
+    expect(within(node).queryByRole("slider", { name: "Param 50" })).toBeNull();
+    expect(within(node).getByRole("slider", { name: "Param 0" })).toBeTruthy();
+    expect(requests().map((r) => r.intent)).toEqual([
+      { type: "setPinned", node: filter.id, params: [0, 1, 2, 3, 4, 5, 6, 7, 50] },
+      { type: "setPinned", node: filter.id, params: [] },
+    ]);
+  });
+
+  test("shows a pin that somebody else makes, in the panel and on the node", async () => {
+    const { server } = await rig(<PatchView />, { snapshot: withManyParams() });
+    fireEvent.click(await buttonOf("Filter"));
+    const panel = await panelOf("Filter");
+    const node = await nodeOf(filter.id);
+    act(() => {
+      server.apply({ type: "setPinned", node: filter.id, params: [90, 91] });
+    });
+    await waitFor(() => {
+      expect(within(node).getByRole("slider", { name: "Param 90" })).toBeTruthy();
+    });
+    // (Not the first eight any more, but for Param 0, which the LFO's cable drives: a cable's target is shown while the cable is there.)
+    expect(within(node).queryByRole("slider", { name: "Param 3" })).toBeNull();
+    expect(within(node).getByRole("slider", { name: "Param 0" })).toBeTruthy();
+    expect(resetButton()).toBeTruthy();
+    fireEvent.change(await searchOf("Filter"), { target: { value: "Param 91" } });
+    expect(pinOf(panel, "Param 91").getAttribute("aria-pressed")).toBe("true");
+  });
+});
