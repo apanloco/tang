@@ -625,6 +625,17 @@ impl Controller {
         true
     }
 
+    /// Put lane `inst` in group `group`, or in none: the audio thread moves it (`SetLaneGroup`), and the model does the
+    /// same (`SessionModel::set_lane_group`), the group modulators' targets on the members following their
+    /// plugins to the ordinals they have now. False, sending nothing, if there is no such lane or no such group.
+    pub fn set_lane_group(&mut self, inst: usize, group: Option<usize>) -> bool {
+        if !self.model.set_lane_group(inst, group) {
+            return false;
+        }
+        let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group });
+        true
+    }
+
     /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
     /// thread drops it and the model with it, and its own cables with it. The cables of the
     /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
@@ -4029,6 +4040,131 @@ depth = 0.1
         assert!(peak(ctl.model.instruments[0].meter) > 0.01, "and the first lane, sounding too: {}", peak(ctl.model.instruments[0].meter));
         ctl.model.check_ids().unwrap();
         ctl.shutdown();
+    }
+
+    const THREE_LANES_TWO_GROUPS: &str = r#"
+[[group]]
+name = "Pad"
+[[group]]
+name = "Lead"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    #[test]
+    fn a_lane_is_put_in_a_group_moved_to_another_and_taken_out_of_its_group() {
+        let (engine, mut ctl) = controller_for(THREE_LANES_TWO_GROUPS);
+        sent(&engine);
+        assert!(ctl.set_lane_group(0, Some(0)));
+        assert!(ctl.set_lane_group(1, Some(1)));
+        assert!(ctl.set_lane_group(0, None));
+        let groups: Vec<Option<usize>> = ctl.model.instruments.iter().map(|lane| lane.group).collect();
+        assert_eq!(groups, [None, Some(1), None]);
+        assert_eq!(sent(&engine), ["SetLaneGroup inst=0 group=Some(0)", "SetLaneGroup inst=1 group=Some(1)", "SetLaneGroup inst=0 group=None"]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_or_a_group_that_is_not_there_changes_nothing_and_sends_nothing() {
+        let (engine, mut ctl) = controller_for(THREE_LANES_TWO_GROUPS);
+        sent(&engine);
+        assert!(!ctl.set_lane_group(3, Some(0)), "no such lane");
+        assert!(!ctl.set_lane_group(3, None), "no such lane to take out of a group");
+        assert!(!ctl.set_lane_group(0, Some(2)), "no such group");
+        assert!(sent(&engine).is_empty());
+        let groups: Vec<Option<usize>> = ctl.model.instruments.iter().map(|lane| lane.group).collect();
+        assert_eq!(groups, [None, Some(0), None]);
+    }
+
+    /// Group 0's LFO, a square at rate 0 (always +1), drives the detune of its first member, lane 1; lane 0 is in no
+    /// group.
+    const A_GROUP_DRIVING_ITS_FIRST_MEMBER: &str = r#"
+[[group]]
+[[group.modulator]]
+waveform = "square"
+rate = 0.0
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.1
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+"#;
+
+    #[test]
+    fn a_lane_that_joins_a_group_before_its_members_leaves_the_cables_on_the_plugins_they_drove() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let (mut graph, mut ctl) = controller_on_a_real_graph(A_GROUP_DRIVING_ITS_FIRST_MEMBER);
+        let detune = index_of(ctl.model.instruments[1].instrument.as_ref().unwrap(), "detune");
+        run(&mut graph);
+        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "lane 1's detune is driven");
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0));
+
+        // Lane 0 is the group's member 0 now, and lane 1 its member 1.
+        assert!(ctl.set_lane_group(0, Some(0)));
+        run(&mut graph);
+        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "still lane 1's detune that is driven");
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "and not the new member's");
+        let kind = &ctl.model.groups[0].modulators[0].targets[0].kind;
+        assert!(matches!(kind, K::GroupMember { member: 1, .. }), "the model says member 1 too: {kind:?}");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_put_in_the_group_it_is_in_keeps_the_cables_to_it() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(A_GROUP_DRIVING_ITS_FIRST_MEMBER);
+        let detune = index_of(ctl.model.instruments[1].instrument.as_ref().unwrap(), "detune");
+        assert!(ctl.set_lane_group(1, Some(0)));
+        run(&mut graph);
+        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1, "the group's cable to it is still there");
+        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "and still drives its detune");
+        ctl.model.check_ids().unwrap();
+    }
+
+    /// As above, with two members: the LFO drives the detune of the second, lane 1.
+    const A_GROUP_DRIVING_ITS_SECOND_MEMBER: &str = r#"
+[[group]]
+[[group.modulator]]
+waveform = "square"
+rate = 0.0
+[[group.modulator.target]]
+member = 1
+param = "detune"
+depth = 0.1
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+"#;
+
+    #[test]
+    fn a_member_that_leaves_a_group_before_the_others_leaves_their_cables_on_the_plugins_they_drove() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let (mut graph, mut ctl) = controller_on_a_real_graph(A_GROUP_DRIVING_ITS_SECOND_MEMBER);
+        let detune = index_of(ctl.model.instruments[1].instrument.as_ref().unwrap(), "detune");
+        run(&mut graph);
+        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "lane 1's detune is driven");
+
+        // Lane 1 is the group's member 0 now.
+        assert!(ctl.set_lane_group(0, None));
+        run(&mut graph);
+        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "still lane 1's detune that is driven");
+        let kind = &ctl.model.groups[0].modulators[0].targets[0].kind;
+        assert!(matches!(kind, K::GroupMember { member: 0, .. }), "the model says member 0 too: {kind:?}");
+        ctl.model.check_ids().unwrap();
     }
 
     // -- What a cable gives back when it is taken out --

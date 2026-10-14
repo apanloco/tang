@@ -632,6 +632,32 @@ impl SessionModel {
         Some(removed)
     }
 
+    /// Put lane `inst` in group `group`, or in none, the way the audio thread's `SetLaneGroup` does: the group
+    /// it leaves drops its modulators' targets on the lane and moves the ones on its later members down an
+    /// ordinal, and the group it joins moves the ones on the members from the lane's place on up one. False
+    /// (and no change) if there is no such lane or no such group.
+    pub fn set_lane_group(&mut self, inst: usize, group: Option<usize>) -> bool {
+        if inst >= self.instruments.len() || group.is_some_and(|g| g >= self.groups.len()) {
+            return false;
+        }
+        let old = lane_member_ordinal(&self.instruments, inst);
+        self.instruments[inst].group = group;
+        let new = lane_member_ordinal(&self.instruments, inst);
+        if old.map(|(g, _)| g) != new.map(|(g, _)| g) {
+            if let Some((leaves, ordinal)) = old {
+                if let Some(g) = self.groups.get_mut(leaves) {
+                    fixup_group_member_after_remove(&mut g.modulators, ordinal);
+                }
+            }
+            if let Some((joins, ordinal)) = new {
+                if let Some(g) = self.groups.get_mut(joins) {
+                    shift_group_member_after_insert(&mut g.modulators, ordinal);
+                }
+            }
+        }
+        true
+    }
+
     /// Take the bus effect at `index` out of group `group`, the way the audio thread's `RemoveGroupEffect`
     /// does: the group's modulator targets on it go with it, and the ones on later bus effects move down an
     /// index so that they keep pointing at the same plugins. `None` (and no change) if the group has no such

@@ -38,9 +38,8 @@ use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
-    ParamKind, ParamSlot, PatternState, PluginSlot, fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
+    ParamKind, ParamSlot, PatternState, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
-    shift_group_member_after_insert,
 };
 use crate::piano_filter::PianoMode;
 use crate::plugin;
@@ -1305,32 +1304,9 @@ impl State {
         let new_group = match choice {
             GroupAssignChoice::Ungroup => None,
             GroupAssignChoice::Existing(g) => Some(g),
-            GroupAssignChoice::New => {
-                Some(self.ctl.add_group())
-            }
+            GroupAssignChoice::New => Some(self.ctl.add_group()),
         };
-        let _ = self.ctl.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: new_group });
-        // Keep group-modulator member ordinals in sync with membership (mirrors
-        // the audio thread's SetLaneGroup fixups).
-        let old = lane_member_ordinal(&self.ctl.model.instruments, inst);
-        if let Some(node) = self.ctl.model.instruments.get_mut(inst) {
-            node.group = new_group;
-        }
-        let new = lane_member_ordinal(&self.ctl.model.instruments, inst);
-        let old_group = old.map(|(g, _)| g);
-        let new_group_idx = new.map(|(g, _)| g);
-        if old_group != new_group_idx {
-            if let Some((og, oo)) = old {
-                if let Some(g) = self.ctl.model.groups.get_mut(og) {
-                    fixup_group_member_after_remove(&mut g.modulators, oo);
-                }
-            }
-            if let Some((ng, no)) = new {
-                if let Some(g) = self.ctl.model.groups.get_mut(ng) {
-                    shift_group_member_after_insert(&mut g.modulators, no);
-                }
-            }
-        }
+        self.ctl.set_lane_group(inst, new_group);
         self.ctl.dirty = true;
         self.rebuild_tree();
     }

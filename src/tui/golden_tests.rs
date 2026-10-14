@@ -1418,6 +1418,24 @@ fn a_new_group_member_before_existing_ones_shifts_member_ordinals() {
 }
 
 #[test]
+fn the_group_popup_takes_a_lane_out_of_its_group_and_moves_it_to_another() {
+    // Lane 1 is the Pad group's second member; the group's cables are all to the first.
+    let mut h = Harness::new([scene_group(), "[[group]]\nname = \"Lead\"\n".to_string()].concat());
+    h.goto(TreeAddress::Instrument(1));
+    // The popup lists "New group", "Ungroup" (the lane is in one), then "Pad (current)" and "Lead".
+    h.press(KeyCode::Char('g')).press(KeyCode::Down).press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetLaneGroup inst=1 group=None"]);
+    assert_eq!(h.s.ctl.model.instruments[1].group, None);
+    assert!(h.s.ctl.dirty);
+    // Now in no group, it is offered "New group", then the two groups: "Lead" is the third.
+    h.goto(TreeAddress::Instrument(1));
+    h.press(KeyCode::Char('g')).press_n(KeyCode::Down, 2).press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SetLaneGroup inst=1 group=Some(1)"]);
+    assert_eq!(h.s.ctl.model.instruments[1].group, Some(1));
+    assert_eq!(h.s.ctl.model.instruments[0].group, Some(0), "the others are where they were");
+}
+
+#[test]
 fn deleting_a_group_ungroups_its_members() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));
