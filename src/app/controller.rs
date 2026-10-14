@@ -419,12 +419,16 @@ impl Controller {
     }
 
     /// Put the lanes at `a` and `b` in each other's places, each with everything it has: in the model, and
-    /// on the audio thread, which is told to do the same (`SessionModel::swap_lanes`). False, sending
-    /// nothing, if either is not there or they are one.
+    /// on the audio thread, which is told to do the same (`SessionModel::swap_lanes`). The history is forgotten:
+    /// what a step took out is put back by the place of its lane. False, sending nothing and keeping the
+    /// history, if either is not there or they are one.
     pub fn swap_lanes(&mut self, a: usize, b: usize) -> bool {
         if !self.model.swap_lanes(a, b) {
             return false;
         }
+        // (No intent asks for this, and a step that took something out names its lane by its place: it would put it back in whatever lane is there
+        // now, with cables addressing the plugins and modulators of the lane it was in.)
+        self.history.clear();
         let _ = self.cmd_tx.send(GraphCommand::SwapInstruments { inst_a: a, inst_b: b });
         true
     }

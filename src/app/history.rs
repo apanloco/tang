@@ -2412,6 +2412,25 @@ depth = 0.5
         assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"));
     }
 
+    #[test]
+    fn reordering_the_lanes_forgets_the_history_as_what_a_removal_put_back_would_go_by_the_place_of_its_lane() {
+        let (_engine, mut ctl, clock) = controller();
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let edge = cable_edge(&ctl, 0, 0);
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("set detune"), Some("remove a cable")));
+        // A swap that is refused changes nothing, the history included.
+        assert!(!ctl.swap_lanes(0, 0) && !ctl.swap_lanes(0, 7));
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("set detune"), Some("remove a cable")));
+        // (No intent asks for it, and the cable that was taken out would be put back into whatever lane is the first by then.)
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        assert!(ctl.swap_lanes(0, 1));
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+        assert!(ctl.undo().is_err() && ctl.redo().is_err());
+    }
+
     /// A step of a script: an intent, or time going by (in milliseconds).
     enum Op {
         Do(Intent),
