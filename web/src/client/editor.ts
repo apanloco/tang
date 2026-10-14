@@ -260,6 +260,16 @@ export class Editor {
     return this.#attempt(DOING.save, { type: "save" });
   }
 
+  /** Put back what the last change that can be undone changed (what the server says it is: `ClientState.history`). True if it was done (the page says why if it was not). */
+  undo(): Promise<boolean> {
+    return this.#attempt(DOING.undo, { type: "undo" });
+  }
+
+  /** Do again what was undone last. True if it was done (the page says why if it was not). */
+  redo(): Promise<boolean> {
+    return this.#attempt(DOING.redo, { type: "redo" });
+  }
+
   /** The node the page added, if it found it, which the canvas is asked to show (it is in the session by now); the node, or null. */
   #shown(node: NodeId | undefined): NodeId | null {
     if (node === undefined) return null;

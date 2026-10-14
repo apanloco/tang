@@ -947,3 +947,36 @@ describe("saving", () => {
     expect(said(notices)).toEqual(["Could not save the session: Not connected to the server."]);
   });
 });
+
+describe("undoing and redoing", () => {
+  const volume = (client: Client): number | undefined => {
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id);
+    return node?.kind === "instrument" ? node.volume : undefined;
+  };
+
+  test("put back what a change set and set it again, and say nothing", async () => {
+    const { client, notices, editor } = await open();
+    const before = volume(client);
+    await client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 0.25 });
+    expect(await editor.undo()).toBe(true);
+    expect(volume(client)).toBe(before);
+    expect(await editor.redo()).toBe(true);
+    expect(volume(client)).toBe(0.25);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("with nothing to undo or redo are refused, and say so in a notice", async () => {
+    const { notices, editor } = await open();
+    expect(await editor.undo()).toBe(false);
+    expect(await editor.redo()).toBe(false);
+    expect(said(notices)).toEqual(["Could not undo: there is nothing to undo", "Could not redo: there is nothing to redo"]);
+  });
+
+  test("when the connection is gone say so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.undo()).toBe(false);
+    expect(await editor.redo()).toBe(false);
+    expect(said(notices)).toEqual(["Could not undo: Not connected to the server.", "Could not redo: Not connected to the server."]);
+  });
+});

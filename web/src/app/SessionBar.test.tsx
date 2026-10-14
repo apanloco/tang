@@ -101,6 +101,20 @@ describe("the bar of the session", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
+  test("has the buttons of Undo and Redo before the one that saves, which work on the session", async () => {
+    const made = await bar();
+    const buttons = screen.getAllByRole("button").map((button) => button.textContent);
+    expect(buttons).toEqual(["Undo", "Redo", "Save"]);
+    await change(made);
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLButtonElement>("button", { name: "Undo set volume" }).disabled).toBe(false);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Undo set volume" }));
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLButtonElement>("button", { name: "Redo set volume" }).disabled).toBe(false);
+    });
+  });
+
   test("says when the session has no file", async () => {
     await bar({ file: null });
     expect(screen.getByText("no file")).toBeTruthy();

@@ -55,7 +55,7 @@ export interface KeyLike {
 }
 
 /** Whether keys typed at `target` are text: a field, a text area, a list that finds an item by its first letters, or what can be edited. */
-function takesText(target: EventTarget | null): boolean {
+export function takesText(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   if (target instanceof HTMLInputElement) return !["button", "checkbox", "radio", "range", "submit", "reset", "image", "file", "color"].includes(target.type);
   return target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
