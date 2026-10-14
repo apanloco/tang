@@ -1235,6 +1235,22 @@ fn a_port_that_is_taken_is_reported_before_the_session_is_loaded() {
         let said = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{args:?}: {said}");
         assert!(said.contains(&format!("cannot listen on {addr}")), "{args:?}: the program said: {said}");
+        // (And why, the way an error that is returned from `main` says it: the whole chain.)
+        assert!(said.contains("Caused by:") && said.contains("Address already in use"), "{args:?}: the program said: {said}");
+    }
+}
+
+/// The program interrupted as soon as it says where it serves, which is while the scan of the installed plugins is still on its
+/// thread (native code: a machine with plugins that take a while to scan shows it). It crashed at its end, with a signal, about
+/// one time in twenty: the process's exit ran what the plugins' libraries have to run at exit while the scan was still in them.
+/// It ends itself now (`main`). Forty runs take three seconds, and found the crash three times of three before that was done.
+#[test]
+fn interrupting_the_program_early_ends_it_with_status_0_every_time() {
+    for run in 1..=40 {
+        let mut tang = Tang::start();
+        tang.interrupt();
+        let status = tang.exit_within(Duration::from_secs(10)).unwrap_or_else(|| panic!("run {run}: tang did not stop\n{}", tang.log()));
+        assert!(status.success(), "run {run}: {status:?}\n{}", tang.log());
     }
 }
 
