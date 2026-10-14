@@ -520,6 +520,36 @@ ui = { x = 376, y = -200 }
 - Older sessions nested `[[instrument.effect.modulator]]`: such a modulator keeps its `ui` when it migrates into the
   lane's rack.
 
+### Pinned parameters (`pinned`)
+
+A front-end that shows a plugin's parameters as knobs on its node (the browser) keeps which ones in the session file, as a
+`pinned` list of parameter names on the plugin's table: the lane's instrument (on the `[[instrument]]`), an effect (`[[instrument.effect]]`)
+and a bus effect (`[[group.effect]]`). The engine and the TUI do not use it: the TUI does not show it, and keeps it through a
+load, an edit and a save.
+
+```toml
+[[instrument]]
+plugin = "builtin:osc"
+pinned = ["sustain", "detune", "waveform"]
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+pinned = ["resonance", "cutoff"]
+ui = { x = 376, y = 0 }
+```
+
+- The order is the order the knobs are shown in. With none pinned (no `pinned`, or an empty list) a node shows the first eight
+  parameters of its plugin; a parameter a cable ends at is shown too, for as long as the cable is there, and is not a pin.
+- It is a key of the plugin's table beside `ui`, not part of it: a node can be pinned without being placed.
+- It is read leniently, as a place is (a layout is not worth refusing a session for): what is not a list is left out and logged,
+  and so is any entry of a list that is not a name. A name that the plugin has no parameter of, a separator, and a name that comes
+  twice (the first place counts) are no pins; each is logged, and the next save leaves them out. A name that two parameters share
+  is the first of them.
+- In the model it is `PluginSlot::pinned`, the plugin's own parameter indices (`ParamSlot::index`, which cables and ports name too),
+  so it goes where its plugin goes: an effect that is moved takes its pins along, an instrument that is replaced has none. The
+  loader resolves the names (`PluginSlot::pin_names`) and the saver writes them (`pinned_names`). At most 64 can be pinned to a node
+  (`MAX_PINNED`).
+
 ### MIDI routing
 
 - Note-on/note-off: filtered by instrument's key range (inclusive)
@@ -1035,7 +1065,11 @@ ends included, or every note for none; refused for a node that is no lane, a not
 note above the high one; the TUI's `R` popup asks it too), `SetScale { scale }` (the Piano tab's scale, as
 the session file writes it, `F# dorian`, flats, long names and any case taken; refused for text that is
 not a scale; answered with `ScaleSet`, which has the root and the pitch classes a client draws from) and
-`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetNodeUi { node, ui }` (where a front-end
+`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetPinned { node, params }` (which parameters of a
+plugin a front-end shows as knobs on its node, by the plugin's own indices in the order they are shown, replacing the list there was;
+none gives the node back to the front-end's own choice; refused, with nothing changed, for a node that has no plugin, a parameter the
+plugin has not, a separator, a parameter twice and more than `MAX_PINNED`; told as `PinnedSet`; the engine and the TUI have no use for
+it, the session file keeps it, see "Pinned parameters (`pinned`)"), `SetNodeUi { node, ui }` (where a front-end
 draws a node, `{ x, y }` in the pixels of its canvas or none for the front-end's own layout; any node, the master included;
 kept to a tenth of a pixel and within 100 000 either way, `NodeUi::tidy`; told as `NodeUiSet`; the engine and the TUI have no
 use for it, the session file keeps it, see "Node positions (`ui`)"); `Save` (the session's own file); and eight that change
@@ -1461,7 +1495,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
-  `SetNodeUi`, `MoveEffect`, `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
+  `SetNodeUi`, `SetPinned`, `MoveEffect`, `RemoveNode` (a modulator or an effect) and `Save` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1483,8 +1517,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`src/app/snapshot.rs`) is that plus the revision, the telemetry layout and
   what belongs to the session as a whole (dirty, file name, tempo, piano). Node
   layout is stored in the session TOML as optional `ui = { x, y }` tables that the
-  engine and the TUI ignore (`Node.ui` in the graph; see "Node positions (`ui`)";
-  the planned `pinned` list is not built).
+  engine and the TUI ignore (`Node.ui` in the graph; see "Node positions (`ui`)"), and so is which of a plugin's parameters its node
+  shows as knobs (`Plugin.pinned` in the graph; see "Pinned parameters (`pinned`)").
 - **Telemetry**: the audio thread publishes modulator outputs, effective
   (modulated) parameter values and meters through lock-free slots; the web
   runtime streams them to the browser as binary frames. The slots, the engine
@@ -1522,7 +1556,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 29): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 30): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1584,7 +1618,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   order; a browser lets go of the focus of an element that the page moves in the DOM, so the button that was pressed is given it
   again (`keepFocus` in `app/focus.ts`). Step 29 drew the shape of an envelope on its node: the line its four stages make, with a dot where
   the envelope is while notes are played (`ui/LiveEnvelope.tsx`, `client/envelope.ts`: a stage's width is the logarithm of its time, and the
-  dot's stage is told from the level and which way it was last going, since the telemetry carries no phase: `courseAfter`). What the controller
+  dot's stage is told from the level and which way it was last going, since the telemetry carries no phase: `courseAfter`). Step 30 let a person
+  choose the knobs of a node: each row of a plugin's panel has a pin (`Show cutoff on the node`, pressed when the node shows it) that adds
+  the parameter to the node or takes it off (`client/pinning.ts`: a node shows what is pinned to its plugin, or the first eight, and the
+  target of a cable while the cable is there; `Editor.pinParam` keeps the other knobs as they were, `SetPinned` replaces the list), and a
+  button under the count gives the node back to the first eight; the pins are the session's, so every page has them and the saved file
+  has them by name. What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1639,7 +1678,7 @@ parity) has begun, §11: the controller takes effects and modulators out of the 
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
 they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27), moves
-effects along their chains (28) and draws the shape of an envelope (29).
+effects along their chains (28), draws the shape of an envelope (29) and lets a person choose the knobs of a node (30).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
@@ -1656,8 +1695,8 @@ parameter the new plugin has under the same name (a vibrato on `detune` could su
 oscillator): a cable would have to be drawn again with the new plugin's index.
 TODO: telemetry slots are never reused (4,096 of them): a session that adds modulators and cables
 for long enough runs out, and later cables have no live dot.
-TODO: pin a parameter to its node as a knob from the panel of parameters (a node shows the first eight, and every one a
-cable drives): to be kept in the session as the `ui` layout's `pinned` list (docs/web-ui.md §4.4; `ui` has the places only, so far).
+TODO: pinning from a knob on the node itself (a pin is set in the panel only), ordering the pins by dragging (they are shown in the order they
+were pinned), and a node with no knobs at all (an empty `pinned` list is the front-end's own choice, the first eight; docs/web-ui.md D33).
 TODO: the panel's sliders ignore what a parameter says of its steps (`stepCount`) and of its group (`group`): a stepped
 parameter is turned as if it were continuous, and the filter looks at names only. (The plugins of this machine report neither.)
 TODO: a lane added from the browser is full range and in no group, and an instrument put in from it starts at

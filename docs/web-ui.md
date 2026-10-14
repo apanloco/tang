@@ -380,7 +380,8 @@ ui = { x = 80, y = 120 }
 
 [[instrument.effect]]
 plugin = "builtin:filter"
-ui = { x = 320, y = 120, pinned = ["cutoff", "resonance"] }
+ui = { x = 320, y = 120 }
+pinned = ["cutoff", "resonance"]
 
 [[instrument.modulator]]
 type = "lfo"
@@ -389,10 +390,10 @@ ui = { x = 320, y = 20 }
 
 The same on `[[group]]`, `[[group.effect]]` and `[[group.modulator]]`; the master
 node's position goes in a top-level `[ui]` table. `pinned` lists the parameters
-shown as knobs and ports on the node (plugins can have hundreds; the inspector
-lists all of them). Attaching a cable pins its target automatically.
+shown as knobs on a plugin's node (plugins can have hundreds; the panel lists all of them); it is a key of the plugin's table
+beside `ui` (step 30, below), and a cable's target is shown while the cable is there, as a cable and not as a pin.
 
-**As built (step 25).** The positions are built; `pinned` is not (a TODO in `CLAUDE.md`). A node's table has `ui = { x, y }`
+**As built (step 25).** The positions are built; `pinned` came with step 30, below. A node's table has `ui = { x, y }`
 for each kind of node (a lane, an effect, a modulator, a group, a bus effect, a group's modulator) and the master's is
 `master = { x, y }` in the top-level `[ui]`; `CLAUDE.md` ("Node positions") has the format as a person reads it. The numbers are
 pixels on the page's canvas, finite, whole (written without a point) or with decimals (as typed: an f32 widened to f64 would
@@ -404,6 +405,17 @@ that is taken out stays in the table (ids are not reused, so nothing reads it) a
 `Node.ui`, left out of the JSON of a node that has none, so that a session with no places is the JSON it was. The TUI shows
 nothing of them and keeps them through a load, an edit and a save. A node with no place is where the page's layout puts it, and
 the layout of the others does not leave room for one that was moved: a node dragged away leaves its space to whatever comes.
+
+**As built (step 30).** `pinned` is a key of the plugin's own table, beside `ui` and not inside it as this section first said: on the
+lane's `[[instrument]]` (its instrument), on an `[[instrument.effect]]` and on a `[[group.effect]]`, a list of the parameters' names in the
+order they are shown (D33 says why it is not in `ui`). It is read leniently, as a place is: what is not a list is left out with a log line,
+and so is any entry that is not a name; a name the plugin has no parameter of, a separator and a name twice are no pins (each is logged, the
+next save leaves them out) and a name that two parameters share is the first of them. In the model it is `PluginSlot::pinned`, the plugin's
+own parameter indices, which is where cables and ports name a parameter too (`pin_names` resolves a file's names, `pinned_names` goes back), so
+it goes where its plugin goes: the effect that is moved takes its pins along, and the instrument that is replaced starts with none, with nothing
+to remember. The graph has it as `Plugin.pinned`. At most 64 can be pinned to a node. A session with nothing pinned is written as it always was,
+and the TUI shows nothing of the pins and keeps them through a load, an edit and a save. A cable's target is not pinned by the cable: it is
+shown for as long as the cable is there (§9.3), since a pin that came and went with a cable would have been in the session file.
 
 ## 5. Intents and events
 
@@ -488,6 +500,15 @@ resolves cursor → ids and then calls `apply`.
   `Saved { file }`, which leaves the session with nothing unsaved; a session with no file, or
   one that cannot be written, is refused with the code `io`, which is no revision and changes
   nothing. `SaveAs` waits for the one validated file name, §8.)
+- Pins: `SetPinned { node, params }` (not undoable; marks the session dirty). Built, step 30: `node` is a lane's node (its instrument), an
+  effect or a bus effect; `params` the plugin's own indices (`Param.index`) in the order the front-end shows them, replacing the list there
+  was, and none gives the node back to the front-end's own choice (the first eight). Refused, with nothing changed and no revision used, in
+  this order: a node that is not there (`NotFound`; the master is no node of the model, for the controller), a node that has no plugin
+  (`that node has no plugin`, `that instrument has no plugin` for an empty lane), more than 64 (`at most 64 parameters can be pinned to a
+  node`: `MAX_PINNED`, `PINNED_LIMIT` in `constants.ts`), then each parameter in order: one the plugin has not (`the plugin has no parameter
+  N`), a separator (`X is a separator, not a control`: the model has them, the graph has none) and one listed twice (`parameter N is listed
+  twice`). The answer is the event `PinnedSet { node, params }`, which `Snapshot::apply` and the page's reducer apply (the plugin's own
+  `pinned`), and which the TUI leaves alone. The graph has the list in every plugin, `Plugin.pinned` (empty for none).
 - Layout: `SetNodeUi` (not undoable; marks the session dirty). (`SetNodeUi { node, ui }` is built, step 25: `ui` is
   `{ x, y }`, in the pixels of the canvas, or `null` to give the node back to the page's layout; `node` is any node of the
   graph, the master (`NodeId::MASTER`) too, which the controller finds though it is not a node of the model. The controller
@@ -819,8 +840,8 @@ pane), with the piano along the bottom.
   are containers (bus nodes) that member strips feed into.
 - Modulators are nodes with free-form cables to knob ports. Audio cables are
   drawn but derived: you reorder by moving a node along the strip.
-- Nodes show their pinned parameters as knobs; everything else is in the
-  inspector. Attaching a cable pins the target.
+- Nodes show their pinned parameters as knobs (the first eight until something is pinned); everything else is in the
+  panel. A cable's target is shown while the cable is there.
 - The limits are the engine's (§2): serial audio path, block-rate lane-global
   modulation.
 
@@ -831,7 +852,7 @@ effects, in columns of 376 px), its modulators above the strip over the node eac
 with the middle of its members, and the master at the end in the middle of it all. Nodes are
 304 px wide, a header is 44 px and a row of four controls 108 px; the layout assumes those and
 `patch.css` keeps to them. A node shows its plugin's first eight parameters and every one a
-cable ends at ("pinned" until the session keeps pinning), then its own gain; each control
+cable ends at (until step 30, when the session began to keep pins), then its own gain; each control
 has a port on its top edge, quiet until a cable ends at it. An audio cable is grey, a
 modulation cable magenta, dashed and thicker the deeper it is; (a cable that ends at a
 modulator's rate or stage has had a handle since step 26, below; one that ends at the depth of a cable has none and is
@@ -932,7 +953,7 @@ it while a cable drives it; it is turned like a knob, by the same `Control`, so 
 until the engine has answered, one intent a frame, a gesture's end at once), and its keys are a knob's. One panel at
 a time: the button of another node puts that node's parameters in, with a filter of its own; the button again, the close
 button and Escape (with the focus in the panel) close it, the focus going back to the button; a node that goes takes
-its panel. Keys typed in the filter are text, not notes. Not built: pinning a parameter to the node, a slider that
+its panel. Keys typed in the filter are text, not notes. Pinning a parameter to the node is step 30, below. Not built: a slider that
 follows a parameter's steps or groups, a log scale for a range of decades.
 
 **As built (step 23).** A lane's node has a cell called Keys after its volume, in the grid of its controls, with a
@@ -1049,6 +1070,23 @@ first level is told by itself alone. Not exact: the first reading of a note is a
 ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place. Not built:
 dragging the corners of the shape to set the stages, and the exact stage (the telemetry has the level and no phase: a channel for it would put the
 dot exactly where the engine is).
+
+**As built (step 30).** What a node shows as knobs is the session's to say. A plugin has a list of the parameters pinned to it (`Plugin.pinned`,
+the plugin's own indices in the order they were pinned); `client/pinning.ts`, a pure module that the canvas, the panel and the editor all ask,
+turns it into what is drawn. `shownParams` is the pinned ones, or the first eight (`DEFAULT_KNOBS`) of the plugin's if none are (a pin that the
+plugin has no parameter for is left out, and if that leaves none it is the first eight), and `knobsOf` is a node's knobs: those and, after them in
+the plugin's order, every parameter a cable ends at that is not among them, for as long as the cable is there (the cable is not a pin). The
+canvas calls them `knobs` (`PatchNodeData.knobs`; it was `pinned`, which is the server's list now), the layout knows a node's height from them, and
+a change of the pins is a change of structure (`sameStructure`): without that a node that gained a row would not have been laid out again.
+`pinnedWith` is how a pin changes what a node shows: a node with nothing pinned has the first eight as its list, so pinning a ninth keeps them and
+taking one off leaves the other seven, which is the case a person is in when they first open a panel; pinning what is shown or taking off what is
+not changes nothing; a parameter the plugin has not, and a list longer than the server takes (`PINNED_LIMIT`), are refused before it is asked; and
+taking off the last pin leaves an empty list, which gives the node back to the first eight. `Editor.pinParam(node, index, pinned)` works the list
+out and asks `SetPinned`, resolving true without asking when it is so already and saying what it could not do in the page's own words.
+In the panel each row has a pin, a button named `Show <parameter> on the node` with a tooltip, pressed (drawn filled) when the node shows the
+parameter and open when it does not (`isKnob`, read from the session, so a pin another page makes shows); while anything is pinned a button under
+the count, `Show the first eight again`, gives the node back to them (`hasPins`). Not built: a node with no knobs at all (an empty list is the
+default, as D33 says), pinning from a knob on the node itself, and ordering the pins by dragging.
 
 ### 9.4 Performance rules
 
@@ -2719,6 +2757,57 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 950 tests, 1104 with the `web` feature and 19 on the real program, 945 without the default plugin
     formats and 1097 with `web` (unchanged); web 1279 in 64 files; 59 in browsers.
 
+- [x] **30. Pinning parameters to a node (phase 1).** A node showed the first eight parameters of its plugin and every one a cable ends at, and a
+  person could not choose which: the panel turned any parameter and could not put it on the node. *Done when:* a pin on every row of a plugin's
+  panel puts its parameter on the node as a knob, or takes it off; the pins are the session's (the program keeps them, tells every page, saves them
+  by name and reads them back, and a plugin that is moved or replaced is as it should be); and the TUI and the engine are as they were. In parts,
+  each its own commit: **30.1** the session file and the model; **30.2** the intent `SetPinned`, the event, `Plugin.pinned` on the wire, the page's
+  reducer, editor and mock engine, and the fixture that pins the mock to the controller; **30.3** what a node shows (`client/pinning.ts`), the canvas
+  and `Editor.pinParam`; **30.4** the pins and the button in the panel; **30.5** browser tests. *Not done (later steps):* a node with no knobs at all,
+  pinning from a knob on the node, ordering the pins by dragging.
+  - **30.1 as built.** §4.4 above. `pinned` in `session.rs` (`PluginConfig`, `EffectConfig`, `SaveInstrument`, `SaveEffect` and the structs that are
+    written), `PluginSlot::pinned` with `pin_names` and `pinned_names`, the loader's three sites and the saver's two.
+  - **30.2 as built.** §5 above. `Intent::SetPinned`, `Event::PinnedSet`, `Controller::set_pinned` (`app::apply`), `Plugin.pinned` in the graph,
+    `Snapshot::apply`, `MAX_PINNED` and `PINNED_LIMIT`; the TUI's match on events has an arm for it and a test that a browser's pin leaves its tree
+    as it was and the session unsaved. The page's reducer, `Editor.setPinned` and the mock engine's `pinnedOutcome`, which `fixtures/pins.json`
+    pins to the controller (every node of a session, the master and one that is not there, each with nine lists: 72 rows, 12 taken and 60
+    refused in the controller's own words); the mock has no refusal of a separator, which its graph does not have.
+  - **30.3 as built.** §9.3 above. `client/pinning.ts` (`shownParams`, `knobsOf`, `pinnedWith`), `PatchNodeData.knobs`, `sameStructure`,
+    `Editor.pinParam`, the selectors `isKnob` and `hasPins`.
+  - **30.4 as built.** §9.3 above. The pin of a row (`PinButton` in `controls.tsx`) and the button of the panel (`ParamPanel.tsx`).
+  - **30.5 as built.** `e2e/pins.spec.ts`: on the mock, a reverb (ten parameters: its node shows the first eight and not `lowcut`) has `lowcut` pinned
+    from its panel, the first eight stay, the keyboard takes `width` off with the space bar and the focus stays on the pin, and the button
+    gives the node back to the first eight; on the real program, a second page and a page that is opened again have what was pinned, what the
+    second page does shows on the first, and the saved file has the pinned parameters by name, in order, and nowhere else (and none after
+    they are given back).
+  - **Tests.** Rust: 22 more than at the end of step 29 in each configuration (972 against 950 with the default features) and one more on the real
+    program: the file's format and the loader and saver (12: the file read on each kind of node and leniently, written and read back, the names
+    resolved, a separator, a name that two parameters share, an effect that is moved takes its pins) and the controller (10: what is kept and
+    in which order, every refusal with nothing changed, the limit, what a session saves, an instrument that is replaced and a preset that is
+    loaded, an effect that is moved, the graph, the TUI, the fixture), with cases in the property test of every intent against the snapshot,
+    the wire shapes and the refusals of an event; and `tests/serve.rs` (the real binary: one browser pins, a second sees it, the controller's
+    words for three refusals, the saved file, a program started on the file, and the node given back). Web: 46 more tests (1325 against 1279,
+    in two more files): the reducer (6), the editor (9: `setPinned` and `pinParam`), the mock against the fixture (3), what a node shows (15),
+    the selectors (3), the canvas and its layout (3 new, and three of the old ones moved into the module: which is why these add up to 46), the pin of a row (6) and the panel (4);
+    in browsers two more (61 against 59). 103 mutations: 20 of the file format, the model, the loader and the saver, 34 of the controller, the
+    snapshot and the page's mock, reducer and editor (16 and 18), 31 of what a node shows, the selectors, the editor's `pinParam` and the
+    structure rule, 15 of the pin and the button, and 3 of the layout's use of the knobs. All were caught in the end: two only after a test was
+    written (a name that two parameters share, and a mock that refuses a list of exactly the limit one place too soon, which the fixture
+    had no list to show), and one did not build and was written again.
+  - **Found on the way.** A browser assertion that no node is over another after a pin passed with the layout broken (a mutation that ignored every
+    node's knobs): a pin on a built-in plugin cannot make its node a row taller (three rows at the first eight and at all ten), so it could not
+    fail for the reason it gave. It was taken out, and the layout is tested where it can be seen, with a plugin of twelve parameters. A sentence of
+    the 30.3 commit message said no built-in plugin has more than eight parameters; the reverb has ten, which the browser test of 30.5 uses (the
+    message was amended: the commit was not pushed). The fixture showed how the controller answers for the master, which is no node of its
+    model: `there is no node 4294967295`, which the mock now says too. A change of the pins had to be a change of structure for the canvas to be
+    laid out again, which a test of `sameStructure` was written for first. The page's notices keep the last few only (the same as in step 28):
+    each is read as it is said.
+  - **Looked at.** On the real program with the user's own Pianoteq 9 on the null audio device (2,202 parameters once the plugin's locked ones
+    are left out): the panel's first eight are filled and the rest open, the filter "Volume" finds nine, pinning three of them adds a third row of
+    knobs to the node, and the button gives the first eight back.
+  - **Numbers at the end of the step.** Rust 972 tests, 1126 with the `web` feature and 20 on the real program, 967 without the default plugin
+    formats and 1119 with `web`; web 1325 in 66 files; 61 in browsers.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2786,6 +2875,7 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D30 | What a modulator has put out is the page's own record, not the server's: a `TraceBuffer` of the samples a node's frames took of the telemetry slot it reads anyway (the past of a page is from when it was opened), so that nothing is added to the wire, nothing is kept for a client that is not there, and what is drawn is exactly what the telemetry carries (30 values a second, which aliases an LFO faster than 15 Hz: f85). A trace is a canvas drawn on the frame loop and a cable's brightness is a CSS variable, so that telemetry still does not pass through React; a value that has not moved for as long as the trace shows is drawn once | Built (step 27) |
 | D31 | An effect is moved by a place in its chain (`MoveEffect { node, index }`), not by a step: a client that offers steps (the page's buttons, the TUI's Shift+Up and Shift+Down) asks for `index ± 1`, one that drags asks for any place, and the controller answers both alike, a lane's chain and a group's bus by one intent and two controller methods that do the model and the audio thread together. A refusal is a refusal of the intent (a place the chain has not, the place it is at), never a silent no-op, so that a client's notice can say why. The page keeps the focus on the button that was pressed by asking for it again when a browser lets it go (`keepFocus`), rather than by keeping the DOM order of the nodes fixed, which would have left the Tab order different from what is drawn | Built (step 28) |
 | D32 | An envelope's dot is placed from what the telemetry already carries, the level the envelope puts out, read with which way it was going (`courseAfter`), and not from a phase that the engine would publish: nothing is added to the wire or to the audio thread (as for the traces, D30). The page infers the stage, and is wrong in a few places that the next reading mends: the first reading of a note is a rise whichever stage it is on, a note that ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place alone. A channel for the stage would make it exact; it is not worth one yet. The telemetry is slower than the page's frames, so a frame that finds the level where it was is no news and the level goes on the way it was going, until a rise has stood still for three readings (100 ms). A stage's width is on a logarithmic scale of its time (a stage is 1 ms to 10 s), and the sustain, which has no time, has the mean of the others | Built (step 29) |
+| D33 | Which parameters of a plugin its node shows as knobs is the session's, kept as a list on the plugin (`pinned = ["cutoff", ...]`, by name, a key of the plugin's table beside `ui`; in the model `PluginSlot::pinned`, the plugin's own indices; on the wire `Plugin.pinned`), not the page's and not inside `ui` as §4.4 first planned: it follows its plugin wherever the plugin goes (an effect that is moved takes it along, an instrument that is replaced has none, with nothing to remember), a node can be pinned without being placed, and `NodeUi` stays a `Copy` pair of numbers that some forty places copy. One intent, `SetPinned { node, params }`, replaces the whole list: simple, idempotent, one event, and the last list wins (two pages that pin in the same moment can lose one of the pins; a pair of intents to pin and to unpin would not, and the page works out the list from what it shows, `pinnedWith`). An empty list is the front-end's own choice, the first eight, so there is no way to ask for a node with no knobs at all, which nobody needs yet; and the first pin of a node keeps the first eight, since a node that lost them at its first pin would be a surprise. A cable's target is shown for as long as the cable is there and is not a pin (§4.4 planned that attaching a cable pins its target: a pin that appeared with a cable would have been written into the session file) | Built (step 30) |
 
 Open questions
 
