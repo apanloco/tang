@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
-import { addEnvelope, cables, drag, node, open, output, port, setting } from "./canvas";
+import { addEnvelope, cables, centre, drag, node, open, output, port, setting } from "./canvas";
 
 // What a person does to build modulation on the page, against the mock engine in the page (so that a test
 // can have a session of its own: the tracer, or two lanes): add a modulator from the menu, draw a cable by
@@ -299,4 +299,50 @@ test("a cable and a modulator are taken out by their buttons", async ({ page }) 
   await page.getByRole("button", { name: "Remove LFO" }).click();
   await expect(node(page, "LFO")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add a modulator to Oscillator" })).toBeFocused();
+});
+
+test("an effect is moved along its chain by its buttons: the canvas lays the chain out in the new order, the cable stays on its plugin, the buttons fit the node, and the focus stays where it was", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  const [filter, reverb] = [node(page, "Filter"), node(page, "Reverb")];
+  await expect(reverb).toBeVisible();
+  const leftOf = async (a: Locator, b: Locator): Promise<boolean> => (await centre(a)).x < (await centre(b)).x;
+  // The chain is the filter and then the reverb, left to right; the first can go no earlier and the last no later.
+  expect(await leftOf(filter, reverb)).toBe(true);
+  const button = (name: string) => page.getByRole("button", { name });
+  await expect(button("Move Filter earlier in its chain")).toHaveAttribute("aria-disabled", "true");
+  await expect(button("Move Filter later in its chain")).toHaveAttribute("aria-disabled", "false");
+  await expect(button("Move Reverb earlier in its chain")).toHaveAttribute("aria-disabled", "false");
+  await expect(button("Move Reverb later in its chain")).toHaveAttribute("aria-disabled", "true");
+
+  // The reverb goes before the filter: the canvas has them the other way round, and the focus is on the button that was pressed, which
+  // has nowhere left to go.
+  await button("Move Reverb earlier in its chain").click();
+  await expect.poll(() => leftOf(reverb, filter), { message: "the reverb is first now" }).toBe(true);
+  await expect(button("Move Reverb earlier in its chain")).toBeFocused();
+  await expect(button("Move Reverb earlier in its chain")).toHaveAttribute("aria-disabled", "true");
+  await expect(button("Move Reverb later in its chain")).toHaveAttribute("aria-disabled", "false");
+  // The LFO's cable is on the filter's cutoff still: it is the plugin that the cable names, not the place.
+  await expect(cables(page)).toHaveCount(1);
+  await expect(button("Remove cable LFO → Filter: cutoff")).toBeVisible();
+  await expect(page.getByText("Unsaved changes")).toBeVisible();
+
+  // The buttons of an effect fit in its node, whatever order they are in.
+  for (const effect of [filter, reverb]) {
+    const box = await effect.locator(".tang-node").boundingBox();
+    if (!box) throw new Error("not on the page");
+    for (const control of await effect.locator(".tang-node__actions button").all()) {
+      const at = await control.boundingBox();
+      if (!at) throw new Error("not on the page");
+      expect(at.x, "inside the node on the left").toBeGreaterThanOrEqual(box.x);
+      expect(at.x + at.width, "inside the node on the right").toBeLessThanOrEqual(box.x + box.width);
+    }
+  }
+
+  // And from the keyboard: Enter on the button that moves it later puts it back.
+  await button("Move Reverb later in its chain").focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => leftOf(filter, reverb), { message: "the filter is first again" }).toBe(true);
+  await expect(button("Move Reverb later in its chain")).toBeFocused();
 });

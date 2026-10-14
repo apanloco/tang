@@ -8,14 +8,14 @@ import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
-import { nodeById, paramCountOf, presetsOf } from "../../client/selectors";
+import { chainPlaceOf, nodeById, paramCountOf, presetsOf, sameChainPlace } from "../../client/selectors";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
 import { LiveTrace } from "../../ui/LiveTrace";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
-import { focusWhenPossible } from "../focus";
+import { focusWhenPossible, keepFocus } from "../focus";
 import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
 import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
@@ -173,6 +173,52 @@ function ParamsButton({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
+/** The `id` of the button that moves the effect `node` one place earlier or later in its chain, which the focus is kept on. */
+const moveEffectId = (node: NodeId, direction: "earlier" | "later"): string => `move-${direction}-${String(node)}`;
+
+/**
+ * The two buttons of an effect that move it one place along its chain: earlier (towards the instrument or the group) and later (towards the master).
+ * The audio goes through the effects in the order of the chain, a lane's or a bus's alike; the cables that drive the plugins stay on them. The
+ * button of a direction the effect cannot go (the first effect has no place earlier, the last none later) says so and does nothing, and keeps the
+ * focus where it was, which a button that was taken away or disabled would not. The canvas puts the effect's node in its new place among the
+ * others, and a browser lets go of the focus of an element that is moved in the page (of the node that is put after the one it was before, not of
+ * the one that stays): a button that was pressed with the focus on it is given it again.
+ */
+function MoveEffectButtons({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const place = useClientSelection((state) => chainPlaceOf(state, node), sameChainPlace);
+  if (!place) return null;
+  const buttons = [
+    { direction: "earlier", glyph: "‹", step: -1, available: place.index > 0 },
+    { direction: "later", glyph: "›", step: 1, available: place.index < place.count - 1 },
+  ] as const;
+  return (
+    <>
+      {buttons.map(({ direction, glyph, step, available }) => (
+        <button
+          key={direction}
+          id={moveEffectId(node, direction)}
+          type="button"
+          className="tang-menu-button tang-node__move nodrag nopan"
+          aria-label={`Move ${name} ${direction} in its chain`}
+          title={`Move ${name} ${direction} in its chain`}
+          aria-disabled={!available}
+          onClick={(event) => {
+            if (!available) return;
+            const focused = document.activeElement === event.currentTarget;
+            // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+            void editor.moveEffect(node, place.index + step).then((moved) => {
+              if (moved && focused) keepFocus(moveEffectId(node, direction));
+            });
+          }}
+        >
+          {glyph}
+        </button>
+      ))}
+    </>
+  );
+}
+
 /** The button of a modulator or an effect that takes it out, with the cables that drive it; the focus goes to the button that adds one like it to its lane or group. */
 function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name: string; parent: NodeId | null; focusTo: (parent: NodeId) => string }) {
   const editor = useEditor();
@@ -206,6 +252,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
       <Header name={data.name} badge={data.format}>
         {effect ? (
           <span className="tang-node__actions">
+            <MoveEffectButtons node={data.node} name={data.name} />
             <PresetMenu node={data.node} name={data.name} />
             <ParamsButton node={data.node} name={data.name} />
             <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />

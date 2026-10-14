@@ -102,6 +102,20 @@
   min-width: 26px;
 }
 
+/* (The two that move an effect along its chain: a glyph each. One that cannot go that way is dimmed, and does not answer the pointer's hover.) */
+.tang-menu-button.tang-node__move {
+  min-width: 22px;
+}
+
+.tang-node__move[aria-disabled="true"] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tang-node__move[aria-disabled="true"]:hover {
+  border-color: var(--tang-border);
+}
+
 /* (The one that changes the instrument of a lane: a glyph, as wide as the one of a modulator's "+".) */
 .tang-menu-button.tang-node__instrument {
   min-width: 26px;

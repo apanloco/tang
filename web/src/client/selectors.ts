@@ -31,6 +31,27 @@ export function presetsOf(state: ClientState, id: NodeId): { presets: readonly P
   return { presets: node.plugin.presets, current: node.plugin.currentPreset };
 }
 
+/** Where an effect is in its chain: its place, from 0 (the first, the nearest the instrument or the group), and how many effects the chain has. */
+export interface ChainPlace {
+  index: number;
+  count: number;
+}
+
+/**
+ * Where the effect `id` is in its chain, a lane's or a group's bus: the effects that have the same parent, in the order of the graph, which is the
+ * order of the audio path. Null for a node that is no effect, a node that is not there, and before there is a session.
+ */
+export function chainPlaceOf(state: ClientState, id: NodeId): ChainPlace | null {
+  const nodes = state.snapshot?.graph.nodes;
+  const found = nodes?.find((node) => node.id === id);
+  if (!nodes || found?.kind !== "effect") return null;
+  const chain = nodes.filter((node) => node.kind === "effect" && node.parent === found.parent);
+  return { index: chain.indexOf(found), count: chain.length };
+}
+
+/** Whether two answers of `chainPlaceOf` are the same place in a chain of the same length. */
+export const sameChainPlace = (a: ChainPlace | null, b: ChainPlace | null): boolean => a === b || (a !== null && b !== null && a.index === b.index && a.count === b.count);
+
 /** The parameters of a plugin to look through: what each is called and its own index, with whose they are. */
 export interface ParamList {
   /** What the canvas calls the node. */

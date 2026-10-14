@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
-import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameParamList } from "./selectors";
+import { MASTER, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { cableDepthOf, chainPlaceOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameChainPlace, sameParamList } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
@@ -273,6 +273,48 @@ describe("counting the parameters of a plugin", () => {
     expect(paramCountOf(reach, MASTER)).toBe(0);
     expect(paramCountOf(reach, 424242)).toBe(0);
     expect(paramCountOf(stateOf(null), filter.id)).toBe(0);
+  });
+});
+
+describe("finding where an effect is in its chain", () => {
+  // The moves fixture: a bus of four effects (1 to 4) of the group 0, a lane (5) in it with four effects (6 to 9) and a lane (11) in none with three (12 to 14).
+  const moves = stateOf(movesFixture.snapshot);
+
+  test("is its place, counted from 0, and how many effects the chain has: of a lane's chain and of a bus", () => {
+    expect(chainPlaceOf(moves, 6)).toEqual({ index: 0, count: 4 });
+    expect(chainPlaceOf(moves, 8)).toEqual({ index: 2, count: 4 });
+    expect(chainPlaceOf(moves, 9)).toEqual({ index: 3, count: 4 });
+    expect(chainPlaceOf(moves, 12)).toEqual({ index: 0, count: 3 });
+    expect(chainPlaceOf(moves, 14)).toEqual({ index: 2, count: 3 });
+    expect(chainPlaceOf(moves, 1)).toEqual({ index: 0, count: 4 });
+    expect(chainPlaceOf(moves, 3)).toEqual({ index: 2, count: 4 });
+  });
+
+  test("counts the effects of the chain it is in, and not those of the other chains of the session", () => {
+    // The tracer's lane has one effect.
+    expect(chainPlaceOf(state, filter.id)).toEqual({ index: 0, count: 1 });
+  });
+
+  test("is none for a node that is no effect, a node that is not there, or before there is a session", () => {
+    for (const id of [0, 5, 10, 11, 16, MASTER, 12345]) expect(chainPlaceOf(moves, id), String(id)).toBeNull();
+    expect(chainPlaceOf(stateOf(null), 6)).toBeNull();
+  });
+
+  test("follows the effect when it moves, and is the same answer while only a value changes", () => {
+    // (The first two effects of the lane's chain change places in the graph.)
+    const nodes = [...movesFixture.snapshot.graph.nodes];
+    const first = nodes.findIndex((n) => n.id === 6);
+    nodes.splice(first, 2, ...nodes.slice(first, first + 2).reverse());
+    const moved: Snapshot = { ...movesFixture.snapshot, graph: { ...movesFixture.snapshot.graph, nodes } };
+    expect(chainPlaceOf(stateOf(moved), 6)).toEqual({ index: 1, count: 4 });
+    expect(chainPlaceOf(stateOf(moved), 7)).toEqual({ index: 0, count: 4 });
+
+    expect(sameChainPlace(chainPlaceOf(moves, 6), chainPlaceOf(stateOf(structuredClone(movesFixture.snapshot)), 6))).toBe(true);
+    expect(sameChainPlace(chainPlaceOf(moves, 6), chainPlaceOf(stateOf(moved), 6))).toBe(false);
+    expect(sameChainPlace({ index: 1, count: 4 }, { index: 1, count: 5 })).toBe(false);
+    expect(sameChainPlace(null, null)).toBe(true);
+    expect(sameChainPlace(null, { index: 0, count: 1 })).toBe(false);
+    expect(sameChainPlace({ index: 0, count: 1 }, null)).toBe(false);
   });
 });
 

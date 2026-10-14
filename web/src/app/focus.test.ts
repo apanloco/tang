@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { focusWhenPossible } from "./focus";
+import { focusWhenPossible, keepFocus } from "./focus";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -57,5 +57,66 @@ describe("giving the focus to something that may not be ready for it", () => {
     document.getElementById("other")?.focus();
     await frames(5);
     expect(document.activeElement?.id).toBe("other");
+  });
+});
+
+describe("keeping the focus on something that the page moves", () => {
+  test("gives the focus back when the page has let it go to nothing, whenever that is in the frames it is kept for", async () => {
+    document.body.innerHTML = '<button id="kept1">b</button>';
+    const b = document.getElementById("kept1") as HTMLButtonElement;
+    b.focus();
+    keepFocus("kept1");
+    // (What a browser does with the focus of an element that is moved in the page: it is on the page itself, the body.)
+    b.blur();
+    expect(document.activeElement).toBe(document.body);
+    await frames(2);
+    expect(document.activeElement).toBe(b);
+    b.blur();
+    await frames(2);
+    expect(document.activeElement).toBe(b);
+  });
+
+  test("leaves the focus where a person has put it", async () => {
+    document.body.innerHTML = '<button id="kept2">b</button><button id="other2">o</button>';
+    document.getElementById("kept2")?.focus();
+    keepFocus("kept2");
+    document.getElementById("other2")?.focus();
+    await frames(5);
+    expect(document.activeElement?.id).toBe("other2");
+  });
+
+  test("does not take the focus when it is on what it is kept for, and has nothing to do for what is not there", async () => {
+    document.body.innerHTML = '<button id="kept3">b</button>';
+    const b = document.getElementById("kept3") as HTMLButtonElement;
+    b.focus();
+    const focused = vi.spyOn(b, "focus");
+    keepFocus("kept3");
+    keepFocus("nothing3");
+    await frames(3);
+    expect(focused).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(b);
+  });
+
+  test("is kept for the latest element only: what was asked for before it is let go, and does not take the focus from it", async () => {
+    document.body.innerHTML = '<button id="kept5">a</button><button id="kept6">b</button>';
+    keepFocus("kept5");
+    // (A person goes on to the other button, which the page then moves as well: the focus is let go.)
+    const second = document.getElementById("kept6") as HTMLButtonElement;
+    second.focus();
+    keepFocus("kept6");
+    second.blur();
+    await frames(2);
+    expect(document.activeElement?.id).toBe("kept6");
+  });
+
+  test("stops after the frames it was asked for", async () => {
+    document.body.innerHTML = '<button id="kept4">b</button>';
+    const b = document.getElementById("kept4") as HTMLButtonElement;
+    b.focus();
+    keepFocus("kept4", 3);
+    await frames(8);
+    b.blur();
+    await frames(3);
+    expect(document.activeElement).toBe(document.body);
   });
 });
