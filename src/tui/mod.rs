@@ -4350,7 +4350,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  Shift+Tab  Previous tab".into(),
         "  Ctrl+S     Save session".into(),
         "  Ctrl+Shift+S  Save session as (new filename)".into(),
-        "  Ctrl+Z     Undo the last thing set (as the browser's Undo does)".into(),
+        "  Ctrl+Z     Undo the last thing done (as the browser's Undo does)".into(),
         "  Ctrl+Y     Redo (Ctrl+Shift+Z too)".into(),
         "  Ctrl+Q     Quit".into(),
         "".into(),

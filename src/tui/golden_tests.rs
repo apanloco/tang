@@ -4462,7 +4462,7 @@ mod undo_and_redo {
         let mut h = Harness::new(scene_bus_pair());
         h.press(KeyCode::Char('4'));
         let frame = h.dump();
-        assert!(frame.contains("Ctrl+Z     Undo the last thing set"), "{frame}");
+        assert!(frame.contains("Ctrl+Z     Undo the last thing done"), "{frame}");
         assert!(frame.contains("Ctrl+Y     Redo (Ctrl+Shift+Z too)"), "{frame}");
     }
 
