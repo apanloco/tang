@@ -191,7 +191,7 @@ describe("what the page gives its views", () => {
     await waitFor(() => {
       expect(notices?.getItems()).toHaveLength(1);
     });
-    expect(notices?.getItems()[0]?.text).toBe("Could not set a parameter: that node has no parameter 99");
+    expect(notices?.getItems()[0]?.text).toBe("Could not set a parameter: the plugin has no parameter 99");
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });

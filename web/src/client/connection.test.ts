@@ -242,7 +242,7 @@ describe("a request", () => {
     const refused = [
       [{ type: "setModulatorField", node: 424242, field: "rate", value: 1 }, "notFound", "there is no node 424242"],
       [{ type: "setModulatorField", node: oscillator.id, field: "rate", value: 1 }, "invalid", "that node is not a modulator"],
-      [{ type: "setModulatorField", node: lfo.id, field: "attack", value: 1 }, "invalid", "attack does not apply to that modulator"],
+      [{ type: "setModulatorField", node: lfo.id, field: "attack", value: 1 }, "invalid", "Attack does not apply to that modulator"],
       [{ type: "setEdgeDepth", edge: 99, depth: 0.5 }, "notFound", "there is no cable 99"],
     ] as const;
     for (const [intent, code, message] of refused) {
@@ -250,6 +250,37 @@ describe("a request", () => {
       expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
     }
     expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("for a parameter or a gain that does not fit is refused in the controller's own words (its names for a gain and a setting, and `inf` for a number beyond 32 bits), the value judged before the node it is for", () => {
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    const hollow: Snapshot = {
+      ...tracerSnapshot,
+      graph: { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.map((n) => (n.id === oscillator.id && n.kind === "instrument" ? { ...n, plugin: null } : n)) },
+    };
+    const refusal = (server: MockServer, intent: Intent): string => {
+      try {
+        server.apply(intent);
+      } catch (thrown) {
+        return thrown instanceof Error ? thrown.message : String(thrown);
+      }
+      return "done";
+    };
+    const refused: [string, MockServer, Intent, string][] = [
+      ["a parameter the plugin has not", new MockServer(), { type: "setParam", node: filter.id, param: 99, value: 1 }, "the plugin has no parameter 99"],
+      ["a modulator, which has no plugin", new MockServer(), { type: "setParam", node: lfo.id, param: 0, value: 1 }, "that node has no plugin"],
+      ["a lane with no plugin in it", new MockServer({ snapshot: hollow }), { type: "setParam", node: oscillator.id, param: 0, value: 1 }, "that instrument has no plugin"],
+      ["a mix for an instrument", new MockServer(), { type: "setGain", node: oscillator.id, gain: "mix", value: 0.5 }, "Mix does not apply to that node"],
+      ["a volume for an effect", new MockServer(), { type: "setGain", node: filter.id, gain: "volume", value: 1 }, "Volume does not apply to that node"],
+      ["a group's volume for an instrument", new MockServer(), { type: "setGain", node: oscillator.id, gain: "groupVolume", value: 1 }, "GroupVolume does not apply to that node"],
+      ["a group's pan for an effect", new MockServer(), { type: "setGain", node: filter.id, gain: "groupPan", value: 0 }, "GroupPan does not apply to that node"],
+      ["a number beyond 32 bits for a parameter", new MockServer(), { type: "setParam", node: filter.id, param: 0, value: 1e39 }, "inf is not a value for cutoff"],
+      ["a number beyond 32 bits, the other way, for a gain", new MockServer(), { type: "setGain", node: oscillator.id, gain: "volume", value: -1e39 }, "-inf is not a value for Volume"],
+      ["a number beyond 32 bits for a gain the node has not", new MockServer(), { type: "setGain", node: oscillator.id, gain: "mix", value: 1e39 }, "inf is not a value for Mix"],
+      ["a number beyond 32 bits for a setting", new MockServer(), { type: "setModulatorField", node: lfo.id, field: "rate", value: 1e39 }, "inf is not a value for Rate"],
+      ["a number beyond 32 bits for the depth of a cable", new MockServer(), { type: "setEdgeDepth", edge: 0, depth: -1e39 }, "-inf is not a value for the depth of a cable"],
+    ];
+    for (const [what, server, intent, message] of refused) expect(refusal(server, intent), what).toBe(message);
   });
 
   test("that names the master is for a node that is not there (the master is not a node of the model), as the controller has it", async () => {
@@ -292,10 +323,10 @@ describe("a request", () => {
     const server = new MockServer();
     expect(() => {
       server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: Number.NaN });
-    }).toThrow("NaN is not a value for rate");
+    }).toThrow("NaN is not a value for Rate");
     expect(() => {
       server.apply({ type: "setEdgeDepth", edge: 0, depth: Number.POSITIVE_INFINITY });
-    }).toThrow("Infinity is not a value for the depth of a cable");
+    }).toThrow("inf is not a value for the depth of a cable");
     expect(server.snapshot).toEqual(tracerSnapshot);
   });
 

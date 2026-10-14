@@ -70,6 +70,16 @@ const holds = (value: number): boolean => Number.isFinite(Math.fround(value));
 /** A number rounded the way the controller does, in 32 bits: 0.49999999 is 0.5 there, which rounds up. */
 const roundIn32Bits = (value: number): number => Math.round(Math.fround(value));
 
+/** A number the controller cannot hold, as it says it: Rust writes the infinite 32-bit numbers `inf` and `-inf`. */
+function shown(value: number): string {
+  const held = Math.fround(value);
+  if (Number.isNaN(held) || Number.isFinite(held)) return String(value);
+  return held > 0 ? "inf" : "-inf";
+}
+
+/** What the controller calls a gain or a setting when it says what is wrong with one: the name of its variant, `Volume`, `GroupPan`, `Attack`. */
+const variant = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
+
 function pluginOf(node: Node): Plugin | null {
   return node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
 }
@@ -85,12 +95,12 @@ function noNode(id: NodeId): Outcome {
 /** A setting of a modulator: clamped to its range, rounded if it is an index, and only if the modulator has it. */
 function fieldOutcome(node: Node, field: ModulatorField, value: number): Outcome {
   if (node.kind !== "modulator") return invalid("that node is not a modulator");
-  if (!holds(value)) return invalid(`${value} is not a value for ${field}`);
+  if (!holds(value)) return invalid(`${shown(value)} is not a value for ${variant(field)}`);
   const [low, high] = MODULATOR_FIELD_RANGES[field];
   const clamped = clamp(value, low, high);
   const { type } = node.source;
   const fits = type === "lfo" ? field === "rate" || field === "waveform" : type === "envelope" && field !== "rate" && field !== "waveform";
-  if (!fits) return invalid(`${field} does not apply to that modulator`);
+  if (!fits) return invalid(`${variant(field)} does not apply to that modulator`);
   return { event: { type: "modulatorFieldSet", node: node.id, field, value: field === "waveform" ? roundIn32Bits(clamped) : clamped } };
 }
 
@@ -99,7 +109,7 @@ function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome 
   if (!snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge)) {
     return { error: { code: "notFound", message: `there is no cable ${edge}` } };
   }
-  if (!holds(depth)) return invalid(`${depth} is not a value for the depth of a cable`);
+  if (!holds(depth)) return invalid(`${shown(depth)} is not a value for the depth of a cable`);
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
 }
 
@@ -773,20 +783,24 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (!node) return noNode(intent.node);
   switch (intent.type) {
     case "setParam": {
-      const param = pluginOf(node)?.params.find((p) => p.index === intent.param);
-      if (!param) return invalid(`that node has no parameter ${intent.param}`);
-      if (!holds(intent.value)) return invalid(`${intent.value} is not a value for ${param.name}`);
+      // (In the controller's order: a node with no plugin, a lane with none, a plugin without the parameter, a number it cannot hold.)
+      if (node.kind !== "instrument" && node.kind !== "effect") return invalid("that node has no plugin");
+      if (node.plugin === null) return invalid("that instrument has no plugin");
+      const param = node.plugin.params.find((p) => p.index === intent.param);
+      if (!param) return invalid(`the plugin has no parameter ${intent.param}`);
+      if (!holds(intent.value)) return invalid(`${shown(intent.value)} is not a value for ${param.name}`);
       const clamped = clamp(intent.value, param.min, param.max);
       const value = param.labels === null ? clamped : roundIn32Bits(clamped);
       return { event: { type: "paramSet", node: node.id, param: param.index, value } };
     }
     case "setGain": {
+      // (The number is judged before the node it is for.)
+      if (!holds(intent.value)) return invalid(`${shown(intent.value)} is not a value for ${variant(intent.gain)}`);
       const fits =
         (intent.gain === "volume" && node.kind === "instrument") ||
         (intent.gain === "mix" && node.kind === "effect") ||
         ((intent.gain === "groupVolume" || intent.gain === "groupPan") && node.kind === "group");
-      if (!fits) return invalid(`${intent.gain} does not apply to that node`);
-      if (!holds(intent.value)) return invalid(`${intent.value} is not a value for ${intent.gain}`);
+      if (!fits) return invalid(`${variant(intent.gain)} does not apply to that node`);
       const [low, high] = GAIN_RANGES[intent.gain];
       return { event: { type: "gainSet", node: node.id, gain: intent.gain, value: clamp(intent.value, low, high) } };
     }
