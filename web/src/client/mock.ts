@@ -166,7 +166,7 @@ const ownerOf = (nodes: readonly Node[], modulator: Node): "group" | "lane" => (
 
 /**
  * A cable to parameter `index` of the plugin in `node`. The value it drives gets a slot in the layout of the telemetry unless
- * another cable drives it already (the layout names one slot for a parameter).
+ * another cable drives it already (the layout names one slot for a parameter); the cable takes a slot either way.
  */
 function addParamCable(snapshot: Snapshot, from: Node, node: NodeId, index: number, counters: Counters): Outcome {
   const { nodes, edges } = snapshot.graph;
@@ -183,7 +183,9 @@ function addParamCable(snapshot: Snapshot, from: Node, node: NodeId, index: numb
   const added: Edge = { from: { node: from.id, port: { type: "modOut" } }, to: { node, port }, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
   const key = paramKey(node, port);
   const aimed = edges.some((e) => isModulation(e) && paramKey(e.to.node, e.to.port) === key);
-  const modulation = aimed ? snapshot.telemetry.modulation : [...snapshot.telemetry.modulation, { slot: counters.slot(), node, port, kind: "effective" as const }];
+  // (Every cable takes a slot, as the controller's `add_target` has it, though the layout names a parameter once: the one that is not named is never read.)
+  const slot = counters.slot();
+  const modulation = aimed ? snapshot.telemetry.modulation : [...snapshot.telemetry.modulation, { slot, node, port, kind: "effective" as const }];
   const telemetry = aimed ? snapshot.telemetry : { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation };
   return { restructured: { ...snapshot, graph: { nodes, edges: withCable(nodes, edges, from.id, added) }, telemetry } };
 }

@@ -3926,6 +3926,22 @@ plugin = "builtin:osc"
     }
 
     #[test]
+    fn every_cable_to_a_parameter_takes_a_slot_even_when_another_cable_drives_it_already_and_the_next_slot_comes_right_after() {
+        let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
+        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Lane(0), 1, cutoff_target(0.25)));
+        let slot = |modulator: usize| ctl.model.instruments[0].modulators[modulator].targets.last().unwrap().effective.map(|slot| slot.index());
+        let (first, second) = (slot(0).expect("the first cable has one"), slot(1).expect("so has the second, though the first drives the parameter"));
+        assert_eq!(second, first + 1, "one slot each, one after the other");
+        // (The layout names the parameter once, by the first cable's slot: what the second took is one that nothing reads.)
+        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
+        let output = ctl.model.instruments[0].modulators[2].output.unwrap().index();
+        assert_eq!(output, second + 1, "no slot is skipped, and none is taken twice");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
     fn a_target_bound_later_carries_its_slot_to_the_real_engine_too() {
         use crate::plugin::chain::LfoWaveform;
         let (handles, engine) = testutil::stub_engine();
