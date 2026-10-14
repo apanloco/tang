@@ -4,6 +4,7 @@
 import { composeStories } from "@storybook/react-vite";
 import type { Meta } from "@storybook/react-vite";
 import { cleanup, render } from "@testing-library/react";
+import { readdirSync } from "node:fs";
 import type { ComponentType } from "react";
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -14,6 +15,16 @@ const modules = import.meta.glob<{ default: Meta }>("./**/*.stories.tsx", { eage
 describe("the stories", () => {
   test("are there", () => {
     expect(Object.keys(modules).length).toBeGreaterThanOrEqual(3);
+  });
+
+  // Vitest keeps what it made of this file, the glob expanded, in node_modules/.vitest-cache; a story file added after that is not found
+  // until the cache is cleared (`rm -rf node_modules/.vitest-cache`), and its stories go unrendered without a word. The disk is asked.
+  test("are all of the story files there are, not those a cached glob knew", () => {
+    const onDisk = readdirSync(import.meta.dirname, { recursive: true, encoding: "utf8" })
+      .map((file) => file.replaceAll("\\", "/"))
+      .filter((file) => file.endsWith(".stories.tsx"))
+      .map((file) => `./${file}`);
+    expect(Object.keys(modules).sort()).toEqual(onDisk.sort());
   });
 
   for (const [path, module] of Object.entries(modules)) {
