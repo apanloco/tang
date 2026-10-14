@@ -1337,6 +1337,89 @@ describe("the patch while it plays", () => {
     expect(callsOf(context, "moveTo")[0]).toEqual([0, 22.5]);
   });
 
+  describe("a cable that is lit by what its modulator puts out", () => {
+    /** The session with a modulator's output in the layout of the telemetry too (a modulator put in by hand has no slot to read). */
+    const withOutput = (snapshot: Snapshot, node: number): Snapshot => {
+      const modulation = snapshot.telemetry.modulation;
+      modulation.splice(modulation.findLastIndex((entry) => entry.kind === "modOutput") + 1, 0, { slot: 500 + node, node, port: { type: "modOut" }, kind: "modOutput" });
+      return snapshot;
+    };
+
+    /** What the cables of the canvas read as the signal that goes through them, by cable, as a number (or nothing). */
+    const signals = (container: HTMLElement): (number | null)[] =>
+      Array.from(container.querySelectorAll<SVGGElement>(".tang-cable__light")).map((light) => {
+        const value = light.style.getPropertyValue("--signal");
+        return value === "" ? null : Number(value);
+      });
+
+    test("has the output of an LFO across its range, from -1 at nothing to 1 at all: the cable follows it", async () => {
+      const { clock, time, view } = await rig(<PatchView />);
+      await nodeOf(lfo.id);
+      // Nothing is known before a frame of the engine's telemetry comes: the cable is as it was.
+      expect(signals(view.container)).toEqual([null]);
+      const lit = async (seconds: number, expected: number) => {
+        time.seconds = seconds;
+        await waitFor(() => {
+          act(() => {
+            clock.tick(performance.now());
+          });
+          expect(signals(view.container)[0]).toBeCloseTo(expected, 5);
+        });
+      };
+      await lit(0.5, 1); // 0.5 Hz: the peak
+      await lit(0, 0.5); // a crossing
+      await lit(1.5, 0); // the trough
+    });
+
+    test("has the output of an envelope across 0 to 1, which an LFO's range would give another number for", async () => {
+      const snapshot: Snapshot = structuredClone(tracerSnapshot);
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
+      snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 1 } } });
+      const { client, clock, view } = await rig(<PatchView />, { snapshot: withOutput(snapshot, 90) });
+      await nodeOf(90);
+      client.noteOn(60); // the mock's envelope is at its sustain while a note is held
+      await waitFor(() => {
+        act(() => {
+          clock.tick(performance.now());
+        });
+        // (The cables are the LFO's first, then the envelope's.)
+        expect(signals(view.container)[1]).toBeCloseTo(0.7, 5);
+      });
+    });
+
+    test("is lit by the modulator that drives it: two cables of two modulators have each their own", async () => {
+      const snapshot: Snapshot = structuredClone(tracerSnapshot);
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 1 } });
+      snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 1 } } });
+      const { clock, time, view } = await rig(<PatchView />, { snapshot: withOutput(snapshot, 90) });
+      await nodeOf(90);
+      time.seconds = 0.25; // the first (a sine at 0.5 Hz) is at sin(π/4) of -1…1, the second (a square at 1 Hz) is at 1
+      await waitFor(() => {
+        act(() => {
+          clock.tick(performance.now());
+        });
+        const [first, second] = signals(view.container);
+        expect(first).toBeCloseTo((1 + Math.sin(2 * Math.PI * 0.5 * 0.25)) / 2, 5);
+        expect(second).toBe(1);
+      });
+    });
+
+    test("is lit by an LFO's cable to the setting of another modulator as by a cable to a parameter", async () => {
+      const snapshot: Snapshot = structuredClone(tracerSnapshot);
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
+      snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.5, from: { node: lfo.id, port: { type: "modOut" } }, to: { node: 90, port: { type: "release" } } });
+      const { clock, time, view } = await rig(<PatchView />, { snapshot });
+      await nodeOf(90);
+      time.seconds = 0.5;
+      await waitFor(() => {
+        act(() => {
+          clock.tick(performance.now());
+        });
+        expect(signals(view.container)).toEqual([1, 1]);
+      });
+    });
+  });
+
   test("follows a parameter somebody else changes without making the canvas again", async () => {
     const { server } = await rig(<PatchView />);
     const fil = await nodeOf(filter.id);

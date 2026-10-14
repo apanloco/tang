@@ -115,3 +115,33 @@ test("the nodes keep to the sizes the layout assumes, and none lies over another
     }
   }
 });
+
+test("the trace of the LFO is drawn on its node, and the cable is as bright as the LFO is high", async ({ page }) => {
+  await open(page);
+  const lfo = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^LFO$/ }) });
+  // The trace is a canvas, and what is drawn on it is a line that scrolls: more than a handful of pixels are lit, and they move.
+  const canvas = lfo.locator("canvas");
+  const lit = async (): Promise<number> =>
+    canvas.evaluate((element: HTMLCanvasElement) => {
+      const context = element.getContext("2d");
+      if (!context) return -1;
+      const { data } = context.getImageData(0, 0, element.width, element.height);
+      let pixels = 0;
+      for (let i = 3; i < data.length; i += 4) if ((data[i] ?? 0) > 0) pixels += 1;
+      return pixels;
+    });
+  await expect.poll(lit).toBeGreaterThan(100);
+  // The cable's opacity follows the output over its 2 s: dim at the bottom of the sine, bright at the top.
+  const cable = page.locator(".tang-cable--modulation").first();
+  const seen: number[] = [];
+  for (let i = 0; i < 30; i += 1) {
+    seen.push(Number(await cable.evaluate((path) => getComputedStyle(path).strokeOpacity)));
+    await page.waitForTimeout(100);
+  }
+  expect(Math.min(...seen)).toBeLessThan(0.45);
+  expect(Math.max(...seen)).toBeGreaterThan(0.85);
+  for (const opacity of seen) {
+    expect(opacity).toBeGreaterThanOrEqual(0.29);
+    expect(opacity).toBeLessThanOrEqual(1);
+  }
+});

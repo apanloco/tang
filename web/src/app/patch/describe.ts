@@ -46,11 +46,15 @@ export function controlDetail(source: Extract<ModulatorSource, { type: "midiLear
   }
 }
 
+/** The range the output of a modulator of a kind goes over: an LFO's goes both ways, the rest from nothing up. */
+export function outputRange(type: ModulatorSource["type"]): { min: number; max: number } {
+  return type === "lfo" ? { min: -1, max: 1 } : { min: 0, max: 1 };
+}
+
 /** The range a source's output is drawn over: a LFO and the pitch bend go both ways (the bend's rest is 0.5), the rest from nothing up. */
 export function outputScale(source: ModulatorSource): { min: number; max: number; centred: boolean } {
-  if (source.type === "lfo") return { min: -1, max: 1, centred: true };
-  if (source.type === "midiLearn" && source.control?.type === "pitchBend") return { min: 0, max: 1, centred: true };
-  return { min: 0, max: 1, centred: false };
+  const centred = source.type === "lfo" || (source.type === "midiLearn" && source.control?.type === "pitchBend");
+  return { ...outputRange(source.type), centred };
 }
 
 /** How thick to draw a modulation cable of this depth (-1 to 1): a deeper one is thicker, in either direction. */

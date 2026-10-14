@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { ModulatorSource } from "../../protocol";
-import { cableWidth, controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
+import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, settingsOf } from "./describe";
 
 const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5 };
 const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
@@ -73,5 +73,20 @@ describe("how thick a cable is", () => {
   test("is no thicker for more than there can be", () => {
     expect(cableWidth(5)).toBe(3.5);
     expect(cableWidth(-5)).toBe(3.5);
+  });
+});
+
+describe("the range a modulator's output goes over", () => {
+  test("is from -1 to 1 for an LFO, which goes both ways, and from 0 to 1 for the rest", () => {
+    expect(outputRange("lfo")).toEqual({ min: -1, max: 1 });
+    expect(outputRange("envelope")).toEqual({ min: 0, max: 1 });
+    expect(outputRange("midiLearn")).toEqual({ min: 0, max: 1 });
+  });
+
+  test("is the range of the scale the output is drawn over, whatever the source is", () => {
+    for (const source of [lfo, envelope, midi(null), midi({ type: "cc", number: 1 }), midi({ type: "pitchBend" }), midi({ type: "aftertouch" })]) {
+      const { min, max } = outputScale(source);
+      expect(outputRange(source.type), source.type).toEqual({ min, max });
+    }
   });
 });

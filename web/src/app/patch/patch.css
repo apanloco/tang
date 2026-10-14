@@ -212,9 +212,12 @@
   stroke-width: 2px;
 }
 
+/* A cable is as bright as what its modulator puts out is high (`--signal`, from 0 to 1, written on every frame the output
+   moves in; a cable that has none is as bright as it can be). */
 .tang-cable--modulation {
   stroke: var(--tang-modulation);
   stroke-dasharray: 7 5;
+  stroke-opacity: calc(0.3 + 0.7 * var(--signal, 1));
 }
 
 /* The depth of a modulation cable, as a slider at the middle of it: in the layer React Flow keeps
