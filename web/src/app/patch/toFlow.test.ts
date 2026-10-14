@@ -686,6 +686,36 @@ describe("the parameters a node shows", () => {
   });
 });
 
+describe("the settings of a modulator that a cable ends at", () => {
+  const toRate: Edge = { kind: "modulation", id: 5, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "rate" } } };
+  const toRelease: Edge = { kind: "modulation", id: 6, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 13, port: { type: "release" } } };
+  const toAttack: Edge = { kind: "modulation", id: 7, amount: 0.3, from: { node: 9, port: { type: "modOut" } }, to: { node: 13, port: { type: "attack" } } };
+  const toDepth: Edge = { kind: "modulation", id: 8, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "depth", edge: 5 } } };
+  const nodes = [...twoLanes.nodes, modulator(9, 1), envelope(13, 1)];
+
+  test("are listed in the data of the node, by the names of their handles, in the order a modulator has them", () => {
+    const flow = toFlow({ nodes, edges: [...twoLanes.edges, toRate, toRelease, toAttack] });
+    expect(at(flow, 9).data.drivenSettings).toEqual(["rate"]);
+    expect(at(flow, 13).data.drivenSettings).toEqual(["attack", "release"]);
+    // (Whichever order the cables are in.)
+    expect(at(toFlow({ nodes, edges: [...twoLanes.edges, toAttack, toRelease] }), 13).data.drivenSettings).toEqual(["attack", "release"]);
+  });
+
+  test("are none for a modulator that no cable ends at, and for a node that is no modulator", () => {
+    const flow = toFlow({ nodes, edges: [...twoLanes.edges, toRate, toRelease, toAttack] });
+    expect(at(flow, 4).data.drivenSettings).toEqual([]);
+    for (const id of [1, 2, 3, 5, 6, MASTER]) expect(at(flow, id).data.drivenSettings, `node ${String(id)}`).toEqual([]);
+    for (const node of toFlow(twoLanes).nodes) expect(node.data.drivenSettings, node.data.name).toEqual([]);
+  });
+
+  test("are not the depth of a cable, nor a parameter", () => {
+    const flow = toFlow({ nodes, edges: [...twoLanes.edges, toRate, toDepth] });
+    expect(at(flow, 9).data.drivenSettings).toEqual(["rate"]);
+    // (The cable of the tracer's cutoff ends at a parameter, which is a plugin node's to show as driven.)
+    for (const node of toFlow(tracerSnapshot.graph).nodes) expect(node.data.drivenSettings, node.data.name).toEqual([]);
+  });
+});
+
 describe("the cables on the canvas", () => {
   test("carry audio from the output of one node to the input of the next", () => {
     const flow = toFlow(tracerSnapshot.graph);
@@ -731,12 +761,25 @@ describe("the cables on the canvas", () => {
     expect(two.map((edge) => edge.id)).toEqual(["mod:0", "mod:7", "mod:8"]);
   });
 
-  test("are not drawn when they end where the canvas has no handle: a modulator's rate, stages or depth", () => {
-    const rate: Edge = { kind: "modulation", id: 5, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "rate" } } };
-    const depth: Edge = { kind: "modulation", id: 6, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "depth", edge: 0 } } };
-    const graph: Graph = { nodes: [...twoLanes.nodes, modulator(9, 1)], edges: [...twoLanes.edges, rate, depth] };
+  test("go to a modulator's rate or stage, from the modulator's output to the port of that setting, and say so", () => {
+    const toRate: Edge = { kind: "modulation", id: 5, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "rate" } } };
+    const toStage: Edge = { kind: "modulation", id: 6, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 13, port: { type: "release" } } };
+    const graph: Graph = { nodes: [...twoLanes.nodes, modulator(9, 1), envelope(13, 1)], edges: [...twoLanes.edges, toRate, toStage] };
     const flow = toFlow(graph);
-    expect(flow.edges.some((edge) => edge.id === "mod:5" || edge.id === "mod:6")).toBe(false);
+    const drawn = (id: string) => {
+      const edge = flow.edges.find((candidate) => candidate.id === id);
+      return edge && [edge.type, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.data];
+    };
+    expect(drawn("mod:5")).toEqual(["modulation", "4", "modOut", "9", "rate", { cable: 5, modulator: 4, label: "Mod 4 → Mod 9: rate" }]);
+    expect(drawn("mod:6")).toEqual(["modulation", "4", "modOut", "13", "release", { cable: 6, modulator: 4, label: "Mod 4 → ADSR: release" }]);
+    expect(flow.edges).toHaveLength(toFlow(twoLanes).edges.length + 2);
+  });
+
+  test("are not drawn when they end where the canvas has no handle: the depth of a cable", () => {
+    const depth: Edge = { kind: "modulation", id: 6, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "depth", edge: 0 } } };
+    const graph: Graph = { nodes: [...twoLanes.nodes, modulator(9, 1)], edges: [...twoLanes.edges, depth] };
+    const flow = toFlow(graph);
+    expect(flow.edges.some((edge) => edge.id === "mod:6")).toBe(false);
     expect(flow.edges).toHaveLength(toFlow(twoLanes).edges.length);
   });
 
@@ -749,9 +792,10 @@ describe("the cables on the canvas", () => {
     expect(handleOf({ type: "audioOut" })).toBe("audioOut");
     expect(handleOf({ type: "modOut" })).toBe("modOut");
     expect(handleOf({ type: "param", index: 7 })).toBe("param-7");
-    for (const port of [{ type: "rate" }, { type: "attack" }, { type: "decay" }, { type: "sustain" }, { type: "release" }, { type: "depth", edge: 3 }] as const) {
-      expect(handleOf(port)).toBeNull();
-    }
+    // The settings of a modulator are named as what they are.
+    for (const type of ["rate", "attack", "decay", "sustain", "release"] as const) expect(handleOf({ type })).toBe(type);
+    // The depth of a cable has none.
+    expect(handleOf({ type: "depth", edge: 3 })).toBeNull();
   });
 });
 

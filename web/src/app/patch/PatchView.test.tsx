@@ -2,9 +2,9 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { builtinCatalog, builtinEffects, builtinPresets, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
+import { builtinCatalog, builtinEffects, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import { decodeFrame } from "../../client/telemetry";
-import type { Snapshot } from "../../protocol";
+import type { Port, Snapshot } from "../../protocol";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
 import { NoticeBoard } from "../../ui/NoticeBoard";
 import { useNotices } from "../ClientProvider";
@@ -33,6 +33,18 @@ const nodeOf = async (id: number): Promise<HTMLElement> => {
   const found = await screen.findByTestId(`rf__node-${String(id)}`);
   return found;
 };
+
+/** The button of the list of the modulator `id`, which draws a cable from it. */
+const pickerOf = async (id: number): Promise<HTMLButtonElement> => {
+  const node = await nodeOf(id);
+  return within(node).getByRole<HTMLButtonElement>("button", { name: /^Add a cable from / });
+};
+
+/** What is on the list that is open, by the plugin or the modulator it is of (a node of the canvas is a group too). */
+const listed = (): [string | null, string[]][] =>
+  within(screen.getByRole("menu"))
+    .getAllByRole("group")
+    .map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
 
 /** The names of the controls in a node, sliders and choices (not the list that draws a cable, which is a button), in the order they are in. */
 const controlsIn = (node: HTMLElement): string[] =>
@@ -314,7 +326,7 @@ describe("the patch", () => {
     expect(new Set(ports)).toEqual(new Set(["top"]));
   });
 
-  test("can be moved but not selected, and takes a cable only at a modulator's output (to start one) and at a parameter's port (to end one)", async () => {
+  test("can be moved but not selected, and takes a cable only at a modulator's output (to start one) and at a parameter's or a setting's port (to end one)", async () => {
     const { view } = await rig(<PatchView />);
     await nodeOf(filter.id);
     for (const node of Array.from(view.container.querySelectorAll(".react-flow__node"))) {
@@ -325,11 +337,16 @@ describe("the patch", () => {
     const ports = connectable.map((handle) => handle.getAttribute("data-handleid") ?? "?");
     expect(ports.filter((port) => port === "modOut")).toHaveLength(1);
     expect(ports.filter((port) => port.startsWith("param-"))).toHaveLength(12); // the oscillator's eight and the filter's four
-    expect(ports).toHaveLength(13); // and no audio port: the audio path is derived, there is nothing to draw
+    expect(ports.filter((port) => port === "rate")).toHaveLength(1); // the LFO's rate, which another modulator's cable can end at
+    expect(ports).toHaveLength(14); // and no audio port: the audio path is derived, there is nothing to draw
     // A cable is started at a modulator's output and ends at a parameter, never the other way.
     const output = view.container.querySelector(".react-flow__handle[data-handleid='modOut']");
     expect(output?.classList.contains("connectablestart")).toBe(true);
-    for (const handle of connectable.filter((h) => h.getAttribute("data-handleid")?.startsWith("param-"))) {
+    const endsCable = (handle: Element): boolean => {
+      const id = handle.getAttribute("data-handleid") ?? "";
+      return id.startsWith("param-") || id === "rate";
+    };
+    for (const handle of connectable.filter(endsCable)) {
       expect(handle.classList.contains("connectablestart")).toBe(false);
       expect(handle.classList.contains("connectableend")).toBe(true);
     }
@@ -771,18 +788,6 @@ describe("the patch", () => {
   });
 
   describe("drawing a cable to a parameter, from a list", () => {
-    /** The button of the list of the modulator `id`. */
-    const pickerOf = async (id: number): Promise<HTMLButtonElement> => {
-      const node = await nodeOf(id);
-      return within(node).getByRole<HTMLButtonElement>("button", { name: /^Add a cable from / });
-    };
-
-    /** The parameters on the list that is open, by the plugin they are of (a node of the canvas is a group too). */
-    const listed = (): [string | null, string[]][] =>
-      within(screen.getByRole("menu"))
-        .getAllByRole("group")
-        .map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
-
     test("every modulator has a list of what it can be drawn to: its plugins' parameters, by plugin, but what it drives already", async () => {
       await rig(<PatchView />);
       const picker = await pickerOf(lfo.id);
@@ -855,11 +860,11 @@ describe("the patch", () => {
       expect(screen.getByRole("menuitem", { name: "detune" })).toBeTruthy();
     });
 
-    test("is for a group's modulator the parameters of its members' plugins and of its own bus effects", async () => {
+    test("is for a group's modulator the parameters of its members' plugins and of its own bus effects, then the settings of its members' modulators", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       fireEvent.click(await pickerOf(15));
-      // (In the order of the graph: the group's own bus effect, then the lanes that are its members.)
-      expect(listed().map(([plugin]) => plugin)).toEqual(["Filter 1", "Oscillator 1", "Filter 2", "Oscillator 2"]);
+      // (In the order of the graph: the group's own bus effect, then the lanes that are its members; then their modulators, which have settings.)
+      expect(listed().map(([plugin]) => plugin)).toEqual(["Filter 1", "Oscillator 1", "Filter 2", "Oscillator 2", "LFO 2", "ADSR 2"]);
     });
 
     test("is disabled for a modulator with nothing to be drawn to, and says so", async () => {
@@ -882,6 +887,137 @@ describe("the patch", () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       for (const id of [15, 6]) expect((await pickerOf(id)).id).toBe(drivesId(id));
       expect(drivesId(15)).not.toBe(drivesId(6));
+    });
+  });
+
+  describe("drawing a cable to a setting of another modulator", () => {
+    // A group with an LFO ("LFO 1"), an envelope ("ADSR 1") and a MIDI control ("CC 74") of its own; its first member lane has an LFO ("LFO 2"),
+    // an envelope ("ADSR 2") and a MIDI control ("CC 1"), and its second an LFO ("LFO 3"); a lane in no group has an LFO, and one of another group.
+    const { snapshot } = fieldsFixture;
+    const [groupLfo, laneLfo, laneEnvelope, laneControl] = [13, 4, 5, 6];
+    const cables = snapshot.graph.edges.filter((edge) => edge.kind === "modulation").length;
+    /** The session with a cable (the 50th) from a modulator to a setting of another. */
+    const withCable = (from: number, to: number, port: Port): Snapshot => ({
+      ...snapshot,
+      graph: { ...snapshot.graph, edges: [...snapshot.graph.edges, { kind: "modulation", id: 50, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: to, port } }] },
+    });
+    const portsOf = async (id: number): Promise<(string | null)[]> => Array.from((await nodeOf(id)).querySelectorAll(".tang-port--param")).map((port) => port.getAttribute("data-handleid"));
+
+    test("has a port at the top of each setting that takes a cable: an LFO's rate and an envelope's stages, but not an LFO's waveform nor a MIDI control", async () => {
+      await rig(<PatchView />, { snapshot });
+      expect(await portsOf(laneLfo)).toEqual(["rate"]);
+      expect(await portsOf(laneEnvelope)).toEqual(["attack", "decay", "sustain", "release"]);
+      expect(await portsOf(laneControl)).toEqual([]);
+      // At the top edge of the control it is for, in its cell, as a parameter's is; a cable ends there, and is not started there.
+      const rate = (await nodeOf(laneLfo)).querySelector(".tang-port--param");
+      expect(rate?.getAttribute("data-handlepos")).toBe("top");
+      expect(rate?.closest(".tang-cell")?.querySelector('[role="slider"]')?.getAttribute("aria-label")).toBe("Rate");
+      expect(rate?.classList.contains("connectablestart")).toBe(false);
+      expect(rate?.classList.contains("connectableend")).toBe(true);
+    });
+
+    test("marks the port of a setting that a cable ends at, and no other, and draws the cable from the modulator's output with a slider for its depth", async () => {
+      const { view } = await rig(<PatchView />, { snapshot: withCable(laneEnvelope, laneLfo, { type: "rate" }) });
+      const driven = async (id: number) => Array.from((await nodeOf(id)).querySelectorAll(".tang-port--driven")).map((port) => port.getAttribute("data-handleid"));
+      expect(await driven(laneLfo)).toEqual(["rate"]);
+      expect(await driven(laneEnvelope)).toEqual([]);
+      expect(await driven(laneControl)).toEqual([]);
+      expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
+      expect(screen.getByRole("slider", { name: "Depth of ADSR 2 → LFO 2: rate" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Remove cable ADSR 2 → LFO 2: rate" })).toBeTruthy();
+    });
+
+    test("is not drawn to the depth of a cable, which the canvas has no port for", async () => {
+      const { view } = await rig(<PatchView />, { snapshot: withCable(laneLfo, laneEnvelope, { type: "depth", edge: 1 }) });
+      await nodeOf(laneLfo);
+      expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables);
+      expect(screen.queryByRole("slider", { name: /^Depth of LFO 2 → ADSR 2/ })).toBeNull();
+    });
+
+    test("is on the list of a modulator, after the parameters, modulator by modulator: the settings of the others of its lane, but what it drives already", async () => {
+      await rig(<PatchView />, { snapshot: withCable(laneControl, laneEnvelope, { type: "decay" }) });
+      fireEvent.click(await pickerOf(laneControl));
+      const groups = listed();
+      // (The oscillator's parameters, then the LFO's one setting and the envelope's three, for the control drives its decay.)
+      expect(groups.map(([name]) => name)).toEqual(["Oscillator 1", "LFO 2", "ADSR 2"]);
+      expect(groups.slice(1)).toEqual([
+        ["LFO 2", ["rate"]],
+        ["ADSR 2", ["attack", "sustain", "release"]],
+      ]);
+    });
+
+    test("is on the list of an LFO as the envelope's four stages, and not for a MIDI control, which has none", async () => {
+      await rig(<PatchView />, { snapshot });
+      fireEvent.click(await pickerOf(laneLfo));
+      expect(listed().map(([name]) => name)).toEqual(["Oscillator 1", "ADSR 2"]);
+      expect(listed()[1]).toEqual(["ADSR 2", ["attack", "decay", "sustain", "release"]]);
+    });
+
+    test("is for a group's modulator the settings of its members' modulators, and of the others of its own rack", async () => {
+      await rig(<PatchView />, { snapshot });
+      fireEvent.click(await pickerOf(groupLfo));
+      // (The group's bus effect and the members' plugins, in the order of the graph; then the members' modulators, member by member, then its own rack's.)
+      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "LFO 2", "ADSR 2", "LFO 3", "ADSR 1"]);
+    });
+
+    test("asks the server for the cable that was picked, and it is drawn, and the setting is off the list", async () => {
+      const { requests, view } = await rig(<PatchView />, { snapshot });
+      const picker = await pickerOf(laneEnvelope);
+      fireEvent.click(picker);
+      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "LFO 2" })).getByRole("menuitem", { name: "rate" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModEdge", modulator: laneEnvelope, to: { node: laneLfo, port: { type: "rate" } } }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
+      });
+      expect(screen.getByRole("slider", { name: "Depth of ADSR 2 → LFO 2: rate" })).toBeTruthy();
+      // The menu is closed, with the focus on its button; the LFO has nothing more to take, and its port is marked as driven.
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(document.activeElement).toBe(picker);
+      fireEvent.click(picker);
+      expect(listed().map(([name]) => name)).not.toContain("LFO 2");
+      expect((await nodeOf(laneLfo)).querySelector(".tang-port--driven")?.getAttribute("data-handleid")).toBe("rate");
+    });
+
+    test("says why when the cable was not drawn, in the names of the modulators and the setting, and the list is as it was", async () => {
+      function Board() {
+        return <NoticeBoard notices={useNotices()} />;
+      }
+      const { server, client } = await rig(
+        <>
+          <PatchView />
+          <Board />
+        </>,
+        { snapshot },
+      );
+      const picker = await pickerOf(laneEnvelope);
+      server.drop();
+      await waitFor(() => {
+        expect(client.state.status).not.toBe("open");
+      });
+      fireEvent.click(picker);
+      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "LFO 2" })).getByRole("menuitem", { name: "rate" }));
+      expect(await screen.findByText("Could not draw a cable from ADSR 2 to LFO 2: rate: Not connected to the server.")).toBeTruthy();
+      expect(document.activeElement).toBe(picker);
+      fireEvent.click(picker);
+      expect(listed().map(([name]) => name)).toContain("LFO 2");
+    });
+
+    test("takes the cable out with its button, and the focus goes to the list of the modulator that drove it", async () => {
+      const { requests, view } = await rig(<PatchView />, { snapshot: withCable(laneEnvelope, laneLfo, { type: "rate" }) });
+      await nodeOf(laneLfo);
+      fireEvent.click(screen.getByRole("button", { name: "Remove cable ADSR 2 → LFO 2: rate" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "removeEdge", edge: 50 }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables);
+      });
+      expect((await nodeOf(laneLfo)).querySelectorAll(".tang-port--driven")).toHaveLength(0);
+      await waitFor(() => {
+        expect(document.activeElement?.id).toBe(drivesId(laneEnvelope));
+      });
     });
   });
 

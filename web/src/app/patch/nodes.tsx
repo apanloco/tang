@@ -261,7 +261,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">
           {settings.map((field) => (
-            <ModulatorSettingCell key={field} node={data.node} field={field} />
+            <ModulatorSettingCell key={field} node={data.node} field={field} driven={data.drivenSettings.some((setting) => setting === field)} />
           ))}
         </div>
       ) : null}

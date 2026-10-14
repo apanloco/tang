@@ -12,16 +12,18 @@ import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { cableDepthOf, gainOf, modulatorFieldOf, paramOf, rangeOf } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
-import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param } from "../../protocol";
+import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import { afterKey } from "../../ui/knob-geometry";
 import type { Scale } from "../../ui/knob-geometry";
 import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
+import type { MenuItem } from "../../ui/MenuButton";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
+import { handleOf, paramHandle } from "./toFlow";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
 export function sameParamFacts(a: Param | undefined, b: Param | undefined): boolean {
@@ -375,17 +377,24 @@ export const WaveformControl = memo(function WaveformControl({ node }: { node: N
 });
 
 /**
- * A parameter in a node with a place on its top edge where a cable from a modulator ends, drawn by dragging
- * one to it (a port does not start a cable). (That the control is there when a cable ends at it is for
- * `toFlow` to see to: a parameter that is driven is always among those a node shows.)
+ * The place on the top edge of a control where a cable from a modulator ends, drawn by dragging one to it (a port does
+ * not start a cable): a handle of the node named `handle` (`handleOf`), quiet until a cable ends at it (`driven`), and,
+ * while a cable is dragged, saying whether it takes that one.
+ */
+function CablePort({ node, handle, driven }: { node: NodeId; handle: string; driven: boolean }) {
+  const takes = useContext(ConnectingContext)?.has(keyOf(node, handle)) ?? false;
+  const classes = ["tang-port", "tang-port--param", ...(driven ? ["tang-port--driven"] : []), ...(takes ? ["tang-port--takes"] : [])];
+  return <Handle isConnectableStart={false} type="target" position={Position.Top} id={handle} className={classes.join(" ")} />;
+}
+
+/**
+ * A parameter in a node with a place on its top edge where a cable from a modulator ends. (That the control is
+ * there when a cable ends at it is for `toFlow` to see to: a parameter that is driven is always among those a node shows.)
  */
 export const ParamCell = memo(function ParamCell({ node, index, driven }: { node: NodeId; index: number; driven: boolean }) {
-  // While a cable is dragged, the ports that take it say so.
-  const takes = useContext(ConnectingContext)?.has(keyOf(node, index)) ?? false;
-  const classes = ["tang-port", "tang-port--param", ...(driven ? ["tang-port--driven"] : []), ...(takes ? ["tang-port--takes"] : [])];
   return (
     <div className="tang-cell">
-      <Handle isConnectableStart={false} type="target" position={Position.Top} id={`param-${String(index)}`} className={classes.join(" ")} />
+      <CablePort node={node} handle={paramHandle(index)} driven={driven} />
       <ParamControl node={node} index={index} />
     </div>
   );
@@ -399,9 +408,24 @@ export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; g
   );
 });
 
-/** A setting of a modulator, in a cell of the node's grid: a choice for the waveform, a knob for the rest. */
-export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, field }: { node: NodeId; field: ModulatorField }) {
-  return <div className="tang-cell">{field === "waveform" ? <WaveformControl node={node} /> : <ModulatorFieldControl node={node} field={field} />}</div>;
+/**
+ * A setting of a modulator, in a cell of the node's grid: a choice for the waveform, which no cable ends at, and for the rest a
+ * knob with a place on its top edge where a cable from another modulator ends (`driven`: one does).
+ */
+export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, field, driven }: { node: NodeId; field: ModulatorField; driven: boolean }) {
+  if (field === "waveform") {
+    return (
+      <div className="tang-cell">
+        <WaveformControl node={node} />
+      </div>
+    );
+  }
+  return (
+    <div className="tang-cell">
+      <CablePort node={node} handle={field} driven={driven} />
+      <ModulatorFieldControl node={node} field={field} />
+    </div>
+  );
 });
 
 /** A depth as a person says it: a percentage, which goes below nothing when the cable pulls the other way. */
@@ -453,17 +477,31 @@ export const CableDepthControl = memo(function CableDepthControl({ edge, label }
 export const drivesId = (node: NodeId): string => `drives-${String(node)}`;
 
 /**
- * The list that draws a cable from a modulator to any parameter it can still drive, plugin by plugin: for a
- * keyboard (which cannot drag a cable), and for the parameters a node does not show as controls. It is a menu
- * and not a native list: the arrow keys of a closed one change its value on some platforms, which here is a
- * cable on each key. Choosing a parameter is the cable; the menu closes and the focus is on its button.
+ * The list that draws a cable from a modulator to any parameter it can still drive, plugin by plugin, and to any setting
+ * of another modulator, modulator by modulator: for a keyboard (which cannot drag a cable), and for the parameters a node
+ * does not show as controls. It is a menu and not a native list: the arrow keys of a closed one change its value on some
+ * platforms, which here is a cable on each key. Choosing a parameter or a setting is the cable; the menu closes and the
+ * focus is on its button.
  */
 export const DrivePicker = memo(function DrivePicker({ modulator, name, targets }: { modulator: NodeId; name: string; targets: readonly Drivable[] }) {
   const editor = useEditor();
-  const items = useMemo(
-    () => targets.flatMap((group) => group.params.map((param) => ({ id: `${String(group.node)}:${String(param.index)}`, label: param.name, group: group.name }))),
-    [targets],
-  );
+  // What each item is the cable to: a node and a port of it, by the key of the port (`keyOf`).
+  const { items, ends } = useMemo(() => {
+    const items: MenuItem[] = [];
+    const ends = new Map<string, { node: NodeId; port: Port }>();
+    const add = (node: NodeId, port: Port, label: string, group: string): void => {
+      const handle = handleOf(port);
+      if (handle === null) return;
+      const id = keyOf(node, handle);
+      items.push({ id, label, group });
+      ends.set(id, { node, port });
+    };
+    for (const group of targets) {
+      for (const param of group.params) add(group.node, { type: "param", index: param.index }, param.name, group.name);
+      for (const field of group.fields) add(group.node, field.port, field.name, group.name);
+    }
+    return { items, ends };
+  }, [targets]);
   return (
     <MenuButton
       id={drivesId(modulator)}
@@ -471,9 +509,9 @@ export const DrivePicker = memo(function DrivePicker({ modulator, name, targets 
       label={`Add a cable from ${name}`}
       items={items}
       onChoose={(choice) => {
-        const [node, param] = choice.split(":").map(Number);
+        const end = ends.get(choice);
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-        if (node !== undefined && param !== undefined) void editor.addCable(modulator, node, { type: "param", index: param });
+        if (end) void editor.addCable(modulator, end.node, end.port);
       }}
     >
       {items.length === 0 ? "Nothing to drive" : "Add a cable…"}

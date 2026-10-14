@@ -49,8 +49,10 @@ export interface PatchNodeData extends Record<string, unknown> {
   pinned: readonly number[];
   /** Those of them that a modulator drives (a cable ends at them). */
   modulated: readonly number[];
-  /** For a modulator: what it can still be drawn to, plugin by plugin (`drivablesOf`); nothing for the other nodes. */
+  /** For a modulator: what it can still be drawn to, plugin by plugin and modulator by modulator (`drivablesOf`); nothing for the other nodes. */
   targets: readonly Drivable[];
+  /** For a modulator: the settings of it that a cable ends at, as the names of their handles, in the order a modulator has them; nothing for the other nodes. */
+  drivenSettings: readonly SettingHandle[];
 }
 
 export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
@@ -76,18 +78,33 @@ export interface Flow {
   edges: PatchEdge[];
 }
 
+/**
+ * The settings of a modulator that a cable ends at, by the names of their handles (the names of the ports), in the order a
+ * modulator has them: an LFO's rate, the four stages of an envelope.
+ */
+export const SETTING_HANDLES = ["rate", "attack", "decay", "sustain", "release"] as const;
+
+export type SettingHandle = (typeof SETTING_HANDLES)[number];
+
+/** The name of the handle of a parameter of a plugin, by the plugin's own index. */
+export const paramHandle = (index: number): string => `param-${String(index)}`;
+
 /** The name of the handle of a node where a port is, if the canvas draws one. */
 export function handleOf(port: Port): string | null {
   switch (port.type) {
     case "audioIn":
     case "audioOut":
     case "modOut":
+    case "rate":
+    case "attack":
+    case "decay":
+    case "sustain":
+    case "release":
       return port.type;
     case "param":
-      return `param-${String(port.index)}`;
-    default:
-      // What a modulator can drive in another modulator (its rate, its stages, its depths)
-      // has no handle yet.
+      return paramHandle(port.index);
+    case "depth":
+      // The depth of a cable is not where anything on the canvas is: it has no handle.
       return null;
   }
 }
@@ -108,6 +125,17 @@ function modulatedParams(graph: Graph): Map<NodeId, Set<number>> {
     modulated.set(edge.to.node, params);
   }
   return modulated;
+}
+
+/** The settings of each modulator that a cable ends at: the names of their handles, in the order a modulator has them. */
+function drivenSettings(graph: Graph): Map<NodeId, SettingHandle[]> {
+  const driven = new Map<NodeId, Set<string>>();
+  for (const edge of graph.edges) {
+    const settings = driven.get(edge.to.node) ?? new Set<string>();
+    settings.add(edge.to.port.type);
+    driven.set(edge.to.node, settings);
+  }
+  return new Map([...driven].map(([node, settings]) => [node, SETTING_HANDLES.filter((handle) => settings.has(handle))]));
 }
 
 /** How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys too) or a group's two. */
@@ -247,6 +275,7 @@ function layout(graph: Graph, pinnedCounts: ReadonlyMap<NodeId, number>): Map<No
 export function toFlow(graph: Graph): Flow {
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
+  const settingsDriven = drivenSettings(graph);
   const pinned = new Map<NodeId, number[]>();
   for (const node of graph.nodes) {
     const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
@@ -268,6 +297,7 @@ export function toFlow(graph: Graph): Flow {
       pinned: pinned.get(node.id) ?? [],
       modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
       targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
+      drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
     },
     draggable: true,
     deletable: false,

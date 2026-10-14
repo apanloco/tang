@@ -166,6 +166,44 @@ test("a modulator added from the menu and a cable dragged to a parameter are in 
   await expect.poll(() => dotOf(page, "resonance")).toBeNull();
 });
 
+test("a cable dragged from an envelope to the rate of the LFO is in the server's session, and goes with its button", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await resetTracer(page);
+  await page.getByRole("button", { name: "Add a modulator to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Envelope" }).click();
+  const envelope = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^ADSR$/ }) });
+  const lfo = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^LFO$/ }) });
+  await expect(envelope).toBeVisible();
+
+  const from = await envelope.locator('.react-flow__handle[data-handleid="modOut"]').boundingBox();
+  const to = await lfo.locator('.react-flow__handle[data-handleid="rate"]').boundingBox();
+  if (!from || !to) throw new Error("no handles");
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 20 });
+  await page.mouse.up();
+  await expect(page.getByRole("slider", { name: "Depth of ADSR → LFO: rate" })).toHaveValue("0.5");
+
+  const drawn = await sessionAccordingToTheServer(page);
+  const adsr = drawn.graph.nodes.find((node) => node.name === "ADSR");
+  const cable = drawn.graph.edges.find((edge) => edge.kind === "modulation" && edge.from?.node === adsr?.id);
+  expect(cable?.amount).toBe(0.5);
+  expect(cable?.to?.port).toEqual({ type: "rate" });
+  expect(cable?.to?.node).toBe(drawn.graph.nodes.find((node) => node.name === "LFO")?.id);
+  expect(drawn.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(2);
+
+  // Taken out with its button: the cable goes, and the envelope stays; then the envelope goes too.
+  await page.getByRole("button", { name: "Remove cable ADSR → LFO: rate" }).click();
+  await expect(page.getByRole("slider", { name: "Depth of ADSR → LFO: rate" })).toHaveCount(0);
+  const back = await sessionAccordingToTheServer(page);
+  expect(back.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(1);
+  expect(back.graph.nodes.find((node) => node.name === "ADSR")).toBeDefined();
+  await page.getByRole("button", { name: "Remove ADSR" }).click();
+  await expect(envelope).toHaveCount(0);
+});
+
 test("a cable drawn from the list, and one taken out with its button, are in the server's session", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("status")).toHaveText("Connected");
