@@ -547,6 +547,18 @@ impl Controller {
         true
     }
 
+    /// Move the effect at `from` of lane `inst`'s chain to `to` (the effects between move one place the other way): the audio
+    /// thread reorders its chain, and the model does the same (`SessionModel::move_effect`), the cables of the lane's modulators
+    /// and of its group's following their plugins to the new slots. False, sending nothing, if either place is not in the chain,
+    /// or they are the same.
+    pub fn move_effect(&mut self, inst: usize, from: usize, to: usize) -> bool {
+        if !self.model.move_effect(inst, from, to) {
+            return false;
+        }
+        let _ = self.cmd_tx.send(GraphCommand::ReorderEffect { inst, from, to });
+        true
+    }
+
     /// Take the effect at `index` out of group `group`'s bus: as `remove_effect` does for a lane's chain, the
     /// group's cables to it go first (with the cables that drive their depths), and the group's cables to the
     /// bus effects after it are told their new places. False, sending nothing, if there is no such effect.
@@ -2852,6 +2864,83 @@ rate = 2.0
                 assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
                 ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
             }
+        }
+    }
+
+    #[test]
+    fn an_effect_that_is_moved_is_told_to_the_audio_thread_and_the_cables_follow_the_plugins() {
+        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        // Lane 0's filter (slot 1) goes after its reverb (slot 2).
+        assert!(ctl.move_effect(0, 0, 1));
+        assert_eq!(sent(&engine), ["ReorderEffect inst=0 from=0 to=1"]);
+        assert_eq!(model_effect_names(&ctl.model), [vec!["Reverb", "Filter"], vec![], vec!["Filter"]]);
+        // The lane's modulator drove the filter's cutoff in slot 1 and the reverb's damping in slot 2: it drives them in 2 and 1 now,
+        // in the order its cables were in; the instrument's detune (slot 0) is where it was, and so is the other lane's filter.
+        assert_eq!(
+            rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 0),
+            [K::PluginParam { slot: 2, param_index: 0 }, K::PluginParam { slot: 1, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]
+        );
+        assert_eq!(rack_kinds(&ctl.model, ModulatorLocation::Lane(2), 0), [K::PluginParam { slot: 1, param_index: 0 }]);
+        // The cables that drive the depths of those cables are as they were: a cable is told by its place in its rack, which did not move.
+        assert_eq!(rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 1), [K::ModulatorDepth { mod_index: 0, target_index: 0 }, K::ModulatorDepth { mod_index: 0, target_index: 1 }]);
+        // The group's cables to its first member's plugins follow them too; the bus is not a lane's chain.
+        assert_eq!(
+            rack_kinds(&ctl.model, ModulatorLocation::Group(0), 0),
+            [
+                K::GroupMember { member: 0, slot: 2, param_index: 0 },
+                K::GroupMember { member: 0, slot: 1, param_index: 2 },
+                K::GroupMember { member: 1, slot: 0, param_index: 1 },
+                K::GroupBus { effect_index: 0, param_index: 0 },
+                K::GroupBus { effect_index: 1, param_index: 2 },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
+            ]
+        );
+        assert!(dangling(&ctl.model).is_empty());
+        ctl.model.check_ids().unwrap();
+        // And back: the reverb goes before the filter again.
+        assert!(ctl.move_effect(0, 1, 0));
+        assert_eq!(sent(&engine), ["ReorderEffect inst=0 from=1 to=0"]);
+        assert_eq!(model_effect_names(&ctl.model), [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
+        assert_eq!(
+            rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 0),
+            [K::PluginParam { slot: 1, param_index: 0 }, K::PluginParam { slot: 2, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]
+        );
+    }
+
+    #[test]
+    fn an_effect_is_not_moved_to_where_it_is_or_out_of_its_chain_or_in_a_lane_that_is_not_there() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        for (inst, from, to) in [(0, 0, 0), (0, 1, 1), (0, 0, 2), (0, 2, 0), (0, 5, 5), (1, 0, 0), (1, 0, 1), (2, 0, 1), (9, 0, 1)] {
+            assert!(!ctl.move_effect(inst, from, to), "{inst}: {from} to {to}");
+        }
+        assert!(sent(&engine).is_empty());
+        assert_eq!(model_effect_names(&ctl.model), [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
+    }
+
+    #[test]
+    fn effects_that_are_moved_leave_the_model_and_the_audio_thread_the_same() {
+        for sequence in [vec![(0, 1)], vec![(1, 0)], vec![(0, 1), (1, 0)], vec![(0, 1), (0, 1)]] {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(testutil::CHAINS);
+            let mut moved = 0;
+            for (from, to) in sequence.iter().copied() {
+                // (A move that is not one, from where an effect is to where it is, is refused by both and is no step.)
+                let did = ctl.move_effect(0, from, to);
+                graph.drain_commands();
+                if did {
+                    moved += 1;
+                }
+                let what = format!("after {from} to {to} of {sequence:?}");
+                assert_eq!(graph.effect_names(), model_effect_names(&ctl.model), "the chains {what}");
+                assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
+                ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+            }
+            assert!(moved > 0, "{sequence:?} moved nothing");
         }
     }
 

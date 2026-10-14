@@ -2824,12 +2824,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
                     TreeAddress::Effect { inst, index } if index > 0 => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderEffect {
-                            inst,
-                            from: index,
-                            to: index - 1,
-                        });
-                        s.ctl.model.move_effect(inst, index, index - 1);
+                        s.ctl.move_effect(inst, index, index - 1);
                         s.ctl.dirty = true;
                         // (The cursor follows the effect it was on.)
                         s.rebuild_tree();
@@ -2892,12 +2887,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         let effect_count = s.ctl.model.instruments.get(inst)
                             .map_or(0, |n| n.effects.len());
                         if index + 1 < effect_count {
-                            let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderEffect {
-                                inst,
-                                from: index,
-                                to: index + 1,
-                            });
-                            s.ctl.model.move_effect(inst, index, index + 1);
+                            s.ctl.move_effect(inst, index, index + 1);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
                         }
