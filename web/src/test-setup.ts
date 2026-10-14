@@ -18,6 +18,9 @@ if (typeof window !== "undefined") {
   Object.assign(globalThis, { ResizeObserver: ObserverOfSizes, DOMMatrixReadOnly: Matrix });
   // jsdom has no hit testing either: no element is under any point (a test that needs one says which).
   document.elementFromPoint = () => null;
+  // ...and no canvas to draw on: it says so, loudly, for each canvas that asks. A canvas has no context here (a test of what is
+  // drawn on one gives it a context of its own).
+  window.HTMLCanvasElement.prototype.getContext = () => null;
   const sizeOf = (element: HTMLElement, property: "width" | "height"): number => Number.parseFloat(element.style[property]) || 1;
   Object.defineProperties(window.HTMLElement.prototype, {
     offsetWidth: {
