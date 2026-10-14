@@ -39,7 +39,7 @@ use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, fixup_group_member_after_remove, format_from_id, lane_member_ordinal, mod_source_slot_to_graph, modulator_param_is_enum,
-    modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod, remap_group_bus_after_reorder,
+    modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
     shift_group_member_after_insert,
 };
 use crate::piano_filter::PianoMode;
@@ -2857,17 +2857,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::GroupEffect { group, index } if index > 0 => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderGroupEffect {
-                            group,
-                            from: index,
-                            to: index - 1,
-                        });
-                        if let Some(g) = s.ctl.model.groups.get_mut(group) {
-                            if index < g.effects.len() {
-                                g.effects.swap(index, index - 1);
-                                remap_group_bus_after_reorder(&mut g.modulators, index, index - 1);
-                            }
-                        }
+                        s.ctl.move_bus_effect(group, index, index - 1);
                         s.ctl.dirty = true;
                         s.rebuild_tree();
                     }
@@ -2922,15 +2912,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                     TreeAddress::GroupEffect { group, index } => {
                         let count = s.ctl.model.groups.get(group).map_or(0, |g| g.effects.len());
                         if index + 1 < count {
-                            let _ = s.ctl.cmd_tx.send(GraphCommand::ReorderGroupEffect {
-                                group,
-                                from: index,
-                                to: index + 1,
-                            });
-                            if let Some(g) = s.ctl.model.groups.get_mut(group) {
-                                g.effects.swap(index, index + 1);
-                                remap_group_bus_after_reorder(&mut g.modulators, index, index + 1);
-                            }
+                            s.ctl.move_bus_effect(group, index, index + 1);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
                         }

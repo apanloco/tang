@@ -666,6 +666,21 @@ impl SessionModel {
         }
         true
     }
+
+    /// Move the effect at `from` to `to` in group `group`'s bus, the way the audio thread's
+    /// `ReorderGroupEffect` does: the group's modulator targets on the bus effects follow their plugins
+    /// to the new places (a member's chain is another one: nothing in it moves). False (and no change)
+    /// if either index is outside the bus, they are the same, or the group is not there.
+    pub fn move_bus_effect(&mut self, group: usize, from: usize, to: usize) -> bool {
+        let Some(bus) = self.groups.get_mut(group) else { return false };
+        if from >= bus.effects.len() || to >= bus.effects.len() || from == to {
+            return false;
+        }
+        let effect = bus.effects.remove(from);
+        bus.effects.insert(to, effect);
+        remap_group_bus_after_reorder(&mut bus.modulators, from, to);
+        true
+    }
 }
 
 /// Default dry/wet mix for a newly added effect. Half-wet suits blend/parallel
@@ -2890,6 +2905,165 @@ depth = 0.5
         let names: Vec<&str> = model.instruments[1].effects.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Filter", "Reverb"]);
         assert_eq!(lane_and_group_slots(&model), ([1, 2].to_vec(), [1, 2].to_vec()));
+    }
+
+    #[test]
+    fn moving_a_bus_effect_moves_the_groups_targets_on_it_with_it() {
+        use crate::app::testutil::CHAINS;
+        let mut model = load(CHAINS).model;
+        let bus_cables = |model: &SessionModel| -> Vec<K> { model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).filter(|kind| matches!(kind, K::GroupBus { .. })).collect() };
+        let (filter, reverb) = (model.groups[0].effects[0].node, model.groups[0].effects[1].node);
+        assert!(model.move_bus_effect(0, 0, 1));
+        let names: Vec<&str> = model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Reverb", "Filter"]);
+        assert_eq!(model.locate(filter), Some(NodePath::GroupEffect { group: 0, index: 1 }), "the node is the same, in its new place");
+        assert_eq!(model.locate(reverb), Some(NodePath::GroupEffect { group: 0, index: 0 }));
+        // The cable to the filter's cutoff says effect 1 now, and the one to the reverb's damping says effect 0: in the order the cables were in.
+        assert_eq!(bus_cables(&model), [K::GroupBus { effect_index: 1, param_index: 0 }, K::GroupBus { effect_index: 0, param_index: 2 }]);
+        // The cables to the members' plugins are what they were: the bus is not a member's chain.
+        let members: Vec<K> = model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).filter(|kind| matches!(kind, K::GroupMember { .. })).collect();
+        assert_eq!(
+            members,
+            [K::GroupMember { member: 0, slot: 1, param_index: 0 }, K::GroupMember { member: 0, slot: 2, param_index: 2 }, K::GroupMember { member: 1, slot: 0, param_index: 1 }]
+        );
+        // Back again, the other way round.
+        assert!(model.move_bus_effect(0, 1, 0));
+        let names: Vec<&str> = model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Filter", "Reverb"]);
+        assert_eq!(bus_cables(&model), [K::GroupBus { effect_index: 0, param_index: 0 }, K::GroupBus { effect_index: 1, param_index: 2 }]);
+    }
+
+    #[test]
+    fn moving_a_bus_effect_nowhere_changes_nothing() {
+        use crate::app::testutil::CHAINS;
+        let mut model = load(CHAINS).model;
+        assert!(!model.move_bus_effect(0, 0, 0), "onto itself");
+        assert!(!model.move_bus_effect(0, 0, 2), "past the end");
+        assert!(!model.move_bus_effect(0, 2, 0), "from past the end");
+        assert!(!model.move_bus_effect(1, 0, 1), "no such group");
+        let names: Vec<&str> = model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Filter", "Reverb"]);
+        assert_eq!(model.groups[0].modulators[0].targets.len(), 6);
+    }
+
+    /// A group with four bus effects (two filters and two reverbs) and a lane in it that has four effects of its own: the
+    /// group's modulator has a cable to each of the eight plugins, and the lane's modulator a cable to each of its four.
+    const LONG_CHAINS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.1
+[[group.modulator.target]]
+bus = 1
+param = "damping"
+depth = 0.2
+[[group.modulator.target]]
+bus = 2
+param = "cutoff"
+depth = 0.3
+[[group.modulator.target]]
+bus = 3
+param = "damping"
+depth = 0.4
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[group.modulator.target]]
+member = 0
+slot = 2
+param = "damping"
+depth = 0.2
+[[group.modulator.target]]
+member = 0
+slot = 3
+param = "cutoff"
+depth = 0.3
+[[group.modulator.target]]
+member = 0
+slot = 4
+param = "damping"
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[instrument.modulator.target]]
+slot = 2
+param = "damping"
+depth = 0.2
+[[instrument.modulator.target]]
+slot = 3
+param = "cutoff"
+depth = 0.3
+[[instrument.modulator.target]]
+slot = 4
+param = "damping"
+depth = 0.4
+"#;
+
+    /// What every cable of `LONG_CHAINS` drives (the group's, then the lane's), as the model says: the node of the plugin and the
+    /// parameter's index.
+    fn what_the_cables_of_long_chains_drive(model: &SessionModel) -> Vec<Option<Driven>> {
+        let mut driven = Vec::new();
+        for (at, rack) in [(ModulatorLocation::Group(0), &model.groups[0].modulators), (ModulatorLocation::Lane(0), &model.instruments[0].modulators)] {
+            for (source, modulator) in rack.iter().enumerate() {
+                driven.extend(modulator.targets.iter().map(|t| model.driven_by(at, source, &t.kind)));
+            }
+        }
+        driven
+    }
+
+    #[test]
+    fn an_effect_that_is_moved_anywhere_in_its_chain_leaves_every_cable_driving_the_plugin_it_drove() {
+        let all_moves = || (0..4).flat_map(|from| (0..4).filter(move |to| *to != from).map(move |to| (from, to)));
+        for (on_a_lane, from, to) in all_moves().map(|(f, t)| (true, f, t)).chain(all_moves().map(|(f, t)| (false, f, t))) {
+            let chain = if on_a_lane { "the lane's chain" } else { "the bus" };
+            let what = format!("{from} to {to} in {chain}");
+            let mut model = load(LONG_CHAINS).model;
+            let before = what_the_cables_of_long_chains_drive(&model);
+            assert_eq!(before.len(), 12);
+            assert!(before.iter().all(Option::is_some), "every cable drives something to begin with");
+            let nodes = |model: &SessionModel| -> Vec<NodeId> {
+                let chain = if on_a_lane { &model.instruments[0].effects } else { &model.groups[0].effects };
+                chain.iter().map(|effect| effect.node).collect()
+            };
+            let mut expected = nodes(&model);
+            let moved = expected.remove(from);
+            expected.insert(to, moved);
+
+            let did = if on_a_lane { model.move_effect(0, from, to) } else { model.move_bus_effect(0, from, to) };
+            assert!(did, "{what}");
+            assert_eq!(nodes(&model), expected, "the effects, {what}");
+            assert_eq!(what_the_cables_of_long_chains_drive(&model), before, "what the cables drive, {what}");
+            model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+        }
     }
 
     #[test]

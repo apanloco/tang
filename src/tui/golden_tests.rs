@@ -1496,8 +1496,10 @@ fn deleting_the_last_effect_keeps_the_earlier_targets() {
 fn reordering_effects_moves_modulator_targets_with_their_plugins() {
     let mut h = Harness::new(scene_two_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    assert!(!h.s.ctl.dirty);
     h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["ReorderEffect inst=0 from=0 to=1"]);
+    assert!(h.s.ctl.dirty, "a session with its effects in another order has something to save");
     // Reverb is now first, but the LFO still drives the same two plugins.
     assert_eq!(h.tree()[1], "├ fx Reverb  [Built-in]");
     assert_eq!(h.tree()[2], "├ fx Filter  [Built-in]");
@@ -1505,12 +1507,25 @@ fn reordering_effects_moves_modulator_targets_with_their_plugins() {
     let slots: Vec<usize> = lane_targets(&h).iter().map(|t| t.0).collect();
     assert_eq!(slots, [2, 1], "cutoff follows the filter to slot 2, damping the reverb to slot 1");
 
+    // The filter is the last now, and has nowhere to go: nothing is sent, and nothing is left to save.
+    h.s.ctl.dirty = false;
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert!(h.commands().is_empty());
+    assert!(!h.s.ctl.dirty);
+
     // ...and moving it back restores the original slots.
+    h.s.ctl.dirty = false;
     h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["ReorderEffect inst=0 from=1 to=0"]);
+    assert!(h.s.ctl.dirty);
     let slots: Vec<usize> = lane_targets(&h).iter().map(|t| t.0).collect();
     assert_eq!(slots, [1, 2]);
     assert_eq!(h.tree()[3], "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Reverb: damping (30%)");
+    // Nor does the first go further up.
+    h.s.ctl.dirty = false;
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    assert!(h.commands().is_empty());
+    assert!(!h.s.ctl.dirty);
 }
 
 #[test]
@@ -1520,8 +1535,10 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
     let label = label.replace("(25%)", "(30%)");
     assert!(h.tree().contains(&label.as_str()), "{:#?}", h.tree());
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    assert!(!h.s.ctl.dirty);
     h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["ReorderGroupEffect group=0 from=0 to=1"]);
+    assert!(h.s.ctl.dirty, "a session with its bus effects in another order has something to save");
     assert_eq!(h.tree()[2], "  fx Reverb  [Built-in]  (bus)");
     assert_eq!(h.tree()[3], "  fx Filter  [Built-in]  (bus)");
     assert!(h.tree().contains(&label.as_str()), "targets follow their effects: {:#?}", h.tree());
@@ -1535,9 +1552,17 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
         ]
     );
 
+    // The filter is the last now, and has nowhere to go: nothing is sent, and nothing is left to save.
+    h.s.ctl.dirty = false;
+    h.press_with(KeyCode::Down, KeyModifiers::SHIFT);
+    assert!(h.commands().is_empty());
+    assert!(!h.s.ctl.dirty);
+
     // Moving the filter back up restores the original indices.
+    h.s.ctl.dirty = false;
     h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["ReorderGroupEffect group=0 from=1 to=0"]);
+    assert!(h.s.ctl.dirty);
     let kinds: Vec<String> =
         h.s.ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
     assert_eq!(
@@ -1548,6 +1573,11 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
         ]
     );
     assert!(h.tree().contains(&label.as_str()), "{:#?}", h.tree());
+    // Nor does the first go further up.
+    h.s.ctl.dirty = false;
+    h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
+    assert!(h.commands().is_empty());
+    assert!(!h.s.ctl.dirty);
 }
 
 #[test]

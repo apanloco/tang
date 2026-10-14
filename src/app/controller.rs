@@ -559,6 +559,18 @@ impl Controller {
         true
     }
 
+    /// Move the effect at `from` of group `group`'s bus to `to` (the effects between move one place the other way), as
+    /// `move_effect` does in a lane's chain: the audio thread reorders the bus, and the model does the same
+    /// (`SessionModel::move_bus_effect`), the group's cables to the bus effects following their plugins to the new
+    /// places. False, sending nothing, if either place is not on the bus, or they are the same.
+    pub fn move_bus_effect(&mut self, group: usize, from: usize, to: usize) -> bool {
+        if !self.model.move_bus_effect(group, from, to) {
+            return false;
+        }
+        let _ = self.cmd_tx.send(GraphCommand::ReorderGroupEffect { group, from, to });
+        true
+    }
+
     /// Take the effect at `index` out of group `group`'s bus: as `remove_effect` does for a lane's chain, the
     /// group's cables to it go first (with the cables that drive their depths), and the group's cables to the
     /// bus effects after it are told their new places. False, sending nothing, if there is no such effect.
@@ -3009,6 +3021,126 @@ rate = 2.0
                 ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
             }
         }
+    }
+
+    #[test]
+    fn a_bus_effect_that_is_moved_is_told_to_the_audio_thread_and_the_groups_cables_follow_the_plugins() {
+        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        // The two bus effects have mixes of their own, which go with them.
+        ctl.model.groups[0].effects[0].mix = 0.25;
+        ctl.model.groups[0].effects[1].mix = 0.75;
+        // The bus's filter (0) goes after its reverb (1).
+        assert!(ctl.move_bus_effect(0, 0, 1));
+        assert_eq!(sent(&engine), ["ReorderGroupEffect group=0 from=0 to=1"]);
+        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| (e.name.as_str(), e.mix)).collect();
+        assert_eq!(bus, [("Reverb", 0.75), ("Filter", 0.25)]);
+        let group = ModulatorLocation::Group(0);
+        // The group's cables to the filter's cutoff and the reverb's damping drive them in 1 and 0 now, in the order the cables were in; the
+        // cables to the members' plugins are where they were (the bus is not a lane's chain), and so are the lanes' own.
+        assert_eq!(
+            rack_kinds(&ctl.model, group, 0),
+            [
+                K::GroupMember { member: 0, slot: 1, param_index: 0 },
+                K::GroupMember { member: 0, slot: 2, param_index: 2 },
+                K::GroupMember { member: 1, slot: 0, param_index: 1 },
+                K::GroupBus { effect_index: 1, param_index: 0 },
+                K::GroupBus { effect_index: 0, param_index: 2 },
+                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
+            ]
+        );
+        assert_eq!(rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 0), [K::PluginParam { slot: 1, param_index: 0 }, K::PluginParam { slot: 2, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]);
+        // The cables that drive the depths of cables are told by the places of those in their rack, which did not move.
+        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 1 }, K::ModulatorDepth { mod_index: 0, target_index: 4 }]);
+        assert!(dangling(&ctl.model).is_empty());
+        ctl.model.check_ids().unwrap();
+        // And back: the reverb goes before the filter again.
+        assert!(ctl.move_bus_effect(0, 1, 0));
+        assert_eq!(sent(&engine), ["ReorderGroupEffect group=0 from=1 to=0"]);
+        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| (e.name.as_str(), e.mix)).collect();
+        assert_eq!(bus, [("Filter", 0.25), ("Reverb", 0.75)]);
+        assert_eq!(
+            &rack_kinds(&ctl.model, group, 0)[3..5],
+            [K::GroupBus { effect_index: 0, param_index: 0 }, K::GroupBus { effect_index: 1, param_index: 2 }]
+        );
+    }
+
+    #[test]
+    fn a_bus_effect_is_not_moved_to_where_it_is_or_out_of_its_bus_or_in_a_group_that_is_not_there() {
+        let (engine, mut ctl) = controller_for(testutil::CHAINS);
+        sent(&engine);
+        for (group, from, to) in [(0, 0, 0), (0, 1, 1), (0, 0, 2), (0, 2, 0), (0, 5, 5), (1, 0, 1), (9, 0, 1)] {
+            assert!(!ctl.move_bus_effect(group, from, to), "{group}: {from} to {to}");
+        }
+        assert!(sent(&engine).is_empty());
+        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(bus, ["Filter", "Reverb"]);
+    }
+
+    #[test]
+    fn bus_effects_that_are_moved_leave_the_model_and_the_audio_thread_the_same() {
+        for sequence in [vec![(0, 1)], vec![(1, 0)], vec![(0, 1), (1, 0)], vec![(0, 1), (0, 1)]] {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(testutil::CHAINS);
+            let mut moved = 0;
+            for (from, to) in sequence.iter().copied() {
+                // (A move that is not one, from where an effect is to where it is, is refused by both and is no step.)
+                let did = ctl.move_bus_effect(0, from, to);
+                graph.drain_commands();
+                if did {
+                    moved += 1;
+                }
+                let what = format!("after {from} to {to} of {sequence:?}");
+                assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+                assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+                assert_eq!(graph.cables(), model_cables(&ctl.model), "the cables {what}");
+                assert!(dangling(&ctl.model).is_empty(), "cables that point at nothing {what}");
+                ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+            }
+            assert!(moved > 0, "{sequence:?} moved nothing");
+        }
+    }
+
+    /// Two groups, each with a filter and then a reverb on its bus, and a lane in each.
+    const TWO_BUSES: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+"#;
+
+    #[test]
+    fn a_bus_effect_is_moved_in_the_group_that_has_it_and_in_no_other() {
+        let (engine, mut ctl) = controller_for(TWO_BUSES);
+        sent(&engine);
+        assert!(ctl.move_bus_effect(1, 0, 1));
+        assert_eq!(sent(&engine), ["ReorderGroupEffect group=1 from=0 to=1"]);
+        let buses: Vec<Vec<&str>> = ctl.model.groups.iter().map(|g| g.effects.iter().map(|e| e.name.as_str()).collect()).collect();
+        assert_eq!(buses, [vec!["Filter", "Reverb"], vec!["Reverb", "Filter"]]);
+        // The audio thread agrees: it moves the bus of the group it is told, and the other's is as it was.
+        let (mut graph, mut ctl) = controller_on_a_real_graph(TWO_BUSES);
+        assert!(ctl.move_bus_effect(1, 0, 1));
+        graph.drain_commands();
+        assert_eq!(graph.groups(), model_groups(&ctl.model));
+        assert!(ctl.move_bus_effect(0, 1, 0));
+        graph.drain_commands();
+        assert_eq!(graph.groups(), model_groups(&ctl.model));
+        assert_eq!(model_groups(&ctl.model).iter().map(|g| g.effects.clone()).collect::<Vec<_>>(), [vec!["Reverb", "Filter"], vec!["Reverb", "Filter"]]);
     }
 
     /// A controller over the stub engine whose catalog has the built-in plugins, as a scan finds them.
