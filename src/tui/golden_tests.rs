@@ -1436,6 +1436,20 @@ fn the_group_popup_takes_a_lane_out_of_its_group_and_moves_it_to_another() {
 }
 
 #[test]
+fn the_group_popup_takes_a_member_the_group_drives_out_of_it_and_the_group_s_cable_goes_and_gives_the_value_back() {
+    // Lane 0 is the Pad group's first member, and the group's LFO drives its detune.
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Char('g')).press(KeyCode::Down).press(KeyCode::Enter); // "New group", then "Ungroup"
+    assert_eq!(
+        h.commands(),
+        ["RemoveGroupModTarget group=0 mod=0 target=0", "SetLaneGroup inst=0 group=None", "SetParameter inst=0 slot=0 param=1 value=0.000"]
+    );
+    assert_eq!(h.s.ctl.model.instruments[0].group, None);
+    assert!(h.tree().contains(&"  ~ LFO 0.5Hz sine → Bus Reverb: damping (25%)  (bus)"), "{:#?}", h.tree());
+}
+
+#[test]
 fn deleting_a_group_ungroups_its_members() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));

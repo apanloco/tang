@@ -627,12 +627,28 @@ impl Controller {
 
     /// Put lane `inst` in group `group`, or in none: the audio thread moves it (`SetLaneGroup`), and the model does the
     /// same (`SessionModel::set_lane_group`), the group modulators' targets on the members following their
-    /// plugins to the ordinals they have now. False, sending nothing, if there is no such lane or no such group.
+    /// plugins to the ordinals they have now. A lane that leaves the group it is in is no longer driven by it: the
+    /// group's cables to its plugins and its modulators go first, each by `take_out` with the cables that drive their
+    /// depths, and what they were driving has the value the user set again once the lane has left (the lane stays, so
+    /// nothing else would write it back), unless a cable of the lane's own still drives it. A lane put in the group it is
+    /// in has nothing taken out. False, sending nothing, if there is no such lane or no such group.
     pub fn set_lane_group(&mut self, inst: usize, group: Option<usize>) -> bool {
+        let Some(lane) = self.model.instruments.get(inst) else { return false };
+        if group.is_some_and(|g| g >= self.model.groups.len()) {
+            return false;
+        }
+        let mut driven: Vec<Driven> = Vec::new();
+        if lane.group != group {
+            for edge in self.model.group_cables_into_lane(inst) {
+                // (One that an earlier one took with it is not there any more.)
+                driven.extend(self.take_out(edge).into_iter().flatten());
+            }
+        }
         if !self.model.set_lane_group(inst, group) {
             return false;
         }
         let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group });
+        self.give_back(driven);
         true
     }
 
@@ -4129,6 +4145,68 @@ group = 0
         assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1, "the group's cable to it is still there");
         assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "and still drives its detune");
         ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_that_leaves_its_group_has_what_the_groups_cables_drove_given_back() {
+        let (mut graph, mut ctl) = controller_on_a_real_graph(GROUP_CABLES);
+        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
+        let cutoff = index_of(&ctl.model.groups[0].effects[0], "cutoff");
+        run(&mut graph);
+        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0, "the member's detune is driven");
+        assert!(graph.lane_lfo(0, 0).unwrap().0 > 20.0, "so is the rate of the member's own LFO");
+        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.7));
+
+        assert!(ctl.set_lane_group(0, None));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "the detune the user set");
+        assert_eq!(graph.lane_lfo(0, 0).map(|(rate, _)| rate), Some(2.0), "and the rate");
+        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.7), "the cable to the bus is the group's still");
+        let group_lfo = &ctl.model.groups[0].modulators[0];
+        assert_eq!(group_lfo.targets.len(), 1, "only the cable to the bus is left");
+        assert_eq!(group_lfo.targets[0].param_name, "cutoff");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_groups_cables_go_first_and_what_they_drove_is_given_back_after_the_lane_has_left() {
+        let (engine, mut ctl) = controller_for(GROUP_CABLES);
+        sent(&engine);
+        assert!(ctl.set_lane_group(0, None));
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=1",
+                "SetLaneGroup inst=0 group=None",
+                "SetParameter inst=0 slot=0 param=1 value=0.000",
+                "SetModulatorRate inst=0 mod=0 rate=2.000",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lane_moved_to_another_group_has_what_the_first_groups_cables_drove_given_back_too() {
+        let two_groups = format!("{GROUP_CABLES}\n[[group]]\n");
+        let (mut graph, mut ctl) = controller_on_a_real_graph(&two_groups);
+        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
+        run(&mut graph);
+        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0);
+        assert!(ctl.set_lane_group(0, Some(1)));
+        run(&mut graph);
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "not driven by the group it left, and the other has no cables");
+        assert_eq!(graph.lane_lfo(0, 0).map(|(rate, _)| rate), Some(2.0));
+        assert_eq!(ctl.model.instruments[0].group, Some(1));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_put_in_the_group_it_is_in_has_nothing_taken_out_and_nothing_given_back() {
+        let (engine, mut ctl) = controller_for(GROUP_CABLES);
+        sent(&engine);
+        assert!(ctl.set_lane_group(0, Some(0)));
+        assert_eq!(sent(&engine), ["SetLaneGroup inst=0 group=Some(0)"]);
+        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 3);
     }
 
     /// As above, with two members: the LFO drives the detune of the second, lane 1.
