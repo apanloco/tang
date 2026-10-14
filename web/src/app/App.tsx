@@ -7,6 +7,7 @@ import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PatchView } from "./patch/PatchView";
+import { Piano } from "./piano/Piano";
 import { SessionBar } from "./SessionBar";
 import { useKeyboardPiano } from "./useKeyboardPiano";
 import "./App.css";
@@ -37,7 +38,7 @@ function RawSession() {
 /** What the keys of the computer do: they play, from this octave. */
 const KEYS_HINT = "The keys Z S X D C V G B H N J M , L . ; / and Q 2 W 3 E R 5 T 6 Y 7 U I 9 O 0 P play notes; [ and ] change the octave";
 
-/** The whole page: the state of the connection, the session as a patch, and the session as the server sent it. */
+/** The whole page: the state of the connection, the session as a patch, the piano, and the session as the server sent it. */
 export function App({ engine }: { engine: EngineKind }) {
   const status = useClientState((state) => state.status);
   const problem = useClientState((state) => state.problem);
@@ -68,6 +69,9 @@ export function App({ engine }: { engine: EngineKind }) {
             <PatchView />
           </ErrorBoundary>
         </div>
+        <ErrorBoundary what="the piano">
+          <Piano octave={octave} />
+        </ErrorBoundary>
         <ErrorBoundary what="the session as JSON">
           <RawSession />
         </ErrorBoundary>

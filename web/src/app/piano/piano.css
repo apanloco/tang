@@ -1,0 +1,155 @@
+/* The piano below the patch: a bar with the scale and the lock, and the keys. The keys are drawn as the TUI draws them: a natural
+   piano (white and black bodies) with a stripe along the bottom of each key for what it is in the scale, gold for the root and
+   teal for the other notes of the scale; a key that is held sinks (a shade darker), and one held that is not in the scale goes red,
+   the "wrong note". */
+.tang-piano {
+  --bar: 32px;
+  --keys: 104px;
+  --gap: 12px;
+  flex: none;
+  box-sizing: border-box;
+  /* As tall as it is with the keys in it, which it is not yet when there is no session: the room below the patch is the same. */
+  height: calc(var(--bar) + var(--keys) + var(--gap) + 1px);
+  border-top: 1px solid var(--tang-border);
+  background: var(--tang-surface);
+}
+
+.tang-piano__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-4);
+  box-sizing: border-box;
+  height: var(--bar);
+  padding: 0 var(--tang-space-4);
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-piano__scale {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-piano__select {
+  padding: 2px var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: var(--tang-text-small) / 1.4 var(--tang-font);
+}
+
+.tang-piano__lock {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Locked: the border and the words are the scale's colour. */
+.tang-piano__lock[aria-pressed="true"] {
+  border-color: var(--tang-scale);
+  color: var(--tang-scale);
+}
+
+.tang-piano__select:focus-visible,
+.tang-piano__lock:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* The keys: white ones side by side, black ones over them at the boundaries (by how many white keys come before: `--after`). */
+.tang-piano__keys {
+  --whites: 7;
+  position: relative;
+  display: flex;
+  height: var(--keys);
+  margin: 0 var(--tang-space-4) var(--gap);
+  /* A finger on a key plays it: it does not scroll or zoom the page, and a press does not select. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tang-key {
+  --body: #f0f0eb;
+  --name: #505050;
+  --stripe: transparent;
+  position: relative;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: var(--body);
+  box-shadow: inset 0 -6px 0 var(--stripe);
+  color: var(--name);
+  font: 600 10px / 1 var(--tang-font);
+  cursor: pointer;
+}
+
+.tang-key--white {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  border-right: 1px solid #969696;
+  border-radius: 0 0 4px 4px;
+}
+
+.tang-key--black {
+  --body: #19191e;
+  --name: #aaaaaf;
+  position: absolute;
+  top: 0;
+  left: calc(var(--after) / var(--whites) * 100%);
+  z-index: 1;
+  width: calc(100% / var(--whites) * 0.62);
+  height: 62%;
+  transform: translateX(-50%);
+  border-radius: 0 0 3px 3px;
+}
+
+.tang-key__name {
+  position: absolute;
+  right: 0;
+  bottom: 8px;
+  left: 0;
+  text-align: center;
+  pointer-events: none;
+}
+
+.tang-key[data-role="root"] {
+  --stripe: var(--tang-root);
+  --name: #000;
+}
+
+.tang-key[data-role="scale"] {
+  --stripe: var(--tang-scale);
+  --name: #000;
+}
+
+/* Held: the body sinks a shade; the stripe stays. */
+.tang-key--white[data-held] {
+  --body: #cdcdc8;
+}
+
+.tang-key--black[data-held] {
+  --body: #55555f;
+}
+
+/* Held and not in the scale: the wrong note. */
+.tang-key[data-held][data-role="off"] {
+  --body: var(--tang-held);
+  --stripe: var(--tang-held);
+  --name: #000;
+}
+
+/* Locked: a key that is not in the scale is not played. */
+.tang-piano__keys[data-locked] .tang-key[data-role="off"] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
