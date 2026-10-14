@@ -50,7 +50,7 @@
           "value": 1.0
         },
         {
-          "default": 0.004000000189989805,
+          "default": 0.004,
           "group": [
             "Envelope"
           ],
@@ -61,10 +61,10 @@
           "name": "attack",
           "stepCount": 0,
           "unit": "s",
-          "value": 0.004000000189989805
+          "value": 0.004
         },
         {
-          "default": 0.10000000149011612,
+          "default": 0.1,
           "group": [
             "Envelope"
           ],
@@ -75,7 +75,7 @@
           "name": "decay",
           "stepCount": 0,
           "unit": "s",
-          "value": 0.10000000149011612
+          "value": 0.1
         },
         {
           "default": 1.0,
@@ -92,7 +92,7 @@
           "value": 1.0
         },
         {
-          "default": 0.012000000104308128,
+          "default": 0.012,
           "group": [
             "Envelope"
           ],
@@ -103,7 +103,7 @@
           "name": "release",
           "stepCount": 0,
           "unit": "s",
-          "value": 0.012000000104308128
+          "value": 0.012
         },
         {
           "default": 0.0,

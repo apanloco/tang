@@ -22,7 +22,7 @@
           "value": 1.0
         },
         {
-          "default": 0.7070000171661377,
+          "default": 0.707,
           "group": [],
           "index": 1,
           "labels": null,
@@ -31,7 +31,7 @@
           "name": "resonance",
           "stepCount": 0,
           "unit": null,
-          "value": 0.7070000171661377
+          "value": 0.707
         },
         {
           "default": 0.0,
@@ -81,31 +81,31 @@
       "isInstrument": false,
       "params": [
         {
-          "default": 0.8799999952316284,
+          "default": 0.88,
           "group": [],
           "index": 0,
           "labels": null,
-          "max": 0.9900000095367432,
-          "min": 0.10000000149011612,
+          "max": 0.99,
+          "min": 0.1,
           "name": "decay",
           "stepCount": 0,
           "unit": null,
-          "value": 0.8799999952316284
+          "value": 0.88
         },
         {
-          "default": 0.8500000238418579,
+          "default": 0.85,
           "group": [],
           "index": 1,
           "labels": null,
           "max": 1.0,
-          "min": 0.30000001192092896,
+          "min": 0.3,
           "name": "size",
           "stepCount": 0,
           "unit": null,
-          "value": 0.8500000238418579
+          "value": 0.85
         },
         {
-          "default": 0.3499999940395355,
+          "default": 0.35,
           "group": [],
           "index": 2,
           "labels": null,
@@ -114,10 +114,10 @@
           "name": "damping",
           "stepCount": 0,
           "unit": null,
-          "value": 0.3499999940395355
+          "value": 0.35
         },
         {
-          "default": 0.03999999910593033,
+          "default": 0.04,
           "group": [],
           "index": 3,
           "labels": null,
@@ -126,33 +126,33 @@
           "name": "predelay",
           "stepCount": 0,
           "unit": "s",
-          "value": 0.03999999910593033
+          "value": 0.04
         },
         {
-          "default": 0.699999988079071,
+          "default": 0.7,
           "group": [],
           "index": 4,
           "labels": null,
-          "max": 0.8500000238418579,
+          "max": 0.85,
           "min": 0.0,
           "name": "diffusion",
           "stepCount": 0,
           "unit": null,
-          "value": 0.699999988079071
+          "value": 0.7
         },
         {
-          "default": 0.30000001192092896,
+          "default": 0.3,
           "group": [
             "Modulation"
           ],
           "index": 5,
           "labels": null,
           "max": 2.0,
-          "min": 0.05000000074505806,
+          "min": 0.05,
           "name": "mod_rate",
           "stepCount": 0,
           "unit": "Hz",
-          "value": 0.30000001192092896
+          "value": 0.3
         },
         {
           "default": 0.5,

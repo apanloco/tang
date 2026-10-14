@@ -1135,3 +1135,10 @@ impl plugin::Plugin for DropProbe {
         Ok(())
     }
 }
+
+/// A value as the wire says it: what its JSON says, with the 32-bit numbers in the fewest digits that tell them. (`serde_json::to_value` writes
+/// them as the 64-bit numbers they widen to, 0.3 as 0.30000001192092896, which no client is sent: the fixtures the web client's tests read
+/// are written from this.)
+pub fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    serde_json::from_str(&serde_json::to_string(value).unwrap()).unwrap()
+}

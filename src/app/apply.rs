@@ -3322,7 +3322,7 @@ type = "midi"
     /// line of text the web client's tests make of its own copy by the same rules (`web/src/client/groups.test.ts`).
     fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
         use serde_json::Value;
-        let wire: Value = serde_json::from_str(&serde_json::to_string(snapshot).unwrap()).unwrap();
+        let wire: Value = testutil::wire(snapshot);
         let text = |value: &Value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
         // A port: its kind, then its index or the cable it is about.
         let port = |port: &Value| {
@@ -3787,7 +3787,7 @@ type = "midi"
                 let applied = ctl.apply(Intent::LoadPreset { node, preset: preset.clone() }).unwrap();
                 let [Event::PresetLoaded { values, .. }] = applied.events.as_slice() else { panic!("one PresetLoaded: {:?}", applied.events) };
                 assert!(!values.is_empty(), "{} {preset}: the controller reports values", info.id);
-                by_preset.insert(preset, serde_json::to_value(values).unwrap());
+                by_preset.insert(preset, testutil::wire(values));
             }
             plugins.insert(info.id.clone(), serde_json::Value::Object(by_preset));
         }
@@ -3818,7 +3818,7 @@ type = "midi"
             let (_engine, mut ctl) = controller_with_builtins();
             add_instrument(&mut ctl, &info.id).unwrap();
             let added = ctl.model.instruments.last().unwrap().node;
-            let mut json = serde_json::to_value(ctl.model.graph().nodes.iter().find(|n| n.id == added).unwrap()).unwrap();
+            let mut json = testutil::wire(ctl.model.graph().nodes.iter().find(|n| n.id == added).unwrap());
             let object = json.as_object_mut().unwrap();
             object.remove("id");
             object.remove("parent");
@@ -3852,7 +3852,7 @@ type = "midi"
             let lane0 = lane(&ctl);
             add_effect(&mut ctl, lane0, &info.id).unwrap();
             let added = ctl.model.instruments[0].effects.last().unwrap().node;
-            let mut json = serde_json::to_value(ctl.model.graph().nodes.iter().find(|n| n.id == added).unwrap()).unwrap();
+            let mut json = testutil::wire(ctl.model.graph().nodes.iter().find(|n| n.id == added).unwrap());
             let object = json.as_object_mut().unwrap();
             object.remove("id");
             object.remove("parent");
