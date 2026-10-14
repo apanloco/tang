@@ -1,0 +1,3051 @@
+{
+  "rows": [
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>15 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 15 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [
+          2
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>15 member",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 15 Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [
+          4
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>15 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 15 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [
+          9
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>15 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>15 member"
+        ],
+        "cables": [
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 15 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 15 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [
+          2,
+          9
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>15 member",
+          "8>15 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 15 Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 15 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [
+          4,
+          8
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "15>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>15 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "24 15 audioOut peak",
+          "25 15 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "15 - Group 3",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 15 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "members": [
+          8,
+          8
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "members": [
+          9999
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "members": [
+          4,
+          9999
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "error": "only a lane can be put in a group",
+      "intent": {
+        "members": [
+          0
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "error": "only a lane can be put in a group",
+      "intent": {
+        "members": [
+          10
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "error": "there is no node 4294967295",
+      "intent": {
+        "members": [
+          4294967295
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "error": "only a lane can be put in a group",
+      "intent": {
+        "members": [
+          2,
+          0
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>4294967295 audio",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 - Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 2,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 0,
+        "node": 2,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>1 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 1 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 1,
+        "node": 2,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>0 member",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 0 Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 0,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>1 member",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 1 Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 1,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>4294967295 audio",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 - Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 8,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>0 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 0 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 0,
+        "node": 8,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 1,
+        "node": 8,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>4294967295 audio"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 - Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 9,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>0 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#1 12>9 param7 @0.2",
+          "#2 12>11 rate @0.3",
+          "#3 13>12 depth#1 @0.5",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "20 9 param7 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 0 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 0,
+        "node": 9,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "8>1 member",
+          "9>10 audio",
+          "10>1 member"
+        ],
+        "cables": [
+          "#0 12>2 param1 @0.1",
+          "#4 14>8 param2 @0.4"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "9 4 audioOut peak",
+          "10 4 audioOut clips",
+          "13 8 audioOut peak",
+          "14 8 audioOut clips",
+          "15 9 audioOut peak",
+          "16 9 audioOut clips"
+        ],
+        "modulation": [
+          "18 12 modOut modOutput",
+          "21 13 modOut modOutput",
+          "22 14 modOut modOutput",
+          "8 3 modOut modOutput",
+          "11 6 modOut modOutput",
+          "12 7 modOut modOutput",
+          "17 11 modOut modOutput",
+          "19 2 param1 effective",
+          "23 8 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "12 0 LFO",
+          "13 0 ADSR",
+          "1 - Group 2",
+          "14 1 LFO",
+          "2 0 Oscillator",
+          "3 2 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 4 LFO",
+          "7 4 LFO",
+          "8 1 Oscillator",
+          "9 1 Oscillator",
+          "10 9 Reverb",
+          "11 9 LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 1,
+        "node": 9,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "only a lane can be put in a group",
+      "intent": {
+        "group": 1,
+        "node": 0,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "only a lane can be put in a group",
+      "intent": {
+        "group": 1,
+        "node": 10,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "only a lane can be put in a group",
+      "intent": {
+        "group": 1,
+        "node": 6,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "there is no node 4294967295",
+      "intent": {
+        "group": 1,
+        "node": 4294967295,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "group": 1,
+        "node": 9999,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "that node is not a group",
+      "intent": {
+        "group": 2,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "that node is not a group",
+      "intent": {
+        "group": 10,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "there is no node 4294967295",
+      "intent": {
+        "group": 4294967295,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "group": 9999,
+        "node": 4,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "Strings",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "Strings"
+    },
+    {
+      "intent": {
+        "name": "  Pad two  ",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "Pad two"
+    },
+    {
+      "intent": {
+        "name": "",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "Group 1"
+    },
+    {
+      "intent": {
+        "name": "   ",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "Group 1"
+    },
+    {
+      "intent": {
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "error": "a name is at most 64 characters",
+      "intent": {
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "node": 0,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "åååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååå",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "åååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååå"
+    },
+    {
+      "error": "a name is at most 64 characters",
+      "intent": {
+        "name": "ååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååå",
+        "node": 0,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+    },
+    {
+      "error": "a name is at most 64 characters",
+      "intent": {
+        "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "node": 0,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "a name has no control characters",
+      "intent": {
+        "name": "two\nlines",
+        "node": 0,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "a name has no control characters",
+      "intent": {
+        "name": "tab\there",
+        "node": 0,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "a name has no control characters",
+      "intent": {
+        "name": "\u0007",
+        "node": 0,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "Next line",
+        "node": 0,
+        "type": "renameGroup"
+      },
+      "name": "Next line"
+    },
+    {
+      "intent": {
+        "name": "Strings",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "Strings"
+    },
+    {
+      "intent": {
+        "name": "  Pad two  ",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "Pad two"
+    },
+    {
+      "intent": {
+        "name": "",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "Group 2"
+    },
+    {
+      "intent": {
+        "name": "   ",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "Group 2"
+    },
+    {
+      "intent": {
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "error": "a name is at most 64 characters",
+      "intent": {
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "node": 1,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "åååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååå",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "åååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååå"
+    },
+    {
+      "error": "a name is at most 64 characters",
+      "intent": {
+        "name": "ååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååååå",
+        "node": 1,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+    },
+    {
+      "error": "a name is at most 64 characters",
+      "intent": {
+        "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "node": 1,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "a name has no control characters",
+      "intent": {
+        "name": "two\nlines",
+        "node": 1,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "a name has no control characters",
+      "intent": {
+        "name": "tab\there",
+        "node": 1,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "a name has no control characters",
+      "intent": {
+        "name": "\u0007",
+        "node": 1,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "intent": {
+        "name": "Next line",
+        "node": 1,
+        "type": "renameGroup"
+      },
+      "name": "Next line"
+    },
+    {
+      "error": "only a group has a name to change",
+      "intent": {
+        "name": "Strings",
+        "node": 2,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "only a group has a name to change",
+      "intent": {
+        "name": "Strings",
+        "node": 10,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "there is no node 4294967295",
+      "intent": {
+        "name": "Strings",
+        "node": 4294967295,
+        "type": "renameGroup"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "name": "Strings",
+        "node": 9999,
+        "type": "renameGroup"
+      }
+    }
+  ],
+  "snapshot": {
+    "graph": {
+      "edges": [
+        {
+          "from": {
+            "node": 0,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 1,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 2,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 4,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 5,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 5,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 1,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 9,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 10,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 10,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "amount": 0.1,
+          "from": {
+            "node": 12,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 0,
+          "kind": "modulation",
+          "to": {
+            "node": 2,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.2,
+          "from": {
+            "node": 12,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 1,
+          "kind": "modulation",
+          "to": {
+            "node": 9,
+            "port": {
+              "index": 7,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.3,
+          "from": {
+            "node": 12,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 2,
+          "kind": "modulation",
+          "to": {
+            "node": 11,
+            "port": {
+              "type": "rate"
+            }
+          }
+        },
+        {
+          "amount": 0.5,
+          "from": {
+            "node": 13,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 3,
+          "kind": "modulation",
+          "to": {
+            "node": 12,
+            "port": {
+              "edge": 1,
+              "type": "depth"
+            }
+          }
+        },
+        {
+          "amount": 0.4,
+          "from": {
+            "node": 14,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 4,
+          "kind": "modulation",
+          "to": {
+            "node": 8,
+            "port": {
+              "index": 2,
+              "type": "param"
+            }
+          }
+        }
+      ],
+      "nodes": [
+        {
+          "id": 0,
+          "kind": "group",
+          "name": "Group 1",
+          "pan": 0.0,
+          "parent": null,
+          "volume": 1.0
+        },
+        {
+          "id": 12,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 0,
+          "source": {
+            "rate": 1.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 13,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": 0,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "id": 1,
+          "kind": "group",
+          "name": "Group 2",
+          "pan": 0.0,
+          "parent": null,
+          "volume": 1.0
+        },
+        {
+          "id": 14,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 1,
+          "source": {
+            "rate": 2.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 2,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": {
+            "high": 59,
+            "low": 12
+          },
+          "transpose": 0,
+          "volume": 0.5
+        },
+        {
+          "id": 3,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 2,
+          "source": {
+            "rate": 3.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 4,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 7,
+          "volume": 0.6
+        },
+        {
+          "id": 5,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 4,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          }
+        },
+        {
+          "id": 6,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 4,
+          "source": {
+            "rate": 4.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 7,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 4,
+          "source": {
+            "rate": 5.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 8,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 1,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 0.7
+        },
+        {
+          "id": 9,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 0.8
+        },
+        {
+          "id": 10,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Reverb",
+          "parent": 9,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:reverb",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.88,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 0.99,
+                "min": 0.1,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.88
+              },
+              {
+                "default": 0.85,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.3,
+                "name": "size",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.85
+              },
+              {
+                "default": 0.35,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "damping",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.35
+              },
+              {
+                "default": 0.04,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 0.25,
+                "min": 0.0,
+                "name": "predelay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.04
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 4,
+                "labels": null,
+                "max": 0.85,
+                "min": 0.0,
+                "name": "diffusion",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              },
+              {
+                "default": 0.3,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.05,
+                "name": "mod_rate",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 0.3
+              },
+              {
+                "default": 0.5,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "mod_depth",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 80.0,
+                "group": [],
+                "index": 8,
+                "labels": null,
+                "max": 500.0,
+                "min": 20.0,
+                "name": "lowcut",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 80.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": [
+              {
+                "id": "arcadia",
+                "name": "Arcadia Dream Hall"
+              },
+              {
+                "id": "cathedral",
+                "name": "Cathedral"
+              },
+              {
+                "id": "plate",
+                "name": "Vintage Plate"
+              },
+              {
+                "id": "room",
+                "name": "Small Room"
+              },
+              {
+                "id": "ambient",
+                "name": "Ambient Wash"
+              }
+            ]
+          }
+        },
+        {
+          "id": 11,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 9,
+          "source": {
+            "rate": 6.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 4294967295,
+          "kind": "master",
+          "name": "Master",
+          "parent": null
+        }
+      ]
+    },
+    "meta": {
+      "bpm": 120.0,
+      "dirty": false,
+      "file": null,
+      "piano": {
+        "kind": "major",
+        "locked": false,
+        "notes": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
+        "root": 0,
+        "scale": "C major"
+      }
+    },
+    "rev": 0,
+    "telemetry": {
+      "meters": [
+        {
+          "kind": "peak",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 0
+        },
+        {
+          "kind": "clips",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 1
+        },
+        {
+          "kind": "peak",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 2
+        },
+        {
+          "kind": "clips",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 3
+        },
+        {
+          "kind": "peak",
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 4
+        },
+        {
+          "kind": "clips",
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 5
+        },
+        {
+          "kind": "peak",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 6
+        },
+        {
+          "kind": "clips",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 7
+        },
+        {
+          "kind": "peak",
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 9
+        },
+        {
+          "kind": "clips",
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 10
+        },
+        {
+          "kind": "peak",
+          "node": 8,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 13
+        },
+        {
+          "kind": "clips",
+          "node": 8,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 14
+        },
+        {
+          "kind": "peak",
+          "node": 9,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 15
+        },
+        {
+          "kind": "clips",
+          "node": 9,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 16
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 12,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 18
+        },
+        {
+          "kind": "modOutput",
+          "node": 13,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 21
+        },
+        {
+          "kind": "modOutput",
+          "node": 14,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 22
+        },
+        {
+          "kind": "modOutput",
+          "node": 3,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 8
+        },
+        {
+          "kind": "modOutput",
+          "node": 6,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 11
+        },
+        {
+          "kind": "modOutput",
+          "node": 7,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 12
+        },
+        {
+          "kind": "modOutput",
+          "node": 11,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 17
+        },
+        {
+          "kind": "effective",
+          "node": 2,
+          "port": {
+            "index": 1,
+            "type": "param"
+          },
+          "slot": 19
+        },
+        {
+          "kind": "effective",
+          "node": 9,
+          "port": {
+            "index": 7,
+            "type": "param"
+          },
+          "slot": 20
+        },
+        {
+          "kind": "effective",
+          "node": 8,
+          "port": {
+            "index": 2,
+            "type": "param"
+          },
+          "slot": 23
+        }
+      ],
+      "rev": 1
+    }
+  }
+}

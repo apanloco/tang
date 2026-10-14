@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL } from "../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -578,6 +578,112 @@ function pinnedOutcome(snapshot: Snapshot, node: NodeId, params: readonly number
   return { event: { type: "pinnedSet", node, params: [...params] } };
 }
 
+/**
+ * A group named, as the controller's `rename_group` does it: only a group has a name (the master is no node of the model, as far as the
+ * controller goes), taken without the spaces round it (what Rust's `trim` takes: the Unicode white space), at most `NAME_LIMIT`
+ * characters (the characters that a person sees, not the halves of a pair that a string counts), and none of them a control character.
+ * A name of nothing is no name: the group is called "Group" and its place among the groups, counting from one.
+ */
+function renameGroupOutcome(snapshot: Snapshot, node: NodeId, name: string): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node);
+  if (!found || node === MASTER) return noNode(node);
+  if (found.kind !== "group") return invalid("only a group has a name to change");
+  const trimmed = name.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+  if (Array.from(trimmed).length > NAME_LIMIT) return invalid(`a name is at most ${NAME_LIMIT} characters`);
+  if (/\p{Cc}/u.test(trimmed)) return invalid("a name has no control characters");
+  const place = snapshot.graph.nodes.filter((n) => n.kind === "group").findIndex((n) => n.id === node);
+  return { event: { type: "groupRenamed", node, name: trimmed === "" ? `Group ${place + 1}` : trimmed } };
+}
+
+/** The lane `lane` put in the group `group` (or in none), the snapshot as it is: see `setLaneGroupOutcome`. Both are known to be what they should be. */
+function lanePutIn(snapshot: Snapshot, lane: NodeId, group: NodeId | null): Snapshot {
+  const found = snapshot.graph.nodes.find((n) => n.id === lane);
+  const master = snapshot.graph.nodes.find((n) => n.kind === "master");
+  if (!found || !master || found.parent === group) return snapshot;
+  const { nodes } = snapshot.graph;
+  // The cables of the group it leaves that go into the lane: to its plugins, to its modulators' settings and to the depths of their cables.
+  const inside = new Set<NodeId>([lane, ...nodes.filter((n) => n.parent === lane).map((n) => n.id)]);
+  const leaving = found.parent;
+  const driven = snapshot.graph.edges
+    .filter(isModulation)
+    .filter((e) => leaving !== null && nodes.find((n) => n.id === e.from.node)?.parent === leaving && inside.has(e.to.node))
+    .map((e) => e.id);
+  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, driven), new Set());
+  // The lane's node is a member of the group, and the last link of its chain, the one that leaves the chain, goes into the group (or the master).
+  const chain = new Set<NodeId>([lane, ...nodes.filter((n) => n.parent === lane && n.kind === "effect").map((n) => n.id)]);
+  const edges = taken.graph.edges.map((e): Edge => {
+    if (e.kind === "modulation" || !chain.has(e.from.node) || chain.has(e.to.node)) return e;
+    return { from: e.from, to: { node: group ?? master.id, port: { type: "audioIn" } }, kind: group === null ? "audio" : "member" };
+  });
+  return { ...taken, graph: { nodes: taken.graph.nodes.map((n) => (n.id === lane ? { ...n, parent: group } : n)), edges } };
+}
+
+/**
+ * A lane put in a group, or taken out of its group (`null`), as the controller does it (`Controller::set_lane_group`): the node has to be a
+ * lane and the group a group (the master is no node of the model, as far as the controller goes). The cables of the group the lane leaves
+ * go first (`lanePutIn`; what they were driving has the value that was set again, which is the audio thread's to do), and the audio path of
+ * the lane ends in its new group, or in the master.
+ */
+function setLaneGroupOutcome(snapshot: Snapshot, node: NodeId, group: NodeId | null): Outcome {
+  const lane = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!lane) return noNode(node);
+  if (lane.kind !== "instrument") return invalid("only a lane can be put in a group");
+  if (group !== null) {
+    const target = snapshot.graph.nodes.find((n) => n.id === group && n.kind !== "master");
+    if (!target) return noNode(group);
+    if (target.kind !== "group") return invalid("that node is not a group");
+  }
+  return { restructured: lanePutIn(snapshot, node, group) };
+}
+
+/**
+ * A group added at the end, with the lanes in `members` put in it, as the controller does it (`add_group_intent`): every member is looked at
+ * first, and one that is no lane refuses the whole. The graph lists the groups (each with its effects and modulators), then the lanes, then the
+ * master, so the group goes before the first lane; its link to the master comes after the links of the groups there are, and its two meters in
+ * the layout after theirs (the master's, the groups', the lanes').
+ */
+function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counters: Counters): Outcome {
+  for (const member of members) {
+    const lane = snapshot.graph.nodes.find((n) => n.id === member && n.kind !== "master");
+    if (!lane) return noNode(member);
+    if (lane.kind !== "instrument") return invalid("only a lane can be put in a group");
+  }
+  const { nodes, edges } = snapshot.graph;
+  const master = nodes.find((n) => n.kind === "master");
+  if (!master) return invalid("the session has no master to hear a group");
+
+  const id = counters.node();
+  const added: Node = { id, parent: null, name: `Group ${nodes.filter((n) => n.kind === "group").length + 1}`, kind: "group", volume: 1, pan: 0 };
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const inLane = (node: NodeId): boolean => {
+    const found = byId.get(node);
+    const owner = found?.kind === "effect" && found.parent !== null ? byId.get(found.parent) : found;
+    return owner?.kind === "instrument";
+  };
+  const firstLane = nodes.findIndex((n) => n.kind === "instrument");
+  const atNode = firstLane >= 0 ? firstLane : nodes.indexOf(master);
+  const firstLink = edges.findIndex((e) => e.kind !== "modulation" && inLane(e.from.node));
+  const firstCable = edges.findIndex(isModulation);
+  const atEdge = firstLink >= 0 ? firstLink : firstCable >= 0 ? firstCable : edges.length;
+  const link: Edge = { from: { node: id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
+  const meters: LayoutEntry[] = [
+    { slot: counters.slot(), node: id, port: { type: "audioOut" }, kind: "peak" },
+    { slot: counters.slot(), node: id, port: { type: "audioOut" }, kind: "clips" },
+  ];
+  const firstMeter = snapshot.telemetry.meters.findIndex((m) => byId.get(m.node)?.kind === "instrument");
+  const atMeter = firstMeter >= 0 ? firstMeter : snapshot.telemetry.meters.length;
+  const made: Snapshot = {
+    ...snapshot,
+    graph: { nodes: [...nodes.slice(0, atNode), added, ...nodes.slice(atNode)], edges: [...edges.slice(0, atEdge), link, ...edges.slice(atEdge)] },
+    telemetry: {
+      ...snapshot.telemetry,
+      rev: snapshot.telemetry.rev + 1,
+      meters: [...snapshot.telemetry.meters.slice(0, atMeter), ...meters, ...snapshot.telemetry.meters.slice(atMeter)],
+    },
+  };
+  return { restructured: members.reduce((session, lane) => lanePutIn(session, lane, id), made) };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -591,8 +697,9 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
-  // (Not in the mock engine yet: the next part of step 31 puts them there, pinned to the controller's by a fixture.)
-  if (intent.type === "addGroup" || intent.type === "setLaneGroup" || intent.type === "renameGroup") return invalid("the mock engine does not have groups yet");
+  if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);
+  if (intent.type === "setLaneGroup") return setLaneGroupOutcome(snapshot, intent.node, intent.group);
+  if (intent.type === "addGroup") return addGroupOutcome(snapshot, intent.members, counters);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);

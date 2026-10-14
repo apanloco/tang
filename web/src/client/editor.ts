@@ -12,6 +12,9 @@ import type { Notices } from "./notices";
 import { pinnedWith } from "./pinning";
 import type { Reveals } from "./reveals";
 
+/** How many characters of a name a notice quotes: a name can be long, and a notice is read at a glance. */
+const NOTICE_NAME = 24;
+
 const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
 
 /** What a person was doing when an intent of each kind was made, for a notice that says it could not be done. */
@@ -94,6 +97,39 @@ export class Editor {
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} as an instrument`, { type: "addInstrument", plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "instrument" && !before.has(node.id));
     return this.#shown(added?.at(-1)?.id);
+  }
+
+  /**
+   * Add a group, a submix bus, at the end of the session, and put the lanes `members` (each the node of a lane) in it at once, whatever group
+   * they were in; none makes an empty one. Resolves with the id of the group it made, or with null if it was refused (the page says why). As for
+   * `addModulator`: the node is the last group the session did not have before.
+   */
+  async addGroup(members: readonly NodeId[] = []): Promise<NodeId | null> {
+    const before = new Set(this.#graph?.nodes.map((node) => node.id));
+    const what = members.length === 0 ? DOING.addGroup : `put ${members.map((member) => this.#name(member)).join(", ")} in a new group`;
+    if (!(await this.#attempt(what, { type: "addGroup", members: [...members] }))) return null;
+    const added = this.#graph?.nodes.filter((node) => node.kind === "group" && !before.has(node.id));
+    return this.#shown(added?.at(-1)?.id);
+  }
+
+  /**
+   * Put the lane `node` in the group `group`, or, for null, take it out of its group. The group it leaves lets go of it: its cables to the
+   * lane go, and what they drove has the value that was set. True if it was done (the page says why if it was not).
+   */
+  setLaneGroup(node: NodeId, group: NodeId | null): Promise<boolean> {
+    const what = group === null ? `take ${this.#name(node)} out of its group` : `put ${this.#name(node)} in ${this.#name(group)}`;
+    return this.#attempt(what, { type: "setLaneGroup", node, group });
+  }
+
+  /**
+   * Call the group `node` `name`: the spaces round it are not part of it, and a name of nothing gives the group its default name back ("Group" and
+   * its number). True if it was done (the page says why if it was not).
+   */
+  renameGroup(node: NodeId, name: string): Promise<boolean> {
+    // (Counted as the characters they are, as the server counts: a character is not always one unit of a string.)
+    const characters = Array.from(name);
+    const shown = characters.length > NOTICE_NAME ? `${characters.slice(0, NOTICE_NAME).join("")}…` : name;
+    return this.#attempt(`give ${this.#name(node)} the name ${JSON.stringify(shown)}`, { type: "renameGroup", node, name });
   }
 
   /**

@@ -3023,6 +3023,19 @@ type = "midi"
         (engine, Controller::new(load(testutil::LANES_IN_GROUPS).model, handles, None))
     }
 
+    /// `LANES_IN_GROUPS` with one more modulator in the first group: an envelope whose cable drives the depth of the group LFO's cable to its
+    /// second member's pan, so that a lane that leaves the group takes with it a cable that no plugin or modulator of the lane is the end of.
+    fn groups_scene() -> (StubEngine, Controller) {
+        let session = testutil::LANES_IN_GROUPS.replacen(
+            "\n[[group]]\n[[group.modulator]]\nrate = 2.0\n",
+            "\n[[group.modulator]]\ntype = \"envelope\"\n[[group.modulator.target]]\nmod_depth = [0, 1]\ndepth = 0.5\n\n[[group]]\n[[group.modulator]]\nrate = 2.0\n",
+            1,
+        );
+        assert_ne!(session, testutil::LANES_IN_GROUPS, "the envelope is in the session");
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(&session).model, handles, None))
+    }
+
     fn lane_node(ctl: &Controller, inst: usize) -> NodeId {
         ctl.model.instruments[inst].node
     }
@@ -3201,6 +3214,145 @@ type = "midi"
         assert!(rename(&mut ctl, group, &"x".repeat(64)).is_ok());
         assert!(rename(&mut ctl, group, &"å".repeat(64)).is_ok());
         assert!(rename(&mut ctl, group, &"å".repeat(65)).is_err());
+    }
+
+    /// What a session comes to, for the fixture of what the intents of groups do: the nodes (their id, their parent and their name), the
+    /// audio path, the modulation cables, and the two lists of the layout of the telemetry (without its fingerprint), each entry as a
+    /// line of text the web client's tests make of its own copy by the same rules (`web/src/client/groups.test.ts`).
+    fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
+        use serde_json::Value;
+        let wire: Value = serde_json::from_str(&serde_json::to_string(snapshot).unwrap()).unwrap();
+        let text = |value: &Value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+        // A port: its kind, then its index or the cable it is about.
+        let port = |port: &Value| {
+            let index = port.get("index").map(|i| i.to_string()).unwrap_or_default();
+            let edge = port.get("edge").map(|e| format!("#{e}")).unwrap_or_default();
+            format!("{}{index}{edge}", text(&port["type"]))
+        };
+        let list = |values: &Value| values.as_array().unwrap().clone();
+        let nodes: Vec<String> = list(&wire["graph"]["nodes"])
+            .iter()
+            .map(|n| format!("{} {} {}", n["id"], if n["parent"].is_null() { "-".to_string() } else { n["parent"].to_string() }, text(&n["name"])))
+            .collect();
+        let edges = list(&wire["graph"]["edges"]);
+        let audio: Vec<String> = edges
+            .iter()
+            .filter(|e| text(&e["kind"]) != "modulation")
+            .map(|e| format!("{}>{} {}", e["from"]["node"], e["to"]["node"], text(&e["kind"])))
+            .collect();
+        let cables: Vec<String> = edges
+            .iter()
+            .filter(|e| text(&e["kind"]) == "modulation")
+            .map(|e| format!("#{} {}>{} {} @{}", e["id"], e["from"]["node"], e["to"]["node"], port(&e["to"]["port"]), e["amount"]))
+            .collect();
+        let slots = |entries: &Value| -> Vec<String> {
+            list(entries).iter().map(|e| format!("{} {} {} {}", e["slot"], e["node"], port(&e["port"]), text(&e["kind"]))).collect()
+        };
+        serde_json::json!({
+            "nodes": nodes,
+            "audio": audio,
+            "cables": cables,
+            "meters": slots(&wire["telemetry"]["meters"]),
+            "modulation": slots(&wire["telemetry"]["modulation"]),
+        })
+    }
+
+    /// The session of `groups_scene()` and what the controller makes of the intents that add a group, put a lane in one and name one,
+    /// as the web client's tests read it (`web/src/client/fixtures/groups.json`): they pin the mock engine's to the controller's, intent by
+    /// intent. One that is taken gives what the session comes to (`shape_of`; for a name, the name the group has), one that is refused the
+    /// controller's words. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_the_intents_of_groups_come_to_is_current() {
+        let (_engine, ctl) = groups_scene();
+        let before = ctl.snapshot();
+        let lanes: Vec<NodeId> = (0..4).map(|i| lane_node(&ctl, i)).collect();
+        let (g0, g1) = (group_node(&ctl, 0), group_node(&ctl, 1));
+        let effect = ctl.model.instruments[3].effects[0].node;
+        let lane_modulator = ctl.model.instruments[1].modulators[0].node;
+        let ghost = NodeId(9_999);
+
+        let mut intents: Vec<Intent> = Vec::new();
+        // A group added: empty, with each lane, with lanes that are in a group, with one twice, and with what is no lane.
+        for members in [vec![], vec![lanes[0]], vec![lanes[1]], vec![lanes[3]], vec![lanes[0], lanes[3]], vec![lanes[1], lanes[2]], vec![lanes[2], lanes[2]]]
+            .into_iter()
+            .chain([vec![ghost], vec![lanes[1], ghost], vec![g0], vec![effect], vec![NodeId::MASTER], vec![lanes[0], g0]])
+        {
+            intents.push(Intent::AddGroup { members });
+        }
+        // Each lane in each group and in none, then what is no lane and what is no group.
+        for lane in &lanes {
+            for group in [None, Some(g0), Some(g1)] {
+                intents.push(Intent::SetLaneGroup { node: *lane, group });
+            }
+        }
+        for node in [g0, effect, lane_modulator, NodeId::MASTER, ghost] {
+            intents.push(Intent::SetLaneGroup { node, group: Some(g1) });
+        }
+        for group in [lanes[0], effect, NodeId::MASTER, ghost] {
+            intents.push(Intent::SetLaneGroup { node: lanes[1], group: Some(group) });
+        }
+        // Names: good ones, ones with spaces round them, none, ones at the limit and one past it (the characters, not the bytes), and ones
+        // with control characters; for each group, then what is no group.
+        let long = |c: &str, n: usize| c.repeat(n);
+        let names = [
+            "Strings".to_string(),
+            "  Pad two  ".to_string(),
+            String::new(),
+            "   ".to_string(),
+            long("x", 64),
+            long("x", 65),
+            long("å", 64),
+            long("å", 65),
+            long("😀", 64),
+            long("😀", 65),
+            "two\nlines".to_string(),
+            "tab\there".to_string(),
+            "\u{7}".to_string(),
+            "\u{85}Next line\u{85}".to_string(),
+        ];
+        for group in [g0, g1] {
+            for name in &names {
+                intents.push(Intent::RenameGroup { node: group, name: name.clone() });
+            }
+        }
+        for node in [lanes[0], effect, NodeId::MASTER, ghost] {
+            intents.push(Intent::RenameGroup { node, name: "Strings".to_string() });
+        }
+
+        let mut rows = Vec::new();
+        for intent in intents {
+            let (_engine, mut fresh) = groups_scene();
+            let row = match fresh.apply(intent.clone()) {
+                Err(error) => serde_json::json!({ "intent": intent, "error": error.to_string() }),
+                Ok(applied) => match applied.events.as_slice() {
+                    [Event::GroupRenamed { name, .. }] => serde_json::json!({ "intent": intent, "name": name }),
+                    [] => {
+                        assert!(applied.restructured, "{intent:?}");
+                        serde_json::json!({ "intent": intent, "after": shape_of(&fresh.snapshot()) })
+                    }
+                    other => panic!("{intent:?}: {other:?}"),
+                },
+            };
+            rows.push(row);
+        }
+        let wire = serde_json::to_string(&before).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/groups.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the intents of groups come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 
     // -- AddEffect --
