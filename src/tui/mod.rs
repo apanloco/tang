@@ -768,33 +768,41 @@ impl State {
         // Determine which instrument to operate on from current selection.
         let inst = self.selected_inst().unwrap_or(0);
 
-        // Load the real plugin, and put it where it goes. (An effect that cannot be added, because it will
-        // not load or its outputs are not the chain's, leaves the session as it was: the controller says why.)
+        // Load the real plugin, and put it where it goes: the intents that a browser asks for too, so that an effect that is
+        // added is a step of the history. (An effect that cannot be added, because it will not load or its outputs are not
+        // the chain's, leaves the session as it was: the controller says why.)
         let source = entry.id.clone();
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
-        match sel.mode {
+        let (intent, refusal) = match sel.mode {
             SelectorMode::Instrument => {
-                if let Err(e) = self.ctl.put_instrument(inst, &source) {
-                    log::error!("Cannot put '{source}' in the lane: {e}");
-                    return;
-                }
+                let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
+                (Intent::ReplaceInstrument { node: lane.node, plugin: source.clone() }, format!("Cannot put '{source}' in the lane"))
             }
             SelectorMode::Effect => {
-                if let Err(e) = self.ctl.add_effect(inst, &source) {
-                    log::error!("Cannot add '{source}': {e}");
-                    return;
-                }
+                let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
+                (Intent::AddEffect { parent: lane.node, plugin: source.clone() }, format!("Cannot add '{source}'"))
             }
             SelectorMode::GroupEffect(group) => {
-                if let Err(e) = self.ctl.add_bus_effect(group, &source) {
-                    log::error!("Cannot add '{source}' to the bus: {e}");
-                    return;
-                }
+                let Some(bus) = self.ctl.model.groups.get(group) else { return };
+                (Intent::AddEffect { parent: bus.node, plugin: source.clone() }, format!("Cannot add '{source}' to the bus"))
             }
+        };
+        if let Err(e) = self.ctl.apply(intent) {
+            log::error!("{refusal}: {e}");
+            return;
         }
 
-        self.ctl.dirty = true;
         self.rebuild_tree();
+    }
+
+    /// Take a node out, by the intent that a browser's "x" asks for: nothing puts it back yet, so the history is forgotten. (A
+    /// session keeps a lane: the last one is refused.)
+    fn remove_node(&mut self, node: Option<NodeId>) {
+        let Some(node) = node else { return };
+        match self.ctl.apply(Intent::RemoveNode { node }) {
+            Ok(_) => self.rebuild_tree(),
+            Err(e) => log::warn!("Cannot take the node out: {e}"),
+        }
     }
 
     /// Get the instrument index for the currently selected tree entry.
@@ -2632,11 +2640,11 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 let addr = s.tree_entries[sel].address;
+                // (A node is taken out by the intent that a browser's "x" asks for too.)
                 match addr {
                     TreeAddress::Effect { inst, index } => {
-                        s.ctl.remove_effect(inst, index);
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)).map(|fx| fx.node);
+                        s.remove_node(node);
                     }
                     TreeAddress::Instrument(inst) => {
                         let has_plugin =
@@ -2645,10 +2653,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             s.ctl.clear_instrument(inst);
                             s.ctl.dirty = true;
                             s.rebuild_tree();
-                        } else if s.ctl.remove_lane(inst) {
-                            // (A session keeps a lane: the last one is not taken out.)
-                            s.ctl.dirty = true;
-                            s.rebuild_tree();
+                        } else {
+                            let node = s.ctl.model.instruments.get(inst).map(|lane| lane.node);
+                            s.remove_node(node);
                         }
                     }
                     TreeAddress::Pattern(inst) => {
@@ -2660,26 +2667,22 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.rebuild_tree();
                     }
                     TreeAddress::Modulator { inst, index } => {
-                        s.ctl.remove_modulator(ModulatorLocation::Lane(inst), index);
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.modulators.get(index)).map(|m| m.node);
+                        s.remove_node(node);
                     }
                     TreeAddress::GroupEffect { group, index } => {
-                        s.ctl.remove_bus_effect(group, index);
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.groups.get(group).and_then(|bus| bus.effects.get(index)).map(|fx| fx.node);
+                        s.remove_node(node);
                     }
                     TreeAddress::GroupModulator { group, index } => {
-                        s.ctl.remove_modulator(ModulatorLocation::Group(group), index);
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.groups.get(group).and_then(|bus| bus.modulators.get(index)).map(|m| m.node);
+                        s.remove_node(node);
                     }
                     TreeAddress::Group(group) => {
                         // Delete the group: members become ungrouped, higher
                         // group indices shift down.
-                        s.ctl.remove_group(group);
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.groups.get(group).map(|bus| bus.node);
+                        s.remove_node(node);
                     }
                 }
             }

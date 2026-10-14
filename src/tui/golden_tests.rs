@@ -4541,6 +4541,78 @@ mod undo_and_redo {
     }
 
     #[test]
+    fn an_effect_added_from_the_selector_is_a_step_that_ctrl_z_takes_out_and_ctrl_y_puts_back() {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        h.press(KeyCode::Char('a')).type_chars("reverb").press(KeyCode::Enter);
+        assert_eq!(h.commands(), ["InsertEffect inst=0 index=0 plugin=Reverb mix=0.500"]);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Reverb"));
+        ctrl_z(&mut h);
+        assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+        assert!(h.tree().iter().all(|line| !line.contains("fx Reverb")), "{:#?}", h.tree());
+        assert!(h.s.ctl.model.instruments[0].effects.is_empty());
+        ctrl_y(&mut h);
+        assert_eq!(h.commands(), ["InsertEffect inst=0 index=0 plugin=Reverb mix=0.500"]);
+        assert!(h.tree().iter().any(|line| line.contains("fx Reverb")), "{:#?}", h.tree());
+    }
+
+    #[test]
+    fn an_effect_on_a_bus_added_from_the_selector_is_a_step_too() {
+        let mut h = Harness::new(scene_group());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        h.goto(TreeAddress::Group(0));
+        let buses = h.s.ctl.model.groups[0].effects.len();
+        h.press(KeyCode::Char('a')).type_chars("filter").press(KeyCode::Enter);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Filter"));
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(h.commands(), [format!("RemoveGroupEffect group=0 index={buses}")]);
+        assert_eq!(h.s.ctl.model.groups[0].effects.len(), buses);
+        ctrl_y(&mut h);
+        assert_eq!(h.commands(), [format!("InsertGroupEffect group=0 index={buses} plugin=Filter mix=1.000")]);
+    }
+
+    #[test]
+    fn an_effect_that_cannot_be_added_leaves_what_was_done_before_to_be_undone() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.press(KeyCode::Enter).press(KeyCode::Left);
+        catalog_with_a_plugin_that_has_gone(&mut h);
+        h.press(KeyCode::Esc).goto(TreeAddress::Group(0));
+        h.press(KeyCode::Char('a')).type_chars("vanish").press(KeyCode::Enter);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("set cutoff"), "no step for what was refused, and nothing forgotten");
+    }
+
+    #[test]
+    fn d_takes_a_node_out_and_forgets_the_history_as_the_browsers_remove_does() {
+        use crate::app::history::HistoryState;
+        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one.
+        let cases = [
+            (scene_two_effects().to_string(), TreeAddress::Effect { inst: 0, index: 0 }, "an effect"),
+            (scene_two_effects().to_string(), TreeAddress::Modulator { inst: 0, index: 0 }, "a modulator"),
+            (scene_bus_pair().to_string(), TreeAddress::GroupEffect { group: 0, index: 0 }, "a bus effect"),
+            (scene_bus_pair().to_string(), TreeAddress::GroupModulator { group: 0, index: 0 }, "a group modulator"),
+            (scene_bus_pair().to_string(), TreeAddress::Group(0), "a group"),
+            (scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied"),
+        ];
+        for (scene, address, what) in cases {
+            let mut h = Harness::new(scene);
+            h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            assert!(h.s.ctl.history_state().undo.is_some(), "{what}: there is something to undo");
+            h.goto(address).press(KeyCode::Char('d'));
+            assert_eq!(h.s.ctl.history_state(), HistoryState { undo: None, redo: None }, "{what}");
+        }
+        // The lane that was emptied is taken out by the next one.
+        let mut h = Harness::new(scene_group());
+        h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('d'));
+        let lanes = h.s.ctl.model.instruments.len();
+        h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('d'));
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes - 1);
+        assert_eq!(h.s.ctl.history_state(), HistoryState { undo: None, redo: None }, "a lane");
+    }
+
+    #[test]
     fn ctrl_z_is_not_heard_while_a_value_is_being_typed_and_does_not_undo_what_was_not_set() {
         let mut h = Harness::new(scene_bus_pair());
         h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });

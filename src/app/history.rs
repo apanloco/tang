@@ -1529,7 +1529,7 @@ rate = 3.0
         clock.advance(Duration::from_secs(5));
         ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
         let added = ctl.model.instruments[0].effects.last().unwrap().node;
-        // The TUI takes it out by the controller's method, which is no step of the history.
+        // Something takes it out by the controller's method and not by the intent, which leaves no step of the history.
         let index = ctl.model.instruments[0].effects.len() - 1;
         assert!(ctl.remove_effect(0, index));
         let refused = ctl.undo().unwrap_err();
@@ -1616,6 +1616,19 @@ rate = 3.0
         set_detune(&mut ctl, 1.0);
         ctl.put_instrument(0, "builtin:osc").unwrap();
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+    }
+
+    #[test]
+    fn emptying_a_lane_of_its_instrument_forgets_the_history_as_putting_another_in_does_and_a_lane_with_none_changes_nothing() {
+        // (The TUI's `d` calls the controller's method: there is no intent for it, and what was set on the plugin is addressed by its parameters' places.)
+        let (_engine, mut ctl, _clock) = controller();
+        set_detune(&mut ctl, 1.0);
+        assert!(ctl.clear_instrument(0));
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let before = ctl.history_state();
+        assert!(!ctl.clear_instrument(0), "the lane has none now");
+        assert_eq!(ctl.history_state(), before, "and the history is as it was");
     }
 
     #[test]

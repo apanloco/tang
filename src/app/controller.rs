@@ -426,6 +426,9 @@ impl Controller {
         if lane.instrument.is_none() {
             return false;
         }
+        // (No intent asks for this, and nothing puts the plugin back: what was set on it is addressed by its parameters' places,
+        // which another plugin in the lane would have.)
+        self.history.clear();
         // The cables that drive the plugin's parameters go first: there is nothing for them to drive.
         for edge in self.model.cables_into_plugin(lane.node) {
             // (One that an earlier one took with it is not there any more.)
