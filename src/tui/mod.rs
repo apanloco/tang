@@ -2348,23 +2348,21 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // plugin selector to fill it. The lane defaults to builtin:osc, so it
         // makes sound even if the selector is dismissed without a pick. Set its
         // key range afterwards with 'R'. This is how you build a keyboard split.
+        // (The lane is made by the intent a browser's "+ Instrument" asks for, a step
+        // of the history: the catalog has to name the oscillator, as the scan has long
+        // before anyone presses a key; if it does not, there is no lane to fill.)
         KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
-            let new_idx = s.ctl.add_lane();
-            // Default the new lane to builtin:osc so it isn't silent if the
-            // selector is cancelled.
-            if let Some((loaded, slot)) = s.ctl.load_plugin("builtin:osc") {
-                s.ctl.set_instrument(new_idx, loaded, slot);
+            if s.apply(Intent::AddInstrument { plugin: "builtin:osc".to_string() }).is_some() {
+                // Move the cursor onto the new lane so the selector fills it.
+                let new_idx = s.ctl.model.instruments.len().saturating_sub(1);
+                if let Some(pos) = s.tree_entries.iter().position(
+                    |e| matches!(e.address, TreeAddress::Instrument(i) if i == new_idx),
+                ) {
+                    s.chain_state.selected = pos;
+                    s.sync_param_state();
+                }
+                s.open_selector(SelectorMode::Instrument);
             }
-            s.ctl.dirty = true;
-            s.rebuild_tree();
-            // Move the cursor onto the new lane so the selector fills it.
-            if let Some(pos) = s.tree_entries.iter().position(
-                |e| matches!(e.address, TreeAddress::Instrument(i) if i == new_idx),
-            ) {
-                s.chain_state.selected = pos;
-                s.sync_param_state();
-            }
-            s.open_selector(SelectorMode::Instrument);
         }
 
         // 'R' — set the key range of the selected instrument, or rename the

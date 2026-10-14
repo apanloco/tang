@@ -1243,6 +1243,7 @@ fn adding_a_group_effect_from_the_selector() {
 #[test]
 fn n_adds_a_full_range_oscillator_lane_and_opens_the_instrument_selector() {
     let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     let lanes = h.s.ctl.model.instruments.len();
     h.press(KeyCode::Char('n'));
 
@@ -1271,6 +1272,7 @@ fn n_adds_a_full_range_oscillator_lane_and_opens_the_instrument_selector() {
 #[test]
 fn cancelling_the_selector_after_n_leaves_the_oscillator() {
     let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     h.press(KeyCode::Char('n'));
     h.commands();
     h.press(KeyCode::Esc);
@@ -2919,6 +2921,7 @@ fn an_added_effect_gets_a_new_id_and_the_others_keep_theirs() {
 #[test]
 fn a_new_lane_shares_one_id_between_itself_and_its_oscillator() {
     let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     let before = all_nodes(&h);
     h.press(KeyCode::Char('n'));
     let lane = &h.s.ctl.model.instruments[2];
@@ -2926,7 +2929,6 @@ fn a_new_lane_shares_one_id_between_itself_and_its_oscillator() {
     assert_eq!(lane.instrument.as_ref().unwrap().node, lane.node);
 
     // Choosing another instrument for it keeps the lane's node.
-    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     h.s.selector = None;
     h.goto(TreeAddress::Instrument(2));
     h.press(KeyCode::Char('i')).type_chars("oscillator").press(KeyCode::Enter);
@@ -3486,6 +3488,8 @@ mod with_web {
     #[test]
     fn both_front_ends_share_one_controller() {
         let mut h = Harness::new(TRACER);
+        // (The lane that `n` adds is by an intent, which loads from the catalog.)
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
         // The TUI's cursor is on the filter.
         h.goto(TreeAddress::Effect { inst: 0, index: 0 });
 
@@ -3536,12 +3540,12 @@ mod with_web {
                 assert_eq!(told["snapshot"]["meta"]["dirty"], true);
                 let seen = told["snapshot"]["graph"]["nodes"].as_array().unwrap().len();
 
-                // And adds a lane with `n` (and leaves the oscillator it comes with).
+                // And adds a lane with `n` (and leaves the oscillator it comes with): an intent, told as a snapshot at the revision after it.
                 browser.keys.send(key(KeyCode::Char('n'))).unwrap();
                 browser.keys.send(key(KeyCode::Esc)).unwrap();
                 let told = said(&mut client).await;
                 assert_eq!(told["type"], "snapshot", "{told}");
-                assert_eq!(told["snapshot"]["rev"], 4);
+                assert_eq!(told["snapshot"]["rev"], 5);
                 assert_eq!(told["snapshot"]["graph"]["nodes"].as_array().unwrap().len(), seen + 1, "a lane");
                 // (What was told before is in it: the cutoff the TUI set.)
                 assert_eq!(node(&told, "Filter")["plugin"]["params"][0]["value"].as_f64().unwrap(), value);
@@ -3554,7 +3558,7 @@ mod with_web {
                 assert!(cutoff < 0.9 && cutoff > 0.8, "{cutoff}");
                 assert_eq!(h.s.ctl.global_bpm, 90.0);
                 assert_eq!(h.s.ctl.model.instruments.len(), 2, "the lane");
-                assert_eq!(h.s.ctl.rev, 4, "an intent from the browser, one from the TUI, and a snapshot for each of the TUI's other two changes");
+                assert_eq!(h.s.ctl.rev, 5, "an intent from the browser, two from the TUI (the lane is told with a snapshot after it), and a snapshot for the tempo");
                 let bar = tab_bar(h);
                 assert!(bar.contains(&format!("web {} (1)", web.status().address)), "the browser is counted: {bar}");
             },
@@ -4611,6 +4615,32 @@ mod undo_and_redo {
         h.press(KeyCode::Esc).goto(TreeAddress::Group(0));
         h.press(KeyCode::Char('a')).type_chars("vanish").press(KeyCode::Enter);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("set cutoff"), "no step for what was refused, and nothing forgotten");
+    }
+
+    #[test]
+    fn n_adds_a_lane_that_ctrl_z_takes_out_and_ctrl_y_puts_back() {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        let lanes = h.s.ctl.model.instruments.len();
+        h.press(KeyCode::Char('n')).press(KeyCode::Esc); // (the selector is dismissed, and the lane stays with its oscillator)
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Oscillator as an instrument"));
+        ctrl_z(&mut h);
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes);
+        assert!(h.tree().iter().filter(|line| line.contains("♪ Oscillator")).count() <= lanes, "{:#?}", h.tree());
+        ctrl_y(&mut h);
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
+        assert!(h.s.ctl.model.instruments[lanes].instrument.is_some(), "with its oscillator");
+    }
+
+    #[test]
+    fn n_with_nothing_in_the_catalog_that_names_the_oscillator_adds_no_lane() {
+        let mut h = Harness::new(scene_split());
+        let lanes = h.s.ctl.model.instruments.len();
+        h.press(KeyCode::Char('n'));
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes, "a lane with nothing in it would make no sound: the catalog has to name what goes in");
+        assert!(h.s.selector.is_none());
+        assert_eq!(h.s.ctl.history_state().undo, None);
     }
 
     #[test]

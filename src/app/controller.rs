@@ -297,7 +297,10 @@ impl Controller {
     /// Load `source` (a plugin path or id) with the model slot that describes it,
     /// every parameter at the value the plugin reports, in a node of its own. The
     /// plugin is for the audio thread; None, after logging why, if it does not load.
-    /// (An instrument takes its lane's node instead, in `set_instrument`.)
+    /// (An instrument takes its lane's node instead, in `set_instrument`. Only the tests
+    /// load a plugin like this: the front-ends ask for one by an intent, which loads
+    /// from the catalog.)
+    #[cfg(test)]
     pub fn load_plugin(&mut self, source: &str) -> Option<(Box<dyn Plugin>, PluginSlot)> {
         let mut loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
             Ok(p) => p,
