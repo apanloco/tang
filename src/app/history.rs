@@ -81,6 +81,15 @@ pub struct HistoryState {
 pub struct History {
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// How many times the history has been forgotten: a mark from before is of a history that is gone.
+    clears: u64,
+}
+
+/// Where the history was: what `Controller::join_steps_since` joins the steps from.
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryMark {
+    len: usize,
+    clears: u64,
 }
 
 impl History {
@@ -127,22 +136,23 @@ impl History {
         let had = !self.undo.is_empty() || !self.redo.is_empty();
         self.undo.clear();
         self.redo.clear();
+        self.clears += 1;
         had
     }
 
-    /// How many steps can be undone.
-    pub fn undo_len(&self) -> usize {
-        self.undo.len()
+    /// Where the history is now.
+    pub fn mark(&self) -> HistoryMark {
+        HistoryMark { len: self.undo.len(), clears: self.clears }
     }
 
-    /// The steps that were recorded after the first `mark` become one step, `label`: it goes back through them in the reverse order and does
-    /// them again in the order they were done, the nodes and the cables that they make under the ids they made them under. Nothing is joined
-    /// unless there are two or more of them.
-    pub fn join_above(&mut self, mark: usize, label: &str) {
-        if self.undo.len() < mark + 2 {
+    /// The steps that were recorded after `mark` become one step, `label`: it goes back through them in the reverse order and does them again
+    /// in the order they were done, the nodes and the cables that they make under the ids they made them under. Nothing is joined unless there
+    /// are two or more of them, and not at all if the history was forgotten since: the mark is of a history that is gone.
+    pub fn join_above(&mut self, mark: HistoryMark, label: &str) {
+        if self.clears != mark.clears || self.undo.len() < mark.len + 2 {
             return;
         }
-        let steps = self.undo.split_off(mark);
+        let steps = self.undo.split_off(mark.len);
         let Some(last) = steps.last().map(|step| step.last) else { return };
         let mut joined = Step { label: label.to_string(), undo: Vec::new(), redo: Vec::new(), key: None, last, undo_made: Made::default(), redo_made: Made::default() };
         for step in &steps {
@@ -194,16 +204,16 @@ impl Controller {
         self.history.state()
     }
 
-    /// Where the history is now, for `join_steps_since`: how many steps can be undone.
-    pub fn history_mark(&self) -> usize {
-        self.history.undo_len()
+    /// Where the history is now, for `join_steps_since`.
+    pub fn history_mark(&self) -> HistoryMark {
+        self.history.mark()
     }
 
     /// Make one step, `label`, of the steps that were recorded since `mark`, so that one thing a person asks for that takes several intents (a new
     /// modulator and a cable to it) is one thing to undo: it goes back through them in the reverse order and does them again in the order they were
     /// done. A step that was merged into one before the mark stays in that one, and what cannot be undone has forgotten the history as it does
     /// anywhere (there is nothing to join then). One step, or none, is left as it is.
-    pub fn join_steps_since(&mut self, mark: usize, label: &str) {
+    pub fn join_steps_since(&mut self, mark: HistoryMark, label: &str) {
         self.history.join_above(mark, label);
     }
 
@@ -1742,6 +1752,25 @@ rate = 3.0
             ctl.apply(Intent::RemoveEdge { edge }).unwrap();
         });
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "the barrier forgot what came before it, and what was done as one step with it");
+    }
+
+    #[test]
+    fn a_barrier_in_the_middle_of_what_is_done_as_one_step_leaves_the_steps_after_it_as_they_are() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        as_one_step(&mut ctl, "joined", |ctl| {
+            let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+            ctl.apply(Intent::RemoveEdge { edge }).unwrap(); // (forgets the step before it, and the mark with it)
+            ctl.apply(Intent::SetLocked { locked: false }).unwrap();
+            ctl.apply(Intent::SetScale { scale: "D dorian".to_string() }).unwrap();
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        });
+        // The three steps after the barrier are three: the mark was of a history that is gone, and joining by it would join the last two.
+        assert_eq!(undo_label(&ctl).as_deref(), Some("lock the piano to its scale"));
+        ctl.undo().unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set the scale"));
+        ctl.undo().unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("let every note of the piano through"));
     }
 
     #[test]
