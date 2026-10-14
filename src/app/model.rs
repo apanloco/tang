@@ -726,6 +726,37 @@ impl SessionModel {
         Some(removed)
     }
 
+    /// Put a plugin into lane `inst`'s chain at `index` (the last place, for one past the end): what `remove_effect` took out, put back, the way the audio
+    /// thread's `InsertEffect` does it. The targets on the effects at that place and after it, the lane's own modulators' and, if the lane is a member of a
+    /// group, the group's, are told the slot they have now, before it goes in, so that they keep pointing at the same plugins. The place it went to; `None`,
+    /// and nothing changed, if there is no such lane.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
+    pub fn insert_effect_at(&mut self, inst: usize, index: usize, effect: PluginSlot) -> Option<usize> {
+        let member_of = lane_member_ordinal(&self.instruments, inst);
+        let lane = self.instruments.get_mut(inst)?;
+        let place = index.min(lane.effects.len());
+        shift_slots_after_insert(&mut lane.modulators, place);
+        lane.effects.insert(place, effect);
+        if let Some((group, member)) = member_of {
+            if let Some(g) = self.groups.get_mut(group) {
+                shift_member_slots_after_insert(&mut g.modulators, member, place);
+            }
+        }
+        Some(place)
+    }
+
+    /// Put a plugin into group `group`'s bus at `index` (the last place, for one past the end): what `remove_bus_effect` took out, put back, the way the
+    /// audio thread's `InsertGroupEffect` does it: the group's cables to the bus effects at that place and after it are told the place they have now, before
+    /// it goes in. The place it went to; `None`, and nothing changed, if there is no such group.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
+    pub fn insert_bus_effect_at(&mut self, group: usize, index: usize, effect: PluginSlot) -> Option<usize> {
+        let bus = self.groups.get_mut(group)?;
+        let place = index.min(bus.effects.len());
+        shift_group_bus_after_insert(&mut bus.modulators, place);
+        bus.effects.insert(place, effect);
+        Some(place)
+    }
+
     /// The cables of the group that lane `inst` is a member of that go to the lane: to its plugins, and to
     /// its modulators' settings and the depths of their cables. (The lane's own modulators' cables, which go
     /// with it, are not these.) None if the lane is in no group.
@@ -1480,6 +1511,22 @@ pub fn fixup_cross_mod_after_remove(modulators: &mut [ModulatorSlot], removed_in
     }
 }
 
+/// Mirror of the audio thread's `shift_group_bus_after_insert`: after a bus effect is put in at `at`, bump the `GroupBus` targets that pointed at that
+/// effect or a later one, so they keep pointing at the same effects (the inverse of `fixup_group_bus_after_remove`).
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
+pub fn shift_group_bus_after_insert(modulators: &mut [ModulatorSlot], at: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
+                if *effect_index >= at {
+                    *effect_index += 1;
+                }
+            }
+        }
+    }
+}
+
 /// Mirror of the audio-thread `fixup_group_bus_after_remove` for the session model:
 /// after a group bus effect at `removed` is deleted, drop GroupBus targets on
 /// it and shift higher bus indices down.
@@ -1699,6 +1746,24 @@ pub fn fixup_slots_after_remove(modulators: &mut [ModulatorSlot], removed: usize
     }
 }
 
+/// Session-model mirror of the audio thread's `shift_slots_after_insert`: after an effect is put in a lane's chain at effect index `at`, bump the
+/// plugin-param targets at the slots of that effect and the ones after it (a slot is an effect index and one more), so every target still points at the same
+/// plugin (the inverse of `fixup_slots_after_remove`). Slot 0, the instrument, never moves.
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
+pub fn shift_slots_after_insert(modulators: &mut [ModulatorSlot], at: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::PluginParam { slot, .. } = &mut t.kind {
+                if *slot > at {
+                    *slot += 1;
+                    t.slot = *slot;
+                }
+            }
+        }
+    }
+}
+
 /// Session-model mirror of `remap_slots_after_reorder`: after the effect at
 /// `from` moves to `to`, remap plugin-param target slots through the same
 /// permutation so they follow their plugins.
@@ -1733,6 +1798,24 @@ pub fn fixup_member_slots_after_remove(modulators: &mut [ModulatorSlot], member:
             if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
                 if *tm == member && *slot > removed_slot {
                     *slot -= 1;
+                    t.slot = *slot;
+                }
+            }
+        }
+    }
+}
+
+/// Session-model mirror of the audio thread's `shift_member_slots_after_insert`: after an effect is put in member `member`'s chain at effect index `at`, bump
+/// that member's group targets at the slots of that effect and the ones after it (the inverse of `fixup_member_slots_after_remove`). Other members' targets
+/// and slot 0, the instrument, never move.
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
+pub fn shift_member_slots_after_insert(modulators: &mut [ModulatorSlot], member: usize, at: usize) {
+    use crate::plugin::chain::ModTargetKind;
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMember { member: tm, slot, .. } = &mut t.kind {
+                if *tm == member && *slot > at {
+                    *slot += 1;
                     t.slot = *slot;
                 }
             }
@@ -2820,6 +2903,158 @@ param = "pan"
         // A cable of another modulator of the member is another's: the group's cables to the first's are where they were.
         assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 2, 0, spare_cable(901)), Some(0));
         assert_eq!(in_the_group(&model), after);
+    }
+
+    // -- Putting an effect back --
+
+    /// What every chain has and what drives it, written out: each lane's effects, group and modulators (with the slots their cables say), then each group's.
+    fn chains_and_cables_of(model: &SessionModel) -> String {
+        let lanes = model.instruments.iter().map(|lane| format!("{:?} | {:?} | {:?}", lane.effects, lane.modulators, lane.group));
+        let groups = model.groups.iter().map(|group| format!("{:?} | {:?}", group.effects, group.modulators));
+        lanes.chain(groups).collect::<Vec<_>>().join("\n")
+    }
+
+    /// The nodes of the effects of the model, a lane's and a bus's, in the order it lists them.
+    fn effect_nodes(model: &SessionModel) -> Vec<NodeId> {
+        model.nodes().filter(|(_, path)| matches!(path, NodePath::Effect { .. } | NodePath::GroupEffect { .. })).map(|(id, _)| id).collect()
+    }
+
+    /// Take the effect in `node` out as the controller does (the cables that drive it first, each with those that drive their depths, and then the
+    /// effect) and put everything back in the reverse order. False, and not put back, if cables that drive each other's depths went.
+    fn effect_out_and_back(model: &mut SessionModel, node: NodeId) -> bool {
+        let mut cables = Vec::new();
+        for edge in model.cables_into_plugin(node) {
+            // (One that an earlier cascade took with it is not there any more.)
+            cables.extend(model.remove_edge(edge).into_iter().flatten());
+        }
+        let path = model.locate(node).unwrap();
+        let effect = match path {
+            NodePath::Effect { inst, index } => model.remove_effect(inst, index).unwrap(),
+            NodePath::GroupEffect { group, index } => model.remove_bus_effect(group, index).unwrap(),
+            _ => panic!("{path:?} is no effect"),
+        };
+        if cables.iter().any(|cable| cable.still_driven) {
+            return false;
+        }
+        match path {
+            NodePath::Effect { inst, index } => assert_eq!(model.insert_effect_at(inst, index, effect), Some(index)),
+            NodePath::GroupEffect { group, index } => assert_eq!(model.insert_bus_effect_at(group, index, effect), Some(index)),
+            _ => unreachable!(),
+        }
+        for cable in cables.into_iter().rev() {
+            assert!(model.insert_target_at(cable.at, cable.mod_index, cable.target_index, cable.slot).is_some());
+        }
+        true
+    }
+
+    #[test]
+    fn every_effect_of_every_session_is_put_back_where_it_was_with_the_cables_that_drove_it_and_the_ones_that_were_told_their_slots() {
+        use crate::app::testutil::{CHAINS, CROSS_MOD_RACKS, GROUPS, LANES_IN_GROUPS};
+        let (mut tried, mut cycles) = (0, 0);
+        for (name, session) in [("LONG_CHAINS", LONG_CHAINS), ("CHAINS", CHAINS), ("GROUPS", GROUPS), ("LANES_IN_GROUPS", LANES_IN_GROUPS), ("CROSS_MOD_RACKS", CROSS_MOD_RACKS)] {
+            let count = effect_nodes(&load(session).model).len();
+            for n in 0..count {
+                // (A session of its own for each: what goes and is not put back would leave the next without it.)
+                let mut model = load(session).model;
+                let (node, before) = (effect_nodes(&model)[n], chains_and_cables_of(&model));
+                if !effect_out_and_back(&mut model, node) {
+                    cycles += 1;
+                    continue;
+                }
+                assert_eq!(chains_and_cables_of(&model), before, "effect {n} of {name} taken out and put back");
+                model.check_ids().unwrap();
+                tried += 1;
+            }
+        }
+        assert!(tried > 20, "{tried} effects is not enough to say much");
+        assert_eq!(cycles, 0);
+    }
+
+    /// An effect to put in, taken from a lane that is not in a group (a spare: its node is the one it had).
+    fn spare_effect(model: &mut SessionModel) -> PluginSlot {
+        model.remove_effect(1, 0).expect("lane 1 has an effect")
+    }
+
+    #[test]
+    fn an_effect_is_put_in_a_lanes_chain_at_its_place_and_the_cables_to_it_and_to_the_effects_after_it_are_told_their_slots() {
+        let mut model = load(LONG_CHAINS).model;
+        // Lane 0 is member 0 of the group: its own modulator has a cable to each effect (slots 1 to 4), and so has the group's (member 0, slots 1 to 4).
+        let own = |model: &SessionModel| model.instruments[0].modulators[0].targets.iter().map(|t| (t.slot, t.kind.clone())).collect::<Vec<_>>();
+        let groups = |model: &SessionModel| -> Vec<(usize, usize)> {
+            model.groups[0].modulators[0].targets.iter().filter_map(|t| match t.kind { K::GroupMember { member, slot, .. } => Some((member, slot)), _ => None }).collect()
+        };
+        let slot_of = |kind: &K| match kind { K::PluginParam { slot, .. } => *slot, _ => usize::MAX };
+        assert_eq!(own(&model).iter().map(|(label, kind)| (*label, slot_of(kind))).collect::<Vec<_>>(), [(1, 1), (2, 2), (3, 3), (4, 4)]);
+        let spare = spare_effect(&mut model);
+        assert_eq!(model.insert_effect_at(0, 1, spare), Some(1));
+        assert_eq!(model.instruments[0].effects.len(), 5);
+        // What drove the first is as it was; what drove the second and the ones after drive the third and the ones after, by the slot the cable says and
+        // the slot its kind says.
+        assert_eq!(own(&model).iter().map(|(label, kind)| (*label, slot_of(kind))).collect::<Vec<_>>(), [(1, 1), (3, 3), (4, 4), (5, 5)]);
+        assert_eq!(groups(&model), [(0, 1), (0, 3), (0, 4), (0, 5)], "the group's cables to the member too");
+    }
+
+    #[test]
+    fn an_effect_that_is_put_in_at_the_end_or_past_it_is_the_last_and_moves_no_cable_and_one_in_a_lane_that_is_not_there_is_not_put_anywhere() {
+        for index in [4, 5, 99] {
+            let mut model = load(LONG_CHAINS).model;
+            let before = chains_and_cables_of(&model);
+            let spare = spare_effect(&mut model);
+            let before_spare = chains_and_cables_of(&model);
+            assert_ne!(before_spare, before, "the spare is out");
+            assert_eq!(model.insert_effect_at(0, index, spare), Some(4), "put at {index}");
+            assert_eq!(model.instruments[0].effects.len(), 5);
+            let cables: Vec<_> = model.instruments[0].modulators[0].targets.iter().map(|t| t.slot).collect();
+            assert_eq!(cables, [1, 2, 3, 4], "put at {index}: nothing moved");
+        }
+        let mut model = load(LONG_CHAINS).model;
+        let spare = spare_effect(&mut model);
+        let before = chains_and_cables_of(&model);
+        assert_eq!(model.insert_effect_at(7, 0, spare), None);
+        assert_eq!(chains_and_cables_of(&model), before);
+    }
+
+    #[test]
+    fn an_effect_that_is_put_in_the_chain_of_a_lane_tells_the_group_only_when_the_lane_is_a_member_and_only_the_cables_to_that_member() {
+        let mut model = load(LONG_CHAINS).model;
+        let group_slots = |model: &SessionModel| -> Vec<(usize, usize)> {
+            model.groups[0].modulators[0].targets.iter().filter_map(|t| match t.kind { K::GroupMember { member, slot, .. } => Some((member, slot)), _ => None }).collect()
+        };
+        assert_eq!(group_slots(&model), [(0, 1), (0, 2), (0, 3), (0, 4)]);
+        // Lane 1 is in no group: what goes into its chain moves nothing of the group's.
+        let spare = spare_effect(&mut model);
+        assert_eq!(model.insert_effect_at(1, 0, spare), Some(0));
+        assert_eq!(group_slots(&model), [(0, 1), (0, 2), (0, 3), (0, 4)]);
+        // A cable to a plugin of another member (the model does not mind that this session has none) is not what member 0's chain moves.
+        let last = model.groups[0].modulators[0].targets.iter().position(|t| matches!(t.kind, K::GroupMember { slot: 4, .. })).unwrap();
+        model.groups[0].modulators[0].targets[last].kind = K::GroupMember { member: 1, slot: 2, param_index: 0 };
+        let spare = model.remove_effect(1, 0).unwrap();
+        assert_eq!(model.insert_effect_at(0, 0, spare), Some(0));
+        assert_eq!(group_slots(&model), [(0, 2), (0, 3), (0, 4), (1, 2)]);
+    }
+
+    #[test]
+    fn an_effect_is_put_in_a_groups_bus_at_its_place_and_the_cables_to_the_bus_effects_from_that_place_on_are_told_their_places() {
+        let mut model = load(LONG_CHAINS).model;
+        let bus = |model: &SessionModel| -> Vec<usize> {
+            model.groups[0].modulators[0].targets.iter().filter_map(|t| match t.kind { K::GroupBus { effect_index, .. } => Some(effect_index), _ => None }).collect()
+        };
+        let members = |model: &SessionModel| -> Vec<usize> {
+            model.groups[0].modulators[0].targets.iter().filter_map(|t| match t.kind { K::GroupMember { slot, .. } => Some(slot), _ => None }).collect()
+        };
+        assert_eq!(bus(&model), [0, 1, 2, 3]);
+        let (members_before, spare) = (members(&model), model.remove_bus_effect(0, 3).unwrap());
+        assert_eq!(bus(&model), [0, 1, 2], "the cable to it went with it");
+        assert_eq!(model.insert_bus_effect_at(0, 1, spare), Some(1));
+        assert_eq!(bus(&model), [0, 2, 3], "what drove the second and the third drives the third and the fourth");
+        assert_eq!(members(&model), members_before, "the cables to the members' plugins are not the bus's");
+        // At the end, past it, and for a group that is not there.
+        let spare = model.remove_bus_effect(0, 0).unwrap();
+        assert_eq!(bus(&model), [1, 2]);
+        assert_eq!(model.insert_bus_effect_at(0, 99, spare), Some(3));
+        assert_eq!(bus(&model), [1, 2], "one that goes in at the end moves nothing");
+        let spare = model.remove_bus_effect(0, 3).unwrap();
+        assert_eq!(model.insert_bus_effect_at(4, 0, spare), None);
     }
 
     // -- Putting a modulator back --
