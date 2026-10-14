@@ -154,6 +154,52 @@ test("an effect that is added is taken out by Undo and put back by Redo, with wh
   expect(Number(/^damping\s*=\s*(\S+)$/m.exec(saved)?.[1])).toBeCloseTo(Number(turned), 5);
 });
 
+test("a cable that is taken out is put back by Undo with the depth it had, and taken out again by Redo, and the saved file has what is done", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  const save = async (): Promise<string> => {
+    await page.getByRole("button", { name: /^Save/ }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+  const depth = page.getByRole("slider", { name: "Depth of LFO → Filter: cutoff" });
+  const remove = page.getByRole("button", { name: "Remove cable LFO → Filter: cutoff" });
+
+  // The cable is turned first, so that what comes back is the cable as it was and not one as a new cable is.
+  await expect(depth).toHaveValue("0.4");
+  await depth.focus();
+  await page.keyboard.press("End");
+  await expect(depth).toHaveValue("1");
+  await expect(undo).toHaveAccessibleName("Undo set the depth of a cable");
+  expect(await save()).toContain('param = "cutoff"');
+
+  // Taken out with its button: it is a step of its own, and the file that is saved then has no cable.
+  await remove.click();
+  await expect(depth).toHaveCount(0);
+  await expect(undo).toHaveAccessibleName("Undo remove a cable");
+  expect(await save()).not.toContain('param = "cutoff"');
+
+  // Put back by Undo: the cable has the depth it had, and what was done before it is the next to be undone.
+  await undo.click();
+  await expect(depth).toHaveValue("1");
+  await expect(undo).toHaveAccessibleName("Undo set the depth of a cable");
+  await expect(redo).toHaveAccessibleName("Redo remove a cable");
+  expect(await save()).toContain('param = "cutoff"');
+
+  // Taken out again by Redo, and put back by the keys; then the depth goes back to where it was before it was turned.
+  await redo.click();
+  await expect(depth).toHaveCount(0);
+  expect(await save()).not.toContain('param = "cutoff"');
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expect(depth).toHaveValue("1");
+  await undo.click();
+  await expect(depth).toHaveValue("0.4");
+  await expect(undo).toBeDisabled();
+});
+
 test("the mock engine in the page has the same buttons and keys, and they do what the program's do", async ({ page }) => {
   await open(page);
   const undo = page.getByRole("button", { name: /^Undo/ });
@@ -181,4 +227,13 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(node(page, "Reverb")).toHaveCount(0);
   await redo.click();
   await expect(node(page, "Reverb")).toBeVisible();
+  // And so is a cable that is taken out.
+  const depth = page.getByRole("slider", { name: "Depth of LFO → Filter: cutoff" });
+  await page.getByRole("button", { name: "Remove cable LFO → Filter: cutoff" }).click();
+  await expect(depth).toHaveCount(0);
+  await expect(undo).toHaveAccessibleName("Undo remove a cable");
+  await undo.click();
+  await expect(depth).toHaveValue("0.4");
+  await redo.click();
+  await expect(depth).toHaveCount(0);
 });

@@ -89,9 +89,10 @@ export type HistoryRow =
  * A session (a group with a bus filter, another with nothing and no name, a lane with a reverb, a filter, an LFO and an envelope with a cable
  * each, and a lane of its own with an LFO) and what the controller makes of scripts of intents and of time going by (a change is a step of its own when a second has gone by
  * since the last of its kind): for each intent the events it made, stamped, whether it changed the structure, what Undo and Redo would do after it,
- * or the words of its refusal. Written by the controller (`the_web_clients_fixture_of_what_a_history_comes_to_is_current`).
+ * or the words of its refusal. Written by the controller (`the_web_clients_fixture_of_what_a_history_comes_to_is_current`). A script that needs
+ * what that session has not has a session of its own (`snapshot`).
  */
-export const historyFixture = history as unknown as { snapshot: Snapshot; scripts: { name: string; rows: HistoryRow[] }[] };
+export const historyFixture = history as unknown as { snapshot: Snapshot; scripts: { name: string; snapshot?: Snapshot; rows: HistoryRow[] }[] };
 
 /** What a session comes to, for the fixture of the group intents: a line of text for each entry of each list. */
 export interface Shape {

@@ -9,12 +9,16 @@
 //!
 //! What is added is taken out by undo and put back by redo **under the ids it had** (`Made`, `NodeIds::reuse`): every step that
 //! names the node or the cable goes on naming it, whatever is undone and redone around it.
+//!
+//! What is taken out is put back by undo from what a `Journal` says was taken, exactly as it was and under its ids (`app::journal`); redo takes it out
+//! again, and what that takes is what the next undo puts back.
 
 use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
 use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField};
+use crate::app::journal::Journal;
 use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
 
@@ -37,10 +41,22 @@ pub enum Key {
     Depth(EdgeId),
 }
 
+/// What a step that took something out holds, to put it back.
+#[derive(Debug)]
+enum Taken {
+    /// The step took nothing out: `undo` is its way back.
+    No,
+    /// What it took out, which undo puts back (`undo` is empty).
+    Held(Journal),
+    /// It was undone, and what it took was put back: redo takes it out again, and holds what that takes.
+    Spent,
+}
+
 /// One thing that was done, and the way back.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Step {
     /// What it was, for a button: "set cutoff".
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by `History::state`, which tells the page what its buttons say"))]
     pub label: String,
     /// The intents that put it back, in the order they are applied.
     pub undo: Vec<Intent>,
@@ -54,17 +70,45 @@ pub struct Step {
     undo_made: Made,
     /// The ids that `redo` makes, in the order it makes them: what was added is added again under the ids it had.
     redo_made: Made,
+    /// What it took out, if it is a removal.
+    taken: Taken,
 }
 
 impl Step {
     /// A step of one change: `undo` puts back what it found, `redo` is the change.
     pub fn new(label: impl Into<String>, undo: Intent, redo: Intent, key: Option<Key>, at: Instant) -> Step {
-        Step { label: label.into(), undo: vec![undo], redo: vec![redo], key, last: at, undo_made: Made::default(), redo_made: Made::default() }
+        Step { label: label.into(), undo: vec![undo], redo: vec![redo], key, last: at, undo_made: Made::default(), redo_made: Made::default(), taken: Taken::No }
     }
 
     /// A step of an add: `redo` is the intent, which made `made` the first time, and `undo` takes it out.
     fn added(label: impl Into<String>, undo: Intent, redo: Intent, made: Made, at: Instant) -> Step {
         Step { redo_made: made, ..Step::new(label, undo, redo, None, at) }
+    }
+
+    /// A step of a removal: `redo` is the intent that took `taken` out, and undo puts it back.
+    fn removed(label: impl Into<String>, redo: Intent, taken: Journal, at: Instant) -> Step {
+        Step { label: label.into(), undo: Vec::new(), redo: vec![redo], key: None, last: at, undo_made: Made::default(), redo_made: Made::default(), taken: Taken::Held(taken) }
+    }
+
+    /// Whether it took something out (which is put back by what was taken, and not by intents).
+    fn is_removal(&self) -> bool {
+        !matches!(self.taken, Taken::No)
+    }
+
+    /// A copy of a step that took nothing out, for a test that needs two of a kind (as nothing the program does makes).
+    #[cfg(test)]
+    fn copy(&self) -> Step {
+        assert!(!self.is_removal(), "what a removal holds is not copied");
+        Step {
+            label: self.label.clone(),
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+            key: self.key,
+            last: self.last,
+            undo_made: self.undo_made.clone(),
+            redo_made: self.redo_made.clone(),
+            taken: Taken::No,
+        }
     }
 }
 
@@ -152,9 +196,13 @@ impl History {
         if self.clears != mark.clears || self.undo.len() < mark.len + 2 {
             return;
         }
+        // A removal is put back by what it took and not by intents that can be listed: it is a step of its own.
+        if self.undo[mark.len..].iter().any(Step::is_removal) {
+            return;
+        }
         let steps = self.undo.split_off(mark.len);
         let Some(last) = steps.last().map(|step| step.last) else { return };
-        let mut joined = Step { label: label.to_string(), undo: Vec::new(), redo: Vec::new(), key: None, last, undo_made: Made::default(), redo_made: Made::default() };
+        let mut joined = Step { label: label.to_string(), undo: Vec::new(), redo: Vec::new(), key: None, last, undo_made: Made::default(), redo_made: Made::default(), taken: Taken::No };
         for step in &steps {
             joined.redo.extend(step.redo.iter().cloned());
             joined.redo_made.nodes.extend(&step.redo_made.nodes);
@@ -191,6 +239,8 @@ pub(super) enum Plan {
     Step(Step),
     /// It adds something, and is undone by taking that out: what it made is known once it is carried out, and the step is made then.
     Added { label: String, intent: Intent, at: Instant },
+    /// It takes something out, and is undone by putting that back: what it took is known once it is carried out, and the step is made then.
+    Removed { label: String, intent: Intent, at: Instant },
     /// It cannot be undone yet, and what came before cannot be undone past it.
     Barrier,
     /// It is no change of the session.
@@ -220,20 +270,37 @@ impl Controller {
     /// Put back what the last step that can be undone did. Refused if there is none, or if what it names is not there any more
     /// (a node taken out since: the step is dropped, and the one before it is the next to be undone).
     pub fn undo(&mut self) -> Result<Applied, IntentError> {
-        let Some(step) = self.history.take_undo() else {
+        let Some(mut step) = self.history.take_undo() else {
             return Err(IntentError::Invalid("there is nothing to undo".to_string()));
         };
-        let applied = self.carry_out_all(&step.undo, &step.undo_made)?;
+        let applied = if step.is_removal() {
+            let Taken::Held(journal) = std::mem::replace(&mut step.taken, Taken::Spent) else {
+                return Err(IntentError::Invalid("what was taken out is not there to be put back".to_string()));
+            };
+            self.rewind(journal)?
+        } else {
+            self.carry_out_all(&step.undo, &step.undo_made)?
+        };
         self.history.kept_undone(step);
         Ok(applied)
     }
 
     /// Do again what the last step that was undone did.
     pub fn redo(&mut self) -> Result<Applied, IntentError> {
-        let Some(step) = self.history.take_redo() else {
+        let Some(mut step) = self.history.take_redo() else {
             return Err(IntentError::Invalid("there is nothing to redo".to_string()));
         };
         let applied = self.carry_out_all(&step.redo, &step.redo_made)?;
+        if step.is_removal() {
+            // What it took out this time is what the next undo puts back.
+            let taken = std::mem::take(&mut self.taken_last);
+            if !taken.can_be_put_back() {
+                // (It took out what nothing puts back: the same session as the first time cannot do that, but a session that changed without the history can.)
+                self.history.clear();
+                return Ok(applied);
+            }
+            step.taken = Taken::Held(taken);
+        }
         self.history.kept_redone(step);
         Ok(applied)
     }
@@ -361,13 +428,17 @@ impl Controller {
                     step(label.to_string(), Intent::SetLaneGroup { node: *node, group: old }, None)
                 }
             }
+            // (A cable that is not there is refused, and the plan is not looked at.)
+            Intent::RemoveEdge { .. } => Plan::Removed { label: "remove a cable".to_string(), intent: intent.clone(), at: now },
             // Nothing puts these back yet.
-            Intent::LoadPreset { .. } | Intent::RemoveEdge { .. } | Intent::RemoveNode { .. } | Intent::ReplaceInstrument { .. } => Plan::Barrier,
+            Intent::LoadPreset { .. } | Intent::RemoveNode { .. } | Intent::ReplaceInstrument { .. } => Plan::Barrier,
         }
     }
 
     /// An intent has been carried out: its step is kept, or the history is forgotten.
     pub(super) fn keep_in_history(&mut self, plan: Plan) {
+        // (What the intent took out is a step's to keep, or nothing's: it is not left here.)
+        let taken = std::mem::take(&mut self.taken_last);
         match plan {
             Plan::Step(step) => self.history.record(step),
             Plan::Added { label, intent, at } => {
@@ -378,6 +449,14 @@ impl Controller {
                     None => {
                         self.history.clear();
                     }
+                }
+            }
+            Plan::Removed { label, intent, at } => {
+                if taken.can_be_put_back() {
+                    self.history.record(Step::removed(label, intent, taken, at));
+                } else {
+                    // (Something went that nothing puts back, or nothing went that can be named.)
+                    self.history.clear();
                 }
             }
             Plan::Barrier => {
@@ -490,8 +569,8 @@ mod tests {
     fn a_new_history_has_nothing_to_undo_or_redo() {
         let mut history = History::default();
         assert_eq!(history.state(), HistoryState { undo: None, redo: None });
-        assert_eq!(history.take_undo(), None);
-        assert_eq!(history.take_redo(), None);
+        assert!(history.take_undo().is_none());
+        assert!(history.take_redo().is_none());
     }
 
     #[test]
@@ -543,7 +622,7 @@ mod tests {
         let only = history.take_undo().unwrap();
         // It puts back what the first change found, and does again what the last did.
         assert_eq!((only.undo, only.redo), (vec![Intent::SetLocked { locked: false }], vec![Intent::SetLocked { locked: true }]));
-        assert_eq!(history.take_undo(), None, "one step and no more");
+        assert!(history.take_undo().is_none(), "one step and no more");
     }
 
     #[test]
@@ -555,7 +634,7 @@ mod tests {
             history.record(step("set cutoff", false, true, knob(3), start + ms(900 * frame)));
         }
         assert!(history.take_undo().is_some());
-        assert_eq!(history.take_undo(), None);
+        assert!(history.take_undo().is_none());
     }
 
     #[test]
@@ -1180,9 +1259,9 @@ rate = 3.0
         set_detune(&mut ctl, 2.0);
         ctl.undo().unwrap();
         assert_eq!((undo_label(&ctl).is_some(), redo_label(&ctl).is_some()), (true, true));
-        // A cable is taken out: nothing puts that back yet, and what was before it cannot be undone past it.
-        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
-        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        // A modulator is taken out: nothing puts that back yet, and what was before it cannot be undone past it.
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        ctl.apply(Intent::RemoveNode { node: lfo }).unwrap();
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
         assert!(ctl.undo().is_err() && ctl.redo().is_err());
     }
@@ -1542,7 +1621,7 @@ rate = 3.0
         ctl.undo().unwrap();
         // Two of the same step to redo (as nothing the program does makes it): the first puts the effect back, the second finds it there.
         let step = ctl.history.take_redo().unwrap();
-        ctl.history.kept_undone(step.clone());
+        ctl.history.kept_undone(step.copy());
         ctl.history.kept_undone(step);
         ctl.redo().unwrap();
         let effects = ctl.model.instruments[0].effects.len();
@@ -1562,7 +1641,7 @@ rate = 3.0
         ctl.apply(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: filter, port: Port::Param { index: resonance } } }).unwrap();
         ctl.undo().unwrap();
         let step = ctl.history.take_redo().unwrap();
-        ctl.history.kept_undone(step.clone());
+        ctl.history.kept_undone(step.copy());
         ctl.history.kept_undone(step);
         ctl.redo().unwrap();
         let cables = ctl.model.instruments[0].modulators[0].targets.len();
@@ -1608,9 +1687,7 @@ rate = 3.0
         let (_engine, mut ctl, clock) = controller();
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
         let lfo = ctl.model.instruments[0].modulators[0].node;
-        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
         let intents = [
-            ("take a cable out", Intent::RemoveEdge { edge }),
             ("take a node out", Intent::RemoveNode { node: lfo }),
             ("replace an instrument", Intent::ReplaceInstrument { node: node(&ctl, NodePath::Instrument(1)), plugin: "builtin:osc".to_string() }),
             // A group made of a lane that is in one: the cables of the group that has it go, and a step would not bring them back.
@@ -1748,8 +1825,8 @@ rate = 3.0
         clock.advance(Duration::from_secs(5));
         as_one_step(&mut ctl, "modulate, and take out", |ctl| {
             modulate_the_filter(ctl);
-            let edge = ctl.model.instruments[0].modulators.last().unwrap().targets[0].edge;
-            ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+            // (Taking the instrument out of its lane is what nothing puts back, whoever asks: the TUI's `d`, which no intent is for.)
+            assert!(ctl.clear_instrument(0));
         });
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "the barrier forgot what came before it, and what was done as one step with it");
     }
@@ -1759,8 +1836,7 @@ rate = 3.0
         let (_engine, mut ctl, _clock) = controller_with_plugins();
         ctl.apply(Intent::SetLocked { locked: true }).unwrap();
         as_one_step(&mut ctl, "joined", |ctl| {
-            let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
-            ctl.apply(Intent::RemoveEdge { edge }).unwrap(); // (forgets the step before it, and the mark with it)
+            assert!(ctl.clear_instrument(0)); // (forgets the step before it, and the mark with it)
             ctl.apply(Intent::SetLocked { locked: false }).unwrap();
             ctl.apply(Intent::SetScale { scale: "D dorian".to_string() }).unwrap();
             ctl.apply(Intent::SetLocked { locked: true }).unwrap();
@@ -1961,6 +2037,381 @@ rate = 3.0
         fn resync(&mut self, _: &crate::app::snapshot::Snapshot) {}
     }
 
+    // -- what is taken out is put back --
+
+    /// A lane with a filter, an LFO with three cables (to the oscillator's detune and volume and the filter's cutoff, in that order) and a second
+    /// LFO whose cable drives the depth of the first's third.
+    const CABLES: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.1
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.2
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.3
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+mod_depth = [0, 2]
+depth = 0.4
+"#;
+
+    /// What a client is told the session is: the nodes and the cables, and the layout of the telemetry. What is put back has to be what it was.
+    fn picture(ctl: &Controller) -> (crate::app::graph::Graph, crate::app::layout::TelemetryLayout) {
+        let snapshot = ctl.snapshot();
+        (snapshot.graph, snapshot.telemetry)
+    }
+
+    /// What `Ctrl+S` would write.
+    fn written(ctl: &Controller) -> String {
+        let (instruments, groups) = crate::app::save::to_save(&ctl.model);
+        crate::session::to_toml(&instruments, &groups, None, None).unwrap()
+    }
+
+    fn cable_edge(ctl: &Controller, modulator: usize, cable: usize) -> EdgeId {
+        ctl.model.instruments[0].modulators[modulator].targets[cable].edge
+    }
+
+    #[test]
+    fn a_cable_that_was_taken_out_is_put_back_by_undo_where_it_was_and_taken_out_again_by_redo() {
+        let (engine, mut ctl, clock) = controller_over(load(CABLES).model);
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let volume = cable_edge(&ctl, 0, 1);
+        let (before, saved) = (picture(&ctl), written(&ctl));
+        sent(&engine);
+
+        ctl.apply(Intent::RemoveEdge { edge: volume }).unwrap();
+        let (taken, saved_taken) = (picture(&ctl), written(&ctl));
+        assert_ne!(taken, before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("remove a cable"), None));
+        let commands = sent(&engine);
+        assert_eq!(commands[0], "RemoveModTarget inst=0 mod=0 target=1", "{commands:?}");
+
+        let rev = ctl.rev;
+        let undone = ctl.undo().unwrap();
+        // (An intent like the others: a revision, and the structure said to have changed.)
+        assert_eq!((undone.rev, undone.restructured, undone.events.is_empty()), (rev + 1, true, true));
+        assert_eq!(picture(&ctl), before, "the cable is where it was, with its id and the slot it publishes to");
+        assert_eq!(written(&ctl), saved);
+        let commands = sent(&engine);
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        assert!(commands[0].starts_with("InsertModTarget inst=0 mod=0 target=1 kind=PluginParam { slot: 0, param_index: "), "{commands:?}");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("set detune"), Some("remove a cable")), "what was done before it is still to be undone");
+        assert!(ctl.dirty);
+
+        let redone = ctl.redo().unwrap();
+        assert!(redone.restructured);
+        assert_eq!(picture(&ctl), taken);
+        assert_eq!(written(&ctl), saved_taken);
+        assert_eq!(sent(&engine)[0], "RemoveModTarget inst=0 mod=0 target=1");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("remove a cable"), None));
+
+        ctl.undo().unwrap();
+        assert_eq!(picture(&ctl), before);
+        ctl.undo().unwrap();
+        assert_eq!(detune(&ctl).1, 0.0, "the step before it goes back too");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_cables_that_drive_the_depth_of_a_cable_that_goes_are_put_back_with_it_each_where_it_was() {
+        let (engine, mut ctl, _clock) = controller_over(load(CABLES).model);
+        // The second LFO's only cable drives the depth of the first's third.
+        let (cutoff, depth_cable) = (cable_edge(&ctl, 0, 2), cable_edge(&ctl, 1, 0));
+        let before = picture(&ctl);
+        sent(&engine);
+        ctl.apply(Intent::RemoveEdge { edge: cutoff }).unwrap();
+        assert!(ctl.model.locate_edge(depth_cable).is_none(), "it went with the cable it drove");
+        assert_eq!(&sent(&engine)[..2], ["RemoveModTarget inst=0 mod=1 target=0", "RemoveModTarget inst=0 mod=0 target=2"]);
+
+        ctl.undo().unwrap();
+        assert_eq!(picture(&ctl), before);
+        let commands = sent(&engine);
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands[0].starts_with("InsertModTarget inst=0 mod=0 target=2 kind=PluginParam { slot: 1,"), "the cable first: {commands:?}");
+        assert!(commands[1].starts_with("InsertModTarget inst=0 mod=1 target=0 kind=ModulatorDepth { mod_index: 0, target_index: 2 }"), "then what drives its depth: {commands:?}");
+        ctl.redo().unwrap();
+        assert!(ctl.model.locate_edge(cutoff).is_none() && ctl.model.locate_edge(depth_cable).is_none());
+        ctl.undo().unwrap();
+        assert_eq!(picture(&ctl), before);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_that_is_put_back_is_put_back_on_the_audio_thread_too_as_the_model_has_it() {
+        use crate::plugin::chain::AudioGraph;
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(CABLES, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let mut ctl = Controller::new(model, handles, None);
+        graph.drain_commands();
+        // What the model says every cable is, in the audio thread's words, and what the audio thread has.
+        let in_the_model = |ctl: &Controller| -> Vec<(crate::plugin::chain::ModulatorLocation, usize, crate::plugin::chain::ModTargetKind)> {
+            let lane = &ctl.model.instruments[0];
+            lane.modulators
+                .iter()
+                .enumerate()
+                .flat_map(|(m, modulator)| modulator.targets.iter().map(move |t| (crate::plugin::chain::ModulatorLocation::Lane(0), m, t.kind.clone())))
+                .collect()
+        };
+        let on_the_audio_thread = |graph: &AudioGraph| -> Vec<_> { graph.cable_bases().into_iter().map(|(at, m, kind, _)| (at, m, kind)).collect() };
+        let before = (graph.cable_bases(), in_the_model(&ctl));
+        assert_eq!(on_the_audio_thread(&graph), before.1);
+
+        for (modulator, cable) in [(0, 0), (0, 1), (0, 2), (1, 0)] {
+            let edge = cable_edge(&ctl, modulator, cable);
+            ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+            graph.drain_commands();
+            assert_eq!(on_the_audio_thread(&graph), in_the_model(&ctl), "cable {cable} of modulator {modulator} taken out");
+            assert_ne!(graph.cable_bases(), before.0);
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_eq!((graph.cable_bases(), in_the_model(&ctl)), before, "cable {cable} of modulator {modulator} put back: the same cables, each centred on what it was");
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            assert_eq!(on_the_audio_thread(&graph), in_the_model(&ctl), "cable {cable} of modulator {modulator} taken out again");
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_eq!((graph.cable_bases(), in_the_model(&ctl)), before);
+        }
+    }
+
+    /// A group with a bus filter and two LFOs, one that drives the bus filter's resonance and the member's detune, and one that drives the depth of the
+    /// member's cable to its volume; a member with an LFO whose cables go to its detune and volume.
+    const GROUP_CABLES: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+bus = 0
+param = "resonance"
+depth = 0.1
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.2
+[[group.modulator]]
+rate = 2.0
+[[group.modulator.target]]
+member = 0
+mod_depth = [0, 1]
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 3.0
+[[instrument.modulator.target]]
+param = "pan"
+depth = 0.4
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.5
+"#;
+
+    #[test]
+    fn the_cables_of_a_groups_modulators_are_put_back_on_the_audio_thread_too_and_the_cables_that_drive_the_depth_of_a_members_cable_with_it() {
+        use crate::plugin::chain::AudioGraph;
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(GROUP_CABLES, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let mut ctl = Controller::new(model, handles, None);
+        graph.drain_commands();
+        let before = (graph.cable_bases(), picture(&ctl), written(&ctl));
+        let rack_of_groups = |ctl: &Controller| -> Vec<Vec<EdgeId>> { ctl.model.groups[0].modulators.iter().map(|m| m.targets.iter().map(|t| t.edge).collect()).collect() };
+        let (group_cables, member_cables) = (rack_of_groups(&ctl), ctl.model.instruments[0].modulators[0].targets.iter().map(|t| t.edge).collect::<Vec<_>>());
+        assert_eq!((group_cables[0].len(), group_cables[1].len(), member_cables.len()), (2, 1, 2));
+        // Each cable of the group's first modulator, the group's cable to the depth of a member's cable, and the member's two (the second of which that one drives).
+        for edge in [group_cables[0][0], group_cables[0][1], group_cables[1][0], member_cables[1], member_cables[0]] {
+            ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+            graph.drain_commands();
+            assert_ne!(graph.cable_bases(), before.0, "{edge:?} taken out");
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_eq!((graph.cable_bases(), picture(&ctl), written(&ctl)), before, "{edge:?} put back");
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_eq!((graph.cable_bases(), picture(&ctl), written(&ctl)), before, "{edge:?} taken out again and put back again");
+        }
+    }
+
+    #[test]
+    fn a_groups_cable_is_put_back_by_the_groups_command_and_the_cable_that_drives_the_depth_of_a_members_cable_after_the_cable() {
+        let (engine, mut ctl, _clock) = controller_over(load(GROUP_CABLES).model);
+        let member_volume = ctl.model.instruments[0].modulators[0].targets[1].edge;
+        let group_bus = ctl.model.groups[0].modulators[0].targets[0].edge;
+        sent(&engine);
+        // The member's cable goes with the group's cable to its depth (which goes first); both are put back by their own racks' commands, the cable first.
+        ctl.apply(Intent::RemoveEdge { edge: member_volume }).unwrap();
+        assert_eq!(sent(&engine)[..2], ["RemoveGroupModTarget group=0 mod=1 target=0", "RemoveModTarget inst=0 mod=0 target=1"]);
+        ctl.undo().unwrap();
+        let commands = sent(&engine);
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands[0].starts_with("InsertModTarget inst=0 mod=0 target=1 "), "{commands:?}");
+        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=1 target=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }"), "{commands:?}");
+        // A cable of the group's first modulator, and nothing else, by the group's command.
+        ctl.apply(Intent::RemoveEdge { edge: group_bus }).unwrap();
+        sent(&engine);
+        ctl.undo().unwrap();
+        let commands = sent(&engine);
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        assert!(commands[0].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 0, param_index: 1 }"), "{commands:?}");
+    }
+
+    #[test]
+    fn a_redo_that_takes_out_what_nothing_puts_back_forgets_the_history_as_a_removal_that_does_so_the_first_time_would() {
+        let (_engine, mut ctl, clock) = controller_over(load(CABLES).model);
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let volume = cable_edge(&ctl, 0, 1);
+        ctl.apply(Intent::RemoveEdge { edge: volume }).unwrap();
+        ctl.undo().unwrap();
+        // Something that no step made (a front-end that edits the model by itself) makes the cable and another drive each other's depths.
+        ctl.model.instruments[0].modulators[0].targets[1].kind = crate::plugin::chain::ModTargetKind::ModulatorDepth { mod_index: 1, target_index: 0 };
+        ctl.model.instruments[0].modulators[1].targets[0].kind = crate::plugin::chain::ModTargetKind::ModulatorDepth { mod_index: 0, target_index: 1 };
+        let redone = ctl.redo().unwrap();
+        assert!(redone.restructured, "it was done");
+        assert_eq!(ctl.model.instruments[0].modulators[1].targets.len(), 0, "and the other cable went with the cable");
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "but it cannot be undone, so nothing can");
+    }
+
+    #[test]
+    fn a_cable_that_is_put_back_is_centred_on_what_the_user_had_set_what_it_drives_to() {
+        use crate::plugin::chain::AudioGraph;
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(CABLES, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let mut ctl = Controller::new(model, handles, None);
+        let (detune_index, _) = detune(&ctl);
+        ctl.apply(Intent::SetParam { node: lane(&ctl), param: detune_index, value: 7.0 }).unwrap();
+        graph.drain_commands();
+        let edge = cable_edge(&ctl, 0, 0);
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        // The user turns the knob that the cable no longer drives, and then the cable comes back: it is centred on the new value, which is what is set.
+        ctl.undo().unwrap();
+        graph.drain_commands();
+        let centre = |graph: &AudioGraph| graph.cable_bases().into_iter().find(|(_, _, kind, _)| matches!(kind, crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index } if *param_index == detune_index)).map(|(.., base)| base);
+        assert_eq!(centre(&graph), Some(7.0), "the value that was set when the cable went");
+    }
+
+    #[test]
+    fn a_cable_that_is_put_back_publishes_the_value_it_drives_into_the_slot_it_had() {
+        use crate::plugin::chain::{AudioGraph, LfoWaveform};
+        let (handles, engine) = testutil::stub_engine();
+        let model = testutil::load_onto(CABLES, &handles.cmd_tx);
+        let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        graph.set_telemetry(handles.telemetry.clone());
+        let mut ctl = Controller::new(model, handles, None);
+        // The first cable drives the oscillator's detune: its slot is where the effective value of the parameter is told.
+        let first = &ctl.model.instruments[0].modulators[0].targets[0];
+        let (edge, slot) = (first.edge, first.effective.expect("the cable has a slot"));
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets[0].effective, Some(slot), "the model has the slot it had");
+        ctl.telemetry.store(slot, f32::NAN);
+        graph.drain_commands();
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        graph.process(&[], &mut out).unwrap();
+        // The LFO is a 1 Hz sine, and the cable pulls the detune (a parameter of 48 semitones, set to 0) by a tenth of its range.
+        let output = LfoWaveform::Sine.eval(1.0 * 64.0 / 48_000.0);
+        let published = ctl.telemetry.load(slot);
+        assert!((published - 0.1 * output * 48.0).abs() < 1e-3, "{published} for an LFO output of {output}");
+    }
+
+    #[test]
+    fn cables_that_drive_each_others_depths_cannot_be_put_back_and_empty_the_history_as_what_cannot_be_undone_does() {
+        let (_engine, mut ctl, _clock) = controller_over(load(testutil::CABLES_THAT_DRIVE_EACH_OTHER).model);
+        set_detune(&mut ctl, 1.0);
+        assert!(undo_label(&ctl).is_some());
+        let first = cable_edge(&ctl, 0, 0);
+        ctl.apply(Intent::RemoveEdge { edge: first }).unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1, "both went");
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+        assert!(ctl.undo().is_err());
+    }
+
+    #[test]
+    fn a_cable_that_is_there_already_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        let (_engine, mut ctl, clock) = controller_over(load(CABLES).model);
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let volume = cable_edge(&ctl, 0, 1);
+        let slot_of_volume = {
+            let target = &ctl.model.instruments[0].modulators[0].targets[1];
+            crate::app::model::ModTargetSlot {
+                edge: target.edge,
+                slot: target.slot,
+                param_name: target.param_name.clone(),
+                kind: target.kind.clone(),
+                depth: target.depth,
+                param_min: target.param_min,
+                param_max: target.param_max,
+                effective: target.effective,
+            }
+        };
+        ctl.apply(Intent::RemoveEdge { edge: volume }).unwrap();
+        // Something puts a cable of that id in without the history (as a front-end that edits the model by itself could).
+        ctl.model.insert_target_at(crate::plugin::chain::ModulatorLocation::Lane(0), 0, 1, slot_of_volume).unwrap();
+        let before = picture(&ctl);
+        let error = ctl.undo().unwrap_err();
+        assert_eq!(error, IntentError::Invalid(format!("cable {} is there already", volume.0)));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("set detune"), None), "the step is gone, the one before it is the next");
+    }
+
+    #[test]
+    fn a_cable_that_was_taken_out_by_the_controller_and_not_by_an_intent_leaves_nothing_to_put_back() {
+        let (_engine, mut ctl, _clock) = controller_over(load(CABLES).model);
+        set_detune(&mut ctl, 1.0);
+        let volume = cable_edge(&ctl, 0, 1);
+        assert!(ctl.remove_edge(volume));
+        assert!(ctl.journal.is_none(), "nothing is written down unless an intent is being carried out");
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "and the history is as it was: nobody asked for a step");
+    }
+
+    #[test]
+    fn a_cable_that_is_refused_leaves_the_history_as_it_was() {
+        let (_engine, mut ctl, _clock) = controller_over(load(CABLES).model);
+        set_detune(&mut ctl, 1.0);
+        let before = ctl.history_state();
+        assert_eq!(ctl.apply(Intent::RemoveEdge { edge: EdgeId(9_999) }).unwrap_err(), IntentError::EdgeNotFound(EdgeId(9_999)));
+        assert_eq!(ctl.history_state(), before);
+    }
+
+    #[test]
+    fn steps_that_are_made_one_do_not_take_in_a_removal_that_cannot_be_joined() {
+        let (_engine, mut ctl, clock) = controller_over(load(CABLES).model);
+        let mark = ctl.history_mark();
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let volume = cable_edge(&ctl, 0, 1);
+        ctl.apply(Intent::RemoveEdge { edge: volume }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        set_detune(&mut ctl, 2.0);
+        ctl.join_steps_since(mark, "all of it");
+        // (A removal holds what it took, which is put back by what it holds and not by intents that can be put in a list: it is a step of its own.)
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"));
+        ctl.undo().unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove a cable"));
+        ctl.undo().unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"));
+    }
+
     /// A step of a script: an intent, or time going by (in milliseconds).
     enum Op {
         Do(Intent),
@@ -1983,6 +2434,7 @@ rate = 3.0
         let other_edge = base.model.instruments[0].modulators[1].targets[0].edge;
         let (detune, _) = param(&base, NodePath::Instrument(0), "detune");
         let (volume, _) = param(&base, NodePath::Instrument(0), "volume");
+        let (pan, _) = param(&base, NodePath::Instrument(0), "pan");
         // The same index in three nodes: the knob of one is not the knob of another.
         let (filter_fx, filter_bus) = (node(&base, NodePath::Effect { inst: 0, index: 1 }), bus);
         let (resonance, _) = param(&base, NodePath::Effect { inst: 0, index: 1 }, "resonance");
@@ -2024,7 +2476,7 @@ rate = 3.0
             ("a change after an undo ends what could be redone", vec![set(detune, 1.0), pause(), undo(), set(volume, 0.5), redo(), undo(), undo()]),
             ("an intent that is refused changes nothing in the history", vec![set(detune, 1.0), set(9_999, 1.0), gain(g0, Gain::Mix, 0.5), field(lane0, ModulatorField::Rate, 1.0), Op::Do(Intent::RemoveNode { node: ghost }), undo()]),
             ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
-            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::RemoveEdge { edge }), undo(), redo()]),
+            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::RemoveNode { node: envelope }), undo(), redo()]),
             ("taking a node out is one of them", vec![set(detune, 1.0), Op::Do(Intent::RemoveNode { node: envelope }), undo()]),
         ];
         let mut gains = vec![gain(lane0, Gain::Volume, 2.5), pause(), gain(reverb, Gain::Mix, 0.125), pause(), gain(bus, Gain::Mix, 0.75), pause(), gain(g0, Gain::GroupVolume, 0.5), pause(), gain(g0, Gain::GroupPan, -0.5)];
@@ -2235,6 +2687,42 @@ rate = 3.0
             "a group made of a lane that is in another is a barrier, whatever else is in the list",
             vec![set(detune, 1.0), pause(), set(detune, 2.0), add_group(vec![lane1, lane0]), undo(), set(detune, 3.0), add_group(vec![lane0, lane1]), undo()],
         ));
+        // What is taken out is put back by undo as it was, under its ids, and taken out again by redo.
+        let remove_cable = |edge: EdgeId| Op::Do(Intent::RemoveEdge { edge });
+        let drive_depth = |modulator: NodeId, node: NodeId, edge: EdgeId| Op::Do(Intent::AddModEdge { modulator, to: Endpoint { node, port: Port::Depth { edge } } });
+        scripts.push((
+            "a cable that is taken out is put back by undo and taken out again by redo, and what was done before it is still to be undone",
+            vec![set(detune, 1.0), pause(), remove_cable(edge), undo(), undo(), redo(), redo(), undo(), redo(), undo()],
+        ));
+        scripts.push((
+            "the cables that drive the depth of a cable that is taken out go with it and come back with it",
+            vec![drive_depth(envelope, lfo, edge), remove_cable(edge), undo(), redo(), undo(), undo(), redo(), redo(), redo()],
+        ));
+        scripts.push((
+            "a cable of a group's modulator, and one that drives the depth of a member's, are put back each where it was",
+            vec![
+                add_modulator(g0, ModulatorKind::Lfo),
+                cable(fresh(0), bus, bus_resonance),
+                cable(fresh(0), lane0, pan),
+                drive_depth(fresh(0), lfo, edge),
+                remove_cable(fresh_edge(1)),
+                undo(),
+                remove_cable(edge),
+                undo(),
+                redo(),
+                undo(),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "a change after an undo of a removal ends what could be redone",
+            vec![remove_cable(edge), undo(), Op::Do(Intent::SetLocked { locked: true }), redo(), undo(), undo()],
+        ));
+        scripts.push((
+            "a cable that is not there is refused and leaves the history as it was",
+            vec![set(detune, 1.0), remove_cable(EdgeId(9_999)), remove_cable(fresh_edge(40)), undo(), undo()],
+        ));
         scripts.push((
             "an add that is refused leaves the history as it was",
             vec![
@@ -2269,7 +2757,6 @@ rate = 3.0
         let barriers = [
             // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
             Intent::AddGroup { members: vec![lane0] },
-            Intent::RemoveEdge { edge },
             Intent::RemoveNode { node: envelope },
             Intent::ReplaceInstrument { node: lane1, plugin: "builtin:osc".to_string() },
             Intent::LoadPreset { node: reverb, preset },
@@ -2280,10 +2767,35 @@ rate = 3.0
         }
         scripts.push(("each of what cannot be undone yet empties the history, and what could be redone", forgotten));
 
+        // A session of its own for a script that needs what the base one has not: cables that drive each other's depths, which only a file can make (a cable
+        // is made to drive a cable that is there already). The controller is not asked to put back what the first of them took out.
+        let (_engine, cycle, _clock) = controller_over(load(testutil::CABLES_THAT_DRIVE_EACH_OTHER).model);
+        let (cycle_lane, cycle_edge) = (node(&cycle, NodePath::Instrument(0)), cycle.model.instruments[0].modulators[0].targets[0].edge);
+        let (cycle_detune, _) = param(&cycle, NodePath::Instrument(0), "detune");
+        let cycle_set = |value: f32| Op::Do(Intent::SetParam { node: cycle_lane, param: cycle_detune, value });
+        let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![(
+            "cables that drive each other's depths are not put back, and what came before them is forgotten",
+            testutil::CABLES_THAT_DRIVE_EACH_OTHER,
+            vec![cycle_set(1.0), pause(), Op::Do(Intent::RemoveEdge { edge: cycle_edge }), undo(), redo()],
+        )];
+
         let mut written = Vec::new();
-        for (what, ops) in &scripts {
-            let (_engine, mut ctl, clock) = controller();
+        let sessions: Vec<(&str, Option<&str>, &Vec<Op>)> = scripts
+            .iter()
+            .map(|(what, ops)| (*what, None, ops))
+            .chain(own_sessions.iter().map(|(what, session, ops)| (*what, Some(*session), ops)))
+            .collect();
+        for (what, own_session, ops) in sessions {
+            let (_engine, mut ctl, clock) = match own_session {
+                Some(session) => controller_over(load(session).model),
+                None => controller(),
+            };
             ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+            let own_snapshot = own_session.map(|_| {
+                let mut snapshot = wire(&ctl.snapshot());
+                snapshot["telemetry"]["rev"] = serde_json::json!(1);
+                snapshot
+            });
             ctl.subscribe(Box::new(Page));
             let mut rows = Vec::new();
             for op in ops {
@@ -2310,7 +2822,11 @@ rate = 3.0
                     }
                 }
             }
-            written.push(serde_json::json!({ "name": what, "rows": rows }));
+            let mut script = serde_json::json!({ "name": what, "rows": rows });
+            if let Some(snapshot) = own_snapshot {
+                script["snapshot"] = snapshot;
+            }
+            written.push(script);
         }
         let mut snapshot = wire(&base.snapshot());
         // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.

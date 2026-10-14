@@ -7,7 +7,8 @@
 //
 // What is added is taken out by undo and put back by redo under the ids it had (`Made`): every step that names the node or the cable goes on naming it.
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP, WAVEFORMS } from "../protocol";
-import type { CatalogEntry, EdgeId, Gain, Intent, ModulatorField, ModulatorKind, Node, NodeId, Snapshot } from "../protocol";
+import type { CatalogEntry, EdgeId, Gain, Graph, Intent, ModulatorField, ModulatorKind, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
+import { cablesThatGo, drivesRoundToItself, isModulation } from "./cables";
 import { cablesIntoLaneFromItsGroup } from "./membership";
 
 /** What a change is of, for a change that goes on to be told from the rest: a string that says which parameter, gain, setting or cable. */
@@ -31,6 +32,12 @@ export interface Made {
 /** Nothing made. (A new one each time: what is made is written to.) */
 export const noneMade = (): Made => ({ nodes: [], edges: [] });
 
+/** What a removal took with it, for it to be put back: the nodes and the cables of the session and the layout of its telemetry as they were before it. */
+export interface Taken {
+  graph: Graph;
+  telemetry: TelemetryLayout;
+}
+
 /** One thing that was done, and the way back. */
 export interface Step {
   /** What it was, for a button: "set cutoff". */
@@ -47,11 +54,18 @@ export interface Step {
   undoMade: Made;
   /** The ids that `redo` makes, in the order it makes them: what was added is added again under the ids it had. */
   redoMade: Made;
+  /** For a step that took something out: the session as it was, which undo puts back (a removal is undone by being put back, and not by intents). */
+  taken: Taken | null;
 }
 
 /** A step of one change: `undo` puts back what it found, `redo` is the change. */
 export function stepOf(label: string, undo: Intent, redo: Intent, key: Key | null, at: number): Step {
-  return { label, undo: [undo], redo: [redo], key, last: at, undoMade: noneMade(), redoMade: noneMade() };
+  return { label, undo: [undo], redo: [redo], key, last: at, undoMade: noneMade(), redoMade: noneMade(), taken: null };
+}
+
+/** A step of a removal: `redo` is the intent that took something out, and `taken` is the session as it was, which undo puts back. */
+export function removedStep(label: string, redo: Intent, taken: Taken, at: number): Step {
+  return { label, undo: [], redo: [redo], key: null, last: at, undoMade: noneMade(), redoMade: noneMade(), taken };
 }
 
 /** The steps that can be undone, the last on top, and the steps that were undone and can be done again. */
@@ -127,11 +141,20 @@ export interface Added {
   at: number;
 }
 
+/** A removal that is carried out: its step holds the session as it was before it, which is known only when it is carried out. */
+export interface Removed {
+  label: string;
+  /** The intent that took something out, which redo does again. */
+  intent: Intent;
+  /** When it was done, in seconds. */
+  at: number;
+}
+
 /**
- * What a change is to the history: a step; or an add, whose step is made when it is carried out; or something that cannot be undone yet (and what came
- * before cannot be undone past it); or no change.
+ * What a change is to the history: a step; or an add, whose step is made when it is carried out; or a removal, whose step holds what was taken out; or
+ * something that cannot be undone yet (and what came before cannot be undone past it); or no change.
  */
-export type Plan = { step: Step } | { added: Added } | "barrier" | "nothing";
+export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "barrier" | "nothing";
 
 /** What a button that adds a modulator says it adds (`ModulatorKind::label`). */
 const MODULATOR_LABELS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
@@ -283,9 +306,14 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       if (cablesIntoLaneFromItsGroup(snapshot.graph, lane.id).length > 0) return "barrier";
       return step(intent.group === null ? "take a lane out of its group" : "put a lane in a group", { type: "setLaneGroup", node: intent.node, group: lane.parent }, null);
     }
+    case "removeEdge": {
+      if (!snapshot.graph.edges.some((e) => isModulation(e) && e.id === intent.edge)) return "nothing";
+      // Cables that drive each other's depths are not put back (`RemovedCable::still_driven` of the controller).
+      if (drivesRoundToItself(snapshot.graph.edges, cablesThatGo(snapshot.graph.edges, [intent.edge]))) return "barrier";
+      return { removed: { label: "remove a cable", intent, at: now } };
+    }
     // Nothing puts these back yet.
     case "loadPreset":
-    case "removeEdge":
     case "removeNode":
     case "replaceInstrument":
       return "barrier";

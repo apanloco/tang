@@ -10,6 +10,7 @@ pub mod controller;
 pub mod graph;
 pub mod history;
 pub mod intent;
+pub mod journal;
 pub mod layout;
 pub mod load;
 pub mod model;

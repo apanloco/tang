@@ -8,6 +8,7 @@
 use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
+use crate::app::journal::Journal;
 use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
@@ -16,7 +17,7 @@ use crate::session::NodeUi;
 use crate::{plugin, session};
 
 /// What an intent did, for `apply` to tell.
-enum Done {
+pub(super) enum Done {
     /// It changed a value: the event says which.
     Event(Event),
     /// It added or took out nodes or cables.
@@ -52,8 +53,11 @@ impl Controller {
     /// The ids it hands out are written down (`made_last`): an add that is undone is done again under them.
     pub(super) fn carry_out(&mut self, intent: Intent) -> Result<Applied, IntentError> {
         self.model.ids.begin_log();
+        // What it takes out is written down, as the ids it hands out are: a removal that is undone puts it back.
+        self.journal = Some(Journal::default());
         let carried = self.carry_out_intent(intent);
         self.made_last = self.model.ids.take_log();
+        self.taken_last = self.journal.take().unwrap_or_default();
         carried
     }
 
@@ -82,6 +86,12 @@ impl Controller {
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
             Intent::Save | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
+        Ok(self.conclude(done))
+    }
+
+    /// What was done is told: the session has changes that are not saved and a revision more, the subscribers hear of it, and when it changed the
+    /// structure they are given the new one as a snapshot, at once, whole.
+    pub(super) fn conclude(&mut self, done: Done) -> Applied {
         self.dirty = true;
         self.rev += 1;
         let applied = match done {
@@ -89,12 +99,11 @@ impl Controller {
             Done::Restructured => Applied::restructured(self.rev),
         };
         self.publish(&applied);
-        // The subscribers are told the new structure as a snapshot, at once, whole.
         #[cfg(any(test, feature = "web"))]
         if applied.restructured {
             self.resync();
         }
-        Ok(applied)
+        applied
     }
 
     /// Write the session to its own file. Refused, with nothing changed (and so no revision), if it has none or

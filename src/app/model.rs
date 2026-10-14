@@ -564,7 +564,6 @@ impl SessionModel {
     /// `remove_edge` took out, put back (the cables of the removal in the reverse order, each at the place it had when its turn came). The
     /// cables of the rack that drive the depth of a later cable of the modulator, and the group's when the lane is a member, are told the
     /// place that cable has now, before the cable goes in. The place it went to; `None`, and nothing changed, if there is no such modulator.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
     pub fn insert_target_at(&mut self, at: ModulatorLocation, mod_index: usize, target_index: usize, slot: ModTargetSlot) -> Option<usize> {
         let rack = self.modulators_mut(at)?;
         let place = target_index.min(rack.get(mod_index)?.targets.len());
@@ -1075,14 +1074,12 @@ pub struct ModTargetSlot {
     /// Where the audio thread publishes the effective value of the parameter the
     /// target drives (telemetry); `None` for a target that drives a modulator's
     /// own field, or if the slots had run out.
-    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by the telemetry layout a client gets (`app::layout`), which only the web runtime sends"))]
     pub effective: Option<Slot>,
 }
 
 /// A cable that was taken out of the session (`SessionModel::remove_edge`): where it was, the cable itself, and what it was centred on. What puts it
 /// back is `SessionModel::insert_target_at` and a command to the audio thread (`Controller::undo`).
 #[derive(Debug)]
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
 pub struct RemovedCable {
     /// The rack it was in.
     pub at: ModulatorLocation,
@@ -1484,7 +1481,6 @@ fn fixup_member_depth_cables_after_remove(modulators: &mut [ModulatorSlot], memb
 /// The inverse of `fixup_depth_cables_after_remove`, mirror of the audio thread's `shift_depth_cables_after_insert`: after a cable goes into the
 /// modulator at `mod_index` at place `inserted`, the cables of the modulators in the rack that drive the depth of a cable of it at that place or
 /// after it are told the place that cable has now. (Before the cable goes in: its own kind is what it says, and is not moved with the others.)
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
 fn shift_depth_cables_after_insert(modulators: &mut [ModulatorSlot], mod_index: usize, inserted: usize) {
     for m in modulators.iter_mut() {
         for t in &mut m.targets {
@@ -1499,7 +1495,6 @@ fn shift_depth_cables_after_insert(modulators: &mut [ModulatorSlot], mod_index: 
 
 /// The same for a group's cables to the depth of a cable of member `member`'s modulator `mod_index` (`shift_member_depth_cables_after_insert`
 /// of the audio thread).
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
 fn shift_member_depth_cables_after_insert(modulators: &mut [ModulatorSlot], member: usize, mod_index: usize, inserted: usize) {
     for m in modulators.iter_mut() {
         for t in &mut m.targets {

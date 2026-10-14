@@ -1844,7 +1844,6 @@ pub enum GraphCommand {
     /// Put a modulation target (a cable) into a modulator at place `target_index` (the last place, for one past the end): what
     /// `RemoveModTarget` takes out, put back. The cables of the rack that drive the depth of a later cable of the modulator are
     /// told its new place.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
     InsertModTarget {
         inst: usize,
         mod_index: usize,
@@ -1909,7 +1908,6 @@ pub enum GraphCommand {
         target: ModTarget,
     },
     /// Put a modulation target (a cable) into a group modulator at place `target_index`, as `InsertModTarget` does for a lane's.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
     InsertGroupModTarget {
         group: usize,
         mod_index: usize,

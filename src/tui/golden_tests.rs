@@ -3649,6 +3649,8 @@ mod with_web {
                 let told = said(&mut client).await;
                 assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(2)), "{told}");
                 assert!(told["snapshot"]["graph"]["edges"].as_array().unwrap().iter().all(|e| e["kind"] != "modulation"));
+                // What can be undone now (the removal is a step of the history, which puts the cable back) is told before the answer.
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "remove a cable", "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
                 browser.quit().await;
             },

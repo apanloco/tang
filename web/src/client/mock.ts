@@ -32,8 +32,9 @@ import type {
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
+import { cablesThatGo, isModulation } from "./cables";
 import { Counters } from "./counters";
-import { History, planOf, stepOf, takesOut } from "./history";
+import { History, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
 import { cablesIntoLaneFromItsGroup } from "./membership";
 import { noteName } from "./notes";
@@ -116,8 +117,6 @@ function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome 
   if (!holds(depth)) return invalid(`${shown(depth)} is not a value for the depth of a cable`);
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
 }
-
-const isModulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } => e.kind === "modulation";
 
 /** A parameter of a node as one key, if the port is one. */
 const paramKey = (node: NodeId, port: Port): string | null => (port.type === "param" ? `${String(node)}:${String(port.index)}` : null);
@@ -212,24 +211,6 @@ function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters:
 
   const added: Edge = { from: { node: from.id, port: { type: "modOut" } }, to, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
   return { restructured: { ...snapshot, graph: { nodes, edges: withCable(nodes, edges, from.id, added) } } };
-}
-
-/**
- * The cables that go when those of `start` do: they, and, in turn, the ones that drive the depth of a cable that
- * goes (what is left pointing at a cable that is not there would drive whichever one is put there next).
- */
-function cablesThatGo(cables: readonly Edge[], start: Iterable<EdgeId>): Set<EdgeId> {
-  const going = new Set<EdgeId>(start);
-  for (let grown = true; grown; ) {
-    grown = false;
-    for (const e of cables) {
-      if (isModulation(e) && !going.has(e.id) && e.to.port.type === "depth" && going.has(e.to.port.edge)) {
-        going.add(e.id);
-        grown = true;
-      }
-    }
-  }
-  return going;
 }
 
 /**
@@ -1001,12 +982,13 @@ export class MockServer {
   #carry(intent: Intent, tell: boolean): { rev: number; told: Told } | { error: WireError } {
     if (intent.type === "undo" || intent.type === "redo") return this.#backAndForth(intent.type, tell);
     const plan = planOf(this.#snapshot, intent, this.now(), this.#catalog.entries);
+    const before = this.#snapshot;
     this.#counters.begin();
     const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
     const made = this.#counters.take();
     if ("error" in outcome) return outcome;
     const done = this.#commit(outcome, tell);
-    this.#keep(plan, made);
+    this.#keep(plan, made, before);
     return done;
   }
 
@@ -1016,6 +998,14 @@ export class MockServer {
     if (!step) return { error: { code: "invalid", message: `there is nothing to ${which}` } };
     let rev = this.#snapshot.rev;
     const told: Told = { events: [], restructured: false };
+    // What was taken out is put back as it was: the nodes and the cables of the session, and the layout of its telemetry, are what they were before.
+    // (Everything done after was undone first, so that nothing else has changed them.)
+    if (which === "undo" && step.taken) {
+      const { graph, telemetry } = step.taken;
+      const done = this.#commit({ restructured: { ...this.#snapshot, graph, telemetry } }, tell);
+      this.#history.keptUndone(step);
+      return done;
+    }
     // What they make is made under the ids it was made under the first time (what is not made of them is not kept for what is made next).
     this.#counters.reuse(which === "undo" ? step.undoMade : step.redoMade);
     try {
@@ -1037,12 +1027,17 @@ export class MockServer {
   }
 
   /** An intent has been carried out, and made `made`: its step is kept, or the history is forgotten. */
-  #keep(plan: Plan, made: Made): void {
+  #keep(plan: Plan, made: Made, before: Snapshot): void {
     if (plan === "barrier") {
       this.#history.clear();
     } else if (plan !== "nothing") {
       if ("step" in plan) {
         this.#history.record(plan.step);
+        return;
+      }
+      if ("removed" in plan) {
+        const { label, intent, at } = plan.removed;
+        this.#history.record(removedStep(label, intent, { graph: before.graph, telemetry: before.telemetry }, at));
         return;
       }
       const { label, intent, at } = plan.added;

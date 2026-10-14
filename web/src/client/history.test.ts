@@ -175,7 +175,8 @@ describe("what an add is to the history", () => {
   const labelOf = (intent: Intent): string | null => {
     const planned = plan(intent);
     if (typeof planned !== "object") return null;
-    return "added" in planned ? planned.added.label : planned.step.label;
+    if ("added" in planned) return planned.added.label;
+    return "step" in planned ? planned.step.label : planned.removed.label;
   };
 
   test("is named in the words a button has for it", () => {
@@ -219,6 +220,40 @@ describe("what an add is to the history", () => {
     expect(undo({ type: "setLaneGroup", node: lane1, group: other })).toEqual([{ type: "setLaneGroup", node: lane1, group: null }]);
     expect(undo({ type: "setLaneGroup", node: lane0, group: other })).toEqual([{ type: "setLaneGroup", node: lane0, group: pad }]);
     expect(undo({ type: "setLaneGroup", node: lane0, group: null })).toEqual([{ type: "setLaneGroup", node: lane0, group: pad }]);
+  });
+});
+
+describe("what a removal is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const cables = snapshot.graph.edges.flatMap((e) => (e.kind === "modulation" ? [e] : []));
+  const [first] = cables;
+  if (!first) throw new Error("the fixture has a cable");
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+
+  test("of a cable is a step that is made when it is carried out, in the words of a button for it", () => {
+    expect(plan({ type: "removeEdge", edge: first.id })).toEqual({ removed: { label: "remove a cable", intent: { type: "removeEdge", edge: first.id }, at: 7 } });
+  });
+
+  test("of a cable that is not there is no step, since it is refused", () => {
+    expect(plan({ type: "removeEdge", edge: 9_999 })).toBe("nothing");
+  });
+
+  test("of a cable that drives the depth of a cable that goes with it, and so on round to itself, is what cannot be put back", () => {
+    const [other] = cables.filter((e) => e.id !== first.id);
+    if (!other) throw new Error("the fixture has two cables");
+    // Each of the two drives the depth of the other.
+    const edges = snapshot.graph.edges.map((e) => {
+      if (e.kind !== "modulation") return e;
+      if (e.id === first.id) return { ...e, to: { node: other.from.node, port: { type: "depth" as const, edge: other.id } } };
+      if (e.id === other.id) return { ...e, to: { node: first.from.node, port: { type: "depth" as const, edge: first.id } } };
+      return e;
+    });
+    const cycle = { ...snapshot, graph: { ...snapshot.graph, edges } };
+    expect(plan({ type: "removeEdge", edge: first.id }, cycle)).toBe("barrier");
+    expect(plan({ type: "removeEdge", edge: other.id }, cycle)).toBe("barrier");
+    // (One that drives the other and not the other way round goes with the one it drives, and is put back with it.)
+    const chain = { ...cycle, graph: { ...cycle.graph, edges: edges.map((e) => (e.kind === "modulation" && e.id === other.id ? { ...e, to: first.to } : e)) } };
+    expect(plan({ type: "removeEdge", edge: first.id }, chain)).toEqual({ removed: { label: "remove a cable", intent: { type: "removeEdge", edge: first.id }, at: 7 } });
   });
 });
 
@@ -407,6 +442,89 @@ describe("the mock engine's undo of what is added", () => {
   });
 });
 
+describe("the mock engine's undo of what is taken out", () => {
+  const fresh = (): MockServer => new MockServer({ snapshot: historyFixture.snapshot });
+  const lanes = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n.id] : []));
+  const [lane0] = lanes;
+  const modulators = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "modulator" && n.parent === lane0 ? [n] : []));
+  const [lfo, envelope] = modulators;
+  if (lane0 === undefined || !lfo || !envelope) throw new Error("the fixture has a lane with two modulators");
+  const cableOf = (server: MockServer, modulator: number): number => {
+    const found = server.snapshot.graph.edges.find((e) => e.kind === "modulation" && e.from.node === modulator);
+    if (found?.kind !== "modulation") throw new Error("no cable");
+    return found.id;
+  };
+  /** The session without its revision and its flag: what a removal that is undone has to leave as it was. */
+  const pieces = (server: MockServer): string => canonical({ graph: server.snapshot.graph, telemetry: server.snapshot.telemetry });
+  const labels = (server: MockServer): [string | null, string | null] => [server.history.undo, server.history.redo];
+
+  test("puts a cable back, with the layout of the telemetry it had, by undo, and takes it out again by redo", () => {
+    const server = fresh();
+    const before = pieces(server);
+    const edge = cableOf(server, lfo.id);
+    server.apply({ type: "removeEdge", edge });
+    const after = pieces(server);
+    expect(after).not.toBe(before);
+    expect(labels(server)).toEqual(["remove a cable", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    expect(labels(server)).toEqual([null, "remove a cable"]);
+    server.apply({ type: "redo" });
+    expect(pieces(server)).toBe(after);
+    expect(labels(server)).toEqual(["remove a cable", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+  });
+
+  test("puts back the cables that went with it, each where it was", () => {
+    const server = fresh();
+    const driven = cableOf(server, lfo.id);
+    // The envelope's cable drives the depth of the LFO's.
+    server.apply({ type: "addModEdge", modulator: envelope.id, to: { node: lfo.id, port: { type: "depth", edge: driven } } });
+    const before = pieces(server);
+    const cablesBefore = server.snapshot.graph.edges.filter((e) => e.kind === "modulation").length;
+    server.apply({ type: "removeEdge", edge: driven });
+    expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation").length).toBe(cablesBefore - 2);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+  });
+
+  test("is a step after the steps before it, and what was done before it is still to be undone", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    server.apply({ type: "removeEdge", edge: cableOf(server, lfo.id) });
+    expect(labels(server)).toEqual(["remove a cable", null]);
+    server.apply({ type: "undo" });
+    expect(labels(server)).toEqual(["lock the piano to its scale", "remove a cable"]);
+  });
+
+  test("forgets what came before cables that drive each other's depths, which are not put back", () => {
+    // (A cable is made to drive a cable that is there already, so only a session that was written can have two that drive each other's.)
+    const first = historyFixture.snapshot.graph.edges.find((e) => e.kind === "modulation" && e.from.node === lfo.id);
+    const second = historyFixture.snapshot.graph.edges.find((e) => e.kind === "modulation" && e.from.node === envelope.id);
+    if (first?.kind !== "modulation" || second?.kind !== "modulation") throw new Error("the fixture has two cables");
+    const edges = historyFixture.snapshot.graph.edges.map((e) => {
+      if (e.kind !== "modulation") return e;
+      if (e.id === first.id) return { ...e, to: { node: envelope.id, port: { type: "depth" as const, edge: second.id } } };
+      if (e.id === second.id) return { ...e, to: { node: lfo.id, port: { type: "depth" as const, edge: first.id } } };
+      return e;
+    });
+    const server = new MockServer({ snapshot: { ...historyFixture.snapshot, graph: { ...historyFixture.snapshot.graph, edges } } });
+    server.apply({ type: "setLocked", locked: true });
+    expect(server.history.undo).toBe("lock the piano to its scale");
+    server.apply({ type: "removeEdge", edge: first.id });
+    expect(labels(server)).toEqual([null, null]);
+  });
+
+  test("leaves the history as it was for a cable that is not there", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    const before = labels(server);
+    expect(() => server.apply({ type: "removeEdge", edge: 9_999 })).toThrow();
+    expect(labels(server)).toEqual(before);
+  });
+});
+
 // -- the mock engine's, against what the controller makes of the same scripts --
 
 /** A value as a string whatever the order its keys were made in: the controller writes them as it likes, and the mock in its own order. */
@@ -462,7 +580,7 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
 
 describe("the mock engine's history", () => {
   test("is what the controller makes of each script of its fixture: the events of each op with their revisions, whether the structure changed, the words of what Undo and Redo would do, and the words of a refusal", () => {
-    const wrong = historyFixture.scripts.flatMap((script) => run(historyFixture.snapshot, script.rows).map((line) => `${script.name} / ${line}`));
+    const wrong = historyFixture.scripts.flatMap((script) => run(script.snapshot ?? historyFixture.snapshot, script.rows).map((line) => `${script.name} / ${line}`));
     expect(wrong).toEqual([]);
   });
 
@@ -481,6 +599,7 @@ describe("the mock engine's history", () => {
       "setScale",
       "setLocked",
       "moveEffect",
+      "removeEdge",
       "addEffect",
       "addInstrument",
       "addModulator",
@@ -488,7 +607,7 @@ describe("the mock engine's history", () => {
       "addGroup",
       "setLaneGroup",
     ];
-    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeEdge", "removeNode", "replaceInstrument"];
+    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeNode", "replaceInstrument"];
     const kinds: Intent["type"][] = [...undoable, ...barriers, "undo", "redo"];
     for (const type of kinds) expect(intents.has(type), type).toBe(true);
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));

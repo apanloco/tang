@@ -37,11 +37,12 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
 use crate::app::history::History;
+use crate::app::journal::{Inverse, Journal};
 use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
     Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
-    PluginSlot, RemovedCable, SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
+    PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -220,6 +221,10 @@ pub struct Controller {
     pub(super) history: History,
     /// The ids the intent that was carried out last made: what an add that is undone and done again has to be given again.
     pub(super) made_last: Made,
+    /// What the intent that is being carried out has taken out so far (`app::journal`); none when no intent is.
+    pub(super) journal: Option<Journal>,
+    /// What the intent that was carried out last took out: what a removal that is undone has to put back.
+    pub(super) taken_last: Journal,
     /// What time it is, for changes that go on to be told from those that are made again (a test turns it).
     pub(super) clock: Box<dyn Fn() -> Instant + Send>,
 }
@@ -284,6 +289,8 @@ impl Controller {
             subscribers: Subscribers::default(),
             history: History::default(),
             made_last: Made::default(),
+            journal: None,
+            taken_last: Journal::default(),
             clock: Box::new(Instant::now),
         }
     }
@@ -749,11 +756,13 @@ impl Controller {
     fn take_out(&mut self, edge: EdgeId) -> Option<Vec<Driven>> {
         let driven = self.model.driven_by_edge(edge).into_iter().collect();
         let removals = self.model.remove_edge(edge)?;
-        for RemovedCable { at, mod_index, target_index, .. } in removals {
+        for removed in removals {
+            let (at, mod_index, target_index) = (removed.at, removed.mod_index, removed.target_index);
             let _ = self.cmd_tx.send(match at {
                 ModulatorLocation::Lane(inst) => GraphCommand::RemoveModTarget { inst, mod_index, target_index },
                 ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModTarget { group, mod_index, target_index },
             });
+            self.took_out(if removed.still_driven { Inverse::NoWayBack } else { Inverse::Cable(removed) });
         }
         Some(driven)
     }
