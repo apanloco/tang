@@ -460,7 +460,16 @@ impl Controller {
             NodePath::GroupEffect { group, index } => {
                 self.remove_bus_effect(group, index);
             }
-            NodePath::Instrument(_) | NodePath::Group(_) => return Err(invalid("only a modulator or an effect can be removed so far")),
+            // (A lane goes with everything it has and the cables of its group to it, a group with its bus and its modulators and every cable of
+            // it, which the controller does: what the cables drove in a lane that stays has the value that was set. A session keeps one lane.)
+            NodePath::Instrument(inst) => {
+                if !self.remove_lane(inst) {
+                    return Err(invalid("a session keeps its last lane"));
+                }
+            }
+            NodePath::Group(group) => {
+                self.remove_group(group);
+            }
         }
         Ok(Done::Restructured)
     }
@@ -2487,17 +2496,15 @@ type = "midi"
     }
 
     #[test]
-    fn remove_node_refuses_a_lane_and_a_group_and_what_is_not_there_and_changes_nothing() {
+    fn remove_node_refuses_what_is_not_there_the_master_and_the_last_lane_and_changes_nothing() {
         let (engine, mut ctl) = modulated();
         sent(&engine);
         let lane_node = lane(&ctl);
-        let group = ctl.model.groups[0].node;
         let ghost = NodeId(9_999);
         let cases = [
-            ("a lane", lane_node, invalid("only a modulator or an effect can be removed so far")),
-            ("a group", group, invalid("only a modulator or an effect can be removed so far")),
             ("a node that is not there", ghost, IntentError::NotFound(ghost)),
             ("the master, which the model does not have", NodeId::MASTER, IntentError::NotFound(NodeId::MASTER)),
+            ("the only lane there is", lane_node, invalid("a session keeps its last lane")),
         ];
         for (what, node, error) in cases {
             assert_eq!(remove(&mut ctl, node), Err(error), "{what}");
@@ -3024,13 +3031,14 @@ type = "midi"
     }
 
     /// `LANES_IN_GROUPS` with one more modulator in the first group: an envelope whose cable drives the depth of the group LFO's cable to its
-    /// second member's pan, so that a lane that leaves the group takes with it a cable that no plugin or modulator of the lane is the end of.
+    /// second member's pan, so that a lane that leaves the group takes with it a cable that no plugin or modulator of the lane is the end of;
+    /// and a third group, empty and with a name of its own, after the two that are called by their places.
     fn groups_scene() -> (StubEngine, Controller) {
         let session = testutil::LANES_IN_GROUPS.replacen(
             "\n[[group]]\n[[group.modulator]]\nrate = 2.0\n",
             "\n[[group.modulator]]\ntype = \"envelope\"\n[[group.modulator.target]]\nmod_depth = [0, 1]\ndepth = 0.5\n\n[[group]]\n[[group.modulator]]\nrate = 2.0\n",
             1,
-        );
+        ) + "\n[[group]]\nname = \"Lead\"\n";
         assert_ne!(session, testutil::LANES_IN_GROUPS, "the envelope is in the session");
         let (handles, engine) = testutil::stub_engine();
         (engine, Controller::new(load(&session).model, handles, None))
@@ -3216,6 +3224,86 @@ type = "midi"
         assert!(rename(&mut ctl, group, &"å".repeat(65)).is_err());
     }
 
+    #[test]
+    fn remove_node_takes_a_group_out_with_its_effects_and_modulators_and_its_members_are_in_no_group() {
+        let (engine, mut ctl) = groups_scene();
+        let (group, lfo, envelope) = (group_node(&ctl, 0), ctl.model.groups[0].modulators[0].node, ctl.model.groups[0].modulators[1].node);
+        sent(&engine);
+        let applied = remove(&mut ctl, group).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        // Every cable of the group goes first (the one that drives the depth of another with it), then the group, and what the cables
+        // drove in the members, which stay, has the value that was set: the first member's detune, the second's pan and its modulator's rate.
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=1 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=0",
+                "RemoveGroup group=0",
+                "SetParameter inst=0 slot=0 param=1 value=0.000",
+                "SetParameter inst=3 slot=0 param=7 value=0.000",
+                "SetModulatorRate inst=3 mod=0 rate=6.000",
+            ]
+        );
+        assert_eq!(ctl.model.groups.len(), 2, "the other two are the first and the second now");
+        assert_eq!(ctl.model.groups[1].name.as_deref(), Some("Lead"));
+        assert_eq!(groups_of_lanes(&ctl), [None, None, Some(0), None], "its members are in no group, and the lane of the group after it has its index");
+        for gone in [group, lfo, envelope] {
+            assert_eq!(ctl.model.locate(gone), None, "the node is gone");
+        }
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+        // And its node is not handed out again.
+        ctl.apply(Intent::AddGroup { members: vec![] }).unwrap();
+        assert!(ctl.model.nodes().all(|(id, _)| id != group));
+    }
+
+    #[test]
+    fn remove_node_takes_a_lane_out_with_its_plugins_and_modulators_and_the_cables_of_its_group_to_it() {
+        let (engine, mut ctl) = groups_scene();
+        // Lane 3 is the second member of the first group, which drives its pan and the rate of its modulator, and the depth of the first
+        // of those by a cable of an envelope; it has a reverb and a modulator.
+        let lane3 = lane_node(&ctl, 3);
+        let (effect, modulator) = (ctl.model.instruments[3].effects[0].node, ctl.model.instruments[3].modulators[0].node);
+        sent(&engine);
+        let applied = remove(&mut ctl, lane3).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(
+            sent(&engine),
+            [
+                "RemoveGroupModTarget group=0 mod=1 target=0",
+                "RemoveGroupModTarget group=0 mod=0 target=1",
+                "RemoveGroupModTarget group=0 mod=0 target=1",
+                "RemoveInstrument inst=3",
+            ]
+        );
+        assert_eq!(ctl.model.instruments.len(), 3);
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), None, Some(1)]);
+        for gone in [lane3, effect, modulator] {
+            assert_eq!(ctl.model.locate(gone), None, "the node is gone");
+        }
+        let left: Vec<_> = ctl.model.groups[0].modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.param_name.clone())).collect();
+        assert_eq!(left, ["detune"], "the group keeps the cable to its first member only");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn remove_node_takes_a_lane_that_has_no_instrument_out_too() {
+        let (engine, mut ctl) = controller();
+        // (`SESSION` has a lane in the group and one with nothing in it.)
+        let empty = ctl.model.instruments[1].node;
+        sent(&engine);
+        assert_eq!(remove(&mut ctl, empty), Ok(Applied::restructured(1)));
+        assert_eq!(sent(&engine), ["RemoveInstrument inst=1"]);
+        assert_eq!(ctl.model.instruments.len(), 1);
+        assert_eq!(ctl.model.locate(empty), None);
+        ctl.model.check_ids().unwrap();
+    }
+
     /// What a session comes to, for the fixture of what the intents of groups do: the nodes (their id, their parent and their name), the
     /// audio path, the modulation cables, and the two lists of the layout of the telemetry (without its fingerprint), each entry as a
     /// line of text the web client's tests make of its own copy by the same rules (`web/src/client/groups.test.ts`).
@@ -3257,16 +3345,16 @@ type = "midi"
         })
     }
 
-    /// The session of `groups_scene()` and what the controller makes of the intents that add a group, put a lane in one and name one,
-    /// as the web client's tests read it (`web/src/client/fixtures/groups.json`): they pin the mock engine's to the controller's, intent by
-    /// intent. One that is taken gives what the session comes to (`shape_of`; for a name, the name the group has), one that is refused the
+    /// The session of `groups_scene()` and what the controller makes of the intents that add a group, put a lane in one, name one and take
+    /// a lane or a group out, as the web client's tests read it (`web/src/client/fixtures/groups.json`): they pin the mock engine's to the
+    /// controller's, intent by intent. One that is taken gives what the session comes to (`shape_of`; for a name, the name the group has), one that is refused the
     /// controller's words. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
     #[test]
     fn the_web_clients_fixture_of_what_the_intents_of_groups_come_to_is_current() {
         let (_engine, ctl) = groups_scene();
         let before = ctl.snapshot();
         let lanes: Vec<NodeId> = (0..4).map(|i| lane_node(&ctl, i)).collect();
-        let (g0, g1) = (group_node(&ctl, 0), group_node(&ctl, 1));
+        let (g0, g1, g2) = (group_node(&ctl, 0), group_node(&ctl, 1), group_node(&ctl, 2));
         let effect = ctl.model.instruments[3].effects[0].node;
         let lane_modulator = ctl.model.instruments[1].modulators[0].node;
         let ghost = NodeId(9_999);
@@ -3284,6 +3372,10 @@ type = "midi"
             for group in [None, Some(g0), Some(g1)] {
                 intents.push(Intent::SetLaneGroup { node: *lane, group });
             }
+        }
+        // (And the third group, a named one: a lane in it, and one that goes from a group to it.)
+        for lane in [lanes[1], lanes[0]] {
+            intents.push(Intent::SetLaneGroup { node: lane, group: Some(g2) });
         }
         for node in [g0, effect, lane_modulator, NodeId::MASTER, ghost] {
             intents.push(Intent::SetLaneGroup { node, group: Some(g1) });
@@ -3315,8 +3407,16 @@ type = "midi"
                 intents.push(Intent::RenameGroup { node: group, name: name.clone() });
             }
         }
+        // (The third group, which has a name: given another, and given none, which is the default name for its place.)
+        for name in ["Strings", ""] {
+            intents.push(Intent::RenameGroup { node: g2, name: name.to_string() });
+        }
         for node in [lanes[0], effect, NodeId::MASTER, ghost] {
             intents.push(Intent::RenameGroup { node, name: "Strings".to_string() });
+        }
+        // Each lane and each group taken out, and what is neither (the master, a node that is not there).
+        for node in lanes.iter().copied().chain([g0, g1, g2, NodeId::MASTER, ghost]) {
+            intents.push(Intent::RemoveNode { node });
         }
 
         let mut rows = Vec::new();
@@ -3339,7 +3439,15 @@ type = "midi"
         let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
         // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
         snapshot["telemetry"]["rev"] = serde_json::json!(1);
-        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows });
+        // The one lane of the tracer scene, which a session keeps: what the controller says to taking it out.
+        let (handles, _engine) = testutil::stub_engine();
+        let mut tracer = Controller::new(load(include_str!("../../web/src/client/fixtures/tracer.toml")).model, handles, None);
+        let only = tracer.model.instruments[0].node;
+        let last_lane = match tracer.apply(Intent::RemoveNode { node: only }) {
+            Err(error) => serde_json::json!({ "node": only, "error": error.to_string() }),
+            Ok(_) => panic!("the only lane of a session was taken out"),
+        };
+        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows, "lastLane": last_lane });
         let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/groups.json");

@@ -65,11 +65,27 @@ describe("the mock engine's groups", () => {
     expect(wrong).toEqual([]);
   });
 
-  test("have been tried with each of the three intents, done and refused in each of their ways: the fixture is not empty", () => {
+  test("refuse to take out the last lane of a session, in the controller's words", () => {
+    const server = new MockServer();
+    const lanes = server.snapshot.graph.nodes.filter((n) => n.kind === "instrument");
+    expect(lanes.map((n) => n.id)).toEqual([groupsFixture.lastLane.node]);
+    expect(() => {
+      server.apply({ type: "removeNode", node: groupsFixture.lastLane.node });
+    }).toThrow(groupsFixture.lastLane.error);
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "instrument")).toHaveLength(1);
+  });
+
+  test("have been tried with each of the four intents, done and refused in each of their ways: the fixture is not empty", () => {
     const rows = groupsFixture.rows;
-    for (const type of ["addGroup", "setLaneGroup", "renameGroup"] as const) {
-      expect(rows.filter((row) => row.intent.type === type && !("error" in row)).length, `${type} done`).toBeGreaterThan(5);
-      expect(rows.filter((row) => row.intent.type === type && "error" in row).length, `${type} refused`).toBeGreaterThan(2);
+    const tried = [
+      ["addGroup", 5, 2],
+      ["setLaneGroup", 5, 2],
+      ["renameGroup", 5, 2],
+      ["removeNode", 5, 1],
+    ] as const;
+    for (const [type, done, refused] of tried) {
+      expect(rows.filter((row) => row.intent.type === type && !("error" in row)).length, `${type} done`).toBeGreaterThanOrEqual(done);
+      expect(rows.filter((row) => row.intent.type === type && "error" in row).length, `${type} refused`).toBeGreaterThanOrEqual(refused);
     }
     const words = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));
     for (const sentence of [

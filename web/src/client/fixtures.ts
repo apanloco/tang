@@ -60,14 +60,16 @@ export const pinsFixture = pins as unknown as {
  * A session with two groups, each with a modulator whose cables go to its members (a parameter, and the rate of a member's own modulator;
  * the first group has an envelope too, whose cable drives the depth of one of them), four lanes (two in the first group, one in the second, one
  * in none), and what the controller makes of the intents that add a group, put a
- * lane in one and name one: for one that is refused its words, for a name the name the group has, and for the others what the session comes
+ * lane in one, name one and take a lane or a group out: for one that is refused its words, for a name the name the group has, and for the others what the session comes
  * to: its nodes (the id, the parent and the name of each), the audio path, the modulation cables and the two lists of the layout of the
- * telemetry, a line of text for each entry, made by the rules of `shapeOf` in `groups.test.ts`. Written by the controller
+ * telemetry, a line of text for each entry, made by the rules of `shapeOf` in `groups.test.ts`; and, for the tracer's one lane, what the
+ * controller says to taking it out, since a session keeps a lane. Written by the controller
  * (`the_web_clients_fixture_of_what_the_intents_of_groups_come_to_is_current`).
  */
 export const groupsFixture = groups as unknown as {
   snapshot: Snapshot;
   rows: ({ intent: Intent } & ({ error: string } | { name: string } | { after: Shape }))[];
+  lastLane: { node: NodeId; error: string };
 };
 
 /** What a session comes to, for the fixture of the group intents: a line of text for each entry of each list. */

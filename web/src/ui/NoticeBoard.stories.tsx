@@ -27,7 +27,7 @@ export const SeveralRefusals: Story = {
   args: {
     notices: said(
       "Could not draw a cable from LFO to Filter: cutoff: that modulator drives that parameter already",
-      "Could not remove Oscillator: only a modulator can be removed so far",
+      "Could not remove Oscillator: a session keeps its last lane",
       "Could not take out that cable: there is no cable 99",
     ),
   },

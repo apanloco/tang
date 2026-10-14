@@ -219,7 +219,8 @@ function cablesThatGo(cables: readonly Edge[], start: Iterable<EdgeId>): Set<Edg
 /**
  * The session without the cables `going` and the nodes `nodesGone`. The layout of the telemetry follows: the
  * outputs of the modulators that go leave it, and so does the slot of the value a cable drove, unless another
- * cable still drives it (the layout names one slot for a parameter, whichever cables are left).
+ * cable still drives it (the layout names one slot for a parameter, whichever cables are left), and the meters of
+ * a lane or a group that goes.
  */
 function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: ReadonlySet<NodeId>): Snapshot {
   const cables = snapshot.graph.edges;
@@ -232,11 +233,12 @@ function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: Read
     return entry.kind === "effective" && aimedBefore.has(key) && !aimedAfter.has(key);
   };
   const modulation = snapshot.telemetry.modulation.filter((entry) => !leaves(entry));
-  const changed = modulation.length !== snapshot.telemetry.modulation.length;
+  const meters = snapshot.telemetry.meters.filter((entry) => !nodesGone.has(entry.node));
+  const changed = modulation.length !== snapshot.telemetry.modulation.length || meters.length !== snapshot.telemetry.meters.length;
   return {
     ...snapshot,
     graph: { nodes: snapshot.graph.nodes.filter((n) => !nodesGone.has(n.id)), edges },
-    telemetry: changed ? { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation } : snapshot.telemetry,
+    telemetry: changed ? { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, meters, modulation } : snapshot.telemetry,
   };
 }
 
@@ -318,15 +320,70 @@ function moveEffectOutcome(snapshot: Snapshot, node: NodeId, index: number): Out
 }
 
 /**
+ * A lane taken out of the session, as the controller does it (`Controller::remove_lane`): its instrument, its effects and its
+ * modulators go, with the links of its audio path, the cables of its own modulators (they reach only its own chain) and those of its
+ * group that end in it, and what drove the depth of any of them. A session keeps a lane: the last one is refused. (What the cables of
+ * its group were driving is gone with it: nothing is given back.)
+ */
+function removeLaneOutcome(snapshot: Snapshot, lane: Node): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  if (nodes.filter((n) => n.kind === "instrument").length < 2) return invalid("a session keeps its last lane");
+  const inside = new Set<NodeId>([lane.id, ...nodes.filter((n) => n.parent === lane.id).map((n) => n.id)]);
+  // (The cables of the lane's own modulators end inside the lane, so the cables that end there are the lane's own and its group's.)
+  const touching = edges.filter(isModulation).filter((e) => inside.has(e.to.node)).map((e) => e.id);
+  const taken = without(snapshot, cablesThatGo(edges, touching), inside);
+  return { restructured: { ...taken, graph: { ...taken.graph, edges: taken.graph.edges.filter((e) => e.kind === "modulation" || !inside.has(e.from.node)) } } };
+}
+
+/**
+ * A group taken out of the session, as the controller does it (`Controller::remove_group`): its bus effects and its modulators go with it,
+ * and the links of its audio path, and every cable of it (and what drove the depth of any of them); its members stay, in no group, their last
+ * link going into the master. The groups after it that have no name of their own are called by their places now (the graph has only the name a
+ * group is called, so a name that is "Group" and its own place is taken for the default one). (What the cables were driving in the
+ * members has the value that was set, which is the audio thread's to do.)
+ */
+function removeGroupOutcome(snapshot: Snapshot, group: Node): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  const master = nodes.find((n) => n.kind === "master");
+  if (!master) return invalid("the session has no master");
+  const inside = new Set<NodeId>([group.id, ...nodes.filter((n) => n.parent === group.id && n.kind !== "instrument").map((n) => n.id)]);
+  const touching = edges.filter(isModulation).filter((e) => inside.has(e.from.node) || inside.has(e.to.node)).map((e) => e.id);
+  const taken = without(snapshot, cablesThatGo(edges, touching), inside);
+  const groups = nodes.filter((n) => n.kind === "group");
+  const place = (id: NodeId): number => groups.findIndex((n) => n.id === id);
+  const renumbered = (n: Node): Node => {
+    const was = place(n.id);
+    return n.kind === "group" && was > place(group.id) && n.name === `Group ${was + 1}` ? { ...n, name: `Group ${was}` } : n;
+  };
+  const members = new Set(nodes.filter((n) => n.parent === group.id && n.kind === "instrument").map((n) => n.id));
+  return {
+    restructured: {
+      ...taken,
+      graph: {
+        nodes: taken.graph.nodes.map((n) => renumbered(members.has(n.id) ? { ...n, parent: null } : n)),
+        edges: taken.graph.edges.flatMap((e): Edge[] => {
+          if (e.kind === "modulation") return [e];
+          if (inside.has(e.from.node)) return [];
+          return e.to.node === group.id ? [{ from: e.from, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" }] : [e];
+        }),
+      },
+    },
+  };
+}
+
+/**
  * A node taken out of the session. A modulator: its own cables go with it, and so do those of the others that drove
  * its settings (a cable that ends at the modulator), and what drove the depth of any of them. An effect: see
- * `removeEffectOutcome`. Nothing else can be taken out yet.
+ * `removeEffectOutcome`; a lane, see `removeLaneOutcome`; a group, `removeGroupOutcome`. Nothing else can be taken out.
  */
 function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
   const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
   if (!found) return noNode(node);
   if (found.kind === "effect") return removeEffectOutcome(snapshot, found);
-  if (found.kind !== "modulator") return invalid("only a modulator or an effect can be removed so far");
+  if (found.kind === "instrument") return removeLaneOutcome(snapshot, found);
+  if (found.kind === "group") return removeGroupOutcome(snapshot, found);
+  // (What is left is a modulator: the master is no node of the model, as far as the controller goes.)
+  if (found.kind !== "modulator") return noNode(node);
   const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
   return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([node])) };
 }

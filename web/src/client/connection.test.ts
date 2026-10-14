@@ -608,19 +608,14 @@ describe("taking a modulator out", () => {
     expect(layout()).toEqual([]);
   });
 
-  test("is refused for what is neither a modulator nor an effect, and for what is not there, and changes nothing", async () => {
+  test("is refused for the last lane of a session, and for what is not there, and changes nothing", async () => {
     const server = new MockServer();
     const client = await open(server);
     const refusal = async (node: number): Promise<RequestError> => (await client.request({ type: "removeNode", node }).catch((e: unknown) => e)) as RequestError;
-    for (const node of [nodeNamed(tracerSnapshot, "Oscillator").id]) {
-      const failure = await refusal(node);
-      expect(failure).toBeInstanceOf(RequestError);
-      expect([failure.code, failure.message]).toEqual(["invalid", "only a modulator or an effect can be removed so far"]);
-    }
-    // (A group is no more one than a lane is.)
-    const grouped = await open(new MockServer({ snapshot: reachFixture.snapshot }));
-    const group = (await grouped.request({ type: "removeNode", node: 0 }).catch((e: unknown) => e)) as RequestError;
-    expect([group.code, group.message]).toEqual(["invalid", "only a modulator or an effect can be removed so far"]);
+    // (A session keeps a lane: the tracer has one.)
+    const failure = await refusal(nodeNamed(tracerSnapshot, "Oscillator").id);
+    expect(failure).toBeInstanceOf(RequestError);
+    expect([failure.code, failure.message]).toEqual(["invalid", "a session keeps its last lane"]);
     expect((await refusal(99)).code).toBe("notFound");
     // (The master is a node of the graph and not of the model: the controller does not find it.)
     expect((await refusal(MASTER)).code).toBe("notFound");

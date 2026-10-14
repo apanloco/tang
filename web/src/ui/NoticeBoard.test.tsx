@@ -21,7 +21,7 @@ describe("the notice board", () => {
     render(<NoticeBoard notices={notices} />);
     act(() => {
       notices.say("Could not add an LFO to Filter: a modulator goes in a lane or in a group");
-      notices.say("Could not remove Oscillator: only a modulator can be removed so far");
+      notices.say("Could not remove Oscillator: a session keeps its last lane");
     });
     expect(screen.getAllByText(/^Could not/)).toHaveLength(2);
     const first = screen.getByRole("button", { name: "Dismiss: Could not add an LFO to Filter: a modulator goes in a lane or in a group" });

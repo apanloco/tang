@@ -196,9 +196,9 @@ describe("adding an instrument", () => {
   });
 });
 
-// The session of the groups fixture: two groups (0 and 1; the first has two modulators, 12 and 13, the second one, 14), four lanes (2 and 9 in the
-// first group, 8 in the second, 4 in none; each has an instrument called Oscillator, and the canvas numbers what is called alike across the session in
-// the order of its graph), and the cables of the groups to their lanes.
+// The session of the groups fixture: three groups (0, 1 and 2, the last empty and called Lead; the first has two modulators, 13 and 14, the second one,
+// 15), four lanes (3 and 10 in the first group, 9 in the second, 5 in none; each has an instrument called Oscillator, and the canvas numbers what is called
+// alike across the session in the order of its graph), and the cables of the groups to their lanes.
 describe("adding a group", () => {
   const groups = { snapshot: groupsFixture.snapshot };
   const parentOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.parent;
@@ -206,32 +206,32 @@ describe("adding a group", () => {
   test("resolves with the node of the group it made, which is in the session then, and says nothing; the canvas is asked to show it", async () => {
     const { client, notices, shown, editor } = await open(groups);
     const id = await editor.addGroup();
-    expect(id).toBe(15);
-    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === id)).toMatchObject({ kind: "group", parent: null, name: "Group 3" });
+    expect(id).toBe(16);
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === id)).toMatchObject({ kind: "group", parent: null, name: "Group 4" });
     expect(said(notices)).toEqual([]);
-    expect(shown).toEqual([15]);
+    expect(shown).toEqual([16]);
     // The next is the next.
-    expect(await editor.addGroup()).toBe(16);
+    expect(await editor.addGroup()).toBe(17);
   });
 
   test("puts the lanes it is given in the group it makes, whatever group they were in", async () => {
     const { client, editor } = await open(groups);
-    const id = await editor.addGroup([4, 9]);
-    expect(id).toBe(15);
-    expect([2, 4, 8, 9].map((lane) => parentOf(client, lane))).toEqual([0, id, 1, id]);
+    const id = await editor.addGroup([5, 10]);
+    expect(id).toBe(16);
+    expect([3, 5, 9, 10].map((lane) => parentOf(client, lane))).toEqual([0, id, 1, id]);
   });
 
   test("takes the group that is new to the session, which is its own, when another front-end added one just before", async () => {
     const { server, editor } = await open(groups);
     server.apply({ type: "addGroup", members: [] });
-    expect(await editor.addGroup()).toBe(16);
-    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "group").map((n) => n.id)).toEqual([0, 1, 15, 16]);
+    expect(await editor.addGroup()).toBe(17);
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "group").map((n) => n.id)).toEqual([0, 1, 2, 16, 17]);
   });
 
   test("is refused for a member that is not a lane: it resolves with null, no group is made, and the page says what it could not do and why", async () => {
     const { client, notices, shown, editor } = await open(groups);
     expect(await editor.addGroup([0])).toBeNull();
-    expect(await editor.addGroup([4, 9999])).toBeNull();
+    expect(await editor.addGroup([5, 9999])).toBeNull();
     expect(said(notices)).toEqual([
       "Could not put Group 1 in a new group: only a lane can be put in a group",
       "Could not put Oscillator 2, that node in a new group: there is no node 9999",
@@ -244,7 +244,7 @@ describe("adding a group", () => {
     const { client, notices, editor } = await open(groups);
     client.stop();
     expect(await editor.addGroup()).toBeNull();
-    expect(await editor.addGroup([4])).toBeNull();
+    expect(await editor.addGroup([5])).toBeNull();
     expect(said(notices)).toEqual(["Could not add a group: Not connected to the server.", "Could not put Oscillator 2 in a new group: Not connected to the server."]);
   });
 });
@@ -255,10 +255,10 @@ describe("putting a lane in a group", () => {
 
   test("resolves true when the lane is in the group, which the session shows, and says nothing; and for null when it is in none", async () => {
     const { client, notices, editor } = await open(groups);
-    expect(await editor.setLaneGroup(4, 1)).toBe(true);
-    expect(parentOf(client, 4)).toBe(1);
-    expect(await editor.setLaneGroup(4, null)).toBe(true);
-    expect(parentOf(client, 4)).toBeNull();
+    expect(await editor.setLaneGroup(5, 1)).toBe(true);
+    expect(parentOf(client, 5)).toBe(1);
+    expect(await editor.setLaneGroup(5, null)).toBe(true);
+    expect(parentOf(client, 5)).toBeNull();
     expect(said(notices)).toEqual([]);
   });
 
@@ -266,10 +266,10 @@ describe("putting a lane in a group", () => {
     const { client, editor } = await open(groups);
     const cables = () => client.state.snapshot?.graph.edges.flatMap((e) => (e.kind === "modulation" ? [e.id] : []));
     expect(cables()).toEqual([0, 1, 2, 3, 4]);
-    expect(await editor.setLaneGroup(2, null)).toBe(true);
+    expect(await editor.setLaneGroup(3, null)).toBe(true);
     expect(cables()).toEqual([1, 2, 3, 4]);
-    // Cable 3 (the first group's envelope) drives the depth of cable 1 (the LFO's, to the pan of lane 9), so it goes when cable 1 does.
-    expect(await editor.setLaneGroup(9, 1)).toBe(true);
+    // Cable 3 (the first group's envelope) drives the depth of cable 1 (the LFO's, to the pan of lane 10), so it goes when cable 1 does.
+    expect(await editor.setLaneGroup(10, 1)).toBe(true);
     expect(cables()).toEqual([4]);
   });
 
@@ -278,8 +278,8 @@ describe("putting a lane in a group", () => {
     // (The notices keep the last few: each is read as it is said.)
     const cases: [number, number | null, string][] = [
       [0, 1, "Could not put Group 1 in Group 2: only a lane can be put in a group"],
-      [4, 2, "Could not put Oscillator 2 in Oscillator 1: that node is not a group"],
-      [4, 9999, "Could not put Oscillator 2 in that node: there is no node 9999"],
+      [5, 3, "Could not put Oscillator 2 in Oscillator 1: that node is not a group"],
+      [5, 9999, "Could not put Oscillator 2 in that node: there is no node 9999"],
       [9999, null, "Could not take that node out of its group: there is no node 9999"],
     ];
     for (const [lane, group, words] of cases) {
@@ -292,8 +292,8 @@ describe("putting a lane in a group", () => {
   test("with no connection says so", async () => {
     const { client, notices, editor } = await open(groups);
     client.stop();
-    expect(await editor.setLaneGroup(4, 1)).toBe(false);
-    expect(await editor.setLaneGroup(2, null)).toBe(false);
+    expect(await editor.setLaneGroup(5, 1)).toBe(false);
+    expect(await editor.setLaneGroup(3, null)).toBe(false);
     expect(said(notices)).toEqual([
       "Could not put Oscillator 2 in Group 2: Not connected to the server.",
       "Could not take Oscillator 1 out of its group: Not connected to the server.",
@@ -322,7 +322,7 @@ describe("naming a group", () => {
       // (A character is not always one unit of a string: the quote is cut after 24 of them, not after 24 units.)
       [0, "😀".repeat(65), `Could not give Group 1 the name "${"😀".repeat(24)}…": a name is at most 64 characters`],
       [0, "two\nlines", 'Could not give Group 1 the name "two\\nlines": a name has no control characters'],
-      [2, "Strings", 'Could not give Oscillator 1 the name "Strings": only a group has a name to change'],
+      [3, "Strings", 'Could not give Oscillator 1 the name "Strings": only a group has a name to change'],
       [9999, "Strings", 'Could not give that node the name "Strings": there is no node 9999'],
     ];
     for (const [node, name, words] of cases) {
@@ -874,12 +874,12 @@ describe("taking a node out", () => {
     expect(said(notices)).toEqual([]);
   });
 
-  test("that cannot be taken out says what and why", async () => {
+  test("that cannot be taken out (the last lane of a session, a node that is not there) says what and why", async () => {
     const { notices, editor } = await open();
     expect(await editor.removeNode(oscillator.id)).toBe(false);
     expect(await editor.removeNode(999)).toBe(false);
     expect(said(notices)).toEqual([
-      "Could not remove Oscillator: only a modulator or an effect can be removed so far",
+      "Could not remove Oscillator: a session keeps its last lane",
       "Could not remove that node: there is no node 999",
     ]);
   });

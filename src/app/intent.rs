@@ -131,11 +131,13 @@ pub enum Intent {
     /// The engine has no use for it, but it is saved with the session and told to every client. Refused, with nothing changed, for a
     /// node that is not a group and a name that is not one.
     RenameGroup { node: NodeId, name: String },
-    /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
-    /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
-    /// effect, with the cables that drive its parameters (and what drove their depths): what they were
-    /// driving goes with it, and the audio path closes up. A lane and a group are refused so far, as is any
-    /// other node.
+    /// Take a node out of the session, for good: there is no undo. A modulator can be, with its own cables and the
+    /// cables of the others that drove its settings (and what drove the depth of any of those), and so can an
+    /// effect or a bus effect, with the cables that drive its parameters (and what drove their depths): what they
+    /// were driving goes with it, and the audio path closes up. A lane goes with its instrument, its effects and its
+    /// modulators, and the cables of its group to it; the last lane of a session is refused (a session keeps one).
+    /// A group goes with its bus effects, its modulators and every cable of it: its members stay, in no group, and
+    /// what its cables were driving in them has the value that was set. Any other node (the master) is refused.
     RemoveNode { node: NodeId },
     /// Move an effect to another place in its chain: `node` is the node of an effect in a lane's chain or on a group's bus, and `index`
     /// the place it is to have among the effects of that chain, from 0 (the first, the nearest the instrument or the group) to one less
