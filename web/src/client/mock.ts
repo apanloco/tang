@@ -268,6 +268,56 @@ function removeEffectOutcome(snapshot: Snapshot, effect: Node): Outcome {
 }
 
 /**
+ * An effect (a lane's or a bus's) moved to place `index` of its chain, as the controller does it (`Controller::move_effect`,
+ * `move_bus_effect`): the effects between its old place and its new one move one place the other way, and the audio path goes through
+ * them in the new order. The graph lists the nodes of a lane, or of a group's bus, together (the lane or the group, its effects, its
+ * modulators), so the effects change places among themselves, in the places they take in the list; the links of the chain stay where
+ * they are in the list of edges, from the lane or the group through the effects in their new order to where the chain ended (a member
+ * lane's chain ends in its group, a bus's and an ungrouped lane's in the master). The cables and the layout of the telemetry are what
+ * they were: they name the plugins by their nodes, which are the same. Refused for what is no effect, a place the chain has not, and
+ * the place the effect is at.
+ */
+function moveEffectOutcome(snapshot: Snapshot, node: NodeId, index: number): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return noNode(node);
+  if (found.kind !== "effect") return invalid("only an effect can be moved");
+  const { nodes, edges } = snapshot.graph;
+  const chain = nodes.filter((n) => n.kind === "effect" && n.parent === found.parent);
+  if (!Number.isInteger(index) || index < 0 || index >= chain.length) return invalid(`the chain has no place ${String(index)}`);
+  const from = chain.indexOf(found);
+  if (index === from) return invalid("that effect is at that place already");
+  const owner = nodes.find((n) => n.id === found.parent);
+  const moved = [...chain];
+  moved.splice(from, 1);
+  moved.splice(index, 0, found);
+
+  // The links of the chain, from the owner through the effects to where it ends: where they are in the list, and what the last one is.
+  const joined = new Set<NodeId>([...(owner ? [owner.id] : []), ...chain.map((n) => n.id)]);
+  const slots = edges.flatMap((e, i) => (e.kind !== "modulation" && joined.has(e.from.node) ? [i] : []));
+  const out = edges[slots.at(-1) ?? -1];
+  if (!owner || slots.length !== chain.length + 1 || !out || out.kind === "modulation") return invalid("that has no audio path to reorder");
+  const path = [owner.id, ...moved.map((n) => n.id)];
+  const links = path.map((leaves, i): Edge => {
+    const next = path[i + 1];
+    const from = { node: leaves, port: { type: "audioOut" } } as const;
+    return next === undefined ? { from, to: out.to, kind: out.kind } : { from, to: { node: next, port: { type: "audioIn" } }, kind: "audio" };
+  });
+
+  const inChain = new Set(chain);
+  let nextNode = 0;
+  let nextLink = 0;
+  return {
+    restructured: {
+      ...snapshot,
+      graph: {
+        nodes: nodes.map((n) => (inChain.has(n) ? (moved[nextNode++] ?? n) : n)),
+        edges: edges.map((e, i) => (slots.includes(i) ? (links[nextLink++] ?? e) : e)),
+      },
+    },
+  };
+}
+
+/**
  * A node taken out of the session. A modulator: its own cables go with it, and so do those of the others that drove
  * its settings (a cable that ends at the modulator), and what drove the depth of any of them. An effect: see
  * `removeEffectOutcome`. Nothing else can be taken out yet.
@@ -528,6 +578,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
+  if (intent.type === "moveEffect") return moveEffectOutcome(snapshot, intent.node, intent.index);
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");

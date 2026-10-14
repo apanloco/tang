@@ -1526,7 +1526,7 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::load;
+    use crate::app::testutil::{LONG_CHAINS, load};
     use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModSource, ModTargetKind as K};
 
     #[test]
@@ -2945,88 +2945,6 @@ depth = 0.5
         assert_eq!(names, ["Filter", "Reverb"]);
         assert_eq!(model.groups[0].modulators[0].targets.len(), 6);
     }
-
-    /// A group with four bus effects (two filters and two reverbs) and a lane in it that has four effects of its own: the
-    /// group's modulator has a cable to each of the eight plugins, and the lane's modulator a cable to each of its four.
-    const LONG_CHAINS: &str = r#"
-[[group]]
-[[group.effect]]
-plugin = "builtin:filter"
-[[group.effect]]
-plugin = "builtin:reverb"
-[[group.effect]]
-plugin = "builtin:filter"
-[[group.effect]]
-plugin = "builtin:reverb"
-[[group.modulator]]
-rate = 1.0
-[[group.modulator.target]]
-bus = 0
-param = "cutoff"
-depth = 0.1
-[[group.modulator.target]]
-bus = 1
-param = "damping"
-depth = 0.2
-[[group.modulator.target]]
-bus = 2
-param = "cutoff"
-depth = 0.3
-[[group.modulator.target]]
-bus = 3
-param = "damping"
-depth = 0.4
-[[group.modulator.target]]
-member = 0
-slot = 1
-param = "cutoff"
-depth = 0.1
-[[group.modulator.target]]
-member = 0
-slot = 2
-param = "damping"
-depth = 0.2
-[[group.modulator.target]]
-member = 0
-slot = 3
-param = "cutoff"
-depth = 0.3
-[[group.modulator.target]]
-member = 0
-slot = 4
-param = "damping"
-depth = 0.4
-
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument.effect]]
-plugin = "builtin:filter"
-[[instrument.effect]]
-plugin = "builtin:reverb"
-[[instrument.effect]]
-plugin = "builtin:filter"
-[[instrument.effect]]
-plugin = "builtin:reverb"
-[[instrument.modulator]]
-rate = 2.0
-[[instrument.modulator.target]]
-slot = 1
-param = "cutoff"
-depth = 0.1
-[[instrument.modulator.target]]
-slot = 2
-param = "damping"
-depth = 0.2
-[[instrument.modulator.target]]
-slot = 3
-param = "cutoff"
-depth = 0.3
-[[instrument.modulator.target]]
-slot = 4
-param = "damping"
-depth = 0.4
-"#;
 
     /// What every cable of `LONG_CHAINS` drives (the group's, then the lane's), as the model says: the node of the plugin and the
     /// parameter's index.

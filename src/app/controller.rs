@@ -1620,6 +1620,51 @@ plugin = "builtin:reverb"
     }
 
     #[test]
+    fn an_effect_moved_by_an_intent_is_in_its_new_place_in_the_snapshot_the_subscribers_are_given_with_the_audio_path_through_it_and_the_cables_on_the_same_plugins() {
+        use crate::app::graph::{Edge, EdgeKind, Endpoint, NodeKind, Port};
+        let (_engine, mut ctl) = controller_for(testutil::CHAINS);
+        let mirror = Mirror::join(&mut ctl);
+        let before = mirror.copy();
+        let (lane, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        let (filter, reverb) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[1].node);
+        // The nodes of a lane's chain, in the order the graph lists them, and the links of its audio path.
+        let chain_of = |snapshot: &Snapshot, parent: crate::app::model::NodeId| -> Vec<crate::app::model::NodeId> {
+            snapshot.graph.nodes.iter().filter(|n| n.parent == Some(parent) && matches!(n.kind, NodeKind::Effect { .. })).map(|n| n.id).collect()
+        };
+        let links_from = |snapshot: &Snapshot, nodes: &[crate::app::model::NodeId]| -> Vec<(crate::app::model::NodeId, crate::app::model::NodeId, bool)> {
+            snapshot
+                .graph
+                .edges
+                .iter()
+                .filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. }) && nodes.contains(&e.from.node))
+                .map(|e| (e.from.node, e.to.node, matches!(e.kind, EdgeKind::Member)))
+                .collect()
+        };
+        assert_eq!(chain_of(&before, lane), [filter, reverb]);
+        assert_eq!(links_from(&before, &[lane, filter, reverb]), [(lane, filter, false), (filter, reverb, false), (reverb, group, true)]);
+
+        let applied = ctl.apply(Intent::MoveEffect { node: filter, index: 1 }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        let told = mirror.copy();
+        // The graph lists the reverb first now, and the audio path goes lane, reverb, filter, and out to the group, the last link being the member's.
+        assert_eq!(chain_of(&told, lane), [reverb, filter]);
+        assert_eq!(links_from(&told, &[lane, filter, reverb]), [(lane, reverb, false), (reverb, filter, false), (filter, group, true)]);
+        // The links are where they were in the list of edges: the audio path first, one chain after the other.
+        let positions = |snapshot: &Snapshot| -> Vec<usize> { snapshot.graph.edges.iter().enumerate().filter(|(_, e)| !matches!(e.kind, EdgeKind::Modulation { .. })).map(|(i, _)| i).collect() };
+        assert_eq!(positions(&told), positions(&before));
+        // The cables are the same cables, on the same plugins: what each drives is the node and the parameter it was.
+        let cables = |snapshot: &Snapshot| -> Vec<Edge> { snapshot.graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).cloned().collect() };
+        assert_eq!(cables(&told), cables(&before));
+        assert!(cables(&told).iter().any(|e| e.to == Endpoint { node: filter, port: Port::Param { index: 0 } }));
+        // The slots the audio thread publishes are the same, for the same nodes: a move changes no layout.
+        assert_eq!(told.telemetry, before.telemetry);
+        assert!(told.meta.dirty);
+        assert!(!ctl.resync(), "and there is nothing left to tell");
+    }
+
+    #[test]
     fn nobody_is_told_of_a_change_of_structure_while_nobody_listens() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
         ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5));

@@ -853,6 +853,112 @@ param = "cutoff"
 depth = 0.2
 "#;
 
+/// Chains long enough to be moved about in: a group with four bus effects (two filters and two reverbs) and a lane in it that has four
+/// effects of its own, then a lane in no group with three. The group's modulator has a cable to each of the eight plugins of the group's
+/// and its member's chains, the member's modulator a cable to each of its four, and the other lane's a cable to each of its three.
+pub const LONG_CHAINS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.1
+[[group.modulator.target]]
+bus = 1
+param = "damping"
+depth = 0.2
+[[group.modulator.target]]
+bus = 2
+param = "cutoff"
+depth = 0.3
+[[group.modulator.target]]
+bus = 3
+param = "damping"
+depth = 0.4
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[group.modulator.target]]
+member = 0
+slot = 2
+param = "damping"
+depth = 0.2
+[[group.modulator.target]]
+member = 0
+slot = 3
+param = "cutoff"
+depth = 0.3
+[[group.modulator.target]]
+member = 0
+slot = 4
+param = "damping"
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[instrument.modulator.target]]
+slot = 2
+param = "damping"
+depth = 0.2
+[[instrument.modulator.target]]
+slot = 3
+param = "cutoff"
+depth = 0.3
+[[instrument.modulator.target]]
+slot = 4
+param = "damping"
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 3.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.1
+[[instrument.modulator.target]]
+slot = 2
+param = "damping"
+depth = 0.2
+[[instrument.modulator.target]]
+slot = 3
+param = "cutoff"
+depth = 0.3
+"#;
+
 /// Panic, showing where, if two models differ anywhere. They are compared by their
 /// `Debug` dumps, so a field added to the model later is covered without touching this.
 pub fn assert_same_model(what: &str, a: &SessionModel, b: &SessionModel) {

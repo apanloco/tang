@@ -3818,6 +3818,105 @@ plugin = "builtin:reverb"
         assert!(h.s.ctl.dirty);
     }
 
+    /// A lane with a filter and then a reverb, and a group with a filter and then a reverb on its bus and a lane in it.
+    const TWO_CHAINS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+"#;
+
+    /// Where the line that has `text` is in the tree.
+    fn line_of(h: &Harness, text: &str) -> usize {
+        h.tree().iter().position(|line| line.contains(text)).unwrap_or_else(|| panic!("no {text:?} in {:#?}", h.tree()))
+    }
+
+    #[test]
+    fn the_cursor_follows_its_effect_when_a_browser_moves_it_and_the_tree_shows_the_new_order() {
+        let mut h = Harness::new(TWO_CHAINS);
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        let filter = cursor_node(&h);
+        assert!(line_of(&h, "fx Filter  [Built-in]") < line_of(&h, "fx Reverb  [Built-in]"), "{:#?}", h.tree());
+        browser(&mut h, Intent::MoveEffect { node: filter, index: 1 });
+        // (The lane's two effects are the first two of the tree's effects; the bus has its own, marked.)
+        let lane_filter = h.tree().iter().position(|line| line.contains("fx Filter  [Built-in]") && !line.contains("(bus)")).unwrap();
+        let lane_reverb = h.tree().iter().position(|line| line.contains("fx Reverb  [Built-in]") && !line.contains("(bus)")).unwrap();
+        assert!(lane_reverb < lane_filter, "the reverb is first now: {:#?}", h.tree());
+        assert_eq!(cursor_node(&h), filter, "{:#?}", h.tree());
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 0, index: 1 });
+        assert!(h.s.ctl.dirty);
+        // What `d` takes out is the filter, which the person was on, and not what has come to its place.
+        h.press(KeyCode::Char('d'));
+        let chain: Vec<_> = h.s.ctl.model.instruments[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(chain, ["Reverb"]);
+    }
+
+    #[test]
+    fn the_cursor_is_left_where_it_was_by_a_move_of_an_effect_it_is_not_on() {
+        let mut h = Harness::new(TWO_CHAINS);
+        h.goto(TreeAddress::Instrument(0));
+        let lane = cursor_node(&h);
+        let filter = h.s.ctl.model.instruments[0].effects[0].node;
+        browser(&mut h, Intent::MoveEffect { node: filter, index: 1 });
+        assert_eq!(cursor_node(&h), lane);
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Instrument(0));
+    }
+
+    #[test]
+    fn a_bus_effect_a_browser_moves_is_in_its_new_place_in_the_tree_and_the_cursor_follows_it() {
+        let mut h = Harness::new(TWO_CHAINS);
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 1 });
+        let reverb = cursor_node(&h);
+        browser(&mut h, Intent::MoveEffect { node: reverb, index: 0 });
+        assert!(line_of(&h, "fx Reverb  [Built-in]  (bus)") < line_of(&h, "fx Filter  [Built-in]  (bus)"), "{:#?}", h.tree());
+        assert_eq!(cursor_node(&h), reverb);
+        assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::GroupEffect { group: 0, index: 0 });
+        assert!(h.s.ctl.dirty);
+    }
+
+    #[test]
+    fn a_value_typed_in_the_tui_goes_to_the_effect_it_was_typed_for_when_a_browser_moves_it() {
+        let mut h = Harness::new(TWO_CHAINS);
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        h.press(KeyCode::Enter); // into the filter's parameters, on the first: the cutoff
+        let filter = cursor_node(&h);
+        h.press(KeyCode::Enter); // the value popup
+        assert!(h.s.editing.is_some());
+        for _ in 0..8 {
+            h.press(KeyCode::Backspace);
+        }
+        h.type_chars("0.25");
+        browser(&mut h, Intent::MoveEffect { node: filter, index: 1 });
+        assert!(h.s.editing.is_some(), "what was being typed is for a node that is still there");
+        h.press(KeyCode::Enter);
+        let effects = &h.s.ctl.model.instruments[0].effects;
+        assert_eq!((effects[1].name.as_str(), effects[1].params[0].value), ("Filter", 0.25), "the filter, which is the second now, has it");
+        assert_ne!(effects[0].params[0].value, 0.25, "and the reverb, which has come to the filter's place, does not");
+    }
+
+    #[test]
+    fn a_selector_of_presets_is_closed_when_a_browser_moves_an_effect_whose_place_it_holds() {
+        let mut h = Harness::new(TWO_CHAINS);
+        h.goto(TreeAddress::Effect { inst: 0, index: 1 }); // the reverb, which has presets
+        h.press(KeyCode::Char('p'));
+        assert!(h.s.preset_selector.is_some(), "the reverb has presets");
+        let filter = h.s.ctl.model.instruments[0].effects[0].node;
+        browser(&mut h, Intent::MoveEffect { node: filter, index: 1 });
+        assert!(h.s.preset_selector.is_none(), "it holds the place of an effect that has moved");
+    }
+
     #[test]
     fn popups_are_closed_when_a_browser_takes_out_the_effect_the_cursor_was_on() {
         let mut h = Harness::new(

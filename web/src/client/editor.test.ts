@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import type { Port } from "../protocol";
 import { Client } from "./connection";
-import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { MASTER, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 import { Editor } from "./editor";
@@ -224,6 +224,56 @@ describe("replacing an instrument", () => {
     client.stop();
     expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(false);
     expect(said(notices)).toEqual(["Could not change the instrument of Oscillator to Oscillator: Not connected to the server."]);
+  });
+});
+
+describe("moving an effect", () => {
+  // The session of the moves fixture: a group (0) with four bus effects (1 to 4), a lane in it (5) with four effects (6 to 9), and a lane
+  // in no group (11) with three (12 to 14). The names the canvas gives are numbered across the session in the order of its graph: the bus's
+  // are Filter 1, Reverb 1, Filter 2 and Reverb 2, the first lane's Filter 3, Reverb 3, Filter 4 and Reverb 4.
+  const chain = (client: Client, parent: number): number[] =>
+    (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "effect" && n.parent === parent).map((n) => n.id);
+
+  test("resolves true when the effect is in its new place in its lane's chain, which the session shows, and says nothing", async () => {
+    const { client, notices, editor } = await open({ snapshot: movesFixture.snapshot });
+    expect(await editor.moveEffect(6, 2)).toBe(true);
+    expect(chain(client, 5)).toEqual([7, 8, 6, 9]);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    // The first place: the effects it passes move the other way.
+    expect(await editor.moveEffect(9, 0)).toBe(true);
+    expect(chain(client, 5)).toEqual([9, 7, 8, 6]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("moves a bus effect in its group's bus", async () => {
+    const { client, notices, editor } = await open({ snapshot: movesFixture.snapshot });
+    expect(await editor.moveEffect(1, 3)).toBe(true);
+    expect(chain(client, 0)).toEqual([2, 3, 4, 1]);
+    expect(chain(client, 5)).toEqual([6, 7, 8, 9]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for what is no effect, a place the chain has not and the place the effect is at: it resolves false, and the page says what it could not do and why, with the place counted from 1", async () => {
+    const { client, notices, editor } = await open({ snapshot: movesFixture.snapshot });
+    // (The notices keep the last few: each is read as it is said.)
+    for (const [node, index, words] of [
+      [5, 0, "Could not move Oscillator 1 to place 1 of its chain: only an effect can be moved"],
+      [6, 4, "Could not move Filter 3 to place 5 of its chain: the chain has no place 4"],
+      [6, 0, "Could not move Filter 3 to place 1 of its chain: that effect is at that place already"],
+      [MASTER, 1, "Could not move Master to place 2 of its chain: there is no node 4294967295"],
+      [9999, 1, "Could not move that node to place 2 of its chain: there is no node 9999"],
+    ] as const) {
+      expect(await editor.moveEffect(node, index)).toBe(false);
+      expect(said(notices).at(-1)).toBe(words);
+    }
+    expect(client.state.snapshot).toEqual(movesFixture.snapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open({ snapshot: movesFixture.snapshot });
+    client.stop();
+    expect(await editor.moveEffect(6, 2)).toBe(false);
+    expect(said(notices)).toEqual(["Could not move Filter 3 to place 3 of its chain: Not connected to the server."]);
   });
 });
 

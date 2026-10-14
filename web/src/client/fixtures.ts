@@ -10,6 +10,7 @@ import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
 import fields from "./fixtures/fields.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
+import moves from "./fixtures/moves.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
@@ -29,6 +30,18 @@ export const reachFixture = reach as unknown as { snapshot: Snapshot; reach: Rec
  * written by the controller (`the_web_clients_fixture_of_what_a_modulator_reaches_of_the_others_is_current`).
  */
 export const fieldsFixture = fields as unknown as { snapshot: Snapshot; fields: Record<string, { node: NodeId; port: Port }[]> };
+
+/**
+ * A session with a group whose bus has four effects, a lane in it with four of its own and a lane in no group with three (a modulator in each
+ * rack, with a cable to every plugin), and what the controller makes of asking it to move each of its nodes to each of some places: for a move
+ * that is done the order of the nodes of the graph afterwards and the links of the audio path in the order of the graph's edges (the node each
+ * leaves, the node it goes to, and its kind), for one that is refused its words. Written by the controller
+ * (`the_web_clients_fixture_of_what_moving_an_effect_comes_to_is_current`).
+ */
+export const movesFixture = moves as unknown as {
+  snapshot: Snapshot;
+  moves: ({ node: NodeId; index: number } & ({ error: string } | { nodes: NodeId[]; audio: [NodeId, NodeId, "audio" | "member"][] }))[];
+};
 
 /** The built-in plugins as the server lists them in its catalog, which the mock engine serves: written by Rust (`the_web_clients_fixture_of_the_builtins_is_current`). */
 export const builtinCatalog = builtins as CatalogEntry[];

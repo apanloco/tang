@@ -51,6 +51,7 @@ impl Controller {
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
+            Intent::MoveEffect { node, index } => self.move_effect_intent(node, index)?,
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
@@ -390,6 +391,21 @@ impl Controller {
         Ok(Done::Restructured)
     }
 
+    fn move_effect_intent(&mut self, node: NodeId, index: u32) -> Result<Done, IntentError> {
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            NodePath::Effect { inst, index: from } => {
+                let to = place_to_move_to(from, self.model.instruments[inst].effects.len(), index)?;
+                self.move_effect(inst, from, to);
+            }
+            NodePath::GroupEffect { group, index: from } => {
+                let to = place_to_move_to(from, self.model.groups[group].effects.len(), index)?;
+                self.move_bus_effect(group, from, to);
+            }
+            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } => return Err(invalid("only an effect can be moved")),
+        }
+        Ok(Done::Restructured)
+    }
+
     fn load_preset(&mut self, node: NodeId, preset_id: &str) -> Result<Event, IntentError> {
         let at = self.locate_plugin(node)?;
         let PluginAt::Lane { inst, slot } = at else {
@@ -478,6 +494,19 @@ fn owner_name(at: ModulatorLocation) -> &'static str {
         ModulatorLocation::Lane(_) => "lane",
         ModulatorLocation::Group(_) => "group",
     }
+}
+
+/// The place `index` in a chain of `places` effects, for the effect that is at `from` to be moved to: refused if the chain has
+/// no such place, or if the effect is at it.
+fn place_to_move_to(from: usize, places: usize, index: u32) -> Result<usize, IntentError> {
+    let to = index as usize;
+    if to >= places {
+        return Err(invalid(format!("the chain has no place {index}")));
+    }
+    if to == from {
+        return Err(invalid("that effect is at that place already"));
+    }
+    Ok(to)
 }
 
 fn invalid(why: impl Into<String>) -> IntentError {
@@ -2184,6 +2213,74 @@ type = "midi"
         );
     }
 
+    /// `LONG_CHAINS` (a bus of four effects, a grouped lane with four and a lane in no group with three) over the stub engine.
+    fn long_chains() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(testutil::LONG_CHAINS).model, handles, None))
+    }
+
+    /// The session of `long_chains()`, and what the controller makes of asking it to move each of its nodes to each of some places, as
+    /// the web client's tests read it (`web/src/client/fixtures/moves.json`): they pin the mock engine's moves to the controller's, node
+    /// by node and place by place. A move that is done gives the order of the nodes of the graph afterwards and the links of the audio
+    /// path (the node each leaves, the node it goes to, and its kind: `audio` or `member`), in the order of the graph's edges; the cables
+    /// and the layout of the telemetry are asserted to be what they were. One that is refused gives the controller's words.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_moving_an_effect_comes_to_is_current() {
+        use crate::app::graph::EdgeKind;
+        let (_engine, ctl) = long_chains();
+        let before = ctl.snapshot();
+        let cables = |snapshot: &crate::app::snapshot::Snapshot| -> Vec<crate::app::graph::Edge> {
+            snapshot.graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).cloned().collect()
+        };
+        // Every node of the session, the master, and one that is not there; an effect at each place of a chain and past it, the others at one.
+        let mut nodes: Vec<(NodeId, bool)> = ctl.model.nodes().map(|(id, path)| (id, matches!(path, NodePath::Effect { .. } | NodePath::GroupEffect { .. }))).collect();
+        nodes.extend([(NodeId::MASTER, false), (NodeId(9_999), false)]);
+        let mut moves = Vec::new();
+        for (node, is_effect) in nodes {
+            let places: &[u32] = if is_effect { &[0, 1, 2, 3, 4, 99] } else { &[0] };
+            for &index in places {
+                let (_engine, mut fresh) = long_chains();
+                let result = match fresh.apply(Intent::MoveEffect { node, index }) {
+                    Err(error) => serde_json::json!({ "node": node, "index": index, "error": error.to_string() }),
+                    Ok(_) => {
+                        let after = fresh.snapshot();
+                        assert_eq!(cables(&after), cables(&before), "a move leaves the cables as they were: {node:?} to {index}");
+                        assert_eq!(after.telemetry, before.telemetry, "and the layout of the telemetry: {node:?} to {index}");
+                        let audio: Vec<_> = after
+                            .graph
+                            .edges
+                            .iter()
+                            .filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. }))
+                            .map(|e| serde_json::json!([e.from.node, e.to.node, if matches!(e.kind, EdgeKind::Member) { "member" } else { "audio" }]))
+                            .collect();
+                        let order: Vec<_> = after.graph.nodes.iter().map(|n| n.id).collect();
+                        serde_json::json!({ "node": node, "index": index, "nodes": order, "audio": audio })
+                    }
+                };
+                moves.push(result);
+            }
+        }
+        let wire = serde_json::to_string(&before).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "moves": moves });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/moves.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what moving an effect comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     #[test]
     fn add_mod_edge_refuses_a_cable_to_a_setting_that_the_modulator_drives_already() {
         let (engine, mut ctl) = racks();
@@ -2430,6 +2527,113 @@ type = "midi"
         assert_eq!(remove(&mut ctl, filter), Err(IntentError::NotFound(filter)));
         assert!(sent(&engine).is_empty());
         assert_eq!(ctl.rev, 1, "a refusal is not a revision");
+    }
+
+    fn move_to(ctl: &mut Controller, node: NodeId, index: u32) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::MoveEffect { node, index })
+    }
+
+    #[test]
+    fn move_effect_puts_an_effect_at_a_place_of_its_lanes_chain_and_says_the_structure_changed() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let (engine, mut ctl) = chains();
+        sent(&engine);
+        // Lane 0's filter, which two modulators drive, goes after the reverb.
+        let (filter, reverb) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[1].node);
+        let applied = move_to(&mut ctl, filter, 1).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["ReorderEffect inst=0 from=0 to=1"]);
+        let chain: Vec<_> = ctl.model.instruments[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(chain, ["Reverb", "Filter"]);
+        assert!(ctl.dirty);
+        // The nodes are the ones they were, in other places.
+        assert_eq!(ctl.model.locate(filter), Some(NodePath::Effect { inst: 0, index: 1 }));
+        assert_eq!(ctl.model.locate(reverb), Some(NodePath::Effect { inst: 0, index: 0 }));
+        // The lane's first modulator drove the filter's cutoff in slot 1 and the reverb's damping in slot 2: it drives them in 2 and 1 now.
+        let kinds: Vec<_> = ctl.model.instruments[0].modulators[0].targets.iter().map(|t| t.kind.clone()).collect();
+        assert_eq!(kinds, [K::PluginParam { slot: 2, param_index: 0 }, K::PluginParam { slot: 1, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn move_effect_puts_a_bus_effect_at_a_place_of_its_groups_bus_by_the_groups_command() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let (engine, mut ctl) = chains();
+        sent(&engine);
+        // The group's reverb (1) goes before its filter (0).
+        let reverb = ctl.model.groups[0].effects[1].node;
+        let applied = move_to(&mut ctl, reverb, 0).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty());
+        assert_eq!(sent(&engine), ["ReorderGroupEffect group=0 from=1 to=0"]);
+        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(bus, ["Reverb", "Filter"]);
+        assert_eq!(ctl.model.locate(reverb), Some(NodePath::GroupEffect { group: 0, index: 0 }));
+        // The group's cables to the bus follow the plugins.
+        let bus_cables: Vec<_> = ctl.model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).filter(|k| matches!(k, K::GroupBus { .. })).collect();
+        assert_eq!(bus_cables, [K::GroupBus { effect_index: 1, param_index: 0 }, K::GroupBus { effect_index: 0, param_index: 2 }]);
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_effect_that_is_moved_and_moved_back_leaves_the_graph_as_it_was() {
+        let (_engine, mut ctl) = chains();
+        let before = ctl.model.graph();
+        let (filter, reverb) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[1].node);
+        move_to(&mut ctl, filter, 1).unwrap();
+        let swapped = ctl.model.graph();
+        assert_ne!(swapped, before);
+        move_to(&mut ctl, filter, 0).unwrap();
+        assert_eq!(ctl.model.graph(), before, "the same effect, back where it was");
+        // Of two effects, moving the other one the other way makes the same chain.
+        move_to(&mut ctl, reverb, 0).unwrap();
+        assert_eq!(ctl.model.graph(), swapped);
+        assert_eq!(ctl.rev, 3);
+        // And the same on the bus.
+        let (bus_filter, bus_reverb) = (ctl.model.groups[0].effects[0].node, ctl.model.groups[0].effects[1].node);
+        let before = ctl.model.graph();
+        move_to(&mut ctl, bus_filter, 1).unwrap();
+        let swapped = ctl.model.graph();
+        move_to(&mut ctl, bus_filter, 0).unwrap();
+        assert_eq!(ctl.model.graph(), before);
+        move_to(&mut ctl, bus_reverb, 0).unwrap();
+        assert_eq!(ctl.model.graph(), swapped);
+    }
+
+    #[test]
+    fn move_effect_refuses_what_is_no_effect_a_place_the_chain_has_not_and_the_place_the_effect_is_at_and_changes_nothing() {
+        let (engine, mut ctl) = chains();
+        sent(&engine);
+        let (lane_node, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        let (filter, bus_filter, lone) = (ctl.model.instruments[0].effects[0].node, ctl.model.groups[0].effects[0].node, ctl.model.instruments[2].effects[0].node);
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let ghost = NodeId(9_999);
+        let cases: [(&str, NodeId, u32, IntentError); 13] = [
+            ("a lane", lane_node, 0, invalid("only an effect can be moved")),
+            ("a group", group, 0, invalid("only an effect can be moved")),
+            ("a modulator", lfo, 0, invalid("only an effect can be moved")),
+            ("a node that is not there", ghost, 0, IntentError::NotFound(ghost)),
+            ("the master, which the model does not have", NodeId::MASTER, 0, IntentError::NotFound(NodeId::MASTER)),
+            ("a place past the end of the chain", filter, 2, invalid("the chain has no place 2")),
+            ("a place far past the end of the chain", filter, u32::MAX, invalid(format!("the chain has no place {}", u32::MAX))),
+            ("the place the effect is at", filter, 0, invalid("that effect is at that place already")),
+            ("the only effect of a chain, where it is", lone, 0, invalid("that effect is at that place already")),
+            ("the only effect of a chain, after it", lone, 1, invalid("the chain has no place 1")),
+            ("a place past the end of the bus", bus_filter, 2, invalid("the chain has no place 2")),
+            ("the place the bus effect is at", bus_filter, 0, invalid("that effect is at that place already")),
+            ("a place past the end of the bus, far", bus_filter, u32::MAX, invalid(format!("the chain has no place {}", u32::MAX))),
+        ];
+        for (what, node, index, error) in cases {
+            assert_eq!(move_to(&mut ctl, node, index), Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        let chains: Vec<Vec<_>> = ctl.model.instruments.iter().map(|lane| lane.effects.iter().map(|e| e.name.as_str()).collect()).collect();
+        assert_eq!(chains, [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
+        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(bus, ["Filter", "Reverb"]);
     }
 
     fn controller_with_file(path: &std::path::Path) -> (StubEngine, Controller) {

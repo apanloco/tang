@@ -112,6 +112,14 @@ pub enum Intent {
     /// driving goes with it, and the audio path closes up. A lane and a group are refused so far, as is any
     /// other node.
     RemoveNode { node: NodeId },
+    /// Move an effect to another place in its chain: `node` is the node of an effect in a lane's chain or on a group's bus, and `index`
+    /// the place it is to have among the effects of that chain, from 0 (the first, the nearest the instrument or the group) to one less
+    /// than the chain has. The effects between its old place and its new one move one place the other way, and the audio path goes
+    /// through them in the new order. The cables that drive the effect's parameters, and those that drive the other plugins of the lane
+    /// or of the bus, stay on the plugins they drove (the controller tells the audio thread the places they have now). Refused, with
+    /// nothing changed, for a node that is not an effect (a lane, a group, a modulator), a place the chain has not, and the place the
+    /// effect is at.
+    MoveEffect { node: NodeId, index: u32 },
     /// Write the session to the file it came from. A client does not name a file: it is the
     /// session's own. Refused (`IntentError::Io`) if the session has no file or it cannot be written,
     /// and then nothing changes.
@@ -343,6 +351,7 @@ mod tests {
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
+            (Intent::MoveEffect { node: NodeId(7), index: 0 }, json!({"type": "moveEffect", "node": 7, "index": 0})),
             (
                 Intent::AddEffect { parent: NodeId(2), plugin: "builtin:filter".to_string() },
                 json!({"type": "addEffect", "parent": 2, "plugin": "builtin:filter"}),

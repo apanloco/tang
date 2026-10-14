@@ -31,6 +31,7 @@ const DOING: Record<Intent["type"], string> = {
   setLocked: "lock or unlock the piano",
   setNodeUi: "move a node",
   removeNode: "remove a node",
+  moveEffect: "move an effect along its chain",
   save: "save the session",
 };
 
@@ -163,6 +164,16 @@ export class Editor {
   /** Take the modulator or effect `node` out, with the cables that drive it (and, for a modulator, those it drives). True if it went. */
   removeNode(node: NodeId): Promise<boolean> {
     return this.#attempt(`remove ${this.#name(node)}`, { type: "removeNode", node });
+  }
+
+  /**
+   * Move the effect `node` (a lane's or a bus's) to place `index` of its chain, 0 being the first, the nearest the instrument or the
+   * group: the effects between its place and the new one move one place the other way, and the audio goes through them in the new
+   * order. The cables that drive them stay on the plugins they drove. True if it was moved (the page says why if it was not, with the place
+   * counted from 1, as a person counts).
+   */
+  moveEffect(node: NodeId, index: number): Promise<boolean> {
+    return this.#attempt(`move ${this.#name(node)} to place ${String(index + 1)} of its chain`, { type: "moveEffect", node, index });
   }
 
   /** Take the cable `edge` out. True if it went. */

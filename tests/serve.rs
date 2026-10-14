@@ -878,6 +878,133 @@ async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_t
     assert!(!cables_of(told).iter().any(|(_, to, port)| *to == lfo && port["type"] == "rate"), "{:?}", cables_of(told));
 }
 
+/// The names of the nodes of a snapshot message, in the order of its graph.
+fn node_names(snapshot: &Value) -> Vec<&str> {
+    snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect()
+}
+
+/// The id of the first node of a snapshot message that has this name.
+fn id_of(snapshot: &Value, name: &str) -> u64 {
+    snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("no node {name}"))["id"].as_u64().unwrap()
+}
+
+/// The links of the audio path of a snapshot message, in order, as (the node it leaves, the node it goes to, its kind).
+fn audio_path_of(snapshot: &Value) -> Vec<(u64, u64, String)> {
+    let edges = snapshot["snapshot"]["graph"]["edges"].as_array().unwrap();
+    edges
+        .iter()
+        .filter(|e| e["kind"] != "modulation")
+        .map(|e| (e["from"]["node"].as_u64().unwrap(), e["to"]["node"].as_u64().unwrap(), e["kind"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+/// Wait until the server has told the client that it can add the plugin `id` (the catalog comes after the snapshot, as far as the scan
+/// has got: the built-ins are the first batch, but an intent that comes before they are in is refused as for a plugin that is not
+/// installed).
+async fn until_installed(client: &mut Client, tang: &Tang, id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let message = next_json(client).await;
+        if message["type"] == "catalog" && message["entries"].as_array().unwrap().iter().any(|entry| entry["id"] == id) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{id} was not told in 30 s\n{}", tang.log());
+    }
+}
+
+/// The next `snapshot` message a client is told (an `event` or anything else that comes before it is passed over).
+async fn next_snapshot(client: &mut Client) -> Value {
+    loop {
+        let message = next_json(client).await;
+        if message["type"] == "snapshot" {
+            return message;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_browser_moves_an_effect_along_its_chain_and_a_second_one_is_told_and_the_note_is_still_heard_and_the_saved_file_has_the_new_order_and_a_program_started_on_it_draws_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    let (mut other, _, _) = listening(&tang).await;
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+    let (filter, cutoff) = param_of(&snapshot, "Filter", "cutoff");
+    let lfo = id_of(&snapshot, "LFO");
+
+    // A reverb at the end of the lane's chain: the oscillator, the filter, then the reverb.
+    until_installed(&mut client, &tang, "builtin:reverb").await;
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addEffect", "parent": osc, "plugin": "builtin:reverb"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    assert_eq!(node_names(told), ["Oscillator", "Filter", "Reverb", "LFO", "Master"]);
+    let reverb = id_of(told, "Reverb");
+    assert_eq!(audio_path_of(told), [(osc, filter, "audio".to_string()), (filter, reverb, "audio".to_string()), (reverb, MASTER, "audio".to_string())]);
+
+    // A note, held: it is heard through the chain as it is.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.01).await;
+
+    // The browser moves the reverb to the first place of the chain: told as a snapshot, with the effects in the new order, the audio
+    // path through them in it, and the LFO's cable on the same filter, which is in the second place now.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "moveEffect", "node": reverb, "index": 0}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    // (The revisions: the effect 1 and the snapshot it was told as 2, the move 3.)
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(3)), "{answered}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("the new order is told as a snapshot");
+    assert_eq!(node_names(told), ["Oscillator", "Reverb", "Filter", "LFO", "Master"]);
+    assert_eq!(audio_path_of(told), [(osc, reverb, "audio".to_string()), (reverb, filter, "audio".to_string()), (filter, MASTER, "audio".to_string())]);
+    assert!(cables_of(told).contains(&(lfo, filter, json!({"type": "param", "index": cutoff}))), "{:?}", cables_of(told));
+    assert_eq!(told["snapshot"]["meta"]["dirty"], true);
+
+    // The other browser is told the same: the snapshot of the effect, then the one of the move.
+    let first = next_snapshot(&mut other).await;
+    assert_eq!(node_names(&first), ["Oscillator", "Filter", "Reverb", "LFO", "Master"]);
+    let moved = next_snapshot(&mut other).await;
+    assert_eq!(node_names(&moved), ["Oscillator", "Reverb", "Filter", "LFO", "Master"]);
+    assert_eq!(audio_path_of(&moved), audio_path_of(told));
+
+    // The note is heard through the chain in its new order, the engine having been told it: the audio path is whole.
+    let after = peak_after(&mut client, at, Duration::from_millis(500)).await;
+    assert!(after > 0.01, "the note is heard through the reordered chain: {after}\n{}", tang.log());
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+
+    // What the controller refuses, it says in its own words, and nothing changes (no revision is used up).
+    for (req_id, node, index, message) in [
+        (3, reverb, 0, "that effect is at that place already"),
+        (4, reverb, 2, "the chain has no place 2"),
+        (5, osc, 0, "only an effect can be moved"),
+        (6, lfo, 0, "only an effect can be moved"),
+        (7, 9999, 0, "there is no node 9999"),
+    ] {
+        tell(&mut client, json!({"type": "request", "reqId": req_id, "intent": {"type": "moveEffect", "node": node, "index": index}})).await;
+        let refused = answer(&mut client, req_id).await;
+        assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!(message)), "{refused}");
+    }
+
+    // What is saved has the effects in the new order, and the LFO's cable on the filter's new slot.
+    tell(&mut client, json!({"type": "request", "reqId": 8, "intent": {"type": "save"}})).await;
+    let saved_answer = answer(&mut client, 8).await;
+    assert_eq!((saved_answer["type"].clone(), saved_answer["rev"].clone()), (json!("ack"), json!(5)), "the refusals used no revision: {saved_answer}");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    let (reverb_at, filter_at) = (saved.find("plugin = \"builtin:reverb\"").expect("a reverb"), saved.find("plugin = \"builtin:filter\"").expect("a filter"));
+    assert!(reverb_at < filter_at, "the reverb comes first in the file: {saved}");
+    assert!(saved.contains("slot = 2"), "the cable is on the second slot of the lane, which is the filter's: {saved}");
+
+    // A program started on that file draws the chain in that order, and the cable on the filter.
+    drop((client, other));
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (_, _, snapshot) = listening(&again).await;
+    assert_eq!(node_names(&snapshot), ["Oscillator", "Reverb", "Filter", "LFO", "Master"]);
+    let (filter, lfo) = (id_of(&snapshot, "Filter"), id_of(&snapshot, "LFO"));
+    assert!(cables_of(&snapshot).contains(&(lfo, filter, json!({"type": "param", "index": cutoff}))), "{:?}", cables_of(&snapshot));
+    assert_eq!(snapshot["snapshot"]["meta"]["dirty"], false);
+}
+
 /// The place a snapshot gives a node, by the node's id: its `ui`, or `None` if it has none (a node that is not placed has no `ui` at all).
 fn place_of(snapshot: &Value, node: u64) -> Option<Value> {
     let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
