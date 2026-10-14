@@ -7,7 +7,7 @@
 // session file, §4.4), and is drawn there; the layout of the others does not leave room for it.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
-import { cableLabel, displayNames } from "../../client/names";
+import { cableLabel, displayNames, portName } from "../../client/names";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
 import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port } from "../../protocol";
@@ -288,13 +288,9 @@ export function toFlow(graph: Graph): Flow {
   return { nodes, edges };
 }
 
-/** What a modulation cable joins, in words: the modulator, then the plugin it drives and the parameter. */
+/** What a modulation cable joins, in words: the modulator, then the node it drives and the parameter or setting of it. */
 function describeCable(graph: Graph, names: ReadonlyMap<NodeId, string>, edge: Edge): string {
-  const target = graph.nodes.find((node) => node.id === edge.to.node);
-  const plugin = target?.kind === "instrument" || target?.kind === "effect" ? target.plugin : null;
-  const index = edge.to.port.type === "param" ? edge.to.port.index : null;
-  const param = plugin?.params.find((candidate) => candidate.index === index)?.name;
-  return cableLabel(names.get(edge.from.node) ?? "?", names.get(edge.to.node) ?? "?", param);
+  return cableLabel(names.get(edge.from.node) ?? "?", names.get(edge.to.node) ?? "?", portName(graph, edge.to.node, edge.to.port));
 }
 
 /** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import { NODE_UI_LIMIT } from "../protocol";
-import type { CatalogEntry, Edge, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
-import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 import { decodeFrame } from "./telemetry";
@@ -872,8 +872,15 @@ describe("drawing a cable", () => {
       expect(await failure(draw(0, osc0, detune0))).toEqual(["invalid", "a cable starts at a modulator"]);
       expect((await failure(draw(99_999, osc0, detune0)))[0]).toBe("notFound");
       expect((await failure(draw(MASTER, osc0, detune0)))[0]).toBe("notFound");
-      for (const port of [{ type: "modOut" }, { type: "audioIn" }, { type: "audioOut" }, { type: "rate" }, { type: "attack" }, { type: "depth", edge: 0 }] as const) {
-        expect(await failure({ type: "addModEdge", modulator: lane0Lfo, to: { node: osc0, port } })).toEqual(["invalid", "a cable can only end at a plugin's parameter so far"]);
+      for (const port of [{ type: "modOut" }, { type: "audioIn" }, { type: "audioOut" }] as const) {
+        expect(await failure({ type: "addModEdge", modulator: lane0Lfo, to: { node: osc0, port } })).toEqual([
+          "invalid",
+          "a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth",
+        ]);
+      }
+      // (The settings of a modulator are not a plugin's: a plugin has none to take.)
+      for (const port of [{ type: "rate" }, { type: "attack" }, { type: "depth", edge: 0 }] as const) {
+        expect(await failure({ type: "addModEdge", modulator: lane0Lfo, to: { node: osc0, port } })).toEqual(["invalid", "a cable ends at the settings of a modulator, and that is not one"]);
       }
       expect((await failure(draw(lane0Lfo, 99_999, 0)))[0]).toBe("notFound");
       expect((await failure(draw(lane0Lfo, MASTER, 0)))[0]).toBe("notFound");
@@ -914,6 +921,163 @@ describe("drawing a cable", () => {
       await client.request(draw(groupLfo, osc0, detune0));
       expect(modulations(client.state.snapshot)).toHaveLength(2);
     });
+  });
+});
+
+describe("drawing a cable to a setting of another modulator", () => {
+  const { snapshot, fields } = fieldsFixture;
+  // Group 1's rack: an LFO, an envelope and a MIDI control; its first member (3) has an LFO, an envelope and a MIDI control of its own,
+  // the second member (7) an LFO; a lane in no group (9) has an LFO, and a lane of the second group (11) has an LFO.
+  const [groupLfo, groupEnvelope, groupControl] = [13, 14, 15];
+  const [laneLfo, laneEnvelope, laneControl, member2Lfo, lane9Lfo, lane11Lfo] = [4, 5, 6, 8, 10, 12];
+  const modulators = snapshot.graph.nodes.filter((n) => n.kind === "modulator");
+  type Cable = Edge & { kind: "modulation"; id: number };
+  const modulations = (s: Snapshot | null | undefined): Cable[] => (s?.graph.edges ?? []).filter((e): e is Cable => e.kind === "modulation");
+  const cables = modulations(snapshot);
+  const drawTo = (modulator: number, node: number, port: Port): Intent => ({ type: "addModEdge", modulator, to: { node, port } });
+  /** Ask, and when it is done wait for the client to have the session as it is then; null if it was, or the code and the words it was refused with. */
+  const attempt = async (client: Client, intent: Intent): Promise<[string | null, string] | null> => {
+    try {
+      const rev = await client.request(intent);
+      await until(() => (client.state.snapshot?.rev ?? -1) >= rev, "the snapshot");
+      return null;
+    } catch (error) {
+      if (!(error instanceof RequestError)) throw error;
+      return [error.code, error.message];
+    }
+  };
+  /** Ask for something that is to be done. */
+  const done = async (client: Client, intent: Intent): Promise<void> => {
+    expect(await attempt(client, intent)).toBeNull();
+  };
+  /** A port, and so a place on a node, as one word. */
+  const key = (node: number, port: Port): string => `${String(node)}:${port.type}${port.type === "depth" ? String(port.edge) : ""}`;
+  const SETTINGS: Port[] = [{ type: "rate" }, { type: "attack" }, { type: "decay" }, { type: "sustain" }, { type: "release" }];
+
+  test("is allowed where the controller allowed it, from every modulator of a session of groups and lanes, and nowhere else", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    // Every setting of every modulator, whether it has it or not, and the depth of every cable (as of the modulator it belongs to).
+    const candidates: { node: number; port: Port }[] = [
+      ...modulators.flatMap((target) => SETTINGS.map((port) => ({ node: target.id, port }))),
+      ...cables.map((cable): { node: number; port: Port } => ({ node: cable.from.node, port: { type: "depth", edge: cable.id } })),
+    ];
+    for (const modulator of modulators) {
+      const accepted: string[] = [];
+      for (const { node, port } of candidates) {
+        if ((await attempt(client, drawTo(modulator.id, node, port))) !== null) continue;
+        accepted.push(key(node, port));
+        // (Taken out again, to ask the next of the session as it was.)
+        await done(client, { type: "removeEdge", edge: Math.max(...modulations(client.state.snapshot).map((e) => e.id)) });
+      }
+      const listed = (fields[String(modulator.id)] ?? []).map((field) => key(field.node, field.port));
+      expect(accepted.sort(), `${modulator.name} ${String(modulator.id)}`).toEqual(listed.sort());
+    }
+    expect(client.state.snapshot?.graph).toEqual(snapshot.graph);
+  });
+
+  test("joins the modulator to the setting at half depth, among the cables of the modulator, and the layout of the telemetry is as it was", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
+    const added = modulations(client.state.snapshot).find((e) => e.id === 7);
+    expect(added).toEqual({ kind: "modulation", id: 7, amount: 0.5, from: { node: laneEnvelope, port: { type: "modOut" } }, to: { node: laneLfo, port: { type: "rate" } } });
+    // The groups' cables first, then the lanes': the envelope's cables are 1 and 2, and the new one comes after them and before the control's.
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 1, 2, 7, 3]);
+    // No slot: a setting of a modulator is not a value that is told of (the controller's layout names none).
+    expect(client.state.snapshot?.telemetry).toEqual(snapshot.telemetry);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+  });
+
+  test("is allowed to more than one setting, and to the same one from another modulator", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" })); // 7
+    await done(client, drawTo(laneControl, laneLfo, { type: "rate" })); // 8: the same rate, from the control
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 0 })); // 9: and the depth of the LFO's cable, from the envelope
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 1, 2, 7, 9, 3, 8]);
+  });
+
+  test("is refused as the controller refuses it, and nothing changes", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    const reachLane = ["invalid", "a modulator of this lane cannot reach that modulator"];
+    const reachGroup = ["invalid", "a modulator of this group cannot reach that modulator"];
+    const notModulator = ["invalid", "a cable ends at the settings of a modulator, and that is not one"];
+    const own = ["invalid", "a modulator cannot drive its own settings"];
+    const table: [string, Intent, string[]][] = [
+      ["itself", drawTo(laneLfo, laneLfo, { type: "rate" }), own],
+      ["the depth of its own cable", drawTo(laneLfo, laneLfo, { type: "depth", edge: 0 }), own],
+      ["a node that is not there", drawTo(laneLfo, 99_999, { type: "rate" }), ["notFound", "there is no node 99999"]],
+      ["the master", drawTo(laneLfo, MASTER, { type: "rate" }), ["notFound", `there is no node ${String(MASTER)}`]],
+      ["a lane", drawTo(laneLfo, 3, { type: "rate" }), notModulator],
+      ["a group", drawTo(laneLfo, 0, { type: "rate" }), notModulator],
+      ["a bus effect", drawTo(groupLfo, 1, { type: "attack" }), notModulator],
+      ["a parameter's port of a modulator", drawTo(laneEnvelope, laneLfo, { type: "param", index: 0 }), ["invalid", "that node has no plugin"]],
+      ["a modulator of another lane of its group", drawTo(laneLfo, member2Lfo, { type: "rate" }), reachLane],
+      ["a modulator of the group of its lane", drawTo(laneLfo, groupLfo, { type: "rate" }), reachLane],
+      ["a modulator of a lane in no group", drawTo(laneLfo, lane9Lfo, { type: "rate" }), reachLane],
+      ["a modulator of a lane in another group, from a group", drawTo(groupLfo, lane11Lfo, { type: "rate" }), reachGroup],
+      ["a modulator of a lane in no group, from a group", drawTo(groupLfo, lane9Lfo, { type: "rate" }), reachGroup],
+      ["the rate of an envelope", drawTo(laneLfo, laneEnvelope, { type: "rate" }), ["invalid", "that modulator has no rate"]],
+      ["the rate of a MIDI control", drawTo(laneLfo, laneControl, { type: "rate" }), ["invalid", "that modulator has no rate"]],
+      ["the attack of an LFO", drawTo(laneEnvelope, laneLfo, { type: "attack" }), ["invalid", "that modulator has no attack"]],
+      ["the decay of an LFO", drawTo(laneEnvelope, laneLfo, { type: "decay" }), ["invalid", "that modulator has no decay"]],
+      ["the sustain of an LFO", drawTo(laneEnvelope, laneLfo, { type: "sustain" }), ["invalid", "that modulator has no sustain"]],
+      ["the release of a MIDI control", drawTo(laneEnvelope, laneControl, { type: "release" }), ["invalid", "that modulator has no release"]],
+      ["the depth of a cable that is not there", drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 99_999 }), ["notFound", "there is no cable 99999"]],
+      ["the depth of a cable that the node named does not have (it is the modulator's own)", drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 1 }), ["notFound", "there is no cable 1"]],
+      ["the depth of a cable that the node named does not have (it is another modulator's)", drawTo(laneEnvelope, laneControl, { type: "depth", edge: 0 }), ["notFound", "there is no cable 0"]],
+    ];
+    for (const [what, intent, expected] of table) expect(await attempt(client, intent), what).toEqual(expected);
+    expect(client.state.snapshot).toEqual(snapshot);
+    // And no cable id was used up.
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toContain(7);
+  });
+
+  test("is refused when the modulator drives the setting already, and allowed for another modulator", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
+    expect(await attempt(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }))).toEqual(["invalid", "that modulator drives that setting already"]);
+    await done(client, drawTo(laneControl, laneLfo, { type: "rate" }));
+    // The depth of a cable too.
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 0 }));
+    expect(await attempt(client, drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 0 }))).toEqual(["invalid", "that modulator drives that setting already"]);
+  });
+
+  test("goes when it is taken out, which leaves the session as it was", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
+    await done(client, { type: "removeEdge", edge: 7 });
+    expect(client.state.snapshot?.graph).toEqual(snapshot.graph);
+    expect(client.state.snapshot?.telemetry).toEqual(snapshot.telemetry);
+  });
+
+  test("goes with the modulator whose setting it drives, and with the one that drives it", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" })); // 7: the envelope drives the LFO's rate
+    await done(client, drawTo(laneControl, laneEnvelope, { type: "attack" })); // 8: the control drives the envelope's attack
+    await done(client, { type: "removeNode", node: laneLfo });
+    // The LFO's own cable (0) went with it, and the one that drove its rate (7); the control's cable to the envelope stays.
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 1, 2, 3, 8]);
+    await done(client, { type: "removeNode", node: laneEnvelope });
+    // Now the envelope's cables (1 and 2) and the one that drove its attack (8) have gone.
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 3]);
+  });
+
+  test("goes with the cable whose depth it drives, and what drives the depth of that goes in turn", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneLfo, laneEnvelope, { type: "depth", edge: 1 })); // 7: the LFO drives the depth of the envelope's cable 1
+    await done(client, drawTo(laneControl, laneLfo, { type: "depth", edge: 7 })); // 8: the control drives the depth of that
+    expect(modulations(client.state.snapshot)).toHaveLength(cables.length + 2);
+    await done(client, { type: "removeEdge", edge: 1 });
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 2, 3]);
+  });
+
+  test("is drawn from a group's modulator to the settings of its members' modulators, and of the others in its rack", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(groupLfo, laneEnvelope, { type: "attack" })); // 7
+    await done(client, drawTo(groupLfo, member2Lfo, { type: "rate" })); // 8
+    await done(client, drawTo(groupLfo, groupEnvelope, { type: "release" })); // 9
+    await done(client, drawTo(groupControl, laneLfo, { type: "rate" })); // 10
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 7, 8, 9, 5, 6, 10, 0, 1, 2, 3]);
   });
 });
 

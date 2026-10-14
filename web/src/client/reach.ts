@@ -1,10 +1,12 @@
 // Where a cable from a modulator may end (docs/web-ui.md §9.3, D21). The controller decides
-// (`SessionModel::param_targets`, and `AddModEdge` refuses the rest), and a client that lets
-// the user draw cables has to know before it asks, to show which parameters take the cable that
-// is being dragged. It reads the answer from the graph alone, by the `parent` of each node; a
-// fixture that the controller writes (what it accepted, for every modulator of a session with
-// groups and lanes in and out of them: `fixtures/reach.json`) pins the two together.
-import type { Graph, Node, NodeId } from "../protocol";
+// (`SessionModel::param_targets` for the parameters of plugins, `SessionModel::field_targets` for the
+// settings of other modulators, and `AddModEdge` refuses the rest), and a client that lets
+// the user draw cables has to know before it asks, to show which parameters and settings take the cable
+// that is being dragged. It reads the answer from the graph alone, by the `parent` of each node; fixtures
+// that the controller writes (what it accepted, for every modulator of a session with groups and lanes in
+// and out of them: `fixtures/reach.json`, and for the settings of modulators `fixtures/fields.json`) pin
+// the two together.
+import type { Edge, Graph, Node, NodeId, Port } from "../protocol";
 
 /** Whether a node has a plugin, whose parameters a cable can end at. */
 const hasPlugin = (node: Node): boolean => (node.kind === "instrument" && node.plugin !== null) || node.kind === "effect";
@@ -31,18 +33,83 @@ export function reachFrom(graph: Graph, modulator: NodeId): Set<NodeId> {
   return new Set(reached.filter(hasPlugin).map((node) => node.id));
 }
 
-/** A plugin node a modulator can still draw a cable to, and the parameters of it that it can still drive. */
+/** A setting of a modulator, or the depth of one of its cables: the node of the modulator and the port on it that a cable ends at. */
+export interface FieldRef {
+  node: NodeId;
+  port: Port;
+}
+
+/** The modulators of a lane or a group's rack, in the order of the graph. */
+const rackOf = (graph: Graph, parent: Node): Node[] => graph.nodes.filter((node) => node.parent === parent.id && node.kind === "modulator");
+
+/**
+ * The modulators whose settings the modulator `modulator` can be drawn to, in the order of the controller's list
+ * (`SessionModel::modulators_in_reach`): a lane's modulator reaches the others of its lane; a group's reaches
+ * its members' modulators, member by member, and then the others of its own rack. Never itself. A node that is
+ * not a modulator, or whose lane or group is not there, reaches none.
+ */
+export function modulatorsInReach(graph: Graph, modulator: NodeId): Node[] {
+  const from = graph.nodes.find((node) => node.id === modulator);
+  const owner = from?.kind === "modulator" ? graph.nodes.find((node) => node.id === from.parent) : undefined;
+  if (!owner) return [];
+  const others = (parent: Node): Node[] => rackOf(graph, parent).filter((node) => node.id !== modulator);
+  if (owner.kind === "instrument") return others(owner);
+  if (owner.kind !== "group") return [];
+  const members = graph.nodes.filter((node) => node.parent === owner.id && node.kind === "instrument");
+  return [...members.flatMap((member) => rackOf(graph, member)), ...others(owner)];
+}
+
+/** Whether two ports are the same place on a node: of the same kind, and for a parameter the same one, for a depth the cable's. */
+export function samePort(a: Port, b: Port): boolean {
+  if (a.type === "param") return b.type === "param" && a.index === b.index;
+  if (a.type === "depth") return b.type === "depth" && a.edge === b.edge;
+  return a.type === b.type;
+}
+
+/** The ports of the settings a modulator has: an LFO's rate, an envelope's four stages, nothing for a MIDI control. */
+function settingPorts(node: Node): Port[] {
+  if (node.kind !== "modulator") return [];
+  switch (node.source.type) {
+    case "lfo":
+      return [{ type: "rate" }];
+    case "envelope":
+      return [{ type: "attack" }, { type: "decay" }, { type: "sustain" }, { type: "release" }];
+    case "midiLearn":
+      return [];
+  }
+}
+
+/** The ports of the depths of the cables that start at the modulator `node`. */
+const depthPorts = (graph: Graph, node: Node): Port[] =>
+  graph.edges.flatMap((edge: Edge): Port[] => (edge.kind === "modulation" && edge.from.node === node.id ? [{ type: "depth", edge: edge.id }] : []));
+
+/**
+ * Every setting and cable depth of other modulators that `modulator` can be drawn to, as the controller lists them
+ * (`SessionModel::field_targets`): for each modulator in reach (`modulatorsInReach`) its settings, then the depths of its
+ * cables. Whether the modulator drives one already is not looked at here.
+ */
+export function fieldsOf(graph: Graph, modulator: NodeId): FieldRef[] {
+  return modulatorsInReach(graph, modulator).flatMap((node) => [...settingPorts(node), ...depthPorts(graph, node)].map((port) => ({ node: node.id, port })));
+}
+
+/**
+ * A node a modulator can still draw a cable to, and what it can still drive in it: the parameters of a plugin (`params`, by the
+ * plugin's own index), or the settings of a modulator (`fields`, by the port; a cable's depth is not offered).
+ */
 export interface Drivable {
   node: NodeId;
-  /** What the plugin's node is called on the canvas. */
+  /** What the node is called on the canvas. */
   name: string;
   params: readonly { index: number; name: string }[];
+  fields: readonly { port: Port; name: string }[];
 }
 
 /**
  * Everything `modulator` can still be drawn to, plugin by plugin in the order of the graph: the parameters of the
  * plugins it reaches (`reachFrom`) that it does not drive already (another modulator may drive the same one: the
- * two add up). `names` is what each node is called (`displayNames`). A plugin with nothing left is not listed.
+ * two add up); then modulator by modulator, in the order of `fieldsOf`: the settings of the modulators it reaches
+ * that it does not drive already (and not the depth of a cable: it has no port on the canvas). `names` is what each
+ * node is called (`displayNames`). A node with nothing left is not listed.
  */
 export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<NodeId, string>): Drivable[] {
   const reached = reachFrom(graph, modulator);
@@ -54,7 +121,16 @@ export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<
     if (!reached.has(node.id)) continue;
     const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
     const params = (plugin?.params ?? []).filter((param) => !driven.has(`${String(node.id)}:${String(param.index)}`)).map(({ index, name }) => ({ index, name }));
-    if (params.length > 0) groups.push({ node: node.id, name: names.get(node.id) ?? node.name, params });
+    if (params.length > 0) groups.push({ node: node.id, name: names.get(node.id) ?? node.name, params, fields: [] });
   }
-  return groups;
+  const drivenFields = new Set(
+    graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type !== "param" ? [`${String(edge.to.node)}:${edge.to.port.type}`] : [])),
+  );
+  const byModulator = new Map<NodeId, Drivable>();
+  for (const { node, port } of fieldsOf(graph, modulator)) {
+    if (port.type === "depth" || drivenFields.has(`${String(node)}:${port.type}`)) continue;
+    const group = byModulator.get(node) ?? { node, name: names.get(node) ?? graph.nodes.find((n) => n.id === node)?.name ?? "?", params: [], fields: [] };
+    byModulator.set(node, { ...group, fields: [...group.fields, { port, name: port.type }] });
+  }
+  return [...groups, ...byModulator.values()];
 }

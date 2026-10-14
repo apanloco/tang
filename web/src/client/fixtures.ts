@@ -4,10 +4,11 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Node, NodeId, NoteRange, ParamValue, Plugin, Snapshot } from "../protocol";
+import type { CatalogEntry, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot } from "../protocol";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
+import fields from "./fixtures/fields.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
@@ -20,6 +21,14 @@ export const tracerSnapshot = tracer as unknown as Snapshot;
  * the controller (`the_web_clients_fixture_of_what_a_modulator_reaches_is_current`).
  */
 export const reachFixture = reach as unknown as { snapshot: Snapshot; reach: Record<string, number[]> };
+
+/**
+ * A session with a group of three modulators whose first member has three of its own (an envelope with two cables among them), a
+ * second member, a lane in no group and a lane in a second group, each with a modulator, and, for each modulator (by its node id),
+ * the settings and cable depths of other modulators that the controller let a cable be drawn to, as a node and the port on it:
+ * written by the controller (`the_web_clients_fixture_of_what_a_modulator_reaches_of_the_others_is_current`).
+ */
+export const fieldsFixture = fields as unknown as { snapshot: Snapshot; fields: Record<string, { node: NodeId; port: Port }[]> };
 
 /** The built-in plugins as the server lists them in its catalog, which the mock engine serves: written by Rust (`the_web_clients_fixture_of_the_builtins_is_current`). */
 export const builtinCatalog = builtins as CatalogEntry[];

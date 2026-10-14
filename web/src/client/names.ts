@@ -1,6 +1,6 @@
 // What the nodes of a session are called, wherever a person reads it: on the canvas, in what a screen
 // reader says of a control, in what the page says of a cable or of what it could not do.
-import type { Graph, NodeId } from "../protocol";
+import type { Graph, NodeId, Port } from "../protocol";
 
 /**
  * What each node is called on the canvas. The server names a node by what it is (a plugin's name, a
@@ -32,3 +32,29 @@ export function displayNames(graph: Graph): Map<NodeId, string> {
 
 /** What a cable joins, in words: `LFO → Filter: cutoff` (the parameter is left out when it is not one). */
 export const cableLabel = (from: string, to: string, param?: string | null): string => `${from} → ${to}${param ? `: ${param}` : ""}`;
+
+/**
+ * What the port of a node that a cable ends at is called, for the cable's words: a parameter is what its plugin calls it (by the
+ * plugin's own index), a setting of a modulator is `rate`, `attack`, `decay`, `sustain` or `release`, the depth of a cable is
+ * `depth`. A parameter the node has not, and the ports that no cable ends at (an output, an audio port), have no name.
+ */
+export function portName(graph: Graph, node: NodeId, port: Port): string | null {
+  switch (port.type) {
+    case "param": {
+      const found = graph.nodes.find((n) => n.id === node);
+      const plugin = found?.kind === "instrument" || found?.kind === "effect" ? found.plugin : null;
+      return plugin?.params.find((param) => param.index === port.index)?.name ?? null;
+    }
+    case "rate":
+    case "attack":
+    case "decay":
+    case "sustain":
+    case "release":
+    case "depth":
+      return port.type;
+    case "modOut":
+    case "audioIn":
+    case "audioOut":
+      return null;
+  }
+}

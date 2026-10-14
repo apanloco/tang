@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { Graph, Node } from "../protocol";
 import { reachFixture, tracerSnapshot } from "./fixtures";
-import { displayNames } from "./names";
+import { displayNames, portName } from "./names";
 
 const lfo = (id: number, parent: number): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
 
@@ -53,5 +53,31 @@ describe("what the nodes are called", () => {
     const names = [...displayNames(reachFixture.snapshot.graph).values()];
     expect(new Set(names).size).toBe(names.length);
     expect(names).toContain("Oscillator 4");
+  });
+});
+
+describe("what the ports a cable ends at are called", () => {
+  const { graph } = tracerSnapshot;
+  const filter = graph.nodes.find((node) => node.name === "Filter");
+  const cutoff = filter?.kind === "effect" ? filter.plugin.params.find((param) => param.name === "cutoff") : undefined;
+
+  test("a parameter is called what its plugin calls it, by the plugin's own index", () => {
+    expect(cutoff).toBeDefined();
+    expect(portName(graph, filter?.id ?? -1, { type: "param", index: cutoff?.index ?? -1 })).toBe("cutoff");
+  });
+
+  test("a parameter the node has not, or a node that has no plugin, or none, has no name", () => {
+    expect(portName(graph, filter?.id ?? -1, { type: "param", index: 999 })).toBeNull();
+    expect(portName(graph, 2, { type: "param", index: 0 })).toBeNull(); // the LFO has no plugin
+    expect(portName(graph, 999, { type: "param", index: 0 })).toBeNull();
+  });
+
+  test("a setting of a modulator, and the depth of a cable, are called what they are", () => {
+    for (const type of ["rate", "attack", "decay", "sustain", "release"] as const) expect(portName(graph, 2, { type })).toBe(type);
+    expect(portName(graph, 2, { type: "depth", edge: 0 })).toBe("depth");
+  });
+
+  test("the ports that no cable ends at have no name", () => {
+    for (const type of ["modOut", "audioIn", "audioOut"] as const) expect(portName(graph, 2, { type })).toBeNull();
   });
 });

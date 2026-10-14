@@ -33,7 +33,7 @@ import type {
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { noteName } from "./notes";
-import { reachFrom } from "./reach";
+import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
 
@@ -112,43 +112,90 @@ const paramKey = (node: NodeId, port: Port): string | null => (port.type === "pa
 const NEW_CABLE_DEPTH = 0.5;
 
 /**
- * A cable drawn from a modulator to a parameter of a plugin it reaches (`reachFrom`: the controller's rule, read
- * from the graph), at half depth. It joins the modulation cables in the order the graph lists them (the groups'
- * modulators' first, then the lanes', each modulator's cables together); the value it drives gets a slot in the
- * layout of the telemetry unless another cable drives it already (the layout names one slot for a parameter).
+ * A cable drawn from a modulator, at half depth: to a parameter of a plugin it reaches (`reachFrom`: the controller's rule,
+ * read from the graph), or to a setting of another modulator it reaches, or to the depth of one of that modulator's cables
+ * (`addFieldCable`).
  */
 function addModEdgeOutcome(snapshot: Snapshot, modulator: NodeId, to: Edge["to"], counters: Counters): Outcome {
-  const { nodes, edges } = snapshot.graph;
-  const from = nodes.find((n) => n.id === modulator && n.kind !== "master");
+  const from = snapshot.graph.nodes.find((n) => n.id === modulator && n.kind !== "master");
   if (!from) return noNode(modulator);
   if (from.kind !== "modulator") return invalid("a cable starts at a modulator");
-  if (to.port.type !== "param") return invalid("a cable can only end at a plugin's parameter so far");
-  const index = to.port.index;
-  const target = nodes.find((n) => n.id === to.node && n.kind !== "master");
-  if (!target) return noNode(to.node);
-  if (target.kind !== "instrument" && target.kind !== "effect") return invalid("that node has no plugin");
-  if (!target.plugin) return invalid("that instrument has no plugin");
-  if (!reachFrom(snapshot.graph, modulator).has(to.node)) {
-    const owner = nodes.find((n) => n.id === from.parent)?.kind === "group" ? "group" : "lane";
-    return invalid(`a modulator of this ${owner} cannot reach that plugin`);
+  switch (to.port.type) {
+    case "param":
+      return addParamCable(snapshot, from, to.node, to.port.index, counters);
+    case "rate":
+    case "attack":
+    case "decay":
+    case "sustain":
+    case "release":
+    case "depth":
+      return addFieldCable(snapshot, from, to, counters);
+    default:
+      return invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth");
   }
-  if (!target.plugin.params.some((p) => p.index === index)) return invalid(`the plugin has no parameter ${index}`);
-  const drivesIt = (e: Edge): boolean => isModulation(e) && e.from.node === modulator && e.to.node === to.node && e.to.port.type === "param" && e.to.port.index === index;
-  if (edges.some(drivesIt)) return invalid("that modulator drives that parameter already");
+}
 
-  const added: Edge = { from: { node: modulator, port: { type: "modOut" } }, to, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
-  // After the last cable of a modulator that comes before this one in the graph, this one's own included.
+/**
+ * `edges` with the cable `added` of the modulator `modulator` among them, where the graph lists a modulator's cables (the groups'
+ * modulators' first, then the lanes', each modulator's cables together): after the last cable of a modulator that comes before this
+ * one in the graph, this one's own included.
+ */
+function withCable(nodes: readonly Node[], edges: readonly Edge[], modulator: NodeId, added: Edge): Edge[] {
   const position = new Map(nodes.map((n, i) => [n.id, i]));
   const mine = position.get(modulator) ?? 0;
   const after = edges.findLastIndex((e) => isModulation(e) && (position.get(e.from.node) ?? Infinity) <= mine);
   const first = edges.findIndex(isModulation);
   const at = after >= 0 ? after + 1 : first >= 0 ? first : edges.length;
+  return [...edges.slice(0, at), added, ...edges.slice(at)];
+}
 
-  const key = paramKey(to.node, to.port);
+/** What a modulator of a lane or of a group is told of what it cannot reach: whose it is. */
+const ownerOf = (nodes: readonly Node[], modulator: Node): "group" | "lane" => (nodes.find((n) => n.id === modulator.parent)?.kind === "group" ? "group" : "lane");
+
+/**
+ * A cable to parameter `index` of the plugin in `node`. The value it drives gets a slot in the layout of the telemetry unless
+ * another cable drives it already (the layout names one slot for a parameter).
+ */
+function addParamCable(snapshot: Snapshot, from: Node, node: NodeId, index: number, counters: Counters): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  const target = nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!target) return noNode(node);
+  if (target.kind !== "instrument" && target.kind !== "effect") return invalid("that node has no plugin");
+  if (!target.plugin) return invalid("that instrument has no plugin");
+  if (!reachFrom(snapshot.graph, from.id).has(node)) return invalid(`a modulator of this ${ownerOf(nodes, from)} cannot reach that plugin`);
+  if (!target.plugin.params.some((p) => p.index === index)) return invalid(`the plugin has no parameter ${index}`);
+  const port: Port = { type: "param", index };
+  const drivesIt = (e: Edge): boolean => isModulation(e) && e.from.node === from.id && e.to.node === node && samePort(e.to.port, port);
+  if (edges.some(drivesIt)) return invalid("that modulator drives that parameter already");
+
+  const added: Edge = { from: { node: from.id, port: { type: "modOut" } }, to: { node, port }, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
+  const key = paramKey(node, port);
   const aimed = edges.some((e) => isModulation(e) && paramKey(e.to.node, e.to.port) === key);
-  const modulation = aimed ? snapshot.telemetry.modulation : [...snapshot.telemetry.modulation, { slot: counters.slot(), node: to.node, port: to.port, kind: "effective" as const }];
+  const modulation = aimed ? snapshot.telemetry.modulation : [...snapshot.telemetry.modulation, { slot: counters.slot(), node, port, kind: "effective" as const }];
   const telemetry = aimed ? snapshot.telemetry : { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation };
-  return { restructured: { ...snapshot, graph: { nodes, edges: [...edges.slice(0, at), added, ...edges.slice(at)] }, telemetry } };
+  return { restructured: { ...snapshot, graph: { nodes, edges: withCable(nodes, edges, from.id, added) }, telemetry } };
+}
+
+/**
+ * A cable to a setting of another modulator (an LFO's rate, a stage of an envelope) or to the depth of one of its cables, as the
+ * controller lets it (`add_field_cable`): the modulator is in reach of the one that is drawn from (`modulatorsInReach`), has the
+ * setting (`fieldsOf`), and is not driven there already. A value of that kind has no slot in the layout of the telemetry.
+ */
+function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters: Counters): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  const target = nodes.find((n) => n.id === to.node && n.kind !== "master");
+  if (!target) return noNode(to.node);
+  if (target.id === from.id) return invalid("a modulator cannot drive its own settings");
+  if (target.kind !== "modulator") return invalid("a cable ends at the settings of a modulator, and that is not one");
+  if (!modulatorsInReach(snapshot.graph, from.id).some((n) => n.id === target.id)) return invalid(`a modulator of this ${ownerOf(nodes, from)} cannot reach that modulator`);
+  if (!fieldsOf(snapshot.graph, from.id).some((field) => field.node === to.node && samePort(field.port, to.port))) {
+    if (to.port.type === "depth") return { error: { code: "notFound", message: `there is no cable ${to.port.edge}` } };
+    return invalid(`that modulator has no ${to.port.type}`);
+  }
+  if (edges.some((e) => isModulation(e) && e.from.node === from.id && e.to.node === to.node && samePort(e.to.port, to.port))) return invalid("that modulator drives that setting already");
+
+  const added: Edge = { from: { node: from.id, port: { type: "modOut" } }, to, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
+  return { restructured: { ...snapshot, graph: { nodes, edges: withCable(nodes, edges, from.id, added) } } };
 }
 
 /**

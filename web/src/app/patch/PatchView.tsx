@@ -148,7 +148,7 @@ export function PatchView() {
     (connection: Connection) => {
       const ends = cableOf(connection);
       // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-      if (ends) void editor.addCable(ends.modulator, ends.node, ends.param);
+      if (ends) void editor.addCable(ends.modulator, ends.node, { type: "param", index: ends.param });
     },
     [editor],
   );

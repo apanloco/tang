@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
+import type { Port } from "../protocol";
 import { Client } from "./connection";
 import { MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
@@ -49,6 +50,8 @@ const param = (node: typeof filter, name: string): number => {
   if (!found) throw new Error(`no ${name}`);
   return found.index;
 };
+/** The port of a parameter of a node, by its name. */
+const paramPort = (node: typeof filter, name: string): Port => ({ type: "param", index: param(node, name) });
 
 describe("adding a modulator", () => {
   test("resolves with the node it made, which is in the session then, and says nothing", async () => {
@@ -430,7 +433,7 @@ describe("showing what was added", () => {
     expect(await editor.addEffect(filter.id, "builtin:reverb")).toBeNull();
     expect(await editor.addInstrument("builtin:reverb")).toBeNull();
     expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(true);
-    expect(await editor.addCable(lfo.id, oscillator.id, param(oscillator, "detune"))).toBe(true);
+    expect(await editor.addCable(lfo.id, oscillator.id, paramPort(oscillator, "detune"))).toBe(true);
     expect(await editor.removeNode(lfo.id)).toBe(true);
     expect(shown).toEqual([]);
   });
@@ -449,18 +452,18 @@ describe("showing what was added", () => {
 describe("drawing a cable", () => {
   test("joins a modulator to a parameter, and says nothing", async () => {
     const { client, notices, editor } = await open();
-    expect(await editor.addCable(lfo.id, oscillator.id, param(oscillator, "detune"))).toBe(true);
+    expect(await editor.addCable(lfo.id, oscillator.id, paramPort(oscillator, "detune"))).toBe(true);
     expect(client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation")).toHaveLength(2);
     expect(said(notices)).toEqual([]);
   });
 
   test("that is refused says which cable, in the names the canvas has, and why", async () => {
     const { notices, editor } = await open();
-    const cutoff = param(filter, "cutoff");
+    const cutoff = paramPort(filter, "cutoff");
     // (The LFO drives the cutoff already.)
     expect(await editor.addCable(lfo.id, filter.id, cutoff)).toBe(false);
     expect(await editor.addCable(oscillator.id, filter.id, cutoff)).toBe(false);
-    expect(await editor.addCable(lfo.id, filter.id, 999)).toBe(false);
+    expect(await editor.addCable(lfo.id, filter.id, { type: "param", index: 999 })).toBe(false);
     expect(said(notices)).toEqual([
       "Could not draw a cable from LFO to Filter: cutoff: that modulator drives that parameter already",
       "Could not draw a cable from Oscillator to Filter: cutoff: a cable starts at a modulator",
@@ -471,9 +474,66 @@ describe("drawing a cable", () => {
   test("names two nodes of one name by their numbers", async () => {
     const { notices, editor } = await open();
     await editor.addModulator(oscillator.id, "lfo");
-    expect(await editor.addCable(3, filter.id, param(filter, "cutoff"))).toBe(true);
-    expect(await editor.addCable(3, filter.id, param(filter, "cutoff"))).toBe(false);
+    expect(await editor.addCable(3, filter.id, paramPort(filter, "cutoff"))).toBe(true);
+    expect(await editor.addCable(3, filter.id, paramPort(filter, "cutoff"))).toBe(false);
     expect(said(notices)).toEqual(["Could not draw a cable from LFO 2 to Filter: cutoff: that modulator drives that parameter already"]);
+  });
+});
+
+describe("drawing a cable to a setting of another modulator", () => {
+  /** The tracer with an envelope added to the oscillator's lane, whose node is 3. */
+  async function withEnvelope() {
+    const rig = await open();
+    expect(await rig.editor.addModulator(oscillator.id, "envelope")).toBe(3);
+    return rig;
+  }
+
+  test("joins a modulator to the rate of an LFO or a stage of an envelope, and says nothing", async () => {
+    const { client, notices, editor } = await withEnvelope();
+    expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(true);
+    expect(await editor.addCable(lfo.id, 3, { type: "attack" })).toBe(true);
+    const cables = client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation").map((e) => [e.from.node, e.to.node, e.to.port.type]);
+    // (A modulator's cables are listed together, in the order of the modulators.)
+    expect(cables).toEqual([
+      [lfo.id, filter.id, "param"],
+      [lfo.id, 3, "attack"],
+      [3, lfo.id, "rate"],
+    ]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("that is refused says which cable, in the names the canvas has, and why", async () => {
+    const { notices, editor } = await withEnvelope();
+    expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(true);
+    // (Each is said when it is refused: only the last few notices are kept.)
+    const refused: [string, () => Promise<boolean>][] = [
+      ["Could not draw a cable from ADSR to LFO: rate: that modulator drives that setting already", () => editor.addCable(3, lfo.id, { type: "rate" })],
+      ["Could not draw a cable from LFO to ADSR: rate: that modulator has no rate", () => editor.addCable(lfo.id, 3, { type: "rate" })],
+      ["Could not draw a cable from ADSR to ADSR: decay: a modulator cannot drive its own settings", () => editor.addCable(3, 3, { type: "decay" })],
+      ["Could not draw a cable from LFO to Oscillator: rate: a cable ends at the settings of a modulator, and that is not one", () => editor.addCable(lfo.id, oscillator.id, { type: "rate" })],
+      ["Could not draw a cable from LFO to that node: rate: there is no node 99", () => editor.addCable(lfo.id, 99, { type: "rate" })],
+      ["Could not draw a cable from LFO to ADSR: a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth", () => editor.addCable(lfo.id, 3, { type: "modOut" })],
+    ];
+    for (const [words, draw] of refused) {
+      expect(await draw()).toBe(false);
+      expect(said(notices).at(-1)).toBe(words);
+    }
+  });
+
+  test("names two modulators of one name by their numbers", async () => {
+    const { notices, editor } = await open();
+    expect(await editor.addModulator(oscillator.id, "lfo")).toBe(3);
+    expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(true);
+    expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(false);
+    expect(said(notices)).toEqual(["Could not draw a cable from LFO 2 to LFO 1: rate: that modulator drives that setting already"]);
+  });
+
+  test("is told of, when it cannot be taken out, by the setting it ends at", async () => {
+    const { client, notices, editor } = await withEnvelope();
+    expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(true);
+    client.stop();
+    expect(await editor.removeCable(1)).toBe(false);
+    expect(said(notices)).toEqual(["Could not take out the cable ADSR → LFO: rate: Not connected to the server."]);
   });
 });
 

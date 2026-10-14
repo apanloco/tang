@@ -473,7 +473,7 @@ export const DrivePicker = memo(function DrivePicker({ modulator, name, targets 
       onChoose={(choice) => {
         const [node, param] = choice.split(":").map(Number);
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-        if (node !== undefined && param !== undefined) void editor.addCable(modulator, node, param);
+        if (node !== undefined && param !== undefined) void editor.addCable(modulator, node, { type: "param", index: param });
       }}
     >
       {items.length === 0 ? "Nothing to drive" : "Add a cable…"}
