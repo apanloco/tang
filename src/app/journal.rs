@@ -49,6 +49,15 @@ impl Controller {
         }
     }
 
+    /// A structural edit that no intent asks for (what the TUI and the tests call by themselves) is no step of the history, and a step that took something
+    /// out puts it back by the places it had, which the edit changes: the history is forgotten. (While an intent is carried out, which is a step of the history
+    /// or forgets it as it should, the journal is there, and nothing is forgotten here.)
+    pub(super) fn forget_the_history_unless_an_intent_asks(&mut self) {
+        if self.journal.is_none() {
+            self.history.clear();
+        }
+    }
+
     /// Put back what `journal` says was taken out, the last thing first, as one revision: the structure is said to have changed. Refused, with nothing
     /// changed, if what is to come back is there already (a cable has the id it had: another front-end has put it back by itself).
     pub(super) fn rewind(&mut self, journal: Journal) -> Result<Applied, IntentError> {

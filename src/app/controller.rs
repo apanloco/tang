@@ -419,16 +419,16 @@ impl Controller {
     }
 
     /// Put the lanes at `a` and `b` in each other's places, each with everything it has: in the model, and
-    /// on the audio thread, which is told to do the same (`SessionModel::swap_lanes`). The history is forgotten:
-    /// what a step took out is put back by the place of its lane. False, sending nothing and keeping the
-    /// history, if either is not there or they are one.
+    /// on the audio thread, which is told to do the same (`SessionModel::swap_lanes`). No intent asks for this, so
+    /// the history is forgotten (`forget_the_history_unless_an_intent_asks`). False, sending nothing and keeping
+    /// the history, if either is not there or they are one.
     pub fn swap_lanes(&mut self, a: usize, b: usize) -> bool {
         if !self.model.swap_lanes(a, b) {
             return false;
         }
-        // (No intent asks for this, and a step that took something out names its lane by its place: it would put it back in whatever lane is there
-        // now, with cables addressing the plugins and modulators of the lane it was in.)
-        self.history.clear();
+        // (A step that took something out names its lane by its place: it would put it back in whatever lane is there now, with cables addressing the
+        // plugins and modulators of the lane it was in.)
+        self.forget_the_history_unless_an_intent_asks();
         let _ = self.cmd_tx.send(GraphCommand::SwapInstruments { inst_a: a, inst_b: b });
         true
     }
@@ -579,7 +579,9 @@ impl Controller {
     /// drive the plugins after it are told their new slots. False, sending nothing, if there is no such effect.
     pub fn remove_effect(&mut self, inst: usize, index: usize) -> bool {
         let Some(effect) = self.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)) else { return false };
-        for edge in self.model.cables_into_plugin(effect.node) {
+        let effect = effect.node;
+        self.forget_the_history_unless_an_intent_asks();
+        for edge in self.model.cables_into_plugin(effect) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
@@ -596,6 +598,7 @@ impl Controller {
         if !self.model.move_effect(inst, from, to) {
             return false;
         }
+        self.forget_the_history_unless_an_intent_asks();
         let _ = self.cmd_tx.send(GraphCommand::ReorderEffect { inst, from, to });
         true
     }
@@ -608,6 +611,7 @@ impl Controller {
         if !self.model.move_bus_effect(group, from, to) {
             return false;
         }
+        self.forget_the_history_unless_an_intent_asks();
         let _ = self.cmd_tx.send(GraphCommand::ReorderGroupEffect { group, from, to });
         true
     }
@@ -617,7 +621,9 @@ impl Controller {
     /// bus effects after it are told their new places. False, sending nothing, if there is no such effect.
     pub fn remove_bus_effect(&mut self, group: usize, index: usize) -> bool {
         let Some(effect) = self.model.groups.get(group).and_then(|g| g.effects.get(index)) else { return false };
-        for edge in self.model.cables_into_plugin(effect.node) {
+        let effect = effect.node;
+        self.forget_the_history_unless_an_intent_asks();
+        for edge in self.model.cables_into_plugin(effect) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
@@ -636,6 +642,7 @@ impl Controller {
         if inst >= self.model.instruments.len() || self.model.instruments.len() < 2 {
             return false;
         }
+        self.forget_the_history_unless_an_intent_asks();
         for edge in self.model.group_cables_into_lane(inst) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
@@ -655,6 +662,7 @@ impl Controller {
     pub fn remove_group(&mut self, group: usize) -> bool {
         let Some(bus) = self.model.groups.get(group) else { return false };
         let edges: Vec<EdgeId> = bus.modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge)).collect();
+        self.forget_the_history_unless_an_intent_asks();
         let mut driven: Vec<Driven> = Vec::new();
         for edge in edges {
             // (One that an earlier one took with it is not there any more.)
@@ -688,6 +696,7 @@ impl Controller {
         if !self.model.set_lane_group(inst, group) {
             return false;
         }
+        self.forget_the_history_unless_an_intent_asks();
         let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group });
         self.give_back(driven);
         true
@@ -704,6 +713,7 @@ impl Controller {
         if self.model.modulators_mut(at).is_none_or(|rack| index >= rack.len()) {
             return false;
         }
+        self.forget_the_history_unless_an_intent_asks();
         for edge in self.model.cables_into(at, index) {
             // (One that an earlier one took with it is not there any more. They drive the modulator's own
             // rate, stages and cable depths, and the cables that drive the depths of those go with them, so
@@ -749,6 +759,7 @@ impl Controller {
     /// (`give_back`). False, sending nothing, if there is no such cable.
     pub fn remove_edge(&mut self, edge: EdgeId) -> bool {
         let Some(driven) = self.take_out(edge) else { return false };
+        self.forget_the_history_unless_an_intent_asks();
         self.give_back(driven);
         true
     }

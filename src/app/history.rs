@@ -1659,9 +1659,9 @@ rate = 3.0
         clock.advance(Duration::from_secs(5));
         ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
         let added = ctl.model.instruments[0].effects.last().unwrap().node;
-        // Something takes it out by the controller's method and not by the intent, which leaves no step of the history.
+        // Something takes it out without the history (as a front-end that edits the model by itself could): the controller's own method forgets the history.
         let index = ctl.model.instruments[0].effects.len() - 1;
-        assert!(ctl.remove_effect(0, index));
+        ctl.model.remove_effect(0, index);
         let refused = ctl.undo().unwrap_err();
         assert_eq!(refused, IntentError::NotFound(added));
         assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "the step is dropped and the one before it is next");
@@ -1899,8 +1899,8 @@ rate = 3.0
         let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
         let (damping, _) = param(&ctl, NodePath::Effect { inst: 0, index: 0 }, "damping");
         ctl.apply(Intent::SetParam { node: reverb, param: damping, value: 0.9 }).unwrap();
-        // The TUI takes the reverb out by the controller's method, which is no intent: the history is not told.
-        assert!(ctl.remove_effect(0, 0));
+        // Something takes the reverb out without the history (as a front-end that edits the model by itself could).
+        ctl.model.remove_effect(0, 0);
         assert_eq!(undo_label(&ctl).as_deref(), Some("set damping"));
         assert_eq!(ctl.undo(), Err(IntentError::NotFound(reverb)));
         // The step is gone, and the one before it is what Undo does now.
@@ -2375,13 +2375,14 @@ depth = 0.5
     }
 
     #[test]
-    fn a_cable_that_was_taken_out_by_the_controller_and_not_by_an_intent_leaves_nothing_to_put_back() {
+    fn a_cable_that_was_taken_out_by_the_controller_and_not_by_an_intent_leaves_nothing_to_put_back_and_forgets_the_history() {
         let (_engine, mut ctl, _clock) = controller_over(load(CABLES).model);
         set_detune(&mut ctl, 1.0);
         let volume = cable_edge(&ctl, 0, 1);
         assert!(ctl.remove_edge(volume));
         assert!(ctl.journal.is_none(), "nothing is written down unless an intent is being carried out");
-        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "and the history is as it was: nobody asked for a step");
+        // (Nobody asked for a step, and the places of the cables of the others may have moved: what a step took out is put back by the places it had.)
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
     }
 
     #[test]
@@ -2429,6 +2430,70 @@ depth = 0.5
         assert!(ctl.swap_lanes(0, 1));
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
         assert!(ctl.undo().is_err() && ctl.redo().is_err());
+    }
+
+    /// A lane in a group that has two bus effects, and a lane in none.
+    const TWO_BUS_EFFECTS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    #[test]
+    fn a_structural_edit_that_no_intent_asks_for_forgets_the_history_and_one_that_is_refused_does_not() {
+        use crate::plugin::chain::ModulatorLocation::Lane;
+        type Edit = fn(&mut Controller) -> bool;
+        // (What a step took out is put back by the places it had, which these change: nothing in the history can be trusted with them. The edits that an intent
+        // asks for are steps, or forget the history themselves.)
+        let edits: [(&str, &str, Edit); 10] = [
+            ("take a cable out", SESSION, |ctl| {
+                let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+                ctl.remove_edge(edge)
+            }),
+            ("take a modulator out", SESSION, |ctl| ctl.remove_modulator(Lane(0), 1)),
+            ("take an effect out", SESSION, |ctl| ctl.remove_effect(0, 0)),
+            ("take a bus effect out", TWO_BUS_EFFECTS, |ctl| ctl.remove_bus_effect(0, 0)),
+            ("take a lane out", SESSION, |ctl| ctl.remove_lane(1)),
+            ("take a group out", SESSION, |ctl| ctl.remove_group(1)),
+            ("move an effect", SESSION, |ctl| ctl.move_effect(0, 0, 1)),
+            ("move a bus effect", TWO_BUS_EFFECTS, |ctl| ctl.move_bus_effect(0, 0, 1)),
+            ("put a lane in a group", SESSION, |ctl| ctl.set_lane_group(1, Some(0))),
+            ("swap two lanes", SESSION, |ctl| ctl.swap_lanes(0, 1)),
+        ];
+        for (what, session, edit) in edits {
+            let (_engine, mut ctl, _clock) = controller_over(load(session).model);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            assert!(undo_label(&ctl).is_some(), "{what}: there is something to forget");
+            assert!(edit(&mut ctl), "{what}");
+            assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "{what}");
+        }
+        // One that does nothing (the place is not there, or the same) leaves the history as it was.
+        let refused: [(&str, Edit); 10] = [
+            ("a cable that is not there", |ctl| ctl.remove_edge(EdgeId(9_999))),
+            ("a modulator that is not there", |ctl| ctl.remove_modulator(Lane(0), 9)),
+            ("an effect that is not there", |ctl| ctl.remove_effect(0, 9)),
+            ("a bus effect that is not there", |ctl| ctl.remove_bus_effect(0, 9)),
+            ("a lane that is not there", |ctl| ctl.remove_lane(9)),
+            ("a group that is not there", |ctl| ctl.remove_group(9)),
+            ("an effect moved to its own place", |ctl| ctl.move_effect(0, 0, 0)),
+            ("a bus effect moved to its own place", |ctl| ctl.move_bus_effect(0, 0, 0)),
+            ("a lane put in a group that is not there", |ctl| ctl.set_lane_group(0, Some(9))),
+            ("a lane swapped with itself", |ctl| ctl.swap_lanes(0, 0)),
+        ];
+        for (what, edit) in refused {
+            let (_engine, mut ctl, _clock) = controller();
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            assert!(!edit(&mut ctl), "{what}");
+            assert_eq!(undo_label(&ctl).as_deref(), Some("lock the piano to its scale"), "{what}: the history is as it was");
+        }
     }
 
     /// A step of a script: an intent, or time going by (in milliseconds).
