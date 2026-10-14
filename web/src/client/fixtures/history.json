@@ -889,8 +889,8 @@
             "undo": null
           },
           "intent": {
-            "members": [],
-            "type": "addGroup"
+            "edge": 0,
+            "type": "removeEdge"
           },
           "restructured": true
         },
@@ -3941,7 +3941,9 @@
             "undo": null
           },
           "intent": {
-            "members": [],
+            "members": [
+              3
+            ],
             "type": "addGroup"
           },
           "restructured": true
@@ -4039,9 +4041,8 @@
             "undo": null
           },
           "intent": {
-            "group": 0,
-            "node": 8,
-            "type": "setLaneGroup"
+            "edge": 0,
+            "type": "removeEdge"
           },
           "restructured": true
         },
@@ -4138,8 +4139,8 @@
             "undo": null
           },
           "intent": {
-            "edge": 0,
-            "type": "removeEdge"
+            "node": 7,
+            "type": "removeNode"
           },
           "restructured": true
         },
@@ -4236,15 +4237,9 @@
             "undo": null
           },
           "intent": {
-            "modulator": 6,
-            "to": {
-              "node": 3,
-              "port": {
-                "index": 1,
-                "type": "param"
-              }
-            },
-            "type": "addModEdge"
+            "node": 8,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
           },
           "restructured": true
         },
@@ -4335,504 +4330,11 @@
           "restructured": false
         },
         {
-          "events": [],
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "kind": "envelope",
-            "parent": 3,
-            "type": "addModulator"
-          },
-          "restructured": true
-        },
-        {
-          "error": "there is nothing to undo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "undo"
-          }
-        },
-        {
-          "error": "there is nothing to redo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "redo"
-          }
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 26,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 1.0
-          },
-          "restructured": false
-        },
-        {
-          "wait": 5000
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 27,
-              "type": "paramSet",
-              "value": 2.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 2.0
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 28,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": "set detune",
-            "undo": "set detune"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": false
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "node": 7,
-            "type": "removeNode"
-          },
-          "restructured": true
-        },
-        {
-          "error": "there is nothing to undo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "undo"
-          }
-        },
-        {
-          "error": "there is nothing to redo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "redo"
-          }
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 31,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 1.0
-          },
-          "restructured": false
-        },
-        {
-          "wait": 5000
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 32,
-              "type": "paramSet",
-              "value": 2.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 2.0
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 33,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": "set detune",
-            "undo": "set detune"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": false
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "parent": 3,
-            "plugin": "builtin:filter",
-            "type": "addEffect"
-          },
-          "restructured": true
-        },
-        {
-          "error": "there is nothing to undo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "undo"
-          }
-        },
-        {
-          "error": "there is nothing to redo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "redo"
-          }
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 36,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 1.0
-          },
-          "restructured": false
-        },
-        {
-          "wait": 5000
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 37,
-              "type": "paramSet",
-              "value": 2.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 2.0
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 38,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": "set detune",
-            "undo": "set detune"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": false
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "plugin": "builtin:osc",
-            "type": "addInstrument"
-          },
-          "restructured": true
-        },
-        {
-          "error": "there is nothing to undo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "undo"
-          }
-        },
-        {
-          "error": "there is nothing to redo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "redo"
-          }
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 41,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 1.0
-          },
-          "restructured": false
-        },
-        {
-          "wait": 5000
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 42,
-              "type": "paramSet",
-              "value": 2.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 2.0
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 43,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": "set detune",
-            "undo": "set detune"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": false
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "node": 8,
-            "plugin": "builtin:osc",
-            "type": "replaceInstrument"
-          },
-          "restructured": true
-        },
-        {
-          "error": "there is nothing to undo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "undo"
-          }
-        },
-        {
-          "error": "there is nothing to redo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "redo"
-          }
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 46,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 1.0
-          },
-          "restructured": false
-        },
-        {
-          "wait": 5000
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 47,
-              "type": "paramSet",
-              "value": 2.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 2.0
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 48,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": "set detune",
-            "undo": "set detune"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": false
-        },
-        {
           "events": [
             {
               "node": 4,
               "preset": "Arcadia Dream Hall",
-              "rev": 49,
+              "rev": 24,
               "type": "presetLoaded",
               "values": [
                 {

@@ -40,8 +40,8 @@ use crate::app::history::History;
 use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    Driven, EdgeId, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState, PluginSlot,
-    SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
+    Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
+    PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -218,6 +218,8 @@ pub struct Controller {
     subscribers: Subscribers,
     /// What can be undone and redone (`app::history`).
     pub(super) history: History,
+    /// The ids the intent that was carried out last made: what an add that is undone and done again has to be given again.
+    pub(super) made_last: Made,
     /// What time it is, for changes that go on to be told from those that are made again (a test turns it).
     pub(super) clock: Box<dyn Fn() -> Instant + Send>,
 }
@@ -281,8 +283,15 @@ impl Controller {
             last_device_poll: now,
             subscribers: Subscribers::default(),
             history: History::default(),
+            made_last: Made::default(),
             clock: Box::new(Instant::now),
         }
+    }
+
+    /// The ids the intent that was carried out last made.
+    #[cfg(test)]
+    pub fn last_made(&self) -> &Made {
+        &self.made_last
     }
 
     /// Load `source` (a plugin path or id) with the model slot that describes it,
@@ -303,10 +312,15 @@ impl Controller {
 
     /// Make `loaded`/`slot` the instrument plugin of lane `inst`, on the audio
     /// thread and in the model. The plugin sits in the lane's node.
-    pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, mut slot: PluginSlot) {
+    pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, slot: PluginSlot) {
         // (What was set on the plugin that goes is addressed by its parameters' places, which are the new plugin's now:
         // what could be undone cannot be, and no intent can tell the history, since the TUI calls this.)
         self.history.clear();
+        self.install_instrument(inst, loaded, slot);
+    }
+
+    /// `set_instrument`, leaving the history as it is: for a lane that has just been made, which nothing in the history names.
+    fn install_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, mut slot: PluginSlot) {
         let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
         let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
             inst,
@@ -449,7 +463,7 @@ impl Controller {
         let inst = self.add_lane();
         let node = self.model.instruments[inst].node;
         let slot = fresh_slot(loaded.as_mut(), source, node);
-        self.set_instrument(inst, loaded, slot);
+        self.install_instrument(inst, loaded, slot);
         Ok(node)
     }
 

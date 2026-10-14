@@ -16,7 +16,7 @@ use crate::plugin;
 use crate::plugin::chain::{CrossModField, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
 use crate::session::NodeUi;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Names a node of the session (an instrument, an effect, a group, a bus effect
 /// or a modulator) for as long as it exists. The engine and the tree address
@@ -42,25 +42,74 @@ impl NodeId {
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 pub struct EdgeId(pub u32);
 
+/// The ids that were handed out for something: the nodes and the cables, each in the order they were made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Made {
+    pub nodes: Vec<NodeId>,
+    pub edges: Vec<EdgeId>,
+}
+
 /// Hands out `NodeId`s and `EdgeId`s, each one once. The two are series of their
 /// own.
+///
+/// One thing is handed out twice: what undo puts back (a node that was taken out, or made, and is made again) has the ids it had, so
+/// that every step of the history that names it goes on naming it. `reuse` says which ids come next, before any new one.
 #[derive(Debug, Default)]
 pub struct NodeIds {
     next: u32,
     next_edge: u32,
+    /// The ids to hand out before new ones, in order.
+    put_back: VecDeque<NodeId>,
+    put_back_edges: VecDeque<EdgeId>,
+    /// Every id handed out since `begin_log`, if it was begun.
+    log: Option<Made>,
 }
 
 impl NodeIds {
     pub fn alloc(&mut self) -> NodeId {
-        let id = NodeId(self.next);
-        self.next += 1;
+        let id = self.put_back.pop_front().unwrap_or_else(|| {
+            let id = NodeId(self.next);
+            self.next += 1;
+            id
+        });
+        if let Some(log) = &mut self.log {
+            log.nodes.push(id);
+        }
         id
     }
 
     pub fn alloc_edge(&mut self) -> EdgeId {
-        let id = EdgeId(self.next_edge);
-        self.next_edge += 1;
+        let id = self.put_back_edges.pop_front().unwrap_or_else(|| {
+            let id = EdgeId(self.next_edge);
+            self.next_edge += 1;
+            id
+        });
+        if let Some(log) = &mut self.log {
+            log.edges.push(id);
+        }
         id
+    }
+
+    /// The ids that come next, in this order, in place of new ones: what undo puts back is under the ids it had.
+    pub fn reuse(&mut self, nodes: &[NodeId], edges: &[EdgeId]) {
+        self.put_back = nodes.iter().copied().collect();
+        self.put_back_edges = edges.iter().copied().collect();
+    }
+
+    /// What was not used of the ids that were to come next is not to be: new ids go on.
+    pub fn drop_ids_to_put_back(&mut self) {
+        self.put_back.clear();
+        self.put_back_edges.clear();
+    }
+
+    /// Write down every id that is handed out, from now until `take_log`.
+    pub fn begin_log(&mut self) {
+        self.log = Some(Made::default());
+    }
+
+    /// The ids handed out since `begin_log`, in order, and nothing is written down after this until the next `begin_log`.
+    pub fn take_log(&mut self) -> Made {
+        self.log.take().unwrap_or_default()
     }
 }
 
@@ -1644,6 +1693,82 @@ mod tests {
         let (n0, e0, n1, e1) = (model.alloc_node(), model.alloc_edge(), model.alloc_node(), model.alloc_edge());
         assert_eq!((n0, n1), (NodeId(0), NodeId(1)), "edges do not use up node ids");
         assert_eq!((e0, e1), (EdgeId(0), EdgeId(1)));
+    }
+
+    #[test]
+    fn ids_that_are_to_be_put_back_come_first_in_order_and_new_ones_go_on_where_they_were() {
+        let mut ids = NodeIds::default();
+        let (a, b, c) = (ids.alloc(), ids.alloc(), ids.alloc());
+        let (x, y) = (ids.alloc_edge(), ids.alloc_edge());
+        // What was taken out comes back under its own ids, in the order it is made; what is made after it is new.
+        ids.reuse(&[b, a], &[y]);
+        assert_eq!((ids.alloc(), ids.alloc()), (b, a));
+        assert_eq!(ids.alloc_edge(), y);
+        assert_eq!(ids.alloc(), NodeId(c.0 + 1), "the next new id is the one after the last there was");
+        assert_eq!(ids.alloc_edge(), EdgeId(y.0 + 1));
+        assert_eq!(x, EdgeId(0));
+    }
+
+    #[test]
+    fn ids_to_put_back_that_are_not_used_can_be_dropped_and_are_not_given_to_what_is_made_next() {
+        let mut ids = NodeIds::default();
+        let a = ids.alloc();
+        ids.reuse(&[a], &[]);
+        ids.drop_ids_to_put_back();
+        assert_ne!(ids.alloc(), a, "an id that nothing asked for is not given again");
+        ids.reuse(&[], &[EdgeId(7)]);
+        ids.drop_ids_to_put_back();
+        assert_ne!(ids.alloc_edge(), EdgeId(7), "an edge's id is dropped as a node's is");
+    }
+
+    #[test]
+    fn edges_that_are_put_back_come_in_the_order_they_were_said() {
+        let mut ids = NodeIds::default();
+        let (x, y) = (ids.alloc_edge(), ids.alloc_edge());
+        ids.reuse(&[], &[y, x]);
+        assert_eq!((ids.alloc_edge(), ids.alloc_edge()), (y, x));
+    }
+
+    #[test]
+    fn a_log_that_is_begun_again_starts_empty() {
+        let mut ids = NodeIds::default();
+        ids.begin_log();
+        ids.alloc();
+        ids.begin_log();
+        assert_eq!(ids.take_log(), Made::default());
+    }
+
+    #[test]
+    fn what_is_to_be_put_back_is_what_was_last_said_and_not_what_was_said_before() {
+        let mut ids = NodeIds::default();
+        let (a, b) = (ids.alloc(), ids.alloc());
+        let (x, y) = (ids.alloc_edge(), ids.alloc_edge());
+        ids.reuse(&[a], &[x]);
+        ids.reuse(&[b], &[y]);
+        assert_eq!((ids.alloc(), ids.alloc_edge()), (b, y));
+        assert_eq!((ids.alloc(), ids.alloc_edge()), (NodeId(b.0 + 1), EdgeId(y.0 + 1)), "and what was said first is not left to come after it");
+    }
+
+    #[test]
+    fn the_ids_handed_out_since_the_log_was_begun_are_told_once_in_order() {
+        let mut ids = NodeIds::default();
+        ids.alloc(); // (before the log: not in it)
+        ids.begin_log();
+        let (n, e, m) = (ids.alloc(), ids.alloc_edge(), ids.alloc());
+        assert_eq!(ids.take_log(), Made { nodes: vec![n, m], edges: vec![e] });
+        ids.alloc();
+        assert_eq!(ids.take_log(), Made::default(), "the log ended with the take: nothing handed out since is in it");
+    }
+
+    #[test]
+    fn an_id_that_is_put_back_is_in_the_log_as_any_is_and_in_its_turn() {
+        let mut ids = NodeIds::default();
+        let a = ids.alloc();
+        ids.begin_log();
+        ids.reuse(&[a], &[]);
+        ids.alloc();
+        ids.alloc();
+        assert_eq!(ids.take_log().nodes, [a, NodeId(a.0 + 1)]);
     }
 
     #[test]

@@ -3641,6 +3641,8 @@ mod with_web {
                 assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(2)), "{told}");
                 let names: Vec<_> = told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
                 assert!(names.contains(&"Reverb".to_string()), "{names:?}");
+                // What can be undone now (the add is a step of the history) is told before the answer.
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "add Reverb", "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
                 // A plugin that is not in the catalog is refused, with the words of the controller.
                 tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addEffect", "parent": oscillator, "plugin": "./evil.clap"}})).await;
@@ -3675,11 +3677,13 @@ mod with_web {
                 // Its meters (a peak and a clip count) are in the layout of the telemetry that the snapshot has.
                 let meters = |snapshot: &Value| snapshot["snapshot"]["telemetry"]["meters"].as_array().unwrap().len();
                 assert_eq!(meters(&told), meters(&snapshot) + 2, "{told}");
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "add Oscillator as an instrument", "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
-                // The lane there was gets another instrument.
+                // The lane there was gets another instrument: nothing puts that back yet, and the history is forgotten.
                 tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "replaceInstrument", "node": oscillator, "plugin": "builtin:osc"}})).await;
                 let told = said(&mut client).await;
                 assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(4)), "{told}");
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": null, "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 2, "rev": 3}));
                 // An effect is not an instrument, and the controller's words say so.
                 tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "replaceInstrument", "node": oscillator, "plugin": "builtin:reverb"}})).await;

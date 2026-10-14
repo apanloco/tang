@@ -217,7 +217,7 @@ describe("the mock engine's history", () => {
     const rows = historyFixture.scripts.flatMap((script) => script.rows);
     const intents = new Set(rows.flatMap((row) => ("intent" in row ? [row.intent.type] : [])));
     const undoable: Intent["type"][] = ["setParam", "setGain", "setModulatorField", "setEdgeDepth", "setRange", "setNodeUi", "setPinned", "renameGroup", "setScale", "setLocked", "moveEffect"];
-    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeEdge", "addModulator", "addModEdge", "removeNode", "addEffect", "addInstrument", "replaceInstrument"];
+    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "removeEdge", "removeNode", "replaceInstrument"];
     const kinds: Intent["type"][] = [...undoable, ...barriers, "undo", "redo"];
     for (const type of kinds) expect(intents.has(type), type).toBe(true);
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));

@@ -49,7 +49,15 @@ impl Controller {
     }
 
     /// Carry out `intent` and tell the subscribers, with nothing kept in the history: what `apply`, `undo` and `redo` are made of.
+    /// The ids it hands out are written down (`made_last`): an add that is undone is done again under them.
     pub(super) fn carry_out(&mut self, intent: Intent) -> Result<Applied, IntentError> {
+        self.model.ids.begin_log();
+        let carried = self.carry_out_intent(intent);
+        self.made_last = self.model.ids.take_log();
+        carried
+    }
+
+    fn carry_out_intent(&mut self, intent: Intent) -> Result<Applied, IntentError> {
         let done = match intent {
             Intent::SetParam { node, param, value } => Done::Event(self.set_param(node, param, value)?),
             Intent::SetGain { node, gain, value } => Done::Event(self.set_gain(node, gain, value)?),

@@ -6,13 +6,16 @@
 //!
 //! A change that goes on (a knob dragged turns it at every frame) is one step, not a hundred: a change of what the last step
 //! was of, soon enough after it, is merged into it, and the step goes back to before the first.
+//!
+//! What is added is taken out by undo and put back by redo **under the ids it had** (`Made`, `NodeIds::reuse`): every step that
+//! names the node or the cable goes on naming it, whatever is undone and redone around it.
 
 use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
 use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField};
-use crate::app::model::{EdgeId, ModSourceSlot, NodeId, NodePath, PluginSlot};
+use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
 
 /// How long after one change of a thing the next change of it may come and still be the same step.
@@ -47,12 +50,21 @@ pub struct Step {
     key: Option<Key>,
     /// When it was last changed.
     last: Instant,
+    /// The ids that `undo` makes, in the order it makes them (none, for most).
+    undo_made: Made,
+    /// The ids that `redo` makes, in the order it makes them: what was added is added again under the ids it had.
+    redo_made: Made,
 }
 
 impl Step {
     /// A step of one change: `undo` puts back what it found, `redo` is the change.
     pub fn new(label: impl Into<String>, undo: Intent, redo: Intent, key: Option<Key>, at: Instant) -> Step {
-        Step { label: label.into(), undo: vec![undo], redo: vec![redo], key, last: at }
+        Step { label: label.into(), undo: vec![undo], redo: vec![redo], key, last: at, undo_made: Made::default(), redo_made: Made::default() }
+    }
+
+    /// A step of an add: `redo` is the intent, which made `made` the first time, and `undo` takes it out.
+    fn added(label: impl Into<String>, undo: Intent, redo: Intent, made: Made, at: Instant) -> Step {
+        Step { redo_made: made, ..Step::new(label, undo, redo, None, at) }
     }
 }
 
@@ -139,6 +151,8 @@ impl History {
 pub(super) enum Plan {
     /// It can be undone: this is the step.
     Step(Step),
+    /// It adds something, and is undone by taking that out: what it made is known once it is carried out, and the step is made then.
+    Added { label: String, intent: Intent, at: Instant },
     /// It cannot be undone yet, and what came before cannot be undone past it.
     Barrier,
     /// It is no change of the session.
@@ -158,7 +172,7 @@ impl Controller {
         let Some(step) = self.history.take_undo() else {
             return Err(IntentError::Invalid("there is nothing to undo".to_string()));
         };
-        let applied = self.carry_out_all(&step.undo)?;
+        let applied = self.carry_out_all(&step.undo, &step.undo_made)?;
         self.history.kept_undone(step);
         Ok(applied)
     }
@@ -168,13 +182,34 @@ impl Controller {
         let Some(step) = self.history.take_redo() else {
             return Err(IntentError::Invalid("there is nothing to redo".to_string()));
         };
-        let applied = self.carry_out_all(&step.redo)?;
+        let applied = self.carry_out_all(&step.redo, &step.redo_made)?;
         self.history.kept_redone(step);
         Ok(applied)
     }
 
-    /// Carry out `intents` one after the other, each a revision of its own, and say what all of them did.
-    fn carry_out_all(&mut self, intents: &[Intent]) -> Result<Applied, IntentError> {
+    /// Carry out `intents` one after the other, each a revision of its own, and say what all of them did. What they make is made under
+    /// the ids in `made`, in the order they were handed out the first time: what comes back has the ids it had.
+    fn carry_out_all(&mut self, intents: &[Intent], made: &Made) -> Result<Applied, IntentError> {
+        self.put_ids_back(made)?;
+        let carried = self.carry_out_each(intents);
+        // (What the intents did not make is not kept for what is made next.)
+        self.model.ids.drop_ids_to_put_back();
+        carried
+    }
+
+    /// The ids in `made` are the ones to come next. Refused if one of them is in use: a node or a cable cannot have two.
+    fn put_ids_back(&mut self, made: &Made) -> Result<(), IntentError> {
+        if let Some(node) = made.nodes.iter().find(|node| self.model.locate(**node).is_some()) {
+            return Err(IntentError::Invalid(format!("node {} is there already", node.0)));
+        }
+        if let Some(edge) = made.edges.iter().find(|edge| self.model.locate_edge(**edge).is_some()) {
+            return Err(IntentError::Invalid(format!("cable {} is there already", edge.0)));
+        }
+        self.model.ids.reuse(&made.nodes, &made.edges);
+        Ok(())
+    }
+
+    fn carry_out_each(&mut self, intents: &[Intent]) -> Result<Applied, IntentError> {
         let mut all: Option<Applied> = None;
         for intent in intents {
             let applied = self.carry_out(intent.clone())?;
@@ -196,6 +231,7 @@ impl Controller {
     pub(super) fn plan_history(&self, intent: &Intent) -> Plan {
         let now = (self.clock)();
         let step = |label: String, undo: Intent, key: Option<Key>| Plan::Step(Step::new(label, undo, intent.clone(), key, now));
+        let added = |label: String| Plan::Added { label, intent: intent.clone(), at: now };
         match intent {
             // (Done before `plan_history` is asked, by `apply`: they are no steps of the history.)
             Intent::Save | Intent::Undo | Intent::Redo => Plan::Nothing,
@@ -249,17 +285,40 @@ impl Controller {
                 }
                 _ => Plan::Nothing,
             },
+            // (The catalog names the plugin, or the intent is refused.)
+            Intent::AddEffect { plugin, .. } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name}"))),
+            Intent::AddInstrument { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name} as an instrument"))),
+            Intent::AddModulator { kind, .. } => added(format!("add {}", kind.label())),
+            Intent::AddModEdge { .. } => added("draw a cable".to_string()),
+            Intent::AddGroup { members } => {
+                // (A member that is no lane is refused with the rest, so it need not be looked at.)
+                let mut lanes = members.iter().filter_map(|member| self.lane_place(*member));
+                // A lane that leaves its group is no longer driven by it, and the cables that did are gone: a step does not bring them back.
+                if lanes.any(|inst| self.model.instruments[inst].group.is_some()) { Plan::Barrier } else { added("add a group".to_string()) }
+            }
+            Intent::SetLaneGroup { node, group } => {
+                let Some(inst) = self.lane_place(*node) else { return Plan::Nothing };
+                let wanted = match group {
+                    None => None,
+                    Some(group) => match self.model.locate(*group) {
+                        Some(NodePath::Group(index)) => Some(index),
+                        _ => return Plan::Nothing,
+                    },
+                };
+                let lane = &self.model.instruments[inst];
+                if lane.group == wanted {
+                    Plan::Nothing
+                } else if !self.model.group_cables_into_lane(inst).is_empty() {
+                    // The cables of the group it leaves are taken out, and a step does not bring them back.
+                    Plan::Barrier
+                } else {
+                    let label = if wanted.is_some() { "put a lane in a group" } else { "take a lane out of its group" };
+                    let old = lane.group.map(|index| self.model.groups[index].node);
+                    step(label.to_string(), Intent::SetLaneGroup { node: *node, group: old }, None)
+                }
+            }
             // Nothing puts these back yet.
-            Intent::LoadPreset { .. }
-            | Intent::AddGroup { .. }
-            | Intent::SetLaneGroup { .. }
-            | Intent::RemoveEdge { .. }
-            | Intent::AddModulator { .. }
-            | Intent::AddModEdge { .. }
-            | Intent::RemoveNode { .. }
-            | Intent::AddEffect { .. }
-            | Intent::AddInstrument { .. }
-            | Intent::ReplaceInstrument { .. } => Plan::Barrier,
+            Intent::LoadPreset { .. } | Intent::RemoveEdge { .. } | Intent::RemoveNode { .. } | Intent::ReplaceInstrument { .. } => Plan::Barrier,
         }
     }
 
@@ -267,10 +326,43 @@ impl Controller {
     pub(super) fn keep_in_history(&mut self, plan: Plan) {
         match plan {
             Plan::Step(step) => self.history.record(step),
+            Plan::Added { label, intent, at } => {
+                let made = self.made_last.clone();
+                match self.takes_out(&intent, &made) {
+                    Some(undo) => self.history.record(Step::added(label, undo, intent, made, at)),
+                    // (It made something that cannot be named, or what it made is not there: nothing puts it back.)
+                    None => {
+                        self.history.clear();
+                    }
+                }
+            }
             Plan::Barrier => {
                 self.history.clear();
             }
             Plan::Nothing => {}
+        }
+    }
+
+    /// The intent that takes out what `added`, an add that is carried out, made: the one node, or the one cable.
+    fn takes_out(&self, added: &Intent, made: &Made) -> Option<Intent> {
+        match (added, made.nodes.as_slice(), made.edges.as_slice()) {
+            (Intent::AddModEdge { .. }, [], [edge]) if self.model.locate_edge(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
+            (Intent::AddModEdge { .. }, ..) => None,
+            (_, [node], []) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
+            _ => None,
+        }
+    }
+
+    /// The name the catalog has for the plugin `source`.
+    fn catalog_name(&self, source: &str) -> Option<String> {
+        self.catalog.plugins().iter().find(|plugin| plugin.id == source).map(|plugin| plugin.name.clone())
+    }
+
+    /// The place of the lane whose node is `node`.
+    fn lane_place(&self, node: NodeId) -> Option<usize> {
+        match self.model.locate(node)? {
+            NodePath::Instrument(inst) => Some(inst),
+            _ => None,
         }
     }
 
@@ -331,7 +423,7 @@ mod tests {
     use crate::app::controller::Controller;
     use crate::app::graph::NoteRange;
     use crate::app::intent::{Applied, Event, IntentError};
-    use crate::app::model::{ModSourceSlot, NodePath};
+    use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel};
     use crate::app::testutil::{self, StubEngine, described, load, wire};
     use crate::session::NodeUi;
 
@@ -554,8 +646,13 @@ rate = 3.0
     }
 
     fn controller() -> (StubEngine, Controller, Clock) {
+        controller_over(load(SESSION).model)
+    }
+
+    /// A controller over `model` and a stub engine, with a clock that the test turns.
+    fn controller_over(model: SessionModel) -> (StubEngine, Controller, Clock) {
         let (handles, engine) = testutil::stub_engine();
-        let mut ctl = Controller::new(load(SESSION).model, handles, None);
+        let mut ctl = Controller::new(model, handles, None);
         let clock = Clock(Arc::new(Mutex::new(Instant::now())));
         let shared = clock.clone();
         ctl.clock = Box::new(move || *shared.0.lock().unwrap());
@@ -1033,38 +1130,454 @@ rate = 3.0
 
     #[test]
     fn what_cannot_be_undone_yet_empties_the_history_so_that_undo_never_does_something_else() {
-        use crate::app::intent::ModulatorKind;
         let (_engine, mut ctl, clock) = controller();
         set_detune(&mut ctl, 1.0);
         clock.advance(Duration::from_secs(5));
         set_detune(&mut ctl, 2.0);
         ctl.undo().unwrap();
         assert_eq!((undo_label(&ctl).is_some(), redo_label(&ctl).is_some()), (true, true));
-        // A modulator is added: nothing puts that back yet, and what was before it cannot be undone past it.
-        ctl.apply(Intent::AddModulator { parent: lane(&ctl), kind: ModulatorKind::Lfo }).unwrap();
+        // A cable is taken out: nothing puts that back yet, and what was before it cannot be undone past it.
+        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
         assert!(ctl.undo().is_err() && ctl.redo().is_err());
     }
 
+    /// The session of `SESSION` with the built-in plugins in the catalog, so that an effect and an instrument can be added.
+    fn controller_with_plugins() -> (StubEngine, Controller, Clock) {
+        let (engine, mut ctl, clock) = controller();
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        (engine, ctl, clock)
+    }
+
+    #[test]
+    fn an_effect_that_was_added_is_taken_out_by_undo_and_put_back_by_redo_under_the_id_it_had() {
+        let (engine, mut ctl, _clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        let before = ctl.model.instruments[0].effects.len();
+        sent(&engine);
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        let added = ctl.model.instruments[0].effects.last().unwrap().node;
+        assert_eq!(ctl.last_made().nodes, [added]);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("add Reverb"), None));
+        assert_eq!(sent(&engine), ["InsertEffect inst=0 index=2 plugin=Reverb mix=0.500"]);
+
+        let undone = ctl.undo().unwrap();
+        assert!(undone.restructured);
+        assert_eq!(ctl.model.instruments[0].effects.len(), before);
+        assert_eq!(ctl.model.locate(added), None);
+        assert_eq!(sent(&engine), ["RemoveEffect inst=0 index=2"]);
+        assert_eq!((undo_label(&ctl), redo_label(&ctl).as_deref()), (None, Some("add Reverb")));
+
+        let redone = ctl.redo().unwrap();
+        assert!(redone.restructured);
+        assert_eq!(ctl.model.instruments[0].effects.last().unwrap().node, added, "the effect that comes back has the id it had");
+        assert_eq!(sent(&engine), ["InsertEffect inst=0 index=2 plugin=Reverb mix=0.500"]);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("add Reverb"), None));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_effect_on_a_groups_bus_is_added_and_taken_out_the_same_way() {
+        let (engine, mut ctl, _clock) = controller_with_plugins();
+        let g0 = node(&ctl, NodePath::Group(0));
+        let before = ctl.model.groups[0].effects.len();
+        sent(&engine);
+        ctl.apply(Intent::AddEffect { parent: g0, plugin: "builtin:reverb".to_string() }).unwrap();
+        let added = ctl.model.groups[0].effects.last().unwrap().node;
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add Reverb"));
+        ctl.undo().unwrap();
+        assert_eq!((ctl.model.groups[0].effects.len(), ctl.model.locate(added)), (before, None));
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.groups[0].effects.last().unwrap().node, added);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn what_was_done_to_an_effect_that_was_added_is_put_back_on_the_same_effect_whatever_came_and_went_in_between() {
+        let (engine, mut ctl, clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        let added = ctl.model.instruments[0].effects.last().unwrap().node;
+        ctl.apply(Intent::SetGain { node: added, gain: Gain::Mix, value: 0.25 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        let (damping, _) = param(&ctl, NodePath::Effect { inst: 0, index: 2 }, "damping");
+        ctl.apply(Intent::SetParam { node: added, param: damping, value: 0.75 }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set damping"));
+
+        // All three go back, the effect with them, and all three come again, on the effect that comes back.
+        for _ in 0..3 {
+            ctl.undo().unwrap();
+        }
+        assert_eq!(ctl.model.locate(added), None);
+        sent(&engine);
+        for _ in 0..3 {
+            ctl.redo().unwrap();
+        }
+        let effect = &ctl.model.instruments[0].effects[2];
+        assert_eq!(effect.node, added);
+        assert_eq!(effect.mix, 0.25);
+        assert_eq!(effect.params.iter().find(|row| row.index == damping).unwrap().value, 0.75);
+        assert_eq!(
+            sent(&engine),
+            [
+                "InsertEffect inst=0 index=2 plugin=Reverb mix=0.500".to_string(),
+                "SetMix inst=0 slot=3 value=0.250".to_string(),
+                format!("SetParameter inst=0 slot=3 param={damping} value=0.750"),
+            ]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_modulator_and_a_cable_that_were_added_are_taken_out_by_undo_and_come_back_under_their_ids_by_redo() {
+        use crate::app::graph::{Endpoint, Port};
+        use crate::app::intent::ModulatorKind;
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let (lane0, filter) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
+        let (resonance, set) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
+        ctl.apply(Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo }).unwrap();
+        let lfo = ctl.last_made().nodes[0];
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add an LFO"));
+        ctl.apply(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: filter, port: Port::Param { index: resonance } } }).unwrap();
+        let cable = ctl.last_made().edges[0];
+        assert_eq!(undo_label(&ctl).as_deref(), Some("draw a cable"));
+
+        ctl.undo().unwrap();
+        assert!(ctl.model.locate_edge(cable).is_none());
+        assert_eq!(param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance").1, set, "what the cable drove has the value that was set");
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add an LFO"));
+        ctl.undo().unwrap();
+        assert!(ctl.model.locate(lfo).is_none());
+        assert_eq!(undo_label(&ctl), None);
+
+        ctl.redo().unwrap();
+        assert!(ctl.model.locate(lfo).is_some(), "the modulator comes back under its id");
+        ctl.redo().unwrap();
+        let (at, index, target) = ctl.model.locate_edge(cable).expect("the cable comes back under its id");
+        assert_eq!(ctl.model.modulators(at).unwrap()[index].node, lfo);
+        assert_eq!(ctl.model.modulators(at).unwrap()[index].targets[target].edge, cable);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_envelope_and_a_midi_control_have_their_own_words() {
+        use crate::app::intent::ModulatorKind;
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        ctl.apply(Intent::AddModulator { parent: lane0, kind: ModulatorKind::Envelope }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add an envelope"));
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::AddModulator { parent: lane0, kind: ModulatorKind::MidiLearn }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add a MIDI control"));
+    }
+
+    #[test]
+    fn an_instrument_that_was_added_is_a_lane_that_undo_takes_out_and_redo_puts_back_under_its_id_and_what_was_done_to_it_is_done_again() {
+        let (engine, mut ctl, clock) = controller_with_plugins();
+        let lanes = ctl.model.instruments.len();
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::AddInstrument { plugin: "builtin:osc".to_string() }).unwrap();
+        let added = ctl.model.instruments.last().unwrap().node;
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add Oscillator as an instrument"));
+        ctl.apply(Intent::SetNodeUi { node: added, ui: Some(NodeUi { x: 5.0, y: 6.0 }) }).unwrap();
+        sent(&engine);
+
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments.len(), lanes);
+        assert_eq!(ctl.model.locate(added), None);
+        assert_eq!(sent(&engine), ["RemoveInstrument inst=2"]);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "what was done before the add is still to be undone");
+        ctl.redo().unwrap();
+        // (The step that moved the lane finds it under the id it had, or it would be refused and dropped.)
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.instruments.last().unwrap().node, added, "the lane comes back under its id");
+        assert_eq!(ctl.model.ui.get(&added).copied(), Some(NodeUi { x: 5.0, y: 6.0 }));
+        ctl.model.check_ids().unwrap();
+        for _ in 0..3 {
+            ctl.undo().unwrap();
+        }
+        assert_eq!(detune(&ctl).1, 0.0);
+    }
+
+    #[test]
+    fn a_group_that_was_added_with_lanes_that_were_in_none_is_taken_out_by_undo_and_comes_back_with_them() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        let lane1 = node(&ctl, NodePath::Instrument(1));
+        assert_eq!(ctl.model.instruments[1].group, None);
+        ctl.apply(Intent::AddGroup { members: vec![lane1] }).unwrap();
+        let group = ctl.model.groups.last().unwrap().node;
+        assert_eq!(ctl.model.instruments[1].group, Some(2));
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add a group"));
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::RenameGroup { node: group, name: "Keys".to_string() }).unwrap();
+
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!((ctl.model.groups.len(), ctl.model.instruments[1].group), (2, None), "the group is gone and its lane is in none");
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.groups.last().unwrap().node, group, "the group comes back under its id");
+        assert_eq!(ctl.model.groups.last().unwrap().name.as_deref(), Some("Keys"));
+        assert_eq!(ctl.model.instruments[1].group, Some(2));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_session_that_is_built_by_adds_goes_back_through_each_of_the_structures_it_had_and_forward_through_them_again() {
+        use crate::app::graph::{Endpoint, Port};
+        use crate::app::intent::ModulatorKind;
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let (lane0, lane1) = (lane(&ctl), node(&ctl, NodePath::Instrument(1)));
+        let (g0, g1) = (node(&ctl, NodePath::Group(0)), node(&ctl, NodePath::Group(1)));
+        let (filter, bus) = (node(&ctl, NodePath::Effect { inst: 0, index: 1 }), node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }));
+        let (resonance, _) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
+        let (cutoff, _) = param(&ctl, NodePath::GroupEffect { group: 0, index: 0 }, "cutoff");
+        let (detune, _) = detune(&ctl);
+        let to = |node: NodeId, index: u32| Endpoint { node, port: Port::Param { index } };
+        // What each add made (the node, or the cable), as it is told, so that a later add can name it.
+        let made = |ctl: &mut Controller, intent: Intent| -> Made {
+            ctl.apply(intent).unwrap();
+            ctl.last_made().clone()
+        };
+
+        let mut structures = vec![(ctl.model.graph(), ctl.model.telemetry_layout())];
+        let mut record = |ctl: &Controller| structures.push((ctl.model.graph(), ctl.model.telemetry_layout()));
+        let fx = made(&mut ctl, Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).nodes[0];
+        record(&ctl);
+        made(&mut ctl, Intent::AddEffect { parent: g0, plugin: "builtin:filter".to_string() });
+        record(&ctl);
+        let lfo = made(&mut ctl, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Lfo }).nodes[0];
+        record(&ctl);
+        made(&mut ctl, Intent::AddModEdge { modulator: lfo, to: to(filter, resonance) });
+        record(&ctl);
+        let envelope = made(&mut ctl, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Envelope }).nodes[0];
+        record(&ctl);
+        made(&mut ctl, Intent::AddModEdge { modulator: envelope, to: Endpoint { node: lfo, port: Port::Rate } });
+        record(&ctl);
+        made(&mut ctl, Intent::AddModEdge { modulator: envelope, to: to(fx, 1) });
+        record(&ctl);
+        let group_lfo = made(&mut ctl, Intent::AddModulator { parent: g0, kind: ModulatorKind::Lfo }).nodes[0];
+        record(&ctl);
+        made(&mut ctl, Intent::AddModEdge { modulator: group_lfo, to: to(lane0, detune) });
+        record(&ctl);
+        made(&mut ctl, Intent::AddModEdge { modulator: group_lfo, to: to(bus, cutoff) });
+        record(&ctl);
+        let lane2 = made(&mut ctl, Intent::AddInstrument { plugin: "builtin:osc".to_string() }).nodes[0];
+        record(&ctl);
+        made(&mut ctl, Intent::AddGroup { members: vec![lane1, lane2] });
+        record(&ctl);
+        made(&mut ctl, Intent::SetLaneGroup { node: lane1, group: Some(g1) });
+        record(&ctl);
+        made(&mut ctl, Intent::AddModulator { parent: lane2, kind: ModulatorKind::MidiLearn });
+        record(&ctl);
+        let steps = structures.len() - 1;
+        assert_eq!(steps, 14);
+
+        // Back through each structure: the nodes, their places, their ids and the cables are what they were, and so are the entries of the layout of the telemetry.
+        for step in (0..steps).rev() {
+            ctl.undo().unwrap();
+            assert_eq!(ctl.model.graph(), structures[step].0, "undone to the structure of {step} adds");
+            assert_eq!(ctl.model.telemetry_layout().meters.len(), structures[step].1.meters.len(), "{step}");
+            ctl.model.check_ids().unwrap();
+        }
+        assert_eq!(ctl.history_state().undo, None);
+        // And forward again: the graph is what it was, whole, with every id the same (the slots of the telemetry are new ones).
+        for (step, (graph, _)) in structures.iter().enumerate().skip(1) {
+            ctl.redo().unwrap();
+            assert_eq!(&ctl.model.graph(), graph, "done again to the structure of {step} adds");
+            ctl.model.check_ids().unwrap();
+        }
+        assert_eq!(ctl.history_state().redo, None);
+    }
+
+    #[test]
+    fn an_empty_group_is_added_and_taken_out_too() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        ctl.apply(Intent::AddGroup { members: vec![] }).unwrap();
+        assert_eq!(ctl.model.groups.len(), 3);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.groups.len(), 2);
+    }
+
+    #[test]
+    fn a_group_that_took_a_lane_out_of_another_group_cannot_be_taken_out_again_and_empties_the_history() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        let (lane0, lane1) = (lane(&ctl), node(&ctl, NodePath::Instrument(1)));
+        assert_eq!((ctl.model.instruments[0].group, ctl.model.instruments[1].group), (Some(0), None));
+        // One lane that is in a group is enough, whatever the others are and wherever it is in the list.
+        for members in [vec![lane0], vec![lane0, lane1], vec![lane1, lane0]] {
+            set_detune(&mut ctl, 1.0);
+            clock.advance(Duration::from_secs(5));
+            assert!(undo_label(&ctl).is_some());
+            ctl.apply(Intent::AddGroup { members: members.clone() }).unwrap();
+            assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "{members:?}");
+        }
+    }
+
+    #[test]
+    fn a_lane_put_in_a_group_is_taken_out_by_undo_and_one_that_was_taken_out_is_put_back() {
+        let (engine, mut ctl, clock) = controller_with_plugins();
+        let (lane1, g1) = (node(&ctl, NodePath::Instrument(1)), node(&ctl, NodePath::Group(1)));
+        sent(&engine);
+        ctl.apply(Intent::SetLaneGroup { node: lane1, group: Some(g1) }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("put a lane in a group"));
+        assert_eq!(ctl.model.instruments[1].group, Some(1));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[1].group, None);
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.instruments[1].group, Some(1));
+
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::SetLaneGroup { node: lane1, group: None }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("take a lane out of its group"));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[1].group, Some(1));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[1].group, None);
+    }
+
+    #[test]
+    fn a_lane_that_moves_from_one_group_to_another_goes_back_to_the_first() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let (lane0, g1) = (lane(&ctl), node(&ctl, NodePath::Group(1)));
+        assert_eq!(ctl.model.instruments[0].group, Some(0));
+        ctl.apply(Intent::SetLaneGroup { node: lane0, group: Some(g1) }).unwrap();
+        assert_eq!(ctl.model.instruments[0].group, Some(1));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].group, Some(0));
+    }
+
+    #[test]
+    fn a_lane_put_in_the_group_it_is_in_is_no_step_and_leaves_the_history_as_it_was() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let (lane0, g0) = (lane(&ctl), node(&ctl, NodePath::Group(0)));
+        set_detune(&mut ctl, 1.0);
+        let before = ctl.history_state();
+        ctl.apply(Intent::SetLaneGroup { node: lane0, group: Some(g0) }).unwrap();
+        assert_eq!(ctl.history_state(), before);
+        // (Nor is a lane that is in none taken out of its group.)
+        let lane1 = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::SetLaneGroup { node: lane1, group: None }).unwrap();
+        assert_eq!(ctl.history_state(), before);
+    }
+
+    #[test]
+    fn a_lane_that_leaves_a_group_that_has_cables_to_it_cannot_be_put_back_and_empties_the_history() {
+        let (_engine, mut ctl, clock) = controller_over(load(testutil::LANES_IN_GROUPS).model);
+        let member = ctl.model.instruments.iter().position(|lane| lane.group.is_some()).unwrap();
+        assert!(!ctl.model.group_cables_into_lane(member).is_empty(), "the group drives the lane");
+        let (lane_node, param_node) = (ctl.model.instruments[member].node, ctl.model.instruments[member].node);
+        // Something to undo first.
+        let (index, _) = param(&ctl, NodePath::Instrument(member), "detune");
+        ctl.apply(Intent::SetParam { node: param_node, param: index, value: 3.0 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        assert!(undo_label(&ctl).is_some());
+        ctl.apply(Intent::SetLaneGroup { node: lane_node, group: None }).unwrap();
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "the cables that went are not brought back by a step");
+    }
+
+    #[test]
+    fn what_is_refused_when_it_is_added_leaves_no_step_and_what_came_before_stays() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        set_detune(&mut ctl, 1.0);
+        let before = ctl.history_state();
+        assert!(ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:nothing".to_string() }).is_err());
+        assert!(ctl.apply(Intent::AddInstrument { plugin: "builtin:reverb".to_string() }).is_err());
+        assert!(ctl.apply(Intent::AddGroup { members: vec![NodeId(9_999)] }).is_err());
+        assert!(ctl.apply(Intent::SetLaneGroup { node: lane0, group: Some(NodeId(9_999)) }).is_err());
+        assert_eq!(ctl.history_state(), before);
+        // (And a refusal leaves no id of its own to put back: the next effect is the first one that was made.)
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        assert_eq!(ctl.last_made().nodes.len(), 1);
+    }
+
+    #[test]
+    fn a_step_that_adds_what_is_there_already_is_refused_and_dropped_and_nothing_has_two_ids() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        ctl.undo().unwrap();
+        // Two of the same step to redo (as nothing the program does makes it): the first puts the effect back, the second finds it there.
+        let step = ctl.history.take_redo().unwrap();
+        ctl.history.kept_undone(step.clone());
+        ctl.history.kept_undone(step);
+        ctl.redo().unwrap();
+        let effects = ctl.model.instruments[0].effects.len();
+        let refused = ctl.redo().unwrap_err();
+        assert!(refused.to_string().contains("is there already"), "{refused}");
+        assert_eq!(ctl.model.instruments[0].effects.len(), effects, "it was not added twice");
+        ctl.model.check_ids().unwrap();
+        // The step is dropped: it is not to be redone again, and what was done before it is still to be undone.
+        assert_eq!(redo_label(&ctl), None);
+    }
+
+    #[test]
+    fn a_step_that_draws_a_cable_that_is_there_already_is_refused_and_no_cable_has_two_ids() {
+        use crate::app::graph::{Endpoint, Port};
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let (lfo, filter) = (ctl.model.instruments[0].modulators[0].node, node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
+        let (resonance, _) = param(&ctl, NodePath::Effect { inst: 0, index: 1 }, "resonance");
+        ctl.apply(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: filter, port: Port::Param { index: resonance } } }).unwrap();
+        ctl.undo().unwrap();
+        let step = ctl.history.take_redo().unwrap();
+        ctl.history.kept_undone(step.clone());
+        ctl.history.kept_undone(step);
+        ctl.redo().unwrap();
+        let cables = ctl.model.instruments[0].modulators[0].targets.len();
+        let refused = ctl.redo().unwrap_err();
+        assert!(refused.to_string().contains("cable") && refused.to_string().contains("is there already"), "{refused}");
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), cables);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_step_that_adds_what_the_tui_has_taken_out_is_refused_with_the_reason_and_dropped() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        let added = ctl.model.instruments[0].effects.last().unwrap().node;
+        // The TUI takes it out by the controller's method, which is no step of the history.
+        let index = ctl.model.instruments[0].effects.len() - 1;
+        assert!(ctl.remove_effect(0, index));
+        let refused = ctl.undo().unwrap_err();
+        assert_eq!(refused, IntentError::NotFound(added));
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "the step is dropped and the one before it is next");
+    }
+
+    #[test]
+    fn an_id_that_an_undone_add_had_is_not_given_to_another_node() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        let first = ctl.last_made().nodes[0];
+        ctl.undo().unwrap();
+        // Something else is added instead of redoing: it is a new node, and what could be redone is gone.
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:filter".to_string() }).unwrap();
+        let second = ctl.last_made().nodes[0];
+        assert_ne!(first, second);
+        assert_eq!(redo_label(&ctl), None);
+        ctl.model.check_ids().unwrap();
+    }
+
     #[test]
     fn every_intent_that_cannot_be_undone_yet_empties_the_history() {
-        use crate::app::intent::ModulatorKind;
         let (_engine, mut ctl, clock) = controller();
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
         let lfo = ctl.model.instruments[0].modulators[0].node;
         let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
-        let cutoff_node = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
         let intents = [
-            ("add a group", Intent::AddGroup { members: vec![] }),
-            ("put a lane in a group", Intent::SetLaneGroup { node: node(&ctl, NodePath::Instrument(1)), group: Some(node(&ctl, NodePath::Group(0))) }),
             ("take a cable out", Intent::RemoveEdge { edge }),
-            ("add a modulator", Intent::AddModulator { parent: lane(&ctl), kind: ModulatorKind::Envelope }),
             ("take a node out", Intent::RemoveNode { node: lfo }),
-            ("add an effect", Intent::AddEffect { parent: lane(&ctl), plugin: "builtin:filter".to_string() }),
-            ("add an instrument", Intent::AddInstrument { plugin: "builtin:osc".to_string() }),
             ("replace an instrument", Intent::ReplaceInstrument { node: node(&ctl, NodePath::Instrument(1)), plugin: "builtin:osc".to_string() }),
+            // A group made of a lane that is in one: the cables of the group that has it go, and a step would not bring them back.
+            ("add a group of a lane that is in another", Intent::AddGroup { members: vec![lane(&ctl)] }),
         ];
-        let _ = cutoff_node;
         for (what, intent) in intents {
             set_detune(&mut ctl, 1.0);
             assert!(undo_label(&ctl).is_some(), "{what}: there was something to undo");
@@ -1199,6 +1712,61 @@ rate = 3.0
         assert_eq!(values, [1.0, 0.0, 1.0]);
     }
 
+    #[test]
+    fn what_an_add_made_is_what_takes_it_out_and_it_has_to_be_the_one_thing_and_be_there() {
+        use crate::app::graph::{Endpoint, Port};
+        let (_engine, ctl, _clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        let (lfo, edge) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[0].targets[0].edge);
+        let add_effect = Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() };
+        let add_cable = Intent::AddModEdge { modulator: lfo, to: Endpoint { node: lane0, port: Port::Param { index: 1 } } };
+        let nodes = |nodes: &[NodeId]| Made { nodes: nodes.to_vec(), edges: vec![] };
+        // One node that is there is taken out; none, two, and one that is not there are not.
+        assert_eq!(ctl.takes_out(&add_effect, &nodes(&[lfo])), Some(Intent::RemoveNode { node: lfo }));
+        assert_eq!(ctl.takes_out(&add_effect, &nodes(&[])), None);
+        assert_eq!(ctl.takes_out(&add_effect, &nodes(&[lfo, lane0])), None);
+        assert_eq!(ctl.takes_out(&add_effect, &nodes(&[NodeId(9_999)])), None);
+        // A cable is taken out by its id, and only a cable that is there, and only when it is all that was made.
+        let cable = |edges: &[EdgeId]| Made { nodes: vec![], edges: edges.to_vec() };
+        assert_eq!(ctl.takes_out(&add_cable, &cable(&[edge])), Some(Intent::RemoveEdge { edge }));
+        assert_eq!(ctl.takes_out(&add_cable, &cable(&[])), None);
+        assert_eq!(ctl.takes_out(&add_cable, &cable(&[edge, edge])), None);
+        assert_eq!(ctl.takes_out(&add_cable, &cable(&[EdgeId(9_999)])), None);
+        assert_eq!(ctl.takes_out(&add_cable, &Made { nodes: vec![lfo], edges: vec![edge] }), None);
+        assert_eq!(ctl.takes_out(&add_cable, &nodes(&[lfo])), None);
+        // Nodes are not what an add of a node makes when it has made a cable.
+        assert_eq!(ctl.takes_out(&add_effect, &cable(&[edge])), None);
+        assert_eq!(ctl.takes_out(&add_effect, &Made { nodes: vec![lfo], edges: vec![edge] }), None);
+    }
+
+    #[test]
+    fn an_add_that_made_nothing_that_can_be_named_leaves_no_step_and_empties_the_history() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        set_detune(&mut ctl, 1.0);
+        assert!(undo_label(&ctl).is_some());
+        ctl.made_last = Made::default();
+        let intent = Intent::AddEffect { parent: lane(&ctl), plugin: "builtin:reverb".to_string() };
+        ctl.keep_in_history(Plan::Added { label: "add Reverb".to_string(), intent, at: Instant::now() });
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "what came before cannot be undone past what cannot be put back");
+    }
+
+    #[test]
+    fn ids_that_a_step_did_not_use_are_not_kept_for_what_is_made_next() {
+        let (_engine, mut ctl, _clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:reverb".to_string() }).unwrap();
+        let first = ctl.last_made().nodes.clone();
+        ctl.undo().unwrap();
+        // The step does something that makes nothing, though it says it makes a node (as a step that was made for something else would).
+        let mut step = ctl.history.take_redo().unwrap();
+        step.redo = vec![Intent::SetLocked { locked: true }];
+        ctl.history.kept_undone(step);
+        ctl.redo().unwrap();
+        ctl.apply(Intent::AddEffect { parent: lane0, plugin: "builtin:filter".to_string() }).unwrap();
+        assert_ne!(ctl.last_made().nodes, first, "the id that was left over is not given to the next node");
+        ctl.model.check_ids().unwrap();
+    }
+
     // -- what the web client's tests read --
 
     /// What a page that is open is to the controller: a subscriber, which a change of structure is told to with a snapshot of a revision of its
@@ -1261,7 +1829,7 @@ rate = 3.0
             ("a change after an undo ends what could be redone", vec![set(detune, 1.0), pause(), undo(), set(volume, 0.5), redo(), undo(), undo()]),
             ("an intent that is refused changes nothing in the history", vec![set(detune, 1.0), set(9_999, 1.0), gain(g0, Gain::Mix, 0.5), field(lane0, ModulatorField::Rate, 1.0), Op::Do(Intent::RemoveNode { node: ghost }), undo()]),
             ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
-            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::AddGroup { members: vec![] }), undo(), redo()]),
+            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::RemoveEdge { edge }), undo(), redo()]),
             ("taking a node out is one of them", vec![set(detune, 1.0), Op::Do(Intent::RemoveNode { node: envelope }), undo()]),
         ];
         let mut gains = vec![gain(lane0, Gain::Volume, 2.5), pause(), gain(reverb, Gain::Mix, 0.125), pause(), gain(bus, Gain::Mix, 0.75), pause(), gain(g0, Gain::GroupVolume, 0.5), pause(), gain(g0, Gain::GroupPan, -0.5)];
@@ -1362,16 +1930,11 @@ rate = 3.0
         cables.extend(n_of(3, redo));
         scripts.push(("the depth of a cable is a step for each cable, and the same one again is the same step", cables));
         let preset = base.model.instruments[0].effects[0].presets[0].id.clone();
-        let lfo_cable = Intent::AddModEdge { modulator: lfo, to: crate::app::graph::Endpoint { node: lane0, port: crate::app::graph::Port::Param { index: detune } } };
         let barriers = [
-            Intent::AddGroup { members: vec![] },
-            Intent::SetLaneGroup { node: lane1, group: Some(g0) },
+            // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
+            Intent::AddGroup { members: vec![lane0] },
             Intent::RemoveEdge { edge },
-            lfo_cable,
-            Intent::AddModulator { parent: lane0, kind: crate::app::intent::ModulatorKind::Envelope },
             Intent::RemoveNode { node: envelope },
-            Intent::AddEffect { parent: lane0, plugin: "builtin:filter".to_string() },
-            Intent::AddInstrument { plugin: "builtin:osc".to_string() },
             Intent::ReplaceInstrument { node: lane1, plugin: "builtin:osc".to_string() },
             Intent::LoadPreset { node: reverb, preset },
         ];

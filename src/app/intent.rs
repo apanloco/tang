@@ -187,6 +187,15 @@ impl ModulatorKind {
             ModulatorKind::MidiLearn => ModSourceSlot::new_midi_learn(),
         }
     }
+
+    /// What a button that adds one says it adds: "an LFO".
+    pub fn label(self) -> &'static str {
+        match self {
+            ModulatorKind::Lfo => "an LFO",
+            ModulatorKind::Envelope => "an envelope",
+            ModulatorKind::MidiLearn => "a MIDI control",
+        }
+    }
 }
 
 /// A setting of a modulator, by name.
