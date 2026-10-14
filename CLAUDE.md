@@ -1523,8 +1523,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   catches up, one intent a frame), the engine's modulation laws for the knobs' rings, and
   the mock engine, which speaks the protocol in the page), generated protocol types,
   design tokens as CSS variables (`web/src/ui/tokens.css`), the controls
-  (`web/src/ui/`: `Knob`, `Choice`, `LiveBar`, `Meter`, which draw live values by
-  writing to the DOM, never through React state) and the patch canvas
+  (`web/src/ui/`: `Knob`, `Choice`, `LiveBar`, `LiveTrace`, `Meter`, which draw live values by
+  writing to the DOM or a canvas, never through React state) and the patch canvas
   (`web/src/app/patch/`: `toFlow`, a pure layout of the graph, drawn with React Flow:
   a strip for each instrument, its modulators above it, cables, a node's knobs bound to
   the session; step 14 added the controls of a modulator: an LFO's rate and waveform and an
@@ -1568,7 +1568,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   parameters have, a cable is dragged to one from another modulator's output (or chosen from the list at the foot of the
   modulator, which lists those settings after the parameters, under a heading for each modulator), and a modulator that
   drives the setting of another is drawn a row above it, so that a cable runs down (`app/patch/toFlow.ts`: `tiersOf`;
-  `client/reach.ts`: `fieldsOf`, pinned to the controller's rule by `fixtures/fields.json`; `Editor.addCable` takes a port). What the controller
+  `client/reach.ts`: `fieldsOf`, pinned to the controller's rule by `fixtures/fields.json`; `Editor.addCable` takes a port). Step 27 made
+  the modulation visible: a modulator's node draws what it has put out for the last four seconds as a line that scrolls (`ui/LiveTrace.tsx`,
+  from the page's own samples of the telemetry, `client/trace.ts`: a rate that another modulator drives is seen to wander), and a cable is as
+  bright as the output of its modulator is high (`app/patch/cableLight.ts`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1621,11 +1624,13 @@ of the computer a piano in the page, so that what is built can be tried by ear. 
 parity) has begun, §11: the controller takes effects and modulators out of the chains (step 17) and the
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
-they are in the session (25), and draws cables between modulators (26).
+they are in the session (25), draws cables between modulators (26) and shows what a modulator puts out (27).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
 for it (`Controller::resync`).
+TODO: a trace of an LFO faster than 15 Hz aliases: the telemetry is 30 values a second (the engine's blocks are much shorter); a telemetry
+channel of the lowest and highest output of each block, or a faster one, would draw it.
 TODO: the page has no port for the depth of a cable: the controller takes a cable to one (`AddModEdge` with a `depth` port;
 the TUI's `t` makes them), and the page neither draws such a cable (`handleOf` has no handle for it) nor offers it.
 TODO: replacing an instrument takes out every cable that drove the old one; keep the ones whose

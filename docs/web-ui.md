@@ -780,8 +780,8 @@ which Vite names by their content, are kept for ever.
 cables that end at a parameter), `selectors.ts` (a node, a parameter or a gain of the
 session by id) and `stress.ts` (the big session of the performance test). `ui/` has
 `Knob`, `Choice` (a native select: it stands where this section said `EnumStepper`),
-`LiveBar`, `Meter` and `ClipLight`, each a function of its props that draws what changes
-every frame by writing to the DOM; what was listed here as `Slider`, `Node`, `Port` and
+`LiveBar`, `LiveTrace` (step 27), `Meter` and `ClipLight`, each a function of its props that draws what changes
+every frame by writing to the DOM (or to a canvas); what was listed here as `Slider`, `Node`, `Port` and
 `Cable` is in `app/patch/` (`nodes.tsx`, `edges.tsx`), since it is made of React Flow;
 `PianoKey` is not built. `app/` has `PatchView`, `controls.tsx` (the controls of a node,
 bound to the session) and `toFlow.ts`, which is pure; the outline, the inspector, the piano
@@ -977,6 +977,25 @@ drives another is one row, laid out as it was; a cycle is cut where it is first 
 a modulator of another strip (a group's to a member lane's) makes no row. A long chain is a tall canvas: the cascade is as
 tall as it is long.
 
+**As built (step 27).** A modulator's node shows what it puts out as a trace and not as a bar: the last four seconds as a line
+that goes by from the right edge to the left and fades into the past, a dot at the newest value and, for a value that goes
+both ways (an LFO, the pitch bend), a mark across the middle (`LiveTrace`, drawn by `drawTrace`). A rate that another modulator
+drives (step 26) is seen to wander. The page keeps its own samples, as many as a ring of 1024 holds (`TraceBuffer`,
+`client/trace.ts`, one for each node, taken on every frame from the telemetry slot the bar read: D30), `plotTrace` says where each
+falls on a plot of the span (the newest at the right edge, the line coming in from the left edge, the newest value held to the
+right edge when it is older than the frame), and the line is drawn on a canvas by the frame loop with no React state. A value that
+has not moved for as long as the trace shows is drawn once (`TraceBuffer.changedAt`: the picture is the same whenever); the bitmap
+is the size of the canvas on the page in the pixels of the device (`devicePixelRatio`), made again when either changes; a value that
+goes (none, or not a number) clears the past. The trace is a `meter` to what reads the page, as the bar was (`aria-valuenow` and
+`-valuetext` follow the value, the canvas is hidden from it). A modulator's node is 36 px taller for it (measured in a browser: 249
+px with settings, 155 without; the layout's allowances are 254 and 164, `TRACE_EXTRA`). **Cables.** A cable is as bright as the
+output of its modulator is high: `useCableLight` (`app/patch/cableLight.ts`) writes the output across its range (`outputRange`: -1
+to 1 for an LFO, 0 to 1 for the rest) to `--signal` on a group around the cable, on the frames it moves in, and the style reads it
+(`stroke-opacity: calc(0.3 + 0.7 * var(--signal, 1))`: dim at the bottom of an LFO's sine, bright at the top, and as bright as it can
+be for a cable with no output to read). Not built: an envelope's curve drawn from its four stages (the trace shows the envelope
+while notes are played; at rest it is a line at nothing), a trace of what a plugin's parameter is as modulated (its dot and ring
+are the knob's own), the span to choose, and a trace that does not alias an LFO faster than half the rate of the telemetry (f85).
+
 ### 9.4 Performance rules
 
 - Telemetry never passes through React state: a `requestAnimationFrame` loop
@@ -992,7 +1011,7 @@ tall as it is long.
   frame plus a loopback round trip; zero React renders caused by telemetry.
 
 **As built (step 12).** One `FrameLoop` (`client/frameloop.ts`) serves everything that
-draws a live value: a knob's dot, a modulator's bar, the master's meter and CLIP light
+draws a live value: a knob's dot, a modulator's bar (a trace since step 27), the master's meter and CLIP light
 subscribe a callback, which reads its slot (`slotReader` finds the slot once for each
 layout, not for each frame) and writes SVG attributes or CSS variables; it writes only when
 the value moved, and no React state is involved (tests count React's commits over a
@@ -1020,6 +1039,11 @@ commits, and at 60.0 fps while a knob was dragged. The tests enforce 55 fps and 
 still fails for a frame that takes 25 ms. The commit count is React's Profiler, which only
 a development build has, so the browser tests run on the Vite dev server (`Instrumented`,
 `window.tangCommits`).
+
+**As built (step 27).** The traces are canvases drawn on the frame loop, and the cables are written a CSS variable: both are
+telemetry that does not pass through React. Measured again at the end of the step with 32 traces and 64 cables lit by them in the
+big scene: 60.0 fps (95th percentile frame 16.8 ms, worst 16.8 ms) and 0 React commits in four seconds, and 60.0 fps (16.8 ms) while
+a knob is dragged; the tracer scene 60.0 fps (16.7 ms) over 366 telemetry frames with 0 commits.
 
 ### 9.5 Piano
 
@@ -2508,6 +2532,51 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 929 tests (914 at the end of step 25), 1083 with the `web` feature and 18 on the real
     program (1068 and 17), 924 without the default plugin formats and 1076 with `web`; web 1144 (1080); 54 in browsers (43).
 
+- [x] **27. Modulators you can see (phase 3, ahead of the rest of it).** A modulator's node said what it puts out as a bar, where it
+  is now and nothing of where it has been, and every cable was the same magenta whatever went through it: the modulation was
+  there and hard to see (what a rate that another modulator drives looks like, since step 26, could not be told at all). *Done
+  when:* on the real program an LFO's node draws what it has put out for the last four seconds as a line that scrolls, a second LFO
+  that drives its rate makes it wander, the cables are bright when their modulator is high and dim when it is low, nothing
+  renders in React for it, and the big scene still runs at 60 fps. In parts, each its own commit: **27.1** the recent past of a
+  value in the client layer (`TraceBuffer`, `plotTrace`); **27.2** `LiveTrace`, a canvas drawn on the frame loop; **27.3** the
+  node of a modulator uses it, in place of the bar; **27.4** the cables' brightness. *Not done (later steps):* an envelope's curve
+  from its four stages, the span to choose, a trace for a plugin's parameter as modulated, and a trace that does not alias an LFO
+  faster than half the telemetry's rate (f85).
+  - **27.1 as built.** §9.3 above. `client/trace.ts`: `TraceBuffer` (a ring of the last N samples as 32-bit values with their
+    times; what is not a finite number is not a sample; `changedAt`, the time the value last became what it is) and `plotTrace`
+    (pure, into an array that is reused and grows, so that a drawing on every frame makes no garbage).
+  - **27.2 as built.** §9.3 above. `ui/LiveTrace.tsx` with `ui/trace-draw.ts` (the drawing as a function of a context of its
+    own small interface, so that a test gives it a recording one: `ui/testing.ts`), a story, and the test setup gives jsdom's
+    canvases no context.
+  - **27.3 as built.** §9.3 above. `ModulatorNode` has a `LiveTrace` where it had a `LiveBar` (the same slot, the same `meter`),
+    and the layout makes room for it (`TRACE_EXTRA`).
+  - **27.4 as built.** §9.3 above. `useCableLight`, `outputRange` (the one place that says what range an output goes over; the
+    scale of the bar and of the trace is made of it), and the style.
+  - **Tests.** Web: 53 more tests (1197 against 1144, in three more files): the buffer and the plot (20), the drawing (8), the
+    component (18: the meter, the frame, the scroll, the pixel ratio and the size, a value that has not moved, a value that goes,
+    no context, the subscription), the node (the trace is drawn on its canvas, at the frame, the newest value at the top for an
+    LFO at its peak), the cables (an LFO's at its peak, a crossing and its trough, an envelope's over 0 to 1, two modulators, a
+    cable to another modulator's setting) and the range by kind; in a browser one more (55 against 54): the trace has lit pixels
+    and the cable's computed opacity swings between dim and bright over the LFO's 2 s. 72 mutations of the page (22 of the buffer
+    and the plot, 32 of the component and the drawing, 5 of the node and the layout, 13 of the cables), all caught but one that
+    cannot be told by the style (a value that is not known written as `1` where nothing is written). Rust unchanged (929 tests,
+    1083 with `web` and 18 on the real program, 924 and 1076).
+  - **Found on the way.** The telemetry is 30 values a second, so a trace of an LFO above 15 Hz aliases: a 50 Hz LFO is drawn as noise
+    (seen in a screenshot of an LFO that another drove up to 50 Hz); what the page draws is what the telemetry carries, and the
+    engine's block rate is much higher (f85). A modulator that a test puts into a snapshot by hand has no slot in the layout of the
+    telemetry, so nothing can be read of it: the tests that need an output put one in. jsdom printed that it has no canvas for each
+    canvas that asked; the test setup says there is none. A test of mine took the first frame that was drawn for the frame of the
+    LFO's peak (the first frames had the value before the engine's was in); it waits for the value. The layout test of step 25 (a
+    node dragged on the real program) failed four runs in five once the canvases were in the page: it read the place of the dropped
+    node as soon as it had moved, which is where the pointer put it (579.888) for about 16 ms and then where the server kept it
+    (579.9), which is what the other pages draw. It was a race the test had always had (the time to the server's place, measured
+    from the pointer going up, is the same with the traces and with the bars they replaced), and it waits for the answer now
+    (`6ea1f62`, its own commit). In the docs: §9.4 said a
+    modulator's output is a bar, and the list of the displays in `ui/` (§9.2) did not have `LiveTrace`; the first says a trace
+    since step 27 and the second has it.
+  - **Numbers at the end of the step.** Rust 929 tests (the same as at the end of step 26), 1083 with the `web` feature and 18 on the
+    real program, 924 without the default plugin formats and 1076 with `web`; web 1197 (1144); 55 in browsers (54).
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -2554,6 +2623,7 @@ mixer, delay, …) are the natural first increment.
 | D27 | The piano of the page draws what the server tells and decides nothing: the scale arrives as its root and pitch classes (the page holds no table of scales), the held keys as a telemetry channel of 128 values at the telemetry rate rather than the bitset on change that §6 planned (one frame format to read, by the note's number, and no bookkeeping of what each client was told), and the lock is the sender's (the server drops a note outside the scale from every source, so the page cannot disagree with a MIDI keyboard about it) | Built (step 24) |
 | D28 | Where a node is drawn belongs to the session, not to a page: a page asks `SetNodeUi` once, when a node is put down (not a stream of moves), the controller keeps the place tidy (a tenth of a pixel and within a limit, so that a file is read by people and a node cannot be lost beyond the edge), every other page draws what the server tells, and a node that has no place is where the layout puts it, with no room left for one that was moved: a place is a pin, not a hint. The places are a side table of the model by `NodeId` and not a field of each node, so that the engine's types and the TUI do not carry what they do not use | Built (step 25) |
 | D29 | A cable between modulators is the model's rule read from both sides, as a cable to a parameter is (D21): `SessionModel::modulators_in_reach` and `field_targets` decide, in the controller and for the TUI's selectors, and the page reads the same rule from the graph (`modulatorsInReach`, `fieldsOf`) to mark the ports that take the cable that is dragged, pinned to the controller's by a fixture it writes (`fields.json`) and mirrored by the mock engine in the controller's order of refusals and words. The depth of a cable is a port of the controller and not of the canvas: no cable to one is drawn or offered by the page until a node has a place where such a cable could end. A modulator that drives another is drawn above it, so that a cable runs down, and a rack in which none does is laid out as it always was | Built (step 26) |
+| D30 | What a modulator has put out is the page's own record, not the server's: a `TraceBuffer` of the samples a node's frames took of the telemetry slot it reads anyway (the past of a page is from when it was opened), so that nothing is added to the wire, nothing is kept for a client that is not there, and what is drawn is exactly what the telemetry carries (30 values a second, which aliases an LFO faster than 15 Hz: f85). A trace is a canvas drawn on the frame loop and a cable's brightness is a CSS variable, so that telemetry still does not pass through React; a value that has not moved for as long as the trace shows is drawn once | Built (step 27) |
 
 Open questions
 
