@@ -10,7 +10,7 @@ import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
 import { nodeById, paramCountOf, presetsOf } from "../../client/selectors";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
-import { LiveBar } from "../../ui/LiveBar";
+import { LiveTrace } from "../../ui/LiveTrace";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
@@ -242,7 +242,7 @@ export function sameModulatorShape(a: Node | undefined, b: Node | undefined): bo
   return a.source.type !== "midiLearn" || JSON.stringify(a.source) === JSON.stringify(b.source);
 }
 
-/** A modulator: what it is, its settings as controls, and what it puts out as it does so. */
+/** A modulator: what it is, its settings as controls, and what it puts out, as a line that scrolls. */
 export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
   const frames = useFrames();
@@ -267,7 +267,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       ) : null}
       <div className="tang-node__body">
         {source?.type === "midiLearn" ? <p className="tang-node__detail">{controlDetail(source)}</p> : null}
-        <LiveBar label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />
+        <LiveTrace label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />
         <div className="tang-node__drives nodrag nopan nowheel">
           <DrivePicker modulator={data.node} name={data.name} targets={data.targets} />
         </div>

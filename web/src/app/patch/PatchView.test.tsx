@@ -8,6 +8,7 @@ import type { Port, Snapshot } from "../../protocol";
 import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
 import { NoticeBoard } from "../../ui/NoticeBoard";
 import { useNotices } from "../ClientProvider";
+import { callsOf, recordingContext } from "../../ui/testing";
 import { rig } from "../testing";
 import * as describeModule from "./describe";
 import { cableWidth } from "./describe";
@@ -188,7 +189,7 @@ describe("the patch", () => {
     expect((await nodeOf(oscillator.id)).querySelectorAll(".tang-port--driven")).toHaveLength(0);
   });
 
-  test("shows the modulator for what it is, with a bar for what it puts out", async () => {
+  test("shows the modulator for what it is, with a trace of what it puts out", async () => {
     await rig(<PatchView />);
     const mod = await nodeOf(lfo.id);
     // (An LFO is called what it is, so its kind is not said twice.)
@@ -1310,8 +1311,30 @@ describe("the patch while it plays", () => {
       expect(level.getAttribute("aria-valuenow")).not.toBeNull();
     });
     const fill = (element: Element) => element.querySelector<HTMLElement>(".tang-livebar__fill")?.style;
-    expect([fill(bar)?.getPropertyValue("--from"), fill(bar)?.getPropertyValue("--to")]).toEqual(["0.5", "1"]);
     expect(Number(fill(level)?.getPropertyValue("--to"))).toBeGreaterThan(0.7); // 0.35 of full scale is about -9 dB
+  });
+
+  test("draws what the LFO puts out as a trace on its node's canvas, at the frame, and a dot at the newest value", async () => {
+    const context = recordingContext();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => context) as never);
+    const { clock, time } = await rig(<PatchView />);
+    const node = await nodeOf(lfo.id);
+    const canvas = node.querySelector("canvas");
+    if (!canvas) throw new Error("the LFO's node has no canvas");
+    canvas.style.width = "280px";
+    canvas.style.height = "44px";
+    time.seconds = 0.5; // the LFO is at its peak
+    await waitFor(() => {
+      context.calls.length = 0;
+      act(() => {
+        clock.tick(performance.now());
+      });
+      // (The newest value is at the top of the 44 px less the room above it, once the engine's frame with the LFO at its peak is in.)
+      expect(callsOf(context, "arc")[0]?.[1]).toBe(3);
+    });
+    // And at the right of the 280 px, with the mark across the middle drawn.
+    expect(callsOf(context, "arc")[0]?.[0]).toBe(277);
+    expect(callsOf(context, "moveTo")[0]).toEqual([0, 22.5]);
   });
 
   test("follows a parameter somebody else changes without making the canvas again", async () => {

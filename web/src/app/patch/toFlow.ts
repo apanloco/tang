@@ -31,10 +31,12 @@ const CONTROLS_PER_ROW = 4;
 const NODE_PADDING = 16;
 /** The list at the foot of a modulator, with which it draws a cable (measured in a browser: 29). */
 const DRIVES_HEIGHT = 30;
-/** A modulator that has no settings (a MIDI control) is this tall (measured in a browser: 119)... */
-export const MODULATOR_HEIGHT = 128;
-/** ...and one that has them has a row of controls more (measured in a browser: 213). */
-export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20 + DRIVES_HEIGHT;
+/** The trace of what a modulator puts out is this much taller than the bar it was (44 against 8: the bar's nodes were 119 and 213). */
+const TRACE_EXTRA = 36;
+/** A modulator that has no settings (a MIDI control) is this tall (measured in a browser: 155)... */
+export const MODULATOR_HEIGHT = 128 + TRACE_EXTRA;
+/** ...and one that has them has a row of controls more (measured in a browser: 249). */
+export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20 + DRIVES_HEIGHT + TRACE_EXTRA;
 export const MASTER_HEIGHT = 164;
 
 export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master";
