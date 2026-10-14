@@ -840,6 +840,22 @@ describe("the parameters a node shows", () => {
     expect(nodeHeight(nodeOf(graph, 1), at(toFlow(graph), 1).data.knobs.length)).toBeLessThan(nodeHeight(nodeOf(graph, 1), DEFAULT_KNOBS));
   });
 
+  test("lay the lane below further down when a pin makes a node of the lane a row taller, by what a row is", () => {
+    // (An instrument has its volume and its keys among the controls: ten are three rows of four, thirteen are four.)
+    const lanes = (pinned: number[]): Graph => ({
+      nodes: [instrumentOf(1, { ...plugin(12), pinned }), instrumentOf(2, plugin(2)), master],
+      edges: [audio(1, MASTER), audio(2, MASTER)],
+    });
+    const indices = plugin(12).params.map((param) => param.index);
+    const eight = lanes(indices.slice(0, 8));
+    const eleven = lanes(indices.slice(0, 11));
+    const grown = at(toFlow(eleven), 2).position.y - at(toFlow(eight), 2).position.y;
+    expect(grown).toBeGreaterThan(0);
+    expect(grown).toBe(nodeHeight(nodeOf(eight, 1), 11) - nodeHeight(nodeOf(eight, 1), 8));
+    // A pin that leaves the node as tall as it was moves nothing.
+    expect(at(toFlow(lanes(indices.slice(0, 9))), 2).position.y).toBe(at(toFlow(eight), 2).position.y);
+  });
+
   test("include a parameter that is beyond the first few when a cable ends at it", () => {
     const wide = plugin(12);
     const last = wide.params[11]?.index ?? -1;
