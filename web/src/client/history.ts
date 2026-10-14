@@ -16,6 +16,9 @@ export interface HistoryState {
   redo: string | null;
 }
 
+/** What the buttons say when there is nothing to undo or redo (and what they say before the server has told). */
+export const NO_HISTORY: HistoryState = { undo: null, redo: null };
+
 /** One thing that was done, and the way back. */
 export interface Step {
   /** What it was, for a button: "set cutoff". */

@@ -9,6 +9,8 @@ import type { StoreApi } from "zustand/vanilla";
 
 import { PROTOCOL } from "../protocol";
 import type { CatalogEntry, ClientMessage, ErrorCode, Intent, ServerMessage, Snapshot, TelemetryChannel, WireError } from "../protocol";
+import { NO_HISTORY } from "./history";
+import type { HistoryState } from "./history";
 import { applyEvent } from "./reducers";
 import { decodeFrame, TelemetryBuffers } from "./telemetry";
 
@@ -67,6 +69,11 @@ export interface ClientState {
   snapshot: Snapshot | null;
   /** What the server can add, as it last said (the one of the connection before, while this one is made good); null until it has. It is no part of the session: telling it changes nothing in `snapshot`. */
   catalog: Catalog | null;
+  /**
+   * What Undo and Redo would do, in the words of a button (null for what they would not): the server's history, as it last said. It is no part of the
+   * session either, and it is the server's own: gone with the connection, and told again by the server the connection is made good to.
+   */
+  history: HistoryState;
   /** How many times the connection has been lost and made again. */
   reconnects: number;
 }
@@ -111,6 +118,7 @@ export class Client {
     hello: null,
     snapshot: null,
     catalog: null,
+    history: NO_HISTORY,
     reconnects: 0,
   }));
   /** The latest telemetry, for a loop that draws it. */
@@ -263,6 +271,12 @@ export class Client {
         // The whole of it each time: what the scan has found so far replaces what it had found.
         this.#set({ catalog: { entries: message.entries, scanning: message.scanning } });
         break;
+      case "history": {
+        // The whole of it each time, and nothing is told to the page that is the same.
+        const { history } = this.store.getState();
+        if (history.undo !== message.undo || history.redo !== message.redo) this.#set({ history: { undo: message.undo, redo: message.redo } });
+        break;
+      }
       case "ack":
         this.#settle(message.reqId, (pending) => {
           pending.resolve(message.rev);
@@ -319,7 +333,8 @@ export class Client {
     }
     this.#attempt += 1;
     const delay = (this.#options.reconnectDelay ?? defaultDelay)(this.#attempt);
-    this.#set({ status: "reconnecting", reconnects: this.store.getState().reconnects + 1 });
+    // (The history is the server's, and this one may have lost it: it is told again once the session is.)
+    this.#set({ status: "reconnecting", history: NO_HISTORY, reconnects: this.store.getState().reconnects + 1 });
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       if (this.#running) this.#connect();

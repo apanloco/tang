@@ -1183,7 +1183,9 @@ describe("the catalog of plugins", () => {
 });
 
 describe("what Undo and Redo would do", () => {
-    /** A connection to the server that writes down what it is told, as the words of its types (an event by its own, a history by what it says). */
+  const nothing = { undo: null, redo: null };
+
+  /** A connection to the server that writes down what it is told, as the words of its types (an event by its own, a history by what it says). */
   function raw(server: MockServer) {
     const heard: string[] = [];
     const transport = server.transport();
@@ -1206,6 +1208,21 @@ describe("what Undo and Redo would do", () => {
       },
     };
   }
+
+  test("is nothing to begin with, and the words of a button for what was done and what was undone", async () => {
+    const client = await open(new MockServer());
+    expect(client.state.history).toEqual(nothing);
+    const before = valueOf(client, filter, 0);
+    // (Each is a revision of its own, and the answer says which.)
+    expect(await client.request(cutoff(0.3))).toBe(1);
+    expect(client.state.history).toEqual({ undo: "set cutoff", redo: null });
+    expect(await client.request({ type: "undo" })).toBe(2);
+    expect(client.state.history).toEqual({ undo: null, redo: "set cutoff" });
+    expect(valueOf(client, filter, 0)).toBe(before);
+    expect(await client.request({ type: "redo" })).toBe(3);
+    expect(client.state.history).toEqual({ undo: "set cutoff", redo: null });
+    expect(valueOf(client, filter, 0)).toBe(0.3);
+  });
 
   test("is told to a connection when it subscribes, after the snapshot and the catalog, and not before", async () => {
     const server = new MockServer();
@@ -1240,6 +1257,27 @@ describe("what Undo and Redo would do", () => {
     close();
   });
 
+  test("is told when only what could be redone has changed: the step before the one that was undone has the same words", async () => {
+    let seconds = 0;
+    const client = await open(new MockServer({ clock: () => seconds }));
+    await client.request(cutoff(0.3));
+    seconds += 5;
+    await client.request(cutoff(0.4));
+    expect(client.state.history).toEqual({ undo: "set cutoff", redo: null });
+    await client.request({ type: "undo" });
+    // (What can be undone is "set cutoff" before and after; what can be redone is new.)
+    expect(client.state.history).toEqual({ undo: "set cutoff", redo: "set cutoff" });
+  });
+
+  test("is as it was after the session is saved, which changes none of it", async () => {
+    const client = await open(new MockServer());
+    await client.request(cutoff(0.3));
+    await client.request({ type: "save" });
+    expect(client.state.history).toEqual({ undo: "set cutoff", redo: null });
+    await client.request({ type: "undo" });
+    expect(valueOf(client, filter, 0)).not.toBe(0.3);
+  });
+
   test("is not told to a connection that has not subscribed", async () => {
     const server = new MockServer();
     const { heard, close } = raw(server);
@@ -1264,6 +1302,28 @@ describe("what Undo and Redo would do", () => {
     close();
   });
 
+  test("is told to every client that has subscribed, when the change is another front-end's", async () => {
+    const server = new MockServer();
+    const [one, other] = [await open(server), await open(server)];
+    server.apply(cutoff(0.3));
+    await until(() => one.state.history.undo !== null && other.state.history.undo !== null, "the history, told to both");
+    expect([one.state.history, other.state.history]).toEqual([{ undo: "set cutoff", redo: null }, { undo: "set cutoff", redo: null }]);
+    server.apply({ type: "undo" });
+    await until(() => one.state.history.undo === null, "the history after the undo");
+    expect(other.state.history).toEqual({ undo: null, redo: "set cutoff" });
+  });
+
+  test("is forgotten when the connection is lost, and what the server has is told again when it comes back", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(cutoff(0.3));
+    expect(client.state.history.undo).toBe("set cutoff");
+    server.drop();
+    await until(() => client.state.status === "reconnecting", "the loss");
+    expect(client.state.history).toEqual(nothing);
+    await until(() => client.state.status === "open" && client.state.history.undo !== null, "the history after the reconnection");
+    expect(client.state.history).toEqual({ undo: "set cutoff", redo: null });
+  });
 });
 
 describe("adding an effect", () => {
@@ -2218,6 +2278,30 @@ describe("what the server says", () => {
     ]);
     await until(() => client.state.catalog?.scanning === false, "the second catalog");
     expect(client.state.catalog).toEqual({ scanning: false, entries: [entry("c")] });
+  });
+
+  test("a history replaces the one before it, whole, and one that says the same changes nothing, one that changes only what can be redone or only what can be undone included", async () => {
+    const server = new MockServer();
+    const client = scripted([
+      server.hello(),
+      { type: "snapshot", snapshot: tracerSnapshot },
+      { type: "history", undo: "set cutoff", redo: null },
+      { type: "history", undo: "set cutoff", redo: null },
+      { type: "history", undo: "set cutoff", redo: "set mix" },
+      { type: "history", undo: null, redo: "set mix" },
+    ]);
+    // (The messages come in one go, after this: every change of the store is counted from here.)
+    let seen = client.state.history;
+    let changes = 0;
+    client.store.subscribe((state) => {
+      if (state.history !== seen) {
+        seen = state.history;
+        changes += 1;
+      }
+    });
+    await until(() => client.state.history.undo === null && client.state.history.redo !== null, "the last history");
+    expect(client.state.history).toEqual({ undo: null, redo: "set mix" });
+    expect(changes).toBe(3);
   });
 
   test("through a transport the client has left is not listened to", async () => {
