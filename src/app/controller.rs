@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
+use crate::app::history::History;
 use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
@@ -215,6 +216,10 @@ pub struct Controller {
     last_device_poll: Instant,
     /// Who hears what `apply` does.
     subscribers: Subscribers,
+    /// What can be undone and redone (`app::history`).
+    pub(super) history: History,
+    /// What time it is, for changes that go on to be told from those that are made again (a test turns it).
+    pub(super) clock: Box<dyn Fn() -> Instant + Send>,
 }
 
 /// The tempo a session starts at: that of the first lane with a recorded
@@ -275,6 +280,8 @@ impl Controller {
             devices: None,
             last_device_poll: now,
             subscribers: Subscribers::default(),
+            history: History::default(),
+            clock: Box::new(Instant::now),
         }
     }
 
@@ -297,6 +304,9 @@ impl Controller {
     /// Make `loaded`/`slot` the instrument plugin of lane `inst`, on the audio
     /// thread and in the model. The plugin sits in the lane's node.
     pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, mut slot: PluginSlot) {
+        // (What was set on the plugin that goes is addressed by its parameters' places, which are the new plugin's now:
+        // what could be undone cannot be, and no intent can tell the history, since the TUI calls this.)
+        self.history.clear();
         let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
         let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
             inst,

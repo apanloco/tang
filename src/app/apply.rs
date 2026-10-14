@@ -32,11 +32,20 @@ enum PluginAt {
 }
 
 impl Controller {
+    /// Carry out `intent`, and keep what puts it back in the history (what it is, `app::history`).
     pub fn apply(&mut self, intent: Intent) -> Result<Applied, IntentError> {
         // (Saving is the one intent that leaves the session with nothing unsaved.)
         if matches!(intent, Intent::Save) {
             return self.save_intent();
         }
+        let plan = self.plan_history(&intent);
+        let applied = self.carry_out(intent)?;
+        self.keep_in_history(plan);
+        Ok(applied)
+    }
+
+    /// Carry out `intent` and tell the subscribers, with nothing kept in the history: what `apply`, `undo` and `redo` are made of.
+    pub(super) fn carry_out(&mut self, intent: Intent) -> Result<Applied, IntentError> {
         let done = match intent {
             Intent::SetParam { node, param, value } => Done::Event(self.set_param(node, param, value)?),
             Intent::SetGain { node, gain, value } => Done::Event(self.set_gain(node, gain, value)?),

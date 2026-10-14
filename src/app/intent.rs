@@ -198,6 +198,18 @@ pub enum ModulatorField {
 }
 
 impl ModulatorField {
+    /// What it is called.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModulatorField::Rate => "rate",
+            ModulatorField::Waveform => "waveform",
+            ModulatorField::Attack => "attack",
+            ModulatorField::Decay => "decay",
+            ModulatorField::Sustain => "sustain",
+            ModulatorField::Release => "release",
+        }
+    }
+
     /// The lowest and the highest value.
     pub fn range(self) -> (f32, f32) {
         match self {
@@ -232,6 +244,16 @@ impl Gain {
             Gain::Volume | Gain::GroupVolume => (0.0, 4.0),
             Gain::Mix => (0.0, 1.0),
             Gain::GroupPan => (-1.0, 1.0),
+        }
+    }
+
+    /// What changing it is, for a button that undoes it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Gain::Volume => "set volume",
+            Gain::Mix => "set mix",
+            Gain::GroupVolume => "set the group's volume",
+            Gain::GroupPan => "set pan",
         }
     }
 }
