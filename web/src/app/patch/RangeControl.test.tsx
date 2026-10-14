@@ -231,11 +231,11 @@ describe("the keys of a lane, chosen again before the first choice is answered",
     fireEvent.change(await lowest(), { target: { value: "60" } });
     fireEvent.change(await highest(), { target: { value: "71" } });
     await waitFor(() => {
-      expect(connection.waiting()).toBe(4); // an event and an answer for each
+      expect(connection.answers()).toBe(2); // an answer for each
     });
     // The first is answered: the session has the keys from C4 to the end of the keyboard, but the last choice is what is shown.
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       const node = client.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id);
@@ -244,7 +244,7 @@ describe("the keys of a lane, chosen again before the first choice is answered",
     expect(await shown()).toEqual(["C4", "B4"]);
     // The second is answered: what the session has is what was chosen.
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       const node = client.state.snapshot?.graph.nodes.find((n) => n.id === oscillator.id);

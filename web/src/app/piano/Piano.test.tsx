@@ -316,18 +316,18 @@ describe("the scale and the lock, chosen again before the first choice is answer
     fireEvent.change(await root(), { target: { value: "6" } });
     fireEvent.change(await kind(), { target: { value: "dorian" } });
     await waitFor(() => {
-      expect(connection.waiting()).toBe(4); // an event and an answer for each
+      expect(connection.answers()).toBe(2); // an answer for each
     });
     // The first is answered: the session has F# major, but the last choice is what is shown.
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       expect(client.state.snapshot?.meta.piano.scale).toBe("F# major");
     });
     expect(await shown()).toEqual(["F#", "Dorian"]);
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       expect(client.state.snapshot?.meta.piano.scale).toBe("F# dorian");
@@ -344,10 +344,10 @@ describe("the scale and the lock, chosen again before the first choice is answer
     fireEvent.click(button);
     fireEvent.click(button);
     await waitFor(() => {
-      expect(connection.waiting()).toBe(4);
+      expect(connection.answers()).toBe(2);
     });
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       expect(client.state.snapshot?.meta.piano.locked).toBe(true);
@@ -355,7 +355,7 @@ describe("the scale and the lock, chosen again before the first choice is answer
     // (Locked for the session, and let go again by the choice that has not been answered: the button says the choice.)
     expect(button.getAttribute("aria-pressed")).toBe("false");
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       expect(client.state.snapshot?.meta.piano.locked).toBe(false);

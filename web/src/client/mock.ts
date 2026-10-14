@@ -32,6 +32,8 @@ import type {
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
+import { History, planOf } from "./history";
+import type { HistoryState, Plan } from "./history";
 import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
@@ -760,8 +762,8 @@ function saveOutcome(snapshot: Snapshot): Outcome {
 /** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names. */
 function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
-  // (The history is the next part's: the mock refuses for now.)
-  if (intent.type === "undo" || intent.type === "redo") return invalid("the mock engine does not have a history yet");
+  // (Undo and Redo are not the outcome of an intent on a snapshot: the history is the server's, `MockServer#carry`.)
+  if (intent.type === "undo" || intent.type === "redo") return invalid(`${intent.type} is done by the history`);
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
@@ -847,6 +849,12 @@ function frameBytes(channel: TelemetryChannel, layoutRev: number, values: readon
 /** How fast a meter's peak falls, as the engine's does: 40 dB a second. */
 const PEAK_FALL_DB_PER_SECOND = 40;
 
+/** What an intent told the clients: the events it made, stamped, and whether it changed the structure (they are given the snapshot then). */
+export interface Told {
+  events: StampedEvent[];
+  restructured: boolean;
+}
+
 export class MockServer {
   /** Everything the clients have sent, in order. */
   readonly received: ClientMessage[] = [];
@@ -860,6 +868,10 @@ export class MockServer {
   #catalogRev = 0;
   readonly #counters: Counters;
   readonly #connections = new Set<MockConnection>();
+  /** What can be undone and redone, as the controller keeps it (`src/app/history.rs`). */
+  readonly #history = new History();
+  /** What the clients were last told Undo and Redo would do. */
+  #historyTold: HistoryState = { undo: null, redo: null };
 
   constructor(options: MockOptions = {}) {
     this.#options = options;
@@ -883,18 +895,24 @@ export class MockServer {
     return new Set([...this.#connections].flatMap((c) => [...c.notes]));
   }
 
-  /** Another front-end's intent (the TUI's, or another browser's): applied, and every subscribed client is told. */
-  apply(intent: Intent): void {
-    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
-    if ("error" in outcome) throw new Error(outcome.error.message);
-    this.#commit(outcome, true);
+  /** What Undo and Redo would do now. */
+  get history(): HistoryState {
+    return this.#history.state();
+  }
+
+  /** Another front-end's intent (the TUI's, or another browser's): applied, and every subscribed client is told. What was told. */
+  apply(intent: Intent): Told {
+    const done = this.#carry(intent, true);
+    if ("error" in done) throw new Error(done.error.message);
+    // (The real server tells what can be undone at its next refresh, when a front-end applies an intent on its own.)
+    this.#tellHistory();
+    return done.told;
   }
 
   /** Change the session without telling anybody: the clients will see a revision missing at the next change. */
   applyQuietly(intent: Intent): void {
-    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
-    if ("error" in outcome) throw new Error(outcome.error.message);
-    this.#commit(outcome, false);
+    const done = this.#carry(intent, false);
+    if ("error" in done) throw new Error(done.error.message);
   }
 
   /** The server's idea of what the telemetry slots mean changes (a node came or went): the subscribed clients are told. */
@@ -915,6 +933,21 @@ export class MockServer {
 
   #catalogMessage(): ServerMessage {
     return { type: "catalog", rev: ++this.#catalogRev, scanning: this.#catalog.scanning, entries: [...this.#catalog.entries] };
+  }
+
+  #historyMessage(): ServerMessage {
+    const { undo, redo } = this.#history.state();
+    return { type: "history", undo, redo };
+  }
+
+  /** Tell the subscribed clients what Undo and Redo would do, if it is not what they were told. */
+  #tellHistory(): void {
+    const now = this.#history.state();
+    if (now.undo === this.#historyTold.undo && now.redo === this.#historyTold.redo) return;
+    this.#historyTold = now;
+    for (const connection of this.#connections) {
+      if (connection.subscribed) connection.tell(this.#historyMessage());
+    }
   }
 
   /** The network goes: every connection ends without a goodbye. */
@@ -971,18 +1004,19 @@ export class MockServer {
         connection.subscribed = true;
         connection.tell({ type: "snapshot", snapshot: this.#snapshot });
         connection.tell(this.#catalogMessage());
+        connection.tell(this.#historyMessage());
         break;
       case "telemetry":
         connection.wantTelemetry(message.channels);
         break;
       case "request": {
-        const outcome = outcomeOf(this.#snapshot, message.intent, this.#counters, this.#catalog.entries);
-        if ("error" in outcome) {
-          connection.tell({ type: "rejected", reqId: message.reqId, error: outcome.error });
+        const done = this.#carry(message.intent, true);
+        if ("error" in done) {
+          connection.tell({ type: "rejected", reqId: message.reqId, error: done.error });
         } else {
-          // (The events are told before the answer, and so is the snapshot that tells a change of structure.)
-          const rev = this.#commit(outcome, true);
-          connection.tell({ type: "ack", reqId: message.reqId, rev });
+          // (The events are told before the answer, and so is the snapshot that tells a change of structure, and what can be undone now.)
+          this.#tellHistory();
+          connection.tell({ type: "ack", reqId: message.reqId, rev: done.rev });
         }
         break;
       }
@@ -996,11 +1030,51 @@ export class MockServer {
   }
 
   /**
+   * Do an intent as the controller does, what it keeps in the history included: the revision it made and what it told, or why it could not
+   * be done. Undo and Redo apply what the last step says, each intent of it a revision of its own, and are no steps themselves.
+   */
+  #carry(intent: Intent, tell: boolean): { rev: number; told: Told } | { error: WireError } {
+    if (intent.type === "undo" || intent.type === "redo") return this.#backAndForth(intent.type, tell);
+    const plan = planOf(this.#snapshot, intent, this.now());
+    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
+    if ("error" in outcome) return outcome;
+    const done = this.#commit(outcome, tell);
+    this.#keep(plan);
+    return done;
+  }
+
+  /** The intents of the last step that can be undone, or of the last that was undone, carried out one after the other. */
+  #backAndForth(which: "undo" | "redo", tell: boolean): { rev: number; told: Told } | { error: WireError } {
+    const step = which === "undo" ? this.#history.takeUndo() : this.#history.takeRedo();
+    if (!step) return { error: { code: "invalid", message: `there is nothing to ${which}` } };
+    let rev = this.#snapshot.rev;
+    const told: Told = { events: [], restructured: false };
+    // (A step whose intent cannot be done, a node that is not there any more, is dropped, and what was done of it stays.)
+    for (const intent of which === "undo" ? step.undo : step.redo) {
+      const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
+      if ("error" in outcome) return outcome;
+      const done = this.#commit(outcome, tell);
+      rev = done.rev;
+      told.events.push(...done.told.events);
+      told.restructured ||= done.told.restructured;
+    }
+    if (which === "undo") this.#history.keptUndone(step);
+    else this.#history.keptRedone(step);
+    return { rev, told };
+  }
+
+  /** An intent has been carried out: its step is kept, or the history is forgotten. */
+  #keep(plan: Plan): void {
+    if (plan === "barrier") this.#history.clear();
+    else if (plan !== "nothing") this.#history.record(plan.step);
+  }
+
+  /**
    * The next revision: apply what the intent did to the model and, if `tell`, tell the subscribed clients. The
    * revision of the intent. (A change of structure is that, and the snapshot that tells it is the revision after,
    * as `Controller::apply` has it.)
    */
-  #commit(outcome: Exclude<Outcome, { error: WireError }>, tell: boolean): number {
+  #commit(outcome: Exclude<Outcome, { error: WireError }>, tell: boolean): { rev: number; told: Told } {
     const rev = this.#snapshot.rev + 1;
     if ("restructured" in outcome) {
       this.#snapshot = { ...outcome.restructured, rev: rev + 1, meta: { ...outcome.restructured.meta, dirty: true } };
@@ -1009,7 +1083,7 @@ export class MockServer {
           if (connection.subscribed) connection.tell({ type: "snapshot", snapshot: this.#snapshot });
         }
       }
-      return rev;
+      return { rev, told: { events: [], restructured: true } };
     }
     const stamped: StampedEvent = { ...outcome.event, rev };
     const applied = applyEvent(this.#snapshot, stamped);
@@ -1020,7 +1094,7 @@ export class MockServer {
         if (connection.subscribed) connection.tell({ type: "event", event: stamped });
       }
     }
-    return rev;
+    return { rev, told: { events: [stamped], restructured: false } };
   }
 
   // -- Telemetry made up --

@@ -1,0 +1,5835 @@
+{
+  "scripts": [
+    {
+      "name": "a parameter that was set is put back and set again",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 3.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 4,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 5,
+              "type": "paramSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a drag is one step that goes back to before it",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 16
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 16
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 3.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 16
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 4,
+              "type": "paramSet",
+              "value": 4.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 4.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 5,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 6,
+              "type": "paramSet",
+              "value": 4.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "a pause of more than a second makes a step of its own",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 4,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a pause of exactly a second does not",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "another thing is a step of its own, and so is going back to the first",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "node": 3,
+            "param": 2,
+            "type": "setParam",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 4,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 5,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 6,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "a change after an undo ends what could be redone",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "node": 3,
+            "param": 2,
+            "type": "setParam",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 4,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set volume",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an intent that is refused changes nothing in the history",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "error": "the plugin has no parameter 9999",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 9999,
+            "type": "setParam",
+            "value": 1.0
+          }
+        },
+        {
+          "error": "Mix does not apply to that node",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "gain": "mix",
+            "node": 0,
+            "type": "setGain",
+            "value": 0.5
+          }
+        },
+        {
+          "error": "that node is not a modulator",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "field": "rate",
+            "node": 3,
+            "type": "setModulatorField",
+            "value": 1.0
+          }
+        },
+        {
+          "error": "there is no node 9999",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 9999,
+            "type": "removeNode"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "with nothing done there is nothing to undo or redo",
+      "rows": [
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "what cannot be undone empties the history, what could be redone too",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "node": 3,
+            "param": 2,
+            "type": "setParam",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "members": [],
+            "type": "addGroup"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "taking a node out is one of them",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "node": 7,
+            "type": "removeNode"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the gains are put back each by its own words",
+      "rows": [
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 3,
+              "rev": 1,
+              "type": "gainSet",
+              "value": 2.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "gain": "volume",
+            "node": 3,
+            "type": "setGain",
+            "value": 2.5
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 4,
+              "rev": 2,
+              "type": "gainSet",
+              "value": 0.125
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set mix"
+          },
+          "intent": {
+            "gain": "mix",
+            "node": 4,
+            "type": "setGain",
+            "value": 0.125
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 1,
+              "rev": 3,
+              "type": "gainSet",
+              "value": 0.75
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set mix"
+          },
+          "intent": {
+            "gain": "mix",
+            "node": 1,
+            "type": "setGain",
+            "value": 0.75
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "gain": "groupVolume",
+              "node": 0,
+              "rev": 4,
+              "type": "gainSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the group's volume"
+          },
+          "intent": {
+            "gain": "groupVolume",
+            "node": 0,
+            "type": "setGain",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 5,
+              "type": "gainSet",
+              "value": -0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set pan"
+          },
+          "intent": {
+            "gain": "groupPan",
+            "node": 0,
+            "type": "setGain",
+            "value": -0.5
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 6,
+              "type": "gainSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set pan",
+            "undo": "set the group's volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupVolume",
+              "node": 0,
+              "rev": 7,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set the group's volume",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 1,
+              "rev": 8,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 4,
+              "rev": 9,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 3,
+              "rev": 10,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 3,
+              "rev": 11,
+              "type": "gainSet",
+              "value": 2.5
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 4,
+              "rev": 12,
+              "type": "gainSet",
+              "value": 0.125
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 1,
+              "rev": 13,
+              "type": "gainSet",
+              "value": 0.75
+            }
+          ],
+          "history": {
+            "redo": "set the group's volume",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupVolume",
+              "node": 0,
+              "rev": 14,
+              "type": "gainSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": "set pan",
+            "undo": "set the group's volume"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 15,
+              "type": "gainSet",
+              "value": -0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set pan"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "the settings of modulators and the depth of a cable are put back",
+      "rows": [
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 6,
+              "rev": 1,
+              "type": "modulatorFieldSet",
+              "value": 9.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set rate"
+          },
+          "intent": {
+            "field": "rate",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 9.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 2,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set waveform"
+          },
+          "intent": {
+            "field": "waveform",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 3,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set waveform"
+          },
+          "intent": {
+            "field": "waveform",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 4,
+              "type": "modulatorFieldSet",
+              "value": 1.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set attack"
+          },
+          "intent": {
+            "field": "attack",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 1.5
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "field": "sustain",
+              "node": 7,
+              "rev": 5,
+              "type": "modulatorFieldSet",
+              "value": 0.9
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set sustain"
+          },
+          "intent": {
+            "field": "sustain",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 0.9
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "depth": -0.75,
+              "edge": 0,
+              "rev": 6,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "depth": -0.75,
+            "edge": 0,
+            "type": "setEdgeDepth"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": -0.5,
+              "edge": 0,
+              "rev": 7,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "depth": -0.5,
+            "edge": 0,
+            "type": "setEdgeDepth"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.5,
+              "edge": 0,
+              "rev": 8,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": "set sustain"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "sustain",
+              "node": 7,
+              "rev": 9,
+              "type": "modulatorFieldSet",
+              "value": 0.3
+            }
+          ],
+          "history": {
+            "redo": "set sustain",
+            "undo": "set attack"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 10,
+              "type": "modulatorFieldSet",
+              "value": 0.1
+            }
+          ],
+          "history": {
+            "redo": "set attack",
+            "undo": "set waveform"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 11,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set waveform",
+            "undo": "set waveform"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 12,
+              "type": "modulatorFieldSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set waveform",
+            "undo": "set rate"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 6,
+              "rev": 13,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": "set rate",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 6,
+              "rev": 14,
+              "type": "modulatorFieldSet",
+              "value": 9.0
+            }
+          ],
+          "history": {
+            "redo": "set waveform",
+            "undo": "set rate"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 15,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set waveform",
+            "undo": "set waveform"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 16,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": "set attack",
+            "undo": "set waveform"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 17,
+              "type": "modulatorFieldSet",
+              "value": 1.5
+            }
+          ],
+          "history": {
+            "redo": "set sustain",
+            "undo": "set attack"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "sustain",
+              "node": 7,
+              "rev": 18,
+              "type": "modulatorFieldSet",
+              "value": 0.9
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": "set sustain"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": -0.5,
+              "edge": 0,
+              "rev": 19,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "the keys, the places of nodes and the knobs are put back",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "range": {
+                "high": 60,
+                "low": 36
+              },
+              "rev": 1,
+              "type": "rangeSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the keys"
+          },
+          "intent": {
+            "node": 3,
+            "range": {
+              "high": 60,
+              "low": 36
+            },
+            "type": "setRange"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "range": null,
+              "rev": 2,
+              "type": "rangeSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the keys"
+          },
+          "intent": {
+            "node": 3,
+            "range": null,
+            "type": "setRange"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 3,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 10.0,
+                "y": 20.0
+              }
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "move a node"
+          },
+          "intent": {
+            "node": 3,
+            "type": "setNodeUi",
+            "ui": {
+              "x": 10.0,
+              "y": 20.0
+            }
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 8,
+              "rev": 4,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 30.0,
+                "y": 40.0
+              }
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "move a node"
+          },
+          "intent": {
+            "node": 8,
+            "type": "setNodeUi",
+            "ui": {
+              "x": 30.0,
+              "y": 40.0
+            }
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 5,
+              "type": "nodeUiSet",
+              "ui": null
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "move a node"
+          },
+          "intent": {
+            "node": 3,
+            "type": "setNodeUi",
+            "ui": null
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 6,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 50.0,
+                "y": 60.0
+              }
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "move a node"
+          },
+          "intent": {
+            "node": 3,
+            "type": "setNodeUi",
+            "ui": {
+              "x": 50.0,
+              "y": 60.0
+            }
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 7,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 70.0,
+                "y": 80.0
+              }
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "move a node"
+          },
+          "intent": {
+            "node": 3,
+            "type": "setNodeUi",
+            "ui": {
+              "x": 70.0,
+              "y": 80.0
+            }
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "params": [
+                1
+              ],
+              "rev": 8,
+              "type": "pinnedSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "choose the knobs"
+          },
+          "intent": {
+            "node": 3,
+            "params": [
+              1
+            ],
+            "type": "setPinned"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "params": [],
+              "rev": 9,
+              "type": "pinnedSet"
+            }
+          ],
+          "history": {
+            "redo": "choose the knobs",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 10,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 50.0,
+                "y": 60.0
+              }
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 11,
+              "type": "nodeUiSet",
+              "ui": null
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 12,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 10.0,
+                "y": 20.0
+              }
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 8,
+              "rev": 13,
+              "type": "nodeUiSet",
+              "ui": null
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 14,
+              "type": "nodeUiSet",
+              "ui": null
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "set the keys"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "range": {
+                "high": 60,
+                "low": 36
+              },
+              "rev": 15,
+              "type": "rangeSet"
+            }
+          ],
+          "history": {
+            "redo": "set the keys",
+            "undo": "set the keys"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "range": null,
+              "rev": 16,
+              "type": "rangeSet"
+            }
+          ],
+          "history": {
+            "redo": "set the keys",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "range": {
+                "high": 60,
+                "low": 36
+              },
+              "rev": 17,
+              "type": "rangeSet"
+            }
+          ],
+          "history": {
+            "redo": "set the keys",
+            "undo": "set the keys"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "range": null,
+              "rev": 18,
+              "type": "rangeSet"
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "set the keys"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 19,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 10.0,
+                "y": 20.0
+              }
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 8,
+              "rev": 20,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 30.0,
+                "y": 40.0
+              }
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 21,
+              "type": "nodeUiSet",
+              "ui": null
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 22,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 50.0,
+                "y": 60.0
+              }
+            }
+          ],
+          "history": {
+            "redo": "move a node",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 23,
+              "type": "nodeUiSet",
+              "ui": {
+                "x": 70.0,
+                "y": 80.0
+              }
+            }
+          ],
+          "history": {
+            "redo": "choose the knobs",
+            "undo": "move a node"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "params": [
+                1
+              ],
+              "rev": 24,
+              "type": "pinnedSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "choose the knobs"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "the name of a group is put back, and a group that had none has its default again",
+      "rows": [
+        {
+          "events": [
+            {
+              "name": "Strings",
+              "node": 0,
+              "rev": 1,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "rename a group"
+          },
+          "intent": {
+            "name": "Strings",
+            "node": 0,
+            "type": "renameGroup"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Keys",
+              "node": 2,
+              "rev": 2,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "rename a group"
+          },
+          "intent": {
+            "name": "Keys",
+            "node": 2,
+            "type": "renameGroup"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Group 2",
+              "node": 2,
+              "rev": 3,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "rename a group"
+          },
+          "intent": {
+            "name": "",
+            "node": 2,
+            "type": "renameGroup"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Group 1",
+              "node": 0,
+              "rev": 4,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "rename a group"
+          },
+          "intent": {
+            "name": "  ",
+            "node": 0,
+            "type": "renameGroup"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Strings",
+              "node": 0,
+              "rev": 5,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Keys",
+              "node": 2,
+              "rev": 6,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Group 2",
+              "node": 2,
+              "rev": 7,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Pad",
+              "node": 0,
+              "rev": 8,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Strings",
+              "node": 0,
+              "rev": 9,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Keys",
+              "node": 2,
+              "rev": 10,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Group 2",
+              "node": 2,
+              "rev": 11,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": "rename a group",
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "name": "Group 1",
+              "node": 0,
+              "rev": 12,
+              "type": "groupRenamed"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "rename a group"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "the scale and the lock of the piano are put back",
+      "rows": [
+        {
+          "events": [
+            {
+              "kind": "dorian",
+              "notes": [
+                1,
+                3,
+                4,
+                6,
+                8,
+                9,
+                11
+              ],
+              "rev": 1,
+              "root": 6,
+              "scale": "F# dorian",
+              "type": "scaleSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the scale"
+          },
+          "intent": {
+            "scale": "F# dorian",
+            "type": "setScale"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "error": "\"not a scale\" is not a scale: a root and a kind of scale, like C major or F# dorian",
+          "history": {
+            "redo": null,
+            "undo": "set the scale"
+          },
+          "intent": {
+            "scale": "not a scale",
+            "type": "setScale"
+          }
+        },
+        {
+          "events": [
+            {
+              "locked": true,
+              "rev": 2,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "lock the piano to its scale"
+          },
+          "intent": {
+            "locked": true,
+            "type": "setLocked"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "locked": false,
+              "rev": 3,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "let every note of the piano through"
+          },
+          "intent": {
+            "locked": false,
+            "type": "setLocked"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "locked": true,
+              "rev": 4,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": "let every note of the piano through",
+            "undo": "lock the piano to its scale"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "locked": false,
+              "rev": 5,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": "lock the piano to its scale",
+            "undo": "set the scale"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "kind": "major",
+              "notes": [
+                0,
+                2,
+                4,
+                5,
+                7,
+                9,
+                11
+              ],
+              "rev": 6,
+              "root": 0,
+              "scale": "C major",
+              "type": "scaleSet"
+            }
+          ],
+          "history": {
+            "redo": "set the scale",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "kind": "dorian",
+              "notes": [
+                1,
+                3,
+                4,
+                6,
+                8,
+                9,
+                11
+              ],
+              "rev": 7,
+              "root": 6,
+              "scale": "F# dorian",
+              "type": "scaleSet"
+            }
+          ],
+          "history": {
+            "redo": "lock the piano to its scale",
+            "undo": "set the scale"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "locked": true,
+              "rev": 8,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": "let every note of the piano through",
+            "undo": "lock the piano to its scale"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "locked": false,
+              "rev": 9,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "let every note of the piano through"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "an effect that was moved is put back, and the structure is said to have changed",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "move an effect"
+          },
+          "intent": {
+            "index": 1,
+            "node": 4,
+            "type": "moveEffect"
+          },
+          "restructured": true
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "move an effect",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "move an effect"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "move an effect",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true
+        }
+      ]
+    },
+    {
+      "name": "the same knob of another node is a step of its own, though no time has gone by",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 5,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set resonance"
+          },
+          "intent": {
+            "node": 5,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 1,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set resonance"
+          },
+          "intent": {
+            "node": 1,
+            "param": 1,
+            "type": "setParam",
+            "value": 3.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 1,
+              "param": 1,
+              "rev": 4,
+              "type": "paramSet",
+              "value": 4.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set resonance"
+          },
+          "intent": {
+            "node": 1,
+            "param": 1,
+            "type": "setParam",
+            "value": 4.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 1,
+              "param": 1,
+              "rev": 5,
+              "type": "paramSet",
+              "value": 0.707
+            }
+          ],
+          "history": {
+            "redo": "set resonance",
+            "undo": "set resonance"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 5,
+              "param": 1,
+              "rev": 6,
+              "type": "paramSet",
+              "value": 0.707
+            }
+          ],
+          "history": {
+            "redo": "set resonance",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 7,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 8,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set resonance",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 5,
+              "param": 1,
+              "rev": 9,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": "set resonance",
+            "undo": "set resonance"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 1,
+              "param": 1,
+              "rev": 10,
+              "type": "paramSet",
+              "value": 4.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set resonance"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "a gain is a step for each node and each kind of gain, and the same one again is the same step",
+      "rows": [
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 3,
+              "rev": 1,
+              "type": "gainSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "gain": "volume",
+            "node": 3,
+            "type": "setGain",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 8,
+              "rev": 2,
+              "type": "gainSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "gain": "volume",
+            "node": 8,
+            "type": "setGain",
+            "value": 3.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 4,
+              "rev": 3,
+              "type": "gainSet",
+              "value": 0.25
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set mix"
+          },
+          "intent": {
+            "gain": "mix",
+            "node": 4,
+            "type": "setGain",
+            "value": 0.25
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 1,
+              "rev": 4,
+              "type": "gainSet",
+              "value": 0.75
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set mix"
+          },
+          "intent": {
+            "gain": "mix",
+            "node": 1,
+            "type": "setGain",
+            "value": 0.75
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupVolume",
+              "node": 0,
+              "rev": 5,
+              "type": "gainSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the group's volume"
+          },
+          "intent": {
+            "gain": "groupVolume",
+            "node": 0,
+            "type": "setGain",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 6,
+              "type": "gainSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set pan"
+          },
+          "intent": {
+            "gain": "groupPan",
+            "node": 0,
+            "type": "setGain",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 7,
+              "type": "gainSet",
+              "value": 0.25
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set pan"
+          },
+          "intent": {
+            "gain": "groupPan",
+            "node": 0,
+            "type": "setGain",
+            "value": 0.25
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 8,
+              "type": "gainSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set pan",
+            "undo": "set the group's volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupVolume",
+              "node": 0,
+              "rev": 9,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set the group's volume",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 1,
+              "rev": 10,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 4,
+              "rev": 11,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 8,
+              "rev": 12,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 3,
+              "rev": 13,
+              "type": "gainSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 3,
+              "rev": 14,
+              "type": "gainSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "volume",
+              "node": 8,
+              "rev": 15,
+              "type": "gainSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 4,
+              "rev": 16,
+              "type": "gainSet",
+              "value": 0.25
+            }
+          ],
+          "history": {
+            "redo": "set mix",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 1,
+              "rev": 17,
+              "type": "gainSet",
+              "value": 0.75
+            }
+          ],
+          "history": {
+            "redo": "set the group's volume",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupVolume",
+              "node": 0,
+              "rev": 18,
+              "type": "gainSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": "set pan",
+            "undo": "set the group's volume"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "gain": "groupPan",
+              "node": 0,
+              "rev": 19,
+              "type": "gainSet",
+              "value": 0.25
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set pan"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "a setting of a modulator is a step for each modulator and each setting, and the same one again is the same step",
+      "rows": [
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 6,
+              "rev": 1,
+              "type": "modulatorFieldSet",
+              "value": 5.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set rate"
+          },
+          "intent": {
+            "field": "rate",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 5.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 9,
+              "rev": 2,
+              "type": "modulatorFieldSet",
+              "value": 6.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set rate"
+          },
+          "intent": {
+            "field": "rate",
+            "node": 9,
+            "type": "setModulatorField",
+            "value": 6.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 3,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set waveform"
+          },
+          "intent": {
+            "field": "waveform",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 4,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set attack"
+          },
+          "intent": {
+            "field": "attack",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "decay",
+              "node": 7,
+              "rev": 5,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set decay"
+          },
+          "intent": {
+            "field": "decay",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 6,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set attack"
+          },
+          "intent": {
+            "field": "attack",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 7,
+              "type": "modulatorFieldSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set attack"
+          },
+          "intent": {
+            "field": "attack",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 3.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 8,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set attack",
+            "undo": "set decay"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "decay",
+              "node": 7,
+              "rev": 9,
+              "type": "modulatorFieldSet",
+              "value": 0.2
+            }
+          ],
+          "history": {
+            "redo": "set decay",
+            "undo": "set attack"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 10,
+              "type": "modulatorFieldSet",
+              "value": 0.1
+            }
+          ],
+          "history": {
+            "redo": "set attack",
+            "undo": "set waveform"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 11,
+              "type": "modulatorFieldSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set waveform",
+            "undo": "set rate"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 9,
+              "rev": 12,
+              "type": "modulatorFieldSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": "set rate",
+            "undo": "set rate"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 6,
+              "rev": 13,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": "set rate",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 6,
+              "rev": 14,
+              "type": "modulatorFieldSet",
+              "value": 5.0
+            }
+          ],
+          "history": {
+            "redo": "set rate",
+            "undo": "set rate"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "rate",
+              "node": 9,
+              "rev": 15,
+              "type": "modulatorFieldSet",
+              "value": 6.0
+            }
+          ],
+          "history": {
+            "redo": "set waveform",
+            "undo": "set rate"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "waveform",
+              "node": 6,
+              "rev": 16,
+              "type": "modulatorFieldSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": "set attack",
+            "undo": "set waveform"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 17,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set decay",
+            "undo": "set attack"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "decay",
+              "node": 7,
+              "rev": 18,
+              "type": "modulatorFieldSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set attack",
+            "undo": "set decay"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "attack",
+              "node": 7,
+              "rev": 19,
+              "type": "modulatorFieldSet",
+              "value": 3.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set attack"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "the depth of a cable is a step for each cable, and the same one again is the same step",
+      "rows": [
+        {
+          "events": [
+            {
+              "depth": -0.25,
+              "edge": 0,
+              "rev": 1,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "depth": -0.25,
+            "edge": 0,
+            "type": "setEdgeDepth"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.75,
+              "edge": 1,
+              "rev": 2,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "depth": 0.75,
+            "edge": 1,
+            "type": "setEdgeDepth"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.125,
+              "edge": 0,
+              "rev": 3,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "depth": 0.125,
+            "edge": 0,
+            "type": "setEdgeDepth"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.5,
+              "edge": 0,
+              "rev": 4,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "depth": 0.5,
+            "edge": 0,
+            "type": "setEdgeDepth"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": -0.25,
+              "edge": 0,
+              "rev": 5,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.25,
+              "edge": 1,
+              "rev": 6,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.5,
+              "edge": 0,
+              "rev": 7,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": -0.25,
+              "edge": 0,
+              "rev": 8,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.75,
+              "edge": 1,
+              "rev": 9,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": "set the depth of a cable",
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "depth": 0.5,
+              "edge": 0,
+              "rev": 10,
+              "type": "edgeDepthSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the depth of a cable"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
+      "name": "each of what cannot be undone yet empties the history, and what could be redone",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 3,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "members": [],
+            "type": "addGroup"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 6,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 7,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 8,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "group": 0,
+            "node": 8,
+            "type": "setLaneGroup"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 11,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 12,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 13,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "edge": 0,
+            "type": "removeEdge"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 16,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 17,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 18,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "modulator": 6,
+            "to": {
+              "node": 3,
+              "port": {
+                "index": 1,
+                "type": "param"
+              }
+            },
+            "type": "addModEdge"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 21,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 22,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 23,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "kind": "envelope",
+            "parent": 3,
+            "type": "addModulator"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 26,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 27,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 28,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "node": 7,
+            "type": "removeNode"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 31,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 32,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 33,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "parent": 3,
+            "plugin": "builtin:filter",
+            "type": "addEffect"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 36,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 37,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 38,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "plugin": "builtin:osc",
+            "type": "addInstrument"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 41,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 42,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 43,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "node": 8,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          },
+          "restructured": true
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 46,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 47,
+              "type": "paramSet",
+              "value": 2.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 2.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 48,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 4,
+              "preset": "Arcadia Dream Hall",
+              "rev": 49,
+              "type": "presetLoaded",
+              "values": [
+                {
+                  "param": 0,
+                  "value": 0.94
+                },
+                {
+                  "param": 1,
+                  "value": 0.95
+                },
+                {
+                  "param": 2,
+                  "value": 0.3
+                },
+                {
+                  "param": 3,
+                  "value": 0.06
+                },
+                {
+                  "param": 4,
+                  "value": 0.78
+                },
+                {
+                  "param": 5,
+                  "value": 0.25
+                },
+                {
+                  "param": 6,
+                  "value": 0.7
+                },
+                {
+                  "param": 7,
+                  "value": 1.0
+                },
+                {
+                  "param": 8,
+                  "value": 80.0
+                },
+                {
+                  "param": 9,
+                  "value": 0.85
+                }
+              ]
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "node": 4,
+            "preset": "arcadia",
+            "type": "loadPreset"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": null
+          },
+          "intent": {
+            "type": "redo"
+          }
+        }
+      ]
+    }
+  ],
+  "snapshot": {
+    "graph": {
+      "edges": [
+        {
+          "from": {
+            "node": 0,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 1,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 1,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 2,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 3,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 4,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 5,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 5,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "amount": 0.5,
+          "from": {
+            "node": 6,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 0,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.25,
+          "from": {
+            "node": 7,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 1,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 2,
+              "type": "param"
+            }
+          }
+        }
+      ],
+      "nodes": [
+        {
+          "id": 0,
+          "kind": "group",
+          "name": "Pad",
+          "pan": 0.0,
+          "parent": null,
+          "volume": 1.0
+        },
+        {
+          "id": 1,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          }
+        },
+        {
+          "id": 2,
+          "kind": "group",
+          "name": "Group 2",
+          "pan": 0.0,
+          "parent": null,
+          "volume": 1.0
+        },
+        {
+          "id": 3,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 4,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Reverb",
+          "parent": 3,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:reverb",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.88,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 0.99,
+                "min": 0.1,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.88
+              },
+              {
+                "default": 0.85,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.3,
+                "name": "size",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.85
+              },
+              {
+                "default": 0.35,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "damping",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.35
+              },
+              {
+                "default": 0.04,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 0.25,
+                "min": 0.0,
+                "name": "predelay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.04
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 4,
+                "labels": null,
+                "max": 0.85,
+                "min": 0.0,
+                "name": "diffusion",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              },
+              {
+                "default": 0.3,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.05,
+                "name": "mod_rate",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 0.3
+              },
+              {
+                "default": 0.5,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "mod_depth",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 80.0,
+                "group": [],
+                "index": 8,
+                "labels": null,
+                "max": 500.0,
+                "min": 20.0,
+                "name": "lowcut",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 80.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": [
+              {
+                "id": "arcadia",
+                "name": "Arcadia Dream Hall"
+              },
+              {
+                "id": "cathedral",
+                "name": "Cathedral"
+              },
+              {
+                "id": "plate",
+                "name": "Vintage Plate"
+              },
+              {
+                "id": "room",
+                "name": "Small Room"
+              },
+              {
+                "id": "ambient",
+                "name": "Ambient Wash"
+              }
+            ]
+          }
+        },
+        {
+          "id": 5,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 3,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          }
+        },
+        {
+          "id": 6,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 3,
+          "source": {
+            "rate": 2.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 7,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": 3,
+          "source": {
+            "attack": 0.1,
+            "decay": 0.2,
+            "release": 0.4,
+            "sustain": 0.3,
+            "type": "envelope"
+          }
+        },
+        {
+          "id": 8,
+          "kind": "instrument",
+          "name": "Oscillator",
+          "parent": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 3,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 9,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": 8,
+          "source": {
+            "rate": 3.0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "id": 4294967295,
+          "kind": "master",
+          "name": "Master",
+          "parent": null
+        }
+      ]
+    },
+    "meta": {
+      "bpm": 120.0,
+      "dirty": false,
+      "file": null,
+      "piano": {
+        "kind": "major",
+        "locked": false,
+        "notes": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
+        "root": 0,
+        "scale": "C major"
+      }
+    },
+    "rev": 0,
+    "telemetry": {
+      "meters": [
+        {
+          "kind": "peak",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 0
+        },
+        {
+          "kind": "clips",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 1
+        },
+        {
+          "kind": "peak",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 2
+        },
+        {
+          "kind": "clips",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 3
+        },
+        {
+          "kind": "peak",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 4
+        },
+        {
+          "kind": "clips",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 5
+        },
+        {
+          "kind": "peak",
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 6
+        },
+        {
+          "kind": "clips",
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 7
+        },
+        {
+          "kind": "peak",
+          "node": 8,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 12
+        },
+        {
+          "kind": "clips",
+          "node": 8,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 13
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 6,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 8
+        },
+        {
+          "kind": "modOutput",
+          "node": 7,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 10
+        },
+        {
+          "kind": "modOutput",
+          "node": 9,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 14
+        },
+        {
+          "kind": "effective",
+          "node": 3,
+          "port": {
+            "index": 1,
+            "type": "param"
+          },
+          "slot": 9
+        },
+        {
+          "kind": "effective",
+          "node": 3,
+          "port": {
+            "index": 2,
+            "type": "param"
+          },
+          "slot": 11
+        }
+      ],
+      "rev": 1
+    }
+  }
+}

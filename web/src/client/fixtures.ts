@@ -4,12 +4,13 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot } from "../protocol";
+import type { CatalogEntry, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
 import fields from "./fixtures/fields.json";
 import groups from "./fixtures/groups.json";
+import history from "./fixtures/history.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
 import pins from "./fixtures/pins.json";
@@ -71,6 +72,19 @@ export const groupsFixture = groups as unknown as {
   rows: ({ intent: Intent } & ({ error: string } | { name: string } | { after: Shape }))[];
   lastLane: { node: NodeId; error: string };
 };
+
+/** One op of a script of the history fixture: time going by (in milliseconds), or an intent and what the controller made of it. */
+export type HistoryRow =
+  | { wait: number }
+  | ({ intent: Intent; history: { undo: string | null; redo: string | null } } & ({ error: string } | { events: StampedEvent[]; restructured: boolean }));
+
+/**
+ * A session (a group with a bus filter, another with nothing and no name, a lane with a reverb, a filter, an LFO and an envelope with a cable
+ * each, and a lane of its own with an LFO) and what the controller makes of scripts of intents and of time going by (a change is a step of its own when a second has gone by
+ * since the last of its kind): for each intent the events it made, stamped, whether it changed the structure, what Undo and Redo would do after it,
+ * or the words of its refusal. Written by the controller (`the_web_clients_fixture_of_what_a_history_comes_to_is_current`).
+ */
+export const historyFixture = history as unknown as { snapshot: Snapshot; scripts: { name: string; rows: HistoryRow[] }[] };
 
 /** What a session comes to, for the fixture of the group intents: a line of text for each entry of each list. */
 export interface Shape {

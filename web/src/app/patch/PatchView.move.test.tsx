@@ -225,16 +225,16 @@ describe("moving a node", () => {
     });
     const { node, header } = await headerOf(filter.id);
     connection.hold();
-    // The first move is put down, and its answer (an event and an answer) is on its way ...
+    // The first move is put down, and its answer (with what it made) is on its way ...
     drag(header, 60, 30);
     await waitFor(() => {
-      expect(connection.waiting()).toBe(2);
+      expect(connection.answers()).toBe(1);
     });
     // ... and the node is picked up again.
     pull(header, 40, 40);
     const inHand = placeOf(node);
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       expect(client.state.snapshot?.graph.nodes.find((n) => n.id === filter.id)?.ui).toBeDefined();
@@ -247,10 +247,10 @@ describe("moving a node", () => {
     expect(placeOf(node)).toEqual(inHand);
     release(40, 40);
     await waitFor(() => {
-      expect(connection.waiting()).toBe(2);
+      expect(connection.answers()).toBe(1);
     });
     act(() => {
-      connection.release(2);
+      connection.answer();
     });
     await waitFor(() => {
       // (The second move is answered: the session's place is the one it was put down at, and the node is there.)

@@ -332,7 +332,7 @@ mod tests {
     use crate::app::graph::NoteRange;
     use crate::app::intent::{Applied, Event, IntentError};
     use crate::app::model::{ModSourceSlot, NodePath};
-    use crate::app::testutil::{self, StubEngine, described, load};
+    use crate::app::testutil::{self, StubEngine, described, load, wire};
     use crate::session::NodeUi;
 
     const T0: fn() -> Instant = Instant::now;
@@ -504,12 +504,14 @@ mod tests {
 
     // -- the controller keeps the history --
 
-    /// A group with a bus filter, a lane in it with a reverb and a filter, an LFO whose cable goes to its detune and an envelope, and a lane of its own.
+    /// A group with a bus filter, another with nothing and no name, a lane in the first with a reverb and a filter, an LFO whose cable goes to its detune and an envelope, and a lane of its own.
     const SESSION: &str = r#"
 [[group]]
 name = "Pad"
 [[group.effect]]
 plugin = "builtin:filter"
+
+[[group]]
 
 [[instrument]]
 plugin = "builtin:osc"
@@ -530,9 +532,15 @@ attack = 0.1
 decay = 0.2
 sustain = 0.3
 release = 0.4
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.25
 
 [[instrument]]
 plugin = "builtin:osc"
+[[instrument.modulator]]
+type = "lfo"
+rate = 3.0
 "#;
 
     /// A clock that a test turns.
@@ -1189,5 +1197,231 @@ plugin = "builtin:osc"
             _ => panic!("{a:?}"),
         }).collect();
         assert_eq!(values, [1.0, 0.0, 1.0]);
+    }
+
+    // -- what the web client's tests read --
+
+    /// What a page that is open is to the controller: a subscriber, which a change of structure is told to with a snapshot of a revision of its
+    /// own (`Controller::resync`), so that the revisions that come after it are the ones a page is told.
+    struct Page;
+
+    impl crate::app::subscribers::EventSink for Page {
+        fn applied(&mut self, _: &Applied) {}
+        fn resync(&mut self, _: &crate::app::snapshot::Snapshot) {}
+    }
+
+    /// A step of a script: an intent, or time going by (in milliseconds).
+    enum Op {
+        Do(Intent),
+        Wait(u64),
+    }
+
+    /// The session of `SESSION` and what the controller says to scripts of intents and waits, as the web client's tests read it
+    /// (`web/src/client/fixtures/history.json`): they pin the mock engine's history to the controller's, op by op. Each op is
+    /// answered by the events it made (stamped, in the order they came), whether it changed the structure, what Undo and Redo would
+    /// do after it, or the controller's words for a refusal. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_history_comes_to_is_current() {
+        let (_engine, base, _clock) = controller();
+        let (lane0, lane1) = (node(&base, NodePath::Instrument(0)), node(&base, NodePath::Instrument(1)));
+        let (reverb, bus) = (node(&base, NodePath::Effect { inst: 0, index: 0 }), node(&base, NodePath::GroupEffect { group: 0, index: 0 }));
+        let (g0, g1) = (node(&base, NodePath::Group(0)), node(&base, NodePath::Group(1)));
+        let (lfo, envelope) = (base.model.instruments[0].modulators[0].node, base.model.instruments[0].modulators[1].node);
+        let other_lfo = base.model.instruments[1].modulators[0].node;
+        let edge = base.model.instruments[0].modulators[0].targets[0].edge;
+        let other_edge = base.model.instruments[0].modulators[1].targets[0].edge;
+        let (detune, _) = param(&base, NodePath::Instrument(0), "detune");
+        let (volume, _) = param(&base, NodePath::Instrument(0), "volume");
+        // The same index in three nodes: the knob of one is not the knob of another.
+        let (filter_fx, filter_bus) = (node(&base, NodePath::Effect { inst: 0, index: 1 }), bus);
+        let (resonance, _) = param(&base, NodePath::Effect { inst: 0, index: 1 }, "resonance");
+        let (bus_resonance, _) = param(&base, NodePath::GroupEffect { group: 0, index: 0 }, "resonance");
+        assert_eq!((detune, resonance, bus_resonance), (1, 1, 1));
+        let ghost = NodeId(9_999);
+
+        let set = |param: u32, value: f32| Op::Do(Intent::SetParam { node: lane0, param, value });
+        let gain = |node: NodeId, gain: Gain, value: f32| Op::Do(Intent::SetGain { node, gain, value });
+        let field = |node: NodeId, field: ModulatorField, value: f32| Op::Do(Intent::SetModulatorField { node, field, value });
+        let name = |node: NodeId, name: &str| Op::Do(Intent::RenameGroup { node, name: name.to_string() });
+        let undo = || Op::Do(Intent::Undo);
+        let redo = || Op::Do(Intent::Redo);
+        // A change is a step of its own when a second has gone by since the last of its kind.
+        let pause = || Op::Wait(5000);
+        let n_of = |n: usize, op: fn() -> Op| (0..n).map(|_| op()).collect::<Vec<Op>>();
+
+        let mut scripts: Vec<(&str, Vec<Op>)> = vec![
+            ("a parameter that was set is put back and set again", vec![set(detune, 3.0), undo(), redo(), undo(), undo(), redo(), redo()]),
+            (
+                "a drag is one step that goes back to before it",
+                vec![set(detune, 1.0), Op::Wait(16), set(detune, 2.0), Op::Wait(16), set(detune, 3.0), Op::Wait(16), set(detune, 4.0), undo(), undo(), redo()],
+            ),
+            ("a pause of more than a second makes a step of its own", vec![set(detune, 1.0), Op::Wait(1500), set(detune, 2.0), undo(), undo(), undo()]),
+            ("a pause of exactly a second does not", vec![set(detune, 1.0), Op::Wait(1000), set(detune, 2.0), undo(), undo()]),
+            ("another thing is a step of its own, and so is going back to the first", vec![set(detune, 1.0), set(volume, 0.5), set(detune, 2.0), undo(), undo(), undo()]),
+            ("a change after an undo ends what could be redone", vec![set(detune, 1.0), pause(), undo(), set(volume, 0.5), redo(), undo(), undo()]),
+            ("an intent that is refused changes nothing in the history", vec![set(detune, 1.0), set(9_999, 1.0), gain(g0, Gain::Mix, 0.5), field(lane0, ModulatorField::Rate, 1.0), Op::Do(Intent::RemoveNode { node: ghost }), undo()]),
+            ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
+            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::AddGroup { members: vec![] }), undo(), redo()]),
+            ("taking a node out is one of them", vec![set(detune, 1.0), Op::Do(Intent::RemoveNode { node: envelope }), undo()]),
+        ];
+        let mut gains = vec![gain(lane0, Gain::Volume, 2.5), pause(), gain(reverb, Gain::Mix, 0.125), pause(), gain(bus, Gain::Mix, 0.75), pause(), gain(g0, Gain::GroupVolume, 0.5), pause(), gain(g0, Gain::GroupPan, -0.5)];
+        gains.extend(n_of(5, undo));
+        gains.extend(n_of(5, redo));
+        scripts.push(("the gains are put back each by its own words", gains));
+        let mut modulators = vec![
+            field(lfo, ModulatorField::Rate, 9.0),
+            pause(),
+            field(lfo, ModulatorField::Waveform, 1.0),
+            pause(),
+            field(lfo, ModulatorField::Waveform, 2.0),
+            pause(),
+            field(envelope, ModulatorField::Attack, 1.5),
+            pause(),
+            field(envelope, ModulatorField::Sustain, 0.9),
+            pause(),
+            Op::Do(Intent::SetEdgeDepth { edge, depth: -0.75 }),
+            Op::Do(Intent::SetEdgeDepth { edge, depth: -0.5 }),
+        ];
+        modulators.extend(n_of(6, undo));
+        modulators.extend(n_of(6, redo));
+        scripts.push(("the settings of modulators and the depth of a cable are put back", modulators));
+        let mut keys = vec![
+            Op::Do(Intent::SetRange { node: lane0, range: Some(NoteRange { low: 36, high: 60 }) }),
+            pause(),
+            Op::Do(Intent::SetRange { node: lane0, range: None }),
+            pause(),
+            Op::Do(Intent::SetNodeUi { node: lane0, ui: Some(NodeUi { x: 10.0, y: 20.0 }) }),
+            Op::Do(Intent::SetNodeUi { node: lane1, ui: Some(NodeUi { x: 30.0, y: 40.0 }) }),
+            Op::Do(Intent::SetNodeUi { node: lane0, ui: None }),
+            Op::Do(Intent::SetNodeUi { node: lane0, ui: Some(NodeUi { x: 50.0, y: 60.0 }) }),
+            Op::Do(Intent::SetNodeUi { node: lane0, ui: Some(NodeUi { x: 70.0, y: 80.0 }) }),
+            pause(),
+            Op::Do(Intent::SetPinned { node: lane0, params: vec![detune] }),
+        ];
+        keys.extend(n_of(8, undo));
+        keys.extend(n_of(8, redo));
+        scripts.push(("the keys, the places of nodes and the knobs are put back", keys));
+        let mut names = vec![name(g0, "Strings"), name(g1, "Keys"), name(g1, ""), name(g0, "  ")];
+        names.extend(n_of(4, undo));
+        names.extend(n_of(4, redo));
+        scripts.push(("the name of a group is put back, and a group that had none has its default again", names));
+        let mut piano = vec![
+            Op::Do(Intent::SetScale { scale: "F# dorian".to_string() }),
+            pause(),
+            Op::Do(Intent::SetScale { scale: "not a scale".to_string() }),
+            Op::Do(Intent::SetLocked { locked: true }),
+            pause(),
+            Op::Do(Intent::SetLocked { locked: false }),
+        ];
+        piano.extend(n_of(3, undo));
+        piano.extend(n_of(3, redo));
+        scripts.push(("the scale and the lock of the piano are put back", piano));
+        scripts.push(("an effect that was moved is put back, and the structure is said to have changed", vec![Op::Do(Intent::MoveEffect { node: reverb, index: 1 }), undo(), redo(), undo()]));
+
+        // Each thing is a step of its own, though no time goes by: what a change is of is the node it is for and what it is for.
+        let mut knobs = vec![
+            set(detune, 1.0),
+            Op::Do(Intent::SetParam { node: filter_fx, param: resonance, value: 2.0 }),
+            Op::Do(Intent::SetParam { node: filter_bus, param: bus_resonance, value: 3.0 }),
+            Op::Do(Intent::SetParam { node: filter_bus, param: bus_resonance, value: 4.0 }),
+        ];
+        knobs.extend(n_of(3, undo));
+        knobs.extend(n_of(3, redo));
+        scripts.push(("the same knob of another node is a step of its own, though no time has gone by", knobs));
+        let mut gains_together = vec![
+            gain(lane0, Gain::Volume, 2.0),
+            gain(lane1, Gain::Volume, 3.0),
+            gain(reverb, Gain::Mix, 0.25),
+            gain(bus, Gain::Mix, 0.75),
+            gain(g0, Gain::GroupVolume, 0.5),
+            gain(g0, Gain::GroupPan, 0.5),
+            gain(g0, Gain::GroupPan, 0.25),
+        ];
+        gains_together.extend(n_of(6, undo));
+        gains_together.extend(n_of(6, redo));
+        scripts.push(("a gain is a step for each node and each kind of gain, and the same one again is the same step", gains_together));
+        let mut settings = vec![
+            field(lfo, ModulatorField::Rate, 5.0),
+            field(other_lfo, ModulatorField::Rate, 6.0),
+            field(lfo, ModulatorField::Waveform, 2.0),
+            field(envelope, ModulatorField::Attack, 1.0),
+            field(envelope, ModulatorField::Decay, 1.0),
+            field(envelope, ModulatorField::Attack, 2.0),
+            field(envelope, ModulatorField::Attack, 3.0),
+        ];
+        settings.extend(n_of(6, undo));
+        settings.extend(n_of(6, redo));
+        scripts.push(("a setting of a modulator is a step for each modulator and each setting, and the same one again is the same step", settings));
+        let mut cables = vec![
+            Op::Do(Intent::SetEdgeDepth { edge, depth: -0.25 }),
+            Op::Do(Intent::SetEdgeDepth { edge: other_edge, depth: 0.75 }),
+            Op::Do(Intent::SetEdgeDepth { edge, depth: 0.125 }),
+            Op::Do(Intent::SetEdgeDepth { edge, depth: 0.5 }),
+        ];
+        cables.extend(n_of(3, undo));
+        cables.extend(n_of(3, redo));
+        scripts.push(("the depth of a cable is a step for each cable, and the same one again is the same step", cables));
+        let preset = base.model.instruments[0].effects[0].presets[0].id.clone();
+        let lfo_cable = Intent::AddModEdge { modulator: lfo, to: crate::app::graph::Endpoint { node: lane0, port: crate::app::graph::Port::Param { index: detune } } };
+        let barriers = [
+            Intent::AddGroup { members: vec![] },
+            Intent::SetLaneGroup { node: lane1, group: Some(g0) },
+            Intent::RemoveEdge { edge },
+            lfo_cable,
+            Intent::AddModulator { parent: lane0, kind: crate::app::intent::ModulatorKind::Envelope },
+            Intent::RemoveNode { node: envelope },
+            Intent::AddEffect { parent: lane0, plugin: "builtin:filter".to_string() },
+            Intent::AddInstrument { plugin: "builtin:osc".to_string() },
+            Intent::ReplaceInstrument { node: lane1, plugin: "builtin:osc".to_string() },
+            Intent::LoadPreset { node: reverb, preset },
+        ];
+        let mut forgotten = Vec::new();
+        for barrier in barriers {
+            forgotten.extend([set(detune, 1.0), pause(), set(detune, 2.0), undo(), Op::Do(barrier), undo(), redo()]);
+        }
+        scripts.push(("each of what cannot be undone yet empties the history, and what could be redone", forgotten));
+
+        let mut written = Vec::new();
+        for (what, ops) in &scripts {
+            let (_engine, mut ctl, clock) = controller();
+            ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+            ctl.subscribe(Box::new(Page));
+            let mut rows = Vec::new();
+            for op in ops {
+                match op {
+                    Op::Wait(ms) => {
+                        clock.advance(Duration::from_millis(*ms));
+                        rows.push(serde_json::json!({ "wait": ms }));
+                    }
+                    Op::Do(intent) => {
+                        let state = ctl.apply(intent.clone());
+                        let history = ctl.history_state();
+                        let history = serde_json::json!({ "undo": history.undo, "redo": history.redo });
+                        rows.push(match state {
+                            Err(error) => serde_json::json!({ "intent": wire(intent), "error": error.to_string(), "history": history }),
+                            Ok(applied) => serde_json::json!({ "intent": wire(intent), "events": wire(&applied.stamped()), "restructured": applied.restructured, "history": history }),
+                        });
+                    }
+                }
+            }
+            written.push(serde_json::json!({ "name": what, "rows": rows }));
+        }
+        let mut snapshot = wire(&base.snapshot());
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "scripts": written });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/history.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a history comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 }

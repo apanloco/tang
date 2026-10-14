@@ -76,3 +76,9 @@ export const PINNED_LIMIT = 64;
 
 /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */
 export const NAME_LIMIT = 64;
+
+/** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */
+export const HISTORY_SAME_STEP = 1;
+
+/** How many steps the history keeps, the oldest going (`history::MAX_STEPS`). */
+export const HISTORY_MAX_STEPS = 200;

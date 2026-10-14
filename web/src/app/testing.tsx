@@ -58,9 +58,12 @@ export async function rig(ui: ReactNode, options: MockOptions = {}): Promise<Rig
   };
 }
 
-/** A connection to a mock engine whose messages to the client can be held back, and let through a few at a time. */
+/**
+ * A connection to a mock engine whose messages to the client can be held back, and let through an answer at a time: a request is answered by
+ * its events, what Undo and Redo would do now if that is new, and the answer, and the three come together.
+ */
 export function holdable(server: MockServer) {
-  const held: (() => void)[] = [];
+  const held: { answer: boolean; tell: () => void }[] = [];
   let holding = false;
   const transport: TransportFactory = () => {
     const inner = server.transport();
@@ -69,10 +72,15 @@ export function holdable(server: MockServer) {
         inner.connect({
           ...events,
           text: (text) => {
-            if (holding) held.push(() => {
+            const tell = () => {
               events.text(text);
-            });
-            else events.text(text);
+            };
+            if (!holding) {
+              tell();
+              return;
+            }
+            const { type } = JSON.parse(text) as { type: string };
+            held.push({ answer: type === "ack" || type === "rejected", tell });
           },
         });
       },
@@ -89,9 +97,14 @@ export function holdable(server: MockServer) {
     hold: () => {
       holding = true;
     },
-    waiting: () => held.length,
-    release: (count: number) => {
-      for (let i = 0; i < count; i += 1) held.shift()?.();
+    /** How many answers are held back. */
+    answers: () => held.filter((message) => message.answer).length,
+    /** Let through what is held back up to the first answer, which is let through too: what a request made, and its answer. */
+    answer: () => {
+      for (let next = held.shift(); next; next = held.shift()) {
+        next.tell();
+        if (next.answer) break;
+      }
     },
   };
 }

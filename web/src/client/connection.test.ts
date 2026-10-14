@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import { NODE_UI_LIMIT } from "../protocol";
-import type { CatalogEntry, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
@@ -1180,6 +1180,90 @@ describe("the catalog of plugins", () => {
     expect(heard.map((message) => message.type)).toEqual(["hello"]);
     transport.close();
   });
+});
+
+describe("what Undo and Redo would do", () => {
+    /** A connection to the server that writes down what it is told, as the words of its types (an event by its own, a history by what it says). */
+  function raw(server: MockServer) {
+    const heard: string[] = [];
+    const transport = server.transport();
+    transport.connect({
+      open: () => undefined,
+      text: (data) => {
+        const message = JSON.parse(data) as ServerMessage;
+        heard.push(message.type === "event" ? `event ${message.event.type}` : message.type === "history" ? `history ${String(message.undo)}/${String(message.redo)}` : message.type);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
+    return {
+      heard,
+      send: (message: ClientMessage) => {
+        transport.send(JSON.stringify(message));
+      },
+      close: () => {
+        transport.close();
+      },
+    };
+  }
+
+  test("is told to a connection when it subscribes, after the snapshot and the catalog, and not before", async () => {
+    const server = new MockServer();
+    const { heard, send, close } = raw(server);
+    await quiet();
+    send({ type: "subscribe" });
+    await quiet();
+    expect(heard).toEqual(["hello", "snapshot", "catalog", "history null/null"]);
+    close();
+  });
+
+  test("is told after the events of what changed it and before the answer, and only when it is not what the connection was told", async () => {
+    const server = new MockServer();
+    const { heard, send, close } = raw(server);
+    send({ type: "subscribe" });
+    await quiet();
+    const seen = heard.length;
+    send({ type: "request", reqId: 1, intent: cutoff(0.3) });
+    await quiet();
+    expect(heard.slice(seen)).toEqual(["event paramSet", "history set cutoff/null", "ack"]);
+    // The same knob again at once is the same step: there is nothing new to tell of the history.
+    send({ type: "request", reqId: 2, intent: cutoff(0.4) });
+    await quiet();
+    expect(heard.slice(seen + 3)).toEqual(["event paramSet", "ack"]);
+    // What is refused changes nothing in it.
+    send({ type: "request", reqId: 3, intent: { type: "setParam", node: 424242, param: 0, value: 1 } });
+    await quiet();
+    expect(heard.slice(seen + 5)).toEqual(["rejected"]);
+    send({ type: "request", reqId: 4, intent: { type: "undo" } });
+    await quiet();
+    expect(heard.slice(seen + 6)).toEqual(["event paramSet", "history null/set cutoff", "ack"]);
+    close();
+  });
+
+  test("is not told to a connection that has not subscribed", async () => {
+    const server = new MockServer();
+    const { heard, close } = raw(server);
+    await quiet();
+    server.apply(cutoff(0.3));
+    await quiet();
+    expect(heard).toEqual(["hello"]);
+    close();
+  });
+
+  test("is told to be gone when what was done cannot be undone yet, with the snapshot that tells what was done", async () => {
+    const server = new MockServer();
+    const { heard, send, close } = raw(server);
+    send({ type: "subscribe" });
+    await quiet();
+    send({ type: "request", reqId: 1, intent: cutoff(0.3) });
+    await quiet();
+    const seen = heard.length;
+    send({ type: "request", reqId: 2, intent: { type: "addEffect", parent: nodeNamed(tracerSnapshot, "Oscillator").id, plugin: "builtin:reverb" } });
+    await quiet();
+    expect(heard.slice(seen)).toEqual(["snapshot", "history null/null", "ack"]);
+    close();
+  });
+
 });
 
 describe("adding an effect", () => {

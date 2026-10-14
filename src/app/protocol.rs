@@ -488,7 +488,11 @@ mod typescript {
                  /** How many parameters of a plugin can be pinned to its node: what the controller refuses more than (`MAX_PINNED`). */\n\
                  export const PINNED_LIMIT = {};\n\n\
                  /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */\n\
-                 export const NAME_LIMIT = {};\n",
+                 export const NAME_LIMIT = {};\n\n\
+                 /** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */\n\
+                 export const HISTORY_SAME_STEP = {};\n\n\
+                 /** How many steps the history keeps, the oldest going (`history::MAX_STEPS`). */\n\
+                 export const HISTORY_MAX_STEPS = {};\n",
                 super::PROTOCOL,
                 super::FRAME_HEADER_LEN,
                 range_entries(&GAINS, Gain::range),
@@ -501,6 +505,8 @@ mod typescript {
                 crate::session::NodeUi::PARTS,
                 crate::app::model::MAX_PINNED,
                 crate::app::model::MAX_NAME,
+                crate::app::history::SAME_STEP.as_secs_f64(),
+                crate::app::history::MAX_STEPS,
             ),
         )?;
         Ok(())
@@ -598,6 +604,15 @@ mod typescript {
         let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
         assert!(constants.contains("export const NODE_UI_LIMIT = 100000;\n"), "{constants}");
         assert!(constants.contains("export const NODE_UI_PARTS = 10;\n"), "{constants}");
+    }
+
+    #[test]
+    fn the_limits_of_the_history_are_in_the_constants_as_the_controller_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        export_typescript(dir.path()).unwrap();
+        let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
+        assert!(constants.contains("export const HISTORY_SAME_STEP = 1;\n"), "{constants}");
+        assert!(constants.contains("export const HISTORY_MAX_STEPS = 200;\n"), "{constants}");
     }
 
     #[test]
