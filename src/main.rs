@@ -248,6 +248,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
                 pitch_bend_range: 2.0,
                 remap: Default::default(),
                 params: Default::default(),
+                pinned: Vec::new(),
             }),
             effects: vec![],
             modulators: vec![],

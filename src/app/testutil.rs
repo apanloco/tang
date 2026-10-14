@@ -385,6 +385,27 @@ ui = { x = 376, y = -200 }
 plugin = "builtin:osc"
 "#;
 
+/// Parameters pinned on the nodes of a plugin: on a lane's instrument, on its effect and on a bus effect. A name that the plugin has no
+/// parameter of, and a name twice, are no pins; the second lane has none.
+pub const PINNED: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+pinned = ["drive", "cutoff"]
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+pinned = ["sustain", "detune", "waveform"]
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+pinned = ["resonance", "no such parameter", "resonance", "cutoff"]
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
 /// A group whose members have modulators of every kind with cables of their own (an envelope with two), and a rack of three of the
 /// group's own; a lane in no group and a lane of a second group, each with an LFO that the first group does not drive: for the lists
 /// of what a modulator can drive of the others'.

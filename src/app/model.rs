@@ -724,6 +724,29 @@ pub struct PluginSlot {
     /// Effect dry/wet mix (1.0 = full wet). Only meaningful for effect slots;
     /// instrument slots leave this at 1.0 and don't read it.
     pub mix: f32,
+    /// The parameters (`ParamSlot::index`) a front-end shows as knobs on the plugin's node, in the order they were pinned; none pinned
+    /// is the first few (`docs/web-ui.md` §4.4). The engine and the TUI do not use it; a session file keeps it as `pinned`, by name.
+    pub pinned: Vec<u32>,
+}
+
+impl PluginSlot {
+    /// The names of the pinned parameters, in order, as a session file keeps them.
+    pub fn pinned_names(&self) -> Vec<String> {
+        self.pinned.iter().filter_map(|index| self.params.iter().find(|p| p.index == *index)).map(|p| p.name.clone()).collect()
+    }
+
+    /// Pin the parameters of these names, in this order, as a session file says them. A name the plugin has no parameter of (or one
+    /// that is no control, a separator) is not a pin, and nor is a name that comes twice (the first place counts): each is logged.
+    pub fn pin_names(&mut self, names: &[String]) {
+        self.pinned.clear();
+        for name in names {
+            match self.params.iter().find(|p| p.name == *name && !matches!(p.kind, ParamKind::Separator)) {
+                Some(param) if self.pinned.contains(&param.index) => log::warn!("{}: '{name}' is pinned twice", self.name),
+                Some(param) => self.pinned.push(param.index),
+                None => log::warn!("{}: no parameter '{name}' to pin", self.name),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]

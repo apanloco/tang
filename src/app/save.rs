@@ -42,6 +42,7 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
                 volume: lane.volume,
                 preset: inst.current_preset.clone(),
                 params: overrides(&inst.params),
+                pinned: inst.pinned_names(),
                 pitch_bend_range: lane.pitch_bend_range,
                 remap: lane.remap.clone(),
             }),
@@ -77,6 +78,7 @@ fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect 
         mix: fx.mix,
         preset: fx.current_preset.clone(),
         params: overrides(&fx.params),
+        pinned: fx.pinned_names(),
         ui: ui.get(&fx.node).copied(),
     }
 }
@@ -126,7 +128,7 @@ mod tests {
     use super::*;
     use crate::app::model::{ModSourceSlot, SessionModel};
     use crate::app::testutil::{
-        CROSS_MOD, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PLACED, SETTINGS, assert_same_model, load, try_load,
+        CROSS_MOD, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, SETTINGS, assert_same_model, load, try_load,
     };
     use crate::plugin::chain::MidiBindSource;
     use crate::session;
@@ -161,6 +163,7 @@ velocity = 100
         ("disabled-pattern", DISABLED_PATTERN),
         ("odd-tempo", ODD_TEMPO),
         ("placed", PLACED),
+        ("pinned", PINNED),
     ];
 
     /// The file a save of this model writes.
@@ -296,6 +299,52 @@ depth = 0.4
             let file = saved(&load(text).model);
             assert!(!file.lines().any(|l| l.starts_with("ui = ") || l == "[ui]"), "{name}:\n{file}");
         }
+    }
+
+    #[test]
+    fn the_pinned_parameters_are_saved_by_name_in_the_order_they_were_pinned_on_the_plugins_they_are_for() {
+        let file = saved(&load(PINNED).model);
+        // (The names the file had that were no pins are gone: the model only has pins.)
+        for line in [r#"pinned = ["sustain", "detune", "waveform"]"#, r#"pinned = ["resonance", "cutoff"]"#, r#"pinned = ["drive", "cutoff"]"#] {
+            assert_eq!(file.lines().filter(|l| *l == line).count(), 1, "{line} in\n{file}");
+        }
+        assert_eq!(file.lines().filter(|l| l.starts_with("pinned")).count(), 3, "{file}");
+        // Each on its own plugin: the instrument's before its effect's, and the bus effect's with the group.
+        let at = |line: &str| file.find(line).unwrap_or_else(|| panic!("{line}\n{file}"));
+        assert!(at(r#"pinned = ["sustain""#) < at("[[instrument.effect]]") && at("[[instrument.effect]]") < at(r#"pinned = ["resonance""#), "{file}");
+        assert!(at("[[group]]") < at(r#"pinned = ["drive""#), "{file}");
+    }
+
+    #[test]
+    fn a_session_with_nothing_pinned_saves_no_pins() {
+        for (name, text) in SCENES {
+            if *name == "pinned" {
+                continue;
+            }
+            let file = saved(&load(text).model);
+            assert!(!file.contains("pinned"), "{name}:\n{file}");
+        }
+    }
+
+    #[test]
+    fn an_effect_that_is_moved_takes_its_pins_with_it() {
+        let mut run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+pinned = ["drive"]
+[[instrument.effect]]
+plugin = "builtin:filter"
+pinned = ["cutoff", "resonance"]
+"#,
+        );
+        run.model.instruments[0].effects.swap(0, 1);
+        let file = saved(&run.model);
+        let first = file.find(r#"pinned = ["cutoff", "resonance"]"#).unwrap();
+        let second = file.find(r#"pinned = ["drive"]"#).unwrap();
+        assert!(first < second, "{file}");
     }
 
     #[test]

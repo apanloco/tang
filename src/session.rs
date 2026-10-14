@@ -56,6 +56,27 @@ fn node_ui_of(value: toml::Value) -> Option<NodeUi> {
     }
 }
 
+/// A `pinned` list, read leniently like a place: which parameters a front-end shows as knobs is not worth refusing a session for,
+/// so what is not a list is left out (and logged), and so is whatever in a list is not a name.
+fn lenient_names<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    Ok(match toml::Value::deserialize(deserializer)? {
+        toml::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                toml::Value::String(name) => Some(name),
+                other => {
+                    log::warn!("ignoring a pinned parameter that is not a name: {other}");
+                    None
+                }
+            })
+            .collect(),
+        other => {
+            log::warn!("ignoring a `pinned` that is not a list of names: {other}");
+            Vec::new()
+        }
+    })
+}
+
 /// The top-level `[ui]` table, read leniently like a node's.
 fn lenient_table<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<toml::Table>, D::Error> {
     Ok(match toml::Value::deserialize(deserializer)? {
@@ -221,6 +242,10 @@ pub struct PluginConfig {
     pub remap: HashMap<String, RemapTarget>,
     #[serde(default)]
     pub params: HashMap<String, f64>,
+    /// The parameters a front-end shows as knobs on the instrument's node, by name, in order (`pinned = [...]`). The engine and
+    /// the TUI do not use them, and they are kept when a session is saved.
+    #[serde(default, deserialize_with = "lenient_names")]
+    pub pinned: Vec<String>,
 }
 
 fn default_volume() -> f64 {
@@ -241,6 +266,9 @@ pub struct EffectConfig {
     pub params: HashMap<String, f64>,
     #[serde(default, rename = "modulator")]
     pub modulators: Vec<ModulatorConfig>,
+    /// The parameters a front-end shows as knobs on the effect's node, by name, in order.
+    #[serde(default, deserialize_with = "lenient_names")]
+    pub pinned: Vec<String>,
     /// Where the effect is drawn.
     #[serde(default, deserialize_with = "lenient_ui")]
     pub ui: Option<NodeUi>,
@@ -298,6 +326,8 @@ struct InstrumentSlotRaw {
     remap: HashMap<String, RemapTarget>,
     #[serde(default)]
     params: HashMap<String, f64>,
+    #[serde(default, deserialize_with = "lenient_names")]
+    pinned: Vec<String>,
     #[serde(default, rename = "modulator")]
     modulators: Vec<ModulatorConfig>,
     // Slot-level fields.
@@ -441,6 +471,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             pitch_bend_range: slot.pitch_bend_range,
             remap: slot.remap,
             params: slot.params,
+            pinned: slot.pinned,
         });
         // Drop out-of-range group references defensively.
         let group = slot.group.filter(|&g| g < groups.len());
@@ -727,6 +758,8 @@ pub struct SaveInstrument {
     pub volume: f32,
     pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
+    /// The parameters a front-end shows as knobs on the node, by name, in order.
+    pub pinned: Vec<String>,
     pub pitch_bend_range: f64,
     pub remap: HashMap<String, RemapTarget>,
 }
@@ -737,6 +770,8 @@ pub struct SaveEffect {
     pub mix: f32,
     pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
+    /// The parameters a front-end shows as knobs on the node, by name, in order.
+    pub pinned: Vec<String>,
     /// Where the effect is drawn.
     pub ui: Option<NodeUi>,
 }
@@ -841,6 +876,8 @@ struct InstrumentSlotOut {
     volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     preset: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pinned: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     params: BTreeMap<String, f64>,
     #[serde(skip_serializing_if = "is_default_pitch_bend_range_opt")]
@@ -958,6 +995,8 @@ struct EffectOut {
     mix: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     preset: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pinned: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     params: BTreeMap<String, f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1126,6 +1165,7 @@ fn effect_to_out(fx: &SaveEffect) -> EffectOut {
         plugin: fx.plugin.clone(),
         mix: fx.mix,
         preset: fx.preset.clone(),
+        pinned: fx.pinned.clone(),
         params: fx.params.iter().map(|(k, v)| (k.clone(), clean_f64(*v))).collect(),
         ui: fx.ui.map(NodeUiOut::from),
     }
@@ -1190,6 +1230,7 @@ pub fn to_toml(
                     plugin,
                     volume,
                     preset,
+                    pinned: slot.instrument.as_ref().map(|inst| inst.pinned.clone()).unwrap_or_default(),
                     params,
                     pitch_bend_range,
                     remap,
@@ -1505,6 +1546,7 @@ range = "C4-C8"
                 group: None,
                 modulators: vec![],
                 instrument: Some(SaveInstrument {
+                    pinned: vec![],
                     plugin: "builtin:sine".into(),
                     volume: 0.8,
                     preset: None,
@@ -1513,6 +1555,7 @@ range = "C4-C8"
                     remap: HashMap::new(),
                 }),
                 effects: vec![SaveEffect {
+                    pinned: vec![],
                     plugin: "builtin:sine".into(),
                     mix: 0.5,
                     preset: None,
@@ -1528,6 +1571,7 @@ range = "C4-C8"
                 group: None,
                 modulators: vec![],
                 instrument: Some(SaveInstrument {
+                    pinned: vec![],
                     plugin: "builtin:sine".into(),
                     volume: 1.0,
                     preset: None,
@@ -1566,6 +1610,7 @@ range = "C4-C8"
             group: None,
             modulators: vec![],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: Some("Lead".into()),
@@ -1574,6 +1619,7 @@ range = "C4-C8"
                 remap: HashMap::new(),
             }),
             effects: vec![SaveEffect {
+                pinned: vec![],
                 plugin: "builtin:reverb".into(),
                 mix: 0.4,
                 preset: Some("Arcadia Dream Hall".into()),
@@ -1620,6 +1666,7 @@ range = "C4-C8"
                 ui: None,
             }],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,
@@ -1670,6 +1717,7 @@ range = "C4-C8"
                 ui: None,
             }],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:filter".into(),
                 volume: 1.0,
                 preset: None,
@@ -1720,6 +1768,7 @@ range = "C4-C8"
                 ui: None,
             }],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:filter".into(),
                 volume: 1.0,
                 preset: None,
@@ -1765,6 +1814,7 @@ range = "C4-C8"
                 ui: None,
             }],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:osc".into(),
                 volume: 1.0,
                 preset: None,
@@ -1773,6 +1823,7 @@ range = "C4-C8"
                 remap: HashMap::new(),
             }),
             effects: vec![SaveEffect {
+                pinned: vec![],
                 plugin: "builtin:filter".into(),
                 mix: 1.0,
                 preset: None,
@@ -1807,6 +1858,7 @@ range = "C4-C8"
             group,
             modulators: vec![],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:osc".into(),
                 volume: 1.0,
                 preset: None,
@@ -1824,6 +1876,7 @@ range = "C4-C8"
             volume: 0.5,
             pan: -0.5,
             effects: vec![SaveEffect {
+                pinned: vec![],
                 plugin: "builtin:reverb".into(),
                 mix: 1.0,
                 preset: None,
@@ -1865,6 +1918,7 @@ range = "C4-C8"
             group: Some(0),
             modulators: vec![],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:osc".into(),
                 volume: 1.0,
                 preset: None,
@@ -1881,6 +1935,7 @@ range = "C4-C8"
             volume: 1.0,
             pan: 0.0,
             effects: vec![SaveEffect {
+                pinned: vec![],
                 plugin: "builtin:filter".into(),
                 mix: 1.0,
                 preset: None,
@@ -1966,6 +2021,7 @@ range = "C4-C8"
             group: None,
             modulators: vec![],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,
@@ -2067,6 +2123,11 @@ plugin = "builtin:osc"
         assert!(parse(&format!("{osc}ui = {{ x = nan, y = 1 }}\n")).is_err());
     }
 
+    /// An effect with nothing set, for the tests of what is written for one thing.
+    fn bare_effect(plugin: &str) -> SaveEffect {
+        SaveEffect { plugin: plugin.into(), mix: 1.0, preset: None, params: vec![], pinned: vec![], ui: None }
+    }
+
     /// A lane with an effect and a modulator, each with this position, for the tests of what is written.
     fn placed_lane(ui: Option<NodeUi>) -> SaveInstrumentSlot {
         SaveInstrumentSlot {
@@ -2074,8 +2135,8 @@ plugin = "builtin:osc"
             transpose: 0,
             group: None,
             modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 }, targets: vec![], ui }],
-            instrument: Some(SaveInstrument { plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
-            effects: vec![SaveEffect { plugin: "builtin:filter".into(), mix: 1.0, preset: None, params: vec![], ui }],
+            instrument: Some(SaveInstrument { pinned: vec![], plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
+            effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, preset: None, params: vec![], ui }],
             pattern: None,
             ui,
         }
@@ -2088,7 +2149,7 @@ plugin = "builtin:osc"
             name: None,
             volume: 1.0,
             pan: 0.0,
-            effects: vec![SaveEffect { plugin: "builtin:reverb".into(), mix: 1.0, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
+            effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
             modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 }, targets: vec![], ui: at(800.0, -120.5) }],
             ui: at(800.0, 40.0),
         };
@@ -2107,6 +2168,70 @@ plugin = "builtin:osc"
         assert_eq!(config.instruments[0].ui, at(80.0, 120.0));
         assert_eq!(config.instruments[0].effects[0].ui, at(80.0, 120.0));
         assert_eq!(config.instruments[0].modulators[0].ui, at(80.0, 120.0));
+    }
+
+    #[test]
+    fn a_pinned_list_is_read_on_an_instrument_an_effect_and_a_bus_effect_and_a_node_without_one_has_none() {
+        let config = parse(crate::app::testutil::PINNED).unwrap();
+        fn names(list: &[String]) -> Vec<&str> {
+            list.iter().map(String::as_str).collect()
+        }
+        assert_eq!(names(&config.instruments[0].instrument.as_ref().unwrap().pinned), ["sustain", "detune", "waveform"]);
+        assert_eq!(names(&config.instruments[0].effects[0].pinned), ["resonance", "no such parameter", "resonance", "cutoff"]);
+        assert_eq!(names(&config.groups[0].effects[0].pinned), ["drive", "cutoff"]);
+        assert!(config.instruments[1].instrument.as_ref().unwrap().pinned.is_empty());
+        // (A session from before there were pins has none.)
+        let old = parse("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").unwrap();
+        assert!(old.instruments[0].instrument.as_ref().unwrap().pinned.is_empty() && old.instruments[0].effects[0].pinned.is_empty());
+    }
+
+    #[test]
+    fn a_pinned_list_that_is_not_a_list_of_names_is_ignored_where_it_is_wrong_and_the_rest_of_the_session_loads() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        let cases: [(&str, &[&str]); 7] = [
+            ("pinned = 5", &[]),
+            ("pinned = \"cutoff\"", &[]),
+            ("pinned = {}", &[]),
+            ("pinned = [1, 2]", &[]),
+            ("pinned = [\"a\", 2, \"b\"]", &["a", "b"]),
+            ("pinned = [[\"a\"]]", &[]),
+            ("pinned = []", &[]),
+        ];
+        for (text, expected) in cases {
+            let config = parse(&format!("{osc}{text}\n")).unwrap_or_else(|e| panic!("{text}: {e}"));
+            let pinned: Vec<&str> = config.instruments[0].instrument.as_ref().unwrap().pinned.iter().map(String::as_str).collect();
+            assert_eq!((config.instruments.len(), pinned), (1, expected.to_vec()), "{text}");
+        }
+        let config = parse(&format!("{osc}[[instrument.effect]]\nplugin = \"builtin:filter\"\npinned = false\n")).unwrap();
+        assert_eq!((config.instruments.len(), config.instruments[0].effects[0].pinned.len()), (1, 0));
+    }
+
+    #[test]
+    fn pinned_parameters_are_written_by_name_on_the_plugin_they_are_for_and_read_back_and_none_are_written_for_none() {
+        let mut lane = placed_lane(None);
+        lane.instrument.as_mut().unwrap().pinned = vec!["sustain".into(), "detune".into()];
+        lane.effects[0].pinned = vec!["cutoff".into()];
+        let group = SaveGroup {
+            name: None,
+            volume: 1.0,
+            pan: 0.0,
+            effects: vec![SaveEffect { pinned: vec!["mix".into(), "width".into()], ..bare_effect("builtin:reverb") }],
+            modulators: vec![],
+            ui: None,
+        };
+        let text = to_toml(&[lane], &[group], None, None).unwrap();
+        for line in [r#"pinned = ["sustain", "detune"]"#, r#"pinned = ["cutoff"]"#, r#"pinned = ["mix", "width"]"#] {
+            assert_eq!(text.lines().filter(|l| *l == line).count(), 1, "{line} in\n{text}");
+        }
+        assert_eq!(text.lines().filter(|l| l.starts_with("pinned")).count(), 3, "{text}");
+        // And what is written is read back, on the same plugins and in the same order.
+        let config = parse(&text).unwrap();
+        assert_eq!(config.instruments[0].instrument.as_ref().unwrap().pinned, ["sustain", "detune"]);
+        assert_eq!(config.instruments[0].effects[0].pinned, ["cutoff"]);
+        assert_eq!(config.groups[0].effects[0].pinned, ["mix", "width"]);
+        // With none pinned there is no line: a file is as it always was.
+        let plain = to_toml(&[placed_lane(None)], &[], None, None).unwrap();
+        assert!(!plain.contains("pinned"), "{plain}");
     }
 
     #[test]
@@ -2155,6 +2280,7 @@ plugin = "builtin:osc"
             group: None,
             modulators: vec![],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,
@@ -2210,6 +2336,7 @@ plugin = "builtin:osc"
                 group: None,
                 modulators: vec![],
                 instrument: Some(SaveInstrument {
+                    pinned: vec![],
                     plugin: "builtin:sine".into(),
                     volume: 1.0,
                     preset: None,
@@ -2247,6 +2374,7 @@ plugin = "builtin:osc"
             group: None,
             modulators: vec![],
             instrument: Some(SaveInstrument {
+                pinned: vec![],
                 plugin: "builtin:sine".into(),
                 volume: 1.0,
                 preset: None,

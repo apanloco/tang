@@ -158,6 +158,7 @@ fn plugin_slot(
         presets,
         current_preset,
         mix,
+        pinned: Vec::new(),
     }
 }
 
@@ -253,7 +254,7 @@ pub fn load_session(
             })?;
             let effect_node = ids.alloc();
             place(&mut ui, effect_node, effect_config.ui);
-            group_effects.push(plugin_slot(
+            let mut slot = plugin_slot(
                 effect_node,
                 name,
                 effect_source,
@@ -262,7 +263,9 @@ pub fn load_session(
                 presets,
                 effect_config.preset.clone(),
                 effect_config.mix as f32,
-            ));
+            );
+            slot.pin_names(&effect_config.pinned);
+            group_effects.push(slot);
             group_bus_params.push(params.for_targets());
         }
         bus_params.push(group_bus_params);
@@ -380,7 +383,7 @@ pub fn load_session(
             }
 
             chain_params.push(params.for_targets());
-            Some(plugin_slot(
+            let mut slot = plugin_slot(
                 lane_node,
                 name,
                 instrument_source,
@@ -389,7 +392,9 @@ pub fn load_session(
                 presets,
                 plug_config.preset.clone(),
                 1.0,
-            ))
+            );
+            slot.pin_names(&plug_config.pinned);
+            Some(slot)
         } else {
             chain_params.push(Vec::new());
             None
@@ -456,7 +461,7 @@ pub fn load_session(
             chain_params.push(params.for_targets());
             let effect_node = ids.alloc();
             place(&mut ui, effect_node, effect_config.ui);
-            effects.push(plugin_slot(
+            let mut slot = plugin_slot(
                 effect_node,
                 name,
                 effect_source,
@@ -465,7 +470,9 @@ pub fn load_session(
                 presets,
                 effect_config.preset.clone(),
                 effect_config.mix as f32,
-            ));
+            );
+            slot.pin_names(&effect_config.pinned);
+            effects.push(slot);
         }
 
         // Build the lane's modulators now that every plugin (and its params)
@@ -1065,7 +1072,7 @@ fn load_group_modulators(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PLACED, SETTINGS, load, try_load};
+    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, SETTINGS, load, try_load};
 
     #[test]
     fn plugin_slots_hide_locked_parameters_and_turn_labelled_ones_into_enums() {
@@ -1648,6 +1655,77 @@ plugin = "builtin:filter"
         assert_eq!(model.ui.len(), 7);
         // A session with no positions has no places.
         assert!(load(GROUPS).model.ui.is_empty());
+    }
+
+    /// The index the plugin of a slot has for the parameter of this name.
+    fn index_of(slot: &PluginSlot, name: &str) -> u32 {
+        slot.params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{} has no parameter {name}", slot.name)).index
+    }
+
+    #[test]
+    fn the_parameters_a_session_pins_are_pinned_on_the_plugin_they_are_for_in_the_order_they_are_named() {
+        let model = load(PINNED).model;
+        let (group, lane, plain) = (&model.groups[0], &model.instruments[0], &model.instruments[1]);
+        let osc = lane.instrument.as_ref().unwrap();
+        assert_eq!(osc.pinned, [index_of(osc, "sustain"), index_of(osc, "detune"), index_of(osc, "waveform")]);
+        // A name that the plugin has no parameter of, and a name twice, are no pins (and the order is that of the first time).
+        let filter = &lane.effects[0];
+        assert_eq!(filter.pinned, [index_of(filter, "resonance"), index_of(filter, "cutoff")]);
+        let bus = &group.effects[0];
+        assert_eq!(bus.pinned, [index_of(bus, "drive"), index_of(bus, "cutoff")]);
+        // The lane the session says nothing of has none, and a session from before pins has none.
+        assert!(plain.instrument.as_ref().unwrap().pinned.is_empty());
+        assert!(load(GROUPS).model.instruments.iter().flat_map(|lane| lane.instrument.iter().chain(&lane.effects)).all(|slot| slot.pinned.is_empty()));
+    }
+
+    #[test]
+    fn a_pin_for_a_parameter_the_plugin_hides_is_no_pin() {
+        let mut run = load("[[instrument]]\nplugin = \"builtin:osc\"\npinned = [\"sustain\"]\n");
+        let osc = run.model.instruments[0].instrument.as_mut().unwrap();
+        // (What a plugin marks "(locked)" is not in the model's list of parameters, so no name of it finds one.)
+        let sustain = index_of(osc, "sustain");
+        assert_eq!(osc.pinned, [sustain], "the session pinned it");
+        osc.params.retain(|p| p.name != "sustain");
+        // (Pinning is saying which are pinned, not adding to them: the sustain that was pinned is not any more.)
+        osc.pin_names(&["sustain".to_string(), "detune".to_string()]);
+        assert_eq!(osc.pinned, [index_of(osc, "detune")], "no sustain (index {sustain}) any more");
+    }
+
+    #[test]
+    fn a_separator_is_no_pin_since_it_is_no_control() {
+        let mut osc = plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap();
+        let mut slot = fresh_slot(osc.as_mut(), "builtin:osc", NodeId(7));
+        slot.params.push(ParamSlot { name: "Envelope".into(), index: 99, kind: ParamKind::Separator, ..Default::default() });
+        slot.pin_names(&["Envelope".to_string(), "detune".to_string()]);
+        assert_eq!(slot.pinned, [index_of(&slot, "detune")]);
+    }
+
+    #[test]
+    fn a_name_that_two_parameters_have_pins_the_first_of_them() {
+        // (As the name of a modulator's target is: some plugins name two parameters alike, and a file has names to go by.)
+        let mut osc = plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap();
+        let mut slot = fresh_slot(osc.as_mut(), "builtin:osc", NodeId(7));
+        let first = index_of(&slot, "detune");
+        slot.params.push(ParamSlot { name: "detune".into(), index: 77, ..Default::default() });
+        slot.pin_names(&["detune".to_string()]);
+        assert_eq!(slot.pinned, [first]);
+    }
+
+    #[test]
+    fn the_names_of_the_pins_are_the_names_of_the_parameters_pinned_in_the_order_they_were_pinned() {
+        let mut osc = plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap();
+        let mut slot = fresh_slot(osc.as_mut(), "builtin:osc", NodeId(7));
+        slot.pinned = vec![index_of(&slot, "pan"), index_of(&slot, "attack")];
+        assert_eq!(slot.pinned_names(), ["pan", "attack"]);
+        // (An index the plugin has no parameter of names nothing.)
+        slot.pinned.push(12_345);
+        assert_eq!(slot.pinned_names(), ["pan", "attack"]);
+    }
+
+    #[test]
+    fn a_plugin_that_is_just_loaded_has_nothing_pinned() {
+        let mut osc = plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap();
+        assert!(fresh_slot(osc.as_mut(), "builtin:osc", NodeId(7)).pinned.is_empty());
     }
 
     #[test]
