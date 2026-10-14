@@ -149,6 +149,13 @@ impl Snapshot {
                 }
                 plugin.pinned = params.clone();
             }
+            Event::GroupRenamed { node, name } => {
+                let group = self.node_mut(*node)?;
+                if !matches!(group.kind, NodeKind::Group { .. }) {
+                    return Err(DoesNotFit(format!("node {} is not a group", node.0)));
+                }
+                group.name.clone_from(name);
+            }
             Event::PresetLoaded { node, preset, values } => {
                 let plugin = self.plugin_mut(*node)?;
                 // All of it or none: look before changing anything.
@@ -526,6 +533,8 @@ type = "envelope"
             Intent::SetPinned { node: n.bus, params: vec![cutoff] },
             Intent::SetPinned { node: n.osc, params: vec![waveform, detune] },
             Intent::SetPinned { node: n.osc, params: vec![] },
+            Intent::RenameGroup { node: n.group, name: "Strings".to_string() },
+            Intent::RenameGroup { node: n.group, name: "  ".to_string() },
         ];
         for intent in intents {
             let before = told.clone();
@@ -534,7 +543,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 38);
+        assert_eq!(told.rev, 40);
     }
 
     #[test]
@@ -671,6 +680,9 @@ type = "envelope"
             (Event::PinnedSet { node: n.empty, params: vec![] }, "has no plugin"),
             (Event::PinnedSet { node: n.group, params: vec![] }, "has no plugin"),
             (Event::PinnedSet { node: n.osc, params: vec![4_000] }, "has no parameter 4000"),
+            (Event::GroupRenamed { node: ghost, name: "Pad".to_string() }, "there is no node 9999"),
+            (Event::GroupRenamed { node: n.osc, name: "Pad".to_string() }, "is not a group"),
+            (Event::GroupRenamed { node: NodeId::MASTER, name: "Pad".to_string() }, "is not a group"),
         ];
         for (event, why) in refused {
             let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();

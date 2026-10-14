@@ -73,3 +73,6 @@ export const NODE_UI_PARTS = 10;
 
 /** How many parameters of a plugin can be pinned to its node: what the controller refuses more than (`MAX_PINNED`). */
 export const PINNED_LIMIT = 64;
+
+/** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */
+export const NAME_LIMIT = 64;

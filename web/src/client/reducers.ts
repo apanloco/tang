@@ -78,6 +78,8 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
       if (missing !== undefined) return `node ${node.id} has no parameter ${missing}`;
       return withPlugin(node, { ...plugin, pinned: event.params });
     }
+    case "groupRenamed":
+      return node.kind === "group" ? { ...node, name: event.name } : `node ${node.id} is not a group`;
     case "modulatorFieldSet":
       return withSetting(node, event.field, event.value);
   }

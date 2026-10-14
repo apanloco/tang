@@ -476,7 +476,9 @@ mod typescript {
                  /** A place is kept to this many parts of a pixel: a tenth (`NodeUi::PARTS`). */\n\
                  export const NODE_UI_PARTS = {};\n\n\
                  /** How many parameters of a plugin can be pinned to its node: what the controller refuses more than (`MAX_PINNED`). */\n\
-                 export const PINNED_LIMIT = {};\n",
+                 export const PINNED_LIMIT = {};\n\n\
+                 /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */\n\
+                 export const NAME_LIMIT = {};\n",
                 super::PROTOCOL,
                 super::FRAME_HEADER_LEN,
                 range_entries(&GAINS, Gain::range),
@@ -488,6 +490,7 @@ mod typescript {
                 crate::session::NodeUi::LIMIT,
                 crate::session::NodeUi::PARTS,
                 crate::app::model::MAX_PINNED,
+                crate::app::model::MAX_NAME,
             ),
         )?;
         Ok(())

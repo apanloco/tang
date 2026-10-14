@@ -37,7 +37,7 @@ use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField};
 use crate::app::model::{
-    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
+    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NEW_CABLE_DEPTH, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
@@ -1300,15 +1300,16 @@ impl State {
             Some(item) => gs.choices[item.index],
             None => return,
         };
-        let inst = gs.inst;
-        let new_group = match choice {
-            GroupAssignChoice::Ungroup => None,
-            GroupAssignChoice::Existing(g) => Some(g),
-            GroupAssignChoice::New => Some(self.ctl.add_group()),
+        let Some(lane) = self.ctl.model.instruments.get(gs.inst).map(|lane| lane.node) else { return };
+        let intent = match choice {
+            GroupAssignChoice::Ungroup => Intent::SetLaneGroup { node: lane, group: None },
+            GroupAssignChoice::Existing(g) => match self.ctl.model.groups.get(g) {
+                Some(group) => Intent::SetLaneGroup { node: lane, group: Some(group.node) },
+                None => return,
+            },
+            GroupAssignChoice::New => Intent::AddGroup { members: vec![lane] },
         };
-        self.ctl.set_lane_group(inst, new_group);
-        self.ctl.dirty = true;
-        self.rebuild_tree();
+        self.apply(intent);
     }
 
     /// Open the preset selector for the selected plugin slot. inst+slot
@@ -1527,6 +1528,8 @@ impl State {
                 intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
                 // (The TUI does not draw where a node is, nor which of its parameters are its knobs.)
                 intent::Event::NodeUiSet { .. } | intent::Event::PinnedSet { .. } => {}
+                // The group's header and its parameter pane's title are its name.
+                intent::Event::GroupRenamed { .. } => self.rebuild_tree(),
                 // The tree shows a modulator's rate and waveform, and its cables' depths.
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 intent::Event::ParamSet { .. }
@@ -2154,15 +2157,16 @@ fn handle_rename_group_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.rename_group = None,
         KeyCode::Enter => {
-            let name = rg.input.value.trim().to_string();
+            let name = rg.input.value.clone();
             let group = rg.group;
             // Empty clears the custom name (falls back to "Group N"). The name
             // is display-only, so no audio-thread command is needed.
-            if let Some(g) = s.ctl.model.groups.get_mut(group) {
-                g.name = if name.is_empty() { None } else { Some(name) };
+            if let Some(node) = s.ctl.model.groups.get(group).map(|g| g.node) {
+                // (A name that is refused keeps the popup open, as a range that is not one does.)
+                if s.apply(Intent::RenameGroup { node, name }).is_none() {
+                    return;
+                }
             }
-            s.ctl.dirty = true;
-            s.rebuild_tree();
             s.rename_group = None;
         }
         KeyCode::Backspace => rg.input.backspace(),
@@ -2171,7 +2175,8 @@ fn handle_rename_group_key(s: &mut State, code: KeyCode) {
         KeyCode::Right => rg.input.move_right(),
         KeyCode::Home => rg.input.home(),
         KeyCode::End => rg.input.end(),
-        KeyCode::Char(ch) => rg.input.insert(ch),
+        // (The controller refuses a name longer than `MAX_NAME`: there is no typing past it.)
+        KeyCode::Char(ch) if rg.input.value.chars().count() < MAX_NAME => rg.input.insert(ch),
         _ => {}
     }
 }

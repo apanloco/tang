@@ -1144,6 +1144,8 @@ pub const NEW_CABLE_DEPTH: f32 = 0.5;
 /// How many parameters of a plugin can be pinned to its node: a node that shows more is taller than a canvas has room for, and a plugin of
 /// hundreds has its other parameters in the panel.
 pub const MAX_PINNED: usize = 64;
+/// How long a group's name can be, in characters: a node shows it in a header, and a name that fills a screen is no name.
+pub const MAX_NAME: usize = 64;
 
 /// What a row of a modulator's parameter pane is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

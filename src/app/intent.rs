@@ -114,6 +114,23 @@ pub enum Intent {
     /// Refused, with nothing changed, for a node that has no plugin, a parameter the plugin does not have, a separator, a parameter
     /// listed twice and more than `MAX_PINNED` of them.
     SetPinned { node: NodeId, params: Vec<u32> },
+    /// Add a group, a submix bus, at the end: it has no effects and no modulators, full volume and a centred pan, and a meter of
+    /// its own. `members` are lanes (each the node of a lane, its instrument's, which an empty lane has too) that are put in it
+    /// at once, as `SetLaneGroup` does for each (a lane in another group leaves it); none makes an empty group. Refused, with
+    /// nothing changed and no group made, for a member that is not a lane.
+    AddGroup { members: Vec<NodeId> },
+    /// Put a lane in a group, or take it out of the one it is in (`None`): `node` is the node of the lane (its instrument's, which an
+    /// empty lane has too) and `group` the node of a group. A lane is in one group at most: one that is in another leaves it. What it
+    /// leaves is no longer driven by it: the cables of the group it leaves to the lane's plugins and its modulators are taken out (with
+    /// the cables that drive their depths) and what they drove has the value that was set again, and the cables to the members after
+    /// the lane keep driving the same plugins. A lane put in the group it is in is as it was. Refused, with nothing changed, for a
+    /// node that is not a lane and for a group that is not a group.
+    SetLaneGroup { node: NodeId, group: Option<NodeId> },
+    /// Name a group: `name` is what it is called, without the spaces around it; a name of nothing gives the group back the name it has
+    /// by default, "Group" and its number, counting from one. A name is at most `MAX_NAME` characters and has no control characters.
+    /// The engine has no use for it, but it is saved with the session and told to every client. Refused, with nothing changed, for a
+    /// node that is not a group and a name that is not one.
+    RenameGroup { node: NodeId, name: String },
     /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
     /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
     /// effect, with the cables that drive its parameters (and what drove their depths): what they were
@@ -241,6 +258,8 @@ pub enum Event {
     NodeUiSet { node: NodeId, ui: Option<NodeUi> },
     /// The parameters now pinned to the node's plugin, in order.
     PinnedSet { node: NodeId, params: Vec<u32> },
+    /// A group is now called `name`: what it was given, or "Group" and its number if it was given none.
+    GroupRenamed { node: NodeId, name: String },
     /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
@@ -389,6 +408,17 @@ mod tests {
             (Intent::SetNodeUi { node: NodeId(2), ui: None }, json!({"type": "setNodeUi", "node": 2, "ui": null})),
             (Intent::SetPinned { node: NodeId(2), params: vec![3, 1] }, json!({"type": "setPinned", "node": 2, "params": [3, 1]})),
             (Intent::SetPinned { node: NodeId(2), params: vec![] }, json!({"type": "setPinned", "node": 2, "params": []})),
+            (Intent::AddGroup { members: vec![NodeId(2), NodeId(5)] }, json!({"type": "addGroup", "members": [2, 5]})),
+            (Intent::AddGroup { members: vec![] }, json!({"type": "addGroup", "members": []})),
+            (
+                Intent::SetLaneGroup { node: NodeId(2), group: Some(NodeId(7)) },
+                json!({"type": "setLaneGroup", "node": 2, "group": 7}),
+            ),
+            (Intent::SetLaneGroup { node: NodeId(2), group: None }, json!({"type": "setLaneGroup", "node": 2, "group": null})),
+            (
+                Intent::RenameGroup { node: NodeId(7), name: "Pad".to_string() },
+                json!({"type": "renameGroup", "node": 7, "name": "Pad"}),
+            ),
             (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
@@ -436,6 +466,10 @@ mod tests {
             (Event::NodeUiSet { node: NodeId(2), ui: None }, json!({"type": "nodeUiSet", "node": 2, "ui": null})),
             (Event::PinnedSet { node: NodeId(2), params: vec![3, 1] }, json!({"type": "pinnedSet", "node": 2, "params": [3, 1]})),
             (Event::PinnedSet { node: NodeId(2), params: vec![] }, json!({"type": "pinnedSet", "node": 2, "params": []})),
+            (
+                Event::GroupRenamed { node: NodeId(7), name: "Pad".to_string() },
+                json!({"type": "groupRenamed", "node": 7, "name": "Pad"}),
+            ),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]
@@ -500,6 +534,11 @@ mod tests {
             ("a pinned parameter that is negative", json!({"type": "setPinned", "node": 3, "params": [-1]})),
             ("a pinned parameter that is not whole", json!({"type": "setPinned", "node": 3, "params": [1.5]})),
             ("a list of pinned parameters that is a number", json!({"type": "setPinned", "node": 3, "params": 4})),
+            ("a group with no members", json!({"type": "addGroup"})),
+            ("members that are not nodes", json!({"type": "addGroup", "members": ["a"]})),
+            ("a lane's group that is a string", json!({"type": "setLaneGroup", "node": 3, "group": "7"})),
+            ("a name that is a number", json!({"type": "renameGroup", "node": 3, "name": 5})),
+            ("no name", json!({"type": "renameGroup", "node": 3})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<Intent>(json).is_err(), "{what}");

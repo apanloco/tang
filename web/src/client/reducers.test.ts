@@ -325,6 +325,53 @@ describe("pinned parameters set", () => {
   });
 });
 
+describe("a group renamed", () => {
+  const nameOf = (snapshot: Snapshot, node: Node) => snapshot.graph.nodes.find((n) => n.id === node.id)?.name;
+  const rename = (node: number, name: string, rev = 1): StampedEvent => ({ rev, type: "groupRenamed", node, name });
+
+  test("gives the group the name the event says, and a second event another", () => {
+    const { snapshot, group } = withGroup();
+    expect(nameOf(snapshot, group)).toBe("Pad");
+    const after = applied(snapshot, rename(group.id, "Strings"));
+    expect(nameOf(after, group)).toBe("Strings");
+    expect(nameOf(applied(after, rename(group.id, "Group 1", 2)), group)).toBe("Group 1");
+  });
+
+  test("changes that group and nothing else: every other node is the object it was, the group is still a group of the same volume and pan", () => {
+    const { snapshot: plain, group: first } = withGroup();
+    // (A group that is not at its defaults, so that a volume and a pan that were lost would show.)
+    const group: Node = { ...first, kind: "group", volume: 0.5, pan: -0.25 };
+    const snapshot = { ...plain, graph: { ...plain.graph, nodes: plain.graph.nodes.map((n) => (n.id === group.id ? group : n)) } };
+    const after = applied(snapshot, rename(group.id, "Strings"));
+    for (const node of snapshot.graph.nodes) {
+      if (node.id === group.id) continue;
+      expect(after.graph.nodes.find((n) => n.id === node.id), `node ${node.id}`).toBe(node);
+    }
+    expect(after.graph.nodes.find((n) => n.id === group.id)).toEqual({ ...group, name: "Strings" });
+    expect(after.graph.edges).toBe(snapshot.graph.edges);
+  });
+
+  test("leaves the session with changes that are not saved, and nothing else of its meta changed", () => {
+    const { snapshot, group } = withGroup();
+    expect(applied(snapshot, rename(group.id, "Strings")).meta).toEqual({ ...snapshot.meta, dirty: true });
+  });
+
+  test("does not fit a node that is not there or a node that is not a group, and changes nothing", () => {
+    const { snapshot } = withGroup();
+    const cases: [string, StampedEvent, string][] = [
+      ["a node that is not there", rename(9999, "x"), "there is no node 9999"],
+      ["an instrument", rename(oscillator.id, "x"), `node ${oscillator.id} is not a group`],
+      ["an effect", rename(filter.id, "x"), `node ${filter.id} is not a group`],
+      ["the master", rename(MASTER, "x"), `node ${MASTER} is not a group`],
+    ];
+    for (const [what, event, why] of cases) {
+      const result = applyEvent(snapshot, event);
+      expect(result.ok, what).toBe(false);
+      expect(!result.ok && result.reason, what).toContain(why);
+    }
+  });
+});
+
 describe("a node's place set", () => {
   const placeOf = (snapshot: Snapshot, id: number) => snapshot.graph.nodes.find((n) => n.id === id)?.ui;
   const place = (node: number, ui: { x: number; y: number } | null, rev = 1): StampedEvent => ({ rev, type: "nodeUiSet", node, ui });

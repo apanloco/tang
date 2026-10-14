@@ -8,7 +8,7 @@
 use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
-use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -48,6 +48,9 @@ impl Controller {
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::SetNodeUi { node, ui } => Done::Event(self.set_node_ui(node, ui)?),
             Intent::SetPinned { node, params } => Done::Event(self.set_pinned(node, params)?),
+            Intent::RenameGroup { node, name } => Done::Event(self.rename_group(node, &name)?),
+            Intent::AddGroup { members } => self.add_group_intent(&members)?,
+            Intent::SetLaneGroup { node, group } => self.set_lane_group_intent(node, group)?,
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
@@ -181,6 +184,55 @@ impl Controller {
         }
         plugin.pinned = params.clone();
         Ok(Event::PinnedSet { node, params })
+    }
+
+    /// What a group is called: in the model only (the session file keeps it; the audio thread has no use for it). The event says the
+    /// name the group has now, which is the default one for a name of nothing.
+    fn rename_group(&mut self, node: NodeId, name: &str) -> Result<Event, IntentError> {
+        let NodePath::Group(group) = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
+            return Err(invalid("only a group has a name to change"));
+        };
+        let name = name.trim();
+        if name.chars().count() > MAX_NAME {
+            return Err(invalid(format!("a name is at most {MAX_NAME} characters")));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(invalid("a name has no control characters"));
+        }
+        self.model.groups[group].name = if name.is_empty() { None } else { Some(name.to_string()) };
+        Ok(Event::GroupRenamed { node, name: self.model.groups[group].display_name(group) })
+    }
+
+    /// A group at the end, with the lanes in `members` put in it. Every member is looked at before anything is made.
+    fn add_group_intent(&mut self, members: &[NodeId]) -> Result<Done, IntentError> {
+        let lanes = members.iter().map(|node| self.lane_at(*node)).collect::<Result<Vec<usize>, IntentError>>()?;
+        let group = self.add_group();
+        for inst in lanes {
+            self.set_lane_group(inst, Some(group));
+        }
+        Ok(Done::Restructured)
+    }
+
+    /// A lane put in a group, or taken out of its group.
+    fn set_lane_group_intent(&mut self, node: NodeId, group: Option<NodeId>) -> Result<Done, IntentError> {
+        let inst = self.lane_at(node)?;
+        let group = match group {
+            None => None,
+            Some(group) => match self.model.locate(group).ok_or(IntentError::NotFound(group))? {
+                NodePath::Group(index) => Some(index),
+                _ => return Err(invalid("that node is not a group")),
+            },
+        };
+        self.set_lane_group(inst, group);
+        Ok(Done::Restructured)
+    }
+
+    /// The place of the lane whose node is `node`: its instrument's, which a lane with none has too.
+    fn lane_at(&self, node: NodeId) -> Result<usize, IntentError> {
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            NodePath::Instrument(inst) => Ok(inst),
+            _ => Err(invalid("only a lane can be put in a group")),
+        }
     }
 
     /// The keys of a lane: in the model and, as `SetInstrumentRange`, in the audio thread (which lets go of the notes it
@@ -2960,6 +3012,195 @@ type = "midi"
             "{} is not what pinning comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
+    }
+
+    // -- AddGroup, SetLaneGroup and RenameGroup --
+
+    /// `LANES_IN_GROUPS` (two groups, each with a modulator that drives its members, and four lanes: the first and the
+    /// last in group 0, the third in group 1, the second in none) over the stub engine.
+    fn lanes_in_groups() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(testutil::LANES_IN_GROUPS).model, handles, None))
+    }
+
+    fn lane_node(ctl: &Controller, inst: usize) -> NodeId {
+        ctl.model.instruments[inst].node
+    }
+
+    fn group_node(ctl: &Controller, group: usize) -> NodeId {
+        ctl.model.groups[group].node
+    }
+
+    fn groups_of_lanes(ctl: &Controller) -> Vec<Option<usize>> {
+        ctl.model.instruments.iter().map(|lane| lane.group).collect()
+    }
+
+    fn set_lane_group(ctl: &mut Controller, node: NodeId, group: Option<NodeId>) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SetLaneGroup { node, group })
+    }
+
+    #[test]
+    fn add_group_adds_an_empty_group_at_the_end_in_the_model_and_the_engine_and_says_the_structure_changed() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        let applied = ctl.apply(Intent::AddGroup { members: vec![] }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["AddGroup"]);
+        assert_eq!(ctl.model.groups.len(), 3);
+        let group = &ctl.model.groups[2];
+        assert_eq!((group.name.as_deref(), group.volume, group.pan), (None, 1.0, 0.0));
+        assert!(group.effects.is_empty() && group.modulators.is_empty() && group.meter.is_some());
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), None, Some(1), Some(0)], "no lane moved");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_group_with_lanes_puts_them_in_the_new_group_and_the_old_groups_cables_to_them_go() {
+        let (engine, mut ctl) = lanes_in_groups();
+        // Lane 3 is member 1 of group 0, which drives its pan and the rate of its modulator; lane 1 is in no group.
+        let members = vec![lane_node(&ctl, 1), lane_node(&ctl, 3)];
+        sent(&engine);
+        let applied = ctl.apply(Intent::AddGroup { members }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        let commands = sent(&engine);
+        assert_eq!(commands[0], "AddGroup", "the group is there before a lane is put in it: {commands:?}");
+        assert!(commands.contains(&"SetLaneGroup inst=1 group=Some(2)".to_string()), "{commands:?}");
+        assert!(commands.contains(&"SetLaneGroup inst=3 group=Some(2)".to_string()), "{commands:?}");
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), Some(2), Some(1), Some(2)]);
+        let group_0_cables: Vec<_> = ctl.model.groups[0].modulators[0].targets.iter().map(|t| t.param_name.clone()).collect();
+        assert_eq!(group_0_cables, ["detune"], "the cables to lane 3 are gone, and the one to lane 0 is not");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_group_with_something_that_is_not_a_lane_makes_no_group() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        let ghost = NodeId(9_999);
+        let (group, effect, lane1) = (group_node(&ctl, 0), ctl.model.instruments[3].effects[0].node, lane_node(&ctl, 1));
+        let cases = [
+            ("a node that is not there", vec![lane1, ghost], IntentError::NotFound(ghost)),
+            ("a group", vec![group], invalid("only a lane can be put in a group")),
+            ("an effect", vec![lane1, effect], invalid("only a lane can be put in a group")),
+            ("the master", vec![NodeId::MASTER], IntentError::NotFound(NodeId::MASTER)),
+        ];
+        for (what, members, error) in cases {
+            assert_eq!(ctl.apply(Intent::AddGroup { members }), Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.model.groups.len(), 2, "and no group was made for the lane that was fine");
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), None, Some(1), Some(0)]);
+    }
+
+    #[test]
+    fn set_lane_group_puts_a_lane_in_a_group_and_takes_it_out_and_says_the_structure_changed() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        let (lane1, group1) = (lane_node(&ctl, 1), group_node(&ctl, 1));
+        let applied = set_lane_group(&mut ctl, lane1, Some(group1)).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["SetLaneGroup inst=1 group=Some(1)"]);
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), Some(1), Some(1), Some(0)]);
+        assert!(ctl.dirty);
+        // And out again.
+        set_lane_group(&mut ctl, lane1, None).unwrap();
+        assert_eq!(sent(&engine), ["SetLaneGroup inst=1 group=None"]);
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), None, Some(1), Some(0)]);
+        assert_eq!(ctl.rev, 2);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn set_lane_group_takes_the_groups_cables_to_the_lane_out_first_and_gives_back_what_they_drove() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        // Group 0's LFO drives the detune of lane 0.
+        let lane0 = lane_node(&ctl, 0);
+        set_lane_group(&mut ctl, lane0, None).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["RemoveGroupModTarget group=0 mod=0 target=0", "SetLaneGroup inst=0 group=None", "SetParameter inst=0 slot=0 param=1 value=0.000"]
+        );
+        // The cables to the member after it are told their new ordinal: lane 3 is member 0 now.
+        let cables: Vec<_> = ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+        assert!(cables.iter().all(|kind| kind.contains("member: 0")), "{cables:?}");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn set_lane_group_refuses_what_is_not_a_lane_what_is_not_a_group_and_what_is_not_there_and_changes_nothing() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        let ghost = NodeId(9_999);
+        let (lane0, lane1) = (lane_node(&ctl, 0), lane_node(&ctl, 1));
+        let (group0, group1) = (group_node(&ctl, 0), group_node(&ctl, 1));
+        let effect = ctl.model.instruments[3].effects[0].node;
+        let lfo = ctl.model.groups[0].modulators[0].node;
+        let cases = [
+            ("a group for the lane", set_lane_group(&mut ctl, group1, Some(group0)), invalid("only a lane can be put in a group")),
+            ("an effect for the lane", set_lane_group(&mut ctl, effect, None), invalid("only a lane can be put in a group")),
+            ("a modulator for the lane", set_lane_group(&mut ctl, lfo, Some(group1)), invalid("only a lane can be put in a group")),
+            ("a lane that is not there", set_lane_group(&mut ctl, ghost, Some(group1)), IntentError::NotFound(ghost)),
+            ("a lane for the group", set_lane_group(&mut ctl, lane1, Some(lane0)), invalid("that node is not a group")),
+            ("an effect for the group", set_lane_group(&mut ctl, lane1, Some(effect)), invalid("that node is not a group")),
+            ("a group that is not there", set_lane_group(&mut ctl, lane1, Some(ghost)), IntentError::NotFound(ghost)),
+            ("the master for the group", set_lane_group(&mut ctl, lane1, Some(NodeId::MASTER)), IntentError::NotFound(NodeId::MASTER)),
+        ];
+        for (what, result, error) in cases {
+            assert_eq!(result, Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(groups_of_lanes(&ctl), [Some(0), None, Some(1), Some(0)]);
+    }
+
+    #[test]
+    fn rename_group_names_a_group_in_the_model_alone_and_says_the_name_it_has_now() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        let group = group_node(&ctl, 1);
+        let applied = ctl.apply(Intent::RenameGroup { node: group, name: "Strings".to_string() }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::GroupRenamed { node: group, name: "Strings".to_string() }]));
+        assert_eq!(ctl.model.groups[1].name.as_deref(), Some("Strings"));
+        assert!(sent(&engine).is_empty(), "the audio thread has no use for a name");
+        assert!(ctl.dirty);
+        let name = |ctl: &Controller| ctl.model.graph().nodes.iter().find(|n| n.id == group).map(|n| n.name.clone());
+        assert_eq!(name(&ctl).as_deref(), Some("Strings"));
+        // Spaces around a name are not part of it, and a name of nothing is no name: the group is called what it is called by default.
+        let applied = ctl.apply(Intent::RenameGroup { node: group, name: "  Pad two  ".to_string() }).unwrap();
+        assert_eq!(applied.events, [Event::GroupRenamed { node: group, name: "Pad two".to_string() }]);
+        assert_eq!(ctl.model.groups[1].name.as_deref(), Some("Pad two"));
+        for blank in ["", "   "] {
+            let applied = ctl.apply(Intent::RenameGroup { node: group, name: blank.to_string() }).unwrap();
+            assert_eq!(applied.events, [Event::GroupRenamed { node: group, name: "Group 2".to_string() }], "{blank:?}");
+            assert_eq!(ctl.model.groups[1].name, None);
+        }
+        assert_eq!(name(&ctl).as_deref(), Some("Group 2"));
+    }
+
+    #[test]
+    fn rename_group_refuses_what_is_not_a_group_a_name_too_long_and_one_with_a_control_character() {
+        let (engine, mut ctl) = lanes_in_groups();
+        sent(&engine);
+        let (group, lane0) = (group_node(&ctl, 0), lane_node(&ctl, 0));
+        let ghost = NodeId(9_999);
+        let rename = |ctl: &mut Controller, node: NodeId, name: &str| ctl.apply(Intent::RenameGroup { node, name: name.to_string() });
+        assert_eq!(rename(&mut ctl, lane0, "x"), Err(invalid("only a group has a name to change")));
+        assert_eq!(rename(&mut ctl, ghost, "x"), Err(IntentError::NotFound(ghost)));
+        assert_eq!(rename(&mut ctl, NodeId::MASTER, "x"), Err(IntentError::NotFound(NodeId::MASTER)));
+        assert_eq!(rename(&mut ctl, group, &"x".repeat(65)), Err(invalid("a name is at most 64 characters")));
+        assert_eq!(rename(&mut ctl, group, "two\nlines"), Err(invalid("a name has no control characters")));
+        assert_eq!(rename(&mut ctl, group, "tab\there"), Err(invalid("a name has no control characters")));
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        assert_eq!(ctl.model.groups[0].name, None);
+        // A name of 64 characters is fine, and so is one that is not ASCII (it is the characters that are counted, not the bytes).
+        assert!(rename(&mut ctl, group, &"x".repeat(64)).is_ok());
+        assert!(rename(&mut ctl, group, &"å".repeat(64)).is_ok());
+        assert!(rename(&mut ctl, group, &"å".repeat(65)).is_err());
     }
 
     // -- AddEffect --

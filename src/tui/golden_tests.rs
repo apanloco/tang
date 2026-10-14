@@ -1450,6 +1450,34 @@ fn the_group_popup_takes_a_member_the_group_drives_out_of_it_and_the_group_s_cab
 }
 
 #[test]
+fn the_rename_popup_names_a_group_and_a_name_of_nothing_gives_the_default_name_back() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('R')).press_n(KeyCode::Backspace, 3); // "Pad" is in the popup
+    for ch in "Strings".chars() {
+        h.press(KeyCode::Char(ch));
+    }
+    h.press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.groups[0].name.as_deref(), Some("Strings"));
+    assert!(h.tree().iter().any(|l| l.starts_with("▦ Strings")), "{:#?}", h.tree());
+    assert!(h.s.ctl.dirty);
+    assert!(h.commands().is_empty(), "the audio thread has no use for a name");
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('R')).press_n(KeyCode::Backspace, 7).press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.groups[0].name, None);
+    assert!(h.tree().iter().any(|l| l.starts_with("▦ Group 1")), "{:#?}", h.tree());
+}
+
+#[test]
+fn the_rename_popup_takes_no_more_characters_than_a_name_can_have() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('R')).press_n(KeyCode::Backspace, 3);
+    h.press_n(KeyCode::Char('x'), 70).press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.groups[0].name.as_deref().map(|name| name.chars().count()), Some(64));
+}
+
+#[test]
 fn deleting_a_group_ungroups_its_members() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));

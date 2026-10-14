@@ -591,6 +591,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
+  // (Not in the mock engine yet: the next part of step 31 puts them there, pinned to the controller's by a fixture.)
+  if (intent.type === "addGroup" || intent.type === "setLaneGroup" || intent.type === "renameGroup") return invalid("the mock engine does not have groups yet");
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);
