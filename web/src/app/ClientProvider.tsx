@@ -8,6 +8,8 @@ import { Drive } from "../client/drive";
 import { Editor, refusal } from "../client/editor";
 import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
+import { NoteHolds } from "../client/holds";
+import type { NoteSink } from "../client/keyboard";
 import { Notices } from "../client/notices";
 import { Reveals } from "../client/reveals";
 
@@ -21,6 +23,8 @@ interface Services {
   editor: Editor;
   /** What the page has added and wants shown: the canvas moves to it. */
   reveals: Reveals;
+  /** Where the notes the page plays go: the client, with a count of who holds each note (the keys of the computer, a pointer on the piano). */
+  notes: NoteSink;
 }
 
 const ServicesContext = createContext<Services | null>(null);
@@ -42,7 +46,7 @@ export function ClientProvider({ client, frames = pageFrames, children }: { clie
     const notices = new Notices();
     const reveals = new Reveals();
     const drive = new Drive({ frames, send: (intent) => client.request(intent), onError: (error, intent) => notices.say(refusal(intent, error)) });
-    return { client, frames, drive, notices, reveals, editor: new Editor(client, notices, reveals) };
+    return { client, frames, drive, notices, reveals, editor: new Editor(client, notices, reveals), notes: new NoteHolds(client) };
   }, [client, frames]);
   return <ServicesContext.Provider value={services}>{children}</ServicesContext.Provider>;
 }
@@ -75,6 +79,11 @@ export function useReveals(): Reveals {
 /** Where a view that adds or takes out a modulator or a cable asks for it. */
 export function useEditor(): Editor {
   return useServices().editor;
+}
+
+/** Where a view that plays notes sends them: whoever else plays shares it, so that a note two of them hold ends when both let go. */
+export function useNotes(): NoteSink {
+  return useServices().notes;
 }
 
 /** The loop a view that draws a live value subscribes to. */

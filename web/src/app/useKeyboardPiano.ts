@@ -5,13 +5,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { DEFAULT_OCTAVE, KeyboardPiano } from "../client/keyboard";
-import { useClient } from "./ClientProvider";
+import { useNotes } from "./ClientProvider";
 
-/** Make the keys of the computer a piano, played through the page's client; the octave it is at. */
+/** Make the keys of the computer a piano, played through the page's notes; the octave it is at. */
 export function useKeyboardPiano(): number {
-  const client = useClient();
+  const notes = useNotes();
   const [octave, setOctave] = useState(DEFAULT_OCTAVE);
-  const piano = useMemo(() => new KeyboardPiano(client, setOctave), [client]);
+  const piano = useMemo(() => new KeyboardPiano(notes, setOctave), [notes]);
   useEffect(() => {
     const down = (event: KeyboardEvent): void => {
       if (piano.keyDown(event)) event.preventDefault();

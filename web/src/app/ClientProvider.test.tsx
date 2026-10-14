@@ -11,7 +11,7 @@ import { MockServer } from "../client/mock";
 import type { Notices } from "../client/notices";
 import type { Reveals } from "../client/reveals";
 import { Clock } from "../client/testing";
-import { ClientProvider, useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames, useNotices, useReveals } from "./ClientProvider";
+import { ClientProvider, useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames, useNotes, useNotices, useReveals } from "./ClientProvider";
 
 afterEach(cleanup);
 
@@ -120,6 +120,40 @@ describe("what the page gives its views", () => {
       expect(secondServer.received.filter((message) => message.type === "request")).toHaveLength(1);
     });
     expect(first.server.received.filter((message) => message.type === "request")).toEqual([]);
+  });
+
+  test("is the notes the page plays, through the client, with a count of who holds each: the same for as long as the client is", () => {
+    const sent: string[] = [];
+    const client = {
+      start: () => undefined,
+      stop: () => undefined,
+      noteOn: (note: number, velocity?: number) => sent.push(`on ${String(note)} ${String(velocity)}`),
+      noteOff: (note: number) => sent.push(`off ${String(note)}`),
+    } as unknown as Client;
+    const seen: unknown[] = [];
+    function Probe() {
+      seen.push(useNotes());
+      return null;
+    }
+    const view = render(
+      <ClientProvider client={client}>
+        <Probe />
+      </ClientProvider>,
+    );
+    view.rerender(
+      <ClientProvider client={client}>
+        <Probe />
+      </ClientProvider>,
+    );
+    expect(new Set(seen).size).toBe(1);
+    const notes = seen[0] as ReturnType<typeof useNotes>;
+    // (A key and a pointer are two players: the note ends when the second lets go.)
+    notes.noteOn(60, 100);
+    notes.noteOn(60, 100);
+    notes.noteOff(60);
+    expect(sent).toEqual(["on 60 100"]);
+    notes.noteOff(60);
+    expect(sent).toEqual(["on 60 100", "off 60"]);
   });
 
   test("is the loop of the page unless there is another", () => {
