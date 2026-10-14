@@ -53,6 +53,10 @@ pub fn describe(cmd: &GraphCommand) -> String {
             "AddGroupModTarget group={group} mod={mod_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
             target.kind, target.depth, target.base_value, target.param_min, target.param_max
         ),
+        C::InsertGroupModTarget { group, mod_index, target_index, target } => format!(
+            "InsertGroupModTarget group={group} mod={mod_index} target={target_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            target.kind, target.depth, target.base_value, target.param_min, target.param_max
+        ),
         C::SetGroupModTargetDepth { group, mod_index, target_index, depth } => {
             format!("SetGroupModTargetDepth group={group} mod={mod_index} target={target_index} depth={depth:.3}")
         }
@@ -90,6 +94,10 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::RemoveModulator { inst, index } => format!("RemoveModulator inst={inst} index={index}"),
         C::AddModTarget { inst, mod_index, target } => format!(
             "AddModTarget inst={inst} mod={mod_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            target.kind, target.depth, target.base_value, target.param_min, target.param_max
+        ),
+        C::InsertModTarget { inst, mod_index, target_index, target } => format!(
+            "InsertModTarget inst={inst} mod={mod_index} target={target_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
             target.kind, target.depth, target.base_value, target.param_min, target.param_max
         ),
         C::RemoveModTarget { inst, mod_index, target_index } => {
