@@ -79,6 +79,88 @@ describe("an envelope drawn from its settings, with a dot where it is", () => {
     expect(frame(0, 116)).toEqual(placeIn(BOX, 0, 0));
   });
 
+  test("keeps a rise on the attack through the frames that find the level where it was: the telemetry comes more slowly than the page's frames", () => {
+    let value: number | undefined = 0;
+    const { dot, clock } = arrange(() => value);
+    const shape = shapeOf(NEW);
+    clock.tick(0);
+    // Each level is read on two frames (30 readings a second against 60 frames), on the way from nothing to the top. The level the sustain holds is
+    // among them: the attack goes through it on its way up, and is not the hold.
+    let time = 16;
+    for (const level of [0.1, 0.3, 0.5, 0.7, 0.9, 1]) {
+      value = level;
+      for (let frame = 1; frame <= 2; frame += 1) {
+        clock.tick(time);
+        time += 16;
+        const place = placeIn(BOX, level * shape.attackEnd, level);
+        expect(at(dot).x, `x at ${String(level)}, frame ${String(frame)}`).toBeCloseTo(place.x, 9);
+        expect(at(dot).y, `y at ${String(level)}, frame ${String(frame)}`).toBeCloseTo(place.y, 9);
+      }
+    }
+  });
+
+  test("takes the dot from the attack to the hold when a rise has stood where it is for as long as the telemetry takes to be sure: the attack and the decay were over between two readings", () => {
+    let value: number | undefined = 0;
+    const { dot, clock } = arrange(() => value);
+    const shape = shapeOf(NEW);
+    clock.tick(0);
+    // The first reading of the note is the sustain already (a pluck whose attack and decay took less than a reading, or the mock's envelope): a rise.
+    value = 0.7;
+    clock.tick(16);
+    const onTheAttack = placeIn(BOX, 0.7 * shape.attackEnd, 0.7).x;
+    expect(at(dot).x).toBeCloseTo(onTheAttack, 9);
+    // The frames that find it where it was are no news for a while (the next reading may be on its way) ...
+    for (const time of [33, 50, 66, 83, 100, 115]) {
+      clock.tick(time);
+      expect(at(dot).x, `at ${String(time)} ms`).toBeCloseTo(onTheAttack, 9);
+    }
+    // ... and then it is steady: the hold, in the middle of its stretch, and there it stays.
+    clock.tick(116);
+    expect(at(dot).x).toBeCloseTo(placeIn(BOX, (shape.decayEnd + shape.holdEnd) / 2, 0.7).x, 9);
+    clock.tick(300);
+    expect(at(dot).x).toBeCloseTo(placeIn(BOX, (shape.decayEnd + shape.holdEnd) / 2, 0.7).x, 9);
+  });
+
+  test("keeps a fall on the decay and then on the release through the frames that find the level where it was", () => {
+    let value: number | undefined = 1;
+    const { dot, clock } = arrange(() => value);
+    const shape = shapeOf(NEW);
+    clock.tick(0);
+    let time = 16;
+    for (const level of [0.95, 0.85, 0.75]) {
+      value = level;
+      for (let frame = 1; frame <= 2; frame += 1) {
+        clock.tick(time);
+        time += 16;
+        const x = at(dot).x;
+        expect(x, `${String(level)}, frame ${String(frame)}`).toBeGreaterThan(placeIn(BOX, shape.attackEnd, 1).x);
+        expect(x).toBeLessThan(placeIn(BOX, shape.decayEnd, 0.7).x);
+      }
+    }
+    for (const level of [0.6, 0.4, 0.2]) {
+      value = level;
+      for (let frame = 1; frame <= 2; frame += 1) {
+        clock.tick(time);
+        time += 16;
+        expect(at(dot).x, `${String(level)}, frame ${String(frame)}`).toBeGreaterThan(placeIn(BOX, shape.holdEnd, 0.7).x);
+      }
+    }
+  });
+
+  test("is in the middle of the hold when the level gets to the sustain, though the telemetry's number is a hair under the session's (it holds 32 bits)", () => {
+    let value: number | undefined = 0.8;
+    const { dot, clock } = arrange(() => value);
+    const shape = shapeOf(NEW);
+    clock.tick(0);
+    value = Math.fround(0.7);
+    expect(value, "the premise: the 32-bit number is under the session's").toBeLessThan(0.7);
+    clock.tick(16);
+    // Not the start of the release, which is where a level a hair under the sustain and falling is by the lines alone.
+    expect(at(dot).x).toBeCloseTo(placeIn(BOX, (shape.decayEnd + shape.holdEnd) / 2, 0.7).x, 9);
+    clock.tick(33);
+    expect(at(dot).x).toBeCloseTo(placeIn(BOX, (shape.decayEnd + shape.holdEnd) / 2, 0.7).x, 9);
+  });
+
   test("hides the dot while there is no value to follow, and shows it again when there is one", () => {
     let value: number | undefined = 0.5;
     const { dot, clock } = arrange(() => value);
@@ -122,14 +204,20 @@ describe("an envelope drawn from its settings, with a dot where it is", () => {
     written.mockClear();
     for (let i = 1; i <= 5; i += 1) clock.tick(i * 16);
     expect(written).not.toHaveBeenCalled();
-    // A level that rises is a move, and then that level standing still is another (the dot goes from the attack to the hold): and nothing after.
+    // A level that moves is a move; the frames that find it where it was are not (the dot stays where the move put it): nothing is written after.
     value = 0.7;
     clock.tick(100);
-    const onTheAttack = at(dot).x;
-    clock.tick(116);
-    expect(at(dot).x).toBeGreaterThan(onTheAttack);
+    const placed = at(dot);
     written.mockClear();
-    for (let i = 0; i < 5; i += 1) clock.tick(133 + i * 16);
+    for (let i = 0; i < 5; i += 1) clock.tick(116 + i * 16);
+    expect(written).not.toHaveBeenCalled();
+    expect(at(dot)).toEqual(placed);
+    // Once it has stood there for long enough it is the hold, which is one more move, and nothing after it.
+    clock.tick(200);
+    expect(written).toHaveBeenCalled();
+    expect(at(dot).x).toBeGreaterThan(placed.x);
+    written.mockClear();
+    for (let i = 0; i < 5; i += 1) clock.tick(216 + i * 16);
     expect(written).not.toHaveBeenCalled();
     // No value hides the dot once, and not again for the frames that have none either.
     value = undefined;

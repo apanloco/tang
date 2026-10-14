@@ -65,7 +65,26 @@ own("the dot of an envelope follows it while a note is held: up the attack, down
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(tang.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
-  const { shape } = await addEnvelope(page);
+  const { envelope, shape } = await addEnvelope(page);
+
+  // The attack is 10 ms, which is less than the time between two frames of the telemetry (30 a second): a dot seen on it would be luck. So it is made
+  // longer first, with the keyboard as a person would (a page key is ten steps, about two and a half times as long), until the shape's words say that
+  // it is a quarter of a second or more; the shape is drawn again with it, and its corners are read after.
+  const attackMs = async (): Promise<number> => {
+    const words = (await shape.getAttribute("aria-label")) ?? "";
+    const found = /attack ([\d.]+) (ms|s),/.exec(words);
+    if (!found) throw new Error(`no attack in "${words}"`);
+    return Number(found[1]) * (found[2] === "s" ? 1000 : 1);
+  };
+  const slider = envelope.getByRole("slider", { name: "attack" });
+  await slider.focus();
+  for (let ms = await attackMs(); ms < 250; ms = await attackMs()) {
+    await page.keyboard.press("PageUp");
+    await expect.poll(attackMs).toBeGreaterThan(ms);
+  }
+  // (The focus is let go: a key on a knob is the knob's, and the note below is the page's.)
+  await slider.blur();
+
   const [start, top, holdStart, holdEnd, end] = await corners(shape);
   if (!start || !top || !holdStart || !holdEnd || !end) throw new Error("no corners");
   const dot = shape.locator(".tang-envelope__dot");
@@ -92,14 +111,17 @@ own("the dot of an envelope follows it while a note is held: up the attack, down
   await page.keyboard.up("z");
   const samples = await sampling;
 
-  // It was on the decay (between the top and the start of the hold: the decay is 0.3 s), on the hold (the sustain, 0.7), and on the release (past the hold).
+  // It was on the attack (between the start and the top), on the decay (between the top and the start of the hold: the decay is 0.3 s), on the hold
+  // (the sustain, 0.7), and on the release (past the hold). The dot at rest is at the start, which is not on the attack.
   const between = (a: number, b: number) => (s: { x: number }) => s.x > a + 0.5 && s.x < b - 0.5;
+  expect(samples.some(between(start.x, top.x)), "a sample on the attack").toBe(true);
   expect(samples.some(between(top.x, holdStart.x)), "a sample on the decay").toBe(true);
   const held = samples.filter((s) => Math.abs(s.x - (holdStart.x + holdEnd.x) / 2) < 1 && Math.abs(s.y - holdStart.y) < 1);
   expect(held.length, "samples on the hold").toBeGreaterThan(10);
   expect(samples.some(between(holdEnd.x, end.x)), "a sample on the release").toBe(true);
-  // The order is the envelope's: the decay before the hold, the hold before the release.
+  // The order is the envelope's: the attack before the decay, the decay before the hold, the hold before the release.
   const first = (match: (s: { x: number }) => boolean) => samples.findIndex(match);
+  expect(first(between(start.x, top.x))).toBeLessThan(first(between(top.x, holdStart.x)));
   expect(first(between(top.x, holdStart.x))).toBeLessThan(first(between(holdStart.x, holdEnd.x)));
   expect(first(between(holdStart.x, holdEnd.x))).toBeLessThan(first(between(holdEnd.x, end.x)));
   // And at the end it is at rest again.
