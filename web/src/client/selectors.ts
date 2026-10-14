@@ -3,6 +3,7 @@
 import { WAVEFORMS } from "../protocol";
 import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, Preset } from "../protocol";
 import type { ClientState } from "./connection";
+import type { Stages } from "./envelope";
 import { displayNames } from "./names";
 
 /** The node of the session with this id, if the client has a session and it has one. */
@@ -130,6 +131,18 @@ export function modulatorFieldOf(state: ClientState, id: NodeId, field: Modulato
   }
   return undefined;
 }
+
+/** The four settings of the envelope `id`: the times of its attack, decay and release and the level of its sustain. Null for a node that is no envelope. */
+export function envelopeStagesOf(state: ClientState, id: NodeId): Stages | null {
+  const node = nodeById(state, id);
+  if (node?.kind !== "modulator" || node.source.type !== "envelope") return null;
+  const { attack, decay, sustain, release } = node.source;
+  return { attack, decay, sustain, release };
+}
+
+/** Whether two answers of `envelopeStagesOf` are the same four settings. */
+export const sameStages = (a: Stages | null, b: Stages | null): boolean =>
+  a === b || (a !== null && b !== null && a.attack === b.attack && a.decay === b.decay && a.sustain === b.sustain && a.release === b.release);
 
 /** How deep the modulation cable with this id pulls, if there is one. */
 export function cableDepthOf(state: ClientState, id: EdgeId): number | undefined {

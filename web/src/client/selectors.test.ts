@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, chainPlaceOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameChainPlace, sameParamList } from "./selectors";
+import { cableDepthOf, chainPlaceOf, envelopeStagesOf, gainOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, sameChainPlace, sameParamList, sameStages } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 
 const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, reconnects: 0 });
@@ -273,6 +273,36 @@ describe("counting the parameters of a plugin", () => {
     expect(paramCountOf(reach, MASTER)).toBe(0);
     expect(paramCountOf(reach, 424242)).toBe(0);
     expect(paramCountOf(stateOf(null), filter.id)).toBe(0);
+  });
+});
+
+describe("finding the settings of an envelope", () => {
+  // The reach fixture's modulators: LFOs (6, 15, 17), envelopes (8, 16) and a MIDI control (13), the envelopes at the engine's defaults.
+  const reach = stateOf(reachFixture.snapshot);
+
+  test("are its four stages, by name: the three times and the sustain level", () => {
+    expect(envelopeStagesOf(reach, 8)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 });
+    expect(envelopeStagesOf(reach, 16)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 });
+  });
+
+  test("are none for what is no envelope: an LFO, a MIDI control, a plugin, a node that is not there, or before there is a session", () => {
+    for (const id of [6, 13, 15, 17, 0, 12345, MASTER]) expect(envelopeStagesOf(reach, id), String(id)).toBeNull();
+    expect(envelopeStagesOf(stateOf(null), 8)).toBeNull();
+  });
+
+  test("follow a stage that changes, and are the same settings while nothing of them does", () => {
+    const changed = structuredClone(reachFixture.snapshot);
+    const envelope = changed.graph.nodes.find((n) => n.id === 8);
+    if (envelope?.kind === "modulator" && envelope.source.type === "envelope") envelope.source.release = 4;
+    expect(envelopeStagesOf(stateOf(changed), 8)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 4 });
+    expect(sameStages(envelopeStagesOf(reach, 8), envelopeStagesOf(stateOf(structuredClone(reachFixture.snapshot)), 8))).toBe(true);
+    for (const stage of ["attack", "decay", "sustain", "release"] as const) {
+      const a = { attack: 1, decay: 2, sustain: 0.5, release: 3 };
+      expect(sameStages(a, { ...a, [stage]: a[stage] + 1 }), stage).toBe(false);
+    }
+    expect(sameStages(null, null)).toBe(true);
+    expect(sameStages(null, { attack: 1, decay: 2, sustain: 0.5, release: 3 })).toBe(false);
+    expect(sameStages({ attack: 1, decay: 2, sustain: 0.5, release: 3 }, null)).toBe(false);
   });
 });
 

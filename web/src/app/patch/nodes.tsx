@@ -8,8 +8,10 @@ import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
-import { chainPlaceOf, nodeById, paramCountOf, presetsOf, sameChainPlace } from "../../client/selectors";
+import { chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, sameChainPlace, sameStages } from "../../client/selectors";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
+import { formatValue } from "../../ui/Knob";
+import { LiveEnvelope } from "../../ui/LiveEnvelope";
 import { LiveTrace } from "../../ui/LiveTrace";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
@@ -17,7 +19,7 @@ import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
 import { DrivePicker, GainCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
-import { controlDetail, kindOf, outputScale, settingsOf } from "./describe";
+import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { PatchNode } from "./toFlow";
 
@@ -289,7 +291,19 @@ export function sameModulatorShape(a: Node | undefined, b: Node | undefined): bo
   return a.source.type !== "midiLearn" || JSON.stringify(a.source) === JSON.stringify(b.source);
 }
 
-/** A modulator: what it is, its settings as controls, and what it puts out, as a line that scrolls. */
+/**
+ * The shape an envelope's four settings make, with a dot where the envelope is while notes are played. It reads the settings itself, so that
+ * turning one draws the shape again and nothing else of the node.
+ */
+function EnvelopeShape({ node, name, read }: { node: NodeId; name: string; read: () => number | undefined }) {
+  const frames = useFrames();
+  const stages = useClientSelection((state) => envelopeStagesOf(state, node), sameStages);
+  if (!stages) return null;
+  const words = `attack ${seconds(stages.attack)}, decay ${seconds(stages.decay)}, sustain ${formatValue(stages.sustain)}, release ${seconds(stages.release)}`;
+  return <LiveEnvelope label={`${name} shape: ${words}`} stages={stages} read={read} frames={frames} />;
+}
+
+/** A modulator: what it is, its settings as controls, and what it puts out, as a line that scrolls (an envelope has its shape too). */
 export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
   const frames = useFrames();
@@ -314,6 +328,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       ) : null}
       <div className="tang-node__body">
         {source?.type === "midiLearn" ? <p className="tang-node__detail">{controlDetail(source)}</p> : null}
+        {source?.type === "envelope" ? <EnvelopeShape node={data.node} name={data.name} read={read} /> : null}
         <LiveTrace label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />
         <div className="tang-node__drives nodrag nopan nowheel">
           <DrivePicker modulator={data.node} name={data.name} targets={data.targets} />

@@ -33,10 +33,14 @@ const NODE_PADDING = 16;
 const DRIVES_HEIGHT = 30;
 /** The trace of what a modulator puts out is this much taller than the bar it was (44 against 8: the bar's nodes were 119 and 213). */
 const TRACE_EXTRA = 36;
+/** The shape of an envelope's settings (a drawing a little under 60 px tall, and the gap above it) makes its node this much taller than an LFO's (measured in a browser: 315 against 249). */
+const ENVELOPE_EXTRA = 66;
 /** A modulator that has no settings (a MIDI control) is this tall (measured in a browser: 155)... */
 export const MODULATOR_HEIGHT = 128 + TRACE_EXTRA;
 /** ...and one that has them has a row of controls more (measured in a browser: 249). */
 export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20 + DRIVES_HEIGHT + TRACE_EXTRA;
+/** ...and an envelope's, which draws its shape, is taller by that. */
+export const ENVELOPE_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + ENVELOPE_EXTRA;
 export const MASTER_HEIGHT = 164;
 
 export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master";
@@ -159,7 +163,8 @@ export function controlCount(node: Node, pinned: number): number {
 export function nodeHeight(node: Node, pinned: number): number {
   switch (node.kind) {
     case "modulator":
-      return node.source.type === "midiLearn" ? MODULATOR_HEIGHT : MODULATOR_SETTINGS_HEIGHT;
+      if (node.source.type === "midiLearn") return MODULATOR_HEIGHT;
+      return node.source.type === "envelope" ? ENVELOPE_NODE_HEIGHT : MODULATOR_SETTINGS_HEIGHT;
     case "master":
       return MASTER_HEIGHT;
     default: {
