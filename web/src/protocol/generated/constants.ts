@@ -64,3 +64,9 @@ export const SCALE_KINDS: readonly { name: string; short: string; intervals: rea
   { name: "Diminished", short: "diminished", intervals: [0, 2, 3, 5, 6, 8, 9, 11] },
   { name: "Chromatic", short: "chromatic", intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
 ];
+
+/** How far from the origin a node may be drawn, either way: what the controller clamps a place to (`NodeUi::LIMIT`). */
+export const NODE_UI_LIMIT = 100000;
+
+/** A place is kept to this many parts of a pixel: a tenth (`NodeUi::PARTS`). */
+export const NODE_UI_PARTS = 10;

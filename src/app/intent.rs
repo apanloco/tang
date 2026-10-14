@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::graph::{Endpoint, NoteRange};
 use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
+use crate::session::NodeUi;
 
 /// What a front-end asks of the controller, naming the node it concerns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,6 +95,13 @@ pub enum Intent {
     /// a MIDI keyboard or the computer's keys), or let every note through, with the ones outside the scale only
     /// coloured. It is saved with the session.
     SetLocked { locked: bool },
+    /// Say where a front-end draws a node, in the pixels of its canvas, or `None` to give the node back to the
+    /// front-end's own layout. `node` is any node of the session, the master (`NodeId::MASTER`) included. A place is
+    /// kept to a tenth of a pixel and to 100 000 either way, which the controller does for the client; the engine has
+    /// no use for it, and the TUI does not show it, but it is saved with the session (the node's `ui` in the file) and
+    /// told to every client. Refused, with nothing changed, for a node that is not there and for numbers that are not
+    /// numbers.
+    SetNodeUi { node: NodeId, ui: Option<NodeUi> },
     /// Take a node out of the session. A modulator can be, with its own cables and the cables of the others
     /// that drove its settings (and what drove the depth of any of those), and so can an effect or a bus
     /// effect, with the cables that drive its parameters (and what drove their depths): what they were
@@ -209,6 +217,8 @@ pub enum Event {
     ScaleSet { scale: String, root: u8, kind: String, notes: Vec<u8> },
     /// The piano is locked to its scale, or it is not.
     LockedSet { locked: bool },
+    /// A node is now drawn at `ui` (after rounding and clamping), or wherever the front-end lays it out if it is `None`.
+    NodeUiSet { node: NodeId, ui: Option<NodeUi> },
     /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
@@ -300,6 +310,7 @@ impl std::error::Error for IntentError {}
 mod tests {
     use super::*;
     use crate::app::graph::{NoteRange, Port};
+    use crate::session::NodeUi;
     use serde_json::{Value, json};
 
     fn wire<T: serde::Serialize>(value: &T) -> Value {
@@ -349,6 +360,11 @@ mod tests {
             (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
             (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
             (
+                Intent::SetNodeUi { node: NodeId(2), ui: Some(NodeUi { x: 80.0, y: -12.5 }) },
+                json!({"type": "setNodeUi", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),
+            ),
+            (Intent::SetNodeUi { node: NodeId(2), ui: None }, json!({"type": "setNodeUi", "node": 2, "ui": null})),
+            (
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
             ),
@@ -388,6 +404,11 @@ mod tests {
                 json!({"type": "scaleSet", "scale": "F# dorian", "root": 6, "kind": "dorian", "notes": [1, 3, 4, 6, 8, 9, 11]}),
             ),
             (Event::LockedSet { locked: false }, json!({"type": "lockedSet", "locked": false})),
+            (
+                Event::NodeUiSet { node: NodeId(2), ui: Some(NodeUi { x: 80.0, y: -12.5 }) },
+                json!({"type": "nodeUiSet", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),
+            ),
+            (Event::NodeUiSet { node: NodeId(2), ui: None }, json!({"type": "nodeUiSet", "node": 2, "ui": null})),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]
@@ -443,6 +464,10 @@ mod tests {
             ("no scale", json!({"type": "setScale"})),
             ("a lock that is not a boolean", json!({"type": "setLocked", "locked": "yes"})),
             ("no lock", json!({"type": "setLocked"})),
+            ("a place with no y", json!({"type": "setNodeUi", "node": 3, "ui": {"x": 1.0}})),
+            ("a place that is a number", json!({"type": "setNodeUi", "node": 3, "ui": 5})),
+            ("a place whose x is a string", json!({"type": "setNodeUi", "node": 3, "ui": {"x": "1", "y": 2.0}})),
+            ("a place whose x is null (what NaN becomes)", json!({"type": "setNodeUi", "node": 3, "ui": {"x": null, "y": 2.0}})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<Intent>(json).is_err(), "{what}");

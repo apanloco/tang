@@ -17,6 +17,7 @@ export type { ModulatorKind } from "./generated/ModulatorKind";
 export type { ModulatorSource } from "./generated/ModulatorSource";
 export type { Node } from "./generated/Node";
 export type { NodeId } from "./generated/NodeId";
+export type { NodeUi } from "./generated/NodeUi";
 export type { NoteRange } from "./generated/NoteRange";
 export type { Param } from "./generated/Param";
 export type { ParamValue } from "./generated/ParamValue";
@@ -38,6 +39,8 @@ export {
   GAIN_RANGES,
   MODULATOR_FIELD_DEFAULTS,
   MODULATOR_FIELD_RANGES,
+  NODE_UI_LIMIT,
+  NODE_UI_PARTS,
   PROTOCOL,
   SCALE_KINDS,
   SCALE_ROOTS,

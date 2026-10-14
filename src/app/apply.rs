@@ -12,6 +12,7 @@ use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, ModSourceSlot, NEW_CABLE_D
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::scale::ScaleSetting;
+use crate::session::NodeUi;
 use crate::{plugin, session};
 
 /// What an intent did, for `apply` to tell.
@@ -45,6 +46,7 @@ impl Controller {
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
+            Intent::SetNodeUi { node, ui } => Done::Event(self.set_node_ui(node, ui)?),
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
@@ -135,6 +137,27 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::GainSet { node, gain, value })
+    }
+
+    /// Where a front-end draws a node: in the model only (the session file keeps it; the audio thread has no use for it). The
+    /// master is a node of the graph and not of the model, but has a place like the others.
+    fn set_node_ui(&mut self, node: NodeId, ui: Option<NodeUi>) -> Result<Event, IntentError> {
+        if node != NodeId::MASTER && self.model.locate(node).is_none() {
+            return Err(IntentError::NotFound(node));
+        }
+        let ui = match ui {
+            None => None,
+            Some(place) => Some(place.tidy().ok_or_else(|| invalid(format!("({}, {}) is not a place", place.x, place.y)))?),
+        };
+        match ui {
+            Some(ui) => {
+                self.model.ui.insert(node, ui);
+            }
+            None => {
+                self.model.ui.remove(&node);
+            }
+        }
+        Ok(Event::NodeUiSet { node, ui })
     }
 
     /// The keys of a lane: in the model and, as `SetInstrumentRange`, in the audio thread (which lets go of the notes it
@@ -420,6 +443,7 @@ mod tests {
     use crate::app::graph::{Graph, NodeKind};
     use crate::app::testutil::{self, StubEngine, described, load};
     use crate::plugin::chain::{ModTargetKind, ModulatorLocation};
+    use crate::session::NodeUi;
 
     /// A group with a bus filter and an LFO, a member with a reverb, and a lane
     /// with no instrument plugin.
@@ -768,6 +792,121 @@ plugin = "builtin:reverb"
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
+    }
+
+    fn place(ctl: &mut Controller, node: NodeId, x: f32, y: f32) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SetNodeUi { node, ui: Some(NodeUi { x, y }) })
+    }
+
+    #[test]
+    fn set_node_ui_keeps_where_a_node_is_drawn_and_tells_it_and_the_engine_hears_nothing_of_it() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let applied = place(&mut ctl, reverb, 376.0, -40.0).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::NodeUiSet { node: reverb, ui: Some(NodeUi { x: 376.0, y: -40.0 }) }]));
+        assert_eq!(ctl.model.ui.get(&reverb), Some(&NodeUi { x: 376.0, y: -40.0 }));
+        assert_eq!(sent(&engine), Vec::<String>::new(), "the audio thread has no use for where a node is drawn");
+        assert!(ctl.dirty, "the place is in the file when the session is saved");
+        // It is moved by saying another.
+        place(&mut ctl, reverb, 0.0, 0.0).unwrap();
+        assert_eq!(ctl.model.ui.get(&reverb), Some(&NodeUi { x: 0.0, y: 0.0 }));
+        assert_eq!(ctl.rev, 2);
+    }
+
+    #[test]
+    fn set_node_ui_is_for_every_kind_of_node_the_master_too() {
+        let (_engine, mut ctl) = controller();
+        let nodes = [
+            lane(&ctl),
+            node(&ctl, NodePath::Instrument(1)),
+            node(&ctl, NodePath::Effect { inst: 0, index: 0 }),
+            node(&ctl, NodePath::Group(0)),
+            node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }),
+            node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 }),
+            NodeId::MASTER,
+        ];
+        for (i, node) in nodes.into_iter().enumerate() {
+            let at = NodeUi { x: i as f32 * 10.0, y: -(i as f32) };
+            let applied = place(&mut ctl, node, at.x, at.y).unwrap_or_else(|e| panic!("{node:?}: {e}"));
+            assert_eq!(applied.events, [Event::NodeUiSet { node, ui: Some(at) }]);
+            assert_eq!(ctl.model.ui.get(&node), Some(&at), "{node:?}");
+        }
+        assert_eq!(ctl.model.ui.len(), 7);
+        assert_eq!(ctl.model.master_ui(), Some(NodeUi { x: 60.0, y: -6.0 }));
+    }
+
+    #[test]
+    fn set_node_ui_with_no_place_gives_the_node_back_to_the_layout() {
+        let (_engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        place(&mut ctl, reverb, 5.0, 6.0).unwrap();
+        place(&mut ctl, NodeId::MASTER, 7.0, 8.0).unwrap();
+        let applied = ctl.apply(Intent::SetNodeUi { node: reverb, ui: None }).unwrap();
+        assert_eq!(applied, Applied::of(3, vec![Event::NodeUiSet { node: reverb, ui: None }]));
+        assert_eq!(ctl.model.ui.get(&reverb), None);
+        let applied = ctl.apply(Intent::SetNodeUi { node: NodeId::MASTER, ui: None }).unwrap();
+        assert_eq!(applied.events, [Event::NodeUiSet { node: NodeId::MASTER, ui: None }]);
+        assert!(ctl.model.ui.is_empty());
+        // (A node with no place has no place to give back, and it is told all the same: the page may be behind.)
+        assert!(ctl.apply(Intent::SetNodeUi { node: reverb, ui: None }).is_ok());
+    }
+
+    #[test]
+    fn set_node_ui_rounds_a_place_to_a_tenth_and_keeps_it_on_the_canvas() {
+        let (_engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let told = |applied: Applied| match applied.events.as_slice() {
+            [Event::NodeUiSet { ui: Some(ui), .. }] => (ui.x, ui.y),
+            other => panic!("{other:?}"),
+        };
+        // (To a tenth: a file is read by people, and a drag on a screen is not that exact. Away from zero at the half.)
+        assert_eq!(told(place(&mut ctl, reverb, 376.382, -40.04).unwrap()), (376.4, -40.0));
+        assert_eq!(told(place(&mut ctl, reverb, 0.25, -0.25).unwrap()), (0.3, -0.3));
+        assert_eq!(told(place(&mut ctl, reverb, 1.0e9, -1.0e9).unwrap()), (100_000.0, -100_000.0));
+        assert_eq!(told(place(&mut ctl, reverb, f32::MAX, f32::MIN).unwrap()), (100_000.0, -100_000.0));
+        // (No `-0`: it is written to the file and to the wire as it is.)
+        let (x, y) = told(place(&mut ctl, reverb, -0.04, -0.0).unwrap());
+        assert!(x.is_sign_positive() && y.is_sign_positive(), "{x} {y}");
+        assert_eq!(ctl.model.ui.get(&reverb), Some(&NodeUi { x: 0.0, y: 0.0 }));
+    }
+
+    #[test]
+    fn set_node_ui_refuses_a_node_that_is_not_there_and_a_place_that_is_not_one() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let ghost = NodeId(9_999);
+        assert_eq!(place(&mut ctl, ghost, 1.0, 2.0), Err(IntentError::NotFound(ghost)));
+        assert_eq!(ctl.apply(Intent::SetNodeUi { node: ghost, ui: None }), Err(IntentError::NotFound(ghost)));
+        for (x, y) in [(f32::NAN, 1.0), (1.0, f32::NAN), (f32::INFINITY, 1.0), (1.0, f32::NEG_INFINITY)] {
+            assert_eq!(place(&mut ctl, reverb, x, y), Err(invalid(format!("({x}, {y}) is not a place"))), "{x} {y}");
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert!(ctl.model.ui.is_empty());
+    }
+
+    #[test]
+    fn a_place_that_was_set_is_what_a_session_saves_and_is_read_back_where_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(SESSION).model, handles, Some(path.clone()));
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        place(&mut ctl, reverb, 376.4, -40.0).unwrap();
+        place(&mut ctl, NodeId::MASTER, 1200.0, 300.0).unwrap();
+        ctl.apply(Intent::Save).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("ui = { x = 376.4, y = -40 }"), "{text}");
+        assert!(text.contains("[ui]\nmaster = { x = 1200, y = 300 }"), "{text}");
+        let again = load(&text).model;
+        assert_eq!(again.ui.get(&again.instruments[0].effects[0].node), Some(&NodeUi { x: 376.4, y: -40.0 }));
+        assert_eq!(again.master_ui(), Some(NodeUi { x: 1200.0, y: 300.0 }));
+        // And a place that is given back is not in the file.
+        ctl.apply(Intent::SetNodeUi { node: reverb, ui: None }).unwrap();
+        ctl.apply(Intent::Save).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("y = -40"), "{text}");
     }
 
     fn scale_set(scale: &str, root: u8, kind: &str, notes: &[u8]) -> Event {

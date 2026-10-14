@@ -1622,6 +1622,8 @@ impl State {
                 intent::Event::RangeSet { .. } => self.rebuild_tree(),
                 // (The Piano tab reads the scale and the lock from the shared filter, on every frame.)
                 intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
+                // (The TUI does not draw where a node is.)
+                intent::Event::NodeUiSet { .. } => {}
                 // The tree shows a modulator's rate and waveform, and its cables' depths.
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 intent::Event::ParamSet { .. }

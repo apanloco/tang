@@ -139,6 +139,9 @@ impl Snapshot {
                 };
                 *keys = *range;
             }
+            Event::NodeUiSet { node, ui } => {
+                self.node_mut(*node)?.ui = *ui;
+            }
             Event::PresetLoaded { node, preset, values } => {
                 let plugin = self.plugin_mut(*node)?;
                 // All of it or none: look before changing anything.
@@ -240,6 +243,7 @@ mod tests {
     use crate::app::model::{EdgeId, NodeId};
     use crate::app::testutil::{GROUPS, load, stub_engine};
     use crate::scale::ScaleSetting;
+    use crate::session::NodeUi;
 
     fn controller(session: &str, path: Option<&str>) -> Controller {
         let model = load(session).model;
@@ -505,6 +509,11 @@ type = "envelope"
             Intent::SetLocked { locked: true },
             Intent::SetScale { scale: "Bb Natural Minor".to_string() },
             Intent::SetLocked { locked: false },
+            Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 120.0 }) },
+            Intent::SetNodeUi { node: NodeId::MASTER, ui: Some(NodeUi { x: 1200.0, y: -40.5 }) },
+            Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 140.0 }) },
+            Intent::SetNodeUi { node: n.reverb, ui: Some(NodeUi { x: 1.0e9, y: 0.0 }) },
+            Intent::SetNodeUi { node: n.osc, ui: None },
         ];
         for intent in intents {
             let before = told.clone();
@@ -513,7 +522,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 28);
+        assert_eq!(told.rev, 33);
     }
 
     #[test]
@@ -645,6 +654,7 @@ type = "envelope"
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 1.5 }, "1.5 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: -1.0 }, "-1 is not a waveform"),
             (Event::EdgeDepthSet { edge: EdgeId(9_999), depth: 0.5 }, "there is no cable 9999"),
+            (Event::NodeUiSet { node: ghost, ui: Some(NodeUi { x: 1.0, y: 2.0 }) }, "there is no node 9999"),
         ];
         for (event, why) in refused {
             let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();

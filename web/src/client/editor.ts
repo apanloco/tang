@@ -4,7 +4,7 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Graph, Intent, ModulatorKind, NodeId, NoteRange } from "../protocol";
+import type { EdgeId, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange } from "../protocol";
 import type { Client } from "./connection";
 import { cableLabel, displayNames } from "./names";
 import { rangeLabel } from "./notes";
@@ -29,6 +29,7 @@ const DOING: Record<Intent["type"], string> = {
   setRange: "set the keys of a lane",
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
+  setNodeUi: "move a node",
   removeNode: "remove a node",
   save: "save the session",
 };
@@ -125,6 +126,16 @@ export class Editor {
   /** Lock the piano to its scale, so that a note outside it is not played, or let every note through. True if it was done. */
   setLocked(locked: boolean): Promise<boolean> {
     return this.#attempt(locked ? "lock the piano to its scale" : "let the piano play every note", { type: "setLocked", locked });
+  }
+
+  /**
+   * Say where the node `node` is drawn, `ui` in the pixels of the canvas, or null to give it back to the layout (the master is
+   * a node too). The server keeps it to a tenth of a pixel and within the limits of the canvas, and saves it with the session.
+   * True if it was kept (the page says why if it was not).
+   */
+  moveNode(node: NodeId, ui: NodeUi | null): Promise<boolean> {
+    const what = ui === null ? `give ${this.#name(node)} back to the layout` : `move ${this.#name(node)}`;
+    return this.#attempt(what, { type: "setNodeUi", node, ui });
   }
 
   /** Draw a cable from the modulator `modulator` to parameter `param` (the plugin's own index) of the plugin in `node`. True if it was drawn. */

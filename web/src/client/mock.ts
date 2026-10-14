@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, PROTOCOL } from "../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, NODE_UI_PARTS, PROTOCOL } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -19,6 +19,7 @@ import type {
   ModulatorSource,
   Node,
   NodeId,
+  NodeUi,
   NoteRange,
   Plugin,
   Port,
@@ -443,6 +444,24 @@ function scaleOutcome(text: string): Outcome {
   return { event: { type: "scaleSet", ...scale } };
 }
 
+/** A coordinate of a place as the controller keeps it (`NodeUi::tidy`): to a tenth, half away from zero, within the limits, and never `-0`. */
+function tidyCoordinate(value: number): number {
+  const kept = (Math.sign(value) * Math.round(Math.abs(clamp(value, -NODE_UI_LIMIT, NODE_UI_LIMIT)) * NODE_UI_PARTS)) / NODE_UI_PARTS;
+  return kept + 0;
+}
+
+/**
+ * A node's place set, as the controller's `set_node_ui` does it: any node of the graph, the master too (which the controller
+ * finds though it is not a node of the model), and a place that is two numbers, kept as `tidyCoordinate` says; none gives the
+ * node back to the layout.
+ */
+function placeOutcome(snapshot: Snapshot, node: NodeId, ui: NodeUi | null): Outcome {
+  if (!snapshot.graph.nodes.some((n) => n.id === node)) return noNode(node);
+  if (ui === null) return { event: { type: "nodeUiSet", node, ui } };
+  if (!holds(ui.x) || !holds(ui.y)) return invalid(`(${String(ui.x)}, ${String(ui.y)}) is not a place`);
+  return { event: { type: "nodeUiSet", node, ui: { x: tidyCoordinate(ui.x), y: tidyCoordinate(ui.y) } } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -454,6 +473,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "save") return saveOutcome(snapshot);
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
+  if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);

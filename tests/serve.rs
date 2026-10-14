@@ -798,6 +798,85 @@ async fn a_second_browser_hears_what_the_first_one_changes() {
     }
 }
 
+/// The place a snapshot gives a node, by the node's id: its `ui`, or `None` if it has none (a node that is not placed has no `ui` at all).
+fn place_of(snapshot: &Value, node: u64) -> Option<Value> {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    nodes.iter().find(|n| n["id"] == node).unwrap_or_else(|| panic!("no node {node}")).get("ui").cloned()
+}
+
+#[tokio::test]
+async fn a_browser_places_a_node_and_a_second_one_sees_it_and_the_saved_file_has_it_and_a_program_started_on_the_file_draws_it_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut first, _, snapshot) = listening(&tang).await;
+    let (mut second, _, _) = listening(&tang).await;
+    let (filter, _) = param_of(&snapshot, "Filter", "resonance");
+    let (osc, _) = param_of(&snapshot, "Oscillator", "volume");
+    assert_eq!((place_of(&snapshot, filter), place_of(&snapshot, MASTER)), (None, None), "the tracer has no places");
+
+    // The first browser drags the filter (a place with more decimals than are kept) and the master: told as an event to
+    // the other browser, which is given the place as the controller keeps it, and answered by the revision.
+    tell(&mut first, json!({"type": "request", "reqId": 1, "intent": {"type": "setNodeUi", "node": filter, "ui": {"x": 376.38211, "y": -40.04}}})).await;
+    let (answered, _) = answer_with_what_came_before(&mut first, 1).await;
+    assert_eq!((answered["type"].clone(), answered["rev"].clone()), (json!("ack"), json!(1)), "{answered}");
+    tell(&mut first, json!({"type": "request", "reqId": 2, "intent": {"type": "setNodeUi", "node": MASTER, "ui": {"x": 1200.0, "y": 300.0}}})).await;
+    assert_eq!(answer(&mut first, 2).await["rev"], 2);
+    for (rev, node, ui) in [(1, filter, json!({"x": 376.4, "y": -40.0})), (2, MASTER, json!({"x": 1200.0, "y": 300.0}))] {
+        let told = loop {
+            let message = next_json(&mut second).await;
+            if message["type"] == "event" {
+                break message;
+            }
+        };
+        assert_eq!(
+            (told["event"]["type"].clone(), told["event"]["node"].clone(), told["event"]["ui"].clone(), told["event"]["rev"].clone()),
+            (json!("nodeUiSet"), json!(node), ui, json!(rev)),
+            "{told}"
+        );
+    }
+
+    // A browser that arrives now is given the places in the session, and a node nobody placed has none.
+    let (_, _, now) = listening(&tang).await;
+    assert_eq!(place_of(&now, filter), Some(json!({"x": 376.4, "y": -40.0})));
+    assert_eq!(place_of(&now, MASTER), Some(json!({"x": 1200.0, "y": 300.0})));
+    assert_eq!(place_of(&now, osc), None);
+    assert_eq!(now["snapshot"]["meta"]["dirty"], true, "a place is a change the session has not saved");
+
+    // A node that is not there is refused in the controller's words, and the session is as it was.
+    tell(&mut first, json!({"type": "request", "reqId": 3, "intent": {"type": "setNodeUi", "node": 9999, "ui": {"x": 1.0, "y": 1.0}}})).await;
+    let refused = answer(&mut first, 3).await;
+    assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!("there is no node 9999")), "{refused}");
+
+    // What is saved has them, as a person would write them, and only on the nodes that were placed.
+    tell(&mut first, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut first, 4).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("ui = { x = 376.4, y = -40 }"), "{saved}");
+    assert!(saved.contains("[ui]\nmaster = { x = 1200, y = 300 }"), "{saved}");
+    assert_eq!(saved.matches("ui = {").count(), 1, "only the filter has a place of its own besides the master: {saved}");
+
+    // A program started on that file draws every node where it was left.
+    drop((first, second));
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, _, snapshot) = listening(&again).await;
+    assert_eq!(place_of(&snapshot, filter), Some(json!({"x": 376.4, "y": -40.0})), "the filter has the same node id: it is the same lane");
+    assert_eq!(place_of(&snapshot, MASTER), Some(json!({"x": 1200.0, "y": 300.0})));
+    assert_eq!(place_of(&snapshot, osc), None);
+    assert_eq!(snapshot["snapshot"]["meta"]["dirty"], false);
+
+    // And a node given back to the layout is gone from the file the next time it is saved.
+    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "setNodeUi", "node": filter, "ui": null}})).await;
+    assert_eq!(answer(&mut browser, 1).await["type"], "ack");
+    tell(&mut browser, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut browser, 2).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(!saved.contains("ui = {"), "{saved}");
+    assert!(saved.contains("[ui]\nmaster = { x = 1200, y = 300 }"), "{saved}");
+}
+
 #[tokio::test]
 async fn a_browser_that_vanishes_with_a_key_held_does_not_leave_the_note_sounding() {
     let tang = Tang::start();

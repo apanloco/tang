@@ -106,6 +106,7 @@ describe("any event", () => {
     ["a gain set", { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 }],
     ["a preset loaded", { rev: 1, type: "presetLoaded", node: filter.id, preset: "Dark", values: [{ param: 0, value: 0.2 }] }],
     ["a range set", { rev: 1, type: "rangeSet", node: oscillator.id, range: { low: 36, high: 84 } }],
+    ["a node's place set", { rev: 1, type: "nodeUiSet", node: oscillator.id, ui: { x: 80, y: 120 } }],
     ["a modulator field set", { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "rate", value: 4 }],
     ["an edge depth set", { rev: 1, type: "edgeDepthSet", edge: CABLE, depth: -0.5 }],
   ];
@@ -269,6 +270,55 @@ describe("a range set", () => {
     }
     const result = applyEvent(tracerSnapshot, { rev: 1, type: "rangeSet", node: 4242, range: null });
     expect(result).toEqual({ ok: false, reason: "there is no node 4242" });
+  });
+});
+
+describe("a node's place set", () => {
+  const placeOf = (snapshot: Snapshot, id: number) => snapshot.graph.nodes.find((n) => n.id === id)?.ui;
+  const place = (node: number, ui: { x: number; y: number } | null, rev = 1): StampedEvent => ({ rev, type: "nodeUiSet", node, ui });
+
+  test("puts the node at the place, and no place gives it back to the layout", () => {
+    expect(placeOf(tracerSnapshot, filter.id)).toBeUndefined();
+    const after = applied(tracerSnapshot, place(filter.id, { x: 376, y: -40.5 }));
+    expect(placeOf(after, filter.id)).toEqual({ x: 376, y: -40.5 });
+    const back = applied(after, place(filter.id, null, 2));
+    expect(placeOf(back, filter.id)).toBeUndefined();
+    // (A node the server never placed has no `ui` at all, and neither has one that was given back.)
+    expect("ui" in (back.graph.nodes.find((n) => n.id === filter.id) ?? { ui: 1 })).toBe(false);
+  });
+
+  test("is for every node, the master too", () => {
+    for (const node of tracerSnapshot.graph.nodes) {
+      const after = applied(tracerSnapshot, place(node.id, { x: 1, y: 2 }));
+      expect(placeOf(after, node.id), `node ${node.id}`).toEqual({ x: 1, y: 2 });
+    }
+    expect(tracerSnapshot.graph.nodes.some((n) => n.id === MASTER)).toBe(true);
+  });
+
+  test("changes that node and nothing else: every other node is the object it was", () => {
+    const after = applied(tracerSnapshot, place(filter.id, { x: 5, y: 6 }));
+    for (const node of tracerSnapshot.graph.nodes) {
+      const now = after.graph.nodes.find((n) => n.id === node.id);
+      if (node.id === filter.id) expect(now).not.toBe(node);
+      else expect(now).toBe(node);
+    }
+    expect(after.graph.edges).toBe(tracerSnapshot.graph.edges);
+  });
+
+  test("keeps the rest of the node as it was", () => {
+    const before = tracerSnapshot.graph.nodes.find((n) => n.id === oscillator.id);
+    const after = applied(tracerSnapshot, place(oscillator.id, { x: 9, y: 9 })).graph.nodes.find((n) => n.id === oscillator.id);
+    expect(after).toEqual({ ...before, ui: { x: 9, y: 9 } });
+  });
+
+  test("moves a node that has a place, and the place is the one the event says whatever it was", () => {
+    const first = applied(tracerSnapshot, place(filter.id, { x: 1, y: 1 }));
+    const second = applied(first, place(filter.id, { x: 2, y: 3 }, 2));
+    expect(placeOf(second, filter.id)).toEqual({ x: 2, y: 3 });
+  });
+
+  test("is refused for a node that is not there", () => {
+    expect(applyEvent(tracerSnapshot, place(4242, { x: 1, y: 1 }))).toEqual({ ok: false, reason: "there is no node 4242" });
   });
 });
 

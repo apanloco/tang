@@ -4,7 +4,7 @@
 // store's subscribers compare). The rules are the controller's (`src/app/apply.rs`),
 // read from the other side.
 import { WAVEFORMS } from "../protocol";
-import type { Gain, Graph, ModulatorField, Node, ParamValue, PianoMeta, Plugin, Snapshot, StampedEvent } from "../protocol";
+import type { Gain, Graph, ModulatorField, Node, NodeUi, ParamValue, PianoMeta, Plugin, Snapshot, StampedEvent } from "../protocol";
 
 /** The snapshot after an event, or why the event does not fit the one it was applied to. */
 export type Applied = { ok: true; snapshot: Snapshot } | { ok: false; reason: string };
@@ -69,9 +69,19 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
     }
     case "rangeSet":
       return node.kind === "instrument" ? { ...node, range: event.range } : `node ${node.id} is not a lane`;
+    case "nodeUiSet":
+      return withPlace(node, event.ui);
     case "modulatorFieldSet":
       return withSetting(node, event.field, event.value);
   }
+}
+
+/** The node at a place, or, for none, as a node the server has not placed is: with no `ui` at all. */
+function withPlace(node: Node, ui: NodeUi | null): Node {
+  if (ui !== null) return { ...node, ui };
+  const unplaced = { ...node };
+  delete unplaced.ui;
+  return unplaced;
 }
 
 function pluginOf(node: Node): Plugin | null {

@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::model::{EdgeId, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PluginSlot, SessionModel};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
+use crate::session::NodeUi;
 
 /// A session as a front-end draws it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -47,6 +48,11 @@ pub struct Node {
     /// modulator's settings are not in its name (they change while the node stays the same):
     /// they are in `kind`.
     pub name: String,
+    /// Where a front-end draws the node, in the pixels of its canvas, if the session says (it is in the file as the
+    /// node's `ui`); a node that has no place is laid out by the front-end, and has no `ui` on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "web", ts(optional))]
+    pub ui: Option<NodeUi>,
     #[serde(flatten)]
     pub kind: NodeKind,
 }
@@ -241,6 +247,7 @@ impl SessionModel {
                 id: group.node,
                 parent: None,
                 name: group.display_name(g),
+                ui: None,
                 kind: NodeKind::Group { volume: group.volume, pan: group.pan },
             });
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
@@ -257,6 +264,7 @@ impl SessionModel {
                 id: lane.node,
                 parent: group.map(|g| g.node),
                 name: lane.instrument.as_ref().map_or_else(|| "(empty)".to_string(), |plugin| plugin.name.clone()),
+                ui: None,
                 kind: NodeKind::Instrument {
                     plugin: lane.instrument.as_ref().map(plugin),
                     range: lane.range.map(|(low, high)| NoteRange { low, high }),
@@ -274,7 +282,11 @@ impl SessionModel {
             audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| fx.node), sink, last);
         }
 
-        nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), kind: NodeKind::Master });
+        nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
+        // Where each of these nodes is drawn, if it has been placed (the table also has the places of nodes that have gone).
+        for node in &mut nodes {
+            node.ui = self.ui.get(&node.id).copied();
+        }
         self.modulation_edges(&mut edges);
         Graph { nodes, edges }
     }
@@ -379,7 +391,7 @@ fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item
 }
 
 fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
-    Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix } }
+    Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix } }
 }
 
 fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
@@ -392,7 +404,7 @@ fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
             ModulatorSource::MidiLearn { control: source.map(MidiControl::from), learning: *learning }
         }
     };
-    Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), kind: NodeKind::Modulator { source } }
+    Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
 }
 
 fn plugin(slot: &PluginSlot) -> Plugin {
@@ -434,7 +446,7 @@ mod tests {
 
     use super::*;
     use crate::app::model::ModTargetSlot;
-    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, SETTINGS, load};
+    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PLACED, SETTINGS, load};
 
     const OSC: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n";
 
@@ -491,7 +503,7 @@ mod tests {
         let ids: Vec<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
         assert_eq!(ids, [lane, NodeId::MASTER]);
         assert_eq!(graph.edges, [audio(out(lane), into(NodeId::MASTER))]);
-        assert_eq!(graph.nodes[1], Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), kind: NodeKind::Master });
+        assert_eq!(graph.nodes[1], Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
 
         let osc = &graph.nodes[0];
         assert_eq!((osc.parent, osc.name.as_str()), (None, "Oscillator"));
@@ -503,6 +515,37 @@ mod tests {
         assert_eq!((plugin.presets.len(), plugin.current_preset.as_deref()), (0, None));
         let names: Vec<&str> = plugin.params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan"]);
+    }
+
+    #[test]
+    fn a_node_that_has_a_place_says_where_and_one_that_has_none_says_nothing() {
+        let model = load(PLACED).model;
+        let graph = model.graph();
+        let at = |x: f32, y: f32| Some(NodeUi { x, y });
+        let (group, lane) = (&model.groups[0], &model.instruments[0]);
+        assert_eq!(node(&graph, NodeId::MASTER).ui, at(1200.0, 300.5));
+        assert_eq!(node(&graph, group.node).ui, at(800.0, 40.0));
+        assert_eq!(node(&graph, group.effects[0].node).ui, at(1100.0, 40.0));
+        assert_eq!(node(&graph, group.modulators[0].node).ui, at(800.0, -120.0));
+        assert_eq!(node(&graph, lane.node).ui, at(0.0, 0.0), "a lane's instrument shares the lane's node");
+        assert_eq!(node(&graph, lane.effects[0].node).ui, at(376.0, 0.25));
+        assert_eq!(node(&graph, lane.modulators[0].node).ui, at(376.0, -200.0));
+        assert_eq!(node(&graph, model.instruments[1].node).ui, None);
+        assert_eq!(graph.nodes.iter().filter(|n| n.ui.is_some()).count(), 7);
+        // On the wire a node with a place has a `ui` and one without has none: a session with no places is the JSON it was.
+        assert_eq!(serde_json::to_value(node(&graph, lane.node)).unwrap()["ui"], json!({"x": 0.0, "y": 0.0}));
+        let unplaced = serde_json::to_value(node(&graph, model.instruments[1].node)).unwrap();
+        assert!(unplaced.get("ui").is_none(), "{unplaced}");
+    }
+
+    #[test]
+    fn the_place_of_a_node_that_has_gone_is_not_in_the_graph() {
+        let mut model = load(PLACED).model;
+        let gone = model.instruments[0].effects.remove(0).node;
+        assert!(model.ui.contains_key(&gone));
+        let graph = model.graph();
+        assert!(graph.nodes.iter().all(|n| n.id != gone));
+        assert_eq!(graph.nodes.iter().filter(|n| n.ui.is_some()).count(), 6);
     }
 
     #[test]
@@ -1290,6 +1333,7 @@ depth = 0.2
             id: NodeId(3),
             parent: Some(NodeId(1)),
             name: "Hall".to_string(),
+            ui: None,
             kind: NodeKind::Effect {
                 plugin: Plugin {
                     id: "builtin:reverb".to_string(),

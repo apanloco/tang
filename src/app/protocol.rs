@@ -470,7 +470,11 @@ mod typescript {
                  /** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */\n\
                  export const SCALE_ROOTS: readonly string[] = [{}];\n\n\
                  /** The kinds of scale, in the order the TUI lists them: the name a person reads, the short name that `setScale` and a session file say, and the semitones above the root of each of its notes (`scale::SCALES`). */\n\
-                 export const SCALE_KINDS: readonly {{ name: string; short: string; intervals: readonly number[] }}[] = [\n{}];\n",
+                 export const SCALE_KINDS: readonly {{ name: string; short: string; intervals: readonly number[] }}[] = [\n{}];\n\n\
+                 /** How far from the origin a node may be drawn, either way: what the controller clamps a place to (`NodeUi::LIMIT`). */\n\
+                 export const NODE_UI_LIMIT = {};\n\n\
+                 /** A place is kept to this many parts of a pixel: a tenth (`NodeUi::PARTS`). */\n\
+                 export const NODE_UI_PARTS = {};\n",
                 super::PROTOCOL,
                 super::FRAME_HEADER_LEN,
                 range_entries(&GAINS, Gain::range),
@@ -479,6 +483,8 @@ mod typescript {
                 waveform_names(),
                 scale_root_names(),
                 scale_kinds(),
+                crate::session::NodeUi::LIMIT,
+                crate::session::NodeUi::PARTS,
             ),
         )?;
         Ok(())
@@ -567,6 +573,15 @@ mod typescript {
         );
         assert!(written.contains("{ name: \"Minor Pentatonic\", short: \"min pent\", intervals: [0, 3, 5, 7, 10] },\n"), "{written}");
         assert!(written.ends_with("{ name: \"Chromatic\", short: \"chromatic\", intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },\n"), "{written}");
+    }
+
+    #[test]
+    fn the_limits_of_a_place_are_in_the_constants_as_the_controller_keeps_a_place() {
+        let dir = tempfile::tempdir().unwrap();
+        export_typescript(dir.path()).unwrap();
+        let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
+        assert!(constants.contains("export const NODE_UI_LIMIT = 100000;\n"), "{constants}");
+        assert!(constants.contains("export const NODE_UI_PARTS = 10;\n"), "{constants}");
     }
 
     #[test]

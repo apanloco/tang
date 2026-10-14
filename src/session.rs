@@ -20,6 +20,25 @@ pub struct NodeUi {
     pub y: f32,
 }
 
+impl NodeUi {
+    /// How far from the origin a node may be drawn, either way: a canvas has to be one a person can come back from.
+    pub const LIMIT: f64 = 100_000.0;
+    /// A place is kept to this many parts of a pixel (a tenth): it is read by people, in the file, and a drag is not
+    /// that exact.
+    pub const PARTS: f64 = 10.0;
+
+    /// The place as it is kept: to a tenth of a pixel (half away from zero), no further than `LIMIT`, and never `-0`.
+    /// `None` if a number of it is not one (NaN, infinite). Done in 64 bits, as a client's page does it, so that what
+    /// the page says it is is what it is.
+    pub fn tidy(self) -> Option<NodeUi> {
+        if !self.x.is_finite() || !self.y.is_finite() {
+            return None;
+        }
+        let tidy = |v: f32| ((f64::from(v).clamp(-Self::LIMIT, Self::LIMIT) * Self::PARTS).round() / Self::PARTS + 0.0) as f32;
+        Some(NodeUi { x: tidy(self.x), y: tidy(self.y) })
+    }
+}
+
 /// A node's `ui`, read leniently: a layout is not worth refusing a session for, so one that is not a pair of numbers
 /// is left out (and logged) and the rest of the session loads.
 fn lenient_ui<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<NodeUi>, D::Error> {
@@ -2088,6 +2107,24 @@ plugin = "builtin:osc"
         assert_eq!(config.instruments[0].ui, at(80.0, 120.0));
         assert_eq!(config.instruments[0].effects[0].ui, at(80.0, 120.0));
         assert_eq!(config.instruments[0].modulators[0].ui, at(80.0, 120.0));
+    }
+
+    #[test]
+    fn a_place_is_kept_to_a_tenth_of_a_pixel_half_away_from_zero_and_within_the_limits_of_the_canvas() {
+        let tidy = |x: f32, y: f32| NodeUi { x, y }.tidy().map(|ui| (ui.x, ui.y));
+        assert_eq!(tidy(376.382, -40.04), Some((376.4, -40.0)));
+        assert_eq!(tidy(0.25, -0.25), Some((0.3, -0.3)));
+        assert_eq!(tidy(0.05, -0.05), Some((0.1, -0.1)));
+        assert_eq!(tidy(80.0, 120.0), Some((80.0, 120.0)), "a place that is tidy is as it was");
+        assert_eq!(tidy(1.0e9, -1.0e9), Some((NodeUi::LIMIT as f32, -(NodeUi::LIMIT as f32))));
+        assert_eq!(tidy(f32::MAX, f32::MIN), Some((100_000.0, -100_000.0)));
+        // (No `-0`: it would be written, to a file and to a client, as it is.)
+        let (x, y) = tidy(-0.04, -0.0).unwrap();
+        assert!(x.is_sign_positive() && y.is_sign_positive(), "{x} {y}");
+        // Numbers that are not numbers are not a place.
+        for (x, y) in [(f32::NAN, 1.0), (1.0, f32::NAN), (f32::INFINITY, 1.0), (1.0, f32::NEG_INFINITY)] {
+            assert_eq!(tidy(x, y), None, "{x} {y}");
+        }
     }
 
     #[test]

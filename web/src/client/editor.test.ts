@@ -293,6 +293,39 @@ describe("setting the keys of a lane", () => {
   });
 });
 
+describe("moving a node", () => {
+  const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
+
+  test("resolves true when the node has the place, which the session shows, and says nothing; none gives it back to the layout", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.moveNode(filter.id, { x: 376, y: -40 })).toBe(true);
+    expect(placeOf(client, filter.id)).toEqual({ x: 376, y: -40 });
+    expect(await editor.moveNode(MASTER, { x: 900, y: 0 })).toBe(true);
+    expect(placeOf(client, MASTER)).toEqual({ x: 900, y: 0 });
+    expect(await editor.moveNode(filter.id, null)).toBe(true);
+    expect(placeOf(client, filter.id)).toBeUndefined();
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a node that is not there: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.moveNode(424242, { x: 1, y: 1 })).toBe(false);
+    expect(await editor.moveNode(424242, null)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not move that node: there is no node 424242",
+      "Could not give that node back to the layout: there is no node 424242",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.moveNode(lfo.id, { x: 1, y: 2 })).toBe(false);
+    expect(said(notices)).toEqual(["Could not move LFO: Not connected to the server."]);
+  });
+});
+
 describe("setting the scale of the piano", () => {
   const piano = (client: Client) => client.state.snapshot?.meta.piano;
 

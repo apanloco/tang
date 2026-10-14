@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
+import { NODE_UI_LIMIT } from "../protocol";
 import type { CatalogEntry, Edge, Intent, Node, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
@@ -1514,6 +1515,82 @@ describe("setting the keys of a lane", () => {
     const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
     await client.request(set({ low: 0, high: 59 }, 14));
     expect(keys(client, 14)).toEqual({ low: 0, high: 59 });
+  });
+});
+
+describe("placing a node", () => {
+  const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
+  const put = (node: number, ui: { x: number; y: number } | null): Intent => ({ type: "setNodeUi", node, ui });
+
+  test("is what the controller says it is: the node has the place, none gives it back, and the session has something unsaved", async () => {
+    const client = await open(new MockServer());
+    expect(placeOf(client, filter.id)).toBeUndefined();
+    await client.request(put(filter.id, { x: 376, y: -40 }));
+    expect(placeOf(client, filter.id)).toEqual({ x: 376, y: -40 });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    await client.request(put(filter.id, null));
+    expect(placeOf(client, filter.id)).toBeUndefined();
+  });
+
+  test("is for every node, the master too", async () => {
+    const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    const nodes = reachFixture.snapshot.graph.nodes;
+    expect(nodes.some((node) => node.id === MASTER)).toBe(true);
+    for (const [i, node] of nodes.entries()) {
+      await client.request(put(node.id, { x: i, y: 1 }));
+      expect(placeOf(client, node.id), `node ${String(node.id)}`).toEqual({ x: i, y: 1 });
+    }
+  });
+
+  test("is kept to a tenth of a pixel, half away from zero, and to the limits of the canvas, as the controller keeps it", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    const told = async (x: number, y: number) => {
+      await client.request(put(filter.id, { x, y }));
+      return placeOf(client, filter.id);
+    };
+    expect(await told(376.38211, -40.04)).toEqual({ x: 376.4, y: -40 });
+    expect(await told(0.25, -0.25)).toEqual({ x: 0.3, y: -0.3 });
+    expect(await told(1e9, -1e9)).toEqual({ x: NODE_UI_LIMIT, y: -NODE_UI_LIMIT });
+    // (The largest a 32-bit number holds: what is beyond is not a number to the controller, which is not asked to keep one.)
+    expect(await told(3.4e38, -3.4e38)).toEqual({ x: NODE_UI_LIMIT, y: -NODE_UI_LIMIT });
+    // Not `-0`: it would be written to a file as it is. (JSON has no `-0`, so it is the server's own copy that shows it.)
+    await told(-0.04, -0);
+    const own = server.snapshot.graph.nodes.find((n) => n.id === filter.id)?.ui;
+    expect([Object.is(own?.x, 0), Object.is(own?.y, 0)], JSON.stringify(own)).toEqual([true, true]);
+  });
+
+  test("is told to the other clients as the event it is", async () => {
+    const server = new MockServer();
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(put(lfo.id, { x: 10, y: 20 }));
+    await until(() => placeOf(second, lfo.id) !== undefined, "the second client's copy");
+    expect(placeOf(second, lfo.id)).toEqual({ x: 10, y: 20 });
+  });
+
+  test("is refused for a node that is not there and for a place that is not one, in the controller's words, and changes nothing", async () => {
+    const client = await open(new MockServer());
+    const refused = [
+      [put(424242, { x: 1, y: 1 }), "notFound", "there is no node 424242"],
+      [put(424242, null), "notFound", "there is no node 424242"],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("for a place that is not numbers is refused in the server's own process (JSON has no such number to send)", () => {
+    const server = new MockServer();
+    expect(() => {
+      server.apply(put(filter.id, { x: Number.NaN, y: 1 }));
+    }).toThrow("(NaN, 1) is not a place");
+    expect(() => {
+      server.apply(put(filter.id, { x: 1, y: Number.POSITIVE_INFINITY }));
+    }).toThrow("(1, Infinity) is not a place");
+    expect(server.snapshot).toEqual(tracerSnapshot);
   });
 });
 
