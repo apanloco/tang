@@ -521,7 +521,8 @@ resolves cursor → ids and then calls `apply`.
   `Ctrl+S` does, and nobody names a file; it is answered by a revision and the event
   `Saved { file }`, which leaves the session with nothing unsaved; a session with no file, or
   one that cannot be written, is refused with the code `io`, which is no revision and changes
-  nothing. `SaveAs` waits for the one validated file name, §8.)
+  nothing. `SaveAs` waits for the one validated file name, §8. `Undo` and `Redo` are built, step 32: the controller keeps a history
+  and these two carry out what its last step says, see "Undo / redo" below and D35.)
 - Pins: `SetPinned { node, params }` (not undoable; marks the session dirty). Built, step 30: `node` is a lane's node (its instrument), an
   effect or a bus effect; `params` the plugin's own indices (`Param.index`) in the order the front-end shows them, replacing the list there
   was, and none gives the node back to the front-end's own choice (the first eight). Refused, with nothing changed and no revision used, in
@@ -541,9 +542,10 @@ resolves cursor → ids and then calls `apply`.
   event and not a snapshot, with the place as it is kept. The engine hears nothing, and the TUI ignores it. The page asks it
   as `Editor.moveNode`; `Editor.resetLayout` gives every node that has a place back to the layout, one request after the other.)
 
-`apply` returns `Applied { rev, events, undo }` or an `IntentError` (`NotFound`,
-`Invalid`, `Busy`, `Io`, …); today `Applied` has no `undo` and the errors are
-`NotFound` and `Invalid`. Every request carries a client `req_id` for the
+`apply` returns `Applied { rev, events, restructured }` or an `IntentError`
+(`NotFound`, `EdgeNotFound`, `Invalid` and `Io`; `Busy` waits for the plugins that load off the
+audio thread). (§5 first sketched an `undo` on `Applied`, the inverse intents of the change: it is not
+on the answer, the controller keeps the history, D35.) Every request carries a client `req_id` for the
 ack/err reply. Note on/off bypasses the controller (§3.3).
 
 Events carry a monotonically increasing `rev` (in the code it sits on `Applied`,
@@ -565,11 +567,23 @@ the nodes or the layout of the telemetry from events would be a second. What a c
 added a node needs to know, the id of the node, is in that snapshot: it is the last
 modulator of the parent that it did not have before the request (`Editor.addModulator`).)
 
-**Undo / redo.** Each `Applied.undo` holds inverse intents. Structural removals
-also carry the removed subtree (with its modulation edges) and the plugin
-instance recovered from the engine's return channel, so undoing a removal is
-instant and does not reload the plugin. Invertibility is part of the intent
-design from phase 0; the undo UI lands in phase 1.
+**Undo / redo** (step 32, D35). The controller keeps a history of what a person set (`src/app/history.rs`): for each
+intent that has an inverse, the intents that put back what it overwrites (read from the model before it is applied) and the intents
+that do it again, in the words of a button for it (`set cutoff`, `move a node`, `rename a group`). The intents that have one are
+`SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`, `SetPinned`, `RenameGroup`, `SetScale`,
+`SetLocked` and `MoveEffect`. A change of one thing (the same parameter, gain, setting or cable, `Key`) a second or less after the
+last of it is one step, so that a drag is one (`SAME_STEP`; a pause of more than a second makes a step of its own, and exactly a
+second does not), 200 steps are kept (`MAX_STEPS`; the oldest go), a change after an undo ends what could be redone, an intent that is
+refused leaves no step, and `Save` is no change. `SetNodeUi`, `SetRange`, `SetPinned`, `RenameGroup`, `SetScale`, `SetLocked` and
+`MoveEffect` have no key, and each is a step of its own. `Undo` and `Redo` are intents like the others: a step is applied
+intent by intent, each a revision of its own, answered with the events of all of them (and `restructured` if one was), and neither
+is a step; with nothing to undo (`there is nothing to undo`, `... to redo`) it is refused and is no revision; a step whose node has
+gone (a front-end took it out without an intent) is dropped, with the reason, and what it did before it failed stays. What has no
+inverse yet, `LoadPreset`, `AddGroup`, `SetLaneGroup`, `RemoveEdge`, `AddModulator`, `AddModEdge`, `RemoveNode`, `AddEffect`,
+`AddInstrument`, `ReplaceInstrument` and the TUI's `Controller::set_instrument`, **empties the history**: a step from before it would
+be put back over what it changed. The structure comes later: a removal will carry the removed subtree and the plugin instance
+recovered from the engine's return channel, so that undoing it is instant and does not load the plugin again (D8). What Undo and Redo
+would do is told to the clients as the message `History { undo, redo }` (§7), which is not an event.
 
 **Continuous controls.** Clients send at most one `SetParam` per frame per
 parameter; when several are queued the owner applies the latest. The engine's
@@ -693,6 +707,7 @@ master peak and clip. A scope ring can follow later.
     client replaces its copy, the layout included, and carries on from the revision in
     it), `event { event }` (a `StampedEvent`), `layout { layout }`, `catalog { rev,
     scanning, entries }` (step 19: the plugins that can be added; see below),
+    `history { undo, redo }` (step 32: what Undo and Redo would do; see below),
     `ack { reqId, rev }`, `rejected { reqId, error }`, `closing { error }` (the last thing
     before the server closes), with `error = { code, message }`, `code` one of `notFound`,
     `invalid`, `io`, `badRequest`, `unauthorized`, `rateLimited`, `overloaded`.
@@ -706,6 +721,16 @@ master peak and clip. A scope ring can follow later.
     chooses by, and never where the plugin is installed (`PluginInfo::path`, §8): a client names a
     plugin by its `id` and the program loads only what is in its own catalog. The catalog is not
     part of the session: it is no revision and leaves the session as it was.
+  - **The history (step 32, D35).** What Undo and Redo would do is told as `history { undo, redo }`: the words of
+    a button for what the last step to undo and the last to redo are (`"set cutoff"`), or `null` for what there is
+    none of. A subscribed client is sent it right after its snapshot and its catalog, and again whenever it is not
+    what the connection was last told, after the events of the request that changed it and before the answer to
+    that request (`web::owner`: `tell_history`, after `apply`, after what a front-end of the program's own did
+    (`refresh`), and on `subscribe`), so that a page which sees `ack` has seen what it can do now. It is the
+    history of the program, not of the connection: what one page set can be put back from another, and each is told.
+    It is no event: it is no change of the session, and a second event at the revision of an intent would be taken
+    by a client for a repeat (`applyEvent`). A client that loses the connection forgets it and is told again by the
+    server it comes back to. `undo` and `redo` are requests with no fields (`{ "type": "undo" }`).
   - **Order.** The owner makes the cut between a snapshot and the events after it:
     `subscribe` is answered by marking the client subscribed and queueing the
     snapshot in one step, and events are only made on the owner's thread, so a client
@@ -1132,7 +1157,7 @@ to "+ Instrument" or "+ Group", which is what is left to do. The mock engine doe
 `setLaneGroupOutcome`, `renameGroupOutcome`, `removeLaneOutcome` and `removeGroupOutcome`, pinned by `fixtures/groups.json`); the one place it
 works by a rule of its own is the default name of the groups after one that is taken out ("Group 3" becomes "Group 2"): it renumbers the groups
 that are called by their place, and one that was given the name "Group 2" at its place is renumbered with them, since the page's graph has the
-name and not whether it was ever set (the controller knows). Not built: undo, putting a lane in a group by drawing its audio to it (the menu is
+name and not whether it was ever set (the controller knows). Not built: undo of this (the page has it for what is set, step 32), putting a lane in a group by drawing its audio to it (the menu is
 what every keyboard has; a cable is for the mouse), and taking a lane out of its group by dragging.
 
 ### 9.4 Performance rules
@@ -1450,7 +1475,8 @@ Each step is a reviewable change; the TUI must not regress at any point.
     `{ events, undo }`): the undo UI is phase 1. The old values `apply` needs for
     the inverse are at hand where it overwrites them, so adding `undo` touches
     `app::apply` only. `Busy` and `Io` errors come with the intents that can
-    produce them.
+    produce them. (Step 32 kept the old values, and kept them in a history of the controller's
+    own and not on the answer: D35.)
   - **Tests.** Golden tests pinned what the TUI did before each move (parameter
     edits, gain popups, presets); `app::apply` has unit tests for each intent
     (model, commands, events, unknown and wrong-kind nodes, no change on error).
@@ -2931,7 +2957,86 @@ Each step is a reviewable change; the TUI must not regress at any point.
     after "+ Group". A group's choice on a lane is as wide as its cell (64 px) and cuts "Group 2" to "Group :": the tooltip says it whole; a wider
     choice is a layout of the node's controls that was not changed here.
   - **Numbers at the end of the step.** Rust 1006 tests, 1160 with the `web` feature and 21 on the real program, 1001 without the default plugin
-    formats and 1153 with `web`, and 3 of the shell's in each; web 1383 in 68 files; 64 in browsers; 276 commits on the branch.
+    formats and 1153 with `web`, and 3 of the shell's in each; web 1383 in 68 files (1411: the working copy's Vitest cache hid 28 stories
+    tests, which step 32 found, f101; the 58 more tests of this step are right, as both counts had the same 28 missing); 64 in browsers; 276 commits on the branch.
+
+- [x] **32. Undo, the values (phase 1).** There was no way back from a change: a knob turned by mistake stayed turned, and a click on a "×" is
+  final. *Done when:* a person can, from the page and from the TUI, put back what was set (a parameter, a gain, a setting of a modulator, the depth
+  of a cable, the keys of a lane, where a node is drawn, the knobs a node shows, the name of a group, the scale and the lock of the piano, the
+  place of an effect in its chain) and do it again, a drag being one step, with buttons and keys that say what they would do; every page is told
+  what can be done, and what was set in one can be put back from another; and what cannot be put back yet (the structure) empties the history and
+  is not put back wrongly. In parts, each its own commit: **32.1** the history in the controller (`Controller::undo` / `redo`); **32.2** the intents
+  `Undo` and `Redo`, and the message `History`; **32.3** the mock engine's history, pinned to the controller's by a fixture; **32.4** the client's
+  state; **32.5** the page; **32.6** the TUI's keys. Three commits of their own for what was found on the way: the mock engine's words of a refusal,
+  the numbers of the built-ins' fixtures, and a Vitest cache that hid stories tests. *Not done (later steps):* undo of the structure (nodes added and
+  taken out, presets, the instrument of a lane, a lane's group, a cable drawn or taken out: each empties the history), the TUI's own structure edits on
+  intents (so that they are in the history), a line in the TUI that says there is nothing to undo, and the keys of the page for the canvas's own
+  focus.
+  - **32.1 as built (e057e09).** §5 above and D35. `src/app/history.rs`: `History` (the steps, `record`, `take_undo`, `kept_undone`, `take_redo`,
+    `kept_redone`, `clear`, `state`), `Step` (the intents that put back and that do again, the words, the `Key`, when it was last changed), `Plan`
+    (a step, a barrier, or no change) and `Controller::plan_history`, which reads from the model what the intent will overwrite before it is applied;
+    `apply` is a recording wrapper round `carry_out`, and `Controller::clock` is the thing a test turns (a drag is a second). 48 tests.
+  - **32.2 as built (ab12cf5).** §5 and §7 above. `Intent::Undo` and `Redo` (`{"type":"undo"}`), refused with nothing to do and no revision;
+    `ServerMessage::History { undo, redo }`, told by `web::owner` after `apply`, after what a front-end of the program's own did and on `subscribe`;
+    the generated types; a property test that what Undo and Redo do is events a client applies as any others, and a test of the real program (a
+    browser's client turns a value, undoes it, redoes it, is told what it can do, and the saved file has what is done).
+  - **32.3 as built (f1da2ad).** `web/src/client/history.ts` (`History`, `planOf`), the mock engine's `#carry`, `#backAndForth` and `#keep`, which do
+    what the controller does, tell `History` as the server does, and answer `apply` with what was told (`Told`); `HISTORY_SAME_STEP` and
+    `HISTORY_MAX_STEPS` are generated into `constants.ts` from `SAME_STEP` and `MAX_STEPS`. The controller writes the fixture
+    `fixtures/history.json` (`the_web_clients_fixture_of_what_a_history_comes_to_is_current`): 21 scripts of 254 intents and 31 waits (285 rows) over a
+    session of two groups, a reverb, a filter, two LFOs, an envelope and three cables, with a page subscribed (so that the revisions are a page's):
+    for each intent the events it made, stamped, whether it changed the structure, the words of Undo and Redo after it or of its refusal (37), over all
+    23 kinds of intent the history knows, 15 changes of structure; the scripts tell one knob, gain, setting or cable from another by the node and
+    the kind, a drag from steps a pause apart (and exactly a second), and each barrier by itself. 86 mutations, 84 caught in the end: 8 survived the
+    first run and are what the second LFO, the repeated move of one node, the tests of what a rename puts back and three of the connection are for;
+    2 are equivalent as long as every step has one intent (the events of a step's intents are added up, and its `restructured`).
+  - **32.4 as built (65acb7b).** `ClientState.history` (`{ undo, redo }`, the words of a button or null; `NO_HISTORY`): the `history` message replaces it
+    whole, one that says what the client has changes nothing in the store, and it is forgotten when the connection is lost and told again by the server
+    the connection comes back to.
+  - **32.5 as built (2f46ef9).** `app/UndoRedo.tsx` in the bar of the session: two buttons named by what they do ("Undo set cutoff") with a tip that has the
+    keys, disabled with nothing to do or while an answer is awaited, and the keys Control or Command+Z, Control or Command+Shift+Z and Control+Y
+    (Command+Y is the browser's History on a Mac), not in a field that takes text (its own undo) and not when there is nothing to do (the browser's
+    own is left alone); `Editor.undo` and `redo`; `takesText` is exported from `client/keyboard.ts`. 3 browser tests (`e2e/undo.spec.ts`: on the real
+    program, with a second page and the saved file; the filter field of the panel and an effect that empties the history; the mock engine). 35 mutations.
+  - **32.6 as built (6196f78).** The TUI's Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z (the capital Z too), from any tab, the same history; the Help tab lists them;
+    9 tests (`undo_and_redo` in `src/tui/golden_tests.rs`), 13 mutations.
+  - **Found on the way, 9245e0f (f99).** The first comparison of the mock with the controller's fixture found that the mock refused in words of its own:
+    "that node has no parameter 99" for the controller's "the plugin has no parameter 99", "mix does not apply to that node" for "Mix does ...",
+    "Infinity is not a value" for Rust's `inf`, the number before the node for a gain, and one message for a node with no plugin, a lane with none and a
+    plugin without the parameter, where the controller has three. The mock says what the controller does (18 mutations; one branch of `shown` was
+    redundant and was taken out).
+  - **Found on the way, 47e4243 (f100).** Three fixtures (`builtins.effects.json`, `.instruments.json`, `.presets.json`) were written through
+    `serde_json::to_value`, which widens a 32-bit number to the 64-bit number it is (0.707 was 0.7070000171661377, 62 lines in all): a page on the mock
+    was given numbers the program never sends. `testutil::wire` writes a value through its JSON text, as the wire has it. (The history's fixture is
+    written so as well.)
+  - **Found on the way, 9b06bf0 (f101).** The stories test rendered 35 stories in the working copy and 63 in a fresh one: Vitest keeps what it makes of a
+    file, the expansion of `import.meta.glob` included, in `node_modules/.vitest-cache`, and the cached `src/stories.test.tsx` knew the seven story files
+    there were then, so the stories of Piano, LiveEnvelope, LiveTrace, MenuButton and NoticeBoard (28 tests) had not been rendered since they were added,
+    with no word. Every count of web tests taken in the working copy until then was 28 short. The test now asks the disk for the story files and fails,
+    with what to do (`rm -rf node_modules/.vitest-cache`), when the glob does not know one. The cache was 190 MB in 4314 files: a mutation run fills it.
+  - **Found on the way, in the work (not in code that was committed).** Held-back answers: three tests counted "an event and an answer" for a request, and a
+    request is now answered by its events, what Undo and Redo say if that is new, and the answer, so `holdable` counts and lets through answers. A move of
+    `groups_scene` into `testutil` that nothing used was taken back. A run of mutations that was interrupted left its mutation in a file
+    (`history.ts`), found by checking that every `old` string of the next list occurred once; it was put back, and every list is checked so now. The two
+    popup handlers of the TUI are given the key code and not the modifiers, so a Ctrl+letter typed in a popup is the letter (Ctrl+Z in a value being
+    typed types a z): not changed here, and not new. §5 said `apply` returns `Applied { rev, events, undo }` with the errors `NotFound` and `Invalid`: it is `{ rev, events,
+    restructured }` and `NotFound`, `EdgeNotFound`, `Invalid` and `Io`; CLAUDE.md's frontend line said steps 18 to 30, and it is to 32.
+  - **Looked at.** On the real program on the null audio device and the mock engine, in a browser, by the three tests above: the buttons' names and
+    tips, a drag of five presses put back by one Undo, the keys with Control and with Command (Playwright's `ControlOrMeta`), a second page told the history
+    when it comes and doing a Redo the first sees. The bar was looked at in screenshots of three states (nothing to do; Undo to do, with Save; Redo to do, with the pointer over
+    it): the two buttons are drawn as Save is, dimmed when disabled, with its outline on the pointer.
+  - **Limits, as built.** An effect that was moved is put back to the place it was at, by its number in the chain: a TUI edit that adds or takes out an
+    effect (which is not in the history, and does not empty it) between the move and its undo puts it at a place that is not the one it left. A step whose
+    node a front-end took out is dropped when it is reached, with the reason, and the page says it in a notice. The page asks for one Undo at a time
+    (a held key goes at the speed of the answers). The history is the program's, not a page's: another person's change is what Undo puts back.
+  - **Tests.** Rust: 60 more than at the end of step 31 in the default configuration (1066 against 1006): 48 in 32.1, 2 in 32.2, the fixture's, 9 in
+    32.6; with `web` 64 more (1224), the same 60 and 4 that only that feature has (3 of the owner's in 32.2 and the test of the constants in 32.3);
+    the real program's, 22 against 21 (32.2). Web: 1457 in 70 files (1411 in 68
+    at the end of step 31): the words of the mock (1), the history and the mock against the fixture (16), what the mock tells (4), the client's (6),
+    the guard of the stories (1) and the page (18: 3 of the editor, 14 of the buttons and keys, 1 of the bar); 67 in browsers (64 + 3). 208 mutations in
+    all (32.1: 45; 32.2: 11; the words: 18; 32.3: 86; 32.5: 35; 32.6: 13): all caught in the end but the two that make no difference.
+  - **Numbers at the end of the step.** Rust 1066 tests, 1224 with the `web` feature and 22 on the real program, 1061 without the default plugin
+    formats and 1217 with `web`, and 3 of the shell's in each; web 1457 in 70 files; 67 in browsers; 286 commits on the branch.
 
 ## 13. Later: track B (`builtin:patch`)
 
@@ -2975,7 +3080,7 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D5 | Controller is a plain struct driven by the owner loop; the web runtime talks to it by channels (no shared model, no locks) | Proposed |
 | D6 | `axum` / `tokio` behind a `web` feature; Node in CI; assets embedded in the binary | Assumed |
 | D7 | Graph-shaped wire model with stable `NodeId`s; layout stored in the session TOML as `ui` tables | Proposed |
-| D8 | Telemetry via lock-free slots, binary frames; undo via inverse intents + recovered plugin instances | Proposed |
+| D8 | Telemetry via lock-free slots, binary frames; undo via inverse intents + recovered plugin instances | Telemetry built (step 6); undo of values built as D35, of the structure not yet |
 | D9 | Short design + TODOs in `CLAUDE.md`, long form here | Assumed |
 | D10 | `tang serve` listens on `127.0.0.1:8765` by default; beyond loopback `--web-bind` and a token made for the run | Built (step 10) |
 | D11 | One current-thread tokio runtime on its own thread for the server and the pusher; `ctrlc` for stopping a headless process | Built (step 10) |
@@ -3002,6 +3107,7 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D32 | An envelope's dot is placed from what the telemetry already carries, the level the envelope puts out, read with which way it was going (`courseAfter`), and not from a phase that the engine would publish: nothing is added to the wire or to the audio thread (as for the traces, D30). The page infers the stage, and is wrong in a few places that the next reading mends: the first reading of a note is a rise whichever stage it is on, a note that ends during the decay is drawn on the decay until the level is below the sustain, and the first reading after a gap is told by its place alone. A channel for the stage would make it exact; it is not worth one yet. The telemetry is slower than the page's frames, so a frame that finds the level where it was is no news and the level goes on the way it was going, until a rise has stood still for three readings (100 ms). A stage's width is on a logarithmic scale of its time (a stage is 1 ms to 10 s), and the sustain, which has no time, has the mean of the others | Built (step 29) |
 | D33 | Which parameters of a plugin its node shows as knobs is the session's, kept as a list on the plugin (`pinned = ["cutoff", ...]`, by name, a key of the plugin's table beside `ui`; in the model `PluginSlot::pinned`, the plugin's own indices; on the wire `Plugin.pinned`), not the page's and not inside `ui` as §4.4 first planned: it follows its plugin wherever the plugin goes (an effect that is moved takes it along, an instrument that is replaced has none, with nothing to remember), a node can be pinned without being placed, and `NodeUi` stays a `Copy` pair of numbers that some forty places copy. One intent, `SetPinned { node, params }`, replaces the whole list: simple, idempotent, one event, and the last list wins (two pages that pin in the same moment can lose one of the pins; a pair of intents to pin and to unpin would not, and the page works out the list from what it shows, `pinnedWith`). An empty list is the front-end's own choice, the first eight, so there is no way to ask for a node with no knobs at all, which nobody needs yet; and the first pin of a node keeps the first eight, since a node that lost them at its first pin would be a surprise. A cable's target is shown for as long as the cable is there and is not a pin (§4.4 planned that attaching a cable pins its target: a pin that appeared with a cable would have been written into the session file) | Built (step 30) |
 | D34 | A group is made and filled by what a front-end means, not by the steps of the TUI's popup: `AddGroup { members }` makes it with its lanes in one intent (every member is looked at before anything is made, so a refusal leaves no group and a client has no half-made state to undo), `SetLaneGroup { node, group }` puts a lane in a group or, for none, takes it out (planned as `AssignGroup`: the intent says what changes), and a lane that leaves a group lets go of it as a node that is taken out does: the group's cables to it are taken out (`take_out`, with what drives their depths) and what they drove has the value the user set (the model used to drop the targets and leave the parameters where the cable had put them, f65). A name is `RenameGroup`, which answers with an event that carries the name the group has *now* (a name of nothing is the default, "Group" and its place), so that no client works out a default. A lane or a group is taken out by `RemoveNode` (the controller keeps one lane: `a session keeps its last lane`), and since there is no undo the page asks first, in a menu that opens on "Keep" and says in words what goes and what stays, and does not offer it on the only lane; the controller does not ask, since a client that is not a person (a script, a test) has no one to ask | Built (step 31) |
+| D35 | Undo is a history that the controller keeps, not an `undo` on every answer: for each intent that has an inverse the controller reads from the model what the intent will overwrite, before it is applied, and keeps (in a list of 200) the intents that put it back and the intents that do it again, with the words of a button for the step. `Undo` and `Redo` are intents like the rest, each intent of a step a revision of its own, so that every front-end (a page, the TUI, a script) uses the one history and what was set in one can be put back from another. A change of one thing a second or less after the last of it is one step, so that a drag is one; a change after an undo ends the redo; what has no inverse yet (the structure, presets, the instrument of a lane, a lane's group) empties the history, so that Undo never does something other than the last thing that was done. The history is the program's, so what Undo and Redo would do is told as a message of its own, `History { undo, redo }`, when a client subscribes and when it changes, before the answer to the request that changed it, and not as an event (a second event at one revision is taken for a repeat). The mock engine keeps the same history, pinned to the controller's by a fixture the controller writes, and the limits (200, a second) are generated into `constants.ts`, not copied | Built (step 32); the structure's later |
 
 Open questions
 

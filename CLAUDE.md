@@ -832,6 +832,8 @@ numeric `params` values (the index into the label list).
 | `b` | Set global BPM (opens value entry popup) |
 | `Ctrl+S` | Save session (to the file it was loaded from) |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves in the current session's directory) |
+| `Ctrl+Z` | Undo the last thing set (the history of the controller, which the browser's Undo has too; not heard while a popup is open) |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 
 Mouse: click to select, drag a parameter bar to set its value, drag the
 parameter scrollbar to scroll. Mouse wheel scrolls the parameter list and the
@@ -1080,7 +1082,7 @@ use for it, the session file keeps it, see "Node positions (`ui`)"), `RenameGrou
 without the spaces round it, at most `MAX_NAME` (64) characters and none of them a control character, and nothing gives the group back the
 name it has by default, "Group" and its number; refused, with nothing changed, for a node that is no group and for a name that is not one;
 told as `GroupRenamed`, which carries the name the group has now; the engine has no use for it, the session file keeps it, and the TUI's `R`
-on a group header asks it); `Save` (the session's own file); and ten that change
+on a group header asks it); `Save` (the session's own file), `Undo` and `Redo` (the history, below); and ten that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1117,7 +1119,7 @@ drive its parameters and what drove their depths, the audio path closing up; a l
 instrument, its effects and its modulators and the cables of its group to it, but not the last
 lane of a session (`a session keeps its last lane`); a group, with its bus effects, its modulators and every cable of it, its
 members staying in no group, and what the cables drove in them given back: `Controller::remove_lane` / `remove_group`. There is
-no undo, which is why the page asks first). An intent that changes the
+no undo for it yet, since a removal empties the history, which is why the page asks first). An intent that changes the
 structure has no event for a client to apply: `Applied::restructured` is set, `apply` calls
 `resync` at once, and the subscribers are given a snapshot at the revision after the
 intent's. Every applied intent bumps `Controller::rev`;
@@ -1138,6 +1140,24 @@ modulator targets of the lane and of its group pointing at the same plugins, as 
 the audio thread together.
 TODO: the TUI's `d` on a lane or a group calls `Controller::remove_lane` / `remove_group` itself; it could ask `RemoveNode`, as the page
 does, and have one way to take a node out.
+
+**Undo and redo** (`src/app/history.rs`, `docs/web-ui.md` §5 and D35). The controller keeps a history of what a person set: a
+step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
+`SetPinned`, `RenameGroup`, `SetScale`, `SetLocked` and `MoveEffect`, made of the intents that put it back and the intents that do it again
+(read from the model before the change, so that it puts back what the change overwrote and does again what was asked) and the words of a
+button for it (`set cutoff`). Changes of one thing (one parameter, gain, setting or cable) a second or less apart are one step, so that a drag
+is one (`SAME_STEP`; 200 steps are kept, `MAX_STEPS`; both are generated into `constants.ts`), a change after an undo ends what could be
+redone, and an intent that is refused leaves no step. `Undo` and `Redo` are intents, answered as any are: each intent of the step is a
+revision of its own (`Controller::undo` / `redo`), neither is a step, and one with nothing to do is refused (`there is nothing to undo`) and
+is no revision; a step whose node has gone (a front-end took it out without an intent) is dropped, with the reason. What cannot be undone yet
+(`LoadPreset`, `AddGroup`, `SetLaneGroup`, `RemoveEdge`, `AddModulator`, `AddModEdge`, `RemoveNode`, `AddEffect`, `AddInstrument`,
+`ReplaceInstrument`, and the TUI's `Controller::set_instrument`) empties the history, since a step from before it would be put back over what
+it changed; `Save` is no change. The TUI's other edits do not go through `apply` and are not in the history. What Undo and Redo would do is
+told to every browser as a message of its own, `History { undo, redo }` (the words of a button, or null), after the snapshot and the catalog
+and after every change of it, before the answer to the request that made it (`web::owner`): it is no event, since a second event of one
+revision is taken for a repeat. The page's buttons and keys ask for them (`ClientState.history`, `app/UndoRedo.tsx`) and so do the TUI's
+Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z; the mock engine has the same history (`client/history.ts`), pinned to the controller's by
+`fixtures/history.json`.
 
 Whoever mirrors the session (the web runtime, for its browsers) subscribes an
 `EventSink` (`app::subscribers`). The controller tells each about every applied
@@ -1524,7 +1544,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
   `SetNodeUi`, `SetPinned`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
-  or a group) and `Save` (see "Session state"). Effects are
+  or a group), `Save`, `Undo` and `Redo` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1576,7 +1596,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   synchronous. Messages: `app::protocol` (`ClientMessage`, `ServerMessage`); the
   plugin catalog (what can be added; step 19) follows a client's snapshot and is told again
   as the scan finds more (`catalog { rev, scanning, entries }`: ids and names, never where a
-  plugin is installed; `tang serve` starts the scan, the TUI its own); the
+  plugin is installed; `tang serve` starts the scan, the TUI its own); what Undo and Redo would do
+  follows the catalog (`history { undo, redo }`, step 32: the words of a button or null, told again when they change, before the
+  answer to the request that changed them); the
   telemetry frames are made by `web::pusher` at 30 Hz for the channels a client
   asked for (`meters`, `modulation` and `held`: a value for each of the 128 notes, 1 for a note that
   is held, from the same bits the Piano tab reads). `NoteInput` (`src/note_input.rs`) is the one note path of hardware
@@ -1585,7 +1607,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 30): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 32): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1657,8 +1679,11 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   moves it to where its members are), the bar has "+ Group" (`app/AddGroup.tsx`), the name of a group is changed in place (a ✎ button
   turns it into a field: Enter or leaving the field asks `RenameGroup`, Escape asks nothing; `GroupNameField`), and a lane or a group is
   taken out by a "×" that opens a menu that asks first, in words that say what goes with it and what stays (`RemoveLaneOrGroupMenu`,
-  `removalOf`; the only lane of a session has none, and there is no undo). The mock engine does all of it as the controller does
-  (`fixtures/groups.json`). What the controller
+  `removalOf`; the only lane of a session has none, and there is no undo for it). The mock engine does all of it as the controller does
+  (`fixtures/groups.json`). Step 32 gave the page Undo and Redo: two buttons in the bar of the session that say what they would put
+  back or do again (`app/UndoRedo.tsx`, from `ClientState.history`; `Editor.undo` and `redo`) and the keys Control or Command+Z,
+  Control or Command+Shift+Z and Control+Y (not in a field that takes text, which has its own undo, and not when there is nothing to
+  do); the mock engine keeps the controller's history (`client/history.ts`, `fixtures/history.json`). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1681,8 +1706,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `reach.json`, next to it, which says where the controller let a cable be drawn, `fields.json`, which says
   which settings and cable depths of other modulators it let a cable be drawn to, `moves.json`, which says what
   it makes of moving each effect of a session to each of some places, `groups.json`, which says what it makes of adding a group,
-  putting a lane in one, naming one and taking a lane or a group out, and
-  `builtins.catalog.json`, the built-in plugins as the catalog lists them, which the mock serves).
+  putting a lane in one, naming one and taking a lane or a group out, `history.json`, which says what it makes of scripts of intents and of time going by
+  (the events, what Undo and Redo would do after each, the words of a refusal), and
+  `builtins.catalog.json`, the built-in plugins as the catalog lists them, which the mock serves). The fixtures say numbers as the wire does
+  (`app::testutil::wire`, not `serde_json::to_value`, which widens a 32-bit number to a 64-bit one).
 - **TUI and web together** (built; step 13, `docs/web-ui.md` §3.4): `tang --web`
   runs the TUI and the web interface on one controller, on the main thread. The loop
   applies a browser's requests and reacts to what they changed (a value a browser set
@@ -1748,6 +1775,12 @@ changes without an intent: until then connected browsers are given a snapshot
 (`Controller::resync`).
 TODO: the events of one intent share its revision, which a client takes for a repeat
 if there is more than one (every intent makes one event today).
+TODO: undo of the structure: adding and taking out nodes (a removal gives the plugin back from the audio thread, so that undoing it
+does not load it again), presets, putting another instrument in a lane and a lane's group each empty the history until their steps exist
+(`Plan::Barrier` in `src/app/history.rs`, `planOf` in `web/src/client/history.ts`).
+TODO: the TUI's edits that do not go through `apply` (adding, replacing and taking out nodes, `Shift+Up` / `Shift+Down`, the pattern, the
+tempo, the Type row, MIDI learn) are not in the history, and do not empty it but for `Controller::set_instrument`: a step whose node they
+took out is dropped when it is undone. Each that becomes an intent is in it.
 TODO: keep-alive pings for WebSockets.
 
 ## Platform
