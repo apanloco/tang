@@ -1313,6 +1313,15 @@ island of async, on a thread of its own):
   the main thread runs the headless loop (`web::runtime`); in `tang --web` the TUI
   loop answers the requests among its own business (`src/tui/web.rs`).
 
+**Exit.** `main` calls `run()`, which stops everything that is Tang's, in order, and then
+ends the process itself: it flushes stdout and stderr, prints an error as `Error: …`
+(status 1) and calls `libc::_exit` (Unix; `process::exit` elsewhere). The ordinary exit runs what the plugins'
+native libraries have to run at exit while the catalog scan, which may still be in one of
+them (a quit a moment after the start finds it there), is in them, and the program crashed
+on the way out (SIGSEGV or SIGBUS) about one time in twenty. `tests/cli.rs` holds what is
+printed and the statuses (0, 1, and 2 for a command line that is not one), and
+`tests/serve.rs` interrupts a `tang serve` early forty times in a row.
+
 The shared LV2 world (`plugin::Runtime`) is created lazily on the first LV2
 plugin load, not at startup — building the world scans every installed LV2
 bundle, which sessions without LV2 plugins shouldn't pay for.
