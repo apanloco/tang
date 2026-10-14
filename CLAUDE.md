@@ -1118,8 +1118,8 @@ those of the others that drove its settings; an effect or a bus effect, with the
 drive its parameters and what drove their depths, the audio path closing up; a lane, with its
 instrument, its effects and its modulators and the cables of its group to it, but not the last
 lane of a session (`a session keeps its last lane`); a group, with its bus effects, its modulators and every cable of it, its
-members staying in no group, and what the cables drove in them given back: `Controller::remove_lane` / `remove_group`. There is
-no undo for it yet, since a removal empties the history, which is why the page asks first). An intent that changes the
+members staying in no group, and what the cables drove in them given back: `Controller::remove_lane` / `remove_group`. A `RemoveEdge` is
+put back by undo (step 34, "Undo and redo"); the others are not yet, since they empty the history, which is why the page asks first). An intent that changes the
 structure has no event for a client to apply: `Applied::restructured` is set, `apply` calls
 `resync` at once, and the subscribers are given a snapshot at the revision after the
 intent's. Every applied intent bumps `Controller::rev`;
@@ -1139,7 +1139,7 @@ the intents' own (`SessionModel::remove_effect` / `move_effect` and the bus's ke
 pointing at the same plugins, as the audio thread does). What the TUI still edits itself, for want of an intent: the order of the lanes
 (`Controller::swap_lanes`), the pattern, the tempo, the Type row and emptying a lane (`Controller::clear_instrument`).
 
-**Undo and redo** (`src/app/history.rs`, `docs/web-ui.md` §5, D35 and D36). The controller keeps a history of what a person did: a
+**Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
 step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
 `SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
 `AddModulator`, `AddModEdge`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
@@ -1149,7 +1149,17 @@ taken out by undo (`RemoveNode`, `RemoveEdge`) and made again by redo under the 
 before any new one, `Controller::carry_out` writes down the ids it hands out (`made_last`, `Made`), a `Plan::Added` becomes a step once they are
 known (`Step::redo_made`), and `carry_out_all` says them to the allocator, refuses ids that are in use (`node 7 is there already`) and drops those
 the intents did not use, so every step that names the node or the cable goes on naming it, whatever is undone and redone around it. (A telemetry
-slot is not given again: a node that comes back has new slots, and they are never reused, 4,096 of them.) One thing a key asks for that takes
+slot is not given again: a node that comes back has new slots, and they are never reused, 4,096 of them.) **What is taken out is put back by
+what was taken** (step 34, D37), exactly as it was: while an intent is carried out the controller writes down what it takes out (`Controller::journal`,
+a `Journal` of `Inverse`s; the TUI's and the tests' own removals leave nothing), the model hands back what it removed (`SessionModel::remove_edge`
+returns the cables as `RemovedCable`: the cable with its id and its slot of the telemetry, its place, and what it was centred on, `centre_of`), a
+`Plan::Removed` becomes a step that holds the journal (`Step::removed`, `Taken`), and undo puts everything back in the reverse order
+(`Controller::rewind`, one revision, the structure said to have changed): each cable goes into its modulator at its place
+(`SessionModel::insert_target_at`, `GraphCommand::InsertModTarget` / `InsertGroupModTarget`, which tell the cables that drive the depth of a later cable
+of the modulator the place it has now, before it goes in), with the id and the slot it had; redo takes it out again and the step holds what that took.
+Built for `RemoveEdge`; two cables that drive each other's depths (only a file can make that) are not put back (`RemovedCable::still_driven`: one goes
+while the other still drives its place, and once it has gone that place cannot be told from the next cable's), and a step is not made of such a
+removal. One thing a key asks for that takes
 several intents is one step for the TUI: `Controller::history_mark` and `join_steps_since` join the steps recorded since a mark (one from before the
 history was forgotten joins nothing), so that a new
 modulator and the cable to it ("modulate cutoff") or a learned control and its depth ("learn cutoff") are one Ctrl+Z; a browser makes them with
@@ -1157,9 +1167,11 @@ two clicks and has two steps. Changes of one thing (one parameter, gain, setting
 is one (`SAME_STEP`; 200 steps are kept, `MAX_STEPS`; both are generated into `constants.ts`), a change after an undo ends what could be
 redone, and an intent that is refused leaves no step. `Undo` and `Redo` are intents, answered as any are: each intent of the step is a
 revision of its own (`Controller::undo` / `redo`), neither is a step, and one with nothing to do is refused (`there is nothing to undo`) and
-is no revision; a step whose node has gone (a front-end took it out without an intent) is dropped, with the reason. What cannot be undone yet
-(`LoadPreset`, `RemoveEdge`, `RemoveNode`, `ReplaceInstrument`, a group made of a lane that is in another (the lane leaves it, and the cables
-of that group to it go), a lane put in a group or out of one that its old group drives, and `Controller::set_instrument` and `clear_instrument`
+is no revision; a step whose node has gone (a front-end took it out without an intent) is dropped, with the reason, and so is one whose cable's
+id is in use (`cable 7 is there already`). What cannot be undone yet
+(`LoadPreset`, `RemoveNode`, `ReplaceInstrument`, a group made of a lane that is in another (the lane leaves it, and the cables
+of that group to it go), a lane put in a group or out of one that its old group drives, a `RemoveEdge` of cables that drive each other's depths,
+and `Controller::set_instrument` and `clear_instrument`
 for the TUI's `i` and `d`) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
 asks by intents for what has them (the plugin selector, `d`, `n`, `g`, Shift+Up and Shift+Down on an effect, `m`, `l` and `t`), so they are in the
 history; what has none is not (the order of the lanes, the pattern, the tempo, the Type row) and does not empty it. What Undo and Redo would do is
