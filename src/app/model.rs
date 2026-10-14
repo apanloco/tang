@@ -333,17 +333,26 @@ impl SessionModel {
     ///
     /// The removals, in the order they were made: the rack, the modulator in it, and the
     /// cable's place in the modulator *as it was when its turn came*, so that the audio thread
-    /// can be sent the same commands in the same order. A cable goes after the cables that
-    /// drive its depth. `None`, and nothing changed, if there is no such cable.
-    pub fn remove_edge(&mut self, edge: EdgeId) -> Option<Vec<(ModulatorLocation, usize, usize)>> {
+    /// can be sent the same commands in the same order, and the cable itself with what it was
+    /// centred on, so that it can be put back (`insert_target_at`, in the reverse order). A cable
+    /// goes after the cables that drive its depth. `None`, and nothing changed, if there is no such cable.
+    pub fn remove_edge(&mut self, edge: EdgeId) -> Option<Vec<RemovedCable>> {
         let going = self.cascade_of(edge)?;
-        let mut removals = Vec::new();
+        let mut removed = Vec::new();
         for gone in going.into_iter().rev() {
-            let (at, mod_index, target) = self.locate_edge(gone)?;
-            self.remove_target_at(at, mod_index, target);
-            removals.push((at, mod_index, target));
+            let (at, mod_index, target_index) = self.locate_edge(gone)?;
+            removed.push(self.remove_target_at(at, mod_index, target_index)?);
         }
-        Some(removals)
+        Some(removed)
+    }
+
+    /// What a cable of `kind` from the modulator at `mod_index` of the rack at `at` is centred on: what the user has set what it drives to
+    /// (a plugin's parameter, a modulator's rate or stage, the depth of a cable). `None` if what it drives is not there.
+    pub fn centre_of(&self, at: ModulatorLocation, mod_index: usize, kind: &ModTargetKind) -> Option<f32> {
+        if let Some(target) = self.param_targets(at).into_iter().find(|target| target.kind == *kind) {
+            return Some(target.base_value);
+        }
+        self.field_targets(at, mod_index).into_iter().find(|target| target.kind == *kind).map(|target| target.base_value)
     }
 
     /// The cables that go when cable `edge` is taken out: it, and then, in turn, those that drive the
@@ -522,12 +531,16 @@ impl SessionModel {
     }
 
     /// Take cable `target` out of modulator `mod_index` in the rack at `at`, and tell the cables
-    /// that drive the depths of its later ones (`fixup_depth_cables_after_remove`).
-    fn remove_target_at(&mut self, at: ModulatorLocation, mod_index: usize, target: usize) {
-        if let Some(rack) = self.modulators_mut(at) {
-            rack[mod_index].targets.remove(target);
-            fixup_depth_cables_after_remove(rack, mod_index, target);
-        }
+    /// that drive the depths of its later ones (`fixup_depth_cables_after_remove`). The cable, and what it was
+    /// centred on; `None`, and nothing changed, if there is no such cable.
+    fn remove_target_at(&mut self, at: ModulatorLocation, mod_index: usize, target: usize) -> Option<RemovedCable> {
+        // (What it drives is read while the cable is there: another cable that drives its depth is taken out first.)
+        let kind = self.modulators(at)?.get(mod_index)?.targets.get(target)?.kind.clone();
+        let centre = self.centre_of(at, mod_index, &kind);
+        let still_driven = self.drives_depth_of(at, mod_index, target);
+        let rack = self.modulators_mut(at)?;
+        let slot = rack[mod_index].targets.remove(target);
+        fixup_depth_cables_after_remove(rack, mod_index, target);
         if let ModulatorLocation::Lane(inst) = at {
             if let Some((group, member)) = lane_member_ordinal(&self.instruments, inst) {
                 if let Some(g) = self.groups.get_mut(group) {
@@ -535,6 +548,36 @@ impl SessionModel {
                 }
             }
         }
+        let base_value = centre.unwrap_or(slot.param_min);
+        Some(RemovedCable { at, mod_index, target_index: target, slot, base_value, still_driven })
+    }
+
+    /// Whether a cable that is there drives the depth of the cable at place `target` of the modulator at `mod_index` of the rack at `at`. (The
+    /// cables that drive a cable go before it, unless they drive each other's: a group's cables to a member's cable always go first, since a
+    /// lane's cables cannot reach the group's.)
+    fn drives_depth_of(&self, at: ModulatorLocation, mod_index: usize, target: usize) -> bool {
+        let drives_it = |kind: &ModTargetKind| matches!(kind, ModTargetKind::ModulatorDepth { mod_index: of, target_index } if *of == mod_index && *target_index == target);
+        self.modulators(at).into_iter().flatten().flat_map(|m| &m.targets).any(|t| drives_it(&t.kind))
+    }
+
+    /// Put a cable into modulator `mod_index` of the rack at `at`, at place `target_index` (the last, for a place past the end): what
+    /// `remove_edge` took out, put back (the cables of the removal in the reverse order, each at the place it had when its turn came). The
+    /// cables of the rack that drive the depth of a later cable of the modulator, and the group's when the lane is a member, are told the
+    /// place that cable has now, before the cable goes in. The place it went to; `None`, and nothing changed, if there is no such modulator.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
+    pub fn insert_target_at(&mut self, at: ModulatorLocation, mod_index: usize, target_index: usize, slot: ModTargetSlot) -> Option<usize> {
+        let rack = self.modulators_mut(at)?;
+        let place = target_index.min(rack.get(mod_index)?.targets.len());
+        shift_depth_cables_after_insert(rack, mod_index, place);
+        rack[mod_index].targets.insert(place, slot);
+        if let ModulatorLocation::Lane(inst) = at {
+            if let Some((group, member)) = lane_member_ordinal(&self.instruments, inst) {
+                if let Some(g) = self.groups.get_mut(group) {
+                    shift_member_depth_cables_after_insert(&mut g.modulators, member, mod_index, place);
+                }
+            }
+        }
+        Some(place)
     }
 
     /// The plugin parameters a modulator in the rack at `at` can drive, in the order a
@@ -1036,6 +1079,27 @@ pub struct ModTargetSlot {
     pub effective: Option<Slot>,
 }
 
+/// A cable that was taken out of the session (`SessionModel::remove_edge`): where it was, the cable itself, and what it was centred on. What puts it
+/// back is `SessionModel::insert_target_at` and a command to the audio thread (`Controller::undo`).
+#[derive(Debug)]
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
+pub struct RemovedCable {
+    /// The rack it was in.
+    pub at: ModulatorLocation,
+    /// The modulator in the rack, and the cable's place in it as it was when its turn came.
+    pub mod_index: usize,
+    pub target_index: usize,
+    /// The cable: its id, the slot it publishes to, and all it says.
+    pub slot: ModTargetSlot,
+    /// What the audio thread had the cable centred on, which is what the user had set what it drove to (`SessionModel::centre_of`).
+    pub base_value: f32,
+    /// A cable that drives the depth of this one was still there when it went: they drive each other's depths, one of the two goes first
+    /// and the other is left driving a place with no cable at it for the moment. Putting them back one at a time cannot tell that place
+    /// from the place of the cable that was after it (both are the same number once the cable has gone), so such a removal is not one that
+    /// can be put back.
+    pub still_driven: bool,
+}
+
 /// A plugin parameter a modulator can drive (`SessionModel::param_targets`), with what it
 /// takes to bind it (`Controller::add_target`) and to say what it is.
 #[derive(Clone, Debug, PartialEq)]
@@ -1411,6 +1475,37 @@ fn fixup_member_depth_cables_after_remove(modulators: &mut [ModulatorSlot], memb
             if let ModTargetKind::GroupMemberMod { member: of, mod_index: at, field: CrossModField::Depth(target) } = &mut t.kind {
                 if *of == member && *at == mod_index && *target > removed {
                     *target -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// The inverse of `fixup_depth_cables_after_remove`, mirror of the audio thread's `shift_depth_cables_after_insert`: after a cable goes into the
+/// modulator at `mod_index` at place `inserted`, the cables of the modulators in the rack that drive the depth of a cable of it at that place or
+/// after it are told the place that cable has now. (Before the cable goes in: its own kind is what it says, and is not moved with the others.)
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
+fn shift_depth_cables_after_insert(modulators: &mut [ModulatorSlot], mod_index: usize, inserted: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::ModulatorDepth { mod_index: of, target_index } = &mut t.kind {
+                if *of == mod_index && *target_index >= inserted {
+                    *target_index += 1;
+                }
+            }
+        }
+    }
+}
+
+/// The same for a group's cables to the depth of a cable of member `member`'s modulator `mod_index` (`shift_member_depth_cables_after_insert`
+/// of the audio thread).
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a cable back when a removal is undone, built next"))]
+fn shift_member_depth_cables_after_insert(modulators: &mut [ModulatorSlot], member: usize, mod_index: usize, inserted: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupMemberMod { member: of, mod_index: at, field: CrossModField::Depth(target) } = &mut t.kind {
+                if *of == member && *at == mod_index && *target >= inserted {
+                    *target += 1;
                 }
             }
         }
@@ -2226,6 +2321,11 @@ group = 1
 
     use crate::app::testutil::{CABLES_THAT_DRIVE_CABLES, CABLES_THAT_DRIVE_EACH_OTHER};
 
+    /// Where each cable that `remove_edge` took out was.
+    fn places(removed: &[RemovedCable]) -> Vec<(ModulatorLocation, usize, usize)> {
+        removed.iter().map(|cable| (cable.at, cable.mod_index, cable.target_index)).collect()
+    }
+
     /// What the modulators of a rack drive: each cable's kind and depth.
     fn cables(rack: &[ModulatorSlot]) -> Vec<Vec<(K, f32)>> {
         rack.iter().map(|m| m.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect()).collect()
@@ -2245,7 +2345,7 @@ group = 1
         let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
         let (volume, pan) = (edge_of(&model, 0, 0, 1), edge_of(&model, 0, 0, 2));
         let removals = model.remove_edge(volume).unwrap();
-        assert_eq!(removals, [(ModulatorLocation::Lane(0), 0, 1)]);
+        assert_eq!(places(&removals), [(ModulatorLocation::Lane(0), 0, 1)]);
         let rack = &model.instruments[0].modulators;
         assert_eq!(rack[0].targets.len(), 2);
         assert_eq!(rack[0].targets[1].edge, pan, "the cable that was third is the second, and is the same cable");
@@ -2263,7 +2363,7 @@ group = 1
         let removals = model.remove_edge(detune).unwrap();
         // The third modulator's cable drove the depth of the second's first, which drove the depth of this one: the
         // deepest goes first, and each is told the place it has at its turn.
-        assert_eq!(removals, [(ModulatorLocation::Lane(0), 2, 0), (ModulatorLocation::Lane(0), 1, 0), (ModulatorLocation::Lane(0), 0, 0)]);
+        assert_eq!(places(&removals), [(ModulatorLocation::Lane(0), 2, 0), (ModulatorLocation::Lane(0), 1, 0), (ModulatorLocation::Lane(0), 0, 0)]);
         let rack = &model.instruments[0].modulators;
         assert_eq!(rack[0].targets.iter().map(|t| t.depth).collect::<Vec<_>>(), [0.2, 0.3], "volume and pan are left, in their order");
         assert_eq!(rack[0].targets.len(), 2);
@@ -2286,7 +2386,7 @@ group = 1
         let group_cables_before = model.groups[0].modulators[1].targets.len();
         let removals = model.remove_edge(detune).unwrap();
         assert_eq!(
-            removals,
+            places(&removals),
             [(ModulatorLocation::Group(0), 1, 7), (ModulatorLocation::Lane(0), 2, 1), (ModulatorLocation::Lane(0), 0, 0)],
             "the group's cable, then the lane's, then the cable"
         );
@@ -2358,7 +2458,7 @@ rate = 3.0
         // its third is its second now, and so is the group's cable that drove that one's depth. The cables that drive
         // the depths of the first member's other modulator's, and of the other member's, are where they were.
         let second = edge_of(&model, 0, 0, 1);
-        assert_eq!(model.remove_edge(second), Some(vec![(ModulatorLocation::Lane(0), 0, 1)]));
+        assert_eq!(places(&model.remove_edge(second).unwrap()), [(ModulatorLocation::Lane(0), 0, 1)]);
         assert_eq!(in_the_group(&model), [drive(0, 0, 0), drive(0, 0, 1), drive(0, 1, 2), drive(1, 0, 2)]);
 
         // The second member's modulator loses its first cable: its third is its second, and its group cable follows.
@@ -2398,11 +2498,243 @@ depth = 0.4
         .model;
         let size = model.groups[0].modulators[0].targets[0].edge;
         let removals = model.remove_edge(size).unwrap();
-        assert_eq!(removals, [(ModulatorLocation::Group(0), 1, 0), (ModulatorLocation::Group(0), 0, 0)]);
+        assert_eq!(places(&removals), [(ModulatorLocation::Group(0), 1, 0), (ModulatorLocation::Group(0), 0, 0)]);
         let rack = &model.groups[0].modulators;
         assert_eq!(rack[0].targets.len(), 1, "damping is left");
         assert_eq!(cables(rack)[1], [(depth_of(0, 0), 0.4)], "and what drove its depth, which is its first now");
         model.check_ids().unwrap();
+    }
+
+    // -- Putting a cable back --
+
+    /// Everything that the racks of the model say about their cables, by modulator (the lanes', then the groups'): each cable as it is
+    /// written down, its id, place in the chain, kind, depth, range and slot.
+    fn racks(model: &SessionModel) -> Vec<Vec<String>> {
+        let lanes = model.instruments.iter().flat_map(|lane| lane.modulators.iter());
+        let groups = model.groups.iter().flat_map(|group| group.modulators.iter());
+        lanes.chain(groups).map(|modulator| modulator.targets.iter().map(|target| format!("{target:?}")).collect()).collect()
+    }
+
+    fn every_cable(model: &SessionModel) -> Vec<EdgeId> {
+        let lanes = model.instruments.iter().flat_map(|lane| lane.modulators.iter());
+        let groups = model.groups.iter().flat_map(|group| group.modulators.iter());
+        lanes.chain(groups).flat_map(|modulator| modulator.targets.iter().map(|target| target.edge)).collect()
+    }
+
+    #[test]
+    fn every_cable_of_every_session_is_put_back_where_it_was_with_the_cables_that_went_with_it() {
+        use crate::app::testutil::{CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS};
+        let sessions = [CABLES_THAT_DRIVE_CABLES, CABLES_THAT_DRIVE_EACH_OTHER, CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS];
+        let (mut tried, mut cycles) = (0, 0);
+        for (n, session) in sessions.into_iter().enumerate() {
+            for edge in every_cable(&load(session).model) {
+                // (A session of its own for each cable: what goes and is not put back would leave the next without its cable.)
+                let mut model = load(session).model;
+                let before = racks(&model);
+                let removed = model.remove_edge(edge).unwrap();
+                // (Cables that drive each other's depths are not put back: see `RemovedCable::still_driven`.)
+                if removed.iter().any(|cable| cable.still_driven) {
+                    cycles += 1;
+                    continue;
+                }
+                for cable in removed.into_iter().rev() {
+                    assert!(model.insert_target_at(cable.at, cable.mod_index, cable.target_index, cable.slot).is_some());
+                }
+                assert_eq!(racks(&model), before, "session {n}: {edge:?} taken out and put back");
+                model.check_ids().unwrap();
+                tried += 1;
+            }
+        }
+        assert!(tried > 30, "{tried} cables is not enough to say much");
+        assert_eq!(cycles, 2, "the two cables that drive each other's depths are the only ones that are not put back");
+    }
+
+    #[test]
+    fn a_cable_whose_driver_is_still_there_when_it_goes_says_so_and_only_when_it_is() {
+        let mut model = load(CABLES_THAT_DRIVE_EACH_OTHER).model;
+        // Each of the first cables drives the depth of the other: one goes first, with the other still driving its place.
+        let first = edge_of(&model, 0, 0, 0);
+        let removed = model.remove_edge(first).unwrap();
+        assert_eq!(removed.iter().map(|cable| cable.still_driven).collect::<Vec<_>>(), [true, false]);
+        // A chain of cables that drive each other's depths one way round has none that is left driving: the driver goes first.
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        let detune = edge_of(&model, 0, 0, 0);
+        let removed = model.remove_edge(detune).unwrap();
+        assert_eq!(removed.iter().map(|cable| cable.still_driven).collect::<Vec<_>>(), [false, false, false]);
+    }
+
+    #[test]
+    fn a_cable_of_a_group_that_drives_the_depth_of_a_members_cable_is_taken_out_first_so_that_it_is_not_left_driving_it() {
+        use crate::app::testutil::CROSS_MOD;
+        let mut model = load(CROSS_MOD).model;
+        let detune = edge_of(&model, 0, 0, 0);
+        let removed = model.remove_edge(detune).unwrap();
+        assert_eq!(places(&removed), [(ModulatorLocation::Group(0), 1, 7), (ModulatorLocation::Lane(0), 2, 1), (ModulatorLocation::Lane(0), 0, 0)]);
+        assert!(removed.iter().all(|cable| !cable.still_driven));
+    }
+
+    #[test]
+    fn a_cable_that_is_taken_out_says_what_it_was_centred_on() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        let osc = model.instruments[0].instrument.as_ref().unwrap();
+        let detune = osc.params.iter().find(|row| row.name == "detune").unwrap().value;
+        let first = edge_of(&model, 0, 0, 0);
+        let removed = model.remove_edge(first).unwrap();
+        // The deepest goes first: a cable that drives the depth of the one that drives the depth of this one is centred on that depth.
+        assert_eq!(removed.iter().map(|cable| cable.slot.depth).collect::<Vec<_>>(), [0.6, 0.4, 0.1]);
+        assert_eq!(removed.iter().map(|cable| cable.base_value).collect::<Vec<_>>(), [0.4, 0.1, detune]);
+        assert_eq!(removed.iter().map(|cable| cable.slot.edge).collect::<Vec<_>>().last(), Some(&first));
+    }
+
+    #[test]
+    fn what_a_cable_is_centred_on_is_what_the_user_set_what_it_drives_to_and_nothing_for_what_is_not_there() {
+        use crate::app::testutil::CROSS_MOD;
+        let model = load(CROSS_MOD).model;
+        // A group's cable to a member's parameter, to a bus parameter and to a field of a member's modulator; a lane's to a sibling's rate.
+        let mut found = 0;
+        for (at, rack) in [(ModulatorLocation::Group(0), &model.groups[0].modulators), (ModulatorLocation::Lane(0), &model.instruments[0].modulators)] {
+            for (index, modulator) in rack.iter().enumerate() {
+                for target in &modulator.targets {
+                    // (The session has a cable to the depth of a cable that its modulator does not have: it drives nothing.)
+                    if model.driven_by(at, index, &target.kind).is_some() {
+                        let centre = model.centre_of(at, index, &target.kind);
+                        assert!(centre.is_some_and(f32::is_finite), "{at:?} {index}: {:?} drives something that is there", target.kind);
+                        found += 1;
+                    } else {
+                        assert_eq!(model.centre_of(at, index, &target.kind), None, "{at:?} {index}: {:?}", target.kind);
+                    }
+                }
+            }
+        }
+        assert!(found > 10, "{found}");
+        let gone = K::PluginParam { slot: 9, param_index: 0 };
+        assert_eq!(model.centre_of(ModulatorLocation::Lane(0), 0, &gone), None);
+        assert_eq!(model.centre_of(ModulatorLocation::Lane(7), 0, &K::PluginParam { slot: 0, param_index: 0 }), None);
+    }
+
+    #[test]
+    fn a_cable_that_drove_nothing_when_it_went_is_put_back_centred_on_the_bottom_of_its_range() {
+        use crate::app::testutil::CROSS_MOD;
+        let mut model = load(CROSS_MOD).model;
+        // The group's second modulator has a cable to the depth of a cable that the first has not: it drives nothing.
+        let nothing = model.groups[0].modulators[1].targets.iter().find(|t| t.kind == depth_of(0, 0)).unwrap().edge;
+        let removed = model.remove_edge(nothing).unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].base_value, removed[0].slot.param_min);
+    }
+
+    /// A cable to the instrument's parameter 5, told apart by its id.
+    fn spare_cable(edge: u32) -> ModTargetSlot {
+        ModTargetSlot {
+            edge: EdgeId(edge),
+            slot: 0,
+            param_name: "spare".to_string(),
+            kind: K::PluginParam { slot: 0, param_index: 5 },
+            depth: 0.7,
+            param_min: 0.0,
+            param_max: 1.0,
+            effective: None,
+        }
+    }
+
+    #[test]
+    fn a_cable_is_put_in_at_the_place_it_is_given_or_the_last_and_not_at_all_where_there_is_no_modulator() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 0, 1, spare_cable(900)), Some(1));
+        let edges = |model: &SessionModel| model.instruments[0].modulators[0].targets.iter().map(|t| t.edge.0).collect::<Vec<_>>();
+        assert_eq!(edges(&model)[1], 900);
+        assert_eq!(edges(&model).len(), 4);
+        // The second modulator drove the depth of the first's third cable, which is the fourth now: it is told.
+        assert_eq!(cables(&model.instruments[0].modulators)[1], [(depth_of(0, 0), 0.4), (depth_of(0, 3), 0.5)]);
+        assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 0, 99, spare_cable(901)), Some(4), "past the end is the last place");
+        assert_eq!(edges(&model).last(), Some(&901));
+        assert_eq!(cables(&model.instruments[0].modulators)[1], [(depth_of(0, 0), 0.4), (depth_of(0, 3), 0.5)], "and moves nothing");
+        for at in [ModulatorLocation::Lane(0), ModulatorLocation::Lane(5), ModulatorLocation::Group(0)] {
+            let index = if at == ModulatorLocation::Lane(0) { 7 } else { 0 };
+            assert_eq!(model.insert_target_at(at, index, 0, spare_cable(902)), None, "{at:?} {index}");
+        }
+        assert_eq!(edges(&model).len(), 5);
+    }
+
+    #[test]
+    fn a_cable_that_goes_in_keeps_the_kind_it_has_though_it_names_a_place_of_the_modulator_it_goes_into() {
+        let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
+        let mut cable = spare_cable(900);
+        cable.kind = depth_of(0, 2);
+        assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 0, 0, cable), Some(0));
+        let rack = &model.instruments[0].modulators;
+        assert_eq!(rack[0].targets[0].kind, depth_of(0, 2), "it is not told a place it was not at: the others are");
+        assert_eq!(cables(rack)[1], [(depth_of(0, 1), 0.4), (depth_of(0, 3), 0.5)]);
+    }
+
+    #[test]
+    fn a_cable_in_a_members_modulator_that_goes_in_leaves_the_groups_cables_to_the_cables_of_the_other_members_alone() {
+        use crate::plugin::chain::CrossModField as F;
+        // Two members, each with a modulator of three cables; the group drives the depth of the third cable of each.
+        let mut model = load(
+            r#"
+[[group]]
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+mod_depth = [0, 2]
+depth = 0.1
+[[group.modulator.target]]
+member = 1
+mod_depth = [0, 2]
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator.target]]
+param = "volume"
+[[instrument.modulator.target]]
+param = "pan"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator.target]]
+param = "volume"
+[[instrument.modulator.target]]
+param = "pan"
+"#,
+        )
+        .model;
+        let drive = |member, depth| K::GroupMemberMod { member, mod_index: 0, field: F::Depth(depth) };
+        let in_the_group = |model: &SessionModel| model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(in_the_group(&model), [drive(0, 2), drive(1, 2)]);
+        // The first member's modulator gets a cable at its first place: the group's cable to its third is to its fourth, and the other member's is where it was.
+        assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 0, 0, spare_cable(900)), Some(0));
+        assert_eq!(in_the_group(&model), [drive(0, 3), drive(1, 2)]);
+    }
+
+    #[test]
+    fn a_cable_in_a_members_modulator_that_goes_in_tells_the_groups_cables_to_the_depths_of_the_later_ones() {
+        use crate::app::testutil::CROSS_MOD;
+        use crate::plugin::chain::CrossModField as F;
+        let mut model = load(CROSS_MOD).model;
+        let drive = |member, mod_index, depth| K::GroupMemberMod { member, mod_index, field: F::Depth(depth) };
+        let in_the_group = |model: &SessionModel| model.groups[0].modulators[1].targets.iter().map(|t| t.kind.clone()).collect::<Vec<_>>();
+        let before = in_the_group(&model);
+        assert!(before.contains(&drive(0, 0, 0)), "the group drives the depth of the member's first modulator's first cable");
+        // The member (lane 0) has a cable more in its first modulator, at its first place: the group's cable is to the second now.
+        assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 0, 0, spare_cable(900)), Some(0));
+        let after = in_the_group(&model);
+        assert!(after.contains(&drive(0, 0, 1)) && !after.contains(&drive(0, 0, 0)), "{after:?}");
+        // A cable of another modulator of the member is another's: the group's cables to the first's are where they were.
+        assert_eq!(model.insert_target_at(ModulatorLocation::Lane(0), 2, 0, spare_cable(901)), Some(0));
+        assert_eq!(in_the_group(&model), after);
     }
 
     #[test]
@@ -2412,7 +2744,7 @@ depth = 0.4
         let removals = model.remove_edge(first).unwrap();
         // Each drives the depth of the other: the second goes first, and then the cable itself. What was after it is
         // the modulator's first cable now, and drove nothing of the others.
-        assert_eq!(removals, [(ModulatorLocation::Lane(0), 1, 0), (ModulatorLocation::Lane(0), 0, 0)]);
+        assert_eq!(places(&removals), [(ModulatorLocation::Lane(0), 1, 0), (ModulatorLocation::Lane(0), 0, 0)]);
         assert!(model.instruments[0].modulators[1].targets.is_empty());
         assert_eq!(model.instruments[0].modulators[0].targets.len(), 1, "the parameter it drives is left");
     }
@@ -2421,10 +2753,10 @@ depth = 0.4
     fn a_cable_that_is_not_there_is_not_taken_out_and_nothing_changes() {
         let mut model = load(CABLES_THAT_DRIVE_CABLES).model;
         let before = cables(&model.instruments[0].modulators);
-        assert_eq!(model.remove_edge(EdgeId(999)), None);
+        assert!(model.remove_edge(EdgeId(999)).is_none());
         let gone = edge_of(&model, 0, 0, 1);
         assert!(model.remove_edge(gone).is_some());
-        assert_eq!(model.remove_edge(gone), None, "it is not there the second time");
+        assert!(model.remove_edge(gone).is_none(), "it is not there the second time");
         assert_ne!(cables(&model.instruments[0].modulators), before, "(the first time did change it)");
     }
 

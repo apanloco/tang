@@ -41,7 +41,7 @@ use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
     Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
-    PluginSlot, SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
+    PluginSlot, RemovedCable, SessionModel, default_effect_mix, fixup_cross_mod_after_remove, fixup_group_member_mod_after_remove, lane_member_ordinal, mod_source_slot_to_graph,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -749,7 +749,7 @@ impl Controller {
     fn take_out(&mut self, edge: EdgeId) -> Option<Vec<Driven>> {
         let driven = self.model.driven_by_edge(edge).into_iter().collect();
         let removals = self.model.remove_edge(edge)?;
-        for (at, mod_index, target_index) in removals {
+        for RemovedCable { at, mod_index, target_index, .. } in removals {
             let _ = self.cmd_tx.send(match at {
                 ModulatorLocation::Lane(inst) => GraphCommand::RemoveModTarget { inst, mod_index, target_index },
                 ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModTarget { group, mod_index, target_index },
