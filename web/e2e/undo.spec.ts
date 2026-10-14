@@ -90,14 +90,68 @@ test("a key typed in a field that takes text is the field's own undo and not the
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
   await expect(undo).toBeEnabled();
 
-  // A change that nothing puts back yet (an effect added) empties it: there is nothing to undo, and the keys leave Control+Z alone.
+  // An effect that is added is a step of its own; one that is taken out is a change that nothing puts back yet, and it empties the history: there is
+  // nothing to undo, and the keys leave Control+Z alone.
   await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Reverb" }).click();
   await expect(node(page, "Reverb")).toBeVisible();
+  await expect(undo).toHaveAccessibleName("Undo add Reverb");
+  await node(page, "Reverb").getByRole("button", { name: "Remove Reverb" }).click();
+  await expect(node(page, "Reverb")).toHaveCount(0);
   await expect(undo).toBeDisabled();
   await detune.focus();
   await page.keyboard.press("ControlOrMeta+Z");
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
+});
+
+test("an effect that is added is taken out by Undo and put back by Redo, with what was done to it, and the saved file has what is done", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  const save = async (): Promise<string> => {
+    await page.getByRole("button", { name: /^Save/ }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  const reverb = node(page, "Reverb");
+  await expect(reverb).toBeVisible();
+  await expect(undo).toHaveAccessibleName("Undo add Reverb");
+
+  // Something is done to the effect that was added.
+  const damping = reverb.getByRole("slider", { name: "damping", exact: true });
+  const before = (await damping.getAttribute("aria-valuenow")) ?? "";
+  await damping.focus();
+  await page.keyboard.press("End");
+  const turned = (await damping.getAttribute("aria-valuenow")) ?? "";
+  expect(turned).not.toBe(before);
+  await expect(undo).toHaveAccessibleName("Undo set damping");
+  expect(await save()).toContain("builtin:reverb");
+
+  // The last thing done is put back first, and then the effect is taken out: the file that is saved then has no reverb.
+  await undo.click();
+  await expect(damping).toHaveAttribute("aria-valuenow", before);
+  await expect(undo).toHaveAccessibleName("Undo add Reverb");
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expect(reverb).toHaveCount(0);
+  await expect(undo).toBeDisabled();
+  await expect(redo).toHaveAccessibleName("Redo add Reverb");
+  expect(await save()).not.toContain("builtin:reverb");
+
+  // And done again: the effect comes back with the id it had, so that what was done to it finds it, and the knob is where it was turned.
+  await page.keyboard.press("ControlOrMeta+Shift+Z");
+  await expect(reverb).toBeVisible();
+  await expect(redo).toHaveAccessibleName("Redo set damping");
+  await redo.click();
+  await expect(reverb.getByRole("slider", { name: "damping", exact: true })).toHaveAttribute("aria-valuenow", turned);
+  await expect(redo).toBeDisabled();
+  const saved = await save();
+  expect(saved).toContain("builtin:reverb");
+  expect(Number(/^damping\s*=\s*(\S+)$/m.exec(saved)?.[1])).toBeCloseTo(Number(turned), 5);
 });
 
 test("the mock engine in the page has the same buttons and keys, and they do what the program's do", async ({ page }) => {
@@ -118,4 +172,13 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
   await page.keyboard.press("ControlOrMeta+Z");
   await expect(detune).toHaveAttribute("aria-valuenow", "0");
+  // What is added is taken out and put back too.
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  await expect(node(page, "Reverb")).toBeVisible();
+  await expect(undo).toHaveAccessibleName("Undo add Reverb");
+  await undo.click();
+  await expect(node(page, "Reverb")).toHaveCount(0);
+  await redo.click();
+  await expect(node(page, "Reverb")).toBeVisible();
 });
