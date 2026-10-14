@@ -2334,6 +2334,19 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 log::error!("Failed to save session: {e}");
             }
         }
+        // Ctrl+Shift+Z and Ctrl+Y — redo; Ctrl+Z — undo: the controller's history of what was set (the browser's buttons ask for
+        // the same). Nothing to undo or redo is logged and changes nothing. (Checked in this order, as the save keys are.)
+        KeyCode::Char('z' | 'Z')
+            if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            s.apply(Intent::Redo);
+        }
+        KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
+            s.apply(Intent::Redo);
+        }
+        KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => {
+            s.apply(Intent::Undo);
+        }
         KeyCode::Char('1') => s.active_tab = 0,
         KeyCode::Char('2') => s.active_tab = 1,
         KeyCode::Char('3') => s.active_tab = 2,
@@ -4384,6 +4397,8 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  Shift+Tab  Previous tab".into(),
         "  Ctrl+S     Save session".into(),
         "  Ctrl+Shift+S  Save session as (new filename)".into(),
+        "  Ctrl+Z     Undo the last thing set (as the browser's Undo does)".into(),
+        "  Ctrl+Y     Redo (Ctrl+Shift+Z too)".into(),
         "  Ctrl+Q     Quit".into(),
         "".into(),
         "Session tab (chain focus):".into(),

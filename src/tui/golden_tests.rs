@@ -4400,3 +4400,153 @@ plugin = "builtin:reverb"
         assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 0, index: 0 });
     }
 }
+
+mod undo_and_redo {
+    //! Ctrl+Z and Ctrl+Y: the controller's history (`Controller::undo` / `redo`), which the browser's buttons ask for too.
+
+    use super::*;
+    use crate::app::intent::Intent;
+
+    fn ctrl_z(h: &mut Harness) {
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    }
+
+    fn ctrl_y(h: &mut Harness) {
+        h.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL);
+    }
+
+    fn cutoff_of_the_bus_filter(h: &Harness) -> f32 {
+        h.s.ctl.model.groups[0].effects[0].params[0].value
+    }
+
+    #[test]
+    fn the_help_tab_lists_the_keys() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.press(KeyCode::Char('4'));
+        let frame = h.dump();
+        assert!(frame.contains("Ctrl+Z     Undo the last thing set"), "{frame}");
+        assert!(frame.contains("Ctrl+Y     Redo (Ctrl+Shift+Z too)"), "{frame}");
+    }
+
+    #[test]
+    fn ctrl_z_puts_back_what_a_key_set_and_ctrl_y_does_it_again_in_the_model_and_in_the_engine() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.press(KeyCode::Enter).press(KeyCode::Left); // the filter's cutoff, 5% down from fully open
+        assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.950"]);
+        assert_eq!(cutoff_of_the_bus_filter(&h), 0.95);
+
+        h.s.ctl.dirty = false;
+        ctrl_z(&mut h);
+        assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=1.000"]);
+        assert_eq!(cutoff_of_the_bus_filter(&h), 1.0);
+        assert!(h.s.ctl.dirty, "going back is a change of the session too");
+
+        ctrl_y(&mut h);
+        assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.950"]);
+        assert_eq!(cutoff_of_the_bus_filter(&h), 0.95);
+    }
+
+    #[test]
+    fn a_drag_of_keys_is_one_step_for_ctrl_z_as_it_is_for_the_browsers_undo() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.press(KeyCode::Enter).press_n(KeyCode::Left, 4); // 20% down, in four presses a moment apart
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(cutoff_of_the_bus_filter(&h), 1.0, "all four are put back at once");
+        assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=1.000"]);
+    }
+
+    #[test]
+    fn ctrl_shift_z_redoes_as_ctrl_y_does_and_a_capital_z_is_the_same_key() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.press(KeyCode::Enter).press(KeyCode::Left);
+        ctrl_z(&mut h);
+        h.commands();
+        h.press_with(KeyCode::Char('z'), ctrl_shift());
+        assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.950"]);
+        ctrl_z(&mut h);
+        h.commands();
+        h.press_with(KeyCode::Char('Z'), ctrl_shift());
+        assert_eq!(h.commands(), ["SetGroupParameter group=0 fx=0 param=0 value=0.950"]);
+    }
+
+    #[test]
+    fn a_z_and_a_y_without_control_are_no_undo_and_no_redo() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.press(KeyCode::Enter).press(KeyCode::Left);
+        ctrl_z(&mut h);
+        h.commands();
+        // A key of the piano on its own tab, and a letter on the others: what was undone is not done again, and the other way round.
+        for tab in ['1', '2'] {
+            h.press(KeyCode::Char(tab));
+            h.press(KeyCode::Char('y')).press(KeyCode::Char('z')).press_with(KeyCode::Char('Z'), KeyModifiers::SHIFT);
+        }
+        assert!(h.commands().is_empty());
+        assert_eq!(cutoff_of_the_bus_filter(&h), 1.0);
+        ctrl_y(&mut h);
+        h.commands();
+        h.press(KeyCode::Char('1')).press(KeyCode::Char('z')).press(KeyCode::Char('y'));
+        assert!(h.commands().is_empty());
+        assert_eq!(cutoff_of_the_bus_filter(&h), 0.95);
+    }
+
+    #[test]
+    fn ctrl_z_and_ctrl_y_with_nothing_to_undo_or_redo_do_nothing() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.s.ctl.dirty = false;
+        ctrl_z(&mut h);
+        ctrl_y(&mut h);
+        assert!(h.commands().is_empty());
+        assert_eq!(cutoff_of_the_bus_filter(&h), 1.0);
+        assert!(!h.s.ctl.dirty);
+    }
+
+    #[test]
+    fn ctrl_z_puts_back_the_keys_of_a_lane_and_the_tree_says_so() {
+        let mut h = Harness::new(scene_split());
+        let before = h.tree()[0].to_string();
+        h.press(KeyCode::Char('R')).press_n(KeyCode::Backspace, 5).type_chars("C2-C6").press(KeyCode::Enter);
+        assert_eq!(h.tree()[0], "♪ Oscillator  [Built-in]  C2-C6");
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(h.tree()[0], before, "the label of the lane is what it was");
+        assert_eq!(h.commands(), ["SetInstrumentRange inst=0 range=Some((12, 59))"], "C0-B3, as the scene has it");
+        ctrl_y(&mut h);
+        assert_eq!(h.tree()[0], "♪ Oscillator  [Built-in]  C2-C6");
+    }
+
+    #[test]
+    fn ctrl_z_puts_back_what_a_browser_did_and_the_tree_follows_the_effects_back_to_their_places() {
+        let mut h = Harness::new(scene_two_effects());
+        let order = |h: &Harness| h.tree().iter().filter(|line| line.contains("fx ")).map(|line| line.to_string()).collect::<Vec<_>>();
+        let before = order(&h);
+        let filter = h.s.ctl.model.instruments[0].effects[0].node;
+        // What a browser does: the intent is applied by the controller, and the loop of the TUI reacts to it.
+        let applied = h.s.ctl.apply(Intent::MoveEffect { node: filter, index: 1 }).unwrap();
+        h.s.react_to(&applied);
+        assert_ne!(order(&h), before, "the effects are in the other order");
+        ctrl_z(&mut h);
+        assert_eq!(order(&h), before);
+        ctrl_y(&mut h);
+        assert_ne!(order(&h), before);
+    }
+
+    #[test]
+    fn ctrl_z_is_not_heard_while_a_value_is_being_typed_and_does_not_undo_what_was_not_set() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+        h.press(KeyCode::Enter).press(KeyCode::Left);
+        h.commands();
+        // The value popup is open: a key goes to it, and what was set is not put back behind it.
+        h.press(KeyCode::Enter);
+        assert!(h.s.editing.is_some());
+        ctrl_z(&mut h);
+        assert!(h.commands().is_empty());
+        assert_eq!(cutoff_of_the_bus_filter(&h), 0.95);
+    }
+}
