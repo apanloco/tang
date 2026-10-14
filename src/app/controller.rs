@@ -585,7 +585,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
+        let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep: None });
         self.model.remove_effect(inst, index);
         true
     }
@@ -627,7 +627,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index });
+        let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index, keep: None });
         self.model.remove_bus_effect(group, index);
         true
     }

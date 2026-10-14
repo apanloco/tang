@@ -36,7 +36,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::InsertGroupEffect { group, index, effect, mix } => {
             format!("InsertGroupEffect group={group} index={index} plugin={} mix={mix:.3}", effect.name())
         }
-        C::RemoveGroupEffect { group, index } => format!("RemoveGroupEffect group={group} index={index}"),
+        C::RemoveGroupEffect { group, index, keep } => format!("RemoveGroupEffect group={group} index={index}{}", if keep.is_some() { " keep" } else { "" }),
         C::ReorderGroupEffect { group, from, to } => {
             format!("ReorderGroupEffect group={group} from={from} to={to}")
         }
@@ -86,7 +86,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::InsertEffect { inst, index, effect, mix } => {
             format!("InsertEffect inst={inst} index={index} plugin={} mix={mix:.3}", effect.name())
         }
-        C::RemoveEffect { inst, index } => format!("RemoveEffect inst={inst} index={index}"),
+        C::RemoveEffect { inst, index, keep } => format!("RemoveEffect inst={inst} index={index}{}", if keep.is_some() { " keep" } else { "" }),
         C::ReorderEffect { inst, from, to } => format!("ReorderEffect inst={inst} from={from} to={to}"),
         C::InsertModulator { inst, index, source } => {
             format!("InsertModulator inst={inst} index={index} source={source:?}")

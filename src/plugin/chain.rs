@@ -873,6 +873,20 @@ fn fixup_cross_mod_after_remove(modulators: &mut [Modulator], removed_index: usi
     }
 }
 
+/// Hand `plugin`, which was taken out of the graph, back to the main thread without dropping it here: to `keep`, the channel that the main thread made
+/// for this plugin when it wants the very plugin to put it back (the controller's history of what was taken out), or by `return_tx`, where the main
+/// thread drops what comes, when it made none, when nobody listens to it any more or when it is full. Never blocks.
+fn hand_back(return_tx: &Sender<Box<dyn Plugin>>, keep: Option<Sender<Box<dyn Plugin>>>, plugin: Box<dyn Plugin>) {
+    let plugin = match keep {
+        Some(keep) => match keep.try_send(plugin) {
+            Ok(()) => return,
+            Err(unsent) => unsent.into_inner(),
+        },
+        None => plugin,
+    };
+    let _ = return_tx.try_send(plugin);
+}
+
 /// After an effect is inserted at effect index `at`, bump plugin-param target
 /// slots so they keep pointing at the same plugins (effects at/after `at`
 /// shifted up one). Slot 0 (instrument) is untouched.
@@ -1580,6 +1594,20 @@ fn remap_member_slots_after_reorder(modulators: &mut [Modulator], member: usize,
     }
 }
 
+/// After a bus effect is inserted at `at`, bump the `GroupBus` targets that pointed at that effect or a later one, so they keep pointing at the same
+/// effects (the inverse of `fixup_group_bus_after_remove`, and the bus counterpart of `shift_slots_after_insert`).
+fn shift_group_bus_after_insert(modulators: &mut [Modulator], at: usize) {
+    for m in modulators.iter_mut() {
+        for t in &mut m.targets {
+            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
+                if *effect_index >= at {
+                    *effect_index += 1;
+                }
+            }
+        }
+    }
+}
+
 /// After bus effect `removed` is deleted, drop GroupBus targets on it and shift
 /// higher effect indices down one.
 fn fixup_group_bus_after_remove(modulators: &mut [Modulator], removed: usize) {
@@ -1712,10 +1740,12 @@ pub enum GraphCommand {
         effect: Box<dyn Plugin>,
         mix: f64,
     },
-    /// Remove an effect from a specific instrument lane's chain.
+    /// Remove an effect from a specific instrument lane's chain. The plugin is handed to `keep` when there is one that has room and is listened to
+    /// (the controller keeps it for the history, to put it back), and goes back by the return channel otherwise (`hand_back`).
     RemoveEffect {
         inst: usize,
         index: usize,
+        keep: Option<Sender<Box<dyn Plugin>>>,
     },
     /// Reorder an effect within a specific instrument lane's chain.
     ReorderEffect {
@@ -1810,10 +1840,11 @@ pub enum GraphCommand {
         effect: Box<dyn Plugin>,
         mix: f64,
     },
-    /// Remove an effect from a group's bus chain.
+    /// Remove an effect from a group's bus chain. The plugin is handed to `keep` as `RemoveEffect` says.
     RemoveGroupEffect {
         group: usize,
         index: usize,
+        keep: Option<Sender<Box<dyn Plugin>>>,
     },
     /// Reorder an effect within a group's bus chain.
     ReorderGroupEffect {
@@ -3362,7 +3393,7 @@ impl AudioGraph {
                         });
                     }
                 }
-                GraphCommand::RemoveEffect { inst, index } => {
+                GraphCommand::RemoveEffect { inst, index, keep } => {
                     let old = self.get_instrument_mut(inst).and_then(|lane| {
                         if index < lane.effects.len() {
                             let old = lane.effects.remove(index);
@@ -3375,7 +3406,7 @@ impl AudioGraph {
                         }
                     });
                     if let Some(old) = old {
-                        let _ = self.return_tx.try_send(old);
+                        hand_back(&self.return_tx, keep, old);
                         // The same for group modulators targeting this lane's plugins.
                         self.fix_group_member_targets(inst, |mods, member| {
                             fixup_member_slots_after_remove(mods, member, index)
@@ -3685,10 +3716,12 @@ impl AudioGraph {
                             let idx = index.min(g.effects.len());
                             g.effects.insert(idx, effect);
                             g.mix_values.insert(idx, mix);
+                            // Bump the group modulators' bus targets that pointed at this or a later effect.
+                            shift_group_bus_after_insert(&mut g.modulators, idx);
                         }
                     }
                 }
-                GraphCommand::RemoveGroupEffect { group, index } => {
+                GraphCommand::RemoveGroupEffect { group, index, keep } => {
                     let old = self.groups.get_mut(group).and_then(|g| {
                         if index < g.effects.len() {
                             g.mix_values.remove(index);
@@ -3701,7 +3734,7 @@ impl AudioGraph {
                         }
                     });
                     if let Some(old) = old {
-                        let _ = self.return_tx.try_send(old);
+                        hand_back(&self.return_tx, keep, old);
                     }
                 }
                 GraphCommand::ReorderGroupEffect { group, from, to } => {
@@ -4813,6 +4846,7 @@ mod tests {
             .send(GraphCommand::RemoveEffect {
                 inst: 0,
                 index: 0,
+                keep: None,
             })
             .unwrap();
 
@@ -5806,7 +5840,7 @@ mod tests {
     #[test]
     fn removing_an_effect_moves_the_group_modulators_targets_on_that_member() {
         let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
-        cmd_tx.send(GraphCommand::RemoveEffect { inst: 1, index: 0 }).unwrap();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 1, index: 0, keep: None }).unwrap();
         graph.drain_commands();
         // The effect in slot 1 is gone with its target; the one in slot 2 is in
         // slot 1 now. The instrument's and the other member's are untouched.
@@ -5816,7 +5850,7 @@ mod tests {
     #[test]
     fn removing_an_effect_on_the_second_member_leaves_the_first_members_targets() {
         let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
-        cmd_tx.send(GraphCommand::RemoveEffect { inst: 2, index: 0 }).unwrap();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 2, index: 0, keep: None }).unwrap();
         graph.drain_commands();
         assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 1, 1), (0, 2, 2)]);
     }
@@ -5848,7 +5882,7 @@ mod tests {
         let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
         cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index: 0, effect: scale_effect(), mix: 1.0 }).unwrap();
         cmd_tx.send(GraphCommand::ReorderEffect { inst: 0, from: 0, to: 1 }).unwrap();
-        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
         graph.drain_commands();
         assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 1, 1), (0, 2, 2), (1, 1, 3)]);
     }
@@ -5879,12 +5913,12 @@ mod tests {
         // An effect that is not there, a move to nowhere, a move to the same place,
         // and a lane that does not exist.
         for command in [
-            GraphCommand::RemoveEffect { inst: 2, index: 1 },
-            GraphCommand::RemoveEffect { inst: 1, index: 9 },
+            GraphCommand::RemoveEffect { inst: 2, index: 1, keep: None },
+            GraphCommand::RemoveEffect { inst: 1, index: 9, keep: None },
             GraphCommand::ReorderEffect { inst: 1, from: 0, to: 9 },
             GraphCommand::ReorderEffect { inst: 1, from: 9, to: 0 },
             GraphCommand::ReorderEffect { inst: 1, from: 1, to: 1 },
-            GraphCommand::RemoveEffect { inst: 9, index: 0 },
+            GraphCommand::RemoveEffect { inst: 9, index: 0, keep: None },
             GraphCommand::ReorderEffect { inst: 9, from: 0, to: 1 },
         ] {
             cmd_tx.send(command).unwrap();
@@ -6684,7 +6718,7 @@ mod tests {
         graph.process(&[note_on(60)], &mut out).unwrap();
 
         // Removing an effect must remap target slots without crashing.
-        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
         let mut out = make_output();
         graph.process(&[note_on(60)], &mut out).unwrap();
         assert!(out[0].iter().all(|&s| s.is_finite()));
@@ -7422,7 +7456,7 @@ mod tests {
         rig.process(&[]);
         assert!(close(rig.read(first), 0.7) && close(rig.read(second), 0.9));
 
-        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
         // The first target is gone with its effect; make the survivor's cell readable as changed.
         rig.telemetry.store(first, -1.0);
         rig.telemetry.store(second, -1.0);
@@ -7654,7 +7688,7 @@ mod tests {
     fn two_parameters_of_one_plugin_publish_their_own_values() {
         let mut rig = Rig::new();
         // Replace the effect with one that has two parameters.
-        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0 }).unwrap();
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
         insert_effect(&rig.cmd_tx, 0, two_param_effect(), 1.0);
         rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
         let target = |rig: &mut Rig, param_index, depth| {
@@ -8750,6 +8784,325 @@ mod tests {
         assert_eq!(all_modulators(&graph), before);
         modulator_out_and_back(&mut graph, &cmd_tx, group, 2, &[]);
         assert_eq!(all_modulators(&graph), before);
+    }
+
+    // -- An effect is handed back, and put back --
+    //
+    // What the controller takes out of a chain for the history, it asks the audio thread to hand back through a channel of its own (`keep`), so that the very
+    // plugin, with whatever it holds, can be put back where it was (`InsertEffect`, `InsertGroupEffect`). A plugin goes the usual way, by the return channel,
+    // when nothing asks for it, when nobody listens or when the channel is full.
+
+    /// The gains of a chain's effects, which tell them apart.
+    fn gains_of(effects: &mut [Box<dyn Plugin>]) -> Vec<f32> {
+        effects.iter_mut().map(|effect| effect.get_parameter(0).unwrap()).collect()
+    }
+
+    /// A lane with three effects whose gains, and mixes, are 0.25, 0.5 and 0.75.
+    fn lane_with_three_effects() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        for (index, gain) in [0.25f32, 0.5, 0.75].into_iter().enumerate() {
+            cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) }).unwrap();
+        }
+        graph.drain_commands();
+        (graph, cmd_tx, return_rx)
+    }
+
+    /// A group with a bus of three effects whose gains, and mixes, are 0.25, 0.5 and 0.75.
+    fn group_with_three_bus_effects() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for (index, gain) in [0.25f32, 0.5, 0.75].into_iter().enumerate() {
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) }).unwrap();
+        }
+        graph.drain_commands();
+        (graph, cmd_tx, return_rx)
+    }
+
+    #[test]
+    fn an_effect_that_is_taken_out_with_a_channel_is_handed_to_it_and_not_to_the_return_channel() {
+        let (mut graph, cmd_tx, return_rx) = lane_with_three_effects();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 1, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        assert!(return_rx.try_recv().is_err(), "it did not go the usual way");
+        let mut plugin = kept.try_recv().expect("it went to the channel that asked for it");
+        assert_eq!(plugin.get_parameter(0), Some(0.5), "the plugin that was at that place");
+        assert_eq!(gains_of(&mut graph.instruments[0].effects), [0.25, 0.75]);
+        assert_eq!(graph.instruments[0].mix_values, [0.25, 0.75]);
+    }
+
+    #[test]
+    fn a_bus_effect_that_is_taken_out_with_a_channel_is_handed_to_it_too() {
+        let (mut graph, cmd_tx, return_rx) = group_with_three_bus_effects();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveGroupEffect { group: 0, index: 0, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        assert!(return_rx.try_recv().is_err());
+        assert_eq!(kept.try_recv().expect("it went to the channel that asked for it").get_parameter(0), Some(0.25));
+        assert_eq!(gains_of(&mut graph.groups[0].effects), [0.5, 0.75]);
+        assert_eq!(graph.groups[0].mix_values, [0.5, 0.75]);
+    }
+
+    #[test]
+    fn an_effect_goes_the_usual_way_when_nothing_asks_for_it_or_nobody_listens_or_the_channel_is_full() {
+        for what in ["no channel", "nobody listens", "a full channel"] {
+            for bus in [false, true] {
+                let (mut graph, cmd_tx, return_rx) = if bus { group_with_three_bus_effects() } else { lane_with_three_effects() };
+                // (Held to the end of the round: the channel is open, and full, for as long as it is.)
+                let mut holders = Vec::new();
+                let keep = match what {
+                    "no channel" => None,
+                    "nobody listens" => {
+                        let (keep, kept) = crossbeam_channel::bounded(1);
+                        drop(kept);
+                        Some(keep)
+                    }
+                    _ => {
+                        let (keep, kept) = crossbeam_channel::bounded(1);
+                        keep.send(Box::new(ParamScaleEffect { gain: 0.9 }) as Box<dyn Plugin>).unwrap();
+                        holders.push(kept);
+                        Some(keep)
+                    }
+                };
+                cmd_tx.send(if bus { GraphCommand::RemoveGroupEffect { group: 0, index: 1, keep } } else { GraphCommand::RemoveEffect { inst: 0, index: 1, keep } }).unwrap();
+                graph.drain_commands();
+                let mut plugin = return_rx.try_recv().unwrap_or_else(|_| panic!("{what}, bus {bus}: it goes to the return channel"));
+                assert_eq!(plugin.get_parameter(0), Some(0.5), "{what}, bus {bus}");
+                let effects = if bus { &mut graph.groups[0].effects } else { &mut graph.instruments[0].effects };
+                assert_eq!(gains_of(effects), [0.25, 0.75], "{what}, bus {bus}");
+                if what == "a full channel" {
+                    assert_eq!(holders[0].try_recv().unwrap().get_parameter(0), Some(0.9), "what was in the channel is still the only thing in it");
+                    assert!(holders[0].try_recv().is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_effect_that_is_not_there_hands_nothing_back_and_leaves_the_channel_empty() {
+        let (mut graph, cmd_tx, return_rx) = lane_with_three_effects();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 3, keep: Some(keep) }).unwrap();
+        let (keep_of_bus, kept_of_bus) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveGroupEffect { group: 4, index: 0, keep: Some(keep_of_bus) }).unwrap();
+        graph.drain_commands();
+        assert!(kept.try_recv().is_err() && kept_of_bus.try_recv().is_err() && return_rx.try_recv().is_err());
+        assert_eq!(gains_of(&mut graph.instruments[0].effects), [0.25, 0.5, 0.75]);
+    }
+
+    /// Group 0's first modulator's cables to its bus effects, as (effect, parameter).
+    fn bus_cables(graph: &AudioGraph) -> Vec<(usize, u32)> {
+        graph.groups[0].modulators[0]
+            .targets
+            .iter()
+            .filter_map(|t| match t.kind {
+                ModTargetKind::GroupBus { effect_index, param_index } => Some((effect_index, param_index)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `group_with_three_bus_effects` with a modulator of the group whose cables go to the effects (told apart by their parameter, 0 to 2) and to a member's plugin.
+    fn group_with_cables_to_three_bus_effects() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
+        let (mut graph, cmd_tx, return_rx) = group_with_three_bus_effects();
+        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
+        for param_index in 0..3 {
+            add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupBus { effect_index: param_index as usize, param_index }, 0.1 * f32::from(param_index as u8 + 1)));
+        }
+        add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 7 }, 0.9));
+        graph.drain_commands();
+        assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)]);
+        (graph, cmd_tx, return_rx)
+    }
+
+    #[test]
+    fn a_bus_effect_that_goes_in_before_others_tells_the_cables_to_them_the_place_they_have_now() {
+        let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1 }).unwrap();
+        graph.drain_commands();
+        // What drove the first is as it was, and what drove the second and the third drive the third and the fourth; what is not a bus cable is not moved.
+        assert_eq!(bus_cables(&graph), [(0, 0), (2, 1), (3, 2)]);
+        assert_eq!(graph.groups[0].modulators[0].targets[3].kind, ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 7 });
+        assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.1, 0.5, 0.75]);
+        assert_eq!(graph.groups[0].mix_values, [0.25, 0.1, 0.5, 0.75]);
+        // At the first place, they all move.
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.2 }), mix: 0.2 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(bus_cables(&graph), [(1, 0), (3, 1), (4, 2)]);
+    }
+
+    #[test]
+    fn a_bus_effect_that_goes_in_at_the_end_or_past_it_is_the_last_and_moves_no_cable() {
+        for index in [3, 4, 99] {
+            let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1 }).unwrap();
+            graph.drain_commands();
+            assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)], "put at {index}");
+            assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.5, 0.75, 0.1], "put at {index}");
+        }
+    }
+
+    #[test]
+    fn a_bus_effect_for_a_group_that_is_not_there_changes_nothing() {
+        let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 5, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)]);
+        assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.5, 0.75]);
+    }
+
+    #[test]
+    fn a_bus_effect_with_the_wrong_channel_count_is_turned_away_and_handed_back_by_the_return_channel_and_moves_no_cable() {
+        /// Mono effect (1 output): incompatible with a stereo chain.
+        struct MonoEffect;
+
+        impl Plugin for MonoEffect {
+            fn name(&self) -> &str {
+                "MonoEffect"
+            }
+            fn is_instrument(&self) -> bool {
+                false
+            }
+            fn audio_output_count(&self) -> usize {
+                1
+            }
+            fn audio_input_count(&self) -> usize {
+                1
+            }
+
+            fn process(&mut self, _midi_events: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+                for (out, inp) in audio_out.iter_mut().zip(audio_in.iter()) {
+                    out.copy_from_slice(inp);
+                }
+                Ok(())
+            }
+
+            mock_plugin_boilerplate!();
+        }
+
+        let (mut graph, cmd_tx, return_rx) = group_with_cables_to_three_bus_effects();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(MonoEffect), mix: 0.1 }).unwrap();
+        graph.drain_commands();
+        assert_eq!(return_rx.try_recv().expect("it comes back").name(), "MonoEffect");
+        assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.5, 0.75], "it is not in the bus");
+        assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)], "and nothing was told that it went in");
+    }
+
+    /// What the controller asks of the audio thread to take an effect of a lane's chain out for the history and to put it back: the cables that drive it
+    /// (`into`: the lane, the modulator and the place of each when its turn comes; for a member of a group, the group's: `group_into`) go first, then the
+    /// effect itself, with a channel to be handed to; and everything comes back in the reverse order: the very plugin, at its place and with its mix, and
+    /// then the cables, the last that went first, each with what it was centred on.
+    fn effect_out_and_back(graph: &mut AudioGraph, cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, index: usize, cables: &[(Rack, usize, usize)]) {
+        let mut taken = Vec::new();
+        for &(rack, modulator, target) in cables {
+            let (at, bases) = match rack {
+                Rack::Lane(of) => (ModulatorLocation::Lane(of), graph.instruments[of].modulators[modulator].targets[target].clone()),
+                Rack::Group(of) => (ModulatorLocation::Group(of), graph.groups[of].modulators[modulator].targets[target].clone()),
+            };
+            cmd_tx
+                .send(match rack {
+                    Rack::Lane(inst) => GraphCommand::RemoveModTarget { inst, mod_index: modulator, target_index: target },
+                    Rack::Group(group) => GraphCommand::RemoveGroupModTarget { group, mod_index: modulator, target_index: target },
+                })
+                .unwrap();
+            taken.push((at, modulator, target, bases));
+            graph.drain_commands();
+        }
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        let mix = graph.instruments[inst].mix_values[index];
+        cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        let effect = kept.try_recv().expect("the effect is handed back");
+        cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect, mix }).unwrap();
+        for (at, modulator, target, cable) in taken.into_iter().rev() {
+            let target_cable = ModTarget { kind: cable.kind, depth: cable.depth, base_value: cable.base_value, param_min: cable.param_min, param_max: cable.param_max, effective: cable.effective };
+            cmd_tx
+                .send(match at {
+                    ModulatorLocation::Lane(inst) => GraphCommand::InsertModTarget { inst, mod_index: modulator, target_index: target, target: target_cable },
+                    ModulatorLocation::Group(group) => GraphCommand::InsertGroupModTarget { group, mod_index: modulator, target_index: target, target: target_cable },
+                })
+                .unwrap();
+        }
+        graph.drain_commands();
+    }
+
+    #[test]
+    fn a_lanes_effect_that_is_taken_out_and_put_back_with_the_cables_that_drove_it_leaves_the_chain_and_the_cables_as_they_were() {
+        let (mut graph, cmd_tx, _rr) = lane_with_three_effects();
+        // An LFO with a cable to each effect's gain (slot 1 to 3) and one to the instrument, and a second LFO that drives the depth of the cable to the second's.
+        insert_lane_lfo(&cmd_tx, 0, 0);
+        for (slot, depth) in [(1, 0.1), (2, 0.2), (3, 0.3), (0, 0.4)] {
+            add_lane_cable(&cmd_tx, 0, 0, cable(param(slot, 0), depth));
+        }
+        insert_lane_lfo(&cmd_tx, 0, 1);
+        add_lane_cable(&cmd_tx, 0, 1, cable(depth_of(0, 1), 0.5));
+        graph.drain_commands();
+        // The effect that is taken out has a state of its own, which has to come back with it.
+        graph.instruments[0].effects[1].set_parameter(0, 0.6).unwrap();
+        let before = (all_modulators(&graph), gains_of(&mut graph.instruments[0].effects), graph.instruments[0].mix_values.clone());
+        let lane = Rack::Lane(0);
+        // Its cable goes first, with the cable that drives its depth before it; the second effect's cable is the second of the first modulator.
+        effect_out_and_back(&mut graph, &cmd_tx, 0, 1, &[(lane, 1, 0), (lane, 0, 1)]);
+        assert_eq!((all_modulators(&graph), gains_of(&mut graph.instruments[0].effects), graph.instruments[0].mix_values.clone()), before);
+        // The first and the last: the cables to the effects after them are told their places, and the instrument's cable is not.
+        effect_out_and_back(&mut graph, &cmd_tx, 0, 0, &[(lane, 0, 0)]);
+        assert_eq!((all_modulators(&graph), gains_of(&mut graph.instruments[0].effects), graph.instruments[0].mix_values.clone()), before);
+        effect_out_and_back(&mut graph, &cmd_tx, 0, 2, &[(lane, 0, 2)]);
+        assert_eq!((all_modulators(&graph), gains_of(&mut graph.instruments[0].effects), graph.instruments[0].mix_values.clone()), before);
+        assert_eq!(gains_of(&mut graph.instruments[0].effects), [0.25, 0.6, 0.75], "the state of the one that was taken out is what it was");
+    }
+
+    #[test]
+    fn a_members_effect_that_is_taken_out_and_put_back_with_the_groups_cables_to_it_leaves_the_group_as_it_was() {
+        // Lane 0 outside the group, lanes 1 and 2 in it; the group's LFO has a cable to each of member 0's (lane 1's) three effects.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for inst in [1, 2] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+        }
+        for index in 0..3 {
+            cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index, effect: Box::new(ParamScaleEffect { gain: 0.25 * (index + 1) as f32 }), mix: 1.0 }).unwrap();
+        }
+        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
+        for slot in 0..4 {
+            add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member: 0, slot, param_index: 0 }, 0.1 + 0.1 * slot as f32));
+        }
+        graph.drain_commands();
+        let before = (all_modulators(&graph), gains_of(&mut graph.instruments[1].effects));
+        let group = Rack::Group(0);
+        // The second effect (slot 2) of lane 1: the group's cable to it goes first, and the cables to the third effect are told it is in slot 2.
+        effect_out_and_back(&mut graph, &cmd_tx, 1, 1, &[(group, 0, 2)]);
+        assert_eq!((all_modulators(&graph), gains_of(&mut graph.instruments[1].effects)), before);
+        effect_out_and_back(&mut graph, &cmd_tx, 1, 0, &[(group, 0, 1)]);
+        assert_eq!((all_modulators(&graph), gains_of(&mut graph.instruments[1].effects)), before);
+        effect_out_and_back(&mut graph, &cmd_tx, 1, 2, &[(group, 0, 3)]);
+        assert_eq!((all_modulators(&graph), gains_of(&mut graph.instruments[1].effects)), before);
+    }
+
+    #[test]
+    fn a_bus_effect_that_is_taken_out_and_put_back_with_the_cables_that_drove_it_leaves_the_bus_and_the_cables_as_they_were() {
+        let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
+        let before = (all_modulators(&graph), gains_of(&mut graph.groups[0].effects), graph.groups[0].mix_values.clone());
+        for (index, cable_place) in [(1, 1), (0, 0), (2, 2)] {
+            // The group's cable to the effect goes first, then the effect with a channel to be handed to; and they come back in the reverse order.
+            let slot = graph.groups[0].modulators[0].targets[cable_place].clone();
+            cmd_tx.send(GraphCommand::RemoveGroupModTarget { group: 0, mod_index: 0, target_index: cable_place }).unwrap();
+            let (keep, kept) = crossbeam_channel::bounded(1);
+            let mix = graph.groups[0].mix_values[index];
+            cmd_tx.send(GraphCommand::RemoveGroupEffect { group: 0, index, keep: Some(keep) }).unwrap();
+            graph.drain_commands();
+            assert_eq!(bus_cables(&graph).len(), 2);
+            let effect = kept.try_recv().expect("the effect is handed back");
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect, mix }).unwrap();
+            let target = ModTarget { kind: slot.kind, depth: slot.depth, base_value: slot.base_value, param_min: slot.param_min, param_max: slot.param_max, effective: slot.effective };
+            cmd_tx.send(GraphCommand::InsertGroupModTarget { group: 0, mod_index: 0, target_index: cable_place, target }).unwrap();
+            graph.drain_commands();
+            assert_eq!((all_modulators(&graph), gains_of(&mut graph.groups[0].effects), graph.groups[0].mix_values.clone()), before, "bus effect {index}");
+        }
     }
 
     // -- Lanes change places --
