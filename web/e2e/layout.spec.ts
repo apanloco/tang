@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
+import { addEnvelope, drag, expectNodesApart, output, setting, still } from "./canvas";
 import { test } from "./own";
 
 // Moving the nodes of the patch, on the real program (a program of its own: where a node is put is in the file it saves).
@@ -96,4 +97,54 @@ test("a node dragged on the canvas stays where it is put down, a page that is op
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(readFileSync(own.file, "utf8")).not.toMatch(/^ui = /m);
   await other.close();
+});
+
+/** Where the canvas draws each node, in its own pixels, by the name in its header (the view pans and zooms, so the screen's are not the node's). */
+async function placesByName(page: Page): Promise<Record<string, { x: number; y: number }>> {
+  return page.evaluate(() => {
+    const places: Record<string, { x: number; y: number }> = {};
+    for (const element of document.querySelectorAll<HTMLElement>(".react-flow__node")) {
+      const found = /translate\((-?[\d.e-]+)px,\s*(-?[\d.e-]+)px\)/.exec(element.style.transform);
+      const name = element.querySelector(".tang-node__name")?.textContent;
+      if (name && found?.[1] && found[2]) places[name] = { x: Number(found[1]), y: Number(found[2]) };
+    }
+    return places;
+  });
+}
+
+test("a cable drawn to the setting of another modulator leaves every node where it is, and the button of the canvas puts them where the layout has them", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const lfo = nodeNamed(page, "LFO");
+  await expect(lfo).toBeVisible();
+
+  // The button has nothing to do yet.
+  const arrange = page.getByRole("button", { name: "Arrange the nodes again" });
+  await expect(arrange).toBeDisabled();
+
+  const first = await placesByName(page);
+  expect(Object.keys(first).sort()).toEqual(["LFO", "Filter", "Master", "Oscillator"].sort());
+  const envelope = await addEnvelope(page);
+  await still(envelope);
+
+  // A cable from the LFO to the Attack of the envelope: the layout would put the LFO a row above the envelope, and move the strip down for the room that makes.
+  // The nodes stay: the canvas is not rearranged under the hand that drew the cable.
+  const added = await placesByName(page);
+  await drag(page, output(lfo), setting(envelope, "attack"));
+  await expect(page.locator(".tang-cable--modulation")).toHaveCount(2);
+  await still(envelope);
+  const drawn = await placesByName(page);
+  expect(drawn).toEqual(added);
+  for (const [name, place] of Object.entries(first)) expect(drawn[name], name).toEqual(place);
+
+  // What is not where the layout has it can be put there: the button is bright, and the nodes go, each to its place in the layout, the oscillator's strip down a row.
+  await expect(arrange).toBeEnabled();
+  await arrange.click();
+  await expect.poll(async () => (await placesByName(page)).Oscillator?.y ?? 0, { message: "the strip goes down a row, below the envelope that the LFO drives" }).toBeGreaterThan((first.Oscillator?.y ?? 0) + 100);
+  await expect(arrange).toBeDisabled();
+  await expectNodesApart(page);
+  const arranged = await placesByName(page);
+  expect(arranged.LFO?.y).toBeLessThan(arranged.ADSR?.y ?? 0);
+  expect(arranged.ADSR?.y).toBeLessThan(arranged.Oscillator?.y ?? 0);
 });

@@ -140,6 +140,20 @@ function rectangles(graph: Graph) {
   });
 }
 
+/** The first pair of nodes of `flow` that overlap, by the sizes the layout assumes, or null. */
+function overlapsIn(graph: Graph, flow: ReturnType<typeof toFlow>): string | null {
+  const rects = flow.nodes.map((placed) => {
+    const node = nodeOf(graph, Number(placed.id));
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length) };
+  });
+  for (const [i, a] of rects.entries()) {
+    for (const b of rects.slice(i + 1)) {
+      if (!(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)) return `${String(a.id)} and ${String(b.id)}`;
+    }
+  }
+  return null;
+}
+
 /** How tall a modulator's node is in `graph`, as the layout assumes: it has a row for each cable that starts at it. */
 function tall(graph: Graph, id: NodeId): number {
   const cables = graph.edges.filter((edge) => edge.kind === "modulation" && edge.from.node === id).length;
@@ -699,7 +713,7 @@ describe("the nodes on the canvas", () => {
   });
 
   test("are none for a session that has none", () => {
-    expect(toFlow({ nodes: [], edges: [] })).toEqual({ nodes: [], edges: [] });
+    expect(toFlow({ nodes: [], edges: [] })).toEqual({ nodes: [], edges: [], places: new Map(), arranged: true });
   });
 
   test("do not move when what changes is a value", () => {
@@ -875,6 +889,277 @@ describe("a node that the layout places, where a person has placed another", () 
       const same = toFlow(placed(twoLanes, { [node.id]: at(flow, node.id).position }));
       for (const other of twoLanes.nodes) expect(at(same, other.id).position, `${String(other.id)} with ${String(node.id)} placed where it is`).toEqual(at(flow, other.id).position);
     }
+  });
+});
+
+describe("a layout that remembers where it put the nodes", () => {
+  // A person who draws a cable does not expect the canvas to be rearranged under their hand: a node that the layout has put somewhere stays there when the session changes, and
+  // what is new goes where the layout would put it, level with the strip it is of, and clear of what is there. The layout puts every node where it would have put it only when it
+  // is asked to (`toFlow` with nothing remembered), which is what the control that arranges the nodes again does.
+  const rack: Graph = {
+    nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), master],
+    edges: [audio(1, 2), audio(2, MASTER)],
+  };
+  const toRate: Edge = { kind: "modulation", id: 5, amount: 0.3, from: { node: 3, port: { type: "modOut" } }, to: { node: 4, port: { type: "rate" } } };
+  const withCable: Graph = { nodes: rack.nodes, edges: [...rack.edges, toRate] };
+  const positions = (flow: ReturnType<typeof toFlow>): Record<string, { x: number; y: number }> => Object.fromEntries(flow.nodes.map((node) => [node.id, node.position]));
+
+  test("a cable from one modulator to a setting of another moves no node, though a layout that has not seen them puts the one that drives a tier above", () => {
+    const before = toFlow(rack);
+    const after = toFlow(withCable, before.places);
+    expect(positions(after)).toEqual(positions(before));
+    // (Without the memory the driver is a row above the one it drives and the strip below makes room for the two rows: that is what a person saw.)
+    expect(at(toFlow(withCable), 4).position).not.toEqual(at(before, 4).position);
+    expect(at(toFlow(withCable), 1).position).not.toEqual(at(before, 1).position);
+  });
+
+  test("nothing moves either when the cable is taken out again, or when a cable goes to a parameter, or to the depth of a cable", () => {
+    const before = toFlow(rack);
+    const drawn = toFlow(withCable, before.places);
+    expect(positions(toFlow(rack, drawn.places))).toEqual(positions(before));
+    const toParam: Graph = { nodes: rack.nodes, edges: [...rack.edges, cable(6, 3, 2, 1)] };
+    expect(positions(toFlow(toParam, before.places))).toEqual(positions(before));
+    const depth: Graph = { nodes: rack.nodes, edges: [...withCable.edges, { kind: "modulation", id: 7, amount: 0.2, from: { node: 4, port: { type: "modOut" } }, to: { node: 3, port: { type: "depth", edge: 5 } } }] };
+    expect(positions(toFlow(depth, drawn.places))).toEqual(positions(before));
+  });
+
+  test("a layout of nothing remembered is the layout of every node where it goes, and says so", () => {
+    const flow = toFlow(withCable);
+    expect(flow.arranged).toBe(true);
+    // (A layout that kept every node where it was is not, once what is drawn would have put a node elsewhere.)
+    expect(toFlow(withCable, toFlow(rack).places).arranged).toBe(false);
+    expect(toFlow(rack, toFlow(rack).places).arranged).toBe(true);
+  });
+
+  test("a node that was not remembered, an effect added at the end of a chain, goes next in the row of its lane, level with the others, though a tier is above it now", () => {
+    const before = toFlow(rack);
+    const drawn = toFlow(withCable, before.places);
+    const longer: Graph = { nodes: [instrument(1), effect(2, 1), effect(6, 1), modulator(3, 1), modulator(4, 1), master], edges: [...withCable.edges, audio(6, MASTER)] };
+    const after = toFlow(longer, drawn.places);
+    expect(at(after, 6).position).toEqual({ x: at(before, 2).position.x + COLUMN, y: at(before, 2).position.y });
+    for (const id of [1, 2, 3, 4]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    // (The master is the end of the canvas: it goes along, a column to the right of the lane that is longer.)
+    expect(at(after, MASTER).position).toEqual({ x: at(before, MASTER).position.x + COLUMN, y: at(before, MASTER).position.y });
+  });
+
+  test("an effect that is moved takes the place of the one it passes, and they are the only nodes that move", () => {
+    const chain: Graph = { nodes: [instrument(1), effect(2, 1), effect(3, 1), effect(4, 1), modulator(5, 1), master], edges: [] };
+    const before = toFlow(chain);
+    const swapped: Graph = { nodes: [instrument(1), effect(3, 1), effect(2, 1), effect(4, 1), modulator(5, 1), master], edges: [] };
+    const after = toFlow(swapped, before.places);
+    expect(at(after, 3).position).toEqual(at(before, 2).position);
+    expect(at(after, 2).position).toEqual(at(before, 3).position);
+    for (const id of [1, 4, 5, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+  });
+
+  test("a node that is taken out leaves the others where they are, except the effects after it in its chain, which close up", () => {
+    const chain: Graph = { nodes: [instrument(1), effect(2, 1), effect(3, 1), effect(4, 1), modulator(5, 1), modulator(6, 1), master], edges: [] };
+    const before = toFlow(chain);
+    const noModulator = toFlow({ nodes: chain.nodes.filter((node) => node.id !== 5), edges: [] }, before.places);
+    for (const id of [1, 2, 3, 4, 6, MASTER]) expect(at(noModulator, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    const noEffect = toFlow({ nodes: chain.nodes.filter((node) => node.id !== 2), edges: [] }, before.places);
+    expect(at(noEffect, 3).position).toEqual(at(before, 2).position);
+    expect(at(noEffect, 4).position).toEqual(at(before, 3).position);
+    for (const id of [1, 5, 6]) expect(at(noEffect, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    // (The master closes up with the lane, which is a column shorter.)
+    expect(at(noEffect, MASTER).position).toEqual({ x: at(before, MASTER).position.x - COLUMN, y: at(before, MASTER).position.y });
+  });
+
+  test("a modulator that is added goes clear of the nodes that are there, in the row above its strip", () => {
+    const before = toFlow(rack);
+    const drawn = toFlow(withCable, before.places);
+    const more: Graph = { nodes: [...withCable.nodes.slice(0, -1), modulator(8, 1), master], edges: withCable.edges };
+    const after = toFlow(more, drawn.places);
+    expect(overlapsIn(more, after)).toBeNull();
+    // (Above the strip, where the others of its rack are, and not on the row of the strip.)
+    expect(at(after, 8).position.y).toBeLessThan(at(after, 1).position.y);
+    for (const id of [1, 2, 3, 4, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+  });
+
+  test("the places of nodes that have a place of their own are the session's, and are not remembered: the node goes where the layout puts it when it has none", () => {
+    const before = toFlow(rack);
+    const placed: Graph = { nodes: rack.nodes.map((node) => (node.id === 2 ? { ...node, ui: { x: 900, y: 900 } } : node)), edges: rack.edges };
+    const moved = toFlow(placed, before.places);
+    expect(at(moved, 2).position).toEqual({ x: 900, y: 900 });
+    expect(moved.places.has(2)).toBe(false);
+    // Taken from where it was put (its place undone): it is laid out again, level with its lane, and does not stay where it had been.
+    const back = toFlow(rack, moved.places);
+    expect(at(back, 2).position).toEqual(at(before, 2).position);
+  });
+
+  test("what a node that is gone had is forgotten, and a node that is back is laid out as a new one", () => {
+    const before = toFlow(rack);
+    const without = toFlow({ nodes: rack.nodes.filter((node) => node.id !== 3), edges: [] }, before.places);
+    expect([...without.places.keys()].sort()).toEqual([1, 2, 4, MASTER].sort());
+  });
+
+  /** `twoLanes` with the first instrument showing twelve knobs more than it did: a node a few rows taller than the place that was left for it. */
+  const grownFirst: Graph = {
+    nodes: twoLanes.nodes.map((node) =>
+      node.id === 1 && node.kind === "instrument" && node.plugin
+        ? { ...node, plugin: { ...node.plugin, params: [...node.plugin.params, ...params(12)].map((param, index) => ({ ...param, index })), pinned: Array.from({ length: 12 }, (_, index) => index) } }
+        : node,
+    ),
+    edges: twoLanes.edges,
+  };
+
+  test("a node that grows, one that shows more knobs, makes room for itself: the strip below it goes down as it is, to where the layout has it, and the rest stays", () => {
+    const before = toFlow(twoLanes);
+    const grown = toFlow(grownFirst, before.places);
+    const fresh = toFlow(grownFirst);
+    expect(overlapsIn(grownFirst, grown)).toBeNull();
+    // (The lane it is in, and the modulator above it, stay: the master is level with the middle of what is below the growth, so that it goes along.)
+    for (const id of [1, 2, 3, 4]) expect(at(grown, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    // The strip below goes down by what the growth took, the instrument and its effect together, below the node that grew with the gap of a row: where the layout has them.
+    expect(at(grown, 5).position.y).toBeGreaterThan(at(before, 5).position.y);
+    expect(at(grown, 5).position).toEqual(at(fresh, 5).position);
+    expect(at(grown, 6).position).toEqual(at(fresh, 6).position);
+    expect(at(grown, 6).position.y).toBe(at(grown, 5).position.y);
+  });
+
+  /** `graph` with the plugin of the node `id` showing `extra` knobs more than it did (all of its parameters are pinned to it). */
+  const grow = (graph: Graph, id: NodeId, extra: number): Graph => ({
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.id === id && (node.kind === "instrument" || node.kind === "effect") && node.plugin
+        ? { ...node, plugin: { ...node.plugin, params: [...node.plugin.params, ...params(extra)].map((param, index) => ({ ...param, index })), pinned: Array.from({ length: node.plugin.params.length + extra }, (_, index) => index) } }
+        : node,
+    ),
+  });
+
+  test("a row that comes to be over a short node of the row above and a taller one next to it is moved below both, one after the other", () => {
+    const before = toFlow(twoLanes);
+    // (The first instrument grows by a row, and the effect after it by three: the row below is over the first at once, and over the second when it is below the first.)
+    const grown = grow(grow(twoLanes, 1, 5), 2, 12);
+    const after = toFlow(grown, before.places);
+    expect(overlapsIn(grown, after)).toBeNull();
+    const bottomOf = (id: NodeId): number => at(after, id).position.y + nodeHeight(nodeOf(grown, id), at(after, id).data.knobs.length);
+    expect(bottomOf(2)).toBeGreaterThan(bottomOf(1));
+    expect(at(after, 5).position.y).toBe(bottomOf(2) + ROW_GAP);
+    expect(at(after, 6).position.y).toBe(at(after, 5).position.y);
+  });
+
+  test("a node that room is made for and that comes to be on one that a person has placed is moved clear of it, and the one that was placed stays", () => {
+    const before = toFlow(twoLanes);
+    // The place is just below the first node of the second lane, clear of it, and in the way of it when it is pushed down.
+    const place = { x: 20, y: at(before, 5).position.y + nodeHeight(nodeOf(twoLanes, 5), at(before, 5).data.knobs.length) + 24 };
+    const withPlaced = (graph: Graph): Graph => ({ ...graph, nodes: graph.nodes.map((node) => (node.id === 3 ? { ...node, ui: place } : node)) });
+    const settled = toFlow(withPlaced(twoLanes), before.places);
+    expect(overlapsIn(withPlaced(twoLanes), settled)).toBeNull();
+    const grown = withPlaced(grownFirst);
+    const after = toFlow(grown, settled.places);
+    expect(overlapsIn(grown, after)).toBeNull();
+    expect(at(after, 3).position).toEqual(place);
+    // (The row was pushed down by the growth, and the node that came to be on the one that was placed went below it.)
+    expect(at(after, 5).position.y).toBeGreaterThan(place.y);
+  });
+
+  test("a node that grows by less than the gap below it moves nothing", () => {
+    const before = toFlow(twoLanes);
+    const room = at(before, 5).position.y - at(before, 1).position.y - nodeHeight(nodeOf(twoLanes, 1), at(before, 1).data.knobs.length);
+    expect(room).toBeGreaterThanOrEqual(ROW_GAP);
+    // (One more cable on the modulator above: its list is a row of 20 px taller, and it has the gap of a cable under it.)
+    const more: Graph = { nodes: twoLanes.nodes, edges: [...twoLanes.edges, cable(1, 4, 3, 3)] };
+    const after = toFlow(more, before.places);
+    expect(positions(after)).toEqual(positions(before));
+  });
+
+  test("the strip of a group goes along with the group when a lane grows past it, with its bus effects and its modulators, at the height they were at, and the master goes after it", () => {
+    const before = toFlow(grouped);
+    const longer: Graph = { nodes: grouped.nodes.flatMap((node) => (node.id === 6 ? [node, effect(7, 4)] : [node])), edges: grouped.edges };
+    const after = toFlow(longer, before.places);
+    expect(overlapsIn(longer, after)).toBeNull();
+    for (const id of [10, 11, 12, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual({ x: at(before, id).position.x + COLUMN, y: at(before, id).position.y });
+    for (const id of [1, 2, 3, 4, 5, 6]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    expect(at(after, 7).position).toEqual({ x: 3 * COLUMN, y: at(before, 6).position.y });
+  });
+
+  test("the strip of a group closes up with the group when a lane is shorter, and its bus effects and its modulators go with it", () => {
+    const before = toFlow(grouped);
+    const shorter: Graph = { nodes: grouped.nodes.filter((node) => node.id !== 5), edges: grouped.edges.filter((edge) => !(edge.kind === "audio" && (edge.from.node === 5 || edge.to.node === 5))) };
+    const after = toFlow(shorter, before.places);
+    expect(overlapsIn(shorter, after)).toBeNull();
+    for (const id of [10, 11, 12, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual({ x: at(before, id).position.x - COLUMN, y: at(before, id).position.y });
+    expect(at(after, 6).position).toEqual(at(before, 5).position);
+    for (const id of [1, 2, 3, 4]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+  });
+
+  test("a modulator that is added to a lane that has no room above its row makes room: the row and what is below go down, and the modulator is above its row as the layout has it", () => {
+    const before = toFlow(twoLanes);
+    const added: Graph = { nodes: [...twoLanes.nodes.slice(0, -1), modulator(9, 5), master], edges: twoLanes.edges };
+    const after = toFlow(added, before.places);
+    const fresh = toFlow(added);
+    expect(overlapsIn(added, after)).toBeNull();
+    for (const id of [1, 2, 3, 4]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    for (const id of [5, 6, 9]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(fresh, id).position);
+    expect(at(after, 9).position.y).toBeLessThan(at(after, 5).position.y);
+    expect(at(after, 5).position.y).toBeGreaterThan(at(before, 5).position.y);
+  });
+
+  test("a node that is put on one that stayed moves that one clear of it, and what is not near it stays", () => {
+    const before = toFlow(twoLanes);
+    const dropped: Graph = { nodes: twoLanes.nodes.map((node) => (node.id === 6 ? { ...node, ui: { x: 20, y: 380 } } : node)), edges: twoLanes.edges };
+    const after = toFlow(dropped, before.places);
+    expect(overlapsIn(dropped, after)).toBeNull();
+    expect(at(after, 6).position).toEqual({ x: 20, y: 380 });
+    // (The first instrument was under it: it goes below it, with the gap of a row.)
+    expect(at(after, 1).position.x).toBe(at(before, 1).position.x);
+    expect(at(after, 1).position.y).toBeGreaterThanOrEqual(380 + nodeHeight(nodeOf(dropped, 6), at(after, 6).data.knobs.length) + ROW_GAP);
+    for (const id of [2, 3, 4, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+  });
+
+  test("a lane that is added where a lane was taken out from above one that stayed goes below the one that stayed", () => {
+    const lanes: Graph = { nodes: [instrument(1), effect(2, 1), instrument(3), effect(4, 3), instrument(5), effect(6, 5), master], edges: [] };
+    const before = toFlow(lanes);
+    const gap: Graph = { nodes: lanes.nodes.filter((node) => node.id !== 3 && node.id !== 4), edges: [] };
+    const gapped = toFlow(gap, before.places);
+    expect(at(gapped, 5).position).toEqual(at(before, 5).position);
+    const added: Graph = { nodes: [...gap.nodes.slice(0, -1), instrument(7), master], edges: [] };
+    const after = toFlow(added, gapped.places);
+    expect(overlapsIn(added, after)).toBeNull();
+    for (const id of [1, 2, 5, 6]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(before, id).position);
+    expect(at(after, 7).position.x).toBe(0);
+    expect(at(after, 7).position.y).toBeGreaterThanOrEqual(at(after, 5).position.y + nodeHeight(nodeOf(added, 5), at(after, 5).data.knobs.length) + ROW_GAP);
+  });
+
+  test("a modulator that is added to a rack that has a hole in it goes above the one that stayed where the layout would have had it", () => {
+    const before = toFlow(rack);
+    const noFirst: Graph = { nodes: rack.nodes.filter((node) => node.id !== 3), edges: [] };
+    const closed = toFlow(noFirst, before.places);
+    expect(at(closed, 4).position).toEqual(at(before, 4).position);
+    const again: Graph = { nodes: [instrument(1), effect(2, 1), modulator(4, 1), modulator(5, 1), master], edges: [] };
+    const after = toFlow(again, closed.places);
+    expect(overlapsIn(again, after)).toBeNull();
+    for (const id of [1, 2, 4, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual(at(closed, id).position);
+    expect(at(after, 5).position.x).toBe(at(closed, 4).position.x);
+    expect(at(after, 5).position.y).toBeLessThan(at(closed, 4).position.y);
+  });
+
+  test("a node that a person has placed is no obstacle at the place it was remembered at: a node that comes to it is where the layout puts it", () => {
+    const before = toFlow(rack);
+    // The second modulator is put somewhere else (and the first is gone) in the same change that adds another: the new one is level with the place the second had.
+    const changed: Graph = { nodes: [instrument(1), effect(2, 1), { ...modulator(4, 1), ui: { x: 3000, y: -2000 } }, modulator(5, 1), master], edges: [] };
+    const after = toFlow(changed, before.places);
+    expect(at(after, 4).position).toEqual({ x: 3000, y: -2000 });
+    expect(at(after, 5).position).toEqual(at(toFlow(changed), 5).position);
+    expect(at(after, 5).position).toEqual(at(before, 4).position);
+  });
+
+  test("the layout is arranged when a node that was put on another has made it move clear, and not for a node that has a place of its own", () => {
+    const dropped: Graph = { nodes: twoLanes.nodes.map((node) => (node.id === 6 ? { ...node, ui: { x: 20, y: 380 } } : node)), edges: twoLanes.edges };
+    expect(toFlow(dropped).arranged).toBe(true);
+    const far: Graph = { nodes: twoLanes.nodes.map((node) => (node.id === 6 ? { ...node, ui: { x: 9000, y: 9000 } } : node)), edges: twoLanes.edges };
+    expect(toFlow(far).arranged).toBe(true);
+    expect(toFlow(far, toFlow(twoLanes).places).arranged).toBe(true);
+  });
+
+  test("the layout is not arranged when a node stays where it was and the layout would have it in another column, though it is level with where the layout has it", () => {
+    const before = toFlow(rack);
+    const noFirst: Graph = { nodes: rack.nodes.filter((node) => node.id !== 3), edges: [] };
+    const closed = toFlow(noFirst, before.places);
+    expect(at(closed, 4).position.y).toBe(at(toFlow(noFirst), 4).position.y);
+    expect(at(closed, 4).position.x).not.toBe(at(toFlow(noFirst), 4).position.x);
+    expect(closed.arranged).toBe(false);
   });
 });
 

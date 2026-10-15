@@ -58,13 +58,32 @@ export async function still(target: Locator): Promise<void> {
     .toBe(true);
 }
 
-/** An envelope put in the oscillator's lane from its menu (the tracer's LFO is in it already). */
+/**
+ * An envelope put in the oscillator's lane from its menu (the tracer's LFO is in it already), once the canvas has stopped moving: the nodes stay where they are when one is
+ * added, and the view moves to show it if it is not all in it (above the others, say), so that a cable dragged at once would start where its port was a moment before.
+ */
 export async function addEnvelope(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Add a modulator to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Envelope" }).click();
   const envelope = node(page, "ADSR");
   await expect(envelope).toBeVisible();
+  await still(envelope);
   return envelope;
+}
+
+/** The view moved to show every node, by the button of the canvas's controls, once it has stopped moving (it moves to show a node that was added, and may leave the others out of it). */
+export async function showAll(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Fit View" }).click();
+  await still(page.locator(".react-flow__node").first());
+}
+
+/** The nodes arranged again, with the button of the canvas, which then moves the view to show them all: waits until it has stopped moving. */
+export async function arrange(page: Page): Promise<void> {
+  const button = page.getByRole("button", { name: "Arrange the nodes again" });
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(button).toBeDisabled();
+  await still(page.locator(".react-flow__node").first());
 }
 
 /** Where each node of the canvas is, as the browser draws it (`name` is the node's own, as it is in its header). */

@@ -4,6 +4,7 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import { SESSION_FILE, TANG } from "../playwright.config";
+import { still } from "./canvas";
 import { resetTracer, sessionAccordingToTheServer } from "./support";
 
 interface Session {
@@ -128,6 +129,7 @@ test("a modulator added from the menu and a cable dragged to a parameter are in 
   await page.getByRole("menuitem", { name: "Envelope" }).click();
   const envelope = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^ADSR$/ }) });
   await expect(envelope).toBeVisible();
+  await still(envelope);
   const added = await sessionAccordingToTheServer(page);
   const adsr = added.graph.nodes.find((node) => node.name === "ADSR");
   expect(adsr?.source?.type).toBe("envelope");
@@ -176,6 +178,7 @@ test("a cable dragged from an envelope to the rate of the LFO is in the server's
   const envelope = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^ADSR$/ }) });
   const lfo = page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: /^LFO$/ }) });
   await expect(envelope).toBeVisible();
+  await still(envelope);
 
   const from = await envelope.locator('.react-flow__handle[data-handleid="modOut"]').boundingBox();
   const to = await lfo.locator('.react-flow__handle[data-handleid="rate"]').boundingBox();

@@ -335,5 +335,9 @@ describe("arranging the nodes again", () => {
       ["setNodeUi", oscillator.id, null],
       ["setNodeUi", filter.id, null],
     ]);
+    // Nothing is left to arrange.
+    await waitFor(async () => {
+      expect((await arrange()).hasAttribute("disabled")).toBe(true);
+    });
   });
 });

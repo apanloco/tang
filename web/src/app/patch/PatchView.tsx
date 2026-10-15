@@ -3,7 +3,9 @@
 // lane or a group, to take a modulator or a cable out, to draw a cable by dragging it from a
 // modulator's output to a parameter's port, and to move a node by dragging it (by what is not a
 // control): where it is put down goes to the server, which keeps it with the session (§4.4), and
-// every browser draws the node there. The nodes that are not moved are where the layout puts them.
+// every browser draws the node there. The nodes that are not moved are where the layout puts them, and stay there when the session
+// changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
+// the nodes to be arranged again.
 import { Background, ControlButton, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
 import type { Connection, Edge, EdgeTypes, NodeTypes, OnConnectStart } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,8 +19,9 @@ import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
-import { sameStructure, toFlow } from "./toFlow";
+import { sameStructure } from "./toFlow";
 import type { Flow } from "./toFlow";
+import { useLayout } from "./useLayout";
 import { useMovableNodes } from "./useMovableNodes";
 import { rectOf, viewToShow } from "./view";
 import type { View } from "./view";
@@ -109,10 +112,15 @@ function ShowWhatWasAdded({ graph, flow }: { graph: Graph | null; flow: Flow }) 
 export function PatchView() {
   // The canvas is laid out again when something other than a value changed.
   const graph = useClientSelection((state) => state.snapshot?.graph ?? null, sameGraphStructure);
-  const flow = useMemo(() => (graph ? toFlow(graph) : { nodes: [], edges: [] }), [graph]);
+  const { flow, arrangeAgain } = useLayout(graph);
   const editor = useEditor();
-  // Whether any node has been moved: what there is to arrange again.
+  // Whether there is anything to arrange again: a node that has been moved, or one that is not where the layout would have it.
   const anyMoved = graph?.nodes.some((node) => node.ui !== undefined) ?? false;
+  const arrange = useCallback(() => {
+    arrangeAgain();
+    // (If one is refused the page says so: `Editor` puts the reason among the notices.)
+    void editor.resetLayout();
+  }, [arrangeAgain, editor]);
   // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
   const moveNode = useCallback((node: NodeId, ui: NodeUi) => editor.moveNode(node, ui), [editor]);
   const { nodes, onNodesChange, onNodeDragStart, onNodeDragStop } = useMovableNodes(flow.nodes, moveNode);
@@ -193,15 +201,7 @@ export function PatchView() {
             >
               <Background gap={24} />
               <Controls showInteractive={false}>
-                <ControlButton
-                  title="Arrange the nodes again"
-                  aria-label="Arrange the nodes again"
-                  disabled={!anyMoved}
-                  onClick={() => {
-                    // (If one is refused the page says so: `Editor` puts the reason among the notices.)
-                    void editor.resetLayout();
-                  }}
-                >
+                <ControlButton title="Arrange the nodes again" aria-label="Arrange the nodes again" disabled={!anyMoved && flow.arranged} onClick={arrange}>
                   <span aria-hidden="true">↺</span>
                 </ControlButton>
               </Controls>

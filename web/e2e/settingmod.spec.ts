@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { angleOf, arcPath, fractionOf, pointAt } from "../src/ui/knob-geometry";
-import { addEnvelope, drag, node, output, setting, still } from "./canvas";
+import { addEnvelope, drag, node, output, setting, showAll, still } from "./canvas";
 import { test } from "./own";
 
 // What a cable to a modulator's own setting looks like, on the real program (a program of its own, on the null audio backend): the rate of the
@@ -122,6 +122,8 @@ test("a group's envelope drawn to the rate of a member's LFO gives the Rate knob
 
   const lfo = node(page, "LFO");
   const rate = knobOf(lfo, "Rate");
+  // (The view has moved to show the envelope, which is above the group where the layout put it, and the LFO, which stayed, may be out of it.)
+  await showAll(page);
   await still(envelope);
   await still(lfo);
   await drag(page, output(envelope), setting(lfo, "rate"));

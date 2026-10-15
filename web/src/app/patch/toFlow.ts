@@ -7,6 +7,12 @@
 // session says otherwise: a node that has been moved has a place (`Node.ui`, kept in the
 // session file, §4.4), and is drawn there; the layout of the others does not leave room for it,
 // but a node that the layout would put on one that was placed (or too near it) is moved clear of it (`clearOfPlaced`).
+// The canvas is not rearranged under a person's hand: given the places that the last layout put the nodes at, a node stays
+// where it was while the slot it was put for is the same, and only what is new (or is in another slot: an effect that was
+// moved along its chain) goes where the layout puts it, level with its strip and clear of the nodes that stayed. Room is made where
+// it is needed: what has grown, or a modulator that is added to a strip that has no room above its row, pushes the rows below it
+// down, strips and all (`makeRoom`). Every node goes where the layout puts it when nothing is remembered, which is what arranging
+// the nodes again does.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { cableWords, displayNames, endLabel } from "../../client/names";
@@ -99,9 +105,23 @@ export interface PatchEdgeData extends Record<string, unknown> {
 
 export type PatchEdge = FlowEdge<PatchEdgeData, PatchEdgeKind>;
 
+/** A place that the layout put a node at, and the slot that the node was in then (`slotsOf`): the next layout keeps it there while the slot is the same. */
+export interface Remembered {
+  x: number;
+  y: number;
+  slot: string;
+}
+
+/** The places that a layout put the nodes that nobody has placed at, by node: what `toFlow` is given, to leave them where they are. */
+export type Places = ReadonlyMap<NodeId, Remembered>;
+
 export interface Flow {
   nodes: PatchNode[];
   edges: PatchEdge[];
+  /** Where the nodes that the layout placed are, for the next layout to leave them there (the nodes that a person placed have the session's place). */
+  places: Places;
+  /** Whether every node is where a layout that remembered nothing puts it: false when the places that were remembered keep a node away from it. */
+  arranged: boolean;
 }
 
 /**
@@ -346,7 +366,7 @@ function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>, cableCoun
   return placed;
 }
 
-/** How near a node that the layout places may be to one that a person placed, before it is moved: the sizes the layout assumes are the components' to a few pixels. */
+/** How near a node that the layout places may be to one that is placed by a person, or one that stayed where it was, before it is moved: the sizes the layout assumes are the components' to a few pixels. */
 const CLEARANCE = 16;
 
 interface Box {
@@ -356,38 +376,187 @@ interface Box {
   bottom: number;
 }
 
+interface Position {
+  x: number;
+  y: number;
+}
+
+const ORIGIN: Position = { x: 0, y: 0 };
+
 /** Whether two boxes are over each other or nearer than `CLEARANCE`. */
 const near = (a: Box, b: Box): boolean => a.left < b.right + CLEARANCE && b.left < a.right + CLEARANCE && a.top < b.bottom + CLEARANCE && b.top < a.bottom + CLEARANCE;
 
+/** Whether two boxes are over each other. */
+const over = (a: Box, b: Box): boolean => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
 /**
- * Move the nodes that the layout places off the nodes that a person has placed. A place is a pin: the layout makes no room around a node that was
- * moved, so a node that is added later (an effect at the end of a chain, a lane, a modulator) goes where the layout puts it, which can be on a node that
- * was placed there, and hide it. A node that would be on one, or nearer to one than `CLEARANCE`, is moved clear of it: below it, with the gap of a
- * row, and above it for a modulator, which belongs above its strip; and clear of the others that it then comes to, one after the other in the order of
- * the graph, so that two that were on the same node do not come to be on each other. A node that is clear of the placed ones stays where the layout puts it:
- * what is moved is what would have been on one, and a node that is dragged does not move the rest unless it is dropped on them.
+ * What a node is in, as far as its place goes: the slot that its place was made for, so that it stays where it is until it is in another. An effect is in the place of
+ * its chain that it is at (a chain that has an effect taken out closes up, and one that has two moved past each other has them change places); a modulator is in its
+ * rack, and not at a place in it (nothing that is drawn to or from it moves it, and nothing that is taken out of the rack does); both are in the slot of the node they are
+ * of, so that what is in a group's strip goes along with the group when it changes column; a lane is in the session; and a group and the master are in the column that the
+ * layout puts them in, which is to the right of the longest lane (a lane that grows, with an effect added to it, moves them along).
  */
-function clearOfPlaced(graph: Graph, positions: Map<NodeId, { x: number; y: number }>, heightOf: (node: Node) => number): void {
-  const box = (node: Node, at: { x: number; y: number }): Box => ({ left: at.x, top: at.y, right: at.x + NODE_WIDTH, bottom: at.y + heightOf(node) });
-  const placed = graph.nodes.flatMap((node) => (node.ui ? [box(node, node.ui)] : []));
-  if (placed.length === 0) return;
-  const free = graph.nodes.filter((node) => !node.ui);
-  const boxOfFree = (node: Node): Box => box(node, positions.get(node.id) ?? { x: 0, y: 0 });
-  const onePlaced = new Set(free.filter((node) => placed.some((other) => near(boxOfFree(node), other))));
-  if (onePlaced.size === 0) return;
-  // What a moved node has to keep clear of: the nodes that are placed, the others that the layout placed (which stay), and the ones moved before it.
-  const obstacles = [...placed, ...free.filter((node) => !onePlaced.has(node)).map(boxOfFree)];
-  for (const node of free.filter((candidate) => onePlaced.has(candidate))) {
-    let at = positions.get(node.id) ?? { x: 0, y: 0 };
+function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>): Map<NodeId, string> {
+  const slots = new Map<NodeId, string>();
+  for (const node of graph.nodes) {
+    if (node.kind === "group" || node.kind === "master") slots.set(node.id, `${node.kind}:${String(fresh.get(node.id)?.x ?? 0)}`);
+    else if (node.kind === "instrument") slots.set(node.id, node.kind);
+  }
+  const effects = new Map<NodeId | null, number>();
+  for (const node of graph.nodes) {
+    const of = node.parent !== null ? (slots.get(node.parent) ?? String(node.parent)) : "";
+    if (node.kind === "effect") {
+      const index = effects.get(node.parent) ?? 0;
+      effects.set(node.parent, index + 1);
+      slots.set(node.id, `effect ${String(index)} of ${of}`);
+    } else if (node.kind === "modulator") {
+      slots.set(node.id, `modulator of ${of}`);
+    }
+  }
+  return slots;
+}
+
+/**
+ * The places to start from: a node that was laid out before and is in the slot it was laid out for is where it was. A group and the master that are in another column
+ * (a lane has grown past them) go along to it and stay at the height they were at. The others are where the layout puts them now, moved down or up as far as the strip they are
+ * of has moved from where the layout would put it (an effect added to a lane that is not where the layout would have it any more is added level with the lane, and not level
+ * with where the lane would be; what is in a group's strip, when the group has gone along to another column, goes along to it, at the group's height). A strip is moved
+ * in height only: its row is in the column that the layout gives it. `kept` is the nodes that stay exactly where they were.
+ */
+function carryOver(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, slots: ReadonlyMap<NodeId, string>, remembered: Places): { positions: Map<NodeId, Position>; kept: Set<NodeId> } {
+  const positions = new Map<NodeId, Position>();
+  const kept = new Set<NodeId>();
+  for (const node of graph.nodes) {
+    const before = node.ui ? undefined : remembered.get(node.id);
+    if (before && before.slot === slots.get(node.id)) {
+      positions.set(node.id, { x: before.x, y: before.y });
+      kept.add(node.id);
+    }
+  }
+  const isChild = (node: Node): boolean => node.kind === "effect" || node.kind === "modulator";
+  // The strips' heads and the rest first, and then what is in a strip, which goes by where its head is.
+  for (const node of graph.nodes.filter((candidate) => !isChild(candidate))) {
+    if (node.ui || kept.has(node.id)) continue;
+    const at = fresh.get(node.id) ?? ORIGIN;
+    const before = remembered.get(node.id);
+    positions.set(node.id, before && (node.kind === "group" || node.kind === "master") ? { x: at.x, y: before.y } : at);
+  }
+  for (const node of graph.nodes.filter(isChild)) {
+    if (node.ui || kept.has(node.id)) continue;
+    const at = fresh.get(node.id) ?? ORIGIN;
+    const where = node.parent !== null ? positions.get(node.parent) : undefined;
+    const would = node.parent !== null ? fresh.get(node.parent) : undefined;
+    positions.set(node.id, where && would ? { x: at.x, y: at.y + where.y - would.y } : at);
+  }
+  return { positions, kept };
+}
+
+/** The box that a node takes where it is, by the sizes the layout assumes. */
+const boxAt = (node: Node, at: Position, heightOf: (node: Node) => number): Box => ({ left: at.x, top: at.y, right: at.x + NODE_WIDTH, bottom: at.y + heightOf(node) });
+
+/** A node that others keep clear of, and the box it takes. */
+interface Obstacle {
+  node: Node;
+  box: Box;
+}
+
+/**
+ * Move each of `moving` that is on one of the `fixed` obstacles, or nearer to one than `CLEARANCE`, clear of them: below it, with the gap of a row, and above it for a modulator, which
+ * belongs above its strip; and clear of the others that it then comes to, one after the other in the order of the graph, so that two that were on the same node do not come to be on
+ * each other. A node that is clear stays where it is: what is moved is what would have been on one. `matters` says which obstacles a node has to keep clear of.
+ */
+function moveClear(
+  moving: readonly Node[],
+  fixed: readonly Obstacle[],
+  positions: Map<NodeId, Position>,
+  heightOf: (node: Node) => number,
+  matters: (mover: Node, obstacle: Obstacle) => boolean = () => true,
+): void {
+  const boxOf = (node: Node): Box => boxAt(node, positions.get(node.id) ?? ORIGIN, heightOf);
+  const onOne = new Set(moving.filter((node) => fixed.some((other) => matters(node, other) && near(boxOf(node), other.box))));
+  if (onOne.size === 0) return;
+  // What a moved node has to keep clear of: the fixed ones, the others that were not on one (which stay), and the ones moved before it.
+  const obstacles: Obstacle[] = [...fixed, ...moving.filter((node) => !onOne.has(node)).map((node) => ({ node, box: boxOf(node) }))];
+  for (const node of moving.filter((candidate) => onOne.has(candidate))) {
+    let at = positions.get(node.id) ?? ORIGIN;
     // (Each step passes an obstacle for good, so it takes no more steps than there are obstacles.)
     for (let step = 0; step <= obstacles.length; step += 1) {
-      const here = box(node, at);
-      const hit = obstacles.find((obstacle) => near(here, obstacle));
+      const here = boxAt(node, at, heightOf);
+      const hit = obstacles.find((obstacle) => matters(node, obstacle) && near(here, obstacle.box));
       if (!hit) break;
-      at = { x: at.x, y: node.kind === "modulator" ? hit.top - ROW_GAP - heightOf(node) : hit.bottom + ROW_GAP };
+      at = { x: at.x, y: node.kind === "modulator" ? hit.box.top - ROW_GAP - heightOf(node) : hit.box.bottom + ROW_GAP };
     }
     positions.set(node.id, at);
-    obstacles.push(box(node, at));
+    obstacles.push({ node, box: boxAt(node, at, heightOf) });
+  }
+}
+
+/**
+ * Move the nodes that the layout places off the nodes that a person has placed (`Node.ui`). A place is a pin: the layout makes no room around a node that was moved, so a node that is
+ * added later (an effect at the end of a chain, a lane, a modulator) goes where the layout puts it, which can be on a node that was placed there, and hide it, and so does a node that
+ * stays where it was when the one next to it is put down on it. Every node that is not placed is moved clear of it, one that stayed too: what is moved is what would have been on one,
+ * and a node that is dragged does not move the rest unless it is dropped on them.
+ */
+function clearOfPlaced(graph: Graph, positions: Map<NodeId, Position>, heightOf: (node: Node) => number): void {
+  const placed = graph.nodes.flatMap((node) => (node.ui ? [{ node, box: boxAt(node, node.ui, heightOf) }] : []));
+  if (placed.length === 0) return;
+  moveClear(
+    graph.nodes.filter((node) => !node.ui),
+    placed,
+    positions,
+    heightOf,
+  );
+}
+
+/**
+ * Move the nodes that are new off the nodes that stayed where they were: a lane that is added is where the layout puts it, which is on what stayed if something was taken out above it,
+ * and goes below that. A modulator keeps clear of the modulators that stayed (above them) and not of the rest: it goes in the room above its strip, which is where the strip above it has its
+ * row if there is none, and `makeRoom` makes it.
+ */
+function clearOfKept(graph: Graph, positions: Map<NodeId, Position>, kept: ReadonlySet<NodeId>, heightOf: (node: Node) => number): void {
+  const stayed = graph.nodes.flatMap((node) => (kept.has(node.id) ? [{ node, box: boxAt(node, positions.get(node.id) ?? ORIGIN, heightOf) }] : []));
+  if (stayed.length === 0) return;
+  moveClear(
+    graph.nodes.filter((node) => !node.ui && !kept.has(node.id)),
+    stayed,
+    positions,
+    heightOf,
+    (mover, obstacle) => mover.kind !== "modulator" || obstacle.node.kind === "modulator",
+  );
+}
+
+/**
+ * Make room for what has grown or is new: a node that shows more knobs (one was pinned to it, or a cable ends at a parameter it did not show), or lists more cables, is taller than the
+ * place it was left in, and a modulator that is added goes where its strip's room above its row is, which the strip above may have. A row of nodes (those that are level) that is over
+ * what is above it is moved down, below it, with the gap of a row, and so is every row below it, by as much: room is made where it is needed, the strips below it keep their shape and
+ * the rows do not come nearer to each other. The rows are taken from the top, so that what is not in the way stays where it is. (The nodes that a person has placed are not in it:
+ * a node that comes to be on one is moved clear of it by itself, `clearOfPlaced`.)
+ */
+function makeRoom(graph: Graph, positions: Map<NodeId, Position>, heightOf: (node: Node) => number): void {
+  const free = graph.nodes.filter((node) => !node.ui);
+  const rows = new Map<number, Node[]>();
+  for (const node of free) {
+    const top = positions.get(node.id)?.y ?? 0;
+    rows.set(top, [...(rows.get(top) ?? []), node]);
+  }
+  const settled: Box[] = [];
+  let shift = 0;
+  for (const top of [...rows.keys()].sort((a, b) => a - b)) {
+    const row = rows.get(top) ?? [];
+    let y = top + shift;
+    // (Each step passes a box for good, so it takes no more steps than there are boxes.)
+    for (let step = 0; step <= settled.length; step += 1) {
+      const here = y;
+      const hit = settled.find((other) => row.some((node) => over(boxAt(node, { x: positions.get(node.id)?.x ?? 0, y: here }, heightOf), other)));
+      if (!hit) break;
+      y = hit.bottom + ROW_GAP;
+    }
+    shift = y - top;
+    for (const node of row) {
+      const at = { x: positions.get(node.id)?.x ?? 0, y };
+      positions.set(node.id, at);
+      settled.push(boxAt(node, at, heightOf));
+    }
   }
 }
 
@@ -402,8 +571,14 @@ function cableRows(graph: Graph, names: ReadonlyMap<NodeId, string>): Map<NodeId
   return rows;
 }
 
-/** The nodes of the session on the canvas, and the cables between them. */
-export function toFlow(graph: Graph): Flow {
+/** Nothing remembered: every node goes where the layout puts it. */
+const NOTHING_REMEMBERED: Places = new Map();
+
+/**
+ * The nodes of the session on the canvas, and the cables between them. `remembered` is the places of the last layout (`Flow.places`): a node stays where it was while it is in
+ * the slot it was put for, so that what is drawn or added or taken out does not rearrange the canvas; without it every node goes where the layout puts it.
+ */
+export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED): Flow {
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);
@@ -415,8 +590,24 @@ export function toFlow(graph: Graph): Flow {
   }
   const knobCounts = new Map([...knobs].map(([id, params]) => [id, params.length]));
   const cableCounts = new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0]));
-  const positions = layout(graph, knobCounts, cableCounts);
-  clearOfPlaced(graph, positions, (node) => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0));
+  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0);
+  const fresh = layout(graph, knobCounts, cableCounts);
+  const slots = slotsOf(graph, fresh);
+  // Where a layout that remembers nothing puts the nodes, to say whether these are arranged.
+  const arrangedAt = new Map(fresh);
+  clearOfPlaced(graph, arrangedAt, heightOf);
+  const { positions, kept } = carryOver(graph, fresh, slots, remembered);
+  clearOfKept(graph, positions, kept, heightOf);
+  makeRoom(graph, positions, heightOf);
+  clearOfPlaced(graph, positions, heightOf);
+  const arranged = graph.nodes.every((node) => {
+    const at = positions.get(node.id) ?? ORIGIN;
+    const would = arrangedAt.get(node.id) ?? ORIGIN;
+    return node.ui !== undefined || (at.x === would.x && at.y === would.y);
+  });
+  const places = new Map<NodeId, Remembered>(
+    graph.nodes.flatMap((node) => (node.ui ? [] : [[node.id, { ...(positions.get(node.id) ?? ORIGIN), slot: slots.get(node.id) ?? node.kind }] as const])),
+  );
 
   const nodes: PatchNode[] = graph.nodes.map((node) => ({
     id: String(node.id),
@@ -448,7 +639,7 @@ export function toFlow(graph: Graph): Flow {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
   }
-  return { nodes, edges };
+  return { nodes, edges, places, arranged };
 }
 
 /** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { CABLE_ROW_HEIGHT, CABLES_GAP, MODULATOR_SETTINGS_HEIGHT, NODE_WIDTH } from "../src/app/patch/toFlow";
-import { addEnvelope, cablePoints, cables, centre, drag, expectNodesApart, node, nodeBoxes, open, output, port, setting, within } from "./canvas";
+import { addEnvelope, arrange, cablePoints, cables, centre, drag, expectNodesApart, node, nodeBoxes, open, output, port, setting, still, within } from "./canvas";
 
 // What a person does to build modulation on the page, against the mock engine in the page (so that a test
 // can have a session of its own: the tracer, or two lanes): add a modulator from the menu, draw a cable by
@@ -97,6 +97,7 @@ test("a modulator added from the menu has an output to drag from at once", async
   await page.getByRole("menuitem", { name: "Envelope" }).click();
   const envelope = node(page, "ADSR");
   await expect(envelope).toBeVisible();
+  await still(envelope);
   await drag(page, output(envelope), port(node(page, "Filter"), "resonance"));
   await expect(page.getByRole("slider", { name: "Depth of ADSR → Filter: resonance" })).toBeVisible();
   await expect(cables(page)).toHaveCount(2);
@@ -308,7 +309,7 @@ test("a modulator lists a row for each cable that starts at it, each as tall as 
   await expectNodesApart(page);
 });
 
-test("a cable is drawn by dragging it from a modulator's output to the depth of a cable, to the port of its row, and the modulator is laid out above the one whose cable it is", async ({ page }) => {
+test("a cable is drawn by dragging it from a modulator's output to the depth of a cable, to the port of its row, and the modulator is laid out above the one whose cable it is when the nodes are arranged", async ({ page }) => {
   await open(page);
   const envelope = await addEnvelope(page);
   const lfo = node(page, "LFO");
@@ -326,7 +327,12 @@ test("a cable is drawn by dragging it from a modulator's output to the depth of 
   await expect(rowPort).toHaveClass(/tang-port--driven/);
   await expect(page.locator(".tang-port--takes")).toHaveCount(0);
   await expect(page.locator(".tang-notice")).toHaveCount(0);
-  // The envelope is above the LFO, in its column and clear of it (the cable runs down), and no node lies over another.
+  // The canvas is not rearranged for the cable: the nodes are where they were, and the envelope is beside the LFO.
+  const beside = [await envelope.boundingBox(), await lfo.boundingBox()];
+  if (!beside[0] || !beside[1]) throw new Error("not on the page");
+  expect(beside[0].y + beside[0].height).toBeGreaterThan(beside[1].y);
+  // Arranged, the envelope is above the LFO, in its column and clear of it (the cable runs down), and no node lies over another.
+  await arrange(page);
   const [above, below] = [await envelope.boundingBox(), await lfo.boundingBox()];
   if (!above || !below) throw new Error("not on the page");
   expect(above.y + above.height).toBeLessThan(below.y);
@@ -341,6 +347,8 @@ test("a cable to the depth of a cable goes round the node it ends at, and has it
   await expect(cables(page)).toHaveCount(2);
   const depth = page.getByRole("slider", { name: "Depth of ADSR → depth of LFO → Filter: cutoff" });
   await expect(depth).toBeVisible();
+  // (The route is made for the layout: the nodes are arranged first, as the cable puts the envelope a row above the LFO.)
+  await arrange(page);
   // No point of the cable is inside a node: it leaves the foot of the envelope, runs along under it and down beside the LFO, and comes in at its left edge.
   const [points, boxes] = [await cablePoints(page), await nodeBoxes(page)];
   const lfo = boxes.find((box) => box.name === "LFO");
@@ -385,6 +393,7 @@ test("a cable can be dropped on the depth of a cable of a modulator of its own l
   await page.getByRole("menuitem", { name: "Envelope" }).click();
   const envelope = node(page, "ADSR");
   await expect(envelope).toBeVisible();
+  await still(envelope);
   await drag(page, output(envelope), port(node(page, "Oscillator 1"), "decay"));
   await expect(cables(page)).toHaveCount(3);
   await expect(envelope.locator(".tang-cable-row")).toHaveCount(1);

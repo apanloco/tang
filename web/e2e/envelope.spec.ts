@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { test as own } from "./own";
-import { node, open } from "./canvas";
+import { node, open, still } from "./canvas";
 
 // What an envelope's node shows of its settings: the shape of the four stages, redrawn when a knob is turned, and a dot that follows the
 // envelope while a note is held (the real engine's envelope: the mock's is a step).
@@ -17,12 +17,13 @@ async function corners(shape: Locator): Promise<{ x: number; y: number }[]> {
   return [0, 2, 4, 6, 8].map((i) => ({ x: numbers[i] ?? 0, y: numbers[i + 1] ?? 0 }));
 }
 
-/** An envelope put in the lane from the menu; its node and its shape. */
+/** An envelope put in the lane from the menu, once the canvas has stopped moving to show it; its node and its shape. */
 async function addEnvelope(page: Page): Promise<{ envelope: Locator; shape: Locator }> {
   await page.getByRole("button", { name: "Add a modulator to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Envelope" }).click();
   const envelope = node(page, "ADSR");
   await expect(envelope).toBeVisible();
+  await still(envelope);
   return { envelope, shape: envelope.getByRole("img", { name: /^ADSR shape: / }) };
 }
 
