@@ -702,7 +702,8 @@ note = "C4"
 velocity = 0
 ```
 
-- `bpm` — the tempo the pattern was recorded at: its length in frames is `length_beats` counted in it (default: 120)
+- `bpm` — the tempo the pattern was recorded at: its length in frames is `length_beats` counted in it (default: 120). It is not the
+  session's tempo (see "Tempo"): setting that, with `b`, does not change a pattern that has been recorded
 - `length_beats` — pattern length in beats (default: 4 = 1 bar in 4/4)
 - `base_note` — reference note for transposition (set to the lowest recorded
   note)

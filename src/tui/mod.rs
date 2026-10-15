@@ -2221,12 +2221,6 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
                 let bpm = val.clamp(edit.param_min, edit.param_max);
                 s.ctl.model.bpm = bpm;
                 let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
-                // Update all pattern states
-                for inst_node in &mut s.ctl.model.instruments {
-                    if let Some(ref mut p) = inst_node.pattern {
-                        p.bpm = bpm;
-                    }
-                }
             }
             s.bpm_editing = None;
         }

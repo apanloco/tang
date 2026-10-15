@@ -3163,6 +3163,18 @@ fn a_finished_recording_shows_in_the_tree_at_the_tempo_set_with_b() {
     assert_eq!(h.s.ctl.model.instruments[1].pattern.as_ref().unwrap().bpm, 95.0);
 }
 
+#[test]
+fn a_tempo_set_with_b_leaves_the_tempo_that_a_recorded_pattern_was_recorded_at() {
+    // A pattern's length in frames is its beats counted in the tempo it was recorded at, and a load counts them in the pattern's `bpm`:
+    // a pattern that was saved at another tempo than that would be another length when it was loaded.
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars("60").press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.bpm, 60.0);
+    assert_eq!(h.s.ctl.model.instruments[1].pattern.as_ref().unwrap().bpm, 120.0, "it was recorded at 120");
+    let (lanes, _) = crate::app::save::to_save(&h.s.ctl.model);
+    assert_eq!(lanes[1].pattern.as_ref().unwrap().bpm, 120.0, "and it is saved at it");
+}
+
 /// A lane with no pattern, and a lane with one.
 const LANES_WITH_AND_WITHOUT_A_PATTERN: &str = r#"
 [[instrument]]
