@@ -897,6 +897,35 @@ function frameBytes(channel: TelemetryChannel, layoutRev: number, values: readon
   return buffer;
 }
 
+/** The frequency of a MIDI note, in Hz: A4 (69) is 440. */
+const hertzOf = (note: number): number => 440 * 2 ** ((note - 69) / 12);
+
+/** How loud the mock's sound is at the most, for one note: as loud as its meter says (0.35). */
+const SCOPE_LEVEL = 0.35;
+
+/**
+ * A scope frame for the notes that are held, which is what the real engine has an ear for and the mock has not: each note a sound of its own pitch (its tone and the
+ * two harmonics above it, a little like a saw), the same on both sides, silence while no note is held. `seconds` is the time of the newest frame, and each frame
+ * before it is a sample's time earlier, so that a note that is held is one wave from one frame to the next.
+ */
+function scopeValues(notes: ReadonlySet<number>, seconds: number, sampleRate: number): number[] {
+  const values = new Array<number>(2 * SCOPE_FRAME_LENGTH).fill(0);
+  if (notes.size === 0) return values;
+  // (A tone and the harmonics, 1 + 1/2 + 1/3 as loud at the most, shared among the notes.)
+  const scale = SCOPE_LEVEL / (1.83 * notes.size);
+  for (let frame = 0; frame < SCOPE_FRAME_LENGTH; frame += 1) {
+    const time = seconds - (SCOPE_FRAME_LENGTH - 1 - frame) / sampleRate;
+    let sample = 0;
+    for (const note of notes) {
+      const turn = 2 * Math.PI * hertzOf(note) * time;
+      sample += Math.sin(turn) + 0.5 * Math.sin(2 * turn) + 0.33 * Math.sin(3 * turn);
+    }
+    values[frame] = sample * scale;
+    values[SCOPE_FRAME_LENGTH + frame] = sample * scale;
+  }
+  return values;
+}
+
 /** How fast a meter's peak falls, as the engine's does: 40 dB a second. */
 const PEAK_FALL_DB_PER_SECOND = 40;
 
@@ -1214,8 +1243,8 @@ export class MockServer {
       const held = this.heldNotes;
       return frameBytes(channel, 0, Array.from({ length: 128 }, (_, note) => (held.has(note) ? 1 : 0)));
     }
-    // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's. The mock hears nothing yet.)
-    if (channel === "scope") return frameBytes(channel, 0, new Array<number>(2 * SCOPE_FRAME_LENGTH).fill(0));
+    // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's.)
+    if (channel === "scope") return frameBytes(channel, 0, scopeValues(this.heldNotes, seconds, this.#snapshot.meta.sampleRate));
     const { telemetry } = this.#snapshot;
     const nodes = this.#snapshot.graph.nodes;
     const outputOf = (id: NodeId): number => {

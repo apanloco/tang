@@ -7,6 +7,7 @@ import type { ClientOptions, Transport, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
+import { Spectrum } from "./fft";
 import { decodeFrame } from "./telemetry";
 
 const filter = nodeNamed(tracerSnapshot, "Filter");
@@ -2097,6 +2098,90 @@ describe("the scope", () => {
     await until(() => player.telemetry.has("meters"), "the meters");
     await quiet(60);
     expect(player.telemetry.has("scope")).toBe(false);
+  });
+
+  /** The latest scope frame of a mock server as its clock says, a side of it. */
+  function sideOf(server: MockServer, side: "left" | "right", seconds = 1): Float32Array {
+    const decoded = decodeFrame(server.frame("scope", seconds, new Map(), 0));
+    const values = decoded?.values ?? new Float32Array(0);
+    return side === "left" ? values.slice(0, SCOPE_FRAME_LENGTH) : values.slice(SCOPE_FRAME_LENGTH);
+  }
+
+  /** The bin of the loudest frequency in a side, and its level. */
+  function loudest(samples: Float32Array): { bin: number; level: number } {
+    const levels = new Spectrum(samples.length).decibels(samples);
+    const bin = levels.indexOf(Math.max(...levels));
+    return { bin, level: levels[bin] ?? Number.NaN };
+  }
+
+  /** A mock server with a client that holds these notes, once the server knows it does. */
+  async function withNotes(...notes: number[]): Promise<MockServer> {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    for (const note of notes) player.noteOn(note);
+    await until(() => notes.every((note) => server.heldNotes.has(note)), "the notes");
+    return server;
+  }
+
+  test("is silence, on both sides, while no note is held", () => {
+    const server = new MockServer();
+    expect(Array.from(sideOf(server, "left")).every((s) => s === 0)).toBe(true);
+    expect(Array.from(sideOf(server, "right")).every((s) => s === 0)).toBe(true);
+  });
+
+  test("is a sound at the pitch of the note that is held, as the mock has no engine to hear: at the frequency of A4, the same on both sides", async () => {
+    const server = await withNotes(69);
+    const left = sideOf(server, "left");
+    // 440 Hz at 48 kHz is between the bins 18 (422 Hz) and 19 (445 Hz) of a block of 2048.
+    expect([18, 19]).toContain(loudest(left).bin);
+    expect(Array.from(sideOf(server, "right"))).toEqual(Array.from(left));
+    const peak = Math.max(...Array.from(left, Math.abs));
+    expect(peak).toBeGreaterThan(0.1);
+    expect(peak).toBeLessThanOrEqual(0.35 + 1e-6);
+  });
+
+  test("goes up an octave with the note, and has a note's own frequency in each that is held", async () => {
+    // 880 Hz is the bin 37.5 (a bin is 23.4 Hz).
+    expect([37, 38]).toContain(loudest(sideOf(await withNotes(81), "left")).bin);
+    const server = await withNotes(57, 69);
+    const levels = new Spectrum(SCOPE_FRAME_LENGTH).decibels(sideOf(server, "left"));
+    // 220 Hz is the bin 9.4 and 440 Hz the bin 18.8: both are over what is between them, which is not a sound.
+    expect(Math.max(levels[9] ?? -999, levels[10] ?? -999)).toBeGreaterThan((levels[14] ?? 0) + 20);
+    expect(Math.max(levels[18] ?? -999, levels[19] ?? -999)).toBeGreaterThan((levels[14] ?? 0) + 20);
+  });
+
+  test("goes on from one frame to the next: a note that is held is the same wave a moment later, a period on", async () => {
+    const server = await withNotes(69);
+    // The 440 Hz of A4 goes round 440 times in a second: a second on is the same place on the wave, and so is a tenth of a second (44 turns).
+    const now = sideOf(server, "left", 1);
+    const later = sideOf(server, "left", 1.1);
+    for (let n = 0; n < 100; n += 1) expect(later[n] ?? 9).toBeCloseTo(now[n] ?? -9, 3);
+    const apart = sideOf(server, "left", 1 + 1 / 880);
+    expect(Math.abs((apart[0] ?? 0) - (now[0] ?? 0))).toBeGreaterThan(0.01);
+  });
+
+  test("is no louder for the notes of a chord than for one note", async () => {
+    const server = await withNotes(60, 64, 67, 72);
+    expect(Math.max(...Array.from(sideOf(server, "left"), Math.abs))).toBeLessThanOrEqual(0.35 + 1e-6);
+  });
+
+  test("has the newest frame last: a sample's time on, the wave has gone one place down the frame", async () => {
+    const server = await withNotes(69);
+    const rate = server.snapshot.meta.sampleRate;
+    const now = sideOf(server, "left", 1.0003);
+    const later = sideOf(server, "left", 1.0003 + 1 / rate);
+    for (let place = 1; place < SCOPE_FRAME_LENGTH; place += 1) expect(later[place - 1] ?? 9).toBeCloseTo(now[place] ?? -9, 4);
+  });
+
+  test("is forgotten when the connection is lost: a client that cannot hear the server does not know what the output is", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const watcher = await open(server, { telemetry: ["scope"], reconnectDelay: () => 60_000 });
+    player.noteOn(69);
+    await until(() => Math.max(...Array.from(watcher.telemetry.values("scope") ?? [], Math.abs)) > 0.1, "the sound");
+    server.drop();
+    await until(() => watcher.state.status === "reconnecting", "the loss");
+    expect(Array.from(watcher.telemetry.values("scope") ?? []).every((s) => s === 0)).toBe(true);
   });
 });
 
