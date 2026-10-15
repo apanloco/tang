@@ -286,7 +286,14 @@ depth = 0.3
 - **Application order:** group modulators are applied *before* the member
   lanes render (so members read the modulated values) and before the bus
   effects run. If a member's own lane modulator targets the same parameter, the
-  lane modulator is applied later (inside the lane) and therefore wins.
+  lane modulator is applied later (inside the lane) and therefore wins. What
+  wins is the lane's whole write: each side writes the parameter from the value
+  the user set plus its own modulators' offsets, so the group's offset is not
+  added to the lane's, and a lane's MIDI control that is not bound yet, which
+  adds nothing, still writes the user's value over the group's (pinned in
+  `plugin/chain.rs`, `a_lane_modulator_and_a_group_modulator_on_one_parameter_…`
+  and `a_lane_control_that_is_not_bound_yet_…`). The page's ring follows it
+  (`modulationsOn`, f134), and so does the mock engine's value of a parameter.
 
 ### Plugin slot fields
 
@@ -1875,7 +1882,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`SLOW_AFTER`) for its answer (a plugin that is slow to load: the program does it on the thread that answers, so everything else waits behind it) is
   counted by the client (`Client.slow`, a store of its own: the client's state is told to every control at every change, and a request goes at every frame of
   a drag), and a "Working…" light shows over the top of the canvas while any is (`app/BusyLight.tsx`: a progress bar with no value, since the page's one `status`
-  is the connection's); nothing is blocked by it, and it does not say what is being done.
+  is the connection's); nothing is blocked by it, and it does not say what is being done. Step 41 made the ring of a parameter that a lane's modulators and its
+  group's both drive the lane's alone (`modulationsOn`, from the engine's order of writes: see "Application order" under "Group modulators"), and the mock engine's value
+  of a parameter that several cables drive the engine's own (each cable's offset made from the value the user set and added, not chained).
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
@@ -1935,9 +1944,9 @@ page saves the session (18), puts effects (19) and instruments (20) in the chain
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
 they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27), moves
 effects along their chains (28), draws the shape of an envelope (29) and lets a person choose the knobs of a node (30);
-steps 31 to 40 followed (groups from the page (31), undo in four steps (32 to 35), cables to the depth of a cable (36), a modulator made for a
-knob from the knob (37), Save as (38), the ring and the dot of a setting that a cable drives (39) and the light for a request that is slow (40): see "Frontend"
-above and `docs/web-ui.md` §12).
+steps 31 to 41 followed (groups from the page (31), undo in four steps (32 to 35), cables to the depth of a cable (36), a modulator made for a
+knob from the knob (37), Save as (38), the ring and the dot of a setting that a cable drives (39), the light for a request that is slow (40) and the ring of a
+parameter that a lane's and its group's modulators both drive (41): see "Frontend" above and `docs/web-ui.md` §12).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
