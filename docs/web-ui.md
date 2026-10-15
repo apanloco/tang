@@ -696,6 +696,12 @@ master peak and clip, and the last frames of the output mix, which a scope draws
     most, and the ring has room for four times what a reader may take, `SCOPE_READ_MAX`, 2048 frames). A reader
     takes the latest frames, the newest last; before the first buffer it gets silence. The page's scope and the
     terminal's Scope tab are the readers.
+  - *The signal at a node* (`Telemetry.probes`, a pool of `PROBES` = 8 rings of that kind; step 46, D47): the last 8192
+    frames of what comes out of an instrument (after its volume), of an effect (after its mix) and of a group (after its pan;
+    a bus effect, after its mix, before the pan), stored by the audio thread's taps, one at each of those places, into the ring
+    that the controller has told the audio thread the node has (`GraphCommand::SetProbe`; a lane or a group that nothing listens to has an empty list of taps, a check at each stage). The rings are made with the telemetry, so that asking for a node's signal allocates nothing on the audio
+    thread, and are shared: which node each is for is the controller's (`Controller::set_probes`, `src/app/probes.rs`), and is
+    in the telemetry for a reader to ask (`Telemetry::probe_node`). A reader copies the latest frames as it does the output's.
 - **Layout.** A `TelemetryLayout { rev, meters, modulation }` tells clients what
   each slot means: two lists, one per channel group, of `{ slot, node, port, kind
   }` with `kind` one of `peak`, `clips`, `modOutput`, `effective`. A frame carries
@@ -740,6 +746,10 @@ master peak and clip, and the last frames of the output mix, which a scope draws
   those is a value or two for each meter, modulator and cable) and only a picture on the screen uses it, a page asks
   for it only while it shows one (`Client.watchTelemetry`, counted, asked again on every connection: D43). The spectrum is not on the
   wire: a client makes it from the samples.
+  **As built (step 46):** the signal at a node has frames of its own, channel number 4 (no client asks for it as a channel: a client asks for
+  nodes, by `probes { nodes }`, §7): the same 2 × 2048 values as the scope's, the left side and then the right, and the node's id where a
+  frame of the others has the layout's revision, since a probe follows no layout. A client is sent one for each node that it watches and that
+  has a ring, 30 times a second (`web::pusher`).
 - **Visual vocabulary.** Knob = base value; ring = modulation extent (depth ×
   range); dot = effective value. A setting of a modulator (an LFO's rate, a stage of an
   envelope) that a cable drives has the same since step 39 (D41), and the depth of a cable that
@@ -779,7 +789,8 @@ master peak and clip, and the last frames of the output mix, which a scope draws
 - **The messages (step 10)**, `app::protocol`, JSON text frames, tagged by `type`
   (camel case):
   - client → server: `auth { token }` (the first message when `Hello.needsToken`),
-    `subscribe`, `telemetry { channels }`, `request { reqId, intent }`,
+    `subscribe`, `telemetry { channels }`, `probes { nodes }` (step 46: the nodes whose signal the client
+    wants, replacing the list it had; see below), `request { reqId, intent }`,
     `noteOn { note, velocity }`, `noteOff { note }`.
   - server → client: `hello { protocol, rev, features, needsToken }` (first),
     `snapshot { snapshot }` (the answer to `subscribe`, and, since step 13, also sent
@@ -788,6 +799,7 @@ master peak and clip, and the last frames of the output mix, which a scope draws
     it), `event { event }` (a `StampedEvent`), `layout { layout }`, `catalog { rev,
     scanning, entries }` (step 19: the plugins that can be added; see below),
     `history { undo, redo }` (step 32: what Undo and Redo would do; see below),
+    `probes { nodes }` (step 46: which of the nodes a client asked the signal of are watched now; see below),
     `ack { reqId, rev }`, `rejected { reqId, error }`, `closing { error }` (the last thing
     before the server closes), with `error = { code, message }`, `code` one of `notFound`,
     `invalid`, `io`, `badRequest`, `unauthorized`, `rateLimited`, `overloaded`.
@@ -811,6 +823,14 @@ master peak and clip, and the last frames of the output mix, which a scope draws
     It is no event: it is no change of the session, and a second event at the revision of an intent would be taken
     by a client for a repeat (`applyEvent`). A client that loses the connection forgets it and is told again by the
     server it comes back to. `undo` and `redo` are requests with no fields (`{ "type": "undo" }`).
+  - **Probes (step 46, D47).** A client says which nodes it wants the signal of with `probes { nodes }`, the whole list each time (what it
+    asked before and does not now it no longer wants; none is `[]`), and is answered with the nodes of them that are watched: those that have a signal
+    (an instrument that has a plugin, an effect, a group; not a modulator, not the master, which has the scope that every client may ask for, and not a node that
+    is not there) and a ring (the engine has eight, shared by every client: two clients that watch a node share its ring, and a node that no ring is
+    left for is watched when one is free, without asking again, and is not in the answer until then). The server keeps each client's list
+    in the hub (`Hub::set_probes`, at most `MAX_PROBES`, 64, of a longer one; the message is limited in rate like a request) and the controller keeps who
+    watches what (`Controller::set_probes`, with the connection's number as the watcher), and a client that closes lets go of its nodes, by the owner's next turn
+    (`refresh_probes`). The frames are the telemetry channel of §6. The answer is no event and no revision.
   - **Order.** The owner makes the cut between a snapshot and the events after it:
     `subscribe` is answered by marking the client subscribed and queueing the
     snapshot in one step, and events are only made on the owner's thread, so a client
@@ -1248,6 +1268,20 @@ works by a rule of its own is the default name of the groups after one that is t
 that are called by their place, and one that was given the name "Group 2" at its place is renumbered with them, since the page's graph has the
 name and not whether it was ever set (the controller knows). Not built: undo of this (the page has it for what is set, step 32), putting a lane in a group by drawing its audio to it (the menu is
 what every keyboard has; a cable is for the mouse), and taking a lane out of its group by dragging.
+
+**The scope of a node (step 46, D47).** The header of an instrument that has a plugin, of an effect (a lane's and a bus's) and of a group has a button with a sine wave
+on it (`ScopeButton`, "Scope of X", pressed while the scope is shown) that shows a scope of what comes out of the node, in the node, below its controls: the wave or
+the spectrum of the master's (`ScopePanel`, which `MasterNode` is drawn from as well), with the choices of its view and its time base, which are the scope's own and are
+lost with it. A lane that has no instrument has no signal and no button, and neither has a modulator; the master has its scope always. Which nodes show one is the
+viewer's, as which node's parameters are in the panel is: `PatchView` holds the set, `scopes.ts` is what the nodes ask it for (the same shape as `inspector.ts`), and
+nothing of it is saved, sent or put in the history. The page asks the server for the signal of a node while its scope is in it (`NodeScope`: `Client.watchProbe`, which the
+effect lets go of with the scope), reads it as frames of its own (`telemetry.probe(node)`), and draws it as the master's is drawn. The layout is told which nodes show
+one: `toFlow(graph, remembered, scopes)` makes the nodes that do (`canScope`: an instrument with a plugin, an effect, a group) `NODE_SCOPE_HEIGHT` taller, the 96 pixels of the
+scope, the gap, the choices and the foot (157, as a browser draws them: a test on the page's mock engine keeps the constant at the measure), and makes room for it as for
+a knob that is pinned, so that the rows below move down by what is needed, strips and all, and nothing lies over anything (a test goes through every set of nodes of a session
+with a group that show one). What was moved stays when the scope is taken away, until the nodes are arranged; "Arrange" lays them out with the scopes that are shown, and a
+node that is taken out and put back by undo shows its scope again, since the set is of ids (a scope that is asked for a node that has no signal is not shown). The
+header of a lane that has a number in its name and a "×" is crowded: in the scene of two lanes the name "Oscillator 1" has 37 of the 75 pixels that it needs, and is cut (f148).
 
 ### 9.4 Performance rules
 
@@ -3670,6 +3704,44 @@ Each step is a reviewable change; the TUI must not regress at any point.
     Mutants: 41 of the engine (the constants and shifts of the hash, the order of seed and cycle, the glide and its easing and its clamp, the counting of cycles, the seeds of a lane's and a group's modulators, the names, the list, the range, the protocol's names), all caught; 19 of the page's (the hash, the cycle of a shape, the glide, the seed), all caught. The terminal was looked at on the real program in tmux (the null audio device, no MIDI): on the tracer's LFO the waveform row went from `sine` to `random` (four steps with `Right` from `sine`) and to `smooth`, and the tree and the pane's title said `LFO 0.5Hz random` and `smooth`.
   - **Numbers at the end of the step.** Rust 1423 tests, 1586 with the `web` feature and 22 on the real program, 1418 without the default plugin formats and 1573 with `web`, and 3 of the shell's in each; web 1873 tests in 88 files; 120 in browsers; 397 commits on the branch before this entry.
 
+- [x] **46. A scope on every node that has a signal: instruments, effects and groups (an extra, ahead of the list).** *Done when:* a person can press a button in the header of an instrument, an effect
+  or a group and see what comes out of that node, as a wave or a spectrum, in the node on the page; the engine listens to a node only while somebody watches it; two browsers can watch one node, and
+  one that stops leaves the other's drawn; the layout makes room for a scope that is shown, so that nothing lies over what is below it; and on the real program the scope of an instrument is loud where
+  the scope of a filter that is shut, and the master's, are nearly silent. *Not done:* a scope in the terminal for each node (the Scope tab is the master's); a scope for a node that no ring is
+  left for (there are eight, shared by every browser: f151); scopes that are kept, with the session or with the page (Open question 8).
+  - **What it was.** The page had one scope, the master's (step 42, D43), which says what the whole session puts out and not what a node does to the sound: with a filter, a reverb or a bus in a chain,
+    the question is what comes out of *that* node. D43 had left it out for a reason, a ring and a store in every lane and group for pictures that nobody asked for.
+  - **As built.**
+    - *Engine* (1a73440): `Telemetry.probes`, a pool of `PROBES` = 8 rings of the scope's kind (64 KB each, made with the telemetry, so that asking allocates nothing on the audio thread); `ProbeTarget` (a lane's
+      instrument, an effect of a lane's chain, a group, an effect of a group's bus), `GraphCommand::SetProbe { target, ring }` and `ClearProbes`; a tap at the end of a lane's instrument stage (after its volume,
+      on the fast path too) and after each effect's mix, and in `Group::finish` (a bus effect after its mix, the group after its pan), each a store into the ring that it was told (a lane or a group that nothing listens to has an empty list of taps, an empty-slice check at each stage).
+    - *Controller* (157da8a): `app::probes` (`Watcher`, `Probes`, `Controller::set_probes`, `reconcile_probes`): which watcher watches which nodes, which ring each watched node has (two watchers of a node share its
+      ring; a node that no ring is left for has one when one is free; a node that has no signal, a modulator, a lane that has no instrument, the master and a node that is not there, has none), and what the audio thread was
+      last told (where a node is in the graph changes when lanes and effects do, so that it is worked out again whenever the structure changes, from `conclude`, and on every `poll`). `Telemetry::set_probe_node`
+      says which node each ring is for, for the pusher. With the `web` feature or in tests only.
+    - *Server* (a37af57): `ClientMessage::Probes { nodes }` and `ServerMessage::Probes { nodes }` (the generated types are committed), `probe_frame` (channel 4, the node's id where the layout's revision is, 2 × 2048
+      values), the hub's list for each client (`MAX_PROBES`, 64, limited in rate like a request), the pusher's frame for each ring that a client wants, the owner's answer, and `refresh_probes`, which lets
+      go of what a client that has gone watched (`Runtime::refresh` takes the controller for it).
+    - *Client* (0f09fb8): `Client.watchProbe(node)` (counted, asked again on every connection, forgotten with it), `ClientState.probed`, `TelemetryBuffers.probe(node)` and `probeFrames(node)`; the mock engine has the
+      eight rings (given in the order the clients asked) and sounds like the notes that are held, as its scope does.
+    - *Page* (327cf58): `NodeScope.tsx` (`ScopeButton`, `NodeScope`, `ScopePanel`, which `MasterNode` is drawn with too), `scopes.ts`, the set that `PatchView` holds, `toFlow(graph, remembered, scopes)` with `canScope`,
+      `PatchNodeData.scope` and `NODE_SCOPE_HEIGHT`, and `useLayout(graph, scopes)` (§9.3).
+  - **Found on the way.** The height of a scope was measured, and not guessed: a throwaway spec on the page's mock engine read the node before and after (a node 360.3 px tall on the screen at a zoom of 0.948 became 509.2, and
+    a second node 257.9 became 406.8: 148.9 px both, 157 in the layout's pixels: the scope's 96, the gap, the 41 of the choices and the foot). A canvas that remembers moves the row that a scope is in the way of, and a lane that is level with
+    the group below moves with it, where a layout from nothing leaves the lane and moves the group alone (the test of two groups says both). Two lanes of one name are numbered ("Oscillator 1"), so that the first test
+    of the room asked for a button that was not there. The browser test of the real program first said that every scope was not silent when the note ended: the filter's and the master's were at 1.07e-42, the tail of the filter shut at 20 Hz, a
+    number that is not zero and no sound (f149: the engine does not flush denormals; its cost was not measured), and the test says a millionth.
+  - **Limits, as built.** There are eight rings for every browser together: a ninth scope shows a flat line, and says nothing (f151; `ClientState.probed` has what the server says is watched, but a node that was asked
+    for and left out cannot be told from one whose answer has not come). A ring that goes to another node keeps the last frames of the one it was for until the audio thread stores over them, so that a scope
+    can show up to 43 ms of another node's signal at first (f150). The scopes are the page's: a reload, and anything that takes the canvas off the page, closes them (Open question 8). The terminal has no scope for a node. The
+    header of a lane with a number and a "×" is crowded (f148). Only Chromium; the sound only on the null backend.
+  - **Tests.** Rust: 41 new (12 of the engine's taps, 12 of the controller's registry and 17 of the server's: the messages and the frame, the hub, the connection, the owner and the pusher, two of them on the real program), 1423 to 1448 (1586 to 1625 with the `web` feature;
+    1418 to 1443 without the default plugin formats; 1573 to 1612 with `web`); on the real program 22 to 24. Web: 19 of the client (`watchProbe`, the frames, the mock's rings) and 24 of the page (nine
+    of the layout, 15 of the nodes: the button where it is and where it is not, the scope and its choices, what is asked of the server and let go of, the frames drawn, undo, the room and arranging): 1873 to 1916; browsers 120 to 123. Mutants: 22 of the engine's taps, 22 of 23 of the controller's
+    (the one that is left was a clause that no input made a difference to, and was taken out), 21 and one of the server's, 30 of the client's, 30 of the page's, all caught; three in the browser, of which two were caught and the third, a scope that is
+    never let go of, is not seen by a test that has a second page that holds the node, and is caught by the page's own.
+  - **Numbers at the end of the step.** Rust 1448 tests, 1625 with the `web` feature and 24 on the real program, 1443 without the default plugin formats and 1612 with `web`, and 3 of the shell's in each; web 1916 tests in 89 files; 123 in browsers; 403 commits on the branch before this entry.
+
 ## 13. Later: track B (`builtin:patch`)
 
 A patchable synth that needs no host changes: a `builtin:patch` instrument that
@@ -3754,6 +3826,7 @@ comes from the DAW: `audio::Renderer` is already the one piece of code that the 
 | D44 | A cable to a setting that is turned on a log scale moves it a fraction of the knob's travel. The knob of a rate (0.01 to 50 Hz) and of an attack, a decay and a release (0.001 to 10 s) runs over decades (`ModulatorField::taper`, `Taper::Log`, `MODULATOR_FIELD_SCALES`), the ring on it draws the depth as a fraction of the knob on both sides of the pointer, and the engine moves the setting there: the user's value goes to its place on the knob, the modulator offsets that place by its own law (an LFO plus or minus `depth`, an envelope from `depth` of the way down to the user's value, a MIDI control as it did) with the knob's travel as the range, and what comes out is a value again (`Modulator::modulated_value`). A swing is as far up the knob as down it, and an LFO at the default depth of 0.5 on an attack of 10 ms goes from 1 ms to 1 s, where it went from 1 ms to 5 s and sat at 1 ms for half of each turn. What is turned by distances, a sustain, the depth of a cable and the parameters of a plugin, goes by its range, as does a range that starts at nothing (there are no decades in it). The alternatives were the law that there was (a depth meant nothing at the bottom of the knob and everything at the top), a depth in octaves or in a ratio (a unit that no knob shows, and a different number for each setting, since the ranges are of different widths), and a law that is set by each setting's own taper in a table of the page's (the engine's `ModulatorField::taper` is the one place that says which settings are on a log scale, and the page reads it from what the controller generates) | Built (step 43) |
 | D45 | The canvas keeps the nodes where they are, and the layout is given where it put them last. `toFlow(graph, remembered)` stays a pure function (of the graph and of the places it is given, `Flow.places`), the page holds the places from one change of the session to the next (`useLayout`), a node stays where it was while its slot is the same, and what needs room makes it by moving rows, strips whole (`makeRoom`); "Arrange" lays everything out from nothing, with the places that a person gave given back, and fits the view. The alternatives were a layout in which a cable makes no row (a cable between two modulators that are in one row has nowhere to run: it is why step 26 made the rows), the place of every node in the session (a `SetNodeUi` for each node that the layout would have moved: the file would be full of places that nobody gave, and a layout that is better later would not reach a session that has them: Open question 6), the difference between two layouts (a node goes as far as the layout moved it: a cable moves the strip, which is the complaint) and an animation from the old layout to the new (the nodes still move under the hand that drew the cable) | Built (step 44) |
 | D46 | A random LFO draws its numbers from a hash of its seed and its cycle, not from a generator that it holds. The number of cycle `n` is `noise(seed, n)` (`plugin::chain::noise`, the top 24 bits of a 32-bit hash, from -1 up to but not including 1), a modulator's seed is the order in which modulators came into the audio graph, and the page's mock engine works the same hash out in TypeScript (`client/noise.ts`) and is pinned to it by a table that the engine writes. The numbers are a function of the seed and of how many times the LFO has gone round, so that a session that is loaded plays the same numbers each time, a test can say what they are, a smooth LFO has the next cycle's number before the cycle begins (it is `noise(seed, n + 1)`, with nothing to advance), the mock engine needs only the number of the cycle it is in, which is `floor(rate * seconds)`, and there is no state of a generator for undo to put back. The alternatives were a generator with a state that the modulator holds (xorshift: a state to advance, so that a smooth LFO keeps two numbers in hand; the mock engine would have to run the same generator in step with an engine whose clock it does not have), the system's randomness (not repeatable, so that no test can say a number, and a session sounds different each time), a seed in the session file (the same numbers after undo and for the browser's mock too, but a field in the format for what no one can hear; it comes with a button that draws new numbers, if one is wanted: Open question 7) and the node's id for a seed (stable, but the engine does not know ids: they are the model's, and every command would have to carry one). A seed that is the order of coming in means that what is added later, or put back by undo, draws other numbers | Built (step 45) |
+| D47 | A node's scope is of a signal that the engine listens to only while somebody watches it, through a small pool of rings. The audio thread has a tap at the output of each lane's instrument (after its volume), of each effect (after its mix) and of each group (after its pan; a bus effect's is after its mix), which does nothing when the node has no ring, and `Telemetry` has `PROBES` = 8 rings of the scope's own kind (`probes`, 8 × 64 KB, made with the telemetry so that asking allocates nothing on the audio thread). The controller keeps who watches which nodes (`Controller::set_probes`: a `Watcher` is a client of the web interface, by the number of its connection) and which ring each watched node has (`reconcile_probes`, which tells the audio thread with `SetProbe` and `ClearProbes`, and runs again whenever the structure of the session changes, so that a ring goes with its node when the lanes and the effects change places); two watchers of one node share its ring, and a node that no ring is left for is given one when it is free. The frames are a telemetry frame of channel 4 whose `u32` is the node's id (a probe follows no layout), 2 × 2048 values, 30 times a second to each client that watches the node (`Client.watchProbe`: counted like `watchTelemetry`, and asked again on every connection). The page shows a scope in the node of an instrument that has a plugin, of an effect and of a group when its viewer presses the button in its header, and asks for the signal while the scope is there. Which nodes show a scope is the viewer's own, like which node's parameters are in the panel: it is not saved, not sent, and not in the history, and the layout is told, `toFlow(graph, remembered, scopes)` (a node that shows one is `NODE_SCOPE_HEIGHT` taller, and room is made for it as it is for a knob that is pinned). The alternatives were a ring in every lane and group (D43's refusal: 64 KB and a store in every lane's `process` for pictures that nobody asked for), a ring that is made when it is asked for (the audio thread may not allocate: the controller would make it and hand it over, as it does a plugin, and take it back to drop), a ring for each client and node (the cost of the audio thread would be the number of people looking and not the number of nodes looked at), taps that the client places (what a node's output is, after its volume or its mix, is the engine's to say) and a scope that is in the session (a choice of picture is the viewer's: D43) | Built (step 46) |
 
 Open questions
 
@@ -3769,3 +3842,4 @@ Open questions
    one signal type or typed cables, voices from the start, where the patch is drawn, our own DSP or FunDSP, the terminal's part.
 6. Whether the places that the layout remembers (what the canvas looks like when cables have been drawn on it and it has not been arranged) should be the session's, so that a page that is opened again and a second browser show the canvas as it was left (D45).
 7. Whether the seed of a random LFO should be the session's (a `seed` in its table, and a button that draws new numbers), so that the numbers of a modulator that undo puts back, of a session that is edited and loaded again, and of the browser's mock engine are the ones it had (D46).
+8. Whether the scopes that a person has shown (the nodes' buttons) should be kept, and where: in the session beside `ui` and `pinned` (every page, and a page that is opened again, shows them; a person's own choice of pictures goes in the file that others load: D43's argument), or in the page's own storage (a reload keeps them, a second browser does not), or nowhere, as it is (a reload closes them all, and so does anything that takes the canvas off the page) (D47).

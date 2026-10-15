@@ -1122,7 +1122,8 @@ The output as it goes by, drawn on a braille canvas as a **wave** or as a **spec
 - The frames are copied from the scope ring (`telemetry::ScopeRing`, see "Architecture") on every frame that is drawn while the tab is shown, about ten a second, so that a wave that moves fast is seen in steps. The choices
   are the tab's own: they are not saved with the session, and not told to the audio thread or to the browsers (a browser's scope has its own).
 
-TODO: a scope for each lane and group (the ring is the master mix, `docs/web-ui.md` D43), a reading of the pitch (a bin of the spectrum is 23 Hz wide: the peak could be
+TODO: a scope for each lane and group in the terminal (the page has one for each node since step 46: the engine has eight rings that the controller gives to the nodes that are watched, `docs/web-ui.md` D47; the Scope tab's
+ring is the master mix), a reading of the pitch (a bin of the spectrum is 23 Hz wide: the peak could be
 interpolated between bins), a vertical zoom for a quiet sound (the tracer's wave, at its oscillator volume of 0.1, is two pixels high on the page's scope), and a key that freezes the picture.
 The page keeps the view and the time base in the master node, so that a reload goes back to the wave at 21 ms.
 
@@ -1578,6 +1579,13 @@ default log levels.
 while it is read; a copy that the writer overtook is made again, up to three times, and then taken as it is). The TUI's Scope tab reads it on every frame that it draws, and the web runtime's pusher on every tick for a client that has asked
 for the `scope` channel (see "Web UI"). Before the first buffer it is silence.
 
+**The probes.** Besides the master's ring the audio thread has a pool of eight (`telemetry::PROBES`, `Telemetry.probes`: rings of the same kind) for the signal at the output of a node: of a lane's instrument (after
+its volume), of each effect (after its mix) and of a group (after its pan; a bus effect, after its mix), stored by taps in `InstrumentLane` and `Group::finish` into the ring that the controller has told the audio thread the node has
+(`GraphCommand::SetProbe { target, ring }`, `ClearProbes`; a lane or a group that nothing listens to has an empty list of taps, a check at each stage). The controller says which ring each watched node has (`Controller::set_probes(Watcher, &[NodeId])`,
+`src/app/probes.rs`: a watcher is a client of the web interface, two watchers of a node share its ring, a node that no ring is left for has one when one is free, and what has no signal has none: a modulator, a lane that has no
+instrument, the master) and keeps the audio thread's taps where the nodes are as the structure of the session changes (`reconcile_probes`, from `conclude` and `poll`). Which node a ring is for is in the telemetry
+(`Telemetry::probe_node`) for the pusher, which sends each client the frames of the nodes it watches (channel 4: see "Web UI"). With the `web` feature or in tests only: the terminal has no scope for a node (the TODO under "Scope tab").
+
 MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop, the
 `play` loop and the headless loop of `serve`) looks for new devices about once a
 second (not in `serve` when there was no MIDI subsystem at startup).
@@ -1820,7 +1828,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   answer to the request that changed them); the
   telemetry frames are made by `web::pusher` at 30 Hz for the channels a client
   asked for (`meters`, `modulation`, `held`: a value for each of the 128 notes, 1 for a note that
-  is held, from the same bits the Piano tab reads, and `scope`: the latest 2048 frames of the output mix, the left side and then the right, 16 KB a frame, made only while a client asks for it). `NoteInput` (`src/note_input.rs`) is the one note path of hardware
+  is held, from the same bits the Piano tab reads, and `scope`: the latest 2048 frames of the output mix, the left side and then the right, 16 KB a frame, made only while a client asks for it; and, from step 46, the signal at a node:
+  a client says which nodes it wants with `probes { nodes }`, the whole list each time and at most 64, is answered with `probes { nodes }` (those that have a signal and a ring) and is sent a frame for each of them on channel 4, with the node's id where
+  the layout's revision is, 2 × 2048 values, D47). `NoteInput` (`src/note_input.rs`) is the one note path of hardware
   MIDI, the virtual piano and the browser: the Piano tab's filter, the held-notes
   bits and the channel to the audio thread, with the notes a WebSocket holds ended
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
@@ -1955,6 +1965,10 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   strips whole (`makeRoom`), and a group's strip and the master go along with a lane that grows past them (a lane that is new goes below the ones that stayed, `clearOfKept`; a node on one that a person placed goes clear of it, last, `clearOfPlaced`).
   `useLayout` keeps the places and lays the nodes out from nothing when "Arrange" is pressed (a button in the corner of the canvas, "Arrange the nodes again" to a screen reader; lit while a node has a place or one is not where the layout has it, `Flow.arranged`),
   which gives the places back (`resetLayout`) and then fits the view to every node (`FitWhenArranged`). The view moves to show a node that is added where it cannot be seen.
+  Step 46 gave every instrument that has a plugin, every effect and every group a button in its header (the sine wave, "Scope of X") that shows a scope of what comes out of it under its controls, with the view and the time
+  base of the master's (`app/patch/NodeScope.tsx`: `ScopeButton`, `NodeScope` and `ScopePanel`, which the master is drawn with too): the page asks the server for the signal while the scope is there (`Client.watchProbe`, counted, and
+  asked again on every connection: D47), which nodes show one is the viewer's own (`PatchView` holds the set, `scopes.ts` hands it to the nodes; it is not saved, not sent and not in the history), and the layout makes room for it
+  (`toFlow(graph, remembered, scopes)`: `canScope`, `PatchNodeData.scope`, `NODE_SCOPE_HEIGHT`, 157 as a browser draws it; `useLayout(graph, scopes)`). The mock engine has eight rings and sounds like the notes that are held.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
