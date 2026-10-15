@@ -743,6 +743,10 @@ velocity = 0
 - Selecting the pattern node shows its settings in the parameter pane:
   Length (beats), Enabled, Loop, and Transpose (Chromatic/In Key), toggled
   with `Left`/`Right`.
+- What is done to a pattern is done by intents, which the browser's requests are as well: `r` is `SetRecording { node, recording }`, `Ctrl+R` and `d`
+  on a pattern are `ClearPattern { node }`, and the rows of the pane (typed or stepped) are `SetPatternField { node, field, value }` (see "Session state"). The
+  pattern is on its lane's node in the graph a browser is given (`PatternInfo`: whether it is recording, enabled, looping and in key, its length in beats, the tempo
+  it was recorded at and how many notes it has), and what is done to it is told as `PatternSet`.
 
 ## Note remapping
 
@@ -1242,7 +1246,16 @@ the session file writes it, `F# dorian`, flats, long names and any case taken; r
 not a scale; answered with `ScaleSet`, which has the root and the pitch classes a client draws from) and
 `SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetBpm { bpm }` (the tempo that patterns are recorded at, held to 20 to 300;
 refused, with nothing changed, for a value that is not a number; told as `BpmSet` with the tempo it has now; the model's `bpm` and the audio thread's `SetGlobalBpm`,
-saved as the file's `bpm`; the patterns that are recorded keep the tempo they were recorded at; the TUI's `b` asks it), `SetPinned { node, params }` (which parameters of a
+saved as the file's `bpm`; the patterns that are recorded keep the tempo they were recorded at; the TUI's `b` asks it), `SetRecording { node, recording }` (start a
+recording on the lane `node`, as the terminal's `r` does: a lane that has no pattern is given an empty one, four beats, looping, not in key and not heard, at the session's tempo; the
+audio thread is told the tempo and the length first, since the count-in and the recording are counted in them, and then to record; a recording that is stopped is stopped at once, and the
+pattern that a recording makes when it is done comes from the audio thread, which `Controller::poll` folds in and the browsers are given a snapshot of; one that is started while it is going
+on, or stopped while it is not, is told as it is and sends nothing, since a second start would begin the count-in again), `ClearPattern { node }` (the pattern of a lane taken out, and a recording that is going
+on with it; refused for a lane that has none), `SetPatternField { node, field, value }` (`length`, 1 to 32 beats, and the switches `enabled`, `looping` and `transpose`, 0 or 1, rounded; each held to
+its range, `PatternField::range`, and sent to the audio thread by its own command; a lane that has no pattern is given an empty one with it, so that the length of its first recording can be
+chosen; refused for a value that is not a number, which is judged before the node is looked at) — all three refused, with nothing changed, for a node that is no lane (`a pattern belongs to a lane`) —
+told as the one event `PatternSet { node, pattern }`, the pattern the lane has after it (`PatternInfo`, or null when it has none), and none of them a step of the history: a pattern is not put
+back by undo, and what is done to one does not forget the steps there are (`Plan::Nothing`), `SetPinned { node, params }` (which parameters of a
 plugin a front-end shows as knobs on its node, by the plugin's own indices in the order they are shown, replacing the list there was;
 none gives the node back to the front-end's own choice; refused, with nothing changed, for a node that has no plugin, a parameter the
 plugin has not, a separator, a parameter twice and more than `MAX_PINNED`; told as `PinnedSet`; the engine and the TUI have no use for
@@ -1324,7 +1337,8 @@ own edit). Step 33 moved the TUI's structure edits that have intents onto them: 
 go through the controller, so that they are in the history, and `Controller::remove_effect`, `move_effect`, `remove_lane` and the others are
 the intents' own (`SessionModel::remove_effect` / `move_effect` and the bus's keep the modulator targets of the lane and of its group
 pointing at the same plugins, as the audio thread does). What the TUI still edits itself, for want of an intent: the order of the lanes
-(`Controller::swap_lanes`, which forgets the history), the pattern, the Type row and emptying a lane (`Controller::clear_instrument`, which does too).
+(`Controller::swap_lanes`, which forgets the history), the Type row and emptying a lane (`Controller::clear_instrument`, which does too). (The pattern was one of them until
+step 50: `r`, `d` and `Ctrl+R` on a pattern and the rows of its pane ask `SetRecording`, `ClearPattern` and `SetPatternField` now, which are no step of the history.)
 
 **Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
 step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
@@ -1418,7 +1432,8 @@ of that group to it go), a lane put in a group or out of one that its old group 
 and `Controller::set_instrument` and `clear_instrument`
 for the TUI's `i` and `d`) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
 asks by intents for what has them (the plugin selector, `d`, `n`, `g`, Shift+Up and Shift+Down on an effect, `m`, `l` and `t`), so they are in the
-history; what has none is not (the pattern, the Type row; the order of the lanes empties it) and the others do not empty it. What Undo and Redo would do is
+history; what has none is not (the Type row; the order of the lanes empties it) and the others do not empty it, and what is done to a pattern has intents and is no step (a
+pattern is not put back by undo: Open question 11 of `docs/web-ui.md`). What Undo and Redo would do is
 told to every browser as a message of its own, `History { undo, redo }` (the words of a button, or null), after the snapshot and the catalog
 and after every change of it, before the answer to the request that made it (`web::owner`): it is no event, since a second event of one
 revision is taken for a repeat. The page's buttons and keys ask for them (`ClientState.history`, `app/UndoRedo.tsx`) and so do the TUI's
@@ -1835,7 +1850,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `Modulate`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
-  `SetNodeUi`, `SetPinned`, `SetBpm`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
+  `SetNodeUi`, `SetPinned`, `SetBpm`, `SetRecording`, `ClearPattern`, `SetPatternField`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
   or a group), `Save`, `SaveAs`, `Undo` and `Redo` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
@@ -1856,7 +1871,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   their `parent`s and the edges between ports (`audio`, `member`, `modulation`
   with the target's depth as `amount`), and `Controller::snapshot()`
   (`src/app/snapshot.rs`) is that plus the revision, the telemetry layout and
-  what belongs to the session as a whole (dirty, file name, tempo, piano). Node
+  what belongs to the session as a whole (dirty, file name, tempo, piano). A lane's
+  pattern is on its node (`NodeKind::Instrument.pattern`, a `PatternInfo`, or null while it has none). Node
   layout is stored in the session TOML as optional `ui = { x, y }` tables that the
   engine and the TUI ignore (`Node.ui` in the graph; see "Node positions (`ui`)"), and so is which of a plugin's parameters its node
   shows as knobs (`Plugin.pinned` in the graph; see "Pinned parameters (`pinned`)").
@@ -2131,7 +2147,7 @@ TODO: the slider of a cable's depth is at the middle of the cable, which can be 
 edge, and two cables with the same middle put theirs over each other; sliders that move along the
 cable would settle it (nodes can be placed since step 25, which helps but does not settle it; a cable that ends at a depth has its slider on the
 run under what drives it, since step 36).
-TODO: patterns as graph nodes (they have no `NodeId` yet).
+TODO: patterns as graph nodes (a lane's pattern is on the lane's node, as a `PatternInfo`, but has no `NodeId` of its own).
 TODO: events of their own for what the audio thread reports to the controller (a
 finished pattern recording, a captured MIDI-learn control) and for what the TUI
 changes without an intent: until then connected browsers are given a snapshot
@@ -2140,7 +2156,7 @@ TODO: the events of one intent share its revision, which a client takes for a re
 if there is more than one (every intent makes one event today).
 TODO: undo of what moves between groups: a group made of a lane that is in another and a lane put in a group or out of one whose modulators drive it (the cables of the group that has it go) empty
 the history until their steps exist (`Plan::Barrier` in `src/app/history.rs`, `planOf` in `web/src/client/history.ts`).
-TODO: the TUI's edits that have no intent (the pattern, the Type row) are not in the history, and do not empty it; the order of the lanes with
+TODO: the TUI's edits that have no intent (the Type row) are not in the history, and do not empty it; the order of the lanes with
 Shift+Up / Shift+Down on a lane and `Controller::clear_instrument` do (a step that took something out puts it back by the places it had).
 TODO: a cable that a file has to a cable that is not there (`mod_depth = [0, 0]` to a modulator with no cable) is centred on something else after undo of the
 removal of its modulator than the loader gave it; it drives nothing, so it makes no difference to what is heard, and the tests leave it out.
