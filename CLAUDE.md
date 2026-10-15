@@ -1772,7 +1772,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   lane of Oscillator", "Undo remove Pad": the group with its bus effects, its modulators and its members); their "×" asks first all the same, and says "for good" (see the
   TODO on its words). Step 35 put what is replaced in it: a preset that is loaded ("Undo load preset Small Room": the preset and the values the plugin had) and an instrument that another replaces
   ("Undo change the instrument to Oscillator": the very plugin that the audio thread handed back, with the cables that drove it and the lane's note remap); what still empties the history is a group made of a lane that
-  is in another and a lane put in a group or out of one whose modulators drive it. What the controller
+  is in another and a lane put in a group or out of one whose modulators drive it. Step 36 drew the cables to the depth of a cable: every cable that starts at a
+  modulator is a row at the foot of its node (`CableRows`, `PatchNodeData.cables`; the layout counts them, `nodeHeight(node, knobs, cables)`), with a port on the node's left edge named after the cable
+  (`depth-<id>`: `DepthPort`, `depthHandle`) where a cable from another modulator ends to drive how deep that one goes: it is dragged to the port (the whole row takes it while one is dragged) or picked
+  from the list at the foot of a modulator, under the modulator whose cables they are (`depth → Filter: cutoff`); the modulator that drives the depth of another's cable is a row above that one, as for a setting;
+  the cable is drawn round the node it ends at, with its slider on the run under what drives it (`cableRoute`); and a cable that ends at a depth is told by the cable whose depth it is (`ADSR → depth of LFO → Filter: cutoff`:
+  `endLabel`, `cableWords` in `client/names.ts`, which the editor uses as well for what it says of a refusal). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1840,8 +1845,7 @@ of its name changes name with its place (Filter 3 becomes Filter 4, and the one 
 the node, by its id, would keep it, but would number a loaded session's nodes out of the order they are drawn in.
 TODO: a trace of an LFO faster than 15 Hz aliases: the telemetry is 30 values a second (the engine's blocks are much shorter); a telemetry
 channel of the lowest and highest output of each block, or a faster one, would draw it.
-TODO: the page has no port for the depth of a cable: the controller takes a cable to one (`AddModEdge` with a `depth` port;
-the TUI's `t` makes them), and the page neither draws such a cable (`handleOf` has no handle for it) nor offers it.
+TODO: the slider of a cable that ends at a depth shows the depth that was set and not what the cables that drive it make of it: a cable to a modulator's own field has no slot of telemetry.
 TODO: replacing an instrument takes out every cable that drove the old one; keep the ones whose
 parameter the new plugin has under the same name (a vibrato on `detune` could survive a change of
 oscillator): a cable would have to be drawn again with the new plugin's index.
@@ -1856,7 +1860,8 @@ not built), and an instrument put in from it starts at its own defaults (or at a
 asks first (see the TODO on the words of its "×").
 TODO: the slider of a cable's depth is at the middle of the cable, which can be over a node's
 edge, and two cables with the same middle put theirs over each other; sliders that move along the
-cable would settle it (nodes can be placed since step 25, which helps but does not settle it).
+cable would settle it (nodes can be placed since step 25, which helps but does not settle it; a cable that ends at a depth has its slider on the
+run under what drives it, since step 36).
 TODO: patterns as graph nodes (they have no `NodeId` yet).
 TODO: events of their own for what the audio thread reports to the controller (a
 finished pattern recording, a captured MIDI-learn control) and for what the TUI
