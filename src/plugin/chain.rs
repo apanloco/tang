@@ -4710,9 +4710,10 @@ impl AudioGraph {
             }
         }
 
-        // What reaches the output, measured.
+        // What reaches the output, measured and kept for a scope.
         if let (Some(telemetry), Some(fall)) = (&self.telemetry, fall) {
             self.master_meter.update(telemetry, &self.mix_buf, fall);
+            telemetry.scope.push(&self.mix_buf);
         }
 
         Ok(())
@@ -7421,6 +7422,19 @@ mod tests {
         assert!((master(&telemetry).0 - 0.75).abs() < 1e-6, "{:?}", master(&telemetry));
         assert_eq!(master(&telemetry).1, 0);
         assert!((out[0][0] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_scope_has_what_reaches_the_output_a_buffer_at_a_time() {
+        // Two lanes, 0.25 and 0.5: the scope has their sum, as the output and the meter have it.
+        let (mut graph, telemetry) = metered_graph(&[0.25, 0.5]);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        let (mut left, mut right) = (vec![9.0; 2 * FRAMES], vec![9.0; 2 * FRAMES]);
+        let written = telemetry.scope.latest(&mut left, &mut right);
+        assert_eq!(written, 2 * FRAMES as u64, "every frame of both buffers");
+        assert!(left.iter().chain(&right).all(|s| (s - 0.75).abs() < 1e-6), "{:?}", &left[..4]);
     }
 
     #[test]

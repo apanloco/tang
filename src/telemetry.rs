@@ -12,7 +12,7 @@
 //! clipped), stored as its bits; a counter is the way to publish an event that
 //! more than one reader must see, because nobody has to reset it.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many slots a session gets. A modulator takes one, each of its targets one,
 /// a meter two: a session with hundreds of nodes is far below this, and 16 KiB is
@@ -56,14 +56,16 @@ pub const MASTER: MeterSlots = MeterSlots { peak: Slot(0), clips: Slot(1) };
 /// Slots before this are reserved for what exists once per engine (`MASTER`).
 const RESERVED: u32 = 2;
 
-/// The cells: written by the audio thread, read by anyone.
+/// The cells, and the last frames of the output: written by the audio thread, read by anyone.
 pub struct Telemetry {
     cells: Box<[AtomicU32]>,
+    /// The output mix as it was a moment ago, for a display of the waveform.
+    pub scope: ScopeRing,
 }
 
 impl Telemetry {
     pub fn new() -> Self {
-        Telemetry { cells: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect() }
+        Telemetry { cells: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect(), scope: ScopeRing::new() }
     }
 
     /// Publish a float.
@@ -102,6 +104,93 @@ impl Telemetry {
     /// How many events `slot` has counted (wrapping, in the unlikely long run).
     pub fn count(&self, slot: Slot) -> u32 {
         self.cells.get(slot.0 as usize).map_or(0, |cell| cell.load(Ordering::Relaxed))
+    }
+}
+
+/// How many frames of the output the scope keeps (a frame is one sample of each side): a power of two, 170 ms at 48 kHz.
+pub const SCOPE_FRAMES: usize = 8192;
+
+/// The most frames a reader can take at once: a quarter of the ring, so that what it reads is not written over while it reads.
+#[cfg_attr(not(test), expect(dead_code, reason = "the web runtime's scope frames and the terminal's Scope tab read the ring (the next commits)"))]
+pub const SCOPE_READ_MAX: usize = SCOPE_FRAMES / 4;
+
+/// How many frames the writer stores before it says that it has: a quarter of the ring too.
+const SCOPE_CHUNK: usize = SCOPE_FRAMES / 4;
+
+/// How many frames may be stored while a reader reads, and what it has read still be what was there: the ring less what it reads and less what the
+/// writer may have half stored.
+const SCOPE_SAFE_ADVANCE: u64 = (SCOPE_FRAMES - SCOPE_READ_MAX - SCOPE_CHUNK) as u64;
+
+/// How many times a reader that was overtaken by the writer reads again before it takes what it has.
+const SCOPE_TRIES: usize = 3;
+
+/// The last frames of the output mix, for a display of the waveform (the page's scope, the terminal's): a ring that the audio thread stores into
+/// and any thread copies from, with no lock and no allocation, and a reader that falls behind just sees the latest frames. Each sample is a cell
+/// of its own (a float cannot tear), and a count of the frames stored in all, which the writer updates after the frames and a reader reads
+/// before and after its copy, says whether the copy is one run of frames that were stored together: a copy that the writer overtook is made again.
+pub struct ScopeRing {
+    /// The samples, a frame's left side and its right side next to each other, as bits.
+    cells: Box<[AtomicU32]>,
+    /// How many frames have been stored in all (a `u64` does not wrap in practice).
+    written: AtomicU64,
+}
+
+impl ScopeRing {
+    pub fn new() -> Self {
+        ScopeRing { cells: (0..2 * SCOPE_FRAMES).map(|_| AtomicU32::new(0)).collect(), written: AtomicU64::new(0) }
+    }
+
+    /// Store a buffer of the output, one `Vec` for each channel: the first is the left side and the second the right (a mix of one channel is
+    /// both sides; the others are not kept). Called by the audio thread only.
+    pub fn push(&self, channels: &[Vec<f32>]) {
+        let Some(left) = channels.first() else { return };
+        let right = channels.get(1).unwrap_or(left);
+        let frames = left.len().min(right.len());
+        let mut written = self.written.load(Ordering::Relaxed);
+        for start in (0..frames).step_by(SCOPE_CHUNK) {
+            let end = (start + SCOPE_CHUNK).min(frames);
+            for (i, (&l, &r)) in left[start..end].iter().zip(&right[start..end]).enumerate() {
+                let cell = ((written as usize + i) & (SCOPE_FRAMES - 1)) * 2;
+                self.cells[cell].store(l.to_bits(), Ordering::Relaxed);
+                self.cells[cell + 1].store(r.to_bits(), Ordering::Relaxed);
+            }
+            written += (end - start) as u64;
+            self.written.store(written, Ordering::Release);
+        }
+    }
+
+    /// Copy the latest frames into `left` and `right` (the most that `SCOPE_READ_MAX` allows, as many as the shorter of them holds; what is
+    /// past that is left as it was), the latest last; before the first frames came, silence. Returns how many frames have been stored in all,
+    /// so that a reader can tell whether it has seen these before.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime's scope frames and the terminal's Scope tab read the ring (the next commits)"))]
+    pub fn latest(&self, left: &mut [f32], right: &mut [f32]) -> u64 {
+        self.latest_checked(left, right, || {})
+    }
+
+    /// `latest`, with `between` called after each copy and before the look at whether the writer overtook it (a test makes the writer do its part there).
+    fn latest_checked(&self, left: &mut [f32], right: &mut [f32], mut between: impl FnMut()) -> u64 {
+        let wanted = left.len().min(right.len()).min(SCOPE_READ_MAX);
+        let (left, right) = (&mut left[..wanted], &mut right[..wanted]);
+        let mut written = self.written.load(Ordering::Acquire);
+        for attempt in 1..=SCOPE_TRIES {
+            for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                // (Before the first frames there is nothing, and the sides get silence.)
+                let frame = written as i64 - wanted as i64 + i as i64;
+                (*l, *r) = if frame < 0 {
+                    (0.0, 0.0)
+                } else {
+                    let cell = (frame as usize & (SCOPE_FRAMES - 1)) * 2;
+                    (f32::from_bits(self.cells[cell].load(Ordering::Relaxed)), f32::from_bits(self.cells[cell + 1].load(Ordering::Relaxed)))
+                };
+            }
+            between();
+            let now = self.written.load(Ordering::Acquire);
+            if now - written <= SCOPE_SAFE_ADVANCE || attempt == SCOPE_TRIES {
+                break;
+            }
+            written = now;
+        }
+        written
     }
 }
 
@@ -378,6 +467,170 @@ mod tests {
         // Many short buffers add up to the same fall as one long one.
         let steps: f32 = (0..100).map(|_| peak_fall(0.005)).product();
         assert!((steps - over_half_a_second).abs() < 1e-4, "{steps}");
+    }
+
+    // -- Scope ring --
+
+    /// `n` frames of a ramp from `from`: the left side counts up and the right side is its negative, so that a mix-up of the sides shows.
+    fn ramp(from: usize, n: usize) -> Vec<Vec<f32>> {
+        vec![(from..from + n).map(|i| i as f32).collect(), (from..from + n).map(|i| -(i as f32)).collect()]
+    }
+
+    /// The latest `n` frames, from sides that were 9 before: what each side has, and how many frames were written in all.
+    fn latest(ring: &ScopeRing, n: usize) -> (Vec<f32>, Vec<f32>, u64) {
+        let (mut left, mut right) = (vec![9.0; n], vec![9.0; n]);
+        let written = ring.latest(&mut left, &mut right);
+        (left, right, written)
+    }
+
+    fn counting(from: usize, to: usize) -> Vec<f32> {
+        (from..to).map(|i| i as f32).collect()
+    }
+
+    #[test]
+    fn a_scope_that_nothing_was_pushed_to_reads_silence_and_no_frames() {
+        let ring = ScopeRing::new();
+        assert_eq!(latest(&ring, 16), (vec![0.0; 16], vec![0.0; 16], 0));
+    }
+
+    #[test]
+    fn the_latest_frames_are_what_was_pushed_in_the_order_it_was_pushed_each_side_its_own() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 100));
+        ring.push(&ramp(100, 50));
+        let (left, right, written) = latest(&ring, 120);
+        assert_eq!(left, counting(30, 150));
+        assert_eq!(right, counting(30, 150).iter().map(|s| -s).collect::<Vec<_>>());
+        assert_eq!(written, 150);
+    }
+
+    #[test]
+    fn asking_for_more_frames_than_there_are_puts_silence_before_them() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(1, 3));
+        let (left, right, written) = latest(&ring, 5);
+        assert_eq!(left, [0.0, 0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(right, [0.0, 0.0, -1.0, -2.0, -3.0]);
+        assert_eq!(written, 3);
+    }
+
+    #[test]
+    fn after_the_ring_has_gone_round_the_latest_frames_are_the_last_ones_pushed() {
+        let ring = ScopeRing::new();
+        let total = 3 * SCOPE_FRAMES + 1234;
+        for from in (0..total).step_by(500) {
+            ring.push(&ramp(from, 500.min(total - from)));
+        }
+        let (left, right, written) = latest(&ring, SCOPE_READ_MAX);
+        assert_eq!(written, total as u64);
+        assert_eq!(left, counting(total - SCOPE_READ_MAX, total));
+        assert!(left.iter().zip(&right).all(|(l, r)| *r == -*l));
+    }
+
+    #[test]
+    fn a_block_longer_than_the_ring_leaves_its_last_frames() {
+        let ring = ScopeRing::new();
+        let total = 3 * SCOPE_FRAMES + 7;
+        ring.push(&ramp(0, total));
+        let (left, _, written) = latest(&ring, 100);
+        assert_eq!((left, written), (counting(total - 100, total), total as u64));
+    }
+
+    #[test]
+    fn a_mix_of_one_channel_is_both_sides_and_a_mix_of_none_pushes_nothing() {
+        let ring = ScopeRing::new();
+        ring.push(&[vec![0.25, -0.5]]);
+        assert_eq!(latest(&ring, 2), (vec![0.25, -0.5], vec![0.25, -0.5], 2));
+        ring.push(&[]);
+        assert_eq!(latest(&ring, 2).2, 2);
+    }
+
+    #[test]
+    fn a_read_asks_for_no_more_than_the_ring_can_give_at_once() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, SCOPE_FRAMES));
+        let (left, _, written) = latest(&ring, SCOPE_READ_MAX + 10);
+        assert_eq!(written, SCOPE_FRAMES as u64);
+        assert_eq!(left[..SCOPE_READ_MAX], counting(SCOPE_FRAMES - SCOPE_READ_MAX, SCOPE_FRAMES)[..]);
+        assert_eq!(left[SCOPE_READ_MAX..], [9.0; 10], "what is past the most it gives is left as it was");
+    }
+
+    #[test]
+    fn a_copy_that_the_writer_overtook_is_made_again_from_the_frames_that_are_there_now() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 3000));
+        let (mut left, mut right) = (vec![0.0; 1000], vec![0.0; 1000]);
+        let mut pushed = false;
+        let written = ring.latest_checked(&mut left, &mut right, || {
+            // While it copies, more goes in than the ring has room for beside what it reads.
+            if !std::mem::replace(&mut pushed, true) {
+                ring.push(&ramp(3000, 5000));
+            }
+        });
+        assert_eq!(written, 8000);
+        assert_eq!(left, counting(7000, 8000));
+    }
+
+    #[test]
+    fn a_copy_that_the_writer_did_not_overtake_stands_as_of_the_frames_it_copied() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 3000));
+        let (mut left, mut right) = (vec![0.0; 1000], vec![0.0; 1000]);
+        let mut looks = 0;
+        let written = ring.latest_checked(&mut left, &mut right, || {
+            // A buffer goes in while it copies: nothing it copied is touched.
+            looks += 1;
+            if looks == 1 {
+                ring.push(&ramp(3000, 1000));
+            }
+        });
+        assert_eq!((written, looks), (3000, 1));
+        assert_eq!(left, counting(2000, 3000));
+    }
+
+    #[test]
+    fn a_reader_that_is_overtaken_every_time_gives_up_after_three_tries() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 3000));
+        let (mut left, mut right) = (vec![0.0; 1000], vec![0.0; 1000]);
+        let mut looks = 0;
+        let mut at = 3000;
+        let written = ring.latest_checked(&mut left, &mut right, || {
+            looks += 1;
+            ring.push(&ramp(at, 5000));
+            at += 5000;
+        });
+        assert_eq!(looks, 3);
+        assert_eq!(written, 13_000, "what the third copy began at");
+    }
+
+    #[test]
+    fn a_reader_that_looks_while_the_writer_pushes_sees_a_run_of_frames_that_were_pushed() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        let ring = Arc::new(ScopeRing::new());
+        let writer = {
+            let ring = ring.clone();
+            std::thread::spawn(move || {
+                // About fifty times faster than the sound card, which is more than a real one does to a reader.
+                for block in 0..2000 {
+                    ring.push(&ramp(block * 256, 256));
+                    std::thread::sleep(Duration::from_micros(20));
+                }
+            })
+        };
+        let mut looks = 0;
+        while !writer.is_finished() {
+            let (left, right, written) = latest(&ring, SCOPE_READ_MAX);
+            if written >= SCOPE_READ_MAX as u64 {
+                let end = written as usize;
+                assert_eq!(left, counting(end - SCOPE_READ_MAX, end), "frames up to {written}");
+                assert!(left.iter().zip(&right).all(|(l, r)| *r == -*l));
+                looks += 1;
+            }
+        }
+        writer.join().unwrap();
+        assert!(looks > 10, "the reader looked {looks} times while the writer ran");
     }
 
     #[test]
