@@ -594,6 +594,8 @@ pub struct Vst3Plugin {
     separate_controller: bool,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<u32>,
+    /// For each parameter, how many steps it has as a list (0 for a number): the value that the page and the terminal give is the step, not the plain value.
+    param_steps: Vec<u32>,
     pending_param_changes: Vec<(u32, f64)>,
     preset_cache: Vec<Preset>,
     preset_param_id: Option<u32>,
@@ -955,8 +957,8 @@ impl Plugin for Vst3Plugin {
     fn get_parameter(&mut self, index: u32) -> Option<f32> {
         let param_id = *self.param_ids.get(index as usize)?;
         let normalized = unsafe { self.controller.getParamNormalized(param_id) };
-        let plain = unsafe { self.controller.normalizedParamToPlain(param_id, normalized) };
-        Some(plain as f32)
+        let steps = self.param_steps[index as usize];
+        Some(normalized_to_value(steps, normalized, |normalized| unsafe { self.controller.normalizedParamToPlain(param_id, normalized) }))
     }
 
     fn set_parameter(&mut self, index: u32, value: f32) -> anyhow::Result<()> {
@@ -964,10 +966,8 @@ impl Plugin for Vst3Plugin {
             .param_ids
             .get(index as usize)
             .ok_or_else(|| anyhow::anyhow!("Parameter index out of range: {index}"))?;
-        let normalized = unsafe {
-            self.controller
-                .plainParamToNormalized(param_id, value as f64)
-        };
+        let steps = self.param_steps[index as usize];
+        let normalized = value_to_normalized(steps, value, |plain| unsafe { self.controller.plainParamToNormalized(param_id, plain) });
         self.pending_param_changes.push((param_id, normalized));
         Ok(())
     }
@@ -1023,6 +1023,54 @@ fn is_listed(flags: i32, midi_controller: bool) -> bool {
     let hidden = flags & (kIsHidden | kIsReadOnly) != 0;
     let only_for_midi = midi_controller && flags & kCanAutomate == 0;
     !hidden && !only_for_midi
+}
+
+/// The most steps that a parameter can have and still be shown as a list of their names: one with more (a program number of 128) is a number.
+const MAX_LIST_STEPS: i32 = 64;
+
+/// Whether a parameter that has `steps` steps (VST3's `stepCount`: 0 for a continuous one, 1 for a switch) is a list: one that has steps, and not very many.
+/// A list is an enum to the page and the terminal (`ParameterInfo::labels`): its names are what the plugin says at each step ("Off" and "On", "C" to "B").
+fn is_list(steps: i32) -> bool {
+    (1..=MAX_LIST_STEPS).contains(&steps)
+}
+
+/// The normalized value of step `step` of a parameter with `steps` steps: the steps of a VST3 parameter are k/steps, whatever the plain range that the plugin
+/// says (Pianoteq's is 0 to 1 for all of them, a plugin that is made with a choice parameter has 0 to steps). The page and the terminal give the step.
+fn step_to_normalized(step: f32, steps: u32) -> f64 {
+    (step as f64 / steps as f64).clamp(0.0, 1.0)
+}
+
+/// The step of a parameter with `steps` steps that a normalized value is nearest.
+fn normalized_to_step(normalized: f64, steps: u32) -> f32 {
+    (normalized * steps as f64).round() as f32
+}
+
+/// The normalized value for the `value` that is given for a parameter with `steps` steps (0 for a number): the step, for a list, and the plugin's own
+/// conversion of a plain value (`plain_to_normalized`) for any other.
+fn value_to_normalized(steps: u32, value: f32, plain_to_normalized: impl FnOnce(f64) -> f64) -> f64 {
+    if steps == 0 { plain_to_normalized(value as f64) } else { step_to_normalized(value, steps) }
+}
+
+/// The value to give for a parameter with `steps` steps (0 for a number) that is at the normalized value `normalized`: the step, for a list, and the
+/// plugin's own conversion to a plain value (`normalized_to_plain`) for any other.
+fn normalized_to_value(steps: u32, normalized: f64, normalized_to_plain: impl FnOnce(f64) -> f64) -> f32 {
+    if steps == 0 { normalized_to_plain(normalized) as f32 } else { normalized_to_step(normalized, steps) }
+}
+
+/// What a step of a list is called: the plugin's own text for it, and the step's number where it says none.
+fn step_name(text: Option<String>, step: u32) -> String {
+    text.filter(|name| !name.is_empty()).unwrap_or_else(|| step.to_string())
+}
+
+/// What the plugin calls each of the `steps + 1` values of a list (`step_name`).
+fn step_names(controller: &ComPtr<IEditController>, id: u32, steps: u32) -> Vec<String> {
+    (0..=steps)
+        .map(|step| {
+            let mut text: String128 = [0u16; 128];
+            let result = unsafe { controller.getParamStringByValue(id, step_to_normalized(step as f32, steps), &mut text) };
+            step_name((result == kResultOk).then(|| string128_to_string(&text)), step)
+        })
+        .collect()
 }
 
 /// What a MIDI mapping points at, from what `assignment(channel, controller)` says of it (the plugin's mapping, for its first bus): the ids of the
@@ -1247,6 +1295,7 @@ pub fn load(
     let param_count = unsafe { controller.getParameterCount() };
     let mut params_cache = Vec::with_capacity(param_count as usize);
     let mut param_ids = Vec::with_capacity(param_count as usize);
+    let mut param_steps = Vec::with_capacity(param_count as usize);
     let mut preset_param_id: Option<u32> = None;
 
     for i in 0..param_count {
@@ -1268,19 +1317,28 @@ pub fn load(
 
         let name_str = string128_to_string(&info.title);
         let default_normalized = info.defaultNormalizedValue;
-        let min = unsafe { controller.normalizedParamToPlain(info.id, 0.0) } as f32;
-        let max = unsafe { controller.normalizedParamToPlain(info.id, 1.0) } as f32;
-        let default =
-            unsafe { controller.normalizedParamToPlain(info.id, default_normalized) } as f32;
+        // A list is its steps: 0 to the last, with the names the plugin gives them. Any other parameter has the plain range that the plugin says.
+        let list_steps = if is_list(info.stepCount) { info.stepCount as u32 } else { 0 };
+        let (min, max, default, labels) = if list_steps > 0 {
+            (0.0, list_steps as f32, normalized_to_step(default_normalized, list_steps), Some(step_names(&controller, info.id, list_steps)))
+        } else {
+            let min = unsafe { controller.normalizedParamToPlain(info.id, 0.0) } as f32;
+            let max = unsafe { controller.normalizedParamToPlain(info.id, 1.0) } as f32;
+            let default = unsafe { controller.normalizedParamToPlain(info.id, default_normalized) } as f32;
+            (min, max, default, None)
+        };
 
         let param_index = params_cache.len() as u32;
         param_ids.push(info.id);
+        param_steps.push(list_steps);
         params_cache.push(ParameterInfo {
             index: param_index,
             name: name_str,
             min,
             max,
             default,
+            labels,
+            step_count: info.stepCount.max(0) as u32,
             ..Default::default()
         });
     }
@@ -1440,6 +1498,7 @@ pub fn load(
         separate_controller,
         params_cache,
         param_ids,
+        param_steps,
         pending_param_changes: Vec::new(),
         preset_cache,
         preset_param_id,
@@ -1788,6 +1847,51 @@ mod tests {
     }
 
     #[test]
+    fn a_parameter_with_steps_is_a_list_of_names_unless_it_has_very_many() {
+        for (steps, list) in [(-1, false), (0, false), (1, true), (2, true), (18, true), (64, true), (65, false), (127, false), (1000, false)] {
+            assert_eq!(is_list(steps), list, "{steps} steps");
+        }
+    }
+
+    /// A parameter with n steps has the normalized values k/n, and the page and the terminal give the step k: so that a switch is 0 or 1 and a list
+    /// of 12 root notes is 0 to 11, whatever the plain range that the plugin says (Pianoteq's is 0 to 1 for all of them).
+    #[test]
+    fn a_step_is_a_place_among_the_normalized_values_of_the_parameter_and_back() {
+        for (step, steps, normalized) in [(0.0, 1, 0.0), (1.0, 1, 1.0), (0.0, 29, 0.0), (10.0, 29, 10.0 / 29.0), (29.0, 29, 1.0), (11.0, 11, 1.0), (3.0, 4, 0.75)] {
+            assert!((step_to_normalized(step, steps) - normalized).abs() < 1e-12, "step {step} of {steps}");
+            assert_eq!(normalized_to_step(normalized, steps), step, "normalized {normalized} of {steps}");
+        }
+        // A step that is not one is the nearest, and one beyond the ends is the end.
+        assert_eq!(normalized_to_step(0.49, 4), 2.0);
+        assert_eq!(normalized_to_step(0.51, 4), 2.0);
+        assert_eq!(normalized_to_step(0.9, 4), 4.0);
+        assert_eq!(step_to_normalized(7.0, 3), 1.0);
+        assert_eq!(step_to_normalized(-2.0, 3), 0.0);
+    }
+
+    /// The value that is given for a parameter is its step for a list and its plain value for any other (`plain_to_normalized` and `normalized_to_plain` are
+    /// the plugin's own conversions, which a list does not use: here they are made up, ten times the normalized value, to tell the two apart).
+    #[test]
+    fn a_list_is_given_and_taken_by_its_step_and_any_other_parameter_by_the_plugins_own_plain_value() {
+        let (to_plain, to_normalized) = (|normalized: f64| normalized * 10.0, |plain: f64| plain / 10.0);
+        // A number: 5 is the plain value 5, which is the normalized 0.5.
+        assert_eq!(value_to_normalized(0, 5.0, to_normalized), 0.5);
+        assert_eq!(normalized_to_value(0, 0.5, to_plain), 5.0);
+        // A list of 4 steps: 3 is the step 3, which is the normalized 0.75, and the plugin's plain values are not asked.
+        assert_eq!(value_to_normalized(4, 3.0, to_normalized), 0.75);
+        assert_eq!(normalized_to_value(4, 0.75, to_plain), 3.0);
+        // The first step of a list of 29, which is the default of a parameter of Pianoteq's, is 1 and not 1/29 of its plain range.
+        assert_eq!(normalized_to_value(29, 1.0 / 29.0, to_plain), 1.0);
+    }
+
+    #[test]
+    fn a_step_that_the_plugin_gives_no_name_is_called_by_its_number() {
+        assert_eq!(step_name(Some("On".to_string()), 1), "On");
+        assert_eq!(step_name(Some(String::new()), 3), "3");
+        assert_eq!(step_name(None, 7), "7");
+    }
+
+    #[test]
     fn the_parameters_a_midi_mapping_points_at_are_those_of_every_channel_and_the_routing_is_that_of_channel_0() {
         // A plugin with a parameter for each channel and controller (the way the placeholders are made): the id says which.
         let (targets, by_controller) = midi_controller_assignments(|channel, cc| Some(1000 + 130 * channel as u32 + cc as u32));
@@ -1827,6 +1931,23 @@ mod tests {
         let volume = listed.iter().find(|p| p.name == "Volume").expect("a volume");
         assert!(listed.iter().any(|p| p.name == "Dynamics"));
         assert!(listed.iter().enumerate().all(|(place, p)| p.index as usize == place), "the indices are the places in the list");
+        // A switch has the names that the plugin gives its two ends, and is a list of two steps (0 and 1); a parameter with no steps is a number.
+        let switch = listed.iter().find(|p| p.name == "Equalizer Switch").expect("a switch");
+        assert_eq!((switch.step_count, switch.labels.clone(), switch.min, switch.max), (1, Some(vec!["Off".to_string(), "On".to_string()]), 0.0, 1.0));
+        assert_eq!((volume.step_count, volume.labels.clone()), (0, None));
+        // A list of 30 (the speeds of a bounce, "16d" to "1/32t"), whose default is the 14th, "1" (step 13): read as the step that it is, and not as 13/29 of a plain range.
+        let speed = listed.iter().find(|p| p.name == "Bounce Sync Speed").expect("a list of speeds");
+        assert_eq!((speed.step_count, speed.min, speed.max, speed.default), (29, 0.0, 29.0, 13.0));
+        assert_eq!(speed.labels.as_ref().map(|labels| (labels.len(), labels[0].as_str(), labels[13].as_str(), labels[29].as_str())), Some((30, "16d", "1", "1/32t")));
+        assert_eq!(plugin.get_parameter(speed.index), Some(13.0));
+        // Set to the step 5 ("8t"), which the plugin takes with the next blocks and says back as 5: the step goes through as the step it is.
+        plugin.set_parameter(speed.index, 5.0).unwrap();
+        let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+        for _ in 0..4 {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            plugin.process(&[], &[], &mut out).unwrap();
+        }
+        assert_eq!(plugin.get_parameter(speed.index), Some(5.0));
         for name in ["Volume", "Dynamics"] {
             let info = listed.iter().find(|p| p.name == name).expect("a parameter of its own");
             // (A new instance is at its defaults: the index reads the parameter that its name says, and not one that was before it in the plugin's own list.)

@@ -370,7 +370,12 @@ at, and that cannot be automated: `is_listed`). Found by looking at the plugins 
 parameters were "MIDI CC 3|47" (214 of its own are left), 2,080 of ROLI Airwave Player's 2,089 (9 are left), 2,078 of ROLI Studio Drums'
 2,156 (78) and 2,080 of Traveler's 2,450 (370); they were 91% to 99.6% of the list in the ⚙ panel and in the terminal. The routing of
 the controllers is unchanged (it goes by the parameter's id, not by the list), and a real parameter that a controller is mapped to can be
-automated and stays. The count that `tang enumerate` and the selector show is the same number. Units, step counts and groups are not
+automated and stays. The count that `tang enumerate` and the selector show is the same number. A parameter of 1 to 64 steps (`stepCount`) is a
+list: an enum (`labels`) of what the plugin says at each step (`getParamStringByValue`: "Off" and "On", "EXP" and "LIN", Studio Drums' "Scale Type"
+with 19 scales and its "Root Note", Pianoteq's "Bounce Sync Speed" with 30), with `min` 0, `max` the last step and the step as the value that is
+given and taken, since VST3's steps are k/n whatever the plain range (Pianoteq's is 0 to 1 for every parameter: read as a plain value a step 13 of 29
+would be 0.45); `step_count` is reported for every parameter. A session that has such a parameter at a plain value that is not a step (0.34 for
+the 10th of 29) reads it as a step; that is a list of more than two, of a plugin whose plain range is 0 to 1. Units and groups are not
 reported yet: the units that a VST3 plugin gives (`dB`, `Hz`) name what its display text shows, and not its plain range, which is 0 to 1 for
 all of Pianoteq's, so "0.44 dB" would lie as "0.37 Hz" would for the filter. CLAP and LV2 do not leave anything out yet.
 

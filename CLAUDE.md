@@ -1612,6 +1612,11 @@ How Tang handles common plugin I/O mismatches:
   `midi_controller_parameters` in `src/plugin/vst3.rs`). Pianoteq 9 has 2,080 of them among its 2,294 and ROLI Airwave Player 2,080
   among 2,089, so what is left is 214 and 9; `tang enumerate` counts what is listed. The routing of controllers to the plugin is
   by parameter id and is as it was. (A test of Pianoteq 9 is `#[ignore]`d: `cargo test -- --ignored`, with it installed.)
+  A VST3 parameter that has 1 to 64 steps (`stepCount`) is a list, an enum to the page and the terminal: its labels are what the plugin says at
+  each step (`getParamStringByValue`: "Off" and "On", "EXP" and "LIN", Studio Drums' "Scale Type" and "Root Note", Pianoteq's 30 "Bounce Sync
+  Speed"s), and its value is the step, 0 to n, since VST3's steps are k/n whatever the plain range that the plugin says (`is_list`,
+  `step_to_normalized`; Pianoteq's plain ranges are all 0 to 1). A session that has such a parameter at a plain value that is not a step (0.34 for
+  the 10th of 29) reads it as the step 0.34, which the model rounds: only a list of more than two, of a plugin whose plain range is 0 to 1.
 
 - **Sidechain inputs**: effects with more audio inputs than the chain provides
   (e.g. Calf Reverb with 2 audio + 1 sidechain = 3 inputs) get silence on the
@@ -1907,7 +1912,8 @@ for long enough runs out, and later cables have no live dot.
 TODO: pinning from a knob on the node itself (a pin is set in the panel only), ordering the pins by dragging (they are shown in the order they
 were pinned), and a node with no knobs at all (an empty `pinned` list is the front-end's own choice, the first eight; docs/web-ui.md D33).
 TODO: the panel's sliders ignore what a parameter says of its steps (`stepCount`) and of its group (`group`): a stepped
-parameter is turned as if it were continuous, and the filter looks at names only. (The plugins of this machine report neither.)
+parameter is turned as if it were continuous, and the filter looks at names only. (The VST3 adapter makes a parameter of 1 to 64 steps a list
+of names, an enum, so that it is not turned as a number; what is left is one with more steps, and the groups, which no plugin of this machine reports.)
 TODO: a lane added from the browser is full range and in no group (its own choice of group puts it in one; drawing its audio to a group is
 not built), and an instrument put in from it starts at its own defaults (or at a preset the page then loads): taking a lane or a group out
 asks first (see the TODO on the words of its "×").
