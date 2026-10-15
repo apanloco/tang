@@ -657,6 +657,80 @@ fn piano_locked_mode_in_d_dorian() {
     assert_golden("piano_locked_mode_in_d_dorian", &mut h);
 }
 
+// ---------------------------------------------------------------------------
+// Scope tab
+// ---------------------------------------------------------------------------
+
+/// `frames` of the output as the audio thread keeps them for the scope: a sine of `left` (hertz, amplitude) on the left side and one of `right` on the right.
+fn sound(h: &Harness, frames: usize, left: (f64, f64), right: (f64, f64)) {
+    let side = |(hertz, amplitude): (f64, f64)| -> Vec<f32> {
+        (0..frames).map(|n| (amplitude * (std::f64::consts::TAU * hertz * n as f64 / f64::from(SAMPLE_RATE)).sin()) as f32).collect()
+    };
+    h.s.ctl.telemetry.scope.push(&[side(left), side(right)]);
+}
+
+#[test]
+fn scope_wave_of_a_sine_on_each_side() {
+    // The wave across 21 ms: ten turns of a sine of 468.75 Hz, 0.8 high on the left (teal) and half of that on the right (green), the status line and the keys.
+    let mut h = Harness::new(scene_split());
+    sound(&h, 2048, (468.75, 0.8), (468.75, 0.4));
+    h.press(KeyCode::Char('3'));
+    assert_golden("scope_wave_of_a_sine_on_each_side", &mut h);
+}
+
+#[test]
+fn scope_wave_in_silence() {
+    // Nothing has come out yet: a flat line along the middle between the lines at a half, and a dash for the peak.
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Char('3'));
+    assert_golden("scope_wave_in_silence", &mut h);
+}
+
+#[test]
+fn scope_spectrum_of_a_sine() {
+    // `v`: the spectrum of a sine of 1.5 kHz, 0.5 high on both sides: a peak at 1.5 kHz, between the lines of 1k and 10k, and a peak of -6.0 dB.
+    let mut h = Harness::new(scene_split());
+    sound(&h, 2048, (1500.0, 0.5), (1500.0, 0.5));
+    h.press(KeyCode::Char('3')).press(KeyCode::Char('v'));
+    assert_golden("scope_spectrum_of_a_sine", &mut h);
+}
+
+#[test]
+fn scope_peak_over_full_scale_is_red() {
+    // A sine of 1.5 high clips: the peak is +3.5 dB, in red, and the wave stops at the edges.
+    let mut h = Harness::new(scene_split());
+    sound(&h, 2048, (468.75, 1.5), (468.75, 1.5));
+    h.press(KeyCode::Char('3'));
+    assert_golden("scope_peak_over_full_scale_is_red", &mut h);
+}
+
+#[test]
+fn the_keys_of_the_scope_tab_choose_the_view_and_the_time_base() {
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Char('3'));
+    assert_eq!((h.s.scope.kind(), scope_view::TIMES[h.s.scope.time()]), (scope_view::Kind::Wave, 1024));
+    h.press(KeyCode::Right);
+    assert_eq!(scope_view::TIMES[h.s.scope.time()], 2048);
+    h.press(KeyCode::Left).press(KeyCode::Left);
+    assert_eq!(scope_view::TIMES[h.s.scope.time()], 512);
+    h.press(KeyCode::Char('v'));
+    assert_eq!(h.s.scope.kind(), scope_view::Kind::Spectrum);
+    h.press(KeyCode::Char('v'));
+    assert_eq!(h.s.scope.kind(), scope_view::Kind::Wave);
+    assert_eq!(h.commands(), Vec::<String>::new(), "the scope is nothing of the audio thread's");
+    assert!(!h.s.ctl.dirty, "and nothing of the session's");
+}
+
+#[test]
+fn the_keys_of_the_scope_tab_are_the_other_tabs_own_elsewhere() {
+    // `v` on the Session tab is the instrument's volume, and Left/Right there are what they were: the scope's choices stay where they are.
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Char('v'));
+    assert!(h.s.gain_editing.is_some(), "the volume popup");
+    h.press(KeyCode::Esc).press(KeyCode::Left).press(KeyCode::Right);
+    assert_eq!((h.s.scope.kind(), scope_view::TIMES[h.s.scope.time()]), (scope_view::Kind::Wave, 1024));
+}
+
 #[test]
 fn choosing_a_scale_in_the_picker_is_an_intent_that_the_controller_carries_out() {
     let mut h = Harness::new(scene_split());

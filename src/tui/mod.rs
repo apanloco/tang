@@ -2,6 +2,7 @@ mod clip;
 #[cfg(test)]
 mod golden_tests;
 mod piano_view;
+mod scope_view;
 pub mod splash;
 mod terminal_input;
 mod web;
@@ -417,6 +418,8 @@ struct State {
     /// Center MIDI octave for the piano view (0..=8). Default 4.
     piano_view_octave: i8,
     scale_selector: Option<ScaleSelectorState>,
+    // Scope tab state: the view, the time base and the frames of the output that the last frame was drawn from.
+    scope: scope_view::Scope,
 }
 
 impl State {
@@ -465,6 +468,7 @@ impl State {
             save_as: None,
             piano_view_octave: 4,
             scale_selector: None,
+            scope: scope_view::Scope::new(),
         }
     }
 
@@ -2365,6 +2369,11 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             s.piano_view_octave += 1;
         }
 
+        // ---- Scope tab ----
+        KeyCode::Char('v') if s.active_tab == 2 => s.scope.toggle_kind(),
+        KeyCode::Left if s.active_tab == 2 => s.scope.faster(),
+        KeyCode::Right if s.active_tab == 2 => s.scope.slower(),
+
         // 'i' — replace instrument on the selected instrument slot.
         KeyCode::Char('i') if s.active_tab == 0 && !s.focus_params => {
             if let Some(TreeAddress::Instrument(_)) = s.selected_address().copied() {
@@ -3190,11 +3199,8 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             }
         }
         2 => {
-            frame.render_widget(
-                Paragraph::new("Oscilloscope — not yet implemented")
-                    .style(Style::default().fg(DIM)),
-                content_area,
-            );
+            s.scope.take(&s.ctl.telemetry.scope, Instant::now());
+            scope_view::render(frame, content_area, &s.scope, s.ctl.sample_rate);
         }
         3 => render_help(frame, content_area, &s.help_lines, s.help_offset),
         _ => {}
@@ -4449,6 +4455,10 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  k          Open scale picker (root + scale)".into(),
         "  [          Shift view octave down".into(),
         "  ]          Shift view octave up".into(),
+        "".into(),
+        "Scope tab:".into(),
+        "  v          Wave or spectrum of the output".into(),
+        "  Left/Right Shorter / longer time base (the wave)".into(),
         "".into(),
         "Session tab (param focus):".into(),
         "  Up/Down    Navigate parameters".into(),

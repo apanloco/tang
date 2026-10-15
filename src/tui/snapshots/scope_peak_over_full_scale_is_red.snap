@@ -1,0 +1,76 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+ Scope: wave   Time: 21 ms   Peak: +3.5 dB
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ⢸⠉⠉⢹        ⡏⠉⠉⢣       ⢀⠏⠉⠉⡇       ⢸⠉⠉⠹⡀       ⡜⠉⠉⢹        ⡏⠉⠉⢱        ⡏⠉⠉⡇       ⢸⠉⠉⠙⡄       ⢸⠉⠉⢹        ⡏⠉⠉⢹       │
+│ ⡇  ⢸        ⡇  ⢸       ⢸   ⡇       ⢸   ⡇       ⡇  ⢸        ⡇  ⢸       ⢰⠁  ⡇       ⢸   ⡇       ⡇  ⠸⡀       ⡇  ⢸       │
+│ ⡇  ⢸       ⢰⠁  ⢸       ⢸   ⢸       ⢸   ⡇       ⡇  ⠈⡆       ⡇  ⢸       ⢸   ⢣       ⢸   ⡇       ⡇   ⡇       ⡇  ⢸       │
+│ ⡇   ⡇      ⢸   ⢸       ⢸   ⢸       ⡇   ⡇       ⡇   ⡇      ⢸   ⢸       ⢸   ⢸       ⡸   ⡇       ⡇   ⡇      ⢠⠃  ⢸       │
+│ ⡇   ⡇      ⢸   ⠘⡄      ⡸   ⢸       ⡇   ⢇       ⡇   ⡇      ⢸   ⢸       ⢸   ⢸       ⡇   ⢸       ⡇   ⡇      ⢸   ⠈⡆      │
+│⢸    ⡇      ⢸    ⡇      ⡇   ⢸       ⡇   ⢸      ⢠⠃   ⡇      ⢸    ⡇      ⡎   ⢸       ⡇   ⢸       ⡇   ⡇      ⢸    ⡇      │
+│⢸⠤⠤⠤⠤⡇⠤⠤⠤⠤⠤⠤⢸⠤⠤⠤⠤⡇⠤⠤⠤⠤⠤⠤⡇⠤⠤⠤⢸⠤⠤⠤⠤⠤⠤⠤⡇⠤⠤⠤⢸⠤⠤⠤⠤⠤⠤⢸⠤⠤⠤⠤⢣⠤⠤⠤⠤⠤⠤⢸⠤⠤⠤⠤⡇⠤⠤⠤⠤⠤⠤⡇⠤⠤⠤⠸⡀⠤⠤⠤⠤⠤⠤⡇⠤⠤⠤⢸⠤⠤⠤⠤⠤⠤⢰⠁⠤⠤⠤⡇⠤⠤⠤⠤⠤⠤⢸⠤⠤⠤⠤⡇⠤⠤⠤⠤⠤⠤│
+│⢸    ⢸      ⡜    ⡇      ⡇   ⠈⡆     ⢰⠁   ⢸      ⢸    ⢸      ⢸    ⡇      ⡇    ⡇      ⡇   ⢸      ⢸    ⢸      ⡸    ⡇      │
+│⢸    ⢸      ⡇    ⡇      ⡇    ⡇     ⢸    ⢸      ⢸    ⢸      ⡎    ⡇      ⡇    ⡇     ⢸    ⠘⡄     ⢸    ⢸      ⡇    ⢇      │
+│⡜    ⢸      ⡇    ⡇      ⡇    ⡇     ⢸    ⠈⡆     ⢸    ⢸      ⡇    ⢣      ⡇    ⡇     ⢸     ⡇     ⢸    ⢸      ⡇    ⢸      │
+│⡇    ⢸      ⡇    ⢸     ⢰⠁    ⡇     ⢸     ⡇     ⡇    ⢸      ⡇    ⢸      ⡇    ⡇     ⢸     ⡇     ⡸    ⢸      ⡇    ⢸      │
+│⡇    ⢸      ⡇    ⢸     ⢸     ⡇     ⢸     ⡇     ⡇    ⢸      ⡇    ⢸     ⢸     ⢱     ⢸     ⡇     ⡇    ⠘⡄     ⡇    ⢸      │
+│⠃    ⢸     ⢰⠁    ⢸     ⢸     ⢸     ⢸     ⡇     ⡇    ⠈⡆     ⡇    ⢸     ⢸     ⢸     ⡸     ⡇     ⡇     ⡇     ⡇    ⢸      │
+│⠉⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⡎⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⢸⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⢀⠇⠉⠉⠉⠉⠘⡄⠉⠉⠉⠉⢰│
+│      ⡇    ⢸     ⠸⡀    ⢸     ⢸     ⡇     ⡇    ⢀⠇     ⡇    ⢸      ⡇    ⢸     ⢸     ⡇     ⢱     ⡇     ⡇    ⢸      ⡇    ⢸│
+│      ⡇    ⢸      ⡇    ⡇     ⢸     ⡇     ⢸    ⢸      ⡇    ⢸      ⡇    ⡸     ⢸     ⡇     ⢸    ⢠⠃     ⡇    ⢸      ⡇    ⢸│
+│      ⡇    ⢸      ⡇    ⡇     ⢸     ⡇     ⢸    ⢸      ⡇    ⢸      ⡇    ⡇     ⢸     ⡇     ⢸    ⢸      ⢱    ⢸      ⡇    ⡜│
+│      ⢣    ⢸      ⡇    ⡇     ⠸⡀   ⢀⠇     ⢸    ⢸      ⢸    ⡜      ⡇    ⡇     ⠈⡆    ⡇     ⢸    ⢸      ⢸    ⢸      ⡇    ⡇│
+│      ⢸    ⡇      ⡇    ⡇      ⡇   ⢸      ⢸    ⢸      ⢸    ⡇      ⡇    ⡇      ⡇   ⢠⠃     ⢸    ⢸      ⢸    ⡎      ⡇    ⡇│
+│⠒⠒⠒⠒⠒⠒⢸⠒⠒⠒⠒⡇⠒⠒⠒⠒⠒⠒⢣⠒⠒⠒⢀⠇⠒⠒⠒⠒⠒⠒⡇⠒⠒⠒⢸⠒⠒⠒⠒⠒⠒⠸⡀⠒⠒⠒⢸⠒⠒⠒⠒⠒⠒⢸⠒⠒⠒⠒⡇⠒⠒⠒⠒⠒⠒⡇⠒⠒⠒⠒⡇⠒⠒⠒⠒⠒⠒⡇⠒⠒⠒⢸⠒⠒⠒⠒⠒⠒⠒⡇⠒⠒⠒⢸⠒⠒⠒⠒⠒⠒⢸⠒⠒⠒⠒⡇⠒⠒⠒⠒⠒⠒⢱⠒⠒⠒⠒⡇│
+│      ⢸    ⡇      ⢸   ⢸       ⡇   ⢸       ⡇   ⡜      ⢸    ⡇      ⢸   ⢰⠁      ⡇   ⢸       ⡇   ⢸      ⢸    ⡇      ⢸    ⡇│
+│      ⢸    ⡇      ⢸   ⢸       ⡇   ⢸       ⡇   ⡇      ⠘⡄   ⡇      ⢸   ⢸       ⢇   ⢸       ⡇   ⡎      ⢸    ⡇      ⢸   ⢸ │
+│       ⡇  ⢠⠃      ⢸   ⢸       ⢱   ⡎       ⡇   ⡇       ⡇   ⡇      ⢸   ⢸       ⢸   ⢸       ⡇   ⡇       ⡇   ⡇      ⢸   ⢸ │
+│       ⡇  ⢸       ⢸   ⢸       ⢸   ⡇       ⡇   ⡇       ⡇  ⢰⠁      ⢸   ⢸       ⢸   ⡇       ⡇   ⡇       ⡇  ⢀⠇      ⠘⡄  ⢸ │
+│       ⡇  ⢸       ⠸⡀  ⢸       ⢸   ⡇       ⢸  ⢀⠇       ⡇  ⢸       ⠈⡆  ⢸       ⢸   ⡇       ⢱   ⡇       ⡇  ⢸        ⡇  ⢸ │
+│       ⣇⣀⣀⣸        ⣇⣀⣀⡇       ⠸⣀⣀⣀⡇       ⢸⣀⣀⣸        ⣇⣀⣀⣸        ⣇⣀⣀⡜       ⠘⣄⣀⣀⡇       ⢸⣀⣀⣰⠁       ⢇⣀⣀⣸        ⣇⣀⣀⡇ │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ [v] wave/spectrum  [←/→] time base
+
+── styles ('.' = default) ──
+aaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaa..................................................................aaaaaaaa
+aaaaaaaabbbbaaaaaaaaabbbbbaaaaaaaaaccccccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+a.dddd........dddd.......ddddd.......ddddd.......dddd........dddd........dddd.......ddddd.......dddd........dddd.......a
+a.d..d........d..d.......d...d.......d...d.......d..d........d..d.......dd..d.......d...d.......d..dd.......d..d.......a
+a.d..d.......dd..d.......d...d.......d...d.......d..dd.......d..d.......d...d.......d...d.......d...d.......d..d.......a
+a.d...d......d...d.......d...d.......d...d.......d...d......d...d.......d...d.......d...d.......d...d......dd..d.......a
+a.d...d......d...dd......d...d.......d...d.......d...d......d...d.......d...d.......d...d.......d...d......d...dd......a
+ad....d......d....d......d...d.......d...d......dd...d......d....d......d...d.......d...d.......d...d......d....d......a
+adeeeedeeeeeedeeeedeeeeeedeeedeeeeeeedeeedeeeeeedeeeedeeeeeedeeeedeeeeeedeeeddeeeeeedeeedeeeeeeddeeedeeeeeedeeeedeeeeeea
+ad....d......d....d......d...dd.....dd...d......d....d......d....d......d....d......d...d......d....d......d....d......a
+ad....d......d....d......d....d.....d....d......d....d......d....d......d....d.....d....dd.....d....d......d....d......a
+ad....d......d....d......d....d.....d....dd.....d....d......d....d......d....d.....d.....d.....d....d......d....d......a
+ad....d......d....d.....dd....d.....d.....d.....d....d......d....d......d....d.....d.....d.....d....d......d....d......a
+ad....d......d....d.....d.....d.....d.....d.....d....d......d....d.....d.....d.....d.....d.....d....dd.....d....d......a
+ad....d.....dd....d.....d.....d.....d.....d.....d....dd.....d....d.....d.....d.....d.....d.....d.....d.....d....d......a
+aeeeeeedeeeedeeeeedeeeeedeeeeedeeeeedeeeeedeeeeedeeeeedeeeedeeeeedeeeeedeeeeedeeeeedeeeeedeeeeedeeeeedeeeeddeeeeddeeeeda
+a......d....d.....dd....d.....d.....d.....d....dd.....d....d......d....d.....d.....d.....d.....d.....d....d......d....da
+a......d....d......d....d.....d.....d.....d....d......d....d......d....d.....d.....d.....d....dd.....d....d......d....da
+a......d....d......d....d.....d.....d.....d....d......d....d......d....d.....d.....d.....d....d......d....d......d....da
+a......d....d......d....d.....dd...dd.....d....d......d....d......d....d.....dd....d.....d....d......d....d......d....da
+a......d....d......d....d......d...d......d....d......d....d......d....d......d...dd.....d....d......d....d......d....da
+aeeeeeedeeeedeeeeeedeeeddeeeeeedeeedeeeeeeddeeedeeeeeedeeeedeeeeeedeeeedeeeeeedeeedeeeeeeedeeedeeeeeedeeeedeeeeeedeeeeda
+a......d....d......d...d.......d...d.......d...d......d....d......d...dd......d...d.......d...d......d....d......d....da
+a......d....d......d...d.......d...d.......d...d......dd...d......d...d.......d...d.......d...d......d....d......d...d.a
+a.......d..dd......d...d.......d...d.......d...d.......d...d......d...d.......d...d.......d...d.......d...d......d...d.a
+a.......d..d.......d...d.......d...d.......d...d.......d..dd......d...d.......d...d.......d...d.......d..dd......dd..d.a
+a.......d..d.......dd..d.......d...d.......d..dd.......d..d.......dd..d.......d...d.......d...d.......d..d........d..d.a
+a.......dddd........dddd.......ddddd.......dddd........dddd........dddd.......ddddd.......ddddd.......dddd........dddd.a
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+── legend ──
+a  fg=Indexed(245) bg=Reset mod=-
+b  fg=White bg=Reset mod=BOLD
+c  fg=Rgb(235, 80, 80) bg=Reset mod=BOLD
+d  fg=Rgb(120, 200, 215) bg=Reset mod=-
+e  fg=Rgb(70, 74, 88) bg=Reset mod=-

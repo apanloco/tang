@@ -111,7 +111,6 @@ impl Telemetry {
 pub const SCOPE_FRAMES: usize = 8192;
 
 /// The most frames a reader can take at once: a quarter of the ring, so that what it reads is not written over while it reads.
-#[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "the web runtime's scope frames read the ring, and the terminal's Scope tab will"))]
 pub const SCOPE_READ_MAX: usize = SCOPE_FRAMES / 4;
 
 /// How many frames the writer stores before it says that it has: a quarter of the ring too.
@@ -162,7 +161,6 @@ impl ScopeRing {
     /// Copy the latest frames into `left` and `right` (the most that `SCOPE_READ_MAX` allows, as many as the shorter of them holds; what is
     /// past that is left as it was), the latest last; before the first frames came, silence. Returns how many frames have been stored in all,
     /// so that a reader can tell whether it has seen these before.
-    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "the web runtime's scope frames read the ring, and the terminal's Scope tab will"))]
     pub fn latest(&self, left: &mut [f32], right: &mut [f32]) -> u64 {
         self.latest_checked(left, right, || {})
     }
@@ -203,7 +201,7 @@ const PEAK_FALL_DB_PER_SECOND: f32 = 40.0;
 
 /// A peak below this is silence: it is published as 0 rather than left to
 /// dwindle through ever smaller numbers.
-const SILENCE: f32 = 1e-6;
+pub const SILENCE: f32 = 1e-6;
 
 /// The factor a peak is multiplied by over a buffer that lasts `seconds`.
 pub fn peak_fall(seconds: f32) -> f32 {
