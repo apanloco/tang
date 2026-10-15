@@ -5,7 +5,8 @@
 // the settings of another above that one), the groups to the right of the lanes that feed
 // them, and the master at the end. That is where a node is unless the
 // session says otherwise: a node that has been moved has a place (`Node.ui`, kept in the
-// session file, §4.4), and is drawn there; the layout of the others does not leave room for it.
+// session file, §4.4), and is drawn there; the layout of the others does not leave room for it,
+// but a node that the layout would put on one that was placed (or too near it) is moved clear of it (`clearOfPlaced`).
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { cableWords, displayNames, endLabel } from "../../client/names";
@@ -344,6 +345,51 @@ function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>, cableCoun
   return placed;
 }
 
+/** How near a node that the layout places may be to one that a person placed, before it is moved: the sizes the layout assumes are the components' to a few pixels. */
+const CLEARANCE = 16;
+
+interface Box {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Whether two boxes are over each other or nearer than `CLEARANCE`. */
+const near = (a: Box, b: Box): boolean => a.left < b.right + CLEARANCE && b.left < a.right + CLEARANCE && a.top < b.bottom + CLEARANCE && b.top < a.bottom + CLEARANCE;
+
+/**
+ * Move the nodes that the layout places off the nodes that a person has placed. A place is a pin: the layout makes no room around a node that was
+ * moved, so a node that is added later (an effect at the end of a chain, a lane, a modulator) goes where the layout puts it, which can be on a node that
+ * was placed there, and hide it. A node that would be on one, or nearer to one than `CLEARANCE`, is moved clear of it: below it, with the gap of a
+ * row, and above it for a modulator, which belongs above its strip; and clear of the others that it then comes to, one after the other in the order of
+ * the graph, so that two that were on the same node do not come to be on each other. A node that is clear of the placed ones stays where the layout puts it:
+ * what is moved is what would have been on one, and a node that is dragged does not move the rest unless it is dropped on them.
+ */
+function clearOfPlaced(graph: Graph, positions: Map<NodeId, { x: number; y: number }>, heightOf: (node: Node) => number): void {
+  const box = (node: Node, at: { x: number; y: number }): Box => ({ left: at.x, top: at.y, right: at.x + NODE_WIDTH, bottom: at.y + heightOf(node) });
+  const placed = graph.nodes.flatMap((node) => (node.ui ? [box(node, node.ui)] : []));
+  if (placed.length === 0) return;
+  const free = graph.nodes.filter((node) => !node.ui);
+  const boxOfFree = (node: Node): Box => box(node, positions.get(node.id) ?? { x: 0, y: 0 });
+  const onePlaced = new Set(free.filter((node) => placed.some((other) => near(boxOfFree(node), other))));
+  if (onePlaced.size === 0) return;
+  // What a moved node has to keep clear of: the nodes that are placed, the others that the layout placed (which stay), and the ones moved before it.
+  const obstacles = [...placed, ...free.filter((node) => !onePlaced.has(node)).map(boxOfFree)];
+  for (const node of free.filter((candidate) => onePlaced.has(candidate))) {
+    let at = positions.get(node.id) ?? { x: 0, y: 0 };
+    // (Each step passes an obstacle for good, so it takes no more steps than there are obstacles.)
+    for (let step = 0; step <= obstacles.length; step += 1) {
+      const here = box(node, at);
+      const hit = obstacles.find((obstacle) => near(here, obstacle));
+      if (!hit) break;
+      at = { x: at.x, y: node.kind === "modulator" ? hit.top - ROW_GAP - heightOf(node) : hit.bottom + ROW_GAP };
+    }
+    positions.set(node.id, at);
+    obstacles.push(box(node, at));
+  }
+}
+
 /** The cables that start at each modulator, as its node lists them, in the order of the graph. */
 function cableRows(graph: Graph, names: ReadonlyMap<NodeId, string>): Map<NodeId, CableRow[]> {
   const drivenDepths = new Set<EdgeId>(graph.edges.flatMap((edge) => (edge.to.port.type === "depth" ? [edge.to.port.edge] : [])));
@@ -366,11 +412,10 @@ export function toFlow(graph: Graph): Flow {
     const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
     knobs.set(node.id, knobsOf(plugin, modulated.get(node.id) ?? new Set()));
   }
-  const positions = layout(
-    graph,
-    new Map([...knobs].map(([id, params]) => [id, params.length])),
-    new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0])),
-  );
+  const knobCounts = new Map([...knobs].map(([id, params]) => [id, params.length]));
+  const cableCounts = new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0]));
+  const positions = layout(graph, knobCounts, cableCounts);
+  clearOfPlaced(graph, positions, (node) => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0));
 
   const nodes: PatchNode[] = graph.nodes.map((node) => ({
     id: String(node.id),

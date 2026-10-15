@@ -1759,7 +1759,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `SetLocked`). Step 25 made the nodes movable: a node is dragged by its header (the controls are
   `nodrag`), the page sends `SetNodeUi` once, when it is put down, every browser draws the node there,
   the session saves it, and a control on the canvas arranges the nodes again (`Editor.moveNode`,
-  `resetLayout`; `useMovableNodes` and `app/patch/moving.ts` keep a node in hand while the session is laid out again). Step 26 drew
+  `resetLayout`; `useMovableNodes` and `app/patch/moving.ts` keep a node in hand while the session is laid out again; a node that the layout would put
+  on one that was placed by hand, or within 16 pixels of it, is moved clear of it, below it and above it for a modulator: `clearOfPlaced` in `toFlow.ts`). Step 26 drew
   the cables between modulators: an LFO's rate and the stages of an envelope have a port on the top edge of their knob as a plugin's
   parameters have, a cable is dragged to one from another modulator's output (or chosen from the list at the foot of the
   modulator, which lists those settings after the parameters, under a heading for each modulator), and a modulator that

@@ -404,7 +404,12 @@ keeps its place when it migrates into the lane), `app::save::to_save` and `sessi
 that is taken out stays in the table (ids are not reused but for what undo gives back, so nothing else reads it) and is not written. The graph has them as
 `Node.ui`, left out of the JSON of a node that has none, so that a session with no places is the JSON it was. The TUI shows
 nothing of them and keeps them through a load, an edit and a save. A node with no place is where the page's layout puts it, and
-the layout of the others does not leave room for one that was moved: a node dragged away leaves its space to whatever comes.
+the layout of the others does not leave room for one that was moved: a node dragged away leaves its space to whatever comes. A node that
+the layout would put on one that was placed, or nearer to it than 16 pixels (`CLEARANCE`), is moved clear of it, below it with the gap of a
+row (above it for a modulator, which belongs above its strip), and clear of the others it then comes to, one after the other in the order of
+the graph: a node that is added later, an effect at the end of a chain say, does not hide one that was put there by hand (`clearOfPlaced` in
+`app/patch/toFlow.ts`, f80). A node that is clear of the placed ones stays where the layout puts it, so nothing moves because another is dragged
+unless it is dropped on it.
 
 **As built (step 30).** `pinned` is a key of the plugin's own table, beside `ui` and not inside it as this section first said: on the
 lane's `[[instrument]]` (its instrument), on an `[[instrument.effect]]` and on a `[[group.effect]]`, a list of the parameters' names in the
@@ -2673,7 +2678,8 @@ Each step is a reviewable change; the TUI must not regress at any point.
     In the docs: §4.4 planned `pinned` inside `ui` (not built, a TODO), and CLAUDE.md said the layout "is to be stored".
     A refactoring that is worth doing: the `Save*` structs have no `Default`, so one more field (`ui`) was 41 edits in test
     literals; a `Default` (or a constructor for a lane) would make the next one cheap. A node that is placed by hand is a pin:
-    the layout does not make room around it, so a node added later can land on one.
+    the layout did not make room around it, so a node added later could land on one and hide it (f80: it is moved clear of it
+    now, §4.4, after step 38).
   - **Numbers at the end of the step.** Rust 914 tests (893 at the end of step 24), 1068 with the `web` feature and 17 on the real
     program (1046 and 16), 909 without the default plugin formats and 1061 with `web`; web 1080 (1038); 43 in browsers (42).
 

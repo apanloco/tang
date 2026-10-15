@@ -757,6 +757,124 @@ describe("where the nodes are", () => {
   });
 });
 
+describe("a node that the layout places, where a person has placed another", () => {
+  const placed = (graph: Graph, places: Record<number, { x: number; y: number }>): Graph => ({
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const ui = places[node.id];
+      return ui ? { ...node, ui } : node;
+    }),
+  });
+
+  /** The nodes of `graph` that overlap, as the layout sizes them: the first pair, or null. */
+  function overlap(graph: Graph): string | null {
+    const rects = rectangles(graph);
+    for (const [i, a] of rects.entries()) {
+      for (const b of rects.slice(i + 1)) {
+        if (!(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)) return `${String(a.id)} and ${String(b.id)}`;
+      }
+    }
+    return null;
+  }
+
+  const auto = toFlow(twoLanes);
+  /** Where the layout puts a node of `twoLanes` when nothing is placed. */
+  const slot = (id: NodeId): { x: number; y: number } => at(auto, id).position;
+
+  test("is below it, in its column, with the gap between rows, when it would be on it: an effect added where a node was put", () => {
+    // (The person has put the first effect of the lane where the second would be. The second goes below it, and not on it.)
+    const graph = placed(twoLanes, { 2: slot(3) });
+    const flow = toFlow(graph);
+    expect(at(flow, 2).position).toEqual(slot(3));
+    const heightOf2 = nodeHeight(nodeOf(graph, 2), at(flow, 2).data.knobs.length, 0);
+    expect(at(flow, 3).position).toEqual({ x: slot(3).x, y: slot(3).y + heightOf2 + ROW_GAP });
+    expect(overlap(graph)).toBeNull();
+  });
+
+  test("is above it when it is a modulator, which belongs above its strip: its bottom a gap above the node's top", () => {
+    const graph = placed(twoLanes, { 3: slot(4) });
+    const flow = toFlow(graph);
+    expect(at(flow, 3).position).toEqual(slot(4));
+    expect(at(flow, 4).position).toEqual({ x: slot(4).x, y: slot(4).y - ROW_GAP - tall(graph, 4) });
+    expect(overlap(graph)).toBeNull();
+  });
+
+  test("is moved when it would be nearer than a little to a placed node, on any side of it, and not when it is as far as that", () => {
+    // (The layout's sizes are about what the components are, to a few pixels: a node that is almost on another is on it.)
+    const flat = nodeOf(twoLanes, 2);
+    const wide = NODE_WIDTH;
+    const high = nodeHeight(flat, at(auto, 2).data.knobs.length, 0);
+    const target = slot(3);
+    const sides: [string, (gap: number) => { x: number; y: number }][] = [
+      ["to the right", (gap) => ({ x: target.x + wide + gap, y: target.y })],
+      ["to the left", (gap) => ({ x: target.x - wide - gap, y: target.y })],
+      ["below", (gap) => ({ x: target.x, y: target.y + high + gap })],
+      ["above", (gap) => ({ x: target.x, y: target.y - high - gap })],
+    ];
+    for (const [side, put] of sides) {
+      const near = at(toFlow(placed(twoLanes, { 2: put(15) })), 3).position;
+      const apart = at(toFlow(placed(twoLanes, { 2: put(16) })), 3).position;
+      expect(near, `15 pixels from it, ${side}`).not.toEqual(target);
+      expect(apart, `16 pixels from it, ${side}`).toEqual(target);
+    }
+  });
+
+  test("do not land on one another when several would be on the same node: the next goes below the last", () => {
+    // Two lanes of effects in the same columns; a tall node placed over the third column of both.
+    const lanes: Graph = {
+      nodes: [instrument(1), effect(2, 1), effect(3, 1), instrument(4), effect(5, 4), effect(6, 4), instrument(7, 8), master],
+      edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(4, 5), audio(5, 6), audio(6, MASTER)],
+    };
+    const base = toFlow(lanes);
+    const graph = placed(lanes, { 7: { x: at(base, 3).position.x, y: 100 } });
+    expect(overlap(graph)).toBeNull();
+    // (Both were over it, so both moved, one below the other.)
+    const [first, second] = [at(toFlow(graph), 3).position.y, at(toFlow(graph), 6).position.y].sort((a, b) => a - b);
+    expect(first).toBeGreaterThan(100);
+    expect(second).toBeGreaterThan((first ?? 0) + 100);
+  });
+
+  test("leaves every node that is clear of the placed ones where the layout puts it, and every placed node where it was put", () => {
+    // (Placed far from all of them: nothing moves. And placed over one, only that one does.)
+    const far = toFlow(placed(twoLanes, { 5: { x: 9000, y: 9000 } }));
+    for (const node of twoLanes.nodes) {
+      if (node.id !== 5) expect(at(far, node.id).position, `node ${String(node.id)}`).toEqual(slot(node.id));
+    }
+    const over = toFlow(placed(twoLanes, { 3: slot(2) }));
+    expect(at(over, 3).position).toEqual(slot(2));
+    for (const node of twoLanes.nodes) {
+      if (![2, 3].includes(node.id)) expect(at(over, node.id).position, `node ${String(node.id)}`).toEqual(slot(node.id));
+    }
+    expect(at(over, 2).position).not.toEqual(slot(2));
+  });
+
+  test("do not overlap any other node, wherever a node is put: each node of a session put on each of the others' places", () => {
+    const cases: [string, Graph][] = [
+      ["two lanes", twoLanes],
+      ["groups", grouped],
+      ["the tracer", tracerSnapshot.graph],
+    ];
+    for (const [name, graph] of cases) {
+      const base = toFlow(graph);
+      for (const moved of graph.nodes) {
+        for (const target of graph.nodes) {
+          if (moved.id === target.id) continue;
+          const there = placed(graph, { [moved.id]: at(base, target.id).position });
+          expect(overlap(there), `${name}: ${String(moved.id)} put where ${String(target.id)} is`).toBeNull();
+        }
+      }
+    }
+  });
+
+  test("do not move when nothing is placed, or when the node that is placed is a node of the layout itself, where it is", () => {
+    const flow = toFlow(twoLanes);
+    for (const node of twoLanes.nodes) {
+      const same = toFlow(placed(twoLanes, { [node.id]: at(flow, node.id).position }));
+      for (const other of twoLanes.nodes) expect(at(same, other.id).position, `${String(other.id)} with ${String(node.id)} placed where it is`).toEqual(at(flow, other.id).position);
+    }
+  });
+});
+
 describe("what a modulator's node can be drawn to", () => {
   test("is what it can still drive: the plugins it reaches and their parameters, but for those it drives already", () => {
     const flow = toFlow(tracerSnapshot.graph);
