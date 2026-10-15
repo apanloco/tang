@@ -63,10 +63,20 @@ impl Tang {
 
     /// `tang serve` on the session in `session`, started in the directory `dir` (where the test is, if none).
     fn start_in(dir: Option<&std::path::Path>, session: impl AsRef<std::ffi::OsStr>) -> Tang {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
         // No sound card and no MIDI input is opened: nothing is heard, nothing is listened to.
+        Tang::start_with(dir, session, "no such device")
+    }
+
+    /// `tang serve` on the session in `session`, listening to the MIDI input called `midi_device` (and to no sound card).
+    #[cfg(unix)]
+    fn start_listening_to(session: impl AsRef<std::ffi::OsStr>, midi_device: &str) -> Tang {
+        Tang::start_with(None, session, midi_device)
+    }
+
+    fn start_with(dir: Option<&std::path::Path>, session: impl AsRef<std::ffi::OsStr>, midi_device: &str) -> Tang {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
         command
-            .args(["--audio-device", "none", "--midi-device", "no such device", "serve"])
+            .args(["--audio-device", "none", "--midi-device", midi_device, "serve"])
             .arg(session)
             .args(["--web-bind", "127.0.0.1:0"])
             .stdin(Stdio::null())
@@ -1337,4 +1347,85 @@ async fn ctrl_c_closes_the_browsers_and_stops_the_program() {
     let status = tang.exit_within(Duration::from_secs(10)).unwrap_or_else(|| panic!("tang did not stop\n{}", tang.log()));
     assert!(status.success(), "{status:?}\n{}", tang.log());
     assert!(std::net::TcpStream::connect(tang.addr).is_err(), "nobody listens any more");
+}
+
+/// A MIDI controller that exists only here: a virtual output that the program can open as an input, as it opens a keyboard's.
+/// (CoreMIDI on a Mac and ALSA's sequencer on Linux make them; Windows has none.)
+#[cfg(unix)]
+fn virtual_controller(name: &str) -> midir::MidiOutputConnection {
+    use midir::os::unix::VirtualOutput;
+    midir::MidiOutput::new("tang test").expect("a MIDI system").create_virtual(name).unwrap_or_else(|e| panic!("a virtual MIDI port called {name:?}: {e}"))
+}
+
+/// The modulator of a snapshot message that is a MIDI control: its node and what it is bound to (`null` while it learns), and whether it learns.
+#[cfg(unix)]
+fn midi_control_of(snapshot: &Value) -> Option<(u64, Value, bool)> {
+    snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["kind"] == "modulator" && n["source"]["type"] == "midiLearn").map(|n| {
+        (n["id"].as_u64().unwrap(), n["source"]["control"].clone(), n["source"]["learning"].as_bool().unwrap())
+    })
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a MIDI system that can make virtual ports (CoreMIDI on a Mac, ALSA's sequencer on Linux): cargo test --features web -- --ignored"]
+async fn a_control_that_learns_is_bound_to_the_controller_that_is_moved_and_drives_the_parameter_and_every_browser_and_the_saved_file_have_it() {
+    let name = format!("tang learn test {}", std::process::id());
+    let mut controller = virtual_controller(&name);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_listening_to(&file, &name);
+    // (The program opens the inputs that it finds as it starts, and this one is there.)
+    let deadline = Instant::now() + SOON;
+    while !tang.log().contains("MIDI inputs connected: 1") {
+        assert!(Instant::now() < deadline, "the program did not open the controller\n{}", tang.log());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (mut client, _, snapshot) = listening(&tang).await;
+    // (The oscillator's pan: the tracer's LFO sweeps the filter's cutoff, which would not keep still for the check below.)
+    let (osc, pan) = param_of(&snapshot, "Oscillator", "pan");
+
+    // A control that learns, made for the pan, at 0.4 of its range: armed, and bound to nothing.
+    let to = json!({"node": osc, "port": {"type": "param", "index": pan}});
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "modulate", "to": to, "kind": "midiLearn", "depth": 0.4}})).await;
+    let (acked, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(acked["type"], "ack", "{acked}");
+    let told = said.iter().find(|m| m["type"] == "snapshot").expect("a snapshot");
+    let (control, bound_to, learning) = midi_control_of(told).expect("a control that learns");
+    assert_eq!((bound_to, learning), (Value::Null, true), "it waits for a controller");
+
+    // The controller is moved (a person turns a knob, which sends a stream of values, and the program binds the first it hears: CC 74).
+    let deadline = Instant::now() + SOON;
+    let bound = loop {
+        controller.send(&[0xB0, 74, 100]).unwrap();
+        if let Ok(snapshot) = tokio::time::timeout(Duration::from_millis(150), next_snapshot(&mut client)).await
+            && let Some((id, bound_to, learning)) = midi_control_of(&snapshot)
+            && !learning
+        {
+            assert_eq!((id, bound_to), (control, json!({"type": "cc", "number": 74})), "{snapshot}");
+            break snapshot;
+        }
+        assert!(Instant::now() < deadline, "the control was not bound within {SOON:?}\n{}", tang.log());
+    };
+
+    // The pan follows the knob: its own value is the centre, 0, and a controller at rest adds nothing; all the way it adds 0.4 of the range of 2.
+    let layout = &bound["snapshot"]["telemetry"];
+    let at = layout["modulation"].as_array().unwrap().iter().position(|e| e["kind"] == "effective" && e["node"] == json!(osc) && e["port"]["index"] == json!(pan)).expect("a slot for the pan");
+    let rev = layout["rev"].as_u64().unwrap() as u32;
+    tell(&mut client, json!({"type": "telemetry", "channels": ["modulation"]})).await;
+    for (value, expected) in [(0u8, 0.0f32), (127, 0.8), (0, 0.0)] {
+        controller.send(&[0xB0, 74, value]).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        drain(&mut client).await;
+        let seen = modulation_value(&mut client, rev, at).await;
+        assert!((seen - expected).abs() < 0.03, "the controller at {value}: the pan is {seen}, and should be about {expected}\n{}", tang.log());
+    }
+
+    // A second browser is told what the control is bound to, and the saved file has it.
+    let (_second, _, told) = listening(&tang).await;
+    assert_eq!(midi_control_of(&told).map(|(_, bound_to, learning)| (bound_to, learning)), Some((json!({"type": "cc", "number": 74}), false)));
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("type = \"midi\"") && saved.contains("midi_cc = 74"), "{saved}");
 }

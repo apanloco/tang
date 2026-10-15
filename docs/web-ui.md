@@ -1356,7 +1356,9 @@ implementations. The TUI golden tests are the regression net.
    D18, and adding and removing modulators and cables in step 15, and cables between modulators, to the rate and
    the stages, in step 26, and groups (adding, naming, putting a lane in one and taking one out, from the page) in step 31, and cables to the
    depth of a cable in step 36, and a modulator made for a knob from the knob, the TUI's `m` and `l` (a control that is armed to learn), in step 37; still to
-   do: an audio cable that puts a lane in a group, patterns, and a MIDI control taught a controller from a browser, which no test has done: the tests have no MIDI port.)
+   do: an audio cable that puts a lane in a group, patterns, and a MIDI control taught a controller in a browser test: the browser tests have no MIDI port. The program's side is tested with a virtual one
+   since step 38: a controller that is moved binds the control, the parameter follows the knob, a second browser and the saved file have it
+   (`tests/serve.rs`, `#[ignore]`d, since it needs CoreMIDI or ALSA's sequencer; f124).)
 4. **Extras:** mixer view, session browser (needs runtime session loading),
    Web MIDI, touch layout.
 5. **Engine track B** (separate, §13).
@@ -3354,7 +3356,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
   Redo makes again; a MIDI control is armed to learn, with its cable at the whole range; on the real program the session and the saved file have it, and a second page sees it. In parts, each its own commit: **37.1** the
   intent `Modulate` in the controller, the mock engine and the TUI, **37.2** the page. *Not done (later steps):* a menu on a control that is chosen from a list (the TUI's `m` leaves such a row out, and so does the page), a
   modulator of a group made from a knob of a member lane (it goes in the lane's rack, as the TUI's `m` has it), a list of what is there that follows the session while the menu is open, and a controller moved in a browser
-  test (the program has no MIDI port there).
+  test (the program has no MIDI port there; after step 38 the program's side has a test with a virtual one, `tests/serve.rs`).
   - **37.1 as built (4396f5b).** `Intent::Modulate { to, kind, depth }` (D39): a modulator of `kind` at the end of the rack that reaches the port `to`, and a cable from it to the port, at half depth or at `depth` (clamped as
     `SetEdgeDepth` clamps it); a MIDI control is armed. Everything that can be refused is looked at before anything is made, with the modulator at the place it will have (`param_cable` and `field_cable`, which `AddModEdge` plans its
     cable with too: one rule of reach and one set of words), so a refusal makes nothing, uses no id and leaves no step; a node that is a group is refused in its own words, since it has no parameter. It is a `Plan::Added`
@@ -3377,7 +3379,9 @@ Each step is a reviewable change; the TUI must not regress at any point.
     and 7 of the CSS against the browser spec, 6 caught and one that makes no difference (the button of a row is under the port that grows to its row, so it need not give way).
   - **Limits, as built.** What is there is looked up when the menu is opened: a modulator that another front-end adds while it is open is not in it. A control that is chosen from a list has no button (a cable can still be dragged to its
     port). The new modulator for a member lane's plugin is the lane's, as the TUI's; the menu lists the group's modulators among those that could drive it, since they reach it. A screen with no pointer shows the button at 60% (`hover: none`):
-    not tried, and only Chromium on a desktop was. A MIDI control made here waits for a controller: the tests have no MIDI port, so they check that it is armed and that the file has it unbound. The slider of a cable that ends at a
+    not tried, and only Chromium on a desktop was. A MIDI control made here waits for a controller: the browser tests have no MIDI port, so they check that it is armed and that the file has it unbound
+    (after step 38 an `#[ignore]`d test of `tests/serve.rs` teaches one a controller through a virtual MIDI port: it is bound, the parameter follows the knob,
+    a second browser and the saved file have it). The slider of a cable that ends at a
     depth still shows the depth that was set (f118).
   - **Tests.** Rust: 2 more than at the end of step 36 in each configuration (1287 against 1285 in the default one; 1445, 1282 and 1438 in the others); the real program's 22 and the shell's 3 as before. Web: 1625 in 77 files (1571 in 75);
     97 in browsers (84). The fixture of the history has 70 scripts (65). The mutations of each part are in its entry above.

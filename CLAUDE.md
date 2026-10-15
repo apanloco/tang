@@ -391,7 +391,12 @@ LFO's rate, an envelope stage, or a target's depth). In the tree it shows as
 `CC 74 → cutoff` / `Pitch Bend → …` / `Aftertouch → …` (or `MIDI (learning…)`
 while armed). `t` and `d` work on it like any modulator. A learned control
 *combines* with your set value (see the apply math below) rather than
-overwriting it.
+overwriting it. The whole path (a controller, the MIDI thread, the audio
+thread's capture, the notification, the controller's binding, the browsers told,
+the parameter following the knob, the saved `midi_cc`) is tested with a virtual
+MIDI port in `tests/serve.rs` (`a_control_that_learns_…`: `#[ignore]`d, since it
+needs CoreMIDI on a Mac or ALSA's sequencer on Linux: `cargo test --features web
+-- --ignored`).
 
 Modulators are applied once per audio buffer; the base value tracks the
 user's set value automatically. Target `depth` runs **−1.0 … 1.0**: negative
