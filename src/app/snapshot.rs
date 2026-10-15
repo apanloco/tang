@@ -562,6 +562,23 @@ type = "envelope"
     }
 
     #[test]
+    fn a_client_is_told_of_a_random_waveform_and_ends_up_where_the_controller_is() {
+        let mut ctl = controller(APPLY, None);
+        let mut told = ctl.snapshot();
+        let lfo = nodes(&told).lane_lfo;
+        let waveform_of = |snapshot: &Snapshot| match &snapshot.graph.nodes.iter().find(|node| node.id == lfo).unwrap().kind {
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, .. } } => *waveform,
+            other => panic!("{other:?} is not an LFO"),
+        };
+        for (value, waveform) in [(4.0, Waveform::Random), (5.0, Waveform::Smooth)] {
+            let applied = ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Waveform, value }).unwrap();
+            told.apply(&applied).unwrap();
+            assert_eq!(waveform_of(&told), waveform);
+            assert_eq!(told, ctl.snapshot());
+        }
+    }
+
+    #[test]
     fn what_undo_and_redo_do_is_events_a_client_applies_as_it_does_any_others() {
         // A client that starts from a snapshot and applies what Undo and Redo bring ends up where the controller is: back at the
         // start after as many undos as there were changes, and where it was after as many redos.
@@ -732,6 +749,7 @@ type = "envelope"
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Attack, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Rate, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Waveform, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 6.0 }, "6 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 7.0 }, "7 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 1.5 }, "1.5 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: -1.0 }, "-1 is not a waveform"),

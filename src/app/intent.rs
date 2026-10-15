@@ -232,7 +232,7 @@ impl ModulatorKind {
 pub enum ModulatorField {
     /// An LFO's rate, in Hz: 0.01 to 50.
     Rate,
-    /// An LFO's waveform, as an index: 0 sine, 1 triangle, 2 saw, 3 square.
+    /// An LFO's waveform, as an index: 0 sine, 1 triangle, 2 saw, 3 square, 4 random, 5 smooth.
     Waveform,
     /// An envelope's attack time, in seconds: 0.001 to 10.
     Attack,
@@ -261,7 +261,7 @@ impl ModulatorField {
     pub fn range(self) -> (f32, f32) {
         match self {
             ModulatorField::Rate => (0.01, 50.0),
-            ModulatorField::Waveform => (0.0, 3.0),
+            ModulatorField::Waveform => (0.0, (crate::plugin::chain::LfoWaveform::ALL.len() - 1) as f32),
             ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => (0.001, 10.0),
             ModulatorField::Sustain => (0.0, 1.0),
         }
@@ -445,6 +445,16 @@ mod tests {
 
     fn wire<T: serde::Serialize>(value: &T) -> Value {
         serde_json::to_value(value).unwrap()
+    }
+
+    #[test]
+    fn the_waveform_setting_runs_from_the_first_waveform_to_the_last() {
+        use crate::plugin::chain::LfoWaveform;
+        let (lowest, highest) = ModulatorField::Waveform.range();
+        assert_eq!((lowest, highest), (0.0, 5.0));
+        assert_eq!(LfoWaveform::ALL[lowest as usize], LfoWaveform::Sine);
+        assert_eq!(LfoWaveform::ALL[highest as usize], LfoWaveform::Smooth);
+        assert_eq!(LfoWaveform::ALL.len(), highest as usize + 1, "a waveform that is not in the range cannot be chosen");
     }
 
     #[test]

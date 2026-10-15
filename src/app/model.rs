@@ -4297,6 +4297,8 @@ depth = 0.5
         let label = |s: ModSourceSlot| s.label();
         assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 0.25 }), "LFO 0.2Hz triangle");
         assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 12.0 }), "LFO 12.0Hz sine");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Random, rate: 4.0 }), "LFO 4.0Hz random");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Smooth, rate: 0.5 }), "LFO 0.5Hz smooth");
         assert_eq!(label(ModSourceSlot::Envelope { attack: 0.0, decay: 0.0, sustain: 0.0, release: 0.0 }), "ADSR");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false }), "CC 74");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::PitchBend), learning: false }), "Pitch Bend");

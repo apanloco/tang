@@ -1495,6 +1495,18 @@ rate = 1.0
     }
 
     #[test]
+    fn set_modulator_field_sets_a_lane_lfo_to_a_random_waveform_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lfo = lane_mod(&ctl, 0);
+        field(&mut ctl, lfo, ModulatorField::Waveform, 4.0).unwrap();
+        assert_eq!(lane_lfo(&ctl, 0).0, LfoWaveform::Random);
+        field(&mut ctl, lfo, ModulatorField::Waveform, 5.0).unwrap();
+        assert_eq!(lane_lfo(&ctl, 0).0, LfoWaveform::Smooth);
+        assert_eq!(sent(&engine), ["SetModulatorWaveform inst=0 mod=0 waveform=Random", "SetModulatorWaveform inst=0 mod=0 waveform=Smooth"]);
+    }
+
+    #[test]
     fn set_modulator_field_sets_an_envelope_stage_and_sends_all_four() {
         let (engine, mut ctl) = modulated();
         sent(&engine);
@@ -1554,7 +1566,8 @@ rate = 1.0
             (envelope, ModulatorField::Release, 0.0, 0.001),
             (lfo, ModulatorField::Waveform, 2.6, 3.0),
             (lfo, ModulatorField::Waveform, 1.4, 1.0),
-            (lfo, ModulatorField::Waveform, 9.0, 3.0),
+            (lfo, ModulatorField::Waveform, 4.4, 4.0),
+            (lfo, ModulatorField::Waveform, 9.0, 5.0),
             (lfo, ModulatorField::Waveform, -4.0, 0.0),
         ];
         for (node, which, asked, expected) in cases {

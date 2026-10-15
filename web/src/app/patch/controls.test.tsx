@@ -824,10 +824,10 @@ describe("the depth of a cable that another cable drives", () => {
 });
 
 describe("the waveform of an LFO", () => {
-  test("is a choice of the four, with the one it has selected", async () => {
+  test("is a choice of every waveform, the random ones among them, with the one it has selected", async () => {
     await rig(<WaveformControl node={lfo.id} />);
     const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Wave" });
-    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "saw", "square"]);
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "saw", "square", "random", "smooth"]);
     expect(select.value).toBe("0");
   });
 

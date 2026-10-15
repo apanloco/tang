@@ -468,8 +468,8 @@ describe("a modulator field set", () => {
     expect(sourceOf(after, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 4 });
   });
 
-  test("sets the waveform of an LFO by its index: sine, triangle, saw, square", () => {
-    const waveforms = ["sine", "triangle", "saw", "square"];
+  test("sets the waveform of an LFO by its index: sine, triangle, saw, square, random, smooth", () => {
+    const waveforms = ["sine", "triangle", "saw", "square", "random", "smooth"];
     waveforms.forEach((name, index) => {
       const after = applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "waveform", value: index });
       expect(sourceOf(after, lfo), `index ${index}`).toEqual({ type: "lfo", waveform: name, rate: 0.5 });
@@ -511,7 +511,7 @@ describe("a modulator field set", () => {
       { node: envelope.id, field: "rate" as const, value: 1, reason: `rate does not apply to node ${envelope.id}` },
       { node: envelope.id, field: "waveform" as const, value: 1, reason: `waveform does not apply to node ${envelope.id}` },
       { node: learn.id, field: "rate" as const, value: 1, reason: `rate does not apply to node ${learn.id}` },
-      { node: lfo.id, field: "waveform" as const, value: 4, reason: "4 is not a waveform" },
+      { node: lfo.id, field: "waveform" as const, value: 6, reason: "6 is not a waveform" },
       { node: lfo.id, field: "waveform" as const, value: 1.5, reason: "1.5 is not a waveform" },
       { node: lfo.id, field: "waveform" as const, value: -1, reason: "-1 is not a waveform" },
       { node: lfo.id, field: "waveform" as const, value: Number.NaN, reason: "NaN is not a waveform" },

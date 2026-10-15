@@ -28,6 +28,7 @@ import type {
   StampedEvent,
   TelemetryChannel,
   TelemetryLayout,
+  Waveform,
   WireError,
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
@@ -38,6 +39,7 @@ import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
 import { cablesIntoLaneFromItsGroup } from "./membership";
+import { noise } from "./noise";
 import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
@@ -867,9 +869,13 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   }
 }
 
-/** A waveform at a phase (0 to 1), from -1 to 1. */
-function shape(waveform: "sine" | "triangle" | "saw" | "square", phase: number): number {
-  const p = phase - Math.floor(phase);
+/**
+ * A waveform `turns` times round, from -1 to 1: the whole part of `turns` is the cycle it is in and the rest its phase. The random waveforms have a number for each cycle (`noise`, whose seed is
+ * `seed`): `random` holds it for the cycle and `smooth` glides to the next cycle's, easing at both ends, as the engine's do (`LfoWaveform::eval_cycle`).
+ */
+function shape(waveform: Waveform, turns: number, seed: number): number {
+  const cycle = Math.floor(turns);
+  const p = turns - cycle;
   switch (waveform) {
     case "sine":
       return Math.sin(2 * Math.PI * p);
@@ -879,6 +885,12 @@ function shape(waveform: "sine" | "triangle" | "saw" | "square", phase: number):
       return 2 * p - 1;
     case "square":
       return p < 0.5 ? 1 : -1;
+    case "random":
+      return noise(seed, cycle);
+    case "smooth": {
+      const from = noise(seed, cycle);
+      return from + (noise(seed, cycle + 1) - from) * (p * p * (3 - 2 * p));
+    }
   }
 }
 
@@ -1228,7 +1240,8 @@ export class MockServer {
     const { source } = node;
     switch (source.type) {
       case "lfo":
-        return shape(source.waveform, source.rate * seconds);
+        // (The seed of the numbers is the node's id: the engine's is the order in which modulators came into it, which the page does not know.)
+        return shape(source.waveform, source.rate * seconds, node.id);
       case "envelope":
         return this.heldNotes.size > 0 ? source.sustain : 0;
       // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, and the pitch bend wheel in the middle.)

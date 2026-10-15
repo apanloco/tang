@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, SCOPE_FRAME_LENGTH } from "../protocol";
-import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout, Waveform } from "../protocol";
 import { Client, RequestError, SLOW_AFTER } from "./connection";
 import type { ClientOptions, Transport, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
+import { noise } from "./noise";
 import { fractionOf, valueAt } from "./travel";
 import { Spectrum } from "./fft";
 import { decodeFrame } from "./telemetry";
@@ -187,11 +188,13 @@ describe("a request", () => {
     expect(source()).toMatchObject({ rate: 50 });
     await field("rate", -3);
     expect(source()).toMatchObject({ rate: 0.01 });
-    // a waveform is an index, rounded: 2.4 is the saw, and there is no waveform after the square
+    // a waveform is an index, rounded: 2.4 is the saw, 4.4 the random one, and there is no waveform after the smooth one
     await field("waveform", 2.4);
     expect(source()).toMatchObject({ waveform: "saw" });
+    await field("waveform", 4.4);
+    expect(source()).toMatchObject({ waveform: "random" });
     await field("waveform", 9);
-    expect(source()).toMatchObject({ waveform: "square" });
+    expect(source()).toMatchObject({ waveform: "smooth" });
     await field("waveform", -2);
     expect(source()).toMatchObject({ waveform: "sine" });
     // a cable's depth goes from -1 to 1
@@ -2455,7 +2458,7 @@ describe("telemetry", () => {
   });
 
   /** The tracer with its LFO's waveform changed. */
-  function withWaveform(waveform: "sine" | "triangle" | "saw" | "square"): Snapshot {
+  function withWaveform(waveform: Waveform): Snapshot {
     const nodes = tracerSnapshot.graph.nodes.map((node) =>
       node.kind === "modulator" && node.source.type === "lfo" ? { ...node, source: { ...node.source, waveform } } : node,
     );
@@ -2482,6 +2485,40 @@ describe("telemetry", () => {
       }
       client.stop();
     }
+  });
+
+  /** What the LFO of a `withWaveform` tracer puts out at each of some times (the clock is set to each, and a frame waited for). */
+  async function lfoOutputAt(waveform: Waveform, times: readonly number[]): Promise<number[]> {
+    const time = clock();
+    const server = new MockServer({ ...fast, clock: time.now, snapshot: withWaveform(waveform) });
+    const client = await open(server, { telemetry: ["modulation"] });
+    const outputs: number[] = [];
+    for (const seconds of times) {
+      time.set(seconds);
+      const frames = client.telemetry.frames;
+      await until(() => client.telemetry.frames > frames + 1, "a frame");
+      outputs.push(client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput") ?? Number.NaN);
+    }
+    client.stop();
+    return outputs;
+  }
+
+  test("makes a random LFO's output the number of its cycle, from the engine's hash with the node's id for the seed, held until the next cycle", async () => {
+    // The LFO runs at half a hertz, so that a cycle is two seconds: these times are in cycles 0, 0, 1, 1, 2 and 7.
+    const outputs = await lfoOutputAt("random", [0.1, 1.9, 2.1, 3.9, 4.5, 14.5]);
+    expect(outputs).toEqual([0, 0, 1, 1, 2, 7].map((cycle) => noise(lfo.id, cycle)));
+    expect(new Set(outputs).size, "a number for each cycle").toBe(4);
+  });
+
+  test("makes a smooth LFO's output glide from the number of its cycle to that of the next, easing at both ends", async () => {
+    // At half a hertz the phase is 0, 0.25, 0.5 and 0.75 at 0, 0.5, 1 and 1.5 seconds, and the next cycle begins at the number that this one ended at.
+    const outputs = await lfoOutputAt("smooth", [0, 0.5, 1, 1.5, 2]);
+    const [from, to] = [noise(lfo.id, 0), noise(lfo.id, 1)];
+    const eased = (phase: number): number => from + (to - from) * (phase * phase * (3 - 2 * phase));
+    [eased(0), eased(0.25), eased(0.5), eased(0.75), to].forEach((expected, i) => {
+      expect(outputs[i], `at ${String(i * 0.5)} seconds`).toBeCloseTo(expected, 6);
+    });
+    expect(outputs[2]).toBeCloseTo((from + to) / 2, 6);
   });
 
   test("lets an envelope's peak be the value the user set", async () => {

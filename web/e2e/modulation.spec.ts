@@ -58,6 +58,35 @@ test("choosing a waveform changes it in the server, and the engine runs it", asy
   expect(looks.filter((look) => look > 0.99).length / looks.length).toBeGreaterThan(0.9);
 });
 
+test("choosing the random waveform makes the engine's LFO hold a number for each cycle, and a new one when the next begins", async ({ page }) => {
+  await open(page);
+  await page.getByRole("combobox", { name: "Wave", exact: true }).selectOption("random");
+  await expect.poll(async () => (await lfoAccordingToTheServer(page)).waveform).toBe("random");
+  await page.waitForTimeout(300); // (until the bar has stopped showing what the sine put out, which the telemetry was still bringing)
+  // At half a hertz a cycle is two seconds, so that 4.5 seconds are in three or four of them. The LFO's bar says one number for each and none in between (a sine would say a
+  // hundred), and the numbers are not all one.
+  const looks = (await sampleCutoff(page, 4500)).flatMap((sample) => (sample.lfo === null ? [] : [sample.lfo]));
+  expect(looks.length).toBeGreaterThan(100);
+  expect(looks.every((look) => look >= -1 && look < 1)).toBe(true);
+  const numbers = new Set(looks.map((look) => look.toFixed(3)));
+  expect(numbers.size).toBeGreaterThanOrEqual(2);
+  expect(numbers.size).toBeLessThanOrEqual(4);
+});
+
+test("choosing the smooth waveform makes the engine's LFO glide between the numbers of its cycles, never jumping", async ({ page }) => {
+  await open(page);
+  await page.getByRole("combobox", { name: "Wave", exact: true }).selectOption("smooth");
+  await expect.poll(async () => (await lfoAccordingToTheServer(page)).waveform).toBe("smooth");
+  await page.waitForTimeout(300); // (until the bar has stopped showing what the sine put out: a step of more than a whole unit, the telemetry being a few frames behind the server)
+  const looks = (await sampleCutoff(page, 4500)).flatMap((sample) => (sample.lfo === null ? [] : [sample.lfo]));
+  expect(looks.length).toBeGreaterThan(100);
+  expect(new Set(looks.map((look) => look.toFixed(3))).size, "it is on the way between two numbers most of the time").toBeGreaterThan(30);
+  // The steepest it goes is a glide from one end of the range to the other in a cycle (1.5 a second at the middle of it, about 0.05 between two of the 30 frames a second), where
+  // the random one jumps by the difference of two numbers from one frame to the next.
+  const steps = looks.slice(1).map((look, i) => Math.abs(look - (looks[i] ?? look)));
+  expect(Math.max(...steps)).toBeLessThan(0.4);
+});
+
 test("turning a cable's depth changes it in the server, in the cable, and in what the engine does with the cutoff", async ({ page }) => {
   await open(page);
   const depth = page.getByRole("slider", { name: DEPTH });

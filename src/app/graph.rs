@@ -149,6 +149,10 @@ pub enum Waveform {
     Triangle,
     Saw,
     Square,
+    /// A number of its own for every cycle, held for the whole of it.
+    Random,
+    /// The numbers of `Random`, glided between.
+    Smooth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +242,8 @@ impl From<LfoWaveform> for Waveform {
             LfoWaveform::Triangle => Waveform::Triangle,
             LfoWaveform::Saw => Waveform::Saw,
             LfoWaveform::Square => Waveform::Square,
+            LfoWaveform::Random => Waveform::Random,
+            LfoWaveform::Smooth => Waveform::Smooth,
         }
     }
 }
@@ -910,7 +916,14 @@ depth = 0.1
 
     #[test]
     fn every_waveform_is_named() {
-        for (name, waveform) in [("sine", Waveform::Sine), ("triangle", Waveform::Triangle), ("saw", Waveform::Saw), ("square", Waveform::Square)] {
+        for (name, waveform) in [
+            ("sine", Waveform::Sine),
+            ("triangle", Waveform::Triangle),
+            ("saw", Waveform::Saw),
+            ("square", Waveform::Square),
+            ("random", Waveform::Random),
+            ("smooth", Waveform::Smooth),
+        ] {
             let model = load(&format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nwaveform = \"{name}\"\n")).model;
             let graph = model.graph();
             let m = model.instruments[0].modulators[0].node;

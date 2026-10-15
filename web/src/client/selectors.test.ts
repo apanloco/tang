@@ -97,15 +97,15 @@ describe("the settings of a modulator and the depths of its cables", () => {
     expect(["attack", "decay", "sustain", "release"].map((field) => modulatorFieldOf(withMore, envelope.id, field as "attack"))).toEqual([0.01, 0.3, 0.7, 0.5]);
   });
 
-  test("the index of each of the four waveforms", () => {
-    const names = ["sine", "triangle", "saw", "square"] as const;
+  test("the index of each of the waveforms", () => {
+    const names = ["sine", "triangle", "saw", "square", "random", "smooth"] as const;
     const indexes = names.map((name) => {
       const copy = structuredClone(tracerSnapshot);
       const node = copy.graph.nodes.find((n) => n.id === lfo.id);
       if (node?.kind === "modulator" && node.source.type === "lfo") node.source.waveform = name;
       return modulatorFieldOf(stateOf(copy), lfo.id, "waveform");
     });
-    expect(indexes).toEqual([0, 1, 2, 3]);
+    expect(indexes).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   test("no setting that the modulator does not have, or of a node that is not one", () => {

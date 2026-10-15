@@ -20,7 +20,7 @@ export const GAIN_RANGES: Record<Gain, readonly [number, number]> = {
 /** The same for each setting of a modulator (`ModulatorField::range`). */
 export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, number]> = {
   rate: [0.01, 50],
-  waveform: [0, 3],
+  waveform: [0, 5],
   attack: [0.001, 10],
   decay: [0.001, 10],
   sustain: [0, 1],
@@ -51,7 +51,7 @@ export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = 
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 
 /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */
-export const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square"];
+export const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square", "random", "smooth"];
 
 /** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */
 export const SCALE_ROOTS: readonly string[] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];

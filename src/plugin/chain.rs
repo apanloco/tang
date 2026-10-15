@@ -221,11 +221,39 @@ pub enum LfoWaveform {
     Triangle,
     Saw,
     Square,
+    /// A number of its own for every cycle, held for the whole of it (sample and hold).
+    Random,
+    /// The numbers of `Random`, glided between: a cycle goes from its number to the next cycle's, easing at both ends.
+    Smooth,
+}
+
+/// The number of cycle `cycle` of a random LFO that has the seed `seed`, in -1.0..1.0 (the top 24 bits of a hash of the two, which a 32-bit float holds exactly): the same
+/// cycle of the same seed always has the same number, and the numbers of one seed and of the next are not alike. The page works it out the same way
+/// (`client/noise.ts`, pinned to this by `fixtures/noise.json`), so that its mock engine's random LFOs are the engine's.
+pub fn noise(seed: u32, cycle: u32) -> f32 {
+    // (Chris Wellons's "lowbias32". The seed is offset first, since the hash of 0 is 0 and the numbers of seed 0 would start at the bottom of the range.)
+    fn lowbias32(mut x: u32) -> u32 {
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7FEB_352D);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846C_A68B);
+        x ^= x >> 16;
+        x
+    }
+    let hash = lowbias32(lowbias32(seed.wrapping_add(0x9E37_79B9)).wrapping_add(cycle));
+    (hash >> 8) as f32 / 8_388_608.0 - 1.0
 }
 
 impl LfoWaveform {
-    /// Evaluate the waveform at a given phase (0.0–1.0), returning a value in -1.0..1.0.
+    /// Evaluate the waveform at a given phase (0.0–1.0), returning a value in -1.0..1.0. The random ones are the first cycle of seed 0 (`eval_cycle` has the others, and is
+    /// what the engine goes by: this is for the tests of the shapes).
+    #[cfg(test)]
     pub fn eval(self, phase: f32) -> f32 {
+        self.eval_cycle(phase, 0, 0)
+    }
+
+    /// Evaluate the waveform at a given phase of cycle `cycle` of an LFO that has the seed `seed` (see `noise`): the shapes that go by the phase alone do not look at them.
+    pub fn eval_cycle(self, phase: f32, seed: u32, cycle: u32) -> f32 {
         match self {
             LfoWaveform::Sine => (phase * std::f32::consts::TAU).sin(),
             LfoWaveform::Triangle => {
@@ -245,6 +273,13 @@ impl LfoWaveform {
             LfoWaveform::Square => {
                 if phase < 0.5 { 1.0 } else { -1.0 }
             }
+            LfoWaveform::Random => noise(seed, cycle),
+            LfoWaveform::Smooth => {
+                let (from, to) = (noise(seed, cycle), noise(seed, cycle.wrapping_add(1)));
+                // (Smoothstep: no corner at either end, so that the cycles join without one. A phase that is not in the cycle, which a rate below 0 makes, is at its nearer end.)
+                let eased = phase.clamp(0.0, 1.0);
+                from + (to - from) * (eased * eased * (3.0 - 2.0 * eased))
+            }
         }
     }
 
@@ -253,6 +288,8 @@ impl LfoWaveform {
         LfoWaveform::Triangle,
         LfoWaveform::Saw,
         LfoWaveform::Square,
+        LfoWaveform::Random,
+        LfoWaveform::Smooth,
     ];
 
     /// Cycle to the next waveform.
@@ -271,6 +308,8 @@ impl LfoWaveform {
             LfoWaveform::Triangle => 1,
             LfoWaveform::Saw => 2,
             LfoWaveform::Square => 3,
+            LfoWaveform::Random => 4,
+            LfoWaveform::Smooth => 5,
         }
     }
 
@@ -280,6 +319,8 @@ impl LfoWaveform {
             LfoWaveform::Triangle => "triangle",
             LfoWaveform::Saw => "saw",
             LfoWaveform::Square => "square",
+            LfoWaveform::Random => "random",
+            LfoWaveform::Smooth => "smooth",
         }
     }
 
@@ -289,6 +330,8 @@ impl LfoWaveform {
             "triangle" | "tri" => Some(LfoWaveform::Triangle),
             "saw" | "sawtooth" => Some(LfoWaveform::Saw),
             "square" | "sq" => Some(LfoWaveform::Square),
+            "random" | "s&h" | "sh" => Some(LfoWaveform::Random),
+            "smooth" => Some(LfoWaveform::Smooth),
             _ => None,
         }
     }
@@ -517,6 +560,11 @@ pub struct Modulator {
     /// Set for one buffer when a `MidiLearn` source just captured a control, so
     /// the graph can notify the main thread. Consumed (taken) by the graph.
     pub last_learned: Option<MidiBindSource>,
+    /// What makes the numbers of a random LFO its own: the graph gives every modulator that comes in the next (`AudioGraph::next_modulator_seed`).
+    seed: u32,
+    /// How many times an LFO has gone round (counted as the phase wraps, so that a rate that is turned does not start the numbers again): the random
+    /// waveforms have a number for each.
+    cycle: u32,
 }
 
 impl Modulator {
@@ -528,7 +576,15 @@ impl Modulator {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            seed: 0,
+            cycle: 0,
         }
+    }
+
+    /// The same modulator with the seed that its random numbers are made from.
+    pub fn with_seed(mut self, seed: u32) -> Self {
+        self.seed = seed;
+        self
     }
 
     /// Advance the modulator by one buffer. For envelopes, processes MIDI note events.
@@ -536,8 +592,11 @@ impl Modulator {
         match &mut self.source {
             ModSource::Lfo { waveform, rate, phase } => {
                 let phase_inc = *rate * buffer_size as f32 / self.sample_rate;
-                *phase = (*phase + phase_inc) % 1.0;
-                self.last_output = waveform.eval(*phase);
+                let turned = *phase + phase_inc;
+                // Every time round is a cycle, and a rate that makes more than one in a buffer counts them all.
+                self.cycle = self.cycle.wrapping_add(turned as u32);
+                *phase = turned % 1.0;
+                self.last_output = waveform.eval_cycle(*phase, self.seed, self.cycle);
             }
             ModSource::Envelope { attack, decay, sustain, release, state, level, notes_held } => {
                 // Process MIDI events for note-on/off.
@@ -3340,6 +3399,8 @@ pub struct AudioGraph {
     telemetry: Option<Arc<Telemetry>>,
     /// The meter of the output mix.
     master_meter: Meter,
+    /// The seed that the next modulator to come in is given (`next_modulator_seed`).
+    modulator_seeds: u32,
 }
 
 impl AudioGraph {
@@ -3368,7 +3429,16 @@ impl AudioGraph {
             group_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             telemetry: None,
             master_meter: Meter::new(telemetry::MASTER),
+            modulator_seeds: 0,
         }
+    }
+
+    /// The seed of the next modulator to come in: each has its own, so that two random LFOs do not draw the same numbers, and a graph that is made
+    /// again from the same commands draws the same as it did.
+    fn next_modulator_seed(&mut self) -> u32 {
+        let seed = self.modulator_seeds;
+        self.modulator_seeds = seed.wrapping_add(1);
+        seed
     }
 
     /// The audio sample rate, derived from the first loaded plugin (all plugins
@@ -4096,8 +4166,9 @@ impl AudioGraph {
                     source,
                 } => {
                     let mut moved_from = None;
+                    let seed = self.next_modulator_seed();
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        let m = Modulator::new(source, lane.sample_rate());
+                        let m = Modulator::new(source, lane.sample_rate()).with_seed(seed);
                         let idx = index.min(lane.modulators.len());
                         // The cables that address a modulator that goes after it are told its place first, so that the ones it gets after are not. One that
                         // goes in at the end moves nothing: a session is loaded a modulator at a time, and the cable of an earlier one can address one that
@@ -4317,8 +4388,9 @@ impl AudioGraph {
                     source,
                 } => {
                     let sr = self.graph_sample_rate();
+                    let seed = self.next_modulator_seed();
                     if let Some(g) = self.groups.get_mut(group) {
-                        let m = Modulator::new(source, sr);
+                        let m = Modulator::new(source, sr).with_seed(seed);
                         let idx = index.min(g.modulators.len());
                         // (As in a lane's rack: one that goes in at the end moves nothing, since a cable can address a modulator that comes later.)
                         if idx < g.modulators.len() {
@@ -5748,7 +5820,12 @@ mod tests {
         assert_eq!(LfoWaveform::Sine.next(), LfoWaveform::Triangle);
         assert_eq!(LfoWaveform::Triangle.next(), LfoWaveform::Saw);
         assert_eq!(LfoWaveform::Saw.next(), LfoWaveform::Square);
-        assert_eq!(LfoWaveform::Square.next(), LfoWaveform::Sine);
+        assert_eq!(LfoWaveform::Square.next(), LfoWaveform::Random);
+        assert_eq!(LfoWaveform::Random.next(), LfoWaveform::Smooth);
+        assert_eq!(LfoWaveform::Smooth.next(), LfoWaveform::Sine);
+        for waveform in LfoWaveform::ALL {
+            assert_eq!(waveform.next().prev(), *waveform);
+        }
     }
 
     #[test]
@@ -5758,7 +5835,228 @@ mod tests {
         assert_eq!(LfoWaveform::from_str("tri"), Some(LfoWaveform::Triangle));
         assert_eq!(LfoWaveform::from_str("saw"), Some(LfoWaveform::Saw));
         assert_eq!(LfoWaveform::from_str("square"), Some(LfoWaveform::Square));
+        assert_eq!(LfoWaveform::from_str("random"), Some(LfoWaveform::Random));
+        assert_eq!(LfoWaveform::from_str("S&H"), Some(LfoWaveform::Random));
+        assert_eq!(LfoWaveform::from_str("sh"), Some(LfoWaveform::Random));
+        assert_eq!(LfoWaveform::from_str("smooth"), Some(LfoWaveform::Smooth));
         assert_eq!(LfoWaveform::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn every_lfo_waveform_has_its_place_in_the_list_and_a_name_that_is_its_own() {
+        let names: Vec<&str> = LfoWaveform::ALL.iter().map(|waveform| waveform.name()).collect();
+        assert_eq!(names, ["sine", "triangle", "saw", "square", "random", "smooth"]);
+        for (index, waveform) in LfoWaveform::ALL.iter().enumerate() {
+            assert_eq!(waveform.to_index(), index);
+            assert_eq!(LfoWaveform::from_str(waveform.name()), Some(*waveform));
+        }
+    }
+
+    // -- The random waveforms: a number for each cycle of the LFO, held (random) or glided to (smooth) --
+
+    #[test]
+    fn the_noise_of_a_cycle_is_known() {
+        // The hash is written out in the page too (`client/noise.ts`, with its table in `fixtures/noise.json`, which this test's numbers are the first of): a change
+        // of it changes the numbers of every random LFO of every saved session. (The numbers are from an independent version of it, in Python.)
+        for (seed, cycle, expected) in [
+            (0, 0, 0.362_777_7),
+            (0, 1, 0.253_798_72),
+            (0, 2, 0.973_738_1),
+            (1, 0, -0.726_370_93),
+            (1, 1, -0.005_097_627_6),
+            (5, 0, 0.599_366_4),
+            (5, 1, 0.556_360_5),
+            (5, 2, 0.941_968_7),
+            (0xDEAD_BEEF, 41, 0.633_545_9),
+            (12345, 100_000, 0.124_951_72),
+        ] {
+            assert_eq!(noise(seed, cycle), expected, "seed {seed}, cycle {cycle}");
+        }
+    }
+
+    #[test]
+    fn the_noise_stays_in_its_range_and_is_spread_over_it() {
+        let numbers: Vec<f32> = (0..20_000).map(|cycle| noise(3, cycle)).collect();
+        assert!(numbers.iter().all(|n| (-1.0..1.0).contains(n)));
+        let mean = numbers.iter().sum::<f32>() / numbers.len() as f32;
+        assert!(mean.abs() < 0.02, "the mean is {mean}");
+        // Each fifth of the range has about a fifth of the numbers (4,000 of them, give or take a few hundred).
+        for fifth in 0..5 {
+            let low = -1.0 + fifth as f32 * 0.4;
+            let count = numbers.iter().filter(|&&n| n >= low && n < low + 0.4).count();
+            assert!((3_600..4_400).contains(&count), "fifth {fifth} has {count}");
+        }
+        assert!(numbers.windows(2).all(|pair| pair[0] != pair[1]), "no two cycles in a row have the same number");
+    }
+
+    #[test]
+    fn the_noise_of_one_seed_is_not_the_noise_of_another() {
+        // (Two numbers drawn at random from the range are within a thousandth of each other one time in a thousand: ten of ten thousand.)
+        let alike = (0..10_000).filter(|&cycle| (noise(0, cycle) - noise(1, cycle)).abs() < 0.001).count();
+        assert!(alike < 40, "{alike} of 10000 cycles have about the same number for two seeds");
+        assert_ne!(noise(0, 0), noise(1, 0));
+    }
+
+    #[test]
+    fn a_random_lfo_has_the_number_of_its_cycle_whatever_the_phase_is() {
+        for phase in [0.0, 0.1, 0.5, 0.999] {
+            assert_eq!(LfoWaveform::Random.eval_cycle(phase, 5, 2), noise(5, 2), "at {phase}");
+        }
+        // (The shapes that go by the phase alone do not look at the cycle.)
+        assert_eq!(LfoWaveform::Sine.eval_cycle(0.25, 5, 2), LfoWaveform::Sine.eval(0.25));
+        assert_eq!(LfoWaveform::Random.eval(0.25), noise(0, 0));
+    }
+
+    #[test]
+    fn a_smooth_lfo_goes_from_the_number_of_its_cycle_to_the_number_of_the_next_and_eases_at_both_ends() {
+        let (from, to) = (noise(5, 1), noise(5, 2));
+        assert!(to > from, "the numbers of this cycle and the next rise, which the rest of the test goes by");
+        let at = |phase: f32| LfoWaveform::Smooth.eval_cycle(phase, 5, 1);
+        assert_eq!(at(0.0), from);
+        assert!(close(at(0.5), (from + to) / 2.0), "half way at the middle: {}", at(0.5));
+        assert!(close(at(1.0), to));
+        let steps: Vec<f32> = (0..=10).map(|tenth| at(tenth as f32 / 10.0)).collect();
+        assert!(steps.windows(2).all(|pair| pair[0] <= pair[1]), "it only rises: {steps:?}");
+        // (It eases: the first tenth of the cycle takes it less than a tenth of the way, and so does the last.)
+        assert!(steps[1] - from < 0.1 * (to - from));
+        assert!(to - steps[9] < 0.1 * (to - from));
+    }
+
+    /// The numbers that `noise` makes for a spread of seeds and cycles, as the web client's mock engine reads them (`web/src/client/fixtures/noise.json`): they pin the page's hash
+    /// (`client/noise.ts`) to this one. A number is written as the 64-bit one it widens to, which is what the page works out. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_the_noise_is_current() {
+        let seeds = [0, 1, 2, 3, 5, 7, 255, 12_345, 0xDEAD_BEEF, u32::MAX];
+        let cycles = [0, 1, 2, 3, 4, 5, 41, 255, 1_000, 100_000, 0x7FFF_FFFF, 0x8000_0000, u32::MAX];
+        let numbers: Vec<serde_json::Value> = seeds
+            .iter()
+            .flat_map(|&seed| cycles.iter().map(move |&cycle| serde_json::json!({ "seed": seed, "cycle": cycle, "value": f64::from(noise(seed, cycle)) })))
+            .collect();
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "numbers": numbers })).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/noise.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the noise is now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn a_smooth_lfo_stays_between_the_numbers_of_its_cycle_and_the_next_for_a_phase_outside_the_cycle() {
+        // (A phase is 0 to 1 for a rate that is above 0: a session file written by hand can have a rate that is not, which takes the phase below 0.)
+        let (from, to) = (noise(5, 1), noise(5, 2));
+        for phase in [-3.0, -0.5, -1.0e-6, 1.0 + 1.0e-6, 1.5, 7.0] {
+            let out = LfoWaveform::Smooth.eval_cycle(phase, 5, 1);
+            assert!(out >= from.min(to) - 1.0e-6 && out <= from.max(to) + 1.0e-6, "at {phase}: {out}");
+        }
+        assert_eq!(LfoWaveform::Smooth.eval_cycle(-3.0, 5, 1), from);
+        assert!(close(LfoWaveform::Smooth.eval_cycle(7.0, 5, 1), to));
+    }
+
+    /// An LFO of `waveform` that goes round once in `buffers` buffers (a rate that is exact: no cycle is early or late), with a seed of its own.
+    fn lfo_that_goes_round_in(waveform: LfoWaveform, buffers: usize, seed: u32) -> Modulator {
+        Modulator::new(lfo(waveform, 48000.0 / (FRAMES * buffers) as f32), 48000.0).with_seed(seed)
+    }
+
+    #[test]
+    fn a_random_lfo_holds_the_number_of_its_cycle_and_takes_the_next_when_the_phase_wraps() {
+        let mut m = lfo_that_goes_round_in(LfoWaveform::Random, 8, 5);
+        for cycle in 0..3 {
+            for buffer in 1..=8 {
+                m.tick(FRAMES, &[]);
+                // (The eighth buffer of a cycle wraps the phase: the LFO is in the next cycle by then.)
+                let now = if buffer == 8 { cycle + 1 } else { cycle };
+                assert_eq!(m.last_output, noise(5, now), "cycle {cycle}, buffer {buffer}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_smooth_lfo_glides_over_a_cycle_and_is_at_the_next_number_when_the_phase_wraps() {
+        let mut m = lfo_that_goes_round_in(LfoWaveform::Smooth, 8, 5);
+        let mut seen = Vec::new();
+        for _ in 0..16 {
+            m.tick(FRAMES, &[]);
+            seen.push(m.last_output);
+        }
+        assert_eq!(seen[7], noise(5, 1), "the first cycle ends at the number of the second");
+        assert_eq!(seen[15], noise(5, 2));
+        for buffer in 1..8 {
+            assert!(close(seen[buffer - 1], LfoWaveform::Smooth.eval_cycle(buffer as f32 / 8.0, 5, 0)), "buffer {buffer}");
+            assert!(close(seen[8 + buffer - 1], LfoWaveform::Smooth.eval_cycle(buffer as f32 / 8.0, 5, 1)), "buffer {} of the second cycle", buffer);
+        }
+    }
+
+    #[test]
+    fn an_lfo_that_goes_round_more_than_once_in_a_buffer_counts_every_cycle() {
+        // 2.5 turns a buffer: 2 cycles are over after the first, and 5 after the second.
+        let mut m = Modulator::new(lfo(LfoWaveform::Random, 2.5 * 48000.0 / FRAMES as f32), 48000.0).with_seed(5);
+        m.tick(FRAMES, &[]);
+        assert_eq!(m.last_output, noise(5, 2));
+        m.tick(FRAMES, &[]);
+        assert_eq!(m.last_output, noise(5, 5));
+    }
+
+    #[test]
+    fn a_random_lfo_does_not_start_again_when_its_rate_is_turned() {
+        // Turning the rate moves the phase on from where it is, and the cycle goes on counting.
+        let mut m = lfo_that_goes_round_in(LfoWaveform::Random, 8, 5);
+        for _ in 0..8 {
+            m.tick(FRAMES, &[]);
+        }
+        if let ModSource::Lfo { rate, .. } = &mut m.source {
+            *rate *= 2.0;
+        }
+        for _ in 0..4 {
+            m.tick(FRAMES, &[]);
+        }
+        assert_eq!(m.last_output, noise(5, 2), "the second cycle is over at the fourth buffer of the new rate");
+    }
+
+    #[test]
+    fn the_random_lfos_of_a_graph_have_numbers_of_their_own_and_a_graph_that_is_made_again_has_the_same() {
+        let run = || {
+            let mut rig = Rig::new();
+            let first = rig.lane_modulator(0, lfo(LfoWaveform::Random, 93.75));
+            let second = rig.lane_modulator(1, lfo(LfoWaveform::Random, 93.75));
+            let mut seen = Vec::new();
+            for _ in 0..40 {
+                rig.process(&[]);
+                seen.push((rig.read(first), rig.read(second)));
+            }
+            seen
+        };
+        let seen = run();
+        // Each holds a number for a cycle of eight buffers, and the two have not the same.
+        assert!(seen.iter().filter(|(a, b)| a == b).count() < 4, "{seen:?}");
+        assert!(seen[..7].iter().all(|pair| pair.0 == seen[0].0), "the first holds its number");
+        assert!(seen[7].0 != seen[6].0, "and takes another when its cycle is over");
+        // The first to come in has the seed 0 and the next the seed 1: the second cycle (the eighth buffer is its first) has their numbers.
+        assert_eq!(seen[7], (noise(0, 1), noise(1, 1)));
+        assert_eq!(seen[15], (noise(0, 2), noise(1, 2)));
+        assert_eq!(seen, run());
+    }
+
+    #[test]
+    fn the_seeds_go_to_the_modulators_in_the_order_they_come_in_whether_they_are_a_lanes_or_a_groups() {
+        let mut rig = Rig::new();
+        let first = rig.lane_modulator(0, lfo(LfoWaveform::Random, 93.75));
+        rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        let group = rig.slot();
+        rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Random, 93.75) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(0), index: 0, slot: group }).unwrap();
+        let third = rig.lane_modulator(1, lfo(LfoWaveform::Random, 93.75));
+        for _ in 0..8 {
+            rig.process(&[]);
+        }
+        assert_eq!((rig.read(first), rig.read(group), rig.read(third)), (noise(0, 1), noise(1, 1), noise(2, 1)));
     }
 
     // -- Modulator integration test --
@@ -6014,6 +6312,8 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            seed: 0,
+            cycle: 0,
         };
         let members = |mods: &[Modulator]| -> Vec<Option<usize>> {
             mods.iter()
@@ -6048,6 +6348,8 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            seed: 0,
+            cycle: 0,
         };
         let mm_members = |mods: &[Modulator]| -> Vec<Option<usize>> {
             mods.iter()
@@ -6077,6 +6379,8 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            seed: 0,
+            cycle: 0,
         };
         let mm_idx = |mods: &[Modulator]| -> Vec<Option<usize>> {
             mods.iter()
@@ -6263,6 +6567,8 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            seed: 0,
+            cycle: 0,
         };
         let on = |member, slot| target(ModTargetKind::GroupMember { member, slot, param_index: 0 });
         // Targets that are not a member's plugin slots, and must never move.

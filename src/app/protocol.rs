@@ -595,7 +595,7 @@ mod typescript {
         // (Not `0.009999999776482582`: an f32 is written as the shortest number that is it.)
         assert_eq!(
             range_entries(&MODULATOR_FIELDS, ModulatorField::range),
-            "  rate: [0.01, 50],\n  waveform: [0, 3],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n"
+            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n"
         );
     }
 
@@ -617,7 +617,7 @@ mod typescript {
 
     #[test]
     fn the_waveforms_are_written_in_the_order_of_their_index() {
-        assert_eq!(waveform_names(), "\"sine\", \"triangle\", \"saw\", \"square\"");
+        assert_eq!(waveform_names(), "\"sine\", \"triangle\", \"saw\", \"square\", \"random\", \"smooth\"");
         // (The index is what a modulator's `waveform` setting is.)
         for (index, name) in crate::plugin::chain::LfoWaveform::ALL.iter().enumerate() {
             assert_eq!(name.to_index(), index);

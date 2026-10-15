@@ -445,7 +445,7 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   );
 });
 
-/** The waveform of an LFO: one of the four, chosen. */
+/** The waveform of an LFO: one of the waveforms (`WAVEFORMS`), chosen. */
 export const WaveformControl = memo(function WaveformControl({ node }: { node: NodeId }) {
   const control = useDrive().modulatorField(node, "waveform");
   const stored = useClientState((state) => modulatorFieldOf(state, node, "waveform"));

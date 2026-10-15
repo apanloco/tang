@@ -14,6 +14,7 @@ import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
+import noise from "./fixtures/noise.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
@@ -100,6 +101,12 @@ export const historyFixture = history as unknown as { snapshot: Snapshot; script
  * the controller (`the_web_clients_fixture_of_file_names_is_current`, `session::plain_file_name`).
  */
 export const filenamesFixture = filenames;
+
+/**
+ * The numbers that the engine's `noise` makes for a spread of seeds and cycles (the random numbers of a random LFO, `plugin::chain::noise`), the ends of the 32 bits among them: each as the
+ * 64-bit number that the engine's 32-bit one widens to. Written by the engine (`the_web_clients_fixture_of_the_noise_is_current`).
+ */
+export const noiseFixture = noise;
 
 /** What a session comes to, for the fixture of the group intents: a line of text for each entry of each list. */
 export interface Shape {

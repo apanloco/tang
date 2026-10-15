@@ -2553,8 +2553,8 @@ fn a_value_typed_for_an_lfos_rate_is_clamped_to_its_range() {
 }
 
 #[test]
-fn left_and_right_on_an_lfos_waveform_go_round_the_four_whatever_the_modifiers() {
-    use crate::plugin::chain::LfoWaveform::{Saw, Sine, Square, Triangle};
+fn left_and_right_on_an_lfos_waveform_go_round_every_waveform_whatever_the_modifiers() {
+    use crate::plugin::chain::LfoWaveform::{Random, Saw, Sine, Smooth, Square, Triangle};
     let mut h = Harness::new(scene_split());
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 1);
     let mut seen = Vec::new();
@@ -2562,6 +2562,8 @@ fn left_and_right_on_an_lfos_waveform_go_round_the_four_whatever_the_modifiers()
         (KeyCode::Right, KeyModifiers::NONE),
         (KeyCode::Right, KeyModifiers::SHIFT),
         (KeyCode::Right, KeyModifiers::CONTROL),
+        (KeyCode::Right, KeyModifiers::NONE),
+        (KeyCode::Right, KeyModifiers::NONE),
         (KeyCode::Right, KeyModifiers::NONE), // round to the first again
         (KeyCode::Left, KeyModifiers::NONE),  // and back round to the last
         (KeyCode::Left, KeyModifiers::CONTROL),
@@ -2576,12 +2578,14 @@ fn left_and_right_on_an_lfos_waveform_go_round_the_four_whatever_the_modifiers()
             (said("Triangle"), Triangle),
             (said("Saw"), Saw),
             (said("Square"), Square),
+            (said("Random"), Random),
+            (said("Smooth"), Smooth),
             (said("Sine"), Sine),
-            (said("Square"), Square),
-            (said("Saw"), Saw),
+            (said("Smooth"), Smooth),
+            (said("Random"), Random),
         ]
     );
-    assert!(h.tree().iter().any(|l| l.contains("LFO 4.0Hz saw")), "the tree shows it: {:#?}", h.tree());
+    assert!(h.tree().iter().any(|l| l.contains("LFO 4.0Hz random")), "the tree shows it: {:#?}", h.tree());
 }
 
 #[test]

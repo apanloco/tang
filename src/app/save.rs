@@ -260,6 +260,20 @@ depth = 0.4
     }
 
     #[test]
+    fn an_lfo_is_saved_by_the_name_of_its_waveform_and_is_the_same_when_the_file_is_loaded_again() {
+        for waveform in crate::plugin::chain::LfoWaveform::ALL {
+            let name = waveform.name();
+            let first = load(&format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nwaveform = \"{name}\"\nrate = 3.0\n"));
+            let file = saved(&first.model);
+            assert!(file.contains(&format!("waveform = \"{name}\"")), "{name}:\n{file}");
+            let second = load(&file);
+            let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
+            assert_eq!(source(&second), source(&first), "{name}");
+            assert_eq!(source(&first), format!("Lfo {{ waveform: {waveform:?}, rate: 3.0 }}"), "{name}");
+        }
+    }
+
+    #[test]
     fn the_places_of_the_nodes_are_saved_on_the_nodes_they_are_for() {
         let file = saved(&load(PLACED).model);
         let lines = |prefix: &str| file.lines().filter(|l| l.starts_with(prefix)).collect::<Vec<_>>();
