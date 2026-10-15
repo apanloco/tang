@@ -680,27 +680,16 @@ type CrossModWrite = (usize, CrossModField, f32);
 /// For each modulator, applies its `last_output` to any sibling modulator targets
 /// (rate, ADSR params, depth). Self-modulation (targeting own index) is skipped.
 /// `mods_to_apply` is scratch space the caller keeps between buffers, so that this
-/// does not allocate once it has grown to fit.
-fn apply_cross_mod(modulators: &mut [Modulator], mods_to_apply: &mut Vec<CrossModWrite>) {
+/// does not allocate once it has grown to fit. What each setting is set to is
+/// published into the slots of the cables that drive it (`telemetry`), once they
+/// have all been applied.
+fn apply_cross_mod(modulators: &mut [Modulator], mods_to_apply: &mut Vec<CrossModWrite>, telemetry: Option<&Telemetry>) {
     // Collect modifications first (avoids simultaneous borrow issues).
     mods_to_apply.clear();
 
     for (src_idx, src) in modulators.iter().enumerate() {
         for target in &src.targets {
-            let (tgt_mod_idx, field) = match &target.kind {
-                ModTargetKind::ModulatorRate { mod_index } => (*mod_index, CrossModField::Rate),
-                ModTargetKind::ModulatorAttack { mod_index } => (*mod_index, CrossModField::Attack),
-                ModTargetKind::ModulatorDecay { mod_index } => (*mod_index, CrossModField::Decay),
-                ModTargetKind::ModulatorSustain { mod_index } => (*mod_index, CrossModField::Sustain),
-                ModTargetKind::ModulatorRelease { mod_index } => (*mod_index, CrossModField::Release),
-                ModTargetKind::ModulatorDepth { mod_index, target_index } => {
-                    (*mod_index, CrossModField::Depth(*target_index))
-                }
-                ModTargetKind::PluginParam { .. }
-                | ModTargetKind::GroupMember { .. }
-                | ModTargetKind::GroupBus { .. }
-                | ModTargetKind::GroupMemberMod { .. } => continue,
-            };
+            let Some((tgt_mod_idx, field)) = sibling_field(&target.kind) else { continue };
             // Skip self-modulation.
             if tgt_mod_idx == src_idx {
                 continue;
@@ -715,6 +704,71 @@ fn apply_cross_mod(modulators: &mut [Modulator], mods_to_apply: &mut Vec<CrossMo
     for &(tgt_idx, field, value) in mods_to_apply.iter() {
         if let Some(tgt) = modulators.get_mut(tgt_idx) {
             apply_cross_mod_field(tgt, field, value);
+        }
+    }
+
+    if let Some(telemetry) = telemetry {
+        publish_cross_mod_effective(modulators, telemetry);
+    }
+}
+
+/// The sibling modulator and the setting of it that a target drives, or `None` for a target that drives anything else.
+fn sibling_field(kind: &ModTargetKind) -> Option<(usize, CrossModField)> {
+    match kind {
+        ModTargetKind::ModulatorRate { mod_index } => Some((*mod_index, CrossModField::Rate)),
+        ModTargetKind::ModulatorAttack { mod_index } => Some((*mod_index, CrossModField::Attack)),
+        ModTargetKind::ModulatorDecay { mod_index } => Some((*mod_index, CrossModField::Decay)),
+        ModTargetKind::ModulatorSustain { mod_index } => Some((*mod_index, CrossModField::Sustain)),
+        ModTargetKind::ModulatorRelease { mod_index } => Some((*mod_index, CrossModField::Release)),
+        ModTargetKind::ModulatorDepth { mod_index, target_index } => Some((*mod_index, CrossModField::Depth(*target_index))),
+        ModTargetKind::PluginParam { .. }
+        | ModTargetKind::GroupMember { .. }
+        | ModTargetKind::GroupBus { .. }
+        | ModTargetKind::GroupMemberMod { .. } => None,
+    }
+}
+
+/// What the setting `field` of `m` is now, or `None` if `m` has no such setting (an envelope has no rate, an LFO has no stages) or no such cable.
+fn cross_mod_field_value(m: &Modulator, field: CrossModField) -> Option<f32> {
+    match (field, &m.source) {
+        (CrossModField::Rate, ModSource::Lfo { rate, .. }) => Some(*rate),
+        (CrossModField::Attack, ModSource::Envelope { attack, .. }) => Some(*attack),
+        (CrossModField::Decay, ModSource::Envelope { decay, .. }) => Some(*decay),
+        (CrossModField::Sustain, ModSource::Envelope { sustain, .. }) => Some(*sustain),
+        (CrossModField::Release, ModSource::Envelope { release, .. }) => Some(*release),
+        (CrossModField::Depth(target_index), _) => m.targets.get(target_index).map(|target| target.depth),
+        _ => None,
+    }
+}
+
+/// Publish what the settings that a rack's cross-mod drives were just set to, into the slot of each cable that drives one: the value the setting has
+/// now, which is the last one written when several cables drive it. A cable to a setting its modulator has not, and one to its own, publish nothing.
+fn publish_cross_mod_effective(modulators: &[Modulator], telemetry: &Telemetry) {
+    for (src_idx, src) in modulators.iter().enumerate() {
+        for target in &src.targets {
+            let Some(slot) = target.effective else { continue };
+            let Some((tgt_idx, field)) = sibling_field(&target.kind) else { continue };
+            if tgt_idx == src_idx {
+                continue;
+            }
+            if let Some(value) = modulators.get(tgt_idx).and_then(|m| cross_mod_field_value(m, field)) {
+                telemetry.store(slot, value);
+            }
+        }
+    }
+}
+
+/// Publish what the settings of the members' modulators that the groups' cables drive ended up as: each cable's slot gets the value its setting has once the
+/// lanes have run (a lane's own cross-mod, applied inside it, comes after the group's and wins). A cable to a member that is not there publishes nothing.
+fn publish_group_member_mod_effective(groups: &[Group], instruments: &[InstrumentLane], telemetry: &Telemetry) {
+    for (gi, g) in groups.iter().enumerate() {
+        for target in g.modulators.iter().flat_map(|m| &m.targets) {
+            let Some(slot) = target.effective else { continue };
+            let ModTargetKind::GroupMemberMod { member, mod_index, field } = target.kind else { continue };
+            let Some(lane) = group_member_lane(instruments, gi, member) else { continue };
+            if let Some(value) = instruments[lane].modulators.get(mod_index).and_then(|m| cross_mod_field_value(m, field)) {
+                telemetry.store(slot, value);
+            }
         }
     }
 }
@@ -2919,7 +2973,7 @@ impl InstrumentLane {
             for m in &mut self.modulators {
                 m.tick(buffer_size, effective_events);
             }
-            apply_cross_mod(&mut self.modulators, &mut self.cross_mod_scratch);
+            apply_cross_mod(&mut self.modulators, &mut self.cross_mod_scratch, telemetry);
             apply_modulators_to_chain(
                 &self.modulators,
                 &mut self.instrument,
@@ -4565,7 +4619,7 @@ impl AudioGraph {
                 for m in &mut self.groups[gi].modulators {
                     m.tick(frames, &self.group_midi_scratch);
                 }
-                apply_cross_mod(&mut self.groups[gi].modulators, &mut self.group_cross_mod_scratch);
+                apply_cross_mod(&mut self.groups[gi].modulators, &mut self.group_cross_mod_scratch, self.telemetry.as_deref());
                 if let Some(telemetry) = &self.telemetry {
                     publish_outputs(&self.groups[gi].modulators, telemetry);
                 }
@@ -4631,6 +4685,11 @@ impl AudioGraph {
                     *ds += *s;
                 }
             }
+        }
+
+        // What the members' settings that a group's cable drives ended up as, now that the lanes have run.
+        if let Some(telemetry) = &self.telemetry {
+            publish_group_member_mod_effective(&self.groups, &self.instruments, telemetry);
         }
 
         // Run each group's volume + effect chain, then fold into the master.
@@ -7476,6 +7535,15 @@ mod tests {
             slot
         }
 
+        /// A cable of lane modulator `mod_index` to a setting of a modulator (or to the depth of a cable): `kind` says which, `base` is what the user set it to and
+        /// `min`…`max` its range; it publishes the value the setting is set to; its slot.
+        fn field_target(&mut self, mod_index: usize, kind: ModTargetKind, depth: f32, base: f32, min: f32, max: f32) -> Slot {
+            let slot = self.slot();
+            let target = ModTarget { kind, depth, base_value: base, param_min: min, param_max: max, effective: Some(slot) };
+            self.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index, target }).unwrap();
+            slot
+        }
+
         fn process(&mut self, midi: &[(u64, [u8; 3])]) {
             self.graph.process(midi, &mut make_output()).unwrap();
         }
@@ -7616,6 +7684,89 @@ mod tests {
             rig.process(&[]);
             assert_eq!(rig.read(effective), stops_at, "depth {depth}");
         }
+    }
+
+    #[test]
+    fn a_cable_to_the_rate_of_an_lfo_publishes_the_rate_it_was_set_to() {
+        // (Finding f132: a cable to a modulator's own setting had no slot, so what drove a rate was not to be seen.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
+        let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.1, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        // The LFO's +1 times the depth of the range (0.01 to 50) on top of the 2 Hz the user set.
+        assert!(close(rig.read(rate), 2.0 + 0.1 * (50.0 - 0.01)), "{}", rig.read(rate));
+    }
+
+    #[test]
+    fn an_envelope_on_a_rate_publishes_it_rising_to_the_value_the_user_set() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, adsr(0.01));
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
+        let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.5, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        // Idle: the user's value less depth of the way down to the lowest, 2 - 0.5 x (2 - 0.01).
+        assert!(close(rig.read(rate), 2.0 - 0.5 * (2.0 - 0.01)), "{}", rig.read(rate));
+        rig.process(&[note_on(60)]);
+        let level = FRAMES as f32 / 48000.0 / 0.01;
+        assert!(close(rig.read(rate), 2.0 - 0.5 * (1.0 - level) * (2.0 - 0.01)), "{}", rig.read(rate));
+    }
+
+    #[test]
+    fn a_cable_to_each_stage_of_an_envelope_publishes_the_stage_it_was_set_to() {
+        // The square LFO is always +1: each stage is what the user set plus the depth of its range.
+        for (kind, base, (min, max), depth) in [
+            (ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.01, (0.001, 10.0), 0.01),
+            (ModTargetKind::ModulatorDecay { mod_index: 1 }, 0.1, (0.001, 10.0), 0.02),
+            (ModTargetKind::ModulatorSustain { mod_index: 1 }, 0.5, (0.0, 1.0), 0.2),
+            (ModTargetKind::ModulatorRelease { mod_index: 1 }, 0.1, (0.001, 10.0), 0.03),
+        ] {
+            let mut rig = Rig::new();
+            rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+            rig.lane_modulator(1, adsr(0.01));
+            let stage = rig.field_target(0, kind.clone(), depth, base, min, max);
+            rig.process(&[]);
+            assert!(close(rig.read(stage), base + depth * (max - min)), "{kind:?}: {}", rig.read(stage));
+        }
+    }
+
+    #[test]
+    fn a_cable_to_the_depth_of_a_cable_publishes_the_depth_it_was_set_to() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 1.0));
+        rig.gain_target(1, 0.5);
+        rig.gain_target(1, 0.3); // the cable whose depth is driven: modulator 1's second (of two, so that the place of a cable counts)
+        let depth = rig.field_target(0, ModTargetKind::ModulatorDepth { mod_index: 1, target_index: 1 }, 0.2, 0.3, -1.0, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(depth), 0.3 + 0.2 * 2.0), "{}", rig.read(depth));
+    }
+
+    #[test]
+    fn two_cables_to_one_setting_publish_the_value_the_last_of_them_wrote_to_both() {
+        // (Writers to one setting are last-wins, as `apply_cross_mod` says: the value is what the later cable made of it.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
+        rig.lane_modulator(2, lfo(LfoWaveform::Square, 0.0));
+        let first = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.1, 2.0, 0.01, 50.0);
+        let second = rig.field_target(2, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.3, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        assert!(close(rig.read(second), 2.0 + 0.3 * (50.0 - 0.01)), "{}", rig.read(second));
+        assert_eq!(rig.read(first), rig.read(second));
+    }
+
+    #[test]
+    fn a_cable_to_a_setting_the_modulator_has_not_and_a_cable_to_itself_publish_nothing() {
+        let mut rig = Rig::new();
+        // (A rate of 5 Hz, which would be published if the cable to itself were not left out: a rate of 0 is what the slot holds already.)
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 5.0));
+        rig.lane_modulator(1, adsr(0.01));
+        // An envelope has no rate; and a modulator does not drive its own settings.
+        let no_such_setting = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.1, 2.0, 0.01, 50.0);
+        let itself = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 0 }, 0.1, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        assert_eq!((rig.read(no_such_setting), rig.read(itself)), (0.0, 0.0));
     }
 
     #[test]
@@ -7823,14 +7974,46 @@ mod tests {
     }
 
     #[test]
-    fn a_cross_mod_target_publishes_nothing() {
+    fn a_group_modulators_cable_to_another_of_the_group_publishes_the_setting_it_was_set_to() {
         let mut g = GroupRig::new();
         g.rig.cmd_tx
             .send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: lfo(LfoWaveform::Sine, 1.0) })
             .unwrap();
-        let cross = g.target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.3);
+        let slot = g.rig.slot();
+        let target = ModTarget { kind: ModTargetKind::ModulatorRate { mod_index: 1 }, depth: 0.3, base_value: 1.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+        g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
         g.rig.process(&[]);
-        assert_eq!(g.rig.read(cross), 0.0, "only parameters of plugins have an effective value here");
+        assert!(close(g.rig.read(slot), 1.0 + 0.3 * (50.0 - 0.01)), "{}", g.rig.read(slot));
+    }
+
+    #[test]
+    fn a_group_modulators_cable_to_a_members_modulator_publishes_what_the_members_setting_ends_up_as() {
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(LfoWaveform::Sine, 2.0) }).unwrap();
+        let field = ModTargetKind::GroupMemberMod { member: 0, mod_index: 0, field: CrossModField::Rate };
+        let slot = g.rig.slot();
+        let target = ModTarget { kind: field, depth: 0.1, base_value: 2.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+        g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        g.rig.process(&[]);
+        // The group's LFO is a square at +1: 2 Hz and a tenth of the range.
+        assert!(close(g.rig.read(slot), 2.0 + 0.1 * (50.0 - 0.01)), "{}", g.rig.read(slot));
+        // A cable of the member's own to the same setting is applied after the group's, and wins: that is what the setting ends up as.
+        g.rig.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 1, source: lfo(LfoWaveform::Square, 0.0) }).unwrap();
+        let own = ModTarget { kind: ModTargetKind::ModulatorRate { mod_index: 0 }, depth: 0.3, base_value: 2.0, param_min: 0.01, param_max: 50.0, effective: None };
+        g.rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 1, target: own }).unwrap();
+        g.rig.process(&[]);
+        assert!(close(g.rig.read(slot), 2.0 + 0.3 * (50.0 - 0.01)), "{}", g.rig.read(slot));
+    }
+
+    #[test]
+    fn a_group_modulators_cable_to_a_member_that_is_not_there_publishes_nothing() {
+        let mut g = GroupRig::new();
+        let slot = g.rig.slot();
+        let field = ModTargetKind::GroupMemberMod { member: 5, mod_index: 0, field: CrossModField::Rate };
+        let target = ModTarget { kind: field, depth: 0.1, base_value: 2.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+        g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        g.rig.process(&[]);
+        assert_eq!(g.rig.read(slot), 0.0);
     }
 
     #[test]
@@ -7840,11 +8023,25 @@ mod tests {
         rig.lane_modulator(1, adsr(0.01));
         rig.gain_target(0, 0.3);
         rig.gain_target(1, 0.3);
+        // (Cables to settings, which publish what they were set to: the LFO drives the attack of the envelope and the envelope the rate of the LFO.)
+        rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.01, 0.01, 0.001, 10.0);
+        rig.field_target(1, ModTargetKind::ModulatorRate { mod_index: 0 }, 0.2, 3.0, 0.01, 50.0);
         rig.graph.drain_commands();
         let allocations = allocations_while_processing(&mut rig.graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "a lane: the audio thread asked the allocator for memory");
 
         let mut g = GroupRig::new();
+        // (A group modulator's cables to another of the group and to a member's modulator.)
+        g.rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: lfo(LfoWaveform::Sine, 1.0) }).unwrap();
+        g.rig.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(LfoWaveform::Sine, 2.0) }).unwrap();
+        for (kind, base) in [
+            (ModTargetKind::ModulatorRate { mod_index: 1 }, 1.0),
+            (ModTargetKind::GroupMemberMod { member: 0, mod_index: 0, field: CrossModField::Rate }, 2.0),
+        ] {
+            let slot = g.rig.slot();
+            let target = ModTarget { kind, depth: 0.2, base_value: base, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+            g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        }
         g.rig.graph.drain_commands();
         let allocations = allocations_while_processing(&mut g.rig.graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "a group: the audio thread asked the allocator for memory");
