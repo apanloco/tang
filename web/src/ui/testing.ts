@@ -11,6 +11,7 @@ export interface RecordingContext {
   beginPath: () => void;
   moveTo: (...args: number[]) => void;
   lineTo: (...args: number[]) => void;
+  closePath: () => void;
   stroke: () => void;
   arc: (...args: number[]) => void;
   fill: () => void;
@@ -21,7 +22,7 @@ export interface RecordingContext {
   lineCap: unknown;
 }
 
-const METHODS = ["setTransform", "clearRect", "beginPath", "moveTo", "lineTo", "stroke", "arc", "fill"] as const;
+const METHODS = ["setTransform", "clearRect", "beginPath", "moveTo", "lineTo", "closePath", "stroke", "arc", "fill"] as const;
 const PROPERTIES = ["strokeStyle", "fillStyle", "lineWidth", "lineJoin", "lineCap"] as const;
 
 /** A context that does nothing but remember: each method and each property that is set is a call in `calls`. */
