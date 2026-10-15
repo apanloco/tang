@@ -5904,9 +5904,12 @@ mod tests {
         );
     }
 
-    /// A group modulator can drive one of the group's own bus effects. Here an
-    /// idle envelope (depth 1.0) pulls a bus ParamScaleEffect's gain (base 1.0)
-    /// to 0, silencing the bus.
+    /// A group modulator can drive one of the group's own bus effects. Here a square
+    /// LFO (always +1) at depth -1 pulls a bus ParamScaleEffect's gain (base 1.0) to
+    /// 0, silencing the bus. The instrument sounds while a note is held, and the bus
+    /// is heard before the modulator is there, so that only the modulated gain can
+    /// silence it. (The test that was here held no note: its instrument was silent
+    /// whatever the bus did, and it passed with the group's writes taken out.)
     #[test]
     fn group_modulator_drives_bus_effect() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
@@ -5922,15 +5925,13 @@ mod tests {
             })
             .unwrap();
 
+        // The bus passes the note: 0.5 from the instrument, at a gain of 1.
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| (s - 0.5).abs() < 1e-6), "the bus is heard before the modulator: {}", out[0][0]);
+
         cmd_tx
-            .send(GraphCommand::InsertGroupModulator {
-                group: 0,
-                index: 0,
-                source: ModSource::Envelope {
-                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                    state: EnvState::Idle, level: 0.0, notes_held: 0,
-                },
-            })
+            .send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) })
             .unwrap();
         cmd_tx
             .send(GraphCommand::AddGroupModTarget {
@@ -5938,7 +5939,7 @@ mod tests {
                 mod_index: 0,
                 target: ModTarget {
                     kind: ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
-                    depth: 1.0,
+                    depth: -1.0,
                     base_value: 1.0,
                     param_min: 0.0,
                     param_max: 1.0,
@@ -5947,14 +5948,11 @@ mod tests {
             })
             .unwrap();
 
-        // No notes → envelope idle → bus gain pulled to 0 (silence). (The
-        // ConstInstrument outputs regardless of notes, so the only thing that
-        // can zero the bus is the modulated gain.)
-        let mut out = make_output();
+        // The note is still held: the LFO's +1 at depth -1 pulls the gain to 0, and the bus is silent.
         graph.process(&[], &mut out).unwrap();
         assert!(
             out[0].iter().all(|&s| s.abs() < 1e-6),
-            "idle group envelope at depth 1 should pull bus gain to 0 (silence), got {}",
+            "a group LFO at depth -1 should pull the bus gain to 0 (silence), got {}",
             out[0][0]
         );
     }
