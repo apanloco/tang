@@ -15,6 +15,7 @@ use std::time::Instant;
 use crossbeam_channel::{Sender, TrySendError};
 
 use crate::app::intent::Intent;
+use crate::app::model::NodeId;
 use crate::app::protocol::{ClientMessage, ErrorCode, PROTOCOL, ServerMessage, WireError};
 use crate::note_input::{Delivery, NoteInput};
 use crate::web::Shared;
@@ -25,6 +26,9 @@ use crate::web::security::Policy;
 /// few dozen bytes each; this is generous.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
+/// The most nodes a connection may watch the signal of at once (`ClientMessage::Probes`): far more than the engine has rings for, which are shared by every client; a longer list is cut.
+pub const MAX_PROBES: usize = 64;
+
 /// What a connection asks of the owner of the controller, over a channel.
 #[derive(Debug, PartialEq)]
 pub enum OwnerRequest {
@@ -32,6 +36,8 @@ pub enum OwnerRequest {
     Subscribe { client: ClientId },
     /// Apply an intent and answer `req_id`.
     Apply { client: ClientId, req_id: u32, intent: Intent },
+    /// Watch the signal at these nodes for the client, and tell it which are watched.
+    Probes { client: ClientId, nodes: Vec<NodeId> },
 }
 
 /// Whether the connection goes on.
@@ -181,6 +187,16 @@ impl Connection {
                     return self.close_with(ErrorCode::RateLimited, "too many requests: slow down");
                 }
                 self.hub.set_channels(self.id, &channels);
+                Flow::Continue
+            }
+            ClientMessage::Probes { mut nodes } => {
+                if !self.limiter.allow(now) {
+                    return self.close_with(ErrorCode::RateLimited, "too many requests: slow down");
+                }
+                nodes.truncate(MAX_PROBES);
+                // (The hub is told at once, so that the frames of a node that has a ring are sent from the next turn; the owner says which of them have one.)
+                self.hub.set_probes(self.id, &nodes);
+                self.ask_owner(OwnerRequest::Probes { client: self.id, nodes });
                 Flow::Continue
             }
             ClientMessage::Request { req_id, intent } => {
@@ -496,6 +512,38 @@ mod tests {
         assert!(!rig.hub.wanted(Meters) && rig.hub.wanted(Modulation));
         rig.send(json!({"type": "telemetry", "channels": []}));
         assert!(!rig.hub.wanted(Meters) && !rig.hub.wanted(Modulation));
+    }
+
+    #[test]
+    fn the_probes_a_client_asks_for_are_what_the_hub_is_told_and_the_owner_is_asked_to_set_them() {
+        let mut rig = rig();
+        rig.send(json!({"type": "probes", "nodes": [3, 9]}));
+        assert!(rig.hub.probe_wanted(NodeId(3)) && rig.hub.probe_wanted(NodeId(9)) && !rig.hub.probe_wanted(NodeId(4)));
+        assert_eq!(rig.asked(), [OwnerRequest::Probes { client: rig.id, nodes: vec![NodeId(3), NodeId(9)] }]);
+        rig.send(json!({"type": "probes", "nodes": []}));
+        assert!(!rig.hub.probe_wanted(NodeId(3)));
+        assert_eq!(rig.asked(), [OwnerRequest::Probes { client: rig.id, nodes: vec![] }], "and the owner is told that it is none");
+    }
+
+    #[test]
+    fn a_client_that_asks_for_more_probes_than_a_connection_can_have_is_given_the_first() {
+        let mut rig = rig();
+        let nodes: Vec<u32> = (0..100).collect();
+        rig.send(json!({"type": "probes", "nodes": nodes}));
+        assert!(rig.hub.probe_wanted(NodeId(MAX_PROBES as u32 - 1)) && !rig.hub.probe_wanted(NodeId(MAX_PROBES as u32)));
+        let asked = rig.asked();
+        let [OwnerRequest::Probes { nodes, .. }] = &asked[..] else { panic!("{asked:?}") };
+        assert_eq!(nodes.len(), MAX_PROBES);
+    }
+
+    #[test]
+    fn asking_for_probes_over_and_over_is_too_fast_and_ends_the_connection() {
+        let mut rig = rig_with(open_policy(), Limits { burst: 2.0, per_second: 1.0 }, 64);
+        assert_eq!(rig.send(json!({"type": "probes", "nodes": [1]})), Flow::Continue);
+        assert_eq!(rig.send(json!({"type": "probes", "nodes": [2]})), Flow::Continue);
+        assert_eq!(rig.send(json!({"type": "probes", "nodes": [3]})), Flow::Close);
+        assert_eq!(rig.said()[0]["error"]["code"], "rateLimited");
+        assert!(rig.hub.probe_wanted(NodeId(2)) && !rig.hub.probe_wanted(NodeId(3)), "the last one that was taken stands");
     }
 
     #[test]

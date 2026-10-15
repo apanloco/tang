@@ -95,7 +95,6 @@ impl Telemetry {
 
     /// The node that ring `ring` of the probe pool is for, if it is for one.
     #[cfg(any(test, feature = "web"))]
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime's pusher reads which node each ring is for (step 46)"))]
     pub fn probe_node(&self, ring: usize) -> Option<u32> {
         self.probe_nodes.get(ring).and_then(|cell| cell.load(Ordering::Relaxed).checked_sub(1))
     }

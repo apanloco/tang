@@ -95,8 +95,9 @@ impl Runtime {
 
     /// Keep what the connections read current: call it on every turn of a loop that is
     /// not the headless one.
-    pub fn refresh(&mut self, ctl: &Controller) {
+    pub fn refresh(&mut self, ctl: &mut Controller) {
         self.owner.refresh(ctl);
+        self.owner.refresh_probes(ctl);
     }
 
     /// The loop of a headless server: answer requests as they come, and every tick poll
@@ -115,7 +116,7 @@ impl Runtime {
                 },
                 recv(tick) -> _ => {
                     ctl.poll();
-                    self.owner.refresh(ctl);
+                    self.refresh(ctl);
                 }
                 recv(quit) -> _ => break,
             }

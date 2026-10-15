@@ -47,7 +47,6 @@ impl Controller {
     /// `watcher` watches the signal at the output of `nodes` (what it watched before it does not): returns the nodes of them that are watched, in the order they were asked for, which are those that
     /// have a signal and a ring (the pool has `PROBES`, shared by every watcher: a node that no ring is left for is watched when one is free, and is not among those returned until then). Two
     /// watchers of one node share its ring.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime asks for the probes of its clients (step 46)"))]
     pub fn set_probes(&mut self, watcher: Watcher, nodes: &[NodeId]) -> Vec<NodeId> {
         let mut asked = Vec::new();
         for &node in nodes {
@@ -60,10 +59,11 @@ impl Controller {
         asked.into_iter().filter(|node| self.probes.rings.contains(&Some(*node))).collect()
     }
 
-    /// `watcher` watches nothing any more (it has gone).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime drops the probes of a client that has gone (step 46)"))]
-    pub fn drop_probes(&mut self, watcher: Watcher) {
-        if self.probes.watching.remove(&watcher).is_some() {
+    /// Let go of the watchers that `keep` says are not there any more (a client of the web interface that has closed).
+    pub fn keep_probes_of(&mut self, keep: impl Fn(Watcher) -> bool) {
+        let before = self.probes.watching.len();
+        self.probes.watching.retain(|watcher, _| keep(*watcher));
+        if self.probes.watching.len() != before {
             self.reconcile_probes();
         }
     }
@@ -219,10 +219,10 @@ plugin = "builtin:osc"
         ctl.set_probes(Watcher(1), &[reverb]);
         assert_eq!(ctl.set_probes(Watcher(2), &[reverb]), [reverb]);
         sent(&engine);
-        ctl.drop_probes(Watcher(1));
+        ctl.keep_probes_of(|watcher| watcher != Watcher(1));
         assert_eq!(sent(&engine), Vec::<String>::new(), "the other still watches it");
         assert_eq!(rings(&ctl), only(0, reverb));
-        ctl.drop_probes(Watcher(2));
+        ctl.keep_probes_of(|watcher| watcher != Watcher(2));
         assert_eq!(sent(&engine), ["ClearProbes"]);
         assert_eq!(rings(&ctl), vec![None; PROBES]);
     }

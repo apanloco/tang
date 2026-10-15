@@ -1791,7 +1791,7 @@ where
     loop {
         tick(s);
         if let Some(web) = web.as_deref_mut() {
-            web.refresh(&s.ctl);
+            web.refresh(&mut s.ctl);
             s.web = Some(web.status());
         }
 

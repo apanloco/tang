@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{self, error::TrySendError};
 
 use crate::app::intent::Applied;
+use crate::app::model::NodeId;
 use crate::app::protocol::{ServerMessage, TelemetryChannel};
 use crate::app::snapshot::Snapshot;
 use crate::app::subscribers::EventSink;
@@ -26,6 +27,13 @@ use crate::web::Shared;
 /// Names a connection for as long as it is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClientId(u64);
+
+impl ClientId {
+    /// The number the client is known by to the controller's watchers (`app::probes::Watcher`).
+    pub fn number(self) -> u64 {
+        self.0
+    }
+}
 
 /// A frame to send to a client: JSON text, or a binary telemetry frame. Shared, so
 /// that sending the same thing to many clients serializes it once.
@@ -40,6 +48,8 @@ struct Client {
     /// Gets the events from now on (the snapshot it was sent says where they start).
     subscribed: bool,
     channels: HashSet<TelemetryChannel>,
+    /// The nodes whose signal the client wants (`ClientMessage::Probes`).
+    probes: HashSet<NodeId>,
 }
 
 pub struct Hub {
@@ -60,7 +70,7 @@ impl Hub {
     pub fn connect(&self) -> (ClientId, mpsc::Receiver<Outgoing>) {
         let id = ClientId(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = mpsc::channel(self.queue);
-        self.lock().insert(id, Client { tx, subscribed: false, channels: HashSet::new() });
+        self.lock().insert(id, Client { tx, subscribed: false, channels: HashSet::new(), probes: HashSet::new() });
         (id, rx)
     }
 
@@ -82,6 +92,37 @@ impl Hub {
     /// Which telemetry the client wants, replacing what it wanted.
     pub fn set_channels(&self, id: ClientId, channels: &[TelemetryChannel]) -> bool {
         self.lock().get_mut(&id).map(|client| client.channels = channels.iter().copied().collect()).is_some()
+    }
+
+    /// Which nodes the client wants the signal of, replacing what it wanted. False if it is not there (any more).
+    pub fn set_probes(&self, id: ClientId, nodes: &[NodeId]) -> bool {
+        self.lock().get_mut(&id).map(|client| client.probes = nodes.iter().copied().collect()).is_some()
+    }
+
+    /// Whether any client wants the signal of `node`, so that nobody builds a frame for nobody.
+    pub fn probe_wanted(&self, node: NodeId) -> bool {
+        self.lock().values().any(|client| client.probes.contains(&node))
+    }
+
+    /// Queue a probe `frame` of `node` for every client that wants it. A client whose queue is full misses this frame, and is not evicted: the next one is newer.
+    pub fn send_probe(&self, node: NodeId, frame: &Outgoing) {
+        let mut gone = Vec::new();
+        let mut clients = self.lock();
+        for (id, client) in clients.iter() {
+            if client.probes.contains(&node) {
+                if let Err(TrySendError::Closed(_)) = client.tx.try_send(frame.clone()) {
+                    gone.push(*id);
+                }
+            }
+        }
+        for id in gone {
+            clients.remove(&id);
+        }
+    }
+
+    /// The numbers (`ClientId::number`) of the clients that are connected.
+    pub fn connected(&self) -> HashSet<u64> {
+        self.lock().keys().map(|id| id.0).collect()
     }
 
     /// Whether any client wants `channel`, so that nobody builds frames for nobody.
@@ -333,6 +374,64 @@ mod tests {
         }
         assert_eq!(hub.client_count(), 1, "not evicted");
         assert_eq!(drain(&mut ra), [Outgoing::Binary(vec![0].into()), Outgoing::Binary(vec![1].into())], "the first two fit");
+    }
+
+    #[test]
+    fn a_probe_goes_to_the_clients_that_watch_its_node_and_to_no_others() {
+        let hub = Hub::new(8);
+        let (a, mut ra) = hub.connect();
+        let (b, mut rb) = hub.connect();
+        let (_c, mut rc) = hub.connect();
+        hub.set_probes(a, &[NodeId(7), NodeId(8)]);
+        hub.set_probes(b, &[NodeId(8)]);
+        assert!(hub.probe_wanted(NodeId(7)) && hub.probe_wanted(NodeId(8)) && !hub.probe_wanted(NodeId(9)));
+        hub.send_probe(NodeId(7), &Outgoing::Binary(vec![7].into()));
+        hub.send_probe(NodeId(8), &Outgoing::Binary(vec![8].into()));
+        hub.send_probe(NodeId(9), &Outgoing::Binary(vec![9].into()));
+        assert_eq!(drain(&mut ra), [Outgoing::Binary(vec![7].into()), Outgoing::Binary(vec![8].into())]);
+        assert_eq!(drain(&mut rb), [Outgoing::Binary(vec![8].into())]);
+        assert!(drain(&mut rc).is_empty());
+    }
+
+    #[test]
+    fn setting_the_probes_replaces_them_and_a_client_that_has_gone_watches_nothing() {
+        let hub = Hub::new(8);
+        let (a, mut ra) = hub.connect();
+        assert!(hub.set_probes(a, &[NodeId(7)]));
+        hub.set_probes(a, &[NodeId(8)]);
+        assert!(!hub.probe_wanted(NodeId(7)) && hub.probe_wanted(NodeId(8)));
+        hub.send_probe(NodeId(7), &Outgoing::Binary(vec![1].into()));
+        assert!(drain(&mut ra).is_empty());
+        hub.set_probes(a, &[]);
+        assert!(!hub.probe_wanted(NodeId(8)), "nobody wants any: nobody builds frames");
+        hub.set_probes(a, &[NodeId(8)]);
+        hub.disconnect(a);
+        assert!(!hub.probe_wanted(NodeId(8)));
+        assert!(!hub.set_probes(a, &[NodeId(8)]), "a client that is not there says so");
+    }
+
+    #[test]
+    fn a_probe_for_a_client_whose_connection_has_gone_forgets_it_and_one_that_falls_behind_misses_frames() {
+        let hub = Hub::new(1);
+        let (a, mut ra) = hub.connect();
+        let (b, rb) = hub.connect();
+        hub.set_probes(a, &[NodeId(7)]);
+        hub.set_probes(b, &[NodeId(7)]);
+        drop(rb);
+        hub.send_probe(NodeId(7), &Outgoing::Binary(vec![1].into()));
+        hub.send_probe(NodeId(7), &Outgoing::Binary(vec![2].into()));
+        assert_eq!(hub.client_count(), 1, "the one whose connection was gone is forgotten and the slow one is not evicted");
+        assert_eq!(drain(&mut ra), [Outgoing::Binary(vec![1].into())], "only the first fits");
+    }
+
+    #[test]
+    fn the_numbers_of_the_clients_that_are_connected_are_known() {
+        let hub = Hub::new(8);
+        let (a, _ra) = hub.connect();
+        let (b, _rb) = hub.connect();
+        assert_eq!(hub.connected(), [a.number(), b.number()].into_iter().collect());
+        hub.disconnect(a);
+        assert_eq!(hub.connected(), [b.number()].into_iter().collect());
     }
 
     #[test]

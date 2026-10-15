@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::catalog::CatalogEntry;
 use crate::app::intent::{Intent, IntentError, StampedEvent};
 use crate::app::layout::TelemetryLayout;
+use crate::app::model::NodeId;
 use crate::app::snapshot::Snapshot;
 
 /// The version of the protocol, in `Hello`: it goes up when a message changes in a
@@ -39,6 +40,9 @@ pub enum ClientMessage {
     Subscribe,
     /// Which telemetry frames to send (each channel at about 30 Hz); none to stop.
     Telemetry { channels: Vec<TelemetryChannel> },
+    /// The nodes whose signal this client wants to see (what it wanted before it does not; none to stop): the signal at the output of an instrument, an effect, a group or a
+    /// bus effect, sent as frames of its own (`probe_frame`, about 30 Hz) for as long as the node is watched. The answer is `Probes`.
+    Probes { nodes: Vec<NodeId> },
     /// Apply an intent; the answer (`Ack` or `Rejected`) carries `req_id`.
     Request { req_id: u32, intent: Intent },
     /// A note, straight to the audio thread (it does not pass the controller).
@@ -79,6 +83,9 @@ pub enum ServerMessage {
     /// that changed it, and before its answer). It is not part of the session: it has no revision, and a client that has been told
     /// nothing has nothing to undo.
     History { undo: Option<String>, redo: Option<String> },
+    /// Which of the nodes that a `Probes` request named are watched now: those that have a signal and a ring (the engine has a few, shared by every client). A node that
+    /// is left out may be watched later, if a ring comes free, and its frames come then.
+    Probes { nodes: Vec<NodeId> },
     /// The intent of the request `req_id` was applied; the session is at `rev`.
     Ack { req_id: u32, rev: u64 },
     /// The intent of the request `req_id` was not applied.
@@ -164,16 +171,31 @@ pub const FRAME_HEADER_LEN: usize = 8;
 /// (reserved), `layout_rev` is the `rev` of the `TelemetryLayout` the values follow:
 /// value *i* is that of entry *i* of the channel's list in it (the held notes and the scope follow none: 0).
 pub fn telemetry_frame(channel: TelemetryChannel, layout_rev: u32, values: &[f32]) -> Vec<u8> {
+    frame_of(
+        match channel {
+            TelemetryChannel::Meters => 0,
+            TelemetryChannel::Modulation => 1,
+            TelemetryChannel::Held => 2,
+            TelemetryChannel::Scope => 3,
+        },
+        layout_rev,
+        values,
+    )
+}
+
+/// The frame of what a node that is watched has at its output (`ClientMessage::Probes`): a telemetry frame of channel 4 whose `u32` is the node's id (it follows no layout) and whose
+/// values are the left side and then the right, as the scope's are, `SCOPE_FRAME_LENGTH` of each.
+#[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends probe frames"))]
+pub fn probe_frame(node: NodeId, values: &[f32]) -> Vec<u8> {
+    frame_of(4, node.0, values)
+}
+
+fn frame_of(channel: u8, tag: u32, values: &[f32]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + values.len() * 4);
-    frame.push(match channel {
-        TelemetryChannel::Meters => 0,
-        TelemetryChannel::Modulation => 1,
-        TelemetryChannel::Held => 2,
-        TelemetryChannel::Scope => 3,
-    });
+    frame.push(channel);
     frame.push(0);
     frame.extend_from_slice(&(values.len().min(u16::MAX as usize) as u16).to_le_bytes());
-    frame.extend_from_slice(&layout_rev.to_le_bytes());
+    frame.extend_from_slice(&tag.to_le_bytes());
     for value in values.iter().take(u16::MAX as usize) {
         frame.extend_from_slice(&value.to_le_bytes());
     }
@@ -214,6 +236,8 @@ mod message_tests {
                 ClientMessage::Request { req_id: 7, intent: Intent::SetGain { node: NodeId(3), gain: Gain::Volume, value: 0.5 } },
                 json!({"type": "request", "reqId": 7, "intent": {"type": "setGain", "node": 3, "gain": "volume", "value": 0.5}}),
             ),
+            (ClientMessage::Probes { nodes: vec![NodeId(3), NodeId(9)] }, json!({"type": "probes", "nodes": [3, 9]})),
+            (ClientMessage::Probes { nodes: vec![] }, json!({"type": "probes", "nodes": []})),
             (ClientMessage::NoteOn { note: 60, velocity: 100 }, json!({"type": "noteOn", "note": 60, "velocity": 100})),
             (ClientMessage::NoteOff { note: 60 }, json!({"type": "noteOff", "note": 60})),
         ]
@@ -238,6 +262,8 @@ mod message_tests {
             ("a request with no id", json!({"type": "request", "intent": {"type": "setParam", "node": 1, "param": 0, "value": 0.5}})),
             ("a request whose intent is nonsense", json!({"type": "request", "reqId": 1, "intent": {"type": "explode"}})),
             ("a channel that does not exist", json!({"type": "telemetry", "channels": ["spectrum"]})),
+            ("probes of nodes that are not numbers", json!({"type": "probes", "nodes": ["Filter"]})),
+            ("probes with no nodes", json!({"type": "probes"})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<ClientMessage>(json).is_err(), "{what}");
@@ -283,6 +309,7 @@ mod message_tests {
                 json!({"type": "history", "undo": "set cutoff", "redo": null}),
             ),
             (ServerMessage::History { undo: None, redo: Some("move an effect".to_string()) }, json!({"type": "history", "undo": null, "redo": "move an effect"})),
+            (ServerMessage::Probes { nodes: vec![NodeId(3)] }, json!({"type": "probes", "nodes": [3]})),
         ];
         for (message, json) in cases {
             assert_eq!(wire(&message), json, "{message:?}");
@@ -349,6 +376,20 @@ mod message_tests {
         assert_eq!(telemetry_frame(TelemetryChannel::Held, 0, &[0.0, 1.0])[0], 2, "the held notes' channel");
         assert_eq!(telemetry_frame(TelemetryChannel::Scope, 0, &[0.0, 1.0])[0], 3, "the scope's channel");
         assert_eq!(telemetry_frame(TelemetryChannel::Meters, 0, &[]).len(), FRAME_HEADER_LEN);
+    }
+
+    #[test]
+    fn a_probe_frame_is_a_telemetry_frame_of_channel_four_with_the_node_where_the_layouts_revision_is() {
+        let frame = probe_frame(NodeId(0x0102_0304), &[1.0, -2.5, 0.25]);
+        assert_eq!(frame.len(), FRAME_HEADER_LEN + 3 * 4);
+        assert_eq!(frame[0], 4, "the probe channel");
+        assert_eq!(frame[1], 0, "no flags");
+        assert_eq!(&frame[2..4], &[3, 0], "three values");
+        assert_eq!(&frame[4..8], &[4, 3, 2, 1], "the node");
+        let values: Vec<f32> = frame[8..].chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        assert_eq!(values, [1.0, -2.5, 0.25]);
+        assert_eq!(probe_frame(NodeId(0), &[]).len(), FRAME_HEADER_LEN);
+        assert_eq!(probe_frame(NodeId(5), &vec![0.5f32; 70_000]).len(), FRAME_HEADER_LEN + u16::MAX as usize * 4, "and as many values as the header can say");
     }
 
     #[test]

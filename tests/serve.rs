@@ -1234,6 +1234,118 @@ async fn a_browser_pins_parameters_to_a_node_and_a_second_one_sees_it_and_the_sa
     assert!(!std::fs::read_to_string(&file).unwrap().contains("pinned"));
 }
 
+/// The latest probe frame (channel 4: the node's id where the layout's revision is, then the left side and the right, 2048 frames of each) that has arrived for each node:
+/// read until `done` is satisfied by what has arrived so far, and return it. Fails, with what the server logged, when it is not within `within`.
+async fn probes_until(
+    client: &mut Client,
+    tang: &Tang,
+    within: Duration,
+    what: &str,
+    done: impl Fn(&std::collections::HashMap<u64, (Vec<f32>, Vec<f32>)>) -> bool,
+) -> std::collections::HashMap<u64, (Vec<f32>, Vec<f32>)> {
+    let mut seen = std::collections::HashMap::new();
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let Ok(Some(Ok(Message::Binary(frame)))) = tokio::time::timeout(Duration::from_millis(500), client.next()).await {
+            if frame[0] != 4 {
+                continue;
+            }
+            let n = u16::from_le_bytes([frame[2], frame[3]]) as usize;
+            assert_eq!((frame[1], n), (0, 4096), "no flags, and 2048 frames of each side");
+            let node = u32::from_le_bytes(frame[4..8].try_into().unwrap()) as u64;
+            let values: Vec<f32> = frame[8..].chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+            seen.insert(node, (values[..2048].to_vec(), values[2048..].to_vec()));
+            if done(&seen) {
+                return seen;
+            }
+        }
+    }
+    panic!("{what}: the frames of {:?} had come after {within:?}\n{}", seen.keys().collect::<Vec<_>>(), tang.log());
+}
+
+#[tokio::test]
+async fn a_browser_watches_the_signal_at_nodes_and_is_sent_what_the_engine_stores_there() {
+    let tang = Tang::start();
+    let (mut client, _, snapshot) = listening(&tang).await;
+    let (osc, filter) = (id_of(&snapshot, "Oscillator"), id_of(&snapshot, "Filter"));
+
+    // The answer says which of the nodes are watched: not the master (its scope is a channel of its own) and not a node that is not there.
+    tell(&mut client, json!({"type": "probes", "nodes": [osc, filter, MASTER, 99_999]})).await;
+    let answered = loop {
+        let message = next_json(&mut client).await;
+        if message["type"] == "probes" {
+            break message;
+        }
+    };
+    assert_eq!(answered["nodes"], json!([osc, filter]), "{answered}");
+
+    // A note: the oscillator's saw is at its output (the same on both sides), and the filter that follows it has changed it.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    let loudest = |side: &[f32]| side.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+    let seen = probes_until(&mut client, &tang, SOON, "both nodes' signal", |seen| {
+        [osc, filter].iter().all(|node| seen.get(node).is_some_and(|(left, _)| loudest(left) > 0.005))
+    })
+    .await;
+    let (osc_left, osc_right) = &seen[&osc];
+    let (filter_left, _) = &seen[&filter];
+    assert_eq!(osc_left, osc_right, "an oscillator with no pan puts out one signal on both sides");
+    assert!(loudest(osc_left) <= 0.1 + 1e-4, "the tracer's oscillator is at a volume of 0.1: {}", loudest(osc_left));
+    assert_ne!(osc_left, filter_left, "the filter makes something else of it");
+
+    // A client that stops watching is sent no more of them, and one that watches a node is not sent another's.
+    tell(&mut client, json!({"type": "probes", "nodes": [filter]})).await;
+    loop {
+        let message = next_json(&mut client).await;
+        if message["type"] == "probes" {
+            assert_eq!(message["nodes"], json!([filter]));
+            break;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let later = probes_until(&mut client, &tang, SOON, "the filter's signal again", |seen| seen.contains_key(&filter)).await;
+    assert!(!later.contains_key(&osc), "the oscillator is not watched any more");
+}
+
+/// The answer to a `probes` request: the nodes that are watched.
+async fn probes_answer(client: &mut Client) -> Value {
+    loop {
+        let message = next_json(client).await;
+        if message["type"] == "probes" {
+            return message["nodes"].clone();
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_rings_of_a_browser_that_has_gone_are_given_to_a_node_that_had_none_and_its_frames_come_without_asking_again() {
+    // Nine lanes, one more than the engine has rings for.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("lanes.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\n".repeat(telemetry_rings() + 1)).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut first, _, snapshot) = listening(&tang).await;
+    let lanes: Vec<u64> = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().filter(|n| n["name"].as_str().is_some_and(|name| name.starts_with("Oscillator"))).map(|n| n["id"].as_u64().unwrap()).collect();
+    assert_eq!(lanes.len(), telemetry_rings() + 1);
+
+    // The first browser takes every ring. A second one that asks for the ninth node is told that none is watched.
+    tell(&mut first, json!({"type": "probes", "nodes": &lanes[..telemetry_rings()]})).await;
+    assert_eq!(probes_answer(&mut first).await, json!(&lanes[..telemetry_rings()]));
+    let (mut second, _, _) = listening(&tang).await;
+    tell(&mut second, json!({"type": "probes", "nodes": [lanes[telemetry_rings()]]})).await;
+    assert_eq!(probes_answer(&mut second).await, json!([]), "no ring is left");
+
+    // When the first has gone, the ring comes to the ninth node, and its frames come to the second browser, which does not have to ask again.
+    drop(first);
+    tell(&mut second, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    let ninth = lanes[telemetry_rings()];
+    probes_until(&mut second, &tang, SOON, "the ninth lane's signal", |seen| seen.get(&ninth).is_some_and(|(left, _)| left.iter().any(|s| s.abs() > 0.001))).await;
+}
+
+/// How many nodes the engine can have probed at once (`telemetry::PROBES`), which the tests of the program cannot read.
+fn telemetry_rings() -> usize {
+    8
+}
+
 #[tokio::test]
 async fn a_browser_that_vanishes_with_a_key_held_does_not_leave_the_note_sounding() {
     let tang = Tang::start();

@@ -20,6 +20,7 @@ use crossbeam_channel::Receiver;
 use crate::app::controller::Controller;
 use crate::app::history::HistoryState;
 use crate::app::intent::Applied;
+use crate::app::probes::Watcher;
 use crate::app::protocol::{ServerMessage, WireError};
 use crate::web::Shared;
 use crate::web::connection::OwnerRequest;
@@ -100,6 +101,12 @@ impl Owner {
                 self.send(client, &reply);
                 applied
             }
+            OwnerRequest::Probes { client, nodes } => {
+                // (Not an intent: it changes nothing in the session. The controller keeps the engine's taps where the nodes are, and the answer is which of them have a ring.)
+                let watched = ctl.set_probes(Watcher(client.number()), &nodes);
+                self.send(client, &ServerMessage::Probes { nodes: watched });
+                None
+            }
         };
         self.shared.rev.store(ctl.rev, Ordering::Relaxed);
         applied
@@ -123,6 +130,12 @@ impl Owner {
             self.history_told = now;
             self.hub.broadcast(&Self::text(&Self::history(ctl)));
         }
+    }
+
+    /// Let go of the probes of the clients that have gone (a connection that closes says nothing to the owner): call it on every turn that `refresh` is called on.
+    pub fn refresh_probes(&mut self, ctl: &mut Controller) {
+        let connected = self.hub.connected();
+        ctl.keep_probes_of(|watcher| connected.contains(&watcher.0));
     }
 
     /// Keep what the connections read current: the session's revision, and the
@@ -344,6 +357,57 @@ mod tests {
         assert!(slow_queue.try_recv().is_ok());
         while slow_queue.try_recv().is_ok() {}
         assert!(matches!(slow_queue.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)));
+    }
+
+    #[test]
+    fn a_client_that_asks_to_watch_nodes_is_told_which_are_watched_and_the_controller_has_them() {
+        let mut rig = rig();
+        let (client, mut queue) = rig.hub.connect();
+        let osc = rig.ctl.model.instruments[0].node;
+        // The master has a scope of its own and there is no node 9999.
+        rig.tx.send(OwnerRequest::Probes { client, nodes: vec![NodeId::MASTER, osc, NodeId(9_999)] }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        assert_eq!(said(&mut queue), [json!({"type": "probes", "nodes": [osc.0]})]);
+        assert_eq!(rig.ctl.telemetry.probe_node(0), Some(osc.0), "the ring is the node's, for whoever sends its frames");
+        // What it asks for next replaces that.
+        rig.tx.send(OwnerRequest::Probes { client, nodes: vec![] }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        assert_eq!(said(&mut queue), [json!({"type": "probes", "nodes": []})]);
+        assert_eq!(rig.ctl.telemetry.probe_node(0), None);
+    }
+
+    #[test]
+    fn a_probe_does_not_change_the_revision_or_tell_anyone_else() {
+        let mut rig = rig();
+        let (watcher, mut watcher_queue) = rig.hub.connect();
+        let (other, mut other_queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client: other }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        said(&mut other_queue);
+        let osc = rig.ctl.model.instruments[0].node;
+        rig.tx.send(OwnerRequest::Probes { client: watcher, nodes: vec![osc] }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        assert_eq!(types(&said(&mut watcher_queue)), ["probes"]);
+        assert!(said(&mut other_queue).is_empty());
+        assert_eq!(rig.ctl.rev, 0);
+        assert!(!rig.ctl.dirty);
+    }
+
+    #[test]
+    fn the_probes_of_a_client_that_has_gone_are_let_go_of_at_the_next_refresh_and_the_others_are_kept() {
+        let mut rig = rig();
+        let (gone, _gone_queue) = rig.hub.connect();
+        let (staying, _staying_queue) = rig.hub.connect();
+        let (first, second) = (rig.ctl.model.instruments[0].node, rig.ctl.model.instruments[1].node);
+        rig.tx.send(OwnerRequest::Probes { client: gone, nodes: vec![first] }).unwrap();
+        rig.tx.send(OwnerRequest::Probes { client: staying, nodes: vec![second] }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        assert_eq!((rig.ctl.telemetry.probe_node(0), rig.ctl.telemetry.probe_node(1)), (Some(first.0), Some(second.0)));
+        rig.hub.disconnect(gone);
+        rig.owner.refresh(&rig.ctl);
+        assert_eq!(rig.ctl.telemetry.probe_node(0), Some(first.0), "refresh only reads the controller");
+        rig.owner.refresh_probes(&mut rig.ctl);
+        assert_eq!((rig.ctl.telemetry.probe_node(0), rig.ctl.telemetry.probe_node(1)), (None, Some(second.0)));
     }
 
     #[test]

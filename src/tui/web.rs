@@ -93,7 +93,7 @@ mod enabled {
         }
 
         /// Keep what the connections read current; call it on every turn of the loop.
-        pub fn refresh(&mut self, ctl: &Controller) {
+        pub fn refresh(&mut self, ctl: &mut Controller) {
             self.runtime.refresh(ctl);
         }
     }
@@ -135,7 +135,7 @@ mod disabled {
             match request {}
         }
 
-        pub fn refresh(&mut self, _ctl: &Controller) {
+        pub fn refresh(&mut self, _ctl: &mut Controller) {
             match *self {}
         }
     }

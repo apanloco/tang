@@ -18,9 +18,10 @@ use tokio::sync::watch;
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::app::layout::{SlotKind, TelemetryLayout};
-use crate::app::protocol::{SCOPE_FRAME_LENGTH, TelemetryChannel, telemetry_frame};
+use crate::app::model::NodeId;
+use crate::app::protocol::{SCOPE_FRAME_LENGTH, TelemetryChannel, probe_frame as frame_of_probe, telemetry_frame};
 use crate::held_notes::HeldNotes;
-use crate::telemetry::Telemetry;
+use crate::telemetry::{PROBES, Telemetry};
 use crate::web::Shared;
 use crate::web::hub::{Hub, Outgoing};
 
@@ -66,12 +67,30 @@ pub fn scope_frame(telemetry: &Telemetry) -> Vec<u8> {
     telemetry_frame(TelemetryChannel::Scope, 0, &values)
 }
 
-/// One turn: queue a frame for the clients of each channel that somebody wants.
+/// The frame of a node that is watched: the latest frames at the output of the node, the left side and then the right, `SCOPE_FRAME_LENGTH` of each, the latest last, as
+/// the scope's are (`scope_frame`), read from ring `ring` of the probe pool and named for `node` (a ring that the pool has not is silence).
+pub fn probe_frame(telemetry: &Telemetry, ring: usize, node: NodeId) -> Vec<u8> {
+    let mut values = vec![0.0f32; 2 * SCOPE_FRAME_LENGTH];
+    if let Some(ring) = telemetry.probes.get(ring) {
+        let (left, right) = values.split_at_mut(SCOPE_FRAME_LENGTH);
+        ring.latest(left, right);
+    }
+    frame_of_probe(node, &values)
+}
+
+/// One turn: queue a frame for the clients of each channel that somebody wants, and for each client the frame of each node that it watches and that has a ring (the controller
+/// says which node a ring is for, `Telemetry::probe_node`).
 pub fn push_once(hub: &Hub, shared: &Shared, telemetry: &Telemetry, held: &HeldNotes) {
     for channel in CHANNELS {
         if hub.wanted(channel) {
             let frame = frame(channel, &shared.layout(), telemetry, held);
             hub.send_telemetry(channel, &Outgoing::Binary(frame.into()));
+        }
+    }
+    for ring in 0..PROBES {
+        let Some(node) = telemetry.probe_node(ring).map(NodeId) else { continue };
+        if hub.probe_wanted(node) {
+            hub.send_probe(node, &Outgoing::Binary(probe_frame(telemetry, ring, node).into()));
         }
     }
 }
@@ -247,6 +266,72 @@ plugin = "builtin:osc"
     /// `n` frames of a ramp from `from`: the left side counts up and the right side is its negative.
     fn ramp(from: usize, n: usize) -> Vec<Vec<f32>> {
         vec![(from..from + n).map(|i| i as f32).collect(), (from..from + n).map(|i| -(i as f32)).collect()]
+    }
+
+    #[test]
+    fn a_probe_is_a_frame_of_the_latest_frames_at_a_node_the_left_side_and_then_the_right_with_the_node_in_the_header() {
+        let telemetry = Telemetry::new();
+        telemetry.probes[2].push(&ramp(0, 3000));
+        let decoded = decode(&probe_frame(&telemetry, 2, NodeId(7)));
+        assert_eq!((decoded.channel, decoded.flags, decoded.rev), (4, 0, 7), "the node where the layout's revision is");
+        let n = SCOPE_FRAME_LENGTH;
+        assert_eq!(decoded.values.len(), 2 * n, "a side and then the other");
+        let left: Vec<f32> = (3000 - n..3000).map(|i| i as f32).collect();
+        let right: Vec<f32> = left.iter().map(|v| -v).collect();
+        assert_eq!(decoded.values[..n], left[..]);
+        assert_eq!(decoded.values[n..], right[..]);
+        assert!(decode(&probe_frame(&telemetry, 5, NodeId(9))).values.iter().all(|&v| v == 0.0), "a ring that nothing was stored into is silence");
+        assert_eq!(probe_frame(&telemetry, 99, NodeId(1)).len(), FRAME_HEADER_LEN + 8 * n, "and a ring that the pool has not is silence too");
+    }
+
+    #[test]
+    fn a_probe_goes_to_the_clients_that_watch_its_node_and_to_no_others() {
+        let hub = Hub::new(16);
+        let (a, mut a_queue) = hub.connect();
+        let (b, mut b_queue) = hub.connect();
+        let (_c, mut c_queue) = hub.connect();
+        hub.set_probes(a, &[NodeId(7)]);
+        hub.set_probes(b, &[NodeId(9)]);
+        let telemetry = Telemetry::new();
+        telemetry.probes[1].push(&ramp(0, 100));
+        telemetry.set_probe_node(1, Some(7));
+        push_once(&hub, &Shared::new(0, layout()), &telemetry, &HeldNotes::new());
+        let frames = binary(&mut a_queue);
+        assert_eq!(frames.len(), 1);
+        let decoded = decode(&frames[0]);
+        assert_eq!((decoded.channel, decoded.rev), (4, 7));
+        assert_eq!(decoded.values[SCOPE_FRAME_LENGTH - 1], 99.0, "the newest frame of the ring is the last of the left side");
+        assert!(binary(&mut b_queue).is_empty(), "node 9 has no ring");
+        assert!(binary(&mut c_queue).is_empty());
+    }
+
+    #[test]
+    fn a_ring_that_is_for_no_node_and_a_node_that_nobody_watches_are_sent_to_nobody() {
+        let hub = Hub::new(16);
+        let (a, mut a_queue) = hub.connect();
+        hub.set_probes(a, &[NodeId(0), NodeId(7)]);
+        let telemetry = Telemetry::new();
+        // (A ring that has something and is for no node, though a client watches node 0; and a ring for node 8, that nobody watches.)
+        telemetry.probes[3].push(&ramp(0, 100));
+        telemetry.probes[4].push(&ramp(0, 100));
+        telemetry.set_probe_node(4, Some(8));
+        push_once(&hub, &Shared::new(0, layout()), &telemetry, &HeldNotes::new());
+        assert!(binary(&mut a_queue).is_empty());
+    }
+
+    #[test]
+    fn every_ring_that_is_for_a_watched_node_is_sent_every_turn() {
+        let hub = Hub::new(64);
+        let (a, mut a_queue) = hub.connect();
+        let nodes: Vec<NodeId> = (10..10 + crate::telemetry::PROBES as u32).map(NodeId).collect();
+        hub.set_probes(a, &nodes);
+        let telemetry = Telemetry::new();
+        for (ring, node) in nodes.iter().enumerate() {
+            telemetry.set_probe_node(ring, Some(node.0));
+        }
+        push_once(&hub, &Shared::new(0, layout()), &telemetry, &HeldNotes::new());
+        let seen: Vec<u32> = binary(&mut a_queue).iter().map(|frame| decode(frame).rev).collect();
+        assert_eq!(seen, nodes.iter().map(|node| node.0).collect::<Vec<_>>(), "one frame for each, in the order of the rings");
     }
 
     #[test]
