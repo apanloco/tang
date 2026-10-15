@@ -17,4 +17,9 @@ file: string | null,
 /**
  * The tempo patterns are recorded and played at.
  */
-bpm: number, piano: PianoMeta, };
+bpm: number, 
+/**
+ * The sample rate the engine runs at, in Hz: what a client needs to put a frequency on what it draws of the output
+ * (the scope's spectrum). It does not change while the program runs.
+ */
+sampleRate: number, piano: PianoMeta, };

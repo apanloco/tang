@@ -35,6 +35,7 @@ pub struct Snapshot {
 /// What belongs to the session as a whole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 pub struct Meta {
     /// The session has changes that are not saved.
     pub dirty: bool,
@@ -43,6 +44,9 @@ pub struct Meta {
     pub file: Option<String>,
     /// The tempo patterns are recorded and played at.
     pub bpm: f32,
+    /// The sample rate the engine runs at, in Hz: what a client needs to put a frequency on what it draws of the output
+    /// (the scope's spectrum). It does not change while the program runs.
+    pub sample_rate: f32,
     pub piano: PianoMeta,
 }
 
@@ -237,6 +241,7 @@ impl Controller {
                 dirty: self.dirty,
                 file: self.session_file_name(),
                 bpm: self.global_bpm,
+                sample_rate: self.sample_rate,
                 piano: PianoMeta::new(self.piano_filter.scale(), matches!(self.piano_filter.mode(), PianoMode::Locked)),
             },
             graph: self.model.graph(),
@@ -278,6 +283,7 @@ mod tests {
                 dirty: false,
                 file: None,
                 bpm: 120.0,
+                sample_rate: 48_000.0,
                 piano: PianoMeta { scale: "C major".to_string(), root: 0, kind: "major".to_string(), notes: vec![0, 2, 4, 5, 7, 9, 11], locked: false },
             }
         );
@@ -317,6 +323,14 @@ mod tests {
             meta.piano,
             PianoMeta { scale: "F# dorian".to_string(), root: 6, kind: "dorian".to_string(), notes: vec![1, 3, 4, 6, 8, 9, 11], locked: true }
         );
+    }
+
+    #[test]
+    fn the_sample_rate_is_in_the_snapshot() {
+        let mut ctl = controller(GROUPS, None);
+        assert_eq!(ctl.snapshot().meta.sample_rate, 48_000.0, "the stub engine's");
+        ctl.sample_rate = 44_100.0;
+        assert_eq!(ctl.snapshot().meta.sample_rate, 44_100.0, "the engine's, as it is now");
     }
 
     /// The snapshot of the tracer scene (`web/src/client/fixtures/tracer.toml`) as JSON text, with the layout's
@@ -378,6 +392,7 @@ mod tests {
                 "dirty": false,
                 "file": "a.toml",
                 "bpm": 120.0,
+                "sampleRate": 48000.0,
                 "piano": {"scale": "C major", "root": 0, "kind": "major", "notes": [0, 2, 4, 5, 7, 9, 11], "locked": false},
             })
         );

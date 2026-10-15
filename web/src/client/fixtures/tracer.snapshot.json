@@ -289,7 +289,8 @@
       ],
       "root": 0,
       "scale": "C major"
-    }
+    },
+    "sampleRate": 48000.0
   },
   "rev": 0,
   "telemetry": {
