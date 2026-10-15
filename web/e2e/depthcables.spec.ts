@@ -76,3 +76,33 @@ test("a cable that is taken out takes with it the cables that drive its depth, a
   await expect(node(page, "LFO")).toBeVisible();
   await expect(node(page, "ADSR")).toBeVisible();
 });
+
+test("the removal of a cable whose depth another cable drives is put back by undo, with the cable that drove it, and done again by redo", async ({ page, own }) => {
+  await open(page, own.url);
+  const envelope = await addEnvelope(page);
+  const rowPort = node(page, "LFO").locator(".tang-cable-row .react-flow__handle");
+  await drag(page, output(envelope), rowPort);
+  await expect(cables(page)).toHaveCount(2);
+  await page.getByRole("slider", { name: `Depth of ${WORDS}` }).fill("0.25");
+  await expect(page.getByRole("slider", { name: `Depth of ${WORDS}` })).toHaveValue("0.25");
+
+  // The LFO's cable goes, and the cable that drives its depth with it.
+  await page.getByRole("button", { name: "Remove cable LFO → Filter: cutoff" }).click();
+  await expect(cables(page)).toHaveCount(0);
+  await expect(page.locator(".tang-cable-row")).toHaveCount(0);
+
+  // Undo puts both back, each at the depth it had, and the row marks that a cable ends at it again.
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(cables(page)).toHaveCount(2);
+  await expect(page.getByRole("slider", { name: "Depth of LFO → Filter: cutoff", exact: true })).toHaveValue("0.4");
+  await expect(page.getByRole("slider", { name: `Depth of ${WORDS}`, exact: true })).toHaveValue("0.25");
+  await expect(rowPort).toHaveClass(/tang-port--driven/);
+  await expectNodesApart(page);
+
+  // Redo takes them out again, and undo again puts them back: the history was not given up for them.
+  await page.getByRole("button", { name: "Redo" }).click();
+  await expect(cables(page)).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(cables(page)).toHaveCount(2);
+  await expect(page.getByRole("slider", { name: `Depth of ${WORDS}` })).toHaveValue("0.25");
+});
