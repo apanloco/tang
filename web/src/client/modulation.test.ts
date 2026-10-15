@@ -112,6 +112,42 @@ describe("how far modulation swings a setting of a modulator", () => {
   });
 });
 
+describe("how far modulation swings a setting that is turned on a log scale", () => {
+  // An attack of 0.001 to 10 seconds is four decades: 0.1 s is half way up the knob, and the engine moves such a setting a fraction of the knob's travel (`Modulator::modulated_value`).
+  const at = (place: number): number => 0.001 * 10_000 ** place;
+
+  test("is ± depth of the knob's travel around the base for a LFO: as far up the knob as down it", () => {
+    expectExtent(settingExtent(0.1, 0.001, 10, [lfo(0.2)], "log"), at(0.3), at(0.7));
+  });
+
+  test("goes from depth of the way down the knob to the lowest value up to the base for an envelope, whose peak the base is", () => {
+    expectExtent(settingExtent(0.1, 0.001, 10, [envelope(0.5)], "log"), at(0.25), at(0.5));
+  });
+
+  test("goes up the knob from the base by depth for a CC, and both ways for the pitch bend", () => {
+    expectExtent(settingExtent(0.1, 0.001, 10, [midi({ type: "cc", number: 74 }, 0.2)], "log"), at(0.5), at(0.7));
+    expectExtent(settingExtent(0.1, 0.001, 10, [midi({ type: "pitchBend" }, 0.2)], "log"), at(0.3), at(0.7));
+  });
+
+  test("stops at the ends of the knob, as the engine clamps: a base near the lowest value has a long way up and none down", () => {
+    // 0.01 s is a quarter of the way up the knob: half the travel either way is below the lowest value and a quarter more than the half above.
+    expectExtent(settingExtent(0.01, 0.001, 10, [lfo(0.5)], "log"), 0.001, at(0.75));
+  });
+
+  test("is the last cable's alone, as for any setting, and nothing when nothing drives it", () => {
+    expectExtent(settingExtent(0.1, 0.001, 10, [lfo(0.1), envelope(0.5)], "log"), at(0.25), at(0.5));
+    expect(settingExtent(0.1, 0.001, 10, [], "log")).toBeUndefined();
+  });
+
+  test("is by the range for a range that starts at nothing, which has no decades, and for a scale that is not asked for", () => {
+    expect(settingExtent(5, 0, 10, [lfo(0.1)], "log")).toEqual(settingExtent(5, 0, 10, [lfo(0.1)]));
+    expect(settingExtent(5, 0, 10, [lfo(0.1)], "linear")).toEqual({ low: 4, high: 6 });
+    // (And one that starts above nothing is by the range too, unless the scale is asked for: that is the default.)
+    expect(settingExtent(5, 1, 11, [lfo(0.1)])).toEqual({ low: 4, high: 6 });
+    expect(settingExtent(5, 1, 11, [lfo(0.1)], "linear")).toEqual({ low: 4, high: 6 });
+  });
+});
+
 describe("the modulators that drive a place on a modulator", () => {
   const modulator = (id: number, source: ModulatorSource): Node => ({ id, parent: 0, name: `Modulator ${String(id)}`, kind: "modulator", source });
   const driven = modulator(60, { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 });

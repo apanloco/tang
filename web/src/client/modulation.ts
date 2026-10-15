@@ -8,9 +8,13 @@
 // those of the lane stand alone (`modulationsOn`).
 // A setting of a modulator (an LFO's rate, a stage of an envelope, the depth of a cable) is
 // different: its cables each write it from the value the user set, and the last stands
-// (`apply_cross_mod`), so `settingExtent` is the extent of the last cable alone.
+// (`apply_cross_mod`), so `settingExtent` is the extent of the last cable alone. And one that is turned on a
+// log scale (a rate, an attack, a decay, a release) is moved a fraction of the knob's travel, in ratios, as the
+// knob shows it (`Modulator::modulated_value`).
 import type { Graph, ModulatorSource, NodeId, Port } from "../protocol";
 import { samePort } from "./reach";
+import { fractionOf, isLog, valueAt } from "./travel";
+import type { Scale } from "./travel";
 
 /** One modulator driving a parameter: what it is, and its depth (-1 to 1) on that parameter. */
 export interface Modulation {
@@ -106,12 +110,21 @@ export function modulationExtent(
  * setting, or undefined when it cannot move it. Not a sum, as for a parameter: the engine writes the setting once for each cable that
  * drives it, each from the set value (`base + offset`, clamped), and the one written last stands, so this is the extent of the last
  * cable alone (an unbound MIDI control, the last of them, writes the set value itself).
+ *
+ * A setting that is turned on a log `scale` (a rate, an attack, a decay, a release: its knob runs over decades) is moved a fraction of the
+ * knob's travel and not of its range in seconds or hertz, so that the law is the same over the knob, from 0 at the lowest value to 1 at the
+ * highest, where equal steps are equal ratios: the extent is as far up the knob as down it. A range that starts at nothing has no decades,
+ * and goes by the range, as the knob does.
  */
 export function settingExtent(
   base: number,
   min: number,
   max: number,
   modulations: readonly Modulation[],
+  scale: Scale = "linear",
 ): { low: number; high: number } | undefined {
-  return modulationExtent(base, min, max, modulations.slice(-1));
+  const last = modulations.slice(-1);
+  if (!isLog(scale, min) || !(max > min)) return modulationExtent(base, min, max, last);
+  const along = modulationExtent(fractionOf(base, min, max, "log"), 0, 1, last);
+  return along && { low: valueAt(along.low, min, max, "log"), high: valueAt(along.high, min, max, "log") };
 }

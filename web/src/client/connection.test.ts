@@ -7,6 +7,7 @@ import type { ClientOptions, Transport, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
+import { fractionOf, valueAt } from "./travel";
 import { Spectrum } from "./fft";
 import { decodeFrame } from "./telemetry";
 
@@ -2501,8 +2502,9 @@ describe("telemetry", () => {
   });
 
   test("tells what an envelope makes of the rate of an LFO and of the depth of its cable, as the engine does", async () => {
-    // (Finding f132: the knob of a setting that another modulator drives showed nothing.) An envelope drawn to the LFO's rate, which is 0.5 Hz (0.01 to 50), and to the
-    // depth of the LFO's cable, which is 0.4 (-1 to 1): at rest the value is the user's less depth of the way down to the lowest, and an open envelope holds the sustain.
+    // (Finding f132: the knob of a setting that another modulator drives showed nothing.) An envelope drawn to the LFO's rate, which is 0.5 Hz (0.01 to 50, turned on a log scale),
+    // and to the depth of the LFO's cable, which is 0.4 (-1 to 1): at rest the value is the user's less depth of the way down to the lowest, down the knob for the rate, and an open
+    // envelope holds the sustain.
     const server = new MockServer(fast);
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
@@ -2514,16 +2516,18 @@ describe("telemetry", () => {
     await client.request({ type: "addModEdge", modulator: envelope?.id ?? -1, to: { node: lfo.id, port: { type: "depth", edge: edge?.kind === "modulation" ? edge.id : -1 } } });
     const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
     const depth = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "depth", edge: edge?.kind === "modulation" ? edge.id : -1 }, "effective");
-    await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.5 * 1 * (0.5 - 0.01))) < 1e-5, "the rate at rest");
+    const place = fractionOf(0.5, 0.01, 50, "log");
+    const rateAt = (taken: number): number => valueAt(place - taken * place, 0.01, 50, "log");
+    await until(() => Math.abs((rate() ?? 0) - rateAt(0.5 * 1)) < 1e-5, "the rate at rest");
     await until(() => Math.abs((depth() ?? 9) - (0.4 - 0.5 * 1 * (0.4 + 1))) < 1e-5, "the depth at rest");
     client.noteOn(60);
-    await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.5 * 0.3 * (0.5 - 0.01))) < 1e-5, "the rate with the envelope open");
+    await until(() => Math.abs((rate() ?? 0) - rateAt(0.5 * 0.3)) < 1e-5, "the rate with the envelope open");
     await until(() => Math.abs((depth() ?? 9) - (0.4 - 0.5 * 0.3 * (0.4 + 1))) < 1e-5, "the depth with the envelope open");
   });
 });
 
 describe("the value of a setting that an LFO drives, and of each stage of an envelope", () => {
-  test("is the user's value and what the LFO adds to it, by the range of the setting", async () => {
+  test("is the user's value and what the LFO adds to it, by the knob's travel for a rate, which is turned on a log scale", async () => {
     // A second LFO (a sine, at its default rate) drives the rate of the first at the cable's default depth, 0.5; a quarter of a period in it is at its top.
     const time = { seconds: 0.25 / MODULATOR_FIELD_DEFAULTS.rate };
     const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
@@ -2535,7 +2539,29 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
     const [low, high] = MODULATOR_FIELD_RANGES.rate;
     const set = lfo.kind === "modulator" && lfo.source.type === "lfo" ? lfo.source.rate : Number.NaN;
-    await until(() => Math.abs((rate() ?? 0) - (set + 1 * 0.5 * (high - low))) < 1e-4, "the rate with the second LFO at its top");
+    await until(() => Math.abs((rate() ?? 0) - valueAt(fractionOf(set, low, high, "log") + 1 * 0.5, low, high, "log")) < 1e-4, "the rate with the second LFO at its top");
+  });
+
+  test("is kept to the range for a setting that is turned by distances, a sustain, when the LFO would take it past the end, and for a setting on the knob, a rate, when it would take it past either", async () => {
+    // A second LFO at its top (a sine, a quarter of a period in) drives the sustain of an envelope, 0.7 on 0 to 1, at depth 1: 0.7 + 1 x 1 is past the top.
+    const time = { seconds: 0.25 / MODULATOR_FIELD_DEFAULTS.rate };
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
+    const client = await open(server, { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+    const nodes = client.state.snapshot?.graph.nodes ?? [];
+    const envelope = nodes.filter((n) => n.kind === "modulator" && n.source.type === "envelope").at(-1);
+    const second = nodes.filter((n) => n.kind === "modulator" && n.source.type === "lfo" && n.id !== lfo.id).at(-1);
+    await client.request({ type: "addModEdge", modulator: second?.id ?? -1, to: { node: envelope?.id ?? -1, port: { type: "sustain" } } });
+    await client.request({ type: "addModEdge", modulator: second?.id ?? -1, to: { node: lfo.id, port: { type: "rate" } } });
+    const cables = (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation" && e.from.node === second?.id);
+    for (const cable of cables) await client.request({ type: "setEdgeDepth", edge: cable.kind === "modulation" ? cable.id : -1, depth: 1 });
+    const sustain = (): number | undefined => client.telemetry.value("modulation", envelope?.id ?? -1, { type: "sustain" }, "effective");
+    const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
+    await until(() => sustain() === MODULATOR_FIELD_RANGES.sustain[1], "the sustain at the top of its range");
+    // The rate, 0.5 Hz, is two thirds of the way up its knob and a whole travel more is past the top: it is at the highest value, and not above it.
+    await until(() => rate() === MODULATOR_FIELD_RANGES.rate[1], "the rate at the top of its range");
   });
 
   test.each(["attack", "decay", "sustain", "release"] as const)("is, for the %s of an envelope that another envelope drives, the user's value less what is taken at rest", async (stage) => {
@@ -2547,17 +2573,19 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     const [driver, driven] = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.name === "ADSR");
     await client.request({ type: "addModEdge", modulator: driver?.id ?? -1, to: { node: driven?.id ?? -1, port: { type: stage } } });
     const value = (): number | undefined => client.telemetry.value("modulation", driven?.id ?? -1, { type: stage }, "effective");
-    // The driver is at rest (no note): the value is the user's less half the way down to the lowest, the cable being at half depth. (Each stage has a value of its own.)
+    // The driver is at rest (no note): the value is the user's less half the way down to the lowest, the cable being at half depth: down the knob for a time, which is turned on a log
+    // scale, and down the range for the sustain, a level. (Each stage has a value of its own.)
     const base = MODULATOR_FIELD_DEFAULTS[stage];
-    const [min] = MODULATOR_FIELD_RANGES[stage];
-    await until(() => Math.abs((value() ?? 99) - (base - 0.5 * (base - min))) < 1e-5, `the ${stage} at rest`);
+    const [min, max] = MODULATOR_FIELD_RANGES[stage];
+    const expected = stage === "sustain" ? base - 0.5 * (base - min) : valueAt(fractionOf(base, min, max, "log") * 0.5, min, max, "log");
+    await until(() => Math.abs((value() ?? 99) - expected) < 1e-5, `the ${stage} at rest`);
   });
 });
 
 describe("the value of a setting that two cables drive", () => {
   test("is what the last of them makes of it, as the engine's writes are last-wins, and one entry of the layout names it", async () => {
-    // Two envelopes at rest drive the rate of the LFO (0.5 Hz, 0.01 to 50), the first at depth 0.5 and the second at 0.2: each pulls it down by its depth of the
-    // way to the lowest, and the later one writes last.
+    // Two envelopes at rest drive the rate of the LFO (0.5 Hz, 0.01 to 50, turned on a log scale), the first at depth 0.5 and the second at 0.2: each pulls it down by its depth of the
+    // way down the knob to the lowest, and the later one writes last.
     const client = await open(new MockServer({ telemetryPeriod: 2 }), { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
     await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
@@ -2571,7 +2599,8 @@ describe("the value of a setting that two cables drive", () => {
     const named = (client.state.snapshot?.telemetry.modulation ?? []).filter((e) => e.kind === "effective" && e.node === lfo.id && e.port.type === "rate");
     expect(named, "the layout names the value once").toHaveLength(1);
     const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
-    await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.2 * 1 * (0.5 - 0.01))) < 1e-5, "the rate the last cable makes of it");
+    const place = fractionOf(0.5, 0.01, 50, "log");
+    await until(() => Math.abs((rate() ?? 0) - valueAt(place - 0.2 * 1 * place, 0.01, 50, "log")) < 1e-5, "the rate the last cable makes of it");
   });
 });
 

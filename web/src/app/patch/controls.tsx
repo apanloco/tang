@@ -419,7 +419,8 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, { type: field }, "effective"), [client, node, field]);
   const shown = pending ?? stored;
   const [min, max] = MODULATOR_FIELD_RANGES[field];
-  const ring = useMemo(() => (shown !== undefined ? settingExtent(shown, min, max, modulations) : undefined), [shown, min, max, modulations]);
+  const scale = MODULATOR_FIELD_SCALES[field];
+  const ring = useMemo(() => (shown !== undefined ? settingExtent(shown, min, max, modulations, scale) : undefined), [shown, min, max, modulations, scale]);
   if (shown === undefined) return null;
   const { label, format } = NUMBERS[field];
   return (
@@ -428,7 +429,7 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
       value={shown}
       min={min}
       max={max}
-      scale={MODULATOR_FIELD_SCALES[field]}
+      scale={scale}
       defaultValue={MODULATOR_FIELD_DEFAULTS[field]}
       format={format}
       modulation={ring}

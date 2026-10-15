@@ -1,6 +1,13 @@
 // The arithmetic of a knob, apart from any drawing: where on its sweep a value is, the
 // path of an arc between two values, and what a drag or a key press does to a value.
 
+import { fractionOf, isLog, valueAt } from "../client/travel";
+import type { Scale } from "../client/travel";
+
+// (How the values are spread over a range, evenly or on a log scale, is in the client layer, where a modulator's law needs it too.)
+export { fractionOf, valueAt };
+export type { Scale };
+
 /** A knob turns through three quarters of a circle, from lower left to lower right. */
 export const SWEEP_DEGREES = 270;
 const START_DEGREES = -135;
@@ -9,32 +16,6 @@ const START_DEGREES = -135;
 export const DRAG_PIXELS = 200;
 
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), high);
-
-/**
- * How the values of a knob are spread over its sweep: evenly, or, for a rate or a time that
- * runs over decades, so that equal ratios are equally far apart (which needs a range that
- * starts above nothing: a range that does not is spread evenly whatever is asked).
- */
-export type Scale = "linear" | "log";
-
-const isLog = (scale: Scale, min: number): boolean => scale === "log" && min > 0;
-
-/** Where `value` is between `min` and `max`, from 0 to 1 (0 for a range that is nothing). */
-export function fractionOf(value: number, min: number, max: number, scale: Scale = "linear"): number {
-  if (!(max > min)) return 0;
-  if (isLog(scale, min)) {
-    // (A value at or below the start has no logarithm to speak of, and is at the start.)
-    return value <= min ? 0 : clamp(Math.log(value / min) / Math.log(max / min), 0, 1);
-  }
-  return clamp((value - min) / (max - min), 0, 1);
-}
-
-/** The value at `fraction` of the way from `min` to `max` (the ends themselves, exactly, at 0 and 1). */
-export function valueAt(fraction: number, min: number, max: number, scale: Scale = "linear"): number {
-  const at = clamp(fraction, 0, 1);
-  if (isLog(scale, min)) return at <= 0 ? min : at >= 1 ? max : min * (max / min) ** at;
-  return min + at * (max - min);
-}
 
 /** A point at `radius` from the centre, `degrees` clockwise from straight up. */
 export function pointAt(centre: number, radius: number, degrees: number): { x: number; y: number } {

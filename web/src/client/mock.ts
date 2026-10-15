@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -42,6 +42,7 @@ import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
+import { fractionOf, isLog, valueAt } from "./travel";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -1274,7 +1275,8 @@ export class MockServer {
   /**
    * The value a setting of a modulator, or the depth of one of its cables, is set to: what the user set, and what the last cable aimed at it makes of it (the
    * engine's writes to a setting are last-wins, `apply_cross_mod`), by the law of the modulator that drives it (a rise to the user's value for an envelope, an
-   * offset around it for the others) and clamped to the range of the setting.
+   * offset around it for the others) and clamped to the range of the setting. A setting that is turned on a log scale (a rate, an attack, a decay, a release) is
+   * moved a fraction of the knob's travel, in ratios: the same law over the places on the knob, 0 to 1 (`Modulator::modulated_value`).
    */
   #settingEffective(entry: LayoutEntry, outputOf: (id: NodeId) => number): number {
     const { nodes, edges } = this.#snapshot.graph;
@@ -1295,13 +1297,17 @@ export class MockServer {
       return 0;
     }
     const [min, max] = range;
-    let value = base;
+    const scale = port.type === "rate" || port.type === "attack" || port.type === "decay" || port.type === "release" ? MODULATOR_FIELD_SCALES[port.type] : "linear";
+    // (On the knob the user's value is at a place, and the law moves it from there between 0 and 1.)
+    const onKnob = isLog(scale, min) && max > min;
+    const [from, low, high] = onKnob ? [fractionOf(base, min, max, "log"), 0, 1] : [base, min, max];
+    let value = from;
     for (const edge of edges) {
       if (!isModulation(edge) || edge.to.node !== entry.node || !samePort(edge.to.port, port)) continue;
       const source = nodes.find((n) => n.id === edge.from.node);
-      value = base + offsetOf(source, outputOf(edge.from.node), edge.amount, base, min, max);
+      value = from + offsetOf(source, outputOf(edge.from.node), edge.amount, from, low, high);
     }
-    return clamp(value, min, max);
+    return onKnob ? valueAt(value, min, max, "log") : clamp(value, min, max);
   }
 
   /**

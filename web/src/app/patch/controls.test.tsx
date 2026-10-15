@@ -610,21 +610,21 @@ describe("the modulation of a number of a modulator", () => {
   };
   const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-3;
 
-  test("is a ring around the knob from where the cable that ends at it can take it, over the setting's range and on its decades", async () => {
-    // The envelope is at its peak at the 0.5 Hz the user set, and the cable at half depth pulls it down half the way to 0.01 Hz when the envelope is at rest.
+  test("is a ring around the knob from where the cable that ends at it can take it, by the travel of the knob, which is on decades", async () => {
+    // The envelope is at its peak at the 0.5 Hz the user set, and the cable at half depth pulls it down half the way down the knob to the lowest, 0.01 Hz, when the envelope is at rest.
     const { view } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: crowded([cableTo(90, lfo.id, { type: "rate" }, 0.5, 9)]) });
-    expect(ringOf(view.container)).toBe(arcPath(24, 21.5, rateFraction(0.255), rateFraction(0.5)));
+    expect(ringOf(view.container)).toBe(arcPath(24, 21.5, 0.5 * rateFraction(0.5), rateFraction(0.5)));
   });
 
   test("is that of the cable that is last, as the engine writes the cables one after another and the last stands, whichever the others", async () => {
     const lfoLast = crowded([cableTo(90, lfo.id, { type: "rate" }, 0.5, 9), cableTo(91, lfo.id, { type: "rate" }, 0.1, 10)]);
     const first = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: lfoLast });
-    // The LFO's: ±0.1 of the range of 49.99 Hz around the 0.5, cut off at the lowest.
-    expect(ringOf(first.view.container)).toBe(arcPath(24, 21.5, 0, rateFraction(0.5 + 0.1 * 49.99)));
+    // The LFO's: ±0.1 of the knob's travel around the place of the 0.5 Hz, as far up as down.
+    expect(ringOf(first.view.container)).toBe(arcPath(24, 21.5, rateFraction(0.5) - 0.1, rateFraction(0.5) + 0.1));
     cleanup();
     const envelopeLast = crowded([cableTo(91, lfo.id, { type: "rate" }, 0.1, 9), cableTo(90, lfo.id, { type: "rate" }, 0.5, 10)]);
     const second = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: envelopeLast });
-    expect(ringOf(second.view.container)).toBe(arcPath(24, 21.5, rateFraction(0.255), rateFraction(0.5)));
+    expect(ringOf(second.view.container)).toBe(arcPath(24, 21.5, 0.5 * rateFraction(0.5), rateFraction(0.5)));
   });
 
   test("is not there for a setting that nothing drives, or one whose last cable is a control that is not bound, which writes the set value over the others", async () => {
@@ -635,7 +635,7 @@ describe("the modulation of a number of a modulator", () => {
     expect(ringOf(bound.view.container)).toBeUndefined();
   });
 
-  test("is the ring of a stage of an envelope over that stage's own range: a level is on a line, a time on decades", async () => {
+  test("is the ring of a stage of an envelope by that stage's own law: a level moves a fraction of its range, a time a fraction of the knob's travel on decades", async () => {
     // The LFO drives the sustain (0.7, over 0 to 1) at 0.2 and the release (2 s, over 0.001 to 10) at 0.1.
     const snapshot = crowded([cableTo(91, 90, { type: "sustain" }, 0.2, 9), cableTo(91, 90, { type: "release" }, 0.1, 10)]);
     const { view } = await rig(
@@ -646,7 +646,8 @@ describe("the modulation of a number of a modulator", () => {
       { snapshot },
     );
     const rings = [...view.container.querySelectorAll(".tang-knob__ring")].map((ring) => ring.getAttribute("d"));
-    expect(rings).toEqual([arcPath(24, 21.5, 0.5, 0.9), arcPath(24, 21.5, fractionOf(2 - 0.1 * 9.999, 0.001, 10, "log"), fractionOf(2 + 0.1 * 9.999, 0.001, 10, "log"))]);
+    const release = fractionOf(2, 0.001, 10, "log");
+    expect(rings).toEqual([arcPath(24, 21.5, 0.5, 0.9), arcPath(24, 21.5, release - 0.1, release + 0.1)]);
   });
 
   test("moves with the value the user sets", async () => {
@@ -654,29 +655,29 @@ describe("the modulation of a number of a modulator", () => {
     drag(slider("Rate"), 50);
     const set = Number(slider("Rate").getAttribute("aria-valuenow"));
     expect(set).toBeGreaterThan(0.5);
-    expect(ringOf(view.container)).toBe(arcPath(24, 21.5, rateFraction(set - 0.5 * (set - 0.01)), rateFraction(set)));
+    expect(ringOf(view.container)).toBe(arcPath(24, 21.5, 0.5 * rateFraction(set), rateFraction(set)));
   });
 
   test("is the dot where the engine says the setting is, taken from the telemetry on the frame, and follows what the user sets", async () => {
     const { view, client, clock, server } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: withEnvelope().snapshot });
-    // An envelope at rest, drawn to the rate: half the way down from the 0.5 Hz the user set to the lowest, 0.01 Hz.
+    // An envelope at rest, drawn to the rate: half the way down the knob from the place of the 0.5 Hz the user set to the lowest, 0.01 Hz.
     await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "rate" } } });
     const at = () => ({ x: dotOf(view.container).x, y: dotOf(view.container).y });
-    const rest = pointAt(24, 18, angleOf(rateFraction(0.255)));
-    await until(clock, () => dotOf(view.container).visible && near(at().x, rest.x) && near(at().y, rest.y), "the dot at 0.255 Hz");
-    // And where it goes when the user sets another rate: 4 Hz is pulled to 2.005.
+    const rest = pointAt(24, 18, angleOf(0.5 * rateFraction(0.5)));
+    await until(clock, () => dotOf(view.container).visible && near(at().x, rest.x) && near(at().y, rest.y), "the dot half way down the knob from 0.5 Hz");
+    // And where it goes when the user sets another rate: 4 Hz is pulled half the way down the knob from its own place.
     act(() => {
       server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 4 });
     });
-    const moved = pointAt(24, 18, angleOf(rateFraction(2.005)));
-    await until(clock, () => near(at().x, moved.x) && near(at().y, moved.y), "the dot at 2.005 Hz");
+    const moved = pointAt(24, 18, angleOf(0.5 * rateFraction(4)));
+    await until(clock, () => near(at().x, moved.x) && near(at().y, moved.y), "the dot half way down the knob from 4 Hz");
   });
 
-  test("is the dot of a stage of an envelope, where the LFO that drives it puts it: the user's value and what its peak adds, cut off at the end of the range", async () => {
+  test("is the dot of a stage of an envelope, where the LFO that drives it puts it: the user's value and what its peak adds of the knob's travel", async () => {
     const { view, client, clock, time } = await rig(<ModulatorFieldControl node={90} field="attack" />, { snapshot: withEnvelope().snapshot });
     await client.request({ type: "addModEdge", modulator: lfo.id, to: { node: 90, port: { type: "attack" } } });
-    time.seconds = 0.5; // the LFO (0.5 Hz) is at its peak: 0.01 s and 0.5 of the range of 9.999 s
-    const peak = pointAt(24, 18, angleOf(fractionOf(0.01 + 0.5 * 9.999, 0.001, 10, "log")));
+    time.seconds = 0.5; // the LFO (0.5 Hz) is at its peak: the place of 0.01 s on the knob and 0.5 of the travel more
+    const peak = pointAt(24, 18, angleOf(fractionOf(0.01, 0.001, 10, "log") + 0.5));
     await until(clock, () => dotOf(view.container).visible && near(dotOf(view.container).x, peak.x) && near(dotOf(view.container).y, peak.y), "the dot at the peak");
   });
 

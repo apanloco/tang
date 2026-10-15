@@ -1,7 +1,7 @@
 import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
-import { angleOf, fractionOf, pointAt } from "../src/ui/knob-geometry";
+import { angleOf, arcPath, fractionOf, pointAt } from "../src/ui/knob-geometry";
 import { addEnvelope, drag, node, output, setting, still } from "./canvas";
 import { test } from "./own";
 
@@ -24,8 +24,11 @@ async function dotAt(dot: Locator): Promise<{ x: number; y: number }> {
   return { x: Number(await dot.getAttribute("cx")), y: Number(await dot.getAttribute("cy")) };
 }
 
-/** Where a knob over `min` to `max`, on decades, draws a dot for `value`. */
-const placeOnDecades = (value: number, min: number, max: number): { x: number; y: number } => pointAt(24, 18, angleOf(fractionOf(value, min, max, "log")));
+/**
+ * Where the Rate knob (0.01 to 50 Hz, on decades) of the tracer's LFO, which the user set to 0.5 Hz, draws its dot when an envelope that is `open` (0 at rest, 1 at its peak) is drawn to it
+ * at half depth: a setting that is turned on a log scale is moved a fraction of the knob's travel, so the envelope takes `0.5 x (1 - open)` of the way down the knob from the place of the 0.5 Hz.
+ */
+const rateWith = (open: number): { x: number; y: number } => pointAt(24, 18, angleOf((1 - 0.5 * (1 - open)) * fractionOf(0.5, 0.01, 50, "log")));
 
 test("an envelope drawn to the rate of the LFO gives the Rate knob its ring and its dot, and the dot follows the real envelope while a note is held", async ({ page, own }) => {
   await open(page, own.url);
@@ -41,14 +44,14 @@ test("an envelope drawn to the rate of the LFO gives the Rate knob its ring and 
   const dot = rate.locator(".tang-knob__dot");
   await expect(dot).toHaveAttribute("visibility", "visible");
 
-  // At rest the envelope puts out nothing: the cable, at half depth, pulls the rate half the way from the 0.5 Hz the user set to the lowest, 0.01 Hz.
-  const rest = placeOnDecades(0.255, 0.01, 50);
+  // At rest the envelope puts out nothing: the cable, at half depth, pulls the rate half the way down the knob from the place of the 0.5 Hz the user set.
+  const rest = rateWith(0);
   await expect.poll(async () => (await dotAt(dot)).x).toBeCloseTo(rest.x, 1);
   expect((await dotAt(dot)).y).toBeCloseTo(rest.y, 1);
 
-  // While a note is held the envelope rises to its sustain, 0.7, which pulls the rate only 0.3 of the way down: 0.4265 Hz.
+  // While a note is held the envelope rises to its sustain, 0.7, which pulls the rate only 0.3 of the way down what it does at rest.
   await page.keyboard.down("z");
-  const held = placeOnDecades(0.4265, 0.01, 50);
+  const held = rateWith(0.7);
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(held.x, 1);
   expect((await dotAt(dot)).y).toBeCloseTo(held.y, 1);
   expect(Math.hypot(held.x - rest.x, held.y - rest.y)).toBeGreaterThan(2);
@@ -125,14 +128,44 @@ test("a group's envelope drawn to the rate of a member's LFO gives the Rate knob
   await expect(rate.locator(".tang-knob__ring")).toHaveCount(1);
   const dot = rate.locator(".tang-knob__dot");
   await expect(dot).toHaveAttribute("visibility", "visible");
-  // At rest, as for a lane's own envelope: the cable, at half depth, pulls the 0.5 Hz half the way down to 0.01 Hz.
-  const rest = placeOnDecades(0.255, 0.01, 50);
+  // At rest, as for a lane's own envelope: the cable, at half depth, pulls the 0.5 Hz half the way down the knob.
+  const rest = rateWith(0);
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(rest.x, 1);
   expect((await dotAt(dot)).y).toBeCloseTo(rest.y, 1);
   // With a note held the group's envelope (which a note of its member opens) rises to its sustain, and the dot goes up with it.
   await page.keyboard.down("z");
-  const held = placeOnDecades(0.4265, 0.01, 50);
+  const held = rateWith(0.7);
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(held.x, 1);
   await page.keyboard.up("z");
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(rest.x, 1);
+});
+
+/** How far round its sweep, from 0 at the lowest value to 1 at the highest, a knob's dot at (`x`, `y`) is: the angle from straight up, clockwise (the knob turns through 270 degrees from the lower left). */
+const placeOfDot = (x: number, y: number): number => (Math.atan2(x - 24, 24 - y) * (180 / Math.PI) + 135) / 270;
+
+test("an LFO drawn to the Attack of an envelope swings it by a fraction of the knob's travel: as far up the knob as the depth says, and no further down than the lowest value", async ({ page, own }) => {
+  await open(page, own.url);
+  const envelope = await addEnvelope(page);
+  const attack = knobOf(envelope, "Attack");
+  await drag(page, output(node(page, "LFO")), setting(envelope, "attack"));
+  const ring = attack.locator(".tang-knob__ring");
+  await expect(ring).toHaveCount(1);
+  // The attack is 10 ms, a quarter of the way up a knob of 0.001 to 10 s (four decades), and the cable is at half depth: a half of the travel either way, which is three quarters up and
+  // past the lowest value down. (It was a half of the range in seconds, which took the ring to 92% of the knob, 5 seconds, with the pointer at a quarter: the dot sat at the lowest value
+  // for half of each turn of the LFO and then went to the top.)
+  await expect(ring).toHaveAttribute("d", arcPath(24, 21.5, 0, 0.75));
+  const dot = attack.locator(".tang-knob__dot");
+  await expect(dot).toHaveAttribute("visibility", "visible");
+
+  // The tracer's LFO turns at 0.5 Hz: in two and a half seconds the dot has been to both ends of the ring, and not past them.
+  const places: number[] = [];
+  const began = Date.now();
+  while (Date.now() - began < 2500) {
+    const { x, y } = await dotAt(dot);
+    places.push(placeOfDot(x, y));
+    await page.waitForTimeout(40);
+  }
+  expect(Math.max(...places)).toBeGreaterThan(0.7);
+  expect(Math.max(...places)).toBeLessThan(0.78);
+  expect(Math.min(...places)).toBeLessThan(0.02);
 });
