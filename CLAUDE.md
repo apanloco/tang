@@ -1883,8 +1883,9 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   counted by the client (`Client.slow`, a store of its own: the client's state is told to every control at every change, and a request goes at every frame of
   a drag), and a "Working…" light shows over the top of the canvas while any is (`app/BusyLight.tsx`: a progress bar with no value, since the page's one `status`
   is the connection's); nothing is blocked by it, and it does not say what is being done. Step 41 made the ring of a parameter that a lane's modulators and its
-  group's both drive the lane's alone (`modulationsOn`, from the engine's order of writes: see "Application order" under "Group modulators"), and the mock engine's value
-  of a parameter that several cables drive the engine's own (each cable's offset made from the value the user set and added, not chained).
+  group's both drive the lane's alone (`modulationsOn`, from the engine's order of writes: see "Application order" under "Group modulators"), made the mock engine's value
+  of a parameter that several cables drive the engine's own (each cable's offset made from the value the user set and added, not chained), and had its MIDI control (the mock
+  has no MIDI) rest where the engine's does.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock

@@ -3520,27 +3520,28 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 1336 tests, 1495 with the `web` feature and 22 on the real program, 1331 without the default plugin formats and 1482 with `web`, and 3 of the shell's in each; web 1710 tests in 81 files;
     111 in browsers; 361 commits on the branch before this entry.
 
-- [x] **41. The ring of a parameter that a lane's modulators and its group's both drive (phase 1).** A lane in a group can be driven by its own modulators and by its group's. While checking the engine's order of
-  writes for the ring of a setting (step 39, D41) the same question came up for a parameter, and the answer was not what the page drew: the engine applies a group's modulators before the lane renders and the lane's own after,
-  each sum from the value the user set, so that the lane's sum stands and the group's offset is not added to it; the page's ring added the cables of both, and the mock engine's value did too. *Done when:* the ring is where
+- [x] **41. The ring of a parameter that a lane's modulators and its group's both drive (phase 1).** A lane in a group can be driven by its own modulators and by its group's. The engine applies a group's modulators before the lane renders and the lane's own after,
+  each sum from the value the user set, so that the lane's sum stands and the group's offset is not added to it (the tests of this step pin it); the page's ring added the cables of both, and the mock engine's value did too. *Done when:* the ring is where
   the lane's cables alone swing the parameter when any modulator of the lane drives it (one whose MIDI control is not bound yet too) and the group's where none does; the mock engine's value of a parameter that several cables drive is the
-  engine's; the engine's order of writes is pinned by tests; and on the real program a group's envelope drawn to the cutoff that the tracer's LFO drives leaves the ring as it was, and the cutoff goes from 0.1 to 0.9 over a turn of the LFO as the ring says.
-  - **As built (75f726c, 028385a).** `modulationsOn` finds whose each modulator is (the `parent` of its node is a group or a lane) and gives the lane's cables alone when there are any (`modulationsAt` is as it was: it is the settings'
+  engine's, and its MIDI control rests where the engine's does; the engine's order of writes is pinned by tests; and on the real program a group's envelope drawn to the cutoff that the tracer's LFO drives leaves the ring as it was, and the cutoff goes from 0.1 to 0.9 over a turn of the LFO as the ring says.
+  - **As built (75f726c, 028385a, 4131b79).** `modulationsOn` finds whose each modulator is (the `parent` of its node is a group or a lane) and gives the lane's cables alone when there are any (`modulationsAt` is as it was: it is the settings'
     too, and a setting's last write is the lane's already, D41). The mock engine's `#effective` makes each cable's offset from the value the user set and adds them (it chained them: an envelope drawn after an LFO took its share of the
-    LFO's swing, 0.45 where the engine has 0.65 for the tracer's cutoff with the LFO at the top and an envelope at rest) and keeps to the lane's where there are any. Rust: two tests that pin the engine's order (ea8458d and 012e041:
-    the lane's sum stands over the group's, and so does the value of a MIDI control that is not bound, which adds nothing). Vitest: 6 of `modulationsOn` and 4 of the mock. Browser: `e2e/ring.spec.ts`, on the real program: a cable
+    LFO's swing, 0.45 where the engine has 0.65 for the tracer's cutoff with the LFO at the top and an envelope at rest) and keeps to the lane's where there are any (f135). Its MIDI control put out a constant 0.5, bound or not, and drove with an LFO's law, so a cable from
+    one moved a dot where the engine's armed control does nothing (f137, found by reading the mock's `#effective` for the first): it puts out what it rests at now (nothing; the middle for the pitch bend wheel), and one function, `offsetOf`, is the law of what a modulator adds, for
+    a parameter and for a setting of a modulator, which had each its own. Rust: two tests that pin the engine's order (ea8458d and 012e041:
+    the lane's sum stands over the group's, and so does the value of a MIDI control that is not bound, which adds nothing). Vitest: 6 of `modulationsOn` and 13 of the mock (4 of the cables that drive a parameter, 9 of the MIDI control). Browser: `e2e/ring.spec.ts`, on the real program: a cable
     of the group's alone to the resonance gives that knob a ring, one to the cutoff leaves its ring as it was (the same path), and the cutoff, sampled for 2.6 seconds (1.3 turns of the LFO), goes from 0.1 to 0.9.
-    Mutations: 2 of the engine (a grouped lane's own modulators left out, caught by both; a cable of the lane that adds nothing left unwritten, caught by the second), 7 of `modulationsOn` and 6 of the mock, and 2 in browsers (all the
+    Mutations: 2 of the engine (a grouped lane's own modulators left out, caught by both; a cable of the lane that adds nothing left unwritten, caught by the second), 7 of `modulationsOn`, 6 of the mock's cables and 6 of its MIDI control, and 2 in browsers (all the
     cables count; the group's alone do not), all caught; the mock's first run left one, the clamp, which a test of the clamp settled.
   - **Found on the way.** The engine test of a group modulator on a bus effect (`group_modulator_drives_bus_effect`) could not fail: it held no note, the test instrument puts out something only while a note is held (its
     comment said it did regardless), so the bus was silent whatever the modulator did, and the test passed with the call that applies a group's writes taken out of `process` (5526b83: it holds a note now, hears the bus first, and fails
     without the call; the test of a group modulator on a member's parameter did fail without it, and was fine). The dot of a knob was right all along: the layout names the first cable to aim at a value, a lane's before a group's, and the lane's value
     is what the engine stores in that slot.
   - **Limits, as built.** A parameter whose lane cables are taken out gets the group's ring back (the cables are the graph's, and the rule is read from them at every change). A lane's MIDI control that is not bound yet, alone among the lane's
-    cables, leaves no ring over a group's cable: the parameter does stay at the user's value, which is what the dot says. The mock engine's MIDI control puts out a constant 0.5, bound or not, and its law is an LFO's, so that a cable from one moves a dot where the engine's rests (an armed control does nothing; f137). Only Chromium was tried.
-  - **Tests.** Rust: 2 more in each configuration (1343 to 1345; 1502 to 1504 with the `web` feature; 1338 to 1340 and 1489 to 1491 without the default formats); web: 1720 in 81 files (1710); 114 in browsers (113).
-  - **Numbers at the end of the step.** Rust 1345 tests, 1504 with the `web` feature and 22 on the real program, 1340 without the default plugin formats and 1491 with `web`, and 3 of the shell's in each; web 1720 tests in 81 files;
-    114 in browsers; 373 commits on the branch before this entry.
+    cables, leaves no ring over a group's cable: the parameter does stay at the user's value, which is what the dot says. The mock engine has no MIDI: its controls only rest, so a bound control moves nothing there. Only Chromium was tried.
+  - **Tests.** Rust: 2 more in each configuration (1343 to 1345; 1502 to 1504 with the `web` feature; 1338 to 1340 and 1489 to 1491 without the default formats); web: 1729 in 81 files (1710); 114 in browsers (113).
+  - **Numbers at the end of the step.** Rust 1345 tests, 1504 with the `web` feature and 22 on the real program, 1340 without the default plugin formats and 1491 with `web`, and 3 of the shell's in each; web 1729 tests in 81 files;
+    114 in browsers; 375 commits on the branch before this entry.
 
 ## 13. Later: track B (`builtin:patch`)
 
