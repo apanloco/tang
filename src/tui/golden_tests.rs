@@ -731,6 +731,278 @@ fn the_keys_of_the_scope_tab_are_the_other_tabs_own_elsewhere() {
     assert_eq!((h.s.scope.kind(), scope_view::TIMES[h.s.scope.time()]), (scope_view::Kind::Wave, 1024));
 }
 
+// ---------------------------------------------------------------------------
+// The scope of the selected node, on the Session tab
+// ---------------------------------------------------------------------------
+
+/// `frames` of a sine as the audio thread keeps them for the node that has probe ring `ring`, the same on both sides.
+fn sound_at(h: &Harness, ring: usize, frames: usize, hertz: f64, amplitude: f64) {
+    let side: Vec<f32> = (0..frames).map(|n| (amplitude * (std::f64::consts::TAU * hertz * n as f64 / f64::from(SAMPLE_RATE)).sin()) as f32).collect();
+    h.s.ctl.telemetry.probes[ring].push(&[side.clone(), side]);
+}
+
+#[test]
+fn o_shows_a_scope_of_the_selected_node_that_the_audio_thread_is_asked_for_and_o_again_takes_it_away() {
+    let mut h = Harness::new(scene_two_effects());
+    h.commands();
+    assert!(!h.s.strip.on, "the scope is not there to begin with");
+    h.press(KeyCode::Char('o'));
+    assert!(h.s.strip.on);
+    assert_eq!(h.commands(), ["ClearProbes", "SetProbe ring=0 Instrument(0)"]);
+    assert_eq!(h.s.strip.watching, Some(h.s.ctl.model.instruments[0].node));
+    h.press(KeyCode::Char('o'));
+    assert!(!h.s.strip.on);
+    assert_eq!(h.commands(), ["ClearProbes"]);
+    assert_eq!(h.s.strip.watching, None);
+    assert!(!h.s.ctl.dirty, "a scope is nothing of the session's");
+}
+
+#[test]
+fn the_scope_follows_the_chain_cursor_and_has_no_signal_at_a_modulator() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('o'));
+    h.commands();
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    assert_eq!(h.commands(), ["ClearProbes", "SetProbe ring=0 Effect { inst: 0, index: 0 }"]);
+    h.goto(TreeAddress::Effect { inst: 0, index: 1 });
+    assert_eq!(h.commands(), ["ClearProbes", "SetProbe ring=0 Effect { inst: 0, index: 1 }"]);
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    assert_eq!(h.commands(), ["ClearProbes"], "a modulator puts out no sound");
+    assert_eq!(h.s.strip.watching, None);
+    h.goto(TreeAddress::Instrument(0));
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetProbe ring=0 Instrument(0)"));
+}
+
+#[test]
+fn the_scope_follows_a_group_and_the_effects_of_its_bus() {
+    let mut h = Harness::new(scene_bus_pair());
+    h.press(KeyCode::Char('o'));
+    h.commands();
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 1 });
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetProbe ring=0 GroupEffect { group: 0, index: 1 }"));
+    h.goto(TreeAddress::Group(0));
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetProbe ring=0 Group(0)"));
+}
+
+#[test]
+fn the_scope_is_asked_for_while_the_session_tab_is_shown_and_not_while_another_is() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('o'));
+    h.commands();
+    h.press(KeyCode::Char('2'));
+    assert_eq!(h.commands(), ["ClearProbes"]);
+    assert!(h.s.strip.on, "it is still on, and comes back");
+    h.press(KeyCode::Char('3'));
+    assert_eq!(h.commands(), Vec::<String>::new());
+    h.press(KeyCode::Char('1'));
+    assert_eq!(h.commands(), ["ClearProbes", "SetProbe ring=0 Instrument(0)"]);
+}
+
+#[test]
+fn o_is_text_in_a_popup_and_in_the_filter_of_the_parameters_and_the_scope_tab_has_no_such_key() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('v'));
+    assert!(h.s.gain_editing.is_some(), "the volume popup");
+    h.press(KeyCode::Char('o'));
+    assert!(!h.s.strip.on, "a letter in a popup is text");
+    h.press(KeyCode::Esc).press(KeyCode::Enter).press(KeyCode::Char('/')).press(KeyCode::Char('o'));
+    assert!(!h.s.strip.on, "and in the filter of the parameters");
+    h.press(KeyCode::Esc).press(KeyCode::Esc).press(KeyCode::Char('3')).press(KeyCode::Char('o')).press(KeyCode::Char('O'));
+    assert!(!h.s.strip.on, "and the Scope tab's keys are its own");
+    assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Wave, "the Scope tab's keys are not the strip's");
+    h.press(KeyCode::Char('4')).press(KeyCode::Char('O'));
+    assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Wave, "nor are the Help tab's");
+    assert_eq!(h.commands(), Vec::<String>::new());
+}
+
+#[test]
+fn big_o_chooses_the_view_of_the_scope_of_a_node_and_the_scope_tabs_choice_is_not_changed() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('o'));
+    assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Wave);
+    h.press(KeyCode::Char('O'));
+    assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Spectrum);
+    assert_eq!(h.s.scope.kind(), scope_view::Kind::Wave, "the Scope tab's is its own");
+    h.press(KeyCode::Char('O'));
+    assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Wave);
+}
+
+#[test]
+fn the_picture_of_the_node_that_was_watched_is_forgotten_when_the_cursor_goes_to_another() {
+    // A spectrum falls slowly where the sound is quieter than it was: the levels of the filter would be seen under the name of the reverb for seconds.
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Down).press(KeyCode::Char('o')).press(KeyCode::Char('O'));
+    sound_at(&h, 0, 2048, 1500.0, 0.5);
+    h.dump();
+    assert!(h.s.strip.scope.peak() > 0.4 && h.s.strip.scope.levels().iter().any(|&level| level > -20.0), "the filter's sound is taken");
+    h.press(KeyCode::Down);
+    assert_eq!(h.s.strip.watching, Some(h.s.ctl.model.instruments[0].effects[1].node), "the reverb is watched now");
+    assert_eq!(h.s.strip.scope.peak(), 0.0);
+    assert!(h.s.strip.scope.levels().iter().all(|&level| level == scope_view::FLOOR_DB), "and the picture begins from nothing");
+    // (The view is the strip's own choice and is kept.)
+    assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Spectrum);
+}
+
+/// The line that is the top of the strip's box: what it is of and what it shows.
+fn strip_title(h: &mut Harness) -> String {
+    h.dump().lines().find(|line| line.contains("Scope: ")).map(str::to_owned).expect("a strip with a title")
+}
+
+#[test]
+fn the_scope_is_called_after_the_node_that_it_is_of_a_group_by_its_name_or_by_its_place() {
+    let mut h = Harness::new(scene_bus_pair());
+    h.press(KeyCode::Char('o'));
+    for (at, name) in [
+        (TreeAddress::Group(0), "Pad"),
+        (TreeAddress::GroupEffect { group: 0, index: 0 }, "Filter"),
+        (TreeAddress::GroupEffect { group: 0, index: 1 }, "Reverb"),
+        (TreeAddress::Instrument(0), "Oscillator"),
+    ] {
+        h.goto(at);
+        assert!(strip_title(&mut h).contains(&format!("Scope: {name} ")), "{at:?}: {}", strip_title(&mut h));
+    }
+    let mut unnamed = Harness::new("[[group]]\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n");
+    unnamed.press(KeyCode::Char('o')).goto(TreeAddress::Group(0));
+    assert!(strip_title(&mut unnamed).contains("Scope: Group 1 "), "{}", strip_title(&mut unnamed));
+}
+
+#[test]
+fn a_lane_that_has_no_instrument_has_no_signal_to_look_at_and_its_effects_have() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('d'));
+    assert!(h.s.ctl.model.instruments[0].instrument.is_none(), "the lane is empty and keeps its effects");
+    h.press(KeyCode::Char('o'));
+    assert_eq!(h.s.strip.watching, None);
+    assert!(h.dump().contains("No signal here"));
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    assert_eq!(h.s.strip.watching, Some(h.s.ctl.model.instruments[0].effects[0].node));
+    assert!(!h.dump().contains("No signal here"));
+}
+
+#[test]
+fn the_peak_of_the_scope_of_a_node_is_red_over_full_scale_and_not_under_it() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('o'));
+    // (A sine of 1.5 high clips: +3.5 dB.)
+    sound_at(&h, 0, 2048, 468.75, 1.5);
+    let loud = h.dump();
+    assert!(loud.contains("Peak: +3.5 dB") && loud.contains("fg=Rgb(235, 80, 80)"), "{loud}");
+    sound_at(&h, 0, 2048, 468.75, 0.5);
+    let quiet = h.dump();
+    assert!(quiet.contains("Peak: -6.0 dB") && !quiet.contains("Rgb(235, 80, 80)"), "{quiet}");
+}
+
+#[test]
+fn a_node_that_a_browser_takes_out_is_let_go_of_and_the_one_that_the_cursor_is_on_then_is_listened_to_at_the_next_tick() {
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 }).press(KeyCode::Char('o'));
+    let (filter, reverb) = (h.s.ctl.model.instruments[0].effects[0].node, h.s.ctl.model.instruments[0].effects[1].node);
+    assert_eq!(h.s.strip.watching, Some(filter));
+    h.commands();
+    // A browser takes the filter out; the loop reacts to it, and its next turn begins with a tick. The reverb is where the filter was.
+    let applied = h.s.ctl.apply(Intent::RemoveNode { node: filter }).unwrap();
+    h.s.react_to(&applied);
+    assert_eq!(h.s.selected_signal().map(|(node, _)| node), Some(reverb), "the cursor is on the reverb now");
+    tick_at(&mut h.s, Instant::now());
+    assert_eq!(h.s.strip.watching, Some(reverb));
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetProbe ring=0 Effect { inst: 0, index: 0 }"));
+    assert!(h.s.ctl.probe_ring(reverb).is_some());
+}
+
+#[test]
+fn the_chain_keeps_its_cursor_in_view_in_the_rows_that_the_scope_leaves_it() {
+    // Thirty lanes are more than the chain has rows: the tab has 30 rows (the terminal's 32 less the tab bar and the action bar), the strip takes 10 of them and the box two.
+    let mut h = Harness::new("[[instrument]]\nplugin = \"builtin:osc\"\n".repeat(30));
+    h.press(KeyCode::Char('o'));
+    h.goto(TreeAddress::Instrument(29));
+    h.dump();
+    let rows = 30 - usize::from(scope_view::STRIP_ROWS) - 2;
+    let (selected, offset) = (h.s.chain_state.selected, h.s.chain_state.offset);
+    assert_eq!(selected, 29);
+    assert!(selected >= offset && selected < offset + rows, "the cursor ({selected}) is in the {rows} rows from {offset}");
+}
+
+#[test]
+fn the_spectrum_of_the_scope_of_a_node_falls_slowly_and_a_tick_does_not_make_it_start_again() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Down).press(KeyCode::Char('o')).press(KeyCode::Char('O'));
+    sound_at(&h, 0, 2048, 1500.0, 0.5);
+    h.dump();
+    let highest = |h: &Harness| h.s.strip.scope.levels().iter().copied().fold(f32::MIN, f32::max);
+    let loud = highest(&h);
+    assert!(loud > -10.0, "{loud}");
+    // The sound stops, and the loop ticks before its next frame: a level falls 40 dB a second from where it was (a few thousandths of a second ago), and does not begin at the floor.
+    h.s.ctl.telemetry.probes[0].push(&[vec![0.0; 2048], vec![0.0; 2048]]);
+    tick_at(&mut h.s, Instant::now());
+    h.dump();
+    let after = highest(&h);
+    assert!(after <= loud && after > loud - 20.0, "{after} from {loud}");
+}
+
+#[test]
+fn scope_strip_wave_of_a_sine_at_the_filter() {
+    // The filter is selected, and what the engine stores at its output is a sine of 468.75 Hz, 0.8 high: ten turns across the 21 ms, under the chain and the parameters.
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Down).press(KeyCode::Char('o'));
+    sound_at(&h, 0, 2048, 468.75, 0.8);
+    assert_golden("scope_strip_wave_of_a_sine_at_the_filter", &mut h);
+}
+
+#[test]
+fn scope_strip_spectrum_of_a_sine_at_the_filter() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Down).press(KeyCode::Char('o')).press(KeyCode::Char('O'));
+    sound_at(&h, 0, 2048, 1500.0, 0.5);
+    assert_golden("scope_strip_spectrum_of_a_sine_at_the_filter", &mut h);
+}
+
+#[test]
+fn scope_strip_at_a_modulator_says_that_there_is_no_signal() {
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    h.press(KeyCode::Char('o'));
+    assert_golden("scope_strip_at_a_modulator_says_that_there_is_no_signal", &mut h);
+}
+
+#[test]
+fn scope_strip_in_silence_at_the_instrument() {
+    let mut h = Harness::new(scene_two_effects());
+    h.press(KeyCode::Char('o'));
+    assert_golden("scope_strip_in_silence_at_the_instrument", &mut h);
+}
+
+#[test]
+fn the_scope_has_the_frames_of_the_ring_that_its_node_has_and_not_another_ring_s() {
+    // A client of the web interface watches the instrument, which has ring 0; the terminal's filter has ring 1. Ring 0 is loud and ring 1 is quiet.
+    let mut h = Harness::new(scene_two_effects());
+    h.s.ctl.set_probes(crate::app::probes::Watcher(1), &[h.s.ctl.model.instruments[0].node]);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 }).press(KeyCode::Char('o'));
+    assert_eq!(h.s.ctl.probe_ring(h.s.ctl.model.instruments[0].effects[0].node), Some(1));
+    sound_at(&h, 0, 2048, 468.75, 0.9);
+    sound_at(&h, 1, 2048, 468.75, 0.25);
+    let frame = strip_title(&mut h);
+    assert!(frame.contains("Peak: -12.0 dB"), "{frame}");
+}
+
+#[test]
+fn a_node_that_has_no_ring_shows_silence_and_says_so() {
+    // Eight rings are held (by clients of the web interface, say) and the node that the terminal watches has none.
+    let lanes = "[[instrument]]\nplugin = \"builtin:osc\"\n".repeat(9);
+    let mut h = Harness::new(&lanes);
+    let held: Vec<NodeId> = (0..8).map(|lane| h.s.ctl.model.instruments[lane].node).collect();
+    h.s.ctl.set_probes(crate::app::probes::Watcher(1), &held);
+    h.goto(TreeAddress::Instrument(8)).press(KeyCode::Char('o'));
+    assert_eq!(h.s.ctl.probe_ring(h.s.ctl.model.instruments[8].node), None);
+    let frame = h.dump();
+    assert!(frame.contains("No ring is free"), "{frame}");
+    assert!(!strip_title(&mut h).contains("Peak"), "there is nothing to say of the peak of a signal that is not listened to");
+    // (When one is let go of, the node has it, and the message is gone.)
+    h.s.ctl.set_probes(crate::app::probes::Watcher(1), &held[1..]);
+    assert_eq!(h.s.ctl.probe_ring(h.s.ctl.model.instruments[8].node), Some(0));
+    assert!(!h.dump().contains("No ring is free"));
+    assert!(strip_title(&mut h).contains("Peak"));
+}
+
 #[test]
 fn choosing_a_scale_in_the_picker_is_an_intent_that_the_controller_carries_out() {
     let mut h = Harness::new(scene_split());

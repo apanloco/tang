@@ -8,9 +8,14 @@ use crate::app::model::{NodeId, NodePath, SessionModel};
 use crate::plugin::chain::{GraphCommand, ProbeTarget};
 use crate::telemetry::PROBES;
 
-/// Who is watching: a client of the web interface, by the number of its connection, or any other front-end that has a number of its own.
+/// Who is watching: a client of the web interface, by the number of its connection (from one up), or the terminal, which has a number of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Watcher(pub u64);
+
+impl Watcher {
+    /// The terminal: the highest number there is, which no connection of the web interface has.
+    pub const TERMINAL: Watcher = Watcher(u64::MAX);
+}
 
 /// What is watched, by whom, and which ring of the engine's pool each node has: the controller's (`Controller::probes`).
 #[derive(Default)]
@@ -59,7 +64,13 @@ impl Controller {
         asked.into_iter().filter(|node| self.probes.rings.contains(&Some(*node))).collect()
     }
 
+    /// The ring of the pool (`Telemetry::probes`) that `node` has now, if it has one: a reader that has the node and not the ring (the terminal's scope) asks for it here.
+    pub fn probe_ring(&self, node: NodeId) -> Option<usize> {
+        self.probes.rings.iter().position(|ring| *ring == Some(node))
+    }
+
     /// Let go of the watchers that `keep` says are not there any more (a client of the web interface that has closed).
+    #[cfg(any(test, feature = "web"))]
     pub fn keep_probes_of(&mut self, keep: impl Fn(Watcher) -> bool) {
         let before = self.probes.watching.len();
         self.probes.watching.retain(|watcher, _| keep(*watcher));
@@ -322,6 +333,37 @@ plugin = "builtin:osc"
         ctl.poll();
         let told = sent(&engine);
         assert_eq!(told[told.len() - 2..], ["ClearProbes", "SetProbe ring=0 Instrument(0)"], "{told:?}");
+    }
+
+    #[test]
+    fn the_ring_that_a_node_has_is_asked_of_the_controller_by_whoever_reads_it() {
+        let (_engine, mut ctl) = controller(SESSION);
+        let (filter, reverb) = (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
+        assert_eq!(ctl.probe_ring(filter), None, "nobody watches it");
+        ctl.set_probes(Watcher::TERMINAL, &[reverb]);
+        assert_eq!((ctl.probe_ring(reverb), ctl.probe_ring(filter)), (Some(0), None));
+        // What the terminal watches next replaces that, and the ring goes to the node that is watched.
+        ctl.set_probes(Watcher::TERMINAL, &[filter]);
+        assert_eq!((ctl.probe_ring(filter), ctl.probe_ring(reverb)), (Some(0), None));
+        // A node that is not there, or has no signal, has none.
+        let lfo = ctl.model.nodes().find(|(_, path)| matches!(path, NodePath::Modulator { .. })).map(|(id, _)| id).unwrap();
+        ctl.set_probes(Watcher::TERMINAL, &[lfo, NodeId(9999)]);
+        assert_eq!((ctl.probe_ring(lfo), ctl.probe_ring(NodeId(9999))), (None, None));
+    }
+
+    #[test]
+    fn the_terminal_and_a_client_of_the_web_interface_share_the_ring_of_a_node_and_the_terminal_is_not_a_client_that_goes() {
+        let (engine, mut ctl) = controller(SESSION);
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 1 });
+        ctl.set_probes(Watcher::TERMINAL, &[reverb]);
+        ctl.set_probes(Watcher(1), &[reverb]);
+        assert_eq!(rings(&ctl), only(0, reverb));
+        sent(&engine);
+        // The client closes: what the owner of the web interface does for the numbers of the connections that are gone, which are the only numbers it knows.
+        ctl.keep_probes_of(|watcher| watcher == Watcher::TERMINAL);
+        assert_eq!(sent(&engine), Vec::<String>::new(), "the terminal still watches it");
+        assert_eq!(rings(&ctl), only(0, reverb));
+        assert!(Watcher::TERMINAL > Watcher(u64::from(u32::MAX)), "the connections are numbered from one: none is the terminal's");
     }
 
     #[test]

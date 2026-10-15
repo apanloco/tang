@@ -101,8 +101,8 @@ impl Controller {
             Done::Restructured => Applied::restructured(self.rev),
         };
         self.publish(&applied);
-        #[cfg(any(test, feature = "web"))]
         if applied.restructured {
+            #[cfg(any(test, feature = "web"))]
             self.resync();
             // (The nodes that are watched may be somewhere else, or gone, or back.)
             self.reconcile_probes();

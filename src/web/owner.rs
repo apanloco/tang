@@ -135,7 +135,8 @@ impl Owner {
     /// Let go of the probes of the clients that have gone (a connection that closes says nothing to the owner): call it on every turn that `refresh` is called on.
     pub fn refresh_probes(&mut self, ctl: &mut Controller) {
         let connected = self.hub.connected();
-        ctl.keep_probes_of(|watcher| connected.contains(&watcher.0));
+        // (The terminal is no connection of the hub's: it watches what it watches until it says otherwise.)
+        ctl.keep_probes_of(|watcher| watcher == Watcher::TERMINAL || connected.contains(&watcher.0));
     }
 
     /// Keep what the connections read current: the session's revision, and the
@@ -408,6 +409,21 @@ mod tests {
         assert_eq!(rig.ctl.telemetry.probe_node(0), Some(first.0), "refresh only reads the controller");
         rig.owner.refresh_probes(&mut rig.ctl);
         assert_eq!((rig.ctl.telemetry.probe_node(0), rig.ctl.telemetry.probe_node(1)), (None, Some(second.0)));
+    }
+
+    #[test]
+    fn the_watch_of_the_terminal_is_kept_when_the_clients_that_have_gone_are_let_go_of() {
+        let mut rig = rig();
+        let (gone, _gone_queue) = rig.hub.connect();
+        let (first, second) = (rig.ctl.model.instruments[0].node, rig.ctl.model.instruments[1].node);
+        rig.tx.send(OwnerRequest::Probes { client: gone, nodes: vec![first] }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        // (`tang --web`: the terminal watches a node of its own, and is no connection of the hub's.)
+        rig.ctl.set_probes(Watcher::TERMINAL, &[second]);
+        assert_eq!((rig.ctl.telemetry.probe_node(0), rig.ctl.telemetry.probe_node(1)), (Some(first.0), Some(second.0)));
+        rig.hub.disconnect(gone);
+        rig.owner.refresh_probes(&mut rig.ctl);
+        assert_eq!((rig.ctl.telemetry.probe_node(0), rig.ctl.telemetry.probe_node(1)), (None, Some(second.0)), "the client's is let go of, the terminal's is kept");
     }
 
     #[test]

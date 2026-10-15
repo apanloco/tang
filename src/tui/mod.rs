@@ -420,6 +420,8 @@ struct State {
     scale_selector: Option<ScaleSelectorState>,
     // Scope tab state: the view, the time base and the frames of the output that the last frame was drawn from.
     scope: scope_view::Scope,
+    /// The scope of the node under the chain cursor, under the Session tab (`o`): its own view, and the node whose signal is asked for.
+    strip: scope_view::Strip,
 }
 
 impl State {
@@ -469,6 +471,7 @@ impl State {
             piano_view_octave: 4,
             scale_selector: None,
             scope: scope_view::Scope::new(),
+            strip: scope_view::Strip::new(),
         }
     }
 
@@ -697,6 +700,32 @@ impl State {
 
     fn selected_address(&self) -> Option<&TreeAddress> {
         self.tree_entries.get(self.chain_state.selected).map(|e| &e.address)
+    }
+
+    /// The node under the chain cursor if it has a signal to look at, and what to call it: an instrument that has a plugin, an effect, a group or an effect of its bus. A modulator
+    /// and a pattern put out no sound, and a lane that has no instrument puts out none.
+    fn selected_signal(&self) -> Option<(NodeId, String)> {
+        let model = &self.ctl.model;
+        match *self.selected_address()? {
+            TreeAddress::Instrument(inst) => {
+                let lane = model.instruments.get(inst)?;
+                lane.instrument.as_ref().map(|plugin| (lane.node, plugin.name.clone()))
+            }
+            TreeAddress::Effect { inst, index } => model.instruments.get(inst)?.effects.get(index).map(|fx| (fx.node, fx.name.clone())),
+            TreeAddress::Group(group) => {
+                let g = model.groups.get(group)?;
+                Some((g.node, g.name.clone().unwrap_or_else(|| format!("Group {}", group + 1))))
+            }
+            TreeAddress::GroupEffect { group, index } => model.groups.get(group)?.effects.get(index).map(|fx| (fx.node, fx.name.clone())),
+            TreeAddress::Pattern(_) | TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } => None,
+        }
+    }
+
+    /// Keep what the scope under the Session tab asks the audio thread to listen to where the chain cursor is. The loop's every turn begins with a tick, which does it, after the
+    /// events of the terminal and the requests of the browsers (which can take the node away): there is no frame between them and it. (The tests' keys do it in `process_event`.)
+    fn sync_strip(&mut self) {
+        let selected = self.selected_signal().map(|(node, _)| node);
+        self.strip.sync(&mut self.ctl, self.active_tab == 0, selected);
     }
 
     /// A lane modulator by instrument + lane-global index.
@@ -1761,6 +1790,8 @@ fn tick_at(s: &mut State, now: Instant) {
         s.refresh_selector();
     }
     s.clip.update(s.ctl.telemetry.count(telemetry::MASTER.clips), now);
+    // (A node that a browser took out, or that the cursor is not on any more, is not listened to.)
+    s.sync_strip();
 }
 
 /// How often the loop wakes by itself: to fold in what the audio thread and the
@@ -1853,6 +1884,7 @@ fn popup_is_open(s: &State) -> bool {
 fn process_event(s: &mut State, ev: Event) {
     handle_event(s, ev);
     run_pending(s);
+    s.sync_strip();
 }
 
 /// What the loop does with an event: `process_event`, with a frame drawn between its two halves when the first asked for something that takes a while. A plugin
@@ -2368,6 +2400,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char(']') if s.active_tab == 1 && s.piano_view_octave < 8 => {
             s.piano_view_octave += 1;
         }
+
+        // ---- Session tab: the scope of the node under the chain cursor, under the chain and the parameters ----
+        KeyCode::Char('o') if s.active_tab == 0 => s.strip.on = !s.strip.on,
+        KeyCode::Char('O') if s.active_tab == 0 => s.strip.scope.toggle_kind(),
 
         // ---- Scope tab ----
         KeyCode::Char('v') if s.active_tab == 2 => s.scope.toggle_kind(),
@@ -3131,15 +3167,17 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
 
     match s.active_tab {
         0 => {
+            // The scope of the node under the cursor, if it is on and there is room, takes the foot of the tab: the chain and the parameters are what is above it.
+            let (session_area, strip_area) = scope_view::split_for_strip(content_area, s.strip.on);
             // Pre-compute approximate inner heights and sync scroll offsets
             // so mouse click_at uses the correct offset.
-            let inner_h = content_area.height.saturating_sub(2) as usize;
+            let inner_h = session_area.height.saturating_sub(2) as usize;
             s.chain_state.ensure_visible(inner_h);
             s.param_state.ensure_visible(inner_h);
 
             let (ci, pi) = render_session(
                 frame,
-                content_area,
+                session_area,
                 &s.tree_entries,
                 &s.chain_state,
                 &s.ctl.model.instruments,
@@ -3152,6 +3190,15 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             );
             s.areas.chain_inner = ci;
             s.areas.param_inner = pi;
+            if let Some(strip_area) = strip_area {
+                s.strip.take(&s.ctl, Instant::now());
+                let looking = match s.selected_signal() {
+                    None => scope_view::Looking::Nothing,
+                    Some((node, name)) if s.ctl.probe_ring(node).is_some() => scope_view::Looking::Ring(name),
+                    Some((_, name)) => scope_view::Looking::NoRing(name),
+                };
+                scope_view::render_strip(frame, strip_area, &s.strip, &looking, s.ctl.sample_rate);
+            }
 
             render_action_bar(frame, action_area, &s.tree_entries, &s.chain_state, s.focus_params);
 
@@ -4459,6 +4506,10 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "Scope tab:".into(),
         "  v          Wave or spectrum of the output".into(),
         "  Left/Right Shorter / longer time base (the wave)".into(),
+        "".into(),
+        "Scope of a node (Session tab):".into(),
+        "  o          Show / hide the scope of the selected node, under the chain (24 rows or more)".into(),
+        "  O          Wave or spectrum of that scope".into(),
         "".into(),
         "Session tab (param focus):".into(),
         "  Up/Down    Navigate parameters".into(),

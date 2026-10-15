@@ -15,6 +15,9 @@ use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use view::DIM;
 
+use crate::app::controller::Controller;
+use crate::app::model::NodeId;
+use crate::app::probes::Watcher;
 use crate::telemetry::{ScopeRing, SCOPE_READ_MAX, SILENCE};
 
 /// How many frames of the output a picture is made from: what a reader of the ring can take at once.
@@ -294,6 +297,15 @@ impl Scope {
         self.time = self.time.saturating_sub(1);
     }
 
+    /// Forget the frames: nothing is coming (the node that is watched has no ring, or is another), and the picture is silence. (The levels that fall to what is taken next begin
+    /// at the floor, so the time of the last look has nothing to fall from.)
+    pub fn silence(&mut self) {
+        self.left.fill(0.0);
+        self.right.fill(0.0);
+        self.peak = 0.0;
+        self.shown.fill(FLOOR_DB);
+    }
+
     /// Copy the latest frames of the output from `ring`, and, for the spectrum, work out the levels of them and let the levels that are drawn fall to them. `now` is when
     /// this look is.
     pub fn take(&mut self, ring: &ScopeRing, now: Instant) {
@@ -380,6 +392,24 @@ fn paint_spectrum(ctx: &mut Context, scope: &Scope, sample_rate: f32, dots: usiz
     }
 }
 
+/// The picture of a scope, in the box `block` that is drawn in `area`: the wave or the spectrum, as it was last taken.
+fn paint(frame: &mut Frame, area: Rect, block: Block, scope: &Scope, sample_rate: f32) {
+    let inner = block.inner(area);
+    match scope.kind() {
+        Kind::Wave => {
+            let length = TIMES[scope.time()];
+            let canvas = Canvas::default().block(block).marker(Marker::Braille).x_bounds([0.0, (length - 1) as f64]).y_bounds([-1.0, 1.0]);
+            frame.render_widget(canvas.paint(|ctx| paint_wave(ctx, scope, length)), area);
+        }
+        Kind::Spectrum => {
+            // (A cell of the canvas is two dots across.)
+            let dots = (2 * usize::from(inner.width)).max(2);
+            let canvas = Canvas::default().block(block).marker(Marker::Braille).x_bounds([0.0, (dots - 1) as f64]).y_bounds([0.0, 1.0]);
+            frame.render_widget(canvas.paint(|ctx| paint_spectrum(ctx, scope, sample_rate, dots)), area);
+        }
+    }
+}
+
 /// The Scope tab, in `area`: a line that says what it shows, the picture in a box, and the keys. The frames are what `Scope::take` last took.
 pub fn render(frame: &mut Frame, area: Rect, scope: &Scope, sample_rate: f32) {
     let [status_area, picture_area, hint_area] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
@@ -396,26 +426,126 @@ pub fn render(frame: &mut Frame, area: Rect, scope: &Scope, sample_rate: f32) {
     frame.render_widget(Paragraph::new(Line::from(status)), status_area);
 
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(DIM));
-    let inner = block.inner(picture_area);
-    match scope.kind() {
-        Kind::Wave => {
-            let length = TIMES[scope.time()];
-            let canvas = Canvas::default().block(block).marker(Marker::Braille).x_bounds([0.0, (length - 1) as f64]).y_bounds([-1.0, 1.0]);
-            frame.render_widget(canvas.paint(|ctx| paint_wave(ctx, scope, length)), picture_area);
-        }
-        Kind::Spectrum => {
-            // (A cell of the canvas is two dots across.)
-            let dots = (2 * usize::from(inner.width)).max(2);
-            let canvas = Canvas::default().block(block).marker(Marker::Braille).x_bounds([0.0, (dots - 1) as f64]).y_bounds([0.0, 1.0]);
-            frame.render_widget(canvas.paint(|ctx| paint_spectrum(ctx, scope, sample_rate, dots)), picture_area);
-        }
-    }
+    paint(frame, picture_area, block, scope, sample_rate);
 
     let hint = match scope.kind() {
         Kind::Wave => " [v] wave/spectrum  [←/→] time base ",
         Kind::Spectrum => " [v] wave/spectrum ",
     };
     frame.render_widget(Paragraph::new(hint).style(Style::default().fg(DIM)), hint_area);
+}
+
+// ---------------------------------------------------------------------------
+// The scope of a node, on the Session tab
+// ---------------------------------------------------------------------------
+
+/// The scope of the node that the chain cursor is on, under the chain and the parameters of the Session tab (`o` shows it and takes it away): whether it is shown, what it has
+/// taken, and the node whose signal it has asked the controller for. The audio thread listens to a node only while somebody watches it (`docs/web-ui.md` D47), so the strip watches
+/// the node under the cursor while it is shown and the Session tab is, and nothing else.
+pub struct Strip {
+    pub on: bool,
+    pub scope: Scope,
+    pub watching: Option<NodeId>,
+}
+
+impl Default for Strip {
+    fn default() -> Self {
+        Strip::new()
+    }
+}
+
+impl Strip {
+    pub fn new() -> Strip {
+        Strip { on: false, scope: Scope::new(), watching: None }
+    }
+
+    /// Ask the controller for the signal of `selected` (the node under the chain cursor, if it has one) while the strip is on and the Session tab is `shown`, and for nothing
+    /// otherwise. Only a change is asked: what is watched already is not asked again. The picture of the node that was watched is forgotten with it: a spectrum falls slowly,
+    /// and the levels of one node would be seen under the name of the next.
+    pub fn sync(&mut self, ctl: &mut Controller, shown: bool, selected: Option<NodeId>) {
+        let wanted = if self.on && shown { selected } else { None };
+        if wanted != self.watching {
+            let nodes: Vec<NodeId> = wanted.into_iter().collect();
+            ctl.set_probes(Watcher::TERMINAL, &nodes);
+            self.watching = wanted;
+            self.scope.silence();
+        }
+    }
+
+    /// Take the latest frames at the node that is watched, from the ring it has. (A node that has none has what `sync` left: silence.)
+    pub fn take(&mut self, ctl: &Controller, now: Instant) {
+        if let Some(ring) = self.watching.and_then(|node| ctl.probe_ring(node)).and_then(|ring| ctl.telemetry.probes.get(ring)) {
+            self.scope.take(ring, now);
+        }
+    }
+}
+
+/// How tall the strip is when it is shown: the picture in its box.
+pub const STRIP_ROWS: u16 = 10;
+
+/// The rows of the Session tab that the chain and the parameters keep when the strip is shown: a terminal that has not room for both does not show it.
+const SESSION_ROWS_KEPT: u16 = 12;
+
+/// Where the strip goes in the area of the Session tab, and where the chain and the parameters are then: the strip under them when it is on and there is room.
+pub fn split_for_strip(area: Rect, on: bool) -> (Rect, Option<Rect>) {
+    if !on || area.height < STRIP_ROWS + SESSION_ROWS_KEPT {
+        return (area, None);
+    }
+    let [session, strip] = Layout::vertical([Constraint::Fill(1), Constraint::Length(STRIP_ROWS)]).areas(area);
+    (session, Some(strip))
+}
+
+/// What the node under the chain cursor is to the strip.
+pub enum Looking {
+    /// Nothing that has a signal: a modulator, a pattern, a lane that has no instrument.
+    Nothing,
+    /// A node that has a signal, by its name, that the engine has no ring to listen to with (it has eight, for every watcher together).
+    NoRing(String),
+    /// A node that the engine listens to, by its name.
+    Ring(String),
+}
+
+/// The strip, in `area`: a box with the node it is of, the view and the loudest sample of the picture in its top line and the keys in its bottom one.
+pub fn render_strip(frame: &mut Frame, area: Rect, strip: &Strip, looking: &Looking, sample_rate: f32) {
+    let label = Style::default().fg(DIM);
+    let value = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let scope = &strip.scope;
+    let name = match looking {
+        Looking::Nothing => "-",
+        Looking::NoRing(name) | Looking::Ring(name) => name.as_str(),
+    };
+    let mut title = vec![Span::styled(" Scope: ", label), Span::styled(name, value)];
+    if matches!(looking, Looking::Ring(_)) {
+        title.push(Span::styled("   ", label));
+        title.push(Span::styled(scope.kind().label(), value));
+        if scope.kind() == Kind::Wave {
+            title.push(Span::styled("   Time: ", label));
+            title.push(Span::styled(time_label(scope.time(), sample_rate), value));
+        }
+        title.push(Span::styled("   Peak: ", label));
+        title.push(Span::styled(peak_text(scope.peak()), if scope.peak() > 1.0 { value.fg(CLIPPING) } else { value }));
+    }
+    title.push(Span::styled(" ", label));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(DIM))
+        .title(Line::from(title))
+        .title_bottom(Line::from(Span::styled(" [o] hide  [O] wave/spectrum ", label)));
+    match looking {
+        Looking::Nothing => message(frame, area, block, "No signal here: select an instrument, an effect or a group"),
+        Looking::NoRing(_) => message(frame, area, block, "No ring is free: the engine has eight, and others hold them"),
+        Looking::Ring(_) => paint(frame, area, block, scope, sample_rate),
+    }
+}
+
+/// A box with a line of words in the middle of it.
+fn message(frame: &mut Frame, area: Rect, block: Block, words: &str) {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height > 0 {
+        let middle = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
+        frame.render_widget(Paragraph::new(words).alignment(ratatui::layout::Alignment::Center).style(Style::default().fg(DIM)), middle);
+    }
 }
 
 #[cfg(test)]
@@ -758,6 +888,68 @@ mod tests {
         scope.toggle_kind();
         scope.toggle_kind();
         assert!(scope.levels().iter().all(|&level| level == FLOOR_DB));
+    }
+
+    #[test]
+    fn silence_forgets_the_frames_the_peak_and_the_levels_of_the_spectrum_that_were_taken() {
+        // A sine on the left and one half as high on the right: both sides have sound, and so has their mix, which the spectrum is of.
+        let ring = ScopeRing::new();
+        let side: Vec<f32> = (0..2048).map(|n| (0.8 * (TAU * 64.0 * f64::from(n) / 2048.0).sin()) as f32).collect();
+        ring.push(&[side.clone(), side.iter().map(|sample| sample / 2.0).collect()]);
+        let mut scope = Scope::new();
+        scope.toggle_kind();
+        scope.take(&ring, Instant::now());
+        assert!(scope.peak() > 0.7 && scope.levels()[64] > -10.0, "something was taken");
+        assert!(scope.left().iter().any(|&sample| sample != 0.0) && scope.right().iter().any(|&sample| sample != 0.0), "from both sides");
+        scope.silence();
+        assert_eq!(scope.peak(), 0.0);
+        assert!(scope.left().iter().all(|&sample| sample == 0.0), "the left side");
+        assert!(scope.right().iter().all(|&sample| sample == 0.0), "the right side");
+        assert!(scope.levels().iter().all(|&level| level == FLOOR_DB), "the levels that were drawn do not fall from where they were");
+        assert_eq!((scope.kind(), TIMES[scope.time()]), (Kind::Spectrum, 1024), "the choices are the viewer's, and stay");
+    }
+
+    #[test]
+    fn the_strip_takes_the_foot_of_the_session_tab_when_it_is_on_and_there_is_room_for_it_and_for_what_is_above_it() {
+        let area = Rect::new(3, 1, 100, 30);
+        assert_eq!(split_for_strip(area, true), (Rect::new(3, 1, 100, 20), Some(Rect::new(3, 21, 100, 10))));
+        assert_eq!(split_for_strip(area, false), (area, None), "not on: the tab has all of its area");
+        // The least that has room for both: twelve rows for the chain and the parameters, and ten for the strip.
+        assert_eq!(split_for_strip(Rect::new(0, 0, 80, 22), true), (Rect::new(0, 0, 80, 12), Some(Rect::new(0, 12, 80, 10))));
+        let short = Rect::new(0, 0, 80, 21);
+        assert_eq!(split_for_strip(short, true), (short, None), "a terminal with no room for both shows the chain and the parameters");
+    }
+
+    /// What `render_strip` draws in a box of `rows` rows (the text of the cells), for a strip that has taken nothing.
+    fn strip_in(rows: u16, looking: &Looking) -> Vec<String> {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, rows)).unwrap();
+        terminal.draw(|frame| render_strip(frame, frame.area(), &Strip::new(), looking, 48_000.0)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..rows).map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_owned()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn a_strip_says_what_it_is_of_and_only_a_node_that_has_a_ring_has_a_view_and_a_peak() {
+        let nothing = strip_in(STRIP_ROWS, &Looking::Nothing);
+        assert!(nothing[0].contains("Scope: -") && !nothing[0].contains("Peak") && !nothing[0].contains("wave"), "{}", nothing[0]);
+        assert!(nothing.iter().any(|row| row.contains("No signal here")), "{nothing:#?}");
+        let no_ring = strip_in(STRIP_ROWS, &Looking::NoRing("Filter".into()));
+        assert!(no_ring[0].contains("Scope: Filter ") && !no_ring[0].contains("Peak") && !no_ring[0].contains("wave"), "{}", no_ring[0]);
+        assert!(no_ring.iter().any(|row| row.contains("No ring is free")), "{no_ring:#?}");
+        let ring = strip_in(STRIP_ROWS, &Looking::Ring("Filter".into()));
+        assert!(ring[0].contains("Scope: Filter   wave   Time: 21 ms   Peak: —"), "{}", ring[0]);
+        assert!(!ring.iter().any(|row| row.contains("No signal") || row.contains("No ring")), "{ring:#?}");
+        // The keys are at the foot of the box, whatever is in it.
+        for rows in [&nothing, &no_ring, &ring] {
+            assert!(rows[rows.len() - 1].contains("[o] hide  [O] wave/spectrum"), "{rows:#?}");
+        }
+    }
+
+    #[test]
+    fn a_box_with_no_room_inside_it_has_no_words_over_its_border() {
+        // (Two rows are the borders and nothing else: the words are not written over the foot of the box.)
+        let rows = strip_in(2, &Looking::Nothing);
+        assert!(!rows.iter().any(|row| row.contains("No signal")), "{rows:#?}");
     }
 
     #[test]

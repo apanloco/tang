@@ -252,7 +252,6 @@ pub struct Controller {
     /// What time it is, for changes that go on to be told from those that are made again (a test turns it).
     pub(super) clock: Box<dyn Fn() -> Instant + Send>,
     /// Which nodes are watched, and by whom, and the ring each has (`app::probes`).
-    #[cfg(any(test, feature = "web"))]
     pub(super) probes: super::probes::Probes,
 }
 
@@ -321,7 +320,6 @@ impl Controller {
             journal: None,
             taken_last: Journal::default(),
             clock: Box::new(Instant::now),
-            #[cfg(any(test, feature = "web"))]
             probes: super::probes::Probes::default(),
         }
     }
@@ -1033,7 +1031,6 @@ impl Controller {
             self.resync();
         }
         // (And so is what the terminal does to the lanes without one: where the nodes that are watched are is looked at again.)
-        #[cfg(any(test, feature = "web"))]
         self.reconcile_probes();
         Polled { catalog_changed, model_changed }
     }
