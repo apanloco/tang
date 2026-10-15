@@ -7,6 +7,12 @@ import type { NodeId, Port, SlotKind, TelemetryChannel, TelemetryLayout } from "
 /** The channel numbers of a frame's header, in order. */
 const CHANNELS: readonly TelemetryChannel[] = ["meters", "modulation", "held", "scope"];
 
+/** The number of the channel of the probes' frames, which no client asks for as a channel: each node that is watched has frames of its own (`ClientMessage::Probes`). */
+const PROBE_CHANNEL = 4;
+
+/** How many values a probe's frame has: the left side and then the right, as many of each as the scope's. */
+const PROBE_LENGTH = 2 * SCOPE_FRAME_LENGTH;
+
 /** The channels whose values are the entries of a list in the layout (the held notes and the scope follow none). */
 export type LayoutChannel = Exclude<TelemetryChannel, "held" | "scope">;
 const LAYOUT_CHANNELS: readonly LayoutChannel[] = ["meters", "modulation"];
@@ -15,29 +21,42 @@ const LAYOUT_CHANNELS: readonly LayoutChannel[] = ["meters", "modulation"];
 export const NOTES = 128;
 
 /** One telemetry frame: the current values of one channel. */
-export interface Frame {
+export interface LayoutFrame {
   channel: TelemetryChannel;
   /** The `rev` of the layout the values follow (0 for the held notes and the scope, which follow none). */
   layoutRev: number;
   /** Value *i* belongs to entry *i* of the channel's list in that layout. */
   values: Float32Array;
+  node?: undefined;
 }
+
+/** The signal at the output of a node that is watched: the left side and then the right. The header has the node where the others have the layout's revision. */
+export interface ProbeFrame {
+  channel: "probe";
+  layoutRev: 0;
+  node: NodeId;
+  values: Float32Array;
+}
+
+export type Frame = LayoutFrame | ProbeFrame;
 
 /**
  * Decode a binary frame (`u8 channel | u8 flags | u16 n | u32 layout_rev | n × f32`,
- * little endian). Null for what is not one: too short, a channel this client does not
+ * little endian; the `u32` is the node of a probe's frame). Null for what is not one: too short, a channel this client does not
  * know, or a length that is not the header's count.
  */
 export function decodeFrame(data: ArrayBuffer | ArrayBufferView): Frame | null {
   const view = ArrayBuffer.isView(data) ? new DataView(data.buffer, data.byteOffset, data.byteLength) : new DataView(data);
   if (view.byteLength < FRAME_HEADER_LEN) return null;
-  const channel = CHANNELS[view.getUint8(0)];
-  if (channel === undefined) return null;
+  const number = view.getUint8(0);
+  const channel = CHANNELS[number];
+  if (channel === undefined && number !== PROBE_CHANNEL) return null;
   const count = view.getUint16(2, true);
   if (view.byteLength !== FRAME_HEADER_LEN + 4 * count) return null;
   const values = new Float32Array(count);
   for (let i = 0; i < count; i++) values[i] = view.getFloat32(FRAME_HEADER_LEN + 4 * i, true);
-  return { channel, layoutRev: view.getUint32(4, true), values };
+  const tag = view.getUint32(4, true);
+  return channel === undefined ? { channel: "probe", layoutRev: 0, node: tag, values } : { channel, layoutRev: tag, values };
 }
 
 /** A port as one string, so that it can be part of a key. */
@@ -88,6 +107,8 @@ export class TelemetryBuffers {
   ]);
   /** How many frames each channel has had taken. */
   readonly #counts = new Map<TelemetryChannel, number>();
+  /** What each node that has been watched had at its output as of its latest frame, and how many frames of it have been taken. */
+  readonly #probes = new Map<NodeId, { values: Float32Array; frames: number }>();
   /** The channels that have had a frame of the layout that is set (the held notes and the scope: a frame at all). */
   readonly #heard = new Set<TelemetryChannel>();
   #frames = 0;
@@ -118,6 +139,7 @@ export class TelemetryBuffers {
    * is not set yet): the next frames will.
    */
   accept(frame: Frame): boolean {
+    if (frame.channel === "probe") return this.#acceptProbe(frame);
     const latest = this.#latest.get(frame.channel);
     // (The held notes and the scope follow no layout: a frame of them is taken at any time, if it is the length it should be.)
     const fits = frame.channel === "held" || frame.channel === "scope" ? true : this.#index?.layout.rev === frame.layoutRev;
@@ -127,6 +149,38 @@ export class TelemetryBuffers {
     this.#counts.set(frame.channel, (this.#counts.get(frame.channel) ?? 0) + 1);
     this.#frames += 1;
     return true;
+  }
+
+  /** A probe's frame is taken at any time, for its node, if it is the length it should be. */
+  #acceptProbe(frame: ProbeFrame): boolean {
+    if (frame.values.length !== PROBE_LENGTH) return false;
+    let probe = this.#probes.get(frame.node);
+    if (!probe) {
+      probe = { values: new Float32Array(PROBE_LENGTH), frames: 0 };
+      this.#probes.set(frame.node, probe);
+    }
+    probe.values.set(frame.values);
+    probe.frames += 1;
+    this.#frames += 1;
+    return true;
+  }
+
+  /** The latest signal at the output of `node`, the left side and then the right (`SCOPE_FRAME_LENGTH` of each, the newest last); undefined until its first frame has come. */
+  probe(node: NodeId): Float32Array | undefined {
+    return this.#probes.get(node)?.values;
+  }
+
+  /** How many frames of the signal at `node` have been taken: a drawing of it can tell whether there is anything new. */
+  probeFrames(node: NodeId): number {
+    return this.#probes.get(node)?.frames ?? 0;
+  }
+
+  /**
+   * Forget what the nodes had at their outputs, in the arrays that readers already hold: the connection that told is gone, and what comes out of a node is not known
+   * until a frame says.
+   */
+  forgetProbes(): void {
+    for (const probe of this.#probes.values()) probe.values.fill(0);
   }
 
   /** The latest values of a channel, in the order of the layout's list; undefined before a layout is set. */

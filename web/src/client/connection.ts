@@ -8,7 +8,7 @@ import { createStore } from "zustand/vanilla";
 import type { StoreApi } from "zustand/vanilla";
 
 import { PROTOCOL } from "../protocol";
-import type { CatalogEntry, ClientMessage, ErrorCode, Intent, ServerMessage, Snapshot, TelemetryChannel, WireError } from "../protocol";
+import type { CatalogEntry, ClientMessage, ErrorCode, Intent, NodeId, ServerMessage, Snapshot, TelemetryChannel, WireError } from "../protocol";
 import { NO_HISTORY } from "./history";
 import type { HistoryState } from "./history";
 import { applyEvent } from "./reducers";
@@ -76,6 +76,11 @@ export interface ClientState {
   history: HistoryState;
   /** How many times the connection has been lost and made again. */
   reconnects: number;
+  /**
+   * The nodes whose signal the server says it sends, as it last said (`watchProbe`): those that have a signal and a ring (the engine has a few, shared by every client). A node
+   * that is left out has none now, and its frames come if one comes free. Gone with the connection.
+   */
+  probed: readonly NodeId[];
 }
 
 /** A request that was not carried out: the server rejected it, or the connection went before it answered. */
@@ -129,6 +134,7 @@ export class Client {
     catalog: null,
     history: NO_HISTORY,
     reconnects: 0,
+    probed: [],
   }));
   /** The latest telemetry, for a loop that draws it. */
   readonly telemetry = new TelemetryBuffers();
@@ -143,6 +149,8 @@ export class Client {
   #channels: TelemetryChannel[];
   /** The channels that something watches, and how many things do (`watchTelemetry`). */
   readonly #watched = new Map<TelemetryChannel, number>();
+  /** The nodes whose signal something watches, and how many things do, in the order they were first asked for (`watchProbe`). */
+  readonly #probes = new Map<NodeId, number>();
   #transport: Transport | null = null;
   readonly #pending = new Map<number, Pending>();
   #nextRequest = 1;
@@ -226,6 +234,33 @@ export class Client {
       else this.#watched.delete(channel);
       this.#sendChannels();
     };
+  }
+
+  /**
+   * Ask for the signal at the output of `node` (an instrument, an effect, a group, a bus effect), as frames of its own (`telemetry.probe`), until the function that is returned is
+   * called: for a picture of it on the screen. Several can watch a node, and it is asked for until the last of them lets go; letting go twice is letting go once. What the server says
+   * it watches is in the state (`probed`).
+   */
+  watchProbe(node: NodeId): () => void {
+    const count = this.#probes.get(node) ?? 0;
+    this.#probes.set(node, count + 1);
+    if (count === 0) this.#sendProbes();
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      const left = (this.#probes.get(node) ?? 1) - 1;
+      if (left > 0) {
+        this.#probes.set(node, left);
+      } else {
+        this.#probes.delete(node);
+        this.#sendProbes();
+      }
+    };
+  }
+
+  #sendProbes(): void {
+    if (this.#live) this.#send({ type: "probes", nodes: [...this.#probes.keys()] });
   }
 
   /** The channels that are asked for: those of the client and those that something watches. */
@@ -321,6 +356,12 @@ export class Client {
         // The whole of it each time: what the scan has found so far replaces what it had found.
         this.#set({ catalog: { entries: message.entries, scanning: message.scanning } });
         break;
+      case "probes": {
+        // The whole of it each time, and nothing is told to the page that is the same.
+        const { probed } = this.store.getState();
+        if (probed.length !== message.nodes.length || probed.some((node, i) => node !== message.nodes[i])) this.#set({ probed: message.nodes });
+        break;
+      }
       case "history": {
         // The whole of it each time, and nothing is told to the page that is the same.
         const { history } = this.store.getState();
@@ -361,6 +402,7 @@ export class Client {
     }
     this.#send({ type: "subscribe" });
     if (this.#wanted.length > 0) this.#send({ type: "telemetry", channels: this.#wanted });
+    if (this.#probes.size > 0) this.#send({ type: "probes", nodes: [...this.#probes.keys()] });
     this.#set({ status: "syncing" });
   }
 
@@ -374,6 +416,8 @@ export class Client {
     // (The notes that were held, as far as this page knew, are held no more as far as it knows, and the sound that it drew is not one that it hears.)
     this.telemetry.forgetHeld();
     this.telemetry.forgetScope();
+    this.telemetry.forgetProbes();
+    if (this.store.getState().probed.length > 0) this.#set({ probed: [] });
     this.#rejectPending("The connection was lost before the server answered.");
     const closing = this.#closing;
     this.#closing = null;

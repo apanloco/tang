@@ -897,11 +897,17 @@ function shape(waveform: Waveform, turns: number, seed: number): number {
 /** The number of a channel in the header of its frames. */
 const CHANNEL_NUMBERS: Record<TelemetryChannel, number> = { meters: 0, modulation: 1, held: 2, scope: 3 };
 
-/** The bytes of a telemetry frame, as the server writes them (`telemetry_frame`). */
-function frameBytes(channel: TelemetryChannel, layoutRev: number, values: readonly number[]): ArrayBuffer {
+/** The number of the channel of a probe's frames, which has the node where the others have the layout's revision (`probe_frame`). */
+const PROBE_CHANNEL_NUMBER = 4;
+
+/** How many nodes can be probed at once, whichever clients watch them: the engine's pool of rings (`telemetry::PROBES`). */
+const PROBE_RINGS = 8;
+
+/** The bytes of a telemetry frame, as the server writes them (`telemetry_frame`); a probe's (`probe_frame`) has its node where the layout's revision is. */
+function frameBytes(channel: TelemetryChannel | "probe", layoutRev: number, values: readonly number[]): ArrayBuffer {
   const buffer = new ArrayBuffer(8 + 4 * values.length);
   const view = new DataView(buffer);
-  view.setUint8(0, CHANNEL_NUMBERS[channel]);
+  view.setUint8(0, channel === "probe" ? PROBE_CHANNEL_NUMBER : CHANNEL_NUMBERS[channel]);
   view.setUint16(2, values.length, true);
   view.setUint32(4, layoutRev, true);
   values.forEach((value, i) => {
@@ -1084,6 +1090,28 @@ export class MockServer {
     this.#connections.delete(connection);
   }
 
+  /**
+   * The nodes that the engine listens to, as the controller has them: those that the connections ask for (in the order of the connections, and of each one's asking) that have a signal
+   * (an instrument that has a plugin, an effect, a group: not a modulator, not the master, not a node that is not there), the first of them that the engine has rings for.
+   */
+  rings(): NodeId[] {
+    const nodes = this.#snapshot.graph.nodes;
+    const audible = (id: NodeId): boolean => {
+      const node = nodes.find((n) => n.id === id);
+      return node !== undefined && ((node.kind === "instrument" && node.plugin !== null) || node.kind === "effect" || node.kind === "group");
+    };
+    const wanted: NodeId[] = [];
+    for (const connection of this.#connections) {
+      for (const node of connection.probes) if (!wanted.includes(node) && audible(node)) wanted.push(node);
+    }
+    return wanted.slice(0, PROBE_RINGS);
+  }
+
+  /** What a probe's frame of `node` is as of `seconds`: the sound of the notes that are held, as the scope's is (the mock has no ear for what each node makes of it). */
+  probeFrame(node: NodeId, seconds: number): ArrayBuffer {
+    return frameBytes("probe", node, scopeValues(this.heldNotes, seconds, this.#snapshot.meta.sampleRate));
+  }
+
   /** A message from a connection: what the real server's connection and owner do with it, together. */
   receive(connection: MockConnection, text: string): void {
     const message = JSON.parse(text) as ClientMessage;
@@ -1105,6 +1133,13 @@ export class MockServer {
       case "telemetry":
         connection.wantTelemetry(message.channels);
         break;
+      case "probes": {
+        connection.wantProbes(message.nodes);
+        // (The answer is which of them have a ring: a node that has none has its frames when another client lets go of one, without asking again.)
+        const rings = this.rings();
+        connection.tell({ type: "probes", nodes: connection.probes.filter((node) => rings.includes(node)) });
+        break;
+      }
       case "request": {
         const done = this.#carry(message.intent, true);
         if ("error" in done) {
@@ -1353,6 +1388,8 @@ export class MockConnection implements Transport {
   authorized: boolean;
   subscribed = false;
   readonly notes = new Set<number>();
+  /** The nodes whose signal the client wants, each once, in the order it asked. */
+  probes: NodeId[] = [];
 
   #events: TransportEvents | null = null;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -1412,9 +1449,20 @@ export class MockConnection implements Transport {
 
   wantTelemetry(channels: readonly TelemetryChannel[]): void {
     this.#channels = new Set(channels);
+    this.#schedule();
+  }
+
+  /** The nodes whose signal the client wants now (what it wanted before it does not). */
+  wantProbes(nodes: readonly NodeId[]): void {
+    this.probes = [...new Set(nodes)];
+    this.#schedule();
+  }
+
+  /** Send the frames that are wanted every period, or stop if none are. */
+  #schedule(): void {
     clearInterval(this.#timer);
     this.#timer = undefined;
-    if (this.#channels.size === 0) return;
+    if (this.#channels.size === 0 && this.probes.length === 0) return;
     this.#last = this.server.now();
     this.#timer = setInterval(() => {
       const events = this.#events;
@@ -1423,6 +1471,9 @@ export class MockConnection implements Transport {
       for (const channel of this.#channels) {
         events.binary(this.server.frame(channel, now, this.#peaks, Math.max(now - this.#last, 0)));
       }
+      // (A node that has a ring: the others are watched by no one as far as the engine goes, and have no frames.)
+      const rings = this.probes.length > 0 ? this.server.rings() : [];
+      for (const node of this.probes) if (rings.includes(node)) events.binary(this.server.probeFrame(node, now));
       this.#last = now;
     }, this.server.telemetryPeriod);
   }

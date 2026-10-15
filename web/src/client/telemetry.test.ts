@@ -49,6 +49,18 @@ describe("decoding a frame", () => {
     expect(Array.from(decoded?.values ?? [])).toEqual([0, 1]);
   });
 
+  test("reads a probe as the Rust side writes it: the node where the layout's revision is, then the values of the two sides", () => {
+    // The bytes of `probe_frame(NodeId(0x01020304), &[1.0, -2.5, 0.25])`, which the Rust test `a_probe_frame_is_a_telemetry_frame_of_channel_four_with_the_node_where_the_layouts_revision_is` writes out.
+    const bytes = new Uint8Array([4, 0, 3, 0, 4, 3, 2, 1, 0, 0, 0x80, 0x3f, 0, 0, 0x20, 0xc0, 0, 0, 0x80, 0x3e]);
+    const decoded = decodeFrame(bytes);
+    expect(decoded?.channel).toBe("probe");
+    expect(decoded?.node).toBe(0x01020304);
+    expect(decoded?.layoutRev, "a probe follows no layout").toBe(0);
+    expect(Array.from(decoded?.values ?? [])).toEqual([1, -2.5, 0.25]);
+    // (The others have no node.)
+    expect(decodeFrame(frame(3, 0, []))?.node).toBeUndefined();
+  });
+
   test("reads the held notes as the Rust side writes them: a value for each note, no layout", () => {
     // The bytes of `telemetry_frame(Held, 0, &[0.0, 1.0])`.
     const decoded = decodeFrame(new Uint8Array([2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f]));
@@ -73,7 +85,7 @@ describe("decoding a frame", () => {
   test("gives null for what is not a frame", () => {
     expect(decodeFrame(new ArrayBuffer(0))).toBeNull();
     expect(decodeFrame(new ArrayBuffer(7))).toBeNull();
-    expect(decodeFrame(frame(4, 1, [1]))).toBeNull(); // a channel this client does not know
+    expect(decodeFrame(frame(5, 1, [1]))).toBeNull(); // a channel this client does not know
     expect(decodeFrame(frame(255, 1, []))).toBeNull();
     const short = new Uint8Array(frame(0, 1, [1, 2])).subarray(0, 12); // says two values, has one
     expect(decodeFrame(short)).toBeNull();
@@ -279,6 +291,96 @@ describe("the scope in the buffers", () => {
     buffers.forgetScope();
     expect(buffers.isHeld(60)).toBe(true);
     expect(Array.from(buffers.values("meters") ?? [])).toEqual(values);
+  });
+});
+
+describe("the probes in the buffers", () => {
+  /** A frame of the signal at `node`: `SCOPE_FRAME_LENGTH` values of the left side, with the one given last, and then as many of the right. */
+  const probeFrame = (node: number, lastLeft = 0, lastRight = 0) => {
+    const values = new Array<number>(2 * SCOPE_FRAME_LENGTH).fill(0);
+    values[SCOPE_FRAME_LENGTH - 1] = lastLeft;
+    values[2 * SCOPE_FRAME_LENGTH - 1] = lastRight;
+    return decodeFrame(frame(4, node, values)) ?? never();
+  };
+
+  test("are known before there is a layout and follow none: a frame is taken for its node, the left side and then the right", () => {
+    const buffers = new TelemetryBuffers();
+    expect(buffers.probe(7)).toBeUndefined();
+    expect(buffers.accept(probeFrame(7, 0.5, -0.25))).toBe(true);
+    const values = buffers.probe(7);
+    expect(values?.length).toBe(2 * SCOPE_FRAME_LENGTH);
+    expect([values?.[SCOPE_FRAME_LENGTH - 1], values?.[2 * SCOPE_FRAME_LENGTH - 1]]).toEqual([0.5, -0.25]);
+    expect(buffers.frames).toBe(1);
+  });
+
+  test("are kept for each node, in the array a reader already holds, and a frame of one node does not touch another's", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(probeFrame(7, 0.5));
+    buffers.accept(probeFrame(9, -0.5));
+    const seven = buffers.probe(7);
+    const nine = buffers.probe(9);
+    expect(seven).not.toBe(nine);
+    buffers.accept(probeFrame(7, 0.75));
+    expect(buffers.probe(7)).toBe(seven);
+    expect([seven?.[SCOPE_FRAME_LENGTH - 1], nine?.[SCOPE_FRAME_LENGTH - 1]]).toEqual([0.75, -0.5]);
+  });
+
+  test("refuse a frame that is not a probe's length, and keep what they have", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(probeFrame(7, 0.5));
+    const short = decodeFrame(frame(4, 7, new Array<number>(2 * SCOPE_FRAME_LENGTH - 1).fill(1))) ?? never();
+    const long = decodeFrame(frame(4, 7, new Array<number>(2 * SCOPE_FRAME_LENGTH + 1).fill(1))) ?? never();
+    expect([buffers.accept(short), buffers.accept(long)]).toEqual([false, false]);
+    expect(buffers.probe(7)?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.5);
+    expect(buffers.probe(8), "and a node that has only had frames that were refused has none").toBeUndefined();
+    buffers.accept(decodeFrame(frame(4, 8, [1, 2, 3])) ?? never());
+    expect(buffers.probe(8)).toBeUndefined();
+    expect(buffers.frames).toBe(1);
+  });
+
+  test("are not forgotten when the layout changes, which they do not follow", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(probeFrame(7, 0.5));
+    buffers.setLayout(layout);
+    buffers.setLayout({ ...layout, rev: layout.rev + 1 });
+    expect(buffers.probe(7)?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.5);
+  });
+
+  test("are counted for each node, so that a drawing can tell that there is a new frame of its own", () => {
+    const buffers = new TelemetryBuffers();
+    expect([buffers.probeFrames(7), buffers.probeFrames(9)]).toEqual([0, 0]);
+    buffers.accept(probeFrame(7));
+    buffers.accept(probeFrame(7));
+    buffers.accept(probeFrame(9));
+    expect([buffers.probeFrames(7), buffers.probeFrames(9), buffers.frames]).toEqual([2, 1, 3]);
+    buffers.accept(decodeFrame(frame(4, 7, [1])) ?? never());
+    expect(buffers.probeFrames(7), "a frame that was refused is not counted").toBe(2);
+  });
+
+  test("can be forgotten, in the arrays readers hold, and are known again by the next frame", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(probeFrame(7, 0.5, 0.25));
+    buffers.accept(probeFrame(9, 0.5, 0.25));
+    const seven = buffers.probe(7);
+    buffers.forgetProbes();
+    expect(buffers.probe(7)).toBe(seven);
+    expect(Array.from(seven ?? []).every((value) => value === 0)).toBe(true);
+    expect(Array.from(buffers.probe(9) ?? []).every((value) => value === 0)).toBe(true);
+    buffers.accept(probeFrame(7, 0.75));
+    expect(seven?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.75);
+  });
+
+  test("being forgotten leaves the scope and the other channels as they are", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.setLayout(layout);
+    const values = new Array<number>(2 * SCOPE_FRAME_LENGTH).fill(0);
+    values[SCOPE_FRAME_LENGTH - 1] = 0.5;
+    buffers.accept(decodeFrame(frame(3, 0, values)) ?? never());
+    buffers.accept(decodeFrame(frame(2, 0, new Array<number>(128).fill(1))) ?? never());
+    buffers.accept(probeFrame(7, 0.5));
+    buffers.forgetProbes();
+    expect(buffers.values("scope")?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.5);
+    expect(buffers.isHeld(60)).toBe(true);
   });
 });
 

@@ -2255,6 +2255,190 @@ describe("a channel that is asked for for as long as something shows it", () => 
   });
 });
 
+describe("the signal at a node", () => {
+  const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+
+  /** The messages that a mock server has had that say which nodes a client watches. */
+  const asks = (server: MockServer) => server.received.filter((message) => message.type === "probes");
+
+  test("is asked for by the node, comes as the two sides of what is there, as long as the real server's, and stops when the one that asked lets go", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    const release = client.watchProbe(oscillator.id);
+    await until(() => client.telemetry.probeFrames(oscillator.id) > 2, "probe frames");
+    expect(client.telemetry.probe(oscillator.id)?.length).toBe(2 * SCOPE_FRAME_LENGTH);
+    expect(asks(server)).toEqual([{ type: "probes", nodes: [oscillator.id] }]);
+    release();
+    await quiet(30);
+    expect(asks(server).at(-1)).toEqual({ type: "probes", nodes: [] });
+    await quiet(30); // (frames that were on their way)
+    const frames = client.telemetry.probeFrames(oscillator.id);
+    await quiet(80);
+    expect(client.telemetry.probeFrames(oscillator.id), "no more of them").toBe(frames);
+  });
+
+  test("is as loud as the notes that are held make it, the same on both sides, and silent when none is", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const client = await open(server, { telemetry: [] });
+    client.watchProbe(oscillator.id);
+    await until(() => client.telemetry.probeFrames(oscillator.id) > 1, "probe frames");
+    expect(Array.from(client.telemetry.probe(oscillator.id) ?? []).every((sample) => sample === 0)).toBe(true);
+    player.noteOn(69);
+    await until(() => Math.max(...Array.from(client.telemetry.probe(oscillator.id) ?? [], Math.abs)) > 0.1, "the sound");
+    const values = client.telemetry.probe(oscillator.id) ?? new Float32Array(0);
+    expect(Array.from(values.slice(0, SCOPE_FRAME_LENGTH))).toEqual(Array.from(values.slice(SCOPE_FRAME_LENGTH)));
+  });
+
+  test("is asked for once for a node that several watch, until the last of them lets go, and letting go twice is letting go once", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    const first = client.watchProbe(oscillator.id);
+    const second = client.watchProbe(oscillator.id);
+    await until(() => client.telemetry.probeFrames(oscillator.id) > 1, "probe frames");
+    expect(asks(server), "the second asked for nothing the server did not have").toHaveLength(1);
+    first();
+    first();
+    await quiet(30);
+    expect(asks(server), "one is left").toHaveLength(1);
+    const frames = client.telemetry.probeFrames(oscillator.id);
+    await until(() => client.telemetry.probeFrames(oscillator.id) > frames + 2, "the frames going on for the one that is left");
+    second();
+    await quiet(30);
+    expect(asks(server)).toHaveLength(2);
+    expect(asks(server).at(-1)).toEqual({ type: "probes", nodes: [] });
+  });
+
+  test("is asked for as a list of the nodes that are watched, in the order they were asked for, each once", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    const release = client.watchProbe(filter.id);
+    client.watchProbe(oscillator.id);
+    client.watchProbe(filter.id);
+    await quiet(10);
+    expect(asks(server)).toEqual([
+      { type: "probes", nodes: [filter.id] },
+      { type: "probes", nodes: [filter.id, oscillator.id] },
+    ]);
+    release();
+    await quiet(10);
+    expect(asks(server).at(-1), "one of two that watch the filter is let go: it is still watched").toEqual({ type: "probes", nodes: [filter.id, oscillator.id] });
+  });
+
+  test("is told as the nodes that are watched in the client's state, which leaves out a node that has no signal", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    expect(client.state.probed).toEqual([]);
+    await client.request({ type: "addGroup", members: [] });
+    const group = (client.state.snapshot?.graph.nodes ?? []).find((node) => node.kind === "group");
+    // (The master has a scope of its own, a modulator makes no sound, and there is no node 9999.)
+    client.watchProbe(MASTER);
+    client.watchProbe(lfo.id);
+    client.watchProbe(9_999);
+    client.watchProbe(oscillator.id);
+    client.watchProbe(filter.id);
+    client.watchProbe(group?.id ?? -1);
+    await until(() => client.state.probed.length === 3, "the answer");
+    expect(client.state.probed).toEqual([oscillator.id, filter.id, group?.id]);
+    await quiet(60);
+    for (const node of [MASTER, lfo.id, 9_999]) expect(client.telemetry.probeFrames(node), `${String(node)} has no frames`).toBe(0);
+    for (const node of client.state.probed) expect(client.telemetry.probeFrames(node), `${String(node)} has frames`).toBeGreaterThan(0);
+  });
+
+  test("is not told for a lane that has no instrument, which puts out nothing", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    await client.request({ type: "addInstrument", plugin: "builtin:osc" });
+    const lanes = (client.state.snapshot?.graph.nodes ?? []).filter((node) => node.kind === "instrument");
+    const empty = lanes.find((lane) => lane.id !== oscillator.id);
+    // (A lane is emptied by taking the instrument out of it, which the terminal does: no intent of the page's does.)
+    const emptied = structuredClone(client.state.snapshot ?? tracerSnapshot);
+    for (const node of emptied.graph.nodes) if (node.id === empty?.id && node.kind === "instrument") node.plugin = null;
+    const quiet_ = new MockServer({ telemetryPeriod: 5, snapshot: emptied });
+    const watcher = await open(quiet_, { telemetry: [] });
+    watcher.watchProbe(empty?.id ?? -1);
+    watcher.watchProbe(oscillator.id);
+    await until(() => watcher.state.probed.length > 0, "the answer");
+    expect(watcher.state.probed).toEqual([oscillator.id]);
+  });
+
+  test("that the server says again is not told to the page again: what is the same stays the same", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    client.watchProbe(oscillator.id);
+    await until(() => client.state.probed.length === 1, "the answer");
+    const told = client.state.probed;
+    let changes = 0;
+    client.store.subscribe(() => {
+      changes += 1;
+    });
+    // (The master has no ring: the answer to this is the same list as before.)
+    client.watchProbe(MASTER);
+    await until(() => asks(server).length === 2, "the second request");
+    await quiet(30);
+    expect(client.state.probed).toBe(told);
+    expect(changes).toBe(0);
+  });
+
+  test("is not told to a client that did not ask for it", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const watcher = await open(server, { telemetry: [] });
+    const other = await open(server, { telemetry: ["meters"] });
+    watcher.watchProbe(oscillator.id);
+    await until(() => watcher.telemetry.probeFrames(oscillator.id) > 1, "probe frames");
+    await until(() => other.telemetry.has("meters"), "the meters");
+    expect(other.telemetry.probeFrames(oscillator.id)).toBe(0);
+  });
+
+  test("is asked for on every connection, the one that was lost and the one that follows, and what was told is forgotten with the connection", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server);
+    const client = await open(server, { telemetry: [], reconnectDelay: () => 60_000 });
+    client.watchProbe(oscillator.id);
+    player.noteOn(69);
+    await until(() => Math.max(...Array.from(client.telemetry.probe(oscillator.id) ?? [], Math.abs)) > 0.1, "the sound");
+    expect(client.state.probed).toEqual([oscillator.id]);
+    server.drop();
+    await until(() => client.state.status === "reconnecting", "the loss");
+    expect(client.state.probed, "the server that said so is gone").toEqual([]);
+    expect(Array.from(client.telemetry.probe(oscillator.id) ?? []).every((sample) => sample === 0), "and the sound is not one that is heard").toBe(true);
+
+    const again = new MockServer({ telemetryPeriod: 5 });
+    const second = await open(again, { telemetry: [], reconnectDelay: () => 5 });
+    second.watchProbe(oscillator.id);
+    await until(() => second.telemetry.probeFrames(oscillator.id) > 1, "probe frames");
+    again.drop();
+    await until(() => second.state.reconnects === 1 && second.state.status === "open", "the reconnection");
+    const frames = second.telemetry.probeFrames(oscillator.id);
+    await until(() => second.telemetry.probeFrames(oscillator.id) > frames + 2, "probe frames after it");
+  });
+
+  test("is asked for when the connection is made, if something asked before", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = connect(server, { telemetry: [] });
+    client.watchProbe(oscillator.id);
+    await until(() => client.telemetry.probeFrames(oscillator.id) > 1, "probe frames");
+  });
+
+  test("is shared by the clients out of eight rings: a ninth node has none until a client lets go of one, and its frames come then, without asking again", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const first = await open(server, { telemetry: [] });
+    for (let lane = 0; lane < 8; lane += 1) await first.request({ type: "addInstrument", plugin: "builtin:osc" });
+    const nodes = (first.state.snapshot?.graph.nodes ?? []).filter((node) => node.kind === "instrument").map((node) => node.id);
+    expect(nodes).toHaveLength(9);
+    const releases = nodes.slice(0, 8).map((node) => first.watchProbe(node));
+    await until(() => first.state.probed.length === 8, "the eight");
+    const second = await open(server, { telemetry: [] });
+    second.watchProbe(nodes[8] ?? -1);
+    await until(() => asks(server).length === 9, "the request of the second");
+    await quiet(60);
+    expect(second.state.probed, "no ring is left").toEqual([]);
+    expect(second.telemetry.probeFrames(nodes[8] ?? -1)).toBe(0);
+    releases[0]?.();
+    await until(() => second.telemetry.probeFrames(nodes[8] ?? -1) > 1, "the frames of the ninth");
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();
