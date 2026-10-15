@@ -97,6 +97,11 @@
   min-width: 26px;
 }
 
+/* (The one that shows the scope of what comes out of the node: a glyph too.) */
+.tang-menu-button.tang-node__scope {
+  min-width: 26px;
+}
+
 /* (The one that renames a group: a glyph too.) */
 .tang-menu-button.tang-node__rename {
   min-width: 26px;

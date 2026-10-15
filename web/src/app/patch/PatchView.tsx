@@ -19,6 +19,8 @@ import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
+import { ScopesContext } from "./scopes";
+import type { Scopes } from "./scopes";
 import { sameStructure } from "./toFlow";
 import type { Flow } from "./toFlow";
 import { useLayout } from "./useLayout";
@@ -131,7 +133,22 @@ function FitWhenArranged({ requests, arranging }: { requests: number; arranging:
 export function PatchView() {
   // The canvas is laid out again when something other than a value changed.
   const graph = useClientSelection((state) => state.snapshot?.graph ?? null, sameGraphStructure);
-  const { flow, arranging, arrangeAgain } = useLayout(graph);
+  // The nodes that show a scope of what comes out of them: the viewer's own, which the layout makes room for (a node that cannot show one is not drawn with it, and one that is not there is nothing).
+  const [shown, setShown] = useState<ReadonlySet<NodeId>>(() => new Set());
+  const scopes = useMemo<Scopes>(
+    () => ({
+      open: shown,
+      toggle: (node) => {
+        setShown((now) => {
+          const next = new Set(now);
+          if (!next.delete(node)) next.add(node);
+          return next;
+        });
+      },
+    }),
+    [shown],
+  );
+  const { flow, arranging, arrangeAgain } = useLayout(graph, shown);
   // How many times the nodes have been asked to be arranged again, for the canvas to be moved to show them.
   const [arrangements, setArrangements] = useState(0);
   const editor = useEditor();
@@ -195,51 +212,53 @@ export function PatchView() {
   return (
     <div className="tang-patch" data-testid="patch" data-connecting={connecting ? "" : undefined}>
       <InspectorContext.Provider value={inspector}>
-        <div className="tang-patch__canvas">
-          <ConnectingContext.Provider value={connecting}>
-            <ReactFlow
-              nodes={nodes}
-              edges={flow.edges}
-              onNodesChange={onNodesChange}
-              onNodeDragStart={onNodeDragStart}
-              onNodeDragStop={onNodeDragStop}
-              nodeDragThreshold={DRAG_THRESHOLD}
-              nodeTypes={NODE_TYPES}
-              edgeTypes={EDGE_TYPES}
-              colorMode="dark"
-              fitView
-              fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1 }}
-              minZoom={0.2}
-              maxZoom={1.5}
-              connectionRadius={40}
-              connectionLineStyle={CONNECTION_LINE}
-              isValidConnection={isValidConnection}
-              onConnectStart={onConnectStart}
-              onConnectEnd={onConnectEnd}
-              onConnect={onConnect}
-              edgesFocusable={false}
-              elementsSelectable={false}
-              deleteKeyCode={null}
-            >
-              <Background gap={24} />
-              <Controls showInteractive={false} />
-              <Panel position="top-right">
-                <button
-                  type="button"
-                  className="tang-patch__arrange"
-                  title="Put every node where the layout has it, and give back the places that were moved"
-                  aria-label="Arrange the nodes again"
-                  disabled={!anyMoved && flow.arranged}
-                  onClick={arrange}
-                >
-                  Arrange
-                </button>
-              </Panel>
-              <ShowWhatWasAdded graph={graph} flow={flow} />
-              <FitWhenArranged requests={arrangements} arranging={arranging} />
-            </ReactFlow>
-          </ConnectingContext.Provider>
-        </div>
+        <ScopesContext.Provider value={scopes}>
+          <div className="tang-patch__canvas">
+            <ConnectingContext.Provider value={connecting}>
+              <ReactFlow
+                nodes={nodes}
+                edges={flow.edges}
+                onNodesChange={onNodesChange}
+                onNodeDragStart={onNodeDragStart}
+                onNodeDragStop={onNodeDragStop}
+                nodeDragThreshold={DRAG_THRESHOLD}
+                nodeTypes={NODE_TYPES}
+                edgeTypes={EDGE_TYPES}
+                colorMode="dark"
+                fitView
+                fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1 }}
+                minZoom={0.2}
+                maxZoom={1.5}
+                connectionRadius={40}
+                connectionLineStyle={CONNECTION_LINE}
+                isValidConnection={isValidConnection}
+                onConnectStart={onConnectStart}
+                onConnectEnd={onConnectEnd}
+                onConnect={onConnect}
+                edgesFocusable={false}
+                elementsSelectable={false}
+                deleteKeyCode={null}
+              >
+                <Background gap={24} />
+                <Controls showInteractive={false} />
+                <Panel position="top-right">
+                  <button
+                    type="button"
+                    className="tang-patch__arrange"
+                    title="Put every node where the layout has it, and give back the places that were moved"
+                    aria-label="Arrange the nodes again"
+                    disabled={!anyMoved && flow.arranged}
+                    onClick={arrange}
+                  >
+                    Arrange
+                  </button>
+                </Panel>
+                <ShowWhatWasAdded graph={graph} flow={flow} />
+                <FitWhenArranged requests={arrangements} arranging={arranging} />
+              </ReactFlow>
+            </ConnectingContext.Provider>
+          </div>
+        </ScopesContext.Provider>
         {inspected !== null ? <ParamPanel key={inspected} node={inspected} onClose={closePanel} /> : null}
       </InspectorContext.Provider>
     </div>

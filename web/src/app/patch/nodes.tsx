@@ -12,11 +12,8 @@ import { chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, remo
 import type { Removal } from "../../client/selectors";
 import { NAME_LIMIT } from "../../protocol";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
-import { Choice } from "../../ui/Choice";
 import { formatValue } from "../../ui/Knob";
 import { LiveEnvelope } from "../../ui/LiveEnvelope";
-import { LiveScope } from "../../ui/LiveScope";
-import type { ScopeView } from "../../ui/LiveScope";
 import { LiveTrace } from "../../ui/LiveTrace";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
@@ -27,6 +24,7 @@ import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, Para
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
+import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
 import type { CableRow, PatchNode } from "./toFlow";
 
 /** The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. */
@@ -355,6 +353,8 @@ function RenameGroupButton({ node, name, onEdit }: { node: NodeId; name: string;
 /** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain. */
 export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const effect = type === "effect";
+  // (A lane that has no instrument has no sound to look at.)
+  const silent = !effect && data.format === null;
   // (Where an effect is: the lane or group whose chain it is in, which the focus goes back to when it is taken out.)
   const parent = useClientState((state) => (effect ? (nodeById(state, data.node)?.parent ?? null) : null));
   return (
@@ -367,6 +367,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
             <MoveEffectButtons node={data.node} name={data.name} />
             <PresetMenu node={data.node} name={data.name} />
             <ParamsButton node={data.node} name={data.name} />
+            <ScopeButton node={data.node} name={data.name} />
             <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
           </span>
         ) : (
@@ -374,6 +375,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
             <ChangeInstrumentMenu node={data.node} name={data.name} empty={data.format === null} />
             <PresetMenu node={data.node} name={data.name} />
             <ParamsButton node={data.node} name={data.name} />
+            {silent ? null : <ScopeButton node={data.node} name={data.name} />}
             <AddEffectMenu node={data.node} name={data.name} />
             <AddModulatorMenu node={data.node} name={data.name} />
             <RemoveLaneOrGroupMenu node={data.node} />
@@ -388,6 +390,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         <RangeCell node={data.node} name={data.name} />
         <GroupCell node={data.node} name={data.name} />
       </div>
+      {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
     </div>
   );
 }
@@ -505,6 +508,7 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
               setEditing(true);
             }}
           />
+          <ScopeButton node={data.node} name={data.name} />
           <AddEffectMenu node={data.node} name={data.name} />
           <AddModulatorMenu node={data.node} name={data.name} />
           <RemoveLaneOrGroupMenu node={data.node} />
@@ -514,44 +518,27 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
         <GainCell node={data.node} gain="groupVolume" />
         <GainCell node={data.node} gain="groupPan" />
       </div>
+      {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
     </div>
   );
 }
-
-/** What the master's scope can show, in the order of its choice. */
-const SCOPE_VIEWS: readonly { view: ScopeView; label: string }[] = [
-  { view: "wave", label: "Wave" },
-  { view: "spectrum", label: "Spectrum" },
-];
-
-/** How many samples the scope's wave can show across its width, a time base each (the third is the one it begins with). */
-const SCOPE_TIMES: readonly number[] = [256, 512, 1024, 2048];
-const SCOPE_TIME_AT_FIRST = 2;
 
 /** The master: where the audio of the session ends, with its level and a scope of what comes out (a wave, or a spectrum), which the server is asked for while the master is here. */
 export function MasterNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
   const frames = useFrames();
-  const sampleRate = useClientState((state) => state.snapshot?.meta.sampleRate ?? 48_000);
-  const [view, setView] = useState(0);
-  const [time, setTime] = useState(SCOPE_TIME_AT_FIRST);
   useEffect(() => client.watchTelemetry("scope"), [client]);
   const readPeak = useMemo(() => slotReader(client.telemetry, "meters", data.node, { type: "audioIn" }, "peak"), [client, data.node]);
   const readClips = useMemo(() => slotReader(client.telemetry, "meters", data.node, { type: "audioIn" }, "clips"), [client, data.node]);
   const readScope = useCallback(() => client.telemetry.values("scope"), [client]);
   const readScopeFrames = useCallback(() => client.telemetry.framesOf("scope"), [client]);
-  const shown = SCOPE_VIEWS[view]?.view ?? "wave";
   return (
     <div className="tang-node tang-node--master">
       <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
       <Header name={data.name} />
       <div className="tang-node__body">
         <Meter label="Master level" readPeak={readPeak} readClips={readClips} frames={frames} />
-        <LiveScope label="Output scope" read={readScope} readFrames={readScopeFrames} view={shown} samples={SCOPE_TIMES[time] ?? 1024} sampleRate={sampleRate} frames={frames} />
-        <div className="tang-scope-choices nodrag nopan nowheel">
-          <Choice label="View" labels={SCOPE_VIEWS.map((choice) => choice.label)} value={view} onChange={setView} />
-          {shown === "wave" ? <Choice label="Time" labels={SCOPE_TIMES.map((samples) => `${String(Math.round((samples / sampleRate) * 1000))} ms`)} value={time} onChange={setTime} /> : null}
-        </div>
+        <ScopePanel label="Output scope" read={readScope} readFrames={readScopeFrames} />
       </div>
     </div>
   );

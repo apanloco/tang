@@ -15,6 +15,7 @@ import {
   ENVELOPE_NODE_HEIGHT,
   MODULATOR_HEIGHT,
   MODULATOR_SETTINGS_HEIGHT,
+  NODE_SCOPE_HEIGHT,
   NODE_WIDTH,
   nodeHeight,
   ROW_GAP,
@@ -136,7 +137,7 @@ function rectangles(graph: Graph) {
   return flow.nodes.map((placed) => {
     const node = graph.nodes.find((candidate) => String(candidate.id) === placed.id);
     if (!node) throw new Error("a node of the canvas that the graph does not have");
-    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length) };
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope) };
   });
 }
 
@@ -144,7 +145,7 @@ function rectangles(graph: Graph) {
 function overlapsIn(graph: Graph, flow: ReturnType<typeof toFlow>): string | null {
   const rects = flow.nodes.map((placed) => {
     const node = nodeOf(graph, Number(placed.id));
-    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length) };
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope) };
   });
   for (const [i, a] of rects.entries()) {
     for (const b of rects.slice(i + 1)) {
@@ -1535,6 +1536,123 @@ describe("the cables on the canvas", () => {
     expect(handleOf({ type: "depth", edge: 3 })).toBe("depth-3");
     expect(handleOf({ type: "depth", edge: 3 })).toBe(depthHandle(3));
     expect(handleOf({ type: "depth", edge: 30 })).not.toBe(handleOf({ type: "depth", edge: 3 }));
+  });
+});
+
+describe("a node that shows a scope", () => {
+  // A person can look at what comes out of a lane's instrument, of an effect and of a group, in a scope in the node: the node is taller by it, and the layout has to know,
+  // as it knows how many knobs a node shows, so that what is below it is not under it. Which nodes show one is the viewer's own, not the session's: `toFlow` is told.
+  const positions = (flow: ReturnType<typeof toFlow>): Record<string, { x: number; y: number }> => Object.fromEntries(flow.nodes.map((node) => [node.id, node.position]));
+  const shown = (flow: ReturnType<typeof toFlow>): string[] => flow.nodes.filter((node) => node.data.scope).map((node) => node.id);
+
+  test("is taller by the height of a scope for an instrument, an effect and a group, and no other node is: a modulator has no audio, and the master has its scope always", () => {
+    for (const node of [instrument(1), effect(2, 1), group(3), instrumentOf(4, null)]) {
+      expect(nodeHeight(node, 3, 0, true), node.name).toBe(nodeHeight(node, 3, 0, false) + NODE_SCOPE_HEIGHT);
+      // (Without being told, a node has none.)
+      expect(nodeHeight(node, 3, 0), node.name).toBe(nodeHeight(node, 3, 0, false));
+    }
+    for (const node of [modulator(5, 1), envelope(6, 1), control(7, 1), master]) {
+      expect(nodeHeight(node, 0, 2, true), node.name).toBe(nodeHeight(node, 0, 2, false));
+    }
+    expect(NODE_SCOPE_HEIGHT).toBeGreaterThan(0);
+  });
+
+  test("is said in the data of the node: of those asked for, the ones that can show one do, and the others, and the ones that are not there, do not", () => {
+    expect(shown(toFlow(twoLanes))).toEqual([]);
+    expect(shown(toFlow(twoLanes, undefined, new Set([1, 3, 6])))).toEqual(["1", "3", "6"]);
+    // (A modulator and the master are not shown one, and a node that is not in the session is nothing to lay out.)
+    expect(shown(toFlow(twoLanes, undefined, new Set([4, MASTER, 99])))).toEqual([]);
+    expect(shown(toFlow(grouped, undefined, new Set([10, 11])))).toEqual(["10", "11"]);
+  });
+
+  test("is not shown by a lane that has no instrument, which has no signal, though it is asked for: it is as tall as it was, and shows one again when it has an instrument", () => {
+    const empty: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), master], edges: [audio(2, MASTER)] };
+    const withInstrument: Graph = { nodes: [instrument(1), effect(2, 1), master], edges: [audio(2, MASTER)] };
+    const asked = new Set([1, 2]);
+    expect(shown(toFlow(empty, undefined, asked))).toEqual(["2"]);
+    expect(shown(toFlow(withInstrument, undefined, asked))).toEqual(["1", "2"]);
+  });
+
+  test("lays the lane below further down by the height of the scope when the tallest node of the lane above shows one, and moves nothing else", () => {
+    const closed = toFlow(twoLanes);
+    const open = toFlow(twoLanes, undefined, new Set([1]));
+    for (const id of [1, 2, 3, 4, MASTER]) expect(at(open, id).position.x, `x of ${String(id)}`).toBe(at(closed, id).position.x);
+    for (const id of [1, 2, 3, 4]) expect(at(open, id).position.y, `y of ${String(id)}`).toBe(at(closed, id).position.y);
+    for (const id of [5, 6]) expect(at(open, id).position.y - at(closed, id).position.y, `y of ${String(id)}`).toBe(NODE_SCOPE_HEIGHT);
+    expect(overlapsIn(twoLanes, open)).toBeNull();
+  });
+
+  test("makes room when it is opened on a canvas that remembers where the nodes are: the rows below are moved down by the height of the scope, and the rest stays", () => {
+    const closed = toFlow(twoLanes);
+    const open = toFlow(twoLanes, closed.places, new Set([1]));
+    expect(overlapsIn(twoLanes, open)).toBeNull();
+    for (const id of [1, 2, 3, 4, MASTER]) expect(at(open, id).position, `node ${String(id)}`).toEqual(at(closed, id).position);
+    for (const id of [5, 6]) expect(at(open, id).position.y - at(closed, id).position.y, `y of ${String(id)}`).toBe(NODE_SCOPE_HEIGHT);
+  });
+
+  test("leaves the nodes where they are when it is closed again, and the nodes are not arranged then, until the person arranges them", () => {
+    const closed = toFlow(twoLanes);
+    const open = toFlow(twoLanes, closed.places, new Set([1]));
+    const again = toFlow(twoLanes, open.places, new Set());
+    expect(positions(again)).toEqual(positions(open));
+    expect(again.arranged).toBe(false);
+    expect(shown(again)).toEqual([]);
+    // (Laid out from nothing, they are where they were before.)
+    expect(positions(toFlow(twoLanes, undefined, new Set()))).toEqual(positions(closed));
+    expect(closed.arranged).toBe(true);
+  });
+
+  test("makes no more room than it needs: a scope on a node that has a tall one beside it, with room below it to hold the scope, moves nothing", () => {
+    // (The instrument shows all twelve of its parameters, four rows of controls, and the effect after it is a row: a scope fits under the effect, in the room the instrument makes.)
+    const indices = plugin(12).params.map((param) => param.index);
+    const tall: Graph = {
+      nodes: [instrumentOf(1, { ...plugin(12), pinned: indices }), effect(2, 1), instrument(3, 2), master],
+      edges: [audio(1, 2), audio(2, MASTER), audio(3, MASTER)],
+    };
+    const closed = toFlow(tall);
+    const room = at(closed, 3).position.y - at(closed, 2).position.y - nodeHeight(nodeOf(tall, 2), at(closed, 2).data.knobs.length);
+    expect(room, "a scope fits under the effect").toBeGreaterThanOrEqual(NODE_SCOPE_HEIGHT + ROW_GAP);
+    expect(positions(toFlow(tall, closed.places, new Set([2])))).toEqual(positions(closed));
+    expect(positions(toFlow(tall, undefined, new Set([2])))).toEqual(positions(closed));
+    // (A scope on the instrument, which is the tallest, moves the lane below, as it does anywhere.)
+    expect(at(toFlow(tall, closed.places, new Set([1])), 3).position.y - at(closed, 3).position.y).toBe(NODE_SCOPE_HEIGHT);
+  });
+
+  test("puts the group below a group that shows a scope further down when they would be over each other, in the layout and where the places are remembered", () => {
+    // (Two lanes of one row of controls each, so that the groups are as near as they can be: the second a row's gap below the first, which a scope on the first is in the way of.)
+    const groups: Graph = {
+      nodes: [group(10), group(20), instrument(1, 1, 10), instrument(2, 1, 20), master],
+      edges: [member(1, 10), member(2, 20), audio(10, MASTER), audio(20, MASTER)],
+    };
+    const closed = toFlow(groups);
+    expect(at(closed, 20).position.y - at(closed, 10).position.y).toBe(nodeHeight(nodeOf(groups, 10), 0) + ROW_GAP);
+    expect(NODE_SCOPE_HEIGHT, "the scope is in the way, which is what this is about").toBeGreaterThan(ROW_GAP);
+    const wanted = at(closed, 10).position.y + nodeHeight(nodeOf(groups, 10), 0, 0, true) + ROW_GAP;
+    const fromNothing = toFlow(groups, undefined, new Set([10]));
+    const remembered = toFlow(groups, closed.places, new Set([10]));
+    for (const open of [fromNothing, remembered]) {
+      expect(overlapsIn(groups, open)).toBeNull();
+      expect(at(open, 10).position).toEqual(at(closed, 10).position);
+      expect(at(open, 20).position.y).toBe(wanted);
+      expect(at(open, 1).position).toEqual(at(closed, 1).position);
+    }
+    // (The layout puts a lane where its row goes, and the group below goes where it is wanted, which is no longer level with its lane. A canvas that remembers moves the row, the lane and
+    // the group that are level, together, as it does for a node that has grown.)
+    expect(at(fromNothing, 2).position).toEqual(at(closed, 2).position);
+    expect(at(remembered, 2).position).toEqual({ x: at(closed, 2).position.x, y: wanted });
+  });
+
+  test("keeps the nodes from lying over one another, whichever of them show a scope, laid out from nothing and on a canvas that remembers the places", () => {
+    const canShow = grouped.nodes.filter((node) => node.kind === "instrument" || node.kind === "effect" || node.kind === "group").map((node) => node.id);
+    const remembered = toFlow(grouped);
+    for (let subset = 0; subset < 2 ** canShow.length; subset += 1) {
+      const scopes = new Set(canShow.filter((_, bit) => (subset >> bit) & 1));
+      const label = `scopes on ${[...scopes].join(", ") || "none"}`;
+      const fresh = toFlow(grouped, undefined, scopes);
+      expect(shown(fresh).map(Number).sort((a, b) => a - b), label).toEqual([...scopes].sort((a, b) => a - b));
+      expect(overlapsIn(grouped, fresh), `${label}, from nothing`).toBeNull();
+      expect(overlapsIn(grouped, toFlow(grouped, remembered.places, scopes)), `${label}, remembered`).toBeNull();
+    }
   });
 });
 

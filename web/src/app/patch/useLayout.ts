@@ -3,7 +3,7 @@
 // nothing, every node where the layout has it, when the person asks for the nodes to be arranged again.
 import { useCallback, useState } from "react";
 
-import type { Graph } from "../../protocol";
+import type { Graph, NodeId } from "../../protocol";
 import { toFlow } from "./toFlow";
 import type { Flow } from "./toFlow";
 
@@ -13,6 +13,8 @@ const NO_FLOW: Flow = { nodes: [], edges: [], places: new Map(), arranged: true 
 interface Laid {
   /** The session that `flow` is the layout of. */
   graph: Graph | null;
+  /** The nodes that showed a scope when it was laid out (the viewer's own: they are taller). */
+  scopes: ReadonlySet<NodeId>;
   flow: Flow;
   /**
    * The nodes that a person placed are being given back to the layout, one answer of the server after the other: until the last has been, the layout is made from nothing
@@ -32,18 +34,21 @@ export interface Layout {
   arrangeAgain: () => void;
 }
 
-/** The layout of `graph` (which is the same object while the session's structure is the same: what is laid out is not the values). */
-export function useLayout(graph: Graph | null): Layout {
-  const [laid, setLaid] = useState<Laid>({ graph: null, flow: NO_FLOW, arranging: false });
+/**
+ * The layout of `graph` (which is the same object while the session's structure is the same: what is laid out is not the values), with room for the scopes that the nodes in `scopes`
+ * show (the same object while they are the same nodes).
+ */
+export function useLayout(graph: Graph | null, scopes: ReadonlySet<NodeId>): Layout {
+  const [laid, setLaid] = useState<Laid>({ graph: null, scopes, flow: NO_FLOW, arranging: false });
   let current = laid;
-  // (A layout that is made when the session changes, in the render that sees it: there is no frame that draws the new session with the old layout.)
-  if (laid.graph !== graph) {
-    const flow = graph ? toFlow(graph, laid.arranging ? undefined : laid.flow.places) : NO_FLOW;
-    current = { graph, flow, arranging: laid.arranging && anyPlaced(graph) };
+  // (A layout that is made when the session changes, or a scope is shown or taken away, in the render that sees it: there is no frame that draws the new session with the old layout.)
+  if (laid.graph !== graph || laid.scopes !== scopes) {
+    const flow = graph ? toFlow(graph, laid.arranging ? undefined : laid.flow.places, scopes) : NO_FLOW;
+    current = { graph, scopes, flow, arranging: laid.arranging && anyPlaced(graph) };
     setLaid(current);
   }
   const arrangeAgain = useCallback(() => {
-    setLaid((now) => ({ graph: now.graph, flow: now.graph ? toFlow(now.graph) : NO_FLOW, arranging: anyPlaced(now.graph) }));
+    setLaid((now) => ({ graph: now.graph, scopes: now.scopes, flow: now.graph ? toFlow(now.graph, undefined, now.scopes) : NO_FLOW, arranging: anyPlaced(now.graph) }));
   }, []);
   return { flow: current.flow, arranging: current.arranging, arrangeAgain };
 }

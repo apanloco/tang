@@ -48,6 +48,8 @@ export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NO
 export const ENVELOPE_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + ENVELOPE_EXTRA;
 /** The master: its name and its meter, the scope under them and the choices of the scope's view (measured in a browser: 223). */
 export const MASTER_HEIGHT = 228;
+/** A scope that an instrument, an effect or a group shows below its controls, with the choices of its view and its time: this much taller (measured in a browser: 157). */
+export const NODE_SCOPE_HEIGHT = 157;
 /** A cable that a modulator's node lists is a row this tall (the style says so: `.tang-cable-row`)... */
 export const CABLE_ROW_HEIGHT = 20;
 /** ...and the list has this much room before it, as much as the rest of what is in the body of the node (`.tang-node__body`'s gap). */
@@ -72,6 +74,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   drivenSettings: readonly SettingHandle[];
   /** For a modulator: the cables that start at it, in the order of the graph, as its node lists them (`CableRow`); nothing for the other nodes. */
   cables: readonly CableRow[];
+  /** Whether it shows a scope of what comes out of it (the viewer's own choice, `toFlow`'s `scopes`, for a node that has a signal: `canScope`), which it is taller by. */
+  scope: boolean;
 }
 
 /**
@@ -194,8 +198,19 @@ export function controlCount(node: Node, knobs: number): number {
   }
 }
 
-/** How tall a node is, as the layout assumes it (the components' styles keep to it). `cables` is how many a modulator lists (`CableRow`); it is nothing to the other nodes. */
-export function nodeHeight(node: Node, knobs: number, cables = 0): number {
+/**
+ * Whether a node has a signal that it can show a scope of: an instrument that has a plugin (a lane that has none has no sound), an effect and a group. A modulator has no audio,
+ * and the master shows its scope always.
+ */
+export function canScope(node: Node): boolean {
+  return node.kind === "effect" || node.kind === "group" || (node.kind === "instrument" && node.plugin !== null);
+}
+
+/**
+ * How tall a node is, as the layout assumes it (the components' styles keep to it). `cables` is how many a modulator lists (`CableRow`); it is nothing to the other nodes.
+ * `scope` is whether an instrument, an effect or a group shows its scope, which it is taller by (`NODE_SCOPE_HEIGHT`); it is nothing to a modulator, and to the master.
+ */
+export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false): number {
   switch (node.kind) {
     case "modulator": {
       const listed = cables > 0 ? CABLES_GAP + cables * CABLE_ROW_HEIGHT : 0;
@@ -206,7 +221,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0): number {
       return MASTER_HEIGHT;
     default: {
       const rows = Math.max(1, Math.ceil(controlCount(node, knobs) / CONTROLS_PER_ROW));
-      return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING;
+      return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (scope ? NODE_SCOPE_HEIGHT : 0);
     }
   }
 }
@@ -299,10 +314,9 @@ function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly No
   return placed;
 }
 
-/** Where each node of the graph goes on the canvas. */
-function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>, cableCounts: ReadonlyMap<NodeId, number>): Map<NodeId, { x: number; y: number }> {
+/** Where each node of the graph goes on the canvas, as tall as `heightOfNode` says each is. */
+function layout(graph: Graph, heightOfNode: (node: Node) => number): Map<NodeId, { x: number; y: number }> {
   const placed = new Map<NodeId, { x: number; y: number }>();
-  const heightOfNode = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0);
   const place = (node: Node, column: number, y: number): void => {
     placed.set(node.id, { x: column * COLUMN, y });
   };
@@ -574,11 +588,16 @@ function cableRows(graph: Graph, names: ReadonlyMap<NodeId, string>): Map<NodeId
 /** Nothing remembered: every node goes where the layout puts it. */
 const NOTHING_REMEMBERED: Places = new Map();
 
+/** No node shows a scope. */
+const NO_SCOPES: ReadonlySet<NodeId> = new Set();
+
 /**
  * The nodes of the session on the canvas, and the cables between them. `remembered` is the places of the last layout (`Flow.places`): a node stays where it was while it is in
- * the slot it was put for, so that what is drawn or added or taken out does not rearrange the canvas; without it every node goes where the layout puts it.
+ * the slot it was put for, so that what is drawn or added or taken out does not rearrange the canvas; without it every node goes where the layout puts it. `scopes` are the
+ * nodes that the viewer shows a scope in (a scope is not part of the session): those of them that have a signal are taller by it, and room is made for it as for a knob that is
+ * pinned.
  */
-export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED): Flow {
+export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);
@@ -590,8 +609,9 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED): F
   }
   const knobCounts = new Map([...knobs].map(([id, params]) => [id, params.length]));
   const cableCounts = new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0]));
-  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0);
-  const fresh = layout(graph, knobCounts, cableCounts);
+  const withScope = new Set(graph.nodes.filter((node) => scopes.has(node.id) && canScope(node)).map((node) => node.id));
+  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id));
+  const fresh = layout(graph, heightOf);
   const slots = slotsOf(graph, fresh);
   // Where a layout that remembers nothing puts the nodes, to say whether these are arranged.
   const arrangedAt = new Map(fresh);
@@ -625,6 +645,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED): F
       targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
       drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
       cables: node.kind === "modulator" ? (listed.get(node.id) ?? []) : [],
+      scope: withScope.has(node.id),
     },
     draggable: true,
     deletable: false,
