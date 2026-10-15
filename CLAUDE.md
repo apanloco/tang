@@ -1119,7 +1119,7 @@ drive its parameters and what drove their depths, the audio path closing up; a l
 instrument, its effects and its modulators and the cables of its group to it, but not the last
 lane of a session (`a session keeps its last lane`); a group, with its bus effects, its modulators and every cable of it, its
 members staying in no group, and what the cables drove in them given back: `Controller::remove_lane` / `remove_group`. A `RemoveEdge` and a
-`RemoveNode` of a modulator, of an effect and of a bus effect are put back by undo (step 34, "Undo and redo"); a lane and a group are not yet, since they empty
+`RemoveNode` of a modulator, of an effect, of a bus effect and of a lane are put back by undo (step 34, "Undo and redo"); a group is not yet, since it empties
 the history, which is why the page asks first). An intent that changes the
 structure has no event for a client to apply: `Applied::restructured` is set, `apply` calls
 `resync` at once, and the subscribers are given a snapshot at the revision after the
@@ -1168,7 +1168,7 @@ that comes later. A step is made of it in the words of the button that adds one 
 from the TUI's `d` alike. An effect of a lane's chain or of a group's bus is put back the same way, with **the very plugin that was in the chain**
 (`Inverse::Effect`: the model's `PluginSlot` as `SessionModel::remove_effect` / `remove_bus_effect` hands it back, with its node, its values, its preset and its
 mix, and the place it was at; the cables that drive its parameters go first, each written down as a cable). The controller makes a channel for the plugin
-(`Controller::channel_for_a_plugin`: one for each removal that an intent carries out, none for a call that no intent asks for), sends the other end with the
+(`Controller::channel_for`: one for each removal that an intent carries out, none for a call that no intent asks for), sends the other end with the
 command (`RemoveEffect { keep }`, `RemoveGroupEffect { keep }`), and the audio thread hands the plugin to it in place of the channel that gives plugins back to
 the main thread (and to that one if no one is listening any more, `hand_back`); the journal holds the end that listens (`Kept::Asked`). Undo gets the plugins
 first, so that what can fail fails before anything is changed (`Controller::rewind`): it waits for them for `recovery_wait` in all (`EngineHandles::recovery_wait`,
@@ -1180,7 +1180,19 @@ the cables that address the effects at that place and after it (the lane's modul
 removal tells them the other way. A plugin can hold a good deal of memory, so the history keeps the plugins of the newest steps only (`MAX_KEPT_PLUGINS`, 8: a
 step that cannot keep all of its plugins keeps none, `History::keep_the_newest_plugins`) and an older step loads them again; and `Controller::shutdown` lets go of
 what the history holds before the plugin runtime goes, since a plugin has to be dropped while the libraries it came from are there. A step is made of an effect
-in the words of the button that adds one (`remove Reverb`). Two cables that drive each other's depths (only a file can make that) are not put back (`RemovedCable::still_driven`: one goes
+in the words of the button that adds one (`remove Reverb`). **A lane is put back whole**: the controller takes out the cables of its group to it first (each
+written down as a cable), and then the lane, handed to a channel of its own (`RemoveInstrument { keep }`, `Inverse::Lane`: the model's `InstrumentNode`, with its
+plugins' slots, its modulators and their cables, its pattern and its group, and `KeptLane`, the lane that the audio thread hands back with its plugins and
+whatever they hold, its modulators and what they have in hand, its pattern and its meter); the lane's own modulators' cables go with it. Undo gets the lane first
+(`Controller::recover_lane`): it waits `recovery_wait` for it, and **refuses the undo with the reason** if it did not come (`the lane of Oscillator was not handed
+back by the audio thread`; a lane cannot be built again from the model, as a plugin can be loaded again, and the step is dropped); a lane that gave up its plugins
+(the history keeps eight plugins in all, and lets go of the oldest steps' by taking them out of the lane it keeps, `KeptLane::take_plugins`) has them loaded again
+into it (`put_plugins`: with the preset and the values each had). Then everything goes back in the reverse order: the lane (`SessionModel::insert_lane_at`, the audio
+thread's `InsertInstrument`, at its place among the lanes and in its group; the pattern players are told the places the lanes have, and the cables of its group to the
+members from its place on their ordinals), the tempo (`SetGlobalBpm`: the pattern player of the lane has the one there was when it went), and the cables of its group.
+What the lane counted as held and what its pattern was playing is forgotten when it goes in (the notes were let go of while it was out, and a plugin that was not sent
+the note-off keeps its voice, as it does when a lane's range is changed under a held note), and a group that is not there is no group. The words of a step are
+`remove the lane of Oscillator`, or `remove an empty lane` for a lane that has no instrument. Two cables that drive each other's depths (only a file can make that) are not put back (`RemovedCable::still_driven`: one goes
 while the other still drives its place, and once it has gone that place cannot be told from the next cable's), and a step is not made of such a
 removal. A journal holds what it took by the places it had, so a structural edit that no intent asks for (the TUI's swap of two lanes, a direct call of a
 method of the controller that takes something out, moves an effect or puts a lane in a group) forgets the history
@@ -1194,7 +1206,7 @@ redone, and an intent that is refused leaves no step. `Undo` and `Redo` are inte
 revision of its own (`Controller::undo` / `redo`), neither is a step, and one with nothing to do is refused (`there is nothing to undo`) and
 is no revision; a step whose node has gone (a front-end took it out without an intent) is dropped, with the reason, and so is one whose cable's
 id is in use (`cable 7 is there already`). What cannot be undone yet
-(`LoadPreset`, `RemoveNode` of a lane or a group, `ReplaceInstrument`, a group made of a lane that is in another (the lane leaves it, and the cables
+(`LoadPreset`, `RemoveNode` of a group, `ReplaceInstrument`, a group made of a lane that is in another (the lane leaves it, and the cables
 of that group to it go), a lane put in a group or out of one that its old group drives, a `RemoveEdge` of cables that drive each other's depths,
 and `Controller::set_instrument` and `clear_instrument`
 for the TUI's `i` and `d`) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
@@ -1735,8 +1747,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   Reverb" makes it again under the id it had), with the mock's ids and slots pinned to the controller's after every undo and redo by the shape
   of the session that the fixture records for each change of structure (`client/counters.ts`, `client/membership.ts`). Step 34 put what is
   taken out in it, as it was: a cable, a modulator and an effect (a lane's or a bus's, with the very plugin that the audio thread hands back) are put
-  back by "Undo remove an LFO" or "Undo remove Reverb" with their cables, at their places and under their ids; a lane and a group are not yet
-  (their "×" still asks first). What the controller
+  back by "Undo remove an LFO" or "Undo remove Reverb" with their cables, at their places and under their ids, and so is a lane, whole ("Undo remove the lane
+  of Oscillator"); a group is not yet (its "×" asks first, and so does a lane's, which says "for good" though it can be undone). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1828,14 +1840,17 @@ changes without an intent: until then connected browsers are given a snapshot
 (`Controller::resync`).
 TODO: the events of one intent share its revision, which a client takes for a repeat
 if there is more than one (every intent makes one event today).
-TODO: undo of what is taken out and what is replaced: taking out a lane or a group (a removal gives the plugins back from the audio thread, as an effect's
-does, so that undoing it does not load them again, and the node comes back under its id and in its place as a modulator does), presets, putting another
-instrument in a lane, and a group made of a lane that is in another, each empty the history until their steps exist
+TODO: undo of what is taken out and what is replaced: taking out a group (a removal gives the group back from the audio thread, as a lane's does, with its bus
+effects, and the node comes back under its id and in its place as a lane does), presets, putting another instrument in a lane, and a group made of a lane that is
+in another, each empty the history until their steps exist
 (`Plan::Barrier` in `src/app/history.rs`, `planOf` in `web/src/client/history.ts`).
 TODO: the TUI's edits that have no intent (the pattern, the tempo, the Type row) are not in the history, and do not empty it; the order of the lanes with
 Shift+Up / Shift+Down on a lane and `Controller::clear_instrument` do (a step that took something out puts it back by the places it had).
 TODO: a cable that a file has to a cable that is not there (`mod_depth = [0, 0]` to a modulator with no cable) is centred on something else after undo of the
 removal of its modulator than the loader gave it; it drives nothing, so it makes no difference to what is heard, and the tests leave it out.
+TODO: the "×" of a lane asks first, in words that say it goes "for good" (`RemoveLaneOrGroupMenu`), from when a removal could not be undone: a lane can be now,
+and a group will be; whether to keep the question is the user's to say, and the words are to be changed either way.
+TODO: an all-notes-off for a lane that comes back by undo: a note that was held when it was taken out stays held in a plugin that was not sent the note-off.
 TODO: the controller's layout of the telemetry lists a cable by the place of its modulator in the rack, and the mock engine's lists one that is drawn after
 the others: a cable of an earlier modulator is told in another order (no reader depends on it; the fixture's scripts draw from the last modulator of a rack).
 TODO: the TUI's `n` and then a choice from its selector is an add and a replacement, and the replacement empties the history: the lane
