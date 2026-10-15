@@ -261,9 +261,8 @@ describe("what a removal is to the history", () => {
     const lfo = modulators.find((m) => m.source.type === "lfo");
     const envelope = modulators.find((m) => m.source.type === "envelope");
     const [lane0] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
-    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
     const group = snapshot.graph.nodes.find((n) => n.kind === "group");
-    if (!lfo || !envelope || !lane0 || !effect || !group) throw new Error("the fixture has an LFO, an envelope, a lane, an effect and a group");
+    if (!lfo || !envelope || !lane0 || !group) throw new Error("the fixture has an LFO, an envelope, a lane and a group");
 
     test("is a step that is made when it is carried out, in the words of a button for the kind it is", () => {
       expect(plan({ type: "removeNode", node: lfo.id })).toEqual({ removed: { label: "remove an LFO", intent: { type: "removeNode", node: lfo.id }, at: 7 } });
@@ -273,9 +272,8 @@ describe("what a removal is to the history", () => {
       expect(plan({ type: "removeNode", node: control.id }, withControl)).toEqual({ removed: { label: "remove a MIDI control", intent: { type: "removeNode", node: control.id }, at: 7 } });
     });
 
-    test("is no step for a node that is not there, which is refused, and what cannot be put back yet for the other kinds of node", () => {
+    test("is no step for a node that is not there, which is refused, and what cannot be put back yet for a lane and a group", () => {
       expect(plan({ type: "removeNode", node: 9_999 })).toBe("nothing");
-      expect(plan({ type: "removeNode", node: effect.id })).toBe("barrier");
       expect(plan({ type: "removeNode", node: lane0.id })).toBe("barrier");
       expect(plan({ type: "removeNode", node: group.id })).toBe("barrier");
     });
@@ -297,6 +295,21 @@ describe("what a removal is to the history", () => {
       expect(plan({ type: "removeNode", node: lfo.id }, cycle)).toBe("barrier");
       expect(plan({ type: "removeNode", node: envelope.id }, cycle)).toBe("barrier");
     });
+  });
+});
+
+describe("what a removal of an effect is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const effects = snapshot.graph.nodes.flatMap((n) => (n.kind === "effect" ? [n] : []));
+
+  test("is a step that is made when it is carried out, in the words of its plugin, for an effect of a lane and one of a bus", () => {
+    // (The fixture has a lane's two effects, and a bus's.)
+    expect(effects.map((effect) => effect.name)).toEqual(expect.arrayContaining(["Reverb", "Filter"]));
+    expect(effects.length).toBeGreaterThanOrEqual(3);
+    for (const effect of effects) {
+      expect(plan({ type: "removeNode", node: effect.id })).toEqual({ removed: { label: `remove ${effect.name}`, intent: { type: "removeNode", node: effect.id }, at: 7 } });
+    }
   });
 });
 
@@ -607,6 +620,45 @@ describe("the mock engine's undo of what is taken out", () => {
     expect(labels(server)).toEqual(["lock the piano to its scale", "remove an envelope"]);
     expect(() => server.apply({ type: "removeNode", node: 9_999 })).toThrow();
     expect(labels(server)).toEqual(["lock the piano to its scale", "remove an envelope"]);
+  });
+
+
+  const effectNamed = (name: string, parent: number): Node => {
+    const found = historyFixture.snapshot.graph.nodes.find((n) => n.kind === "effect" && n.name === name && n.parent === parent);
+    if (!found) throw new Error(`the fixture has a ${name} under ${String(parent)}`);
+    return found;
+  };
+
+  test("puts an effect back with the cables that drove it and its place in its chain, by undo, and takes it out again by redo", () => {
+    const server = fresh();
+    const filter = effectNamed("Filter", lane0);
+    // The LFO drives a parameter of the filter, so that there is a cable to put back as well.
+    server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: filter.id, port: { type: "param", index: 1 } } });
+    const before = pieces(server);
+    server.apply({ type: "removeNode", node: filter.id });
+    const after = pieces(server);
+    expect(after).not.toBe(before);
+    expect(server.snapshot.graph.nodes.some((n) => n.id === filter.id)).toBe(false);
+    expect(labels(server)).toEqual(["remove Filter", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    expect(labels(server)).toEqual(["draw a cable", "remove Filter"]);
+    server.apply({ type: "redo" });
+    expect(pieces(server)).toBe(after);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+  });
+
+  test("puts back the first effect of a chain before the one after it, and an effect of a bus", () => {
+    const server = fresh();
+    const before = pieces(server);
+    for (const effect of [effectNamed("Reverb", lane0), historyFixture.snapshot.graph.nodes.find((n) => n.kind === "effect" && n.parent !== lane0)]) {
+      if (!effect) throw new Error("the fixture has the effect");
+      server.apply({ type: "removeNode", node: effect.id });
+      expect(labels(server)).toEqual([`remove ${effect.name}`, null]);
+      server.apply({ type: "undo" });
+      expect(pieces(server)).toBe(before);
+    }
   });
 });
 

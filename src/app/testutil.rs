@@ -280,6 +280,8 @@ pub fn stub_engine_of(capacity: usize) -> (EngineHandles, StubEngine) {
         piano_filter: Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight)),
         midi_monitor: Arc::new(MidiMonitor::new(false)),
         telemetry: Arc::new(Telemetry::new()),
+        // (Nobody runs the audio thread that hands a plugin back, unless a test does it by hand: it is not waited for.)
+        recovery_wait: std::time::Duration::ZERO,
     };
     (handles, StubEngine { cmd_rx, midi_rx, return_tx, pattern_tx, learn_tx })
 }

@@ -3329,6 +3329,31 @@ impl AudioGraph {
         lanes.chain(groups).collect()
     }
 
+    /// Set a parameter of an effect of a lane's chain on the plugin itself, for a test: what the model does not know, as a plugin has state apart from its
+    /// parameters.
+    #[cfg(test)]
+    pub fn poke_effect(&mut self, inst: usize, index: usize, param: u32, value: f32) {
+        self.instruments[inst].effects[index].set_parameter(param, value).unwrap();
+    }
+
+    /// A parameter of an effect of a lane's chain, as the plugin itself says it, for a test.
+    #[cfg(test)]
+    pub fn peek_effect(&mut self, inst: usize, index: usize, param: u32) -> Option<f32> {
+        self.instruments.get_mut(inst)?.effects.get_mut(index)?.get_parameter(param)
+    }
+
+    /// Every chain as it is, for a test: for each lane and then each group, its effects (the name, where the plugin is in memory, and the mix as the model has it,
+    /// a 32-bit number): a plugin that went out and came back is where it was, one that was loaded again is not.
+    #[cfg(test)]
+    pub fn chain_dump(&self) -> Vec<Vec<(String, usize, f32)>> {
+        let chain = |effects: &[Box<dyn Plugin>], mixes: &[f64]| -> Vec<(String, usize, f32)> {
+            effects.iter().zip(mixes).map(|(effect, mix)| (effect.name().to_string(), &**effect as *const dyn Plugin as *const () as usize, *mix as f32)).collect()
+        };
+        let lanes = self.instruments.iter().map(|lane| chain(&lane.effects, &lane.mix_values));
+        let groups = self.groups.iter().map(|group| chain(&group.effects, &group.mix_values));
+        lanes.chain(groups).collect()
+    }
+
     /// Every modulator as it is, for a test: its source, what it drives (each cable's kind, depth and telemetry slot; what each is centred on is
     /// `cable_bases`) and the slot it publishes to; the lanes' racks, then the groups'.
     #[cfg(test)]

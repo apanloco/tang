@@ -1347,7 +1347,7 @@ fn deleting_a_bus_effect_drops_the_group_modulators_bus_targets() {
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Char('d'));
     // (The group LFO's cable to the reverb's damping goes first, then the reverb.)
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=1", "RemoveGroupEffect group=0 index=0"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=1", "RemoveGroupEffect group=0 index=0 keep"]);
     let tree = h.tree();
     assert!(!tree.iter().any(|l| l.contains("Reverb")), "{tree:#?}");
     assert!(tree.contains(&"  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)  (bus)"), "{tree:#?}");
@@ -1533,7 +1533,7 @@ fn deleting_an_effect_drops_its_modulator_targets_and_shifts_later_slots() {
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('d'));
     // (The cable to the filter goes first, then the filter.)
-    assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=0", "RemoveEffect inst=0 index=0"]);
+    assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=0", "RemoveEffect inst=0 index=0 keep"]);
     // The reverb's `damping` (parameter 2) moved from slot 2 to slot 1 and the filter's target is gone.
     assert_eq!(lane_targets(&h), [(1, "PluginParam { slot: 1, param_index: 2 }".to_string())]);
     assert_eq!(
@@ -1547,7 +1547,7 @@ fn deleting_the_last_effect_keeps_the_earlier_targets() {
     let mut h = Harness::new(scene_two_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 1 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=1", "RemoveEffect inst=0 index=1"]);
+    assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=1", "RemoveEffect inst=0 index=1 keep"]);
     assert_eq!(
         h.tree(),
         ["♪ Oscillator  [Built-in]", "├ fx Filter  [Built-in]", "╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%)"]
@@ -1698,7 +1698,7 @@ fn deleting_a_member_effect_drops_its_group_targets_and_shifts_the_later_slots()
     let mut h = Harness::new(scene_member_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveEffect inst=0 index=0"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveEffect inst=0 index=0 keep"]);
     // Member 0's filter and its target are gone and its reverb is in slot 1 now;
     // member 1 is another lane and keeps its filter's target in slot 1.
     assert_eq!(member_targets(&h), [(0, 1, 2, 1), (1, 1, 0, 1)]);
@@ -1710,7 +1710,7 @@ fn deleting_the_last_member_effect_keeps_the_earlier_group_targets() {
     let mut h = Harness::new(scene_member_effects());
     h.goto(TreeAddress::Effect { inst: 0, index: 1 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=1", "RemoveEffect inst=0 index=1"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=1", "RemoveEffect inst=0 index=1 keep"]);
     assert_eq!(member_targets(&h), [(0, 1, 0, 1), (1, 1, 0, 1)]);
     assert_eq!(group_lfo_line(&h), "  ~ LFO 0.5Hz sine → M0 Filter: cutoff (40%), M1 Filter: cutoff (20%)  (bus)");
 }
@@ -1721,7 +1721,7 @@ fn deleting_an_effect_of_the_second_member_leaves_the_first_members_targets() {
     let mut h = Harness::new(scene_member_effects());
     h.goto(TreeAddress::Effect { inst: 1, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=2", "RemoveEffect inst=1 index=0"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=2", "RemoveEffect inst=1 index=0 keep"]);
     assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2)]);
 }
 
@@ -1736,7 +1736,7 @@ fn deleting_an_effect_of_a_lane_outside_the_group_leaves_the_group_targets() {
     assert_eq!(member_targets(&h).len(), 3);
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+    assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0 keep"]);
     assert_eq!(member_targets(&h), [(0, 1, 0, 1), (0, 2, 2, 2), (1, 1, 0, 1)]);
 }
 
@@ -4584,7 +4584,7 @@ mod undo_and_redo {
         assert_eq!(h.commands(), ["InsertEffect inst=0 index=0 plugin=Reverb mix=0.500"]);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Reverb"));
         ctrl_z(&mut h);
-        assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0"]);
+        assert_eq!(h.commands(), ["RemoveEffect inst=0 index=0 keep"]);
         assert!(h.tree().iter().all(|line| !line.contains("fx Reverb")), "{:#?}", h.tree());
         assert!(h.s.ctl.model.instruments[0].effects.is_empty());
         ctrl_y(&mut h);
@@ -4602,7 +4602,7 @@ mod undo_and_redo {
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Filter"));
         h.commands();
         ctrl_z(&mut h);
-        assert_eq!(h.commands(), [format!("RemoveGroupEffect group=0 index={buses}")]);
+        assert_eq!(h.commands(), [format!("RemoveGroupEffect group=0 index={buses} keep")]);
         assert_eq!(h.s.ctl.model.groups[0].effects.len(), buses);
         ctrl_y(&mut h);
         assert_eq!(h.commands(), [format!("InsertGroupEffect group=0 index={buses} plugin=Filter mix=1.000")]);
@@ -4790,12 +4790,42 @@ mod undo_and_redo {
     }
 
     #[test]
+    fn d_takes_an_effect_out_as_a_step_that_ctrl_z_puts_back_in_its_place_with_its_cables_and_ctrl_y_takes_out_again() {
+        let cases = [
+            (scene_two_effects().to_string(), TreeAddress::Effect { inst: 0, index: 0 }, "an effect of a lane", "InsertEffect inst=0 index=0 plugin=Filter"),
+            (scene_bus_pair().to_string(), TreeAddress::GroupEffect { group: 0, index: 0 }, "an effect of a bus", "InsertGroupEffect group=0 index=0 plugin=Filter"),
+        ];
+        for (scene, address, what, insert) in cases {
+            let mut h = Harness::new(scene);
+            h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            // Every chain and every cable, with the ids and slots they have.
+            let shape = |h: &Harness| -> String {
+                let lanes = h.s.ctl.model.instruments.iter().map(|lane| format!("{:?} {:?}", lane.effects, lane.modulators));
+                let groups = h.s.ctl.model.groups.iter().map(|group| format!("{:?} {:?}", group.effects, group.modulators));
+                lanes.chain(groups).collect::<Vec<_>>().join("\n")
+            };
+            let before = shape(&h);
+            h.commands();
+            h.goto(address).press(KeyCode::Char('d'));
+            assert_ne!(shape(&h), before, "{what} is gone");
+            assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("remove Filter"), "{what}");
+            h.commands();
+            ctrl_z(&mut h);
+            let commands = h.commands();
+            assert!(commands[0].starts_with(insert), "{what}: {commands:?}");
+            assert_eq!(shape(&h), before, "{what} is back where it was, with its cables and the ids and slots they had");
+            ctrl_y(&mut h);
+            assert_ne!(shape(&h), before, "{what} is taken out again");
+            ctrl_z(&mut h);
+            assert_eq!(shape(&h), before);
+        }
+    }
+
+    #[test]
     fn d_takes_a_node_out_and_forgets_the_history_as_the_browsers_remove_does() {
         use crate::app::history::HistoryState;
-        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator is put back: a test of its own.)
+        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator and an effect are put back: tests of their own.)
         let cases = [
-            (scene_two_effects().to_string(), TreeAddress::Effect { inst: 0, index: 0 }, "an effect"),
-            (scene_bus_pair().to_string(), TreeAddress::GroupEffect { group: 0, index: 0 }, "a bus effect"),
             (scene_bus_pair().to_string(), TreeAddress::Group(0), "a group"),
             (scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied"),
         ];

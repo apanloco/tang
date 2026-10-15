@@ -90,14 +90,18 @@ test("a key typed in a field that takes text is the field's own undo and not the
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
   await expect(undo).toBeEnabled();
 
-  // An effect that is added is a step of its own; one that is taken out is a change that nothing puts back yet, and it empties the history: there is
-  // nothing to undo, and the keys leave Control+Z alone.
+  // An effect that is added is a step of its own, and so is a group; a group that is taken out is a change that nothing puts back yet, and it empties the
+  // history: there is nothing to undo, and the keys leave Control+Z alone.
   await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Reverb" }).click();
   await expect(node(page, "Reverb")).toBeVisible();
   await expect(undo).toHaveAccessibleName("Undo add Reverb");
-  await node(page, "Reverb").getByRole("button", { name: "Remove Reverb" }).click();
-  await expect(node(page, "Reverb")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add a group" }).click();
+  await expect(node(page, "Group 1")).toBeVisible();
+  await expect(undo).toHaveAccessibleName("Undo add a group");
+  await node(page, "Group 1").getByRole("button", { name: "Remove Group 1" }).click();
+  await page.getByRole("menuitem", { name: /^Remove Group 1 for good/ }).click();
+  await expect(node(page, "Group 1")).toHaveCount(0);
   await expect(undo).toBeDisabled();
   await detune.focus();
   await page.keyboard.press("ControlOrMeta+Z");
@@ -250,6 +254,65 @@ test("a modulator that is taken out is put back by Undo with its cable and the d
   await expect(undo).toBeDisabled();
 });
 
+test("an effect that is taken out is put back by Undo with the values it had and the cable that drove it, and taken out again by Redo, and the saved file has what is done", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  const save = async (): Promise<string> => {
+    await page.getByRole("button", { name: /^Save/ }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+  const filter = node(page, "Filter");
+  const resonance = filter.getByRole("slider", { name: "resonance", exact: true });
+  const depth = page.getByRole("slider", { name: "Depth of LFO → Filter: cutoff" });
+
+  // A value of the effect and the depth of the cable that drives it are turned first, so that what comes back is the effect as it was set and not as a new one is.
+  const first = (await resonance.getAttribute("aria-valuenow")) ?? "";
+  await resonance.focus();
+  await page.keyboard.press("End");
+  const turned = (await resonance.getAttribute("aria-valuenow")) ?? "";
+  expect(turned).not.toBe(first);
+  await depth.focus();
+  await page.keyboard.press("End");
+  await expect(depth).toHaveValue("1");
+  const before = await save();
+  expect(before).toContain("builtin:filter");
+
+  // Taken out with its button, the effect goes with the cable that drives it: it is a step of its own, and the file that is saved then has neither.
+  await page.getByRole("button", { name: "Remove Filter", exact: true }).click();
+  await expect(filter).toHaveCount(0);
+  await expect(depth).toHaveCount(0);
+  await expect(undo).toHaveAccessibleName("Undo remove Filter");
+  const taken = await save();
+  expect(taken).not.toContain("builtin:filter");
+  expect(taken).not.toContain('param = "cutoff"');
+
+  // Put back by Undo: it is in its place with the values it had and its cable at the depth it had, and the file is the one that was saved before it went.
+  await undo.click();
+  await expect(filter).toBeVisible();
+  await expect(resonance).toHaveAttribute("aria-valuenow", turned);
+  await expect(depth).toHaveValue("1");
+  await expect(undo).toHaveAccessibleName("Undo set the depth of a cable");
+  await expect(redo).toHaveAccessibleName("Redo remove Filter");
+  expect(await save()).toBe(before);
+
+  // Taken out again by Redo, and put back by the keys; then the cable's depth and the effect's value go back to where they were before they were turned.
+  await redo.click();
+  await expect(filter).toHaveCount(0);
+  expect(await save()).toBe(taken);
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expect(filter).toBeVisible();
+  await expect(depth).toHaveValue("1");
+  await undo.click();
+  await expect(depth).toHaveValue("0.4");
+  await undo.click();
+  await expect(resonance).toHaveAttribute("aria-valuenow", first);
+  await expect(undo).toBeDisabled();
+});
+
 test("the mock engine in the page has the same buttons and keys, and they do what the program's do", async ({ page }) => {
   await open(page);
   const undo = page.getByRole("button", { name: /^Undo/ });
@@ -298,4 +361,16 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(depth).toHaveValue("0.4");
   await redo.click();
   await expect(node(page, "LFO")).toHaveCount(0);
+  // And an effect, with what drives it.
+  await undo.click();
+  await expect(depth).toHaveValue("0.4");
+  await page.getByRole("button", { name: "Remove Filter", exact: true }).click();
+  await expect(node(page, "Filter")).toHaveCount(0);
+  await expect(depth).toHaveCount(0);
+  await expect(undo).toHaveAccessibleName("Undo remove Filter");
+  await undo.click();
+  await expect(node(page, "Filter")).toBeVisible();
+  await expect(depth).toHaveValue("0.4");
+  await redo.click();
+  await expect(node(page, "Filter")).toHaveCount(0);
 });

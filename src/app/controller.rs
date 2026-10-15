@@ -111,6 +111,9 @@ pub struct EngineHandles {
     pub midi_monitor: Arc<MidiMonitor>,
     /// What the audio thread publishes about itself: meters, for now.
     pub telemetry: Arc<Telemetry>,
+    /// How long an undo waits for the audio thread to hand back a plugin that it was asked to keep (a block or two of audio) before it loads the plugin
+    /// again.
+    pub recovery_wait: Duration,
 }
 
 /// The command that gives the audio thread the rate of the LFO at `index` of the rack at `at`.
@@ -170,7 +173,7 @@ impl NewTarget {
 
 /// A chain of effects: a lane's, or a group's bus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChainAt {
+pub(super) enum ChainAt {
     Lane(usize),
     Bus(usize),
 }
@@ -210,6 +213,8 @@ pub struct Controller {
     pub piano_filter: Arc<PianoFilter>,
     pub midi_monitor: Arc<MidiMonitor>,
     pub telemetry: Arc<Telemetry>,
+    /// How long an undo waits for the audio thread to hand back a plugin (`EngineHandles::recovery_wait`).
+    pub(super) recovery_wait: Duration,
 
     /// Plugins the audio thread has taken out of the graph.
     return_rx: Receiver<Box<dyn Plugin>>,
@@ -264,6 +269,7 @@ impl Controller {
             piano_filter,
             midi_monitor,
             telemetry,
+            recovery_wait,
         } = engine;
         Controller {
             global_bpm: initial_bpm(&model),
@@ -283,6 +289,7 @@ impl Controller {
             piano_filter,
             midi_monitor,
             telemetry,
+            recovery_wait,
             return_rx,
             devices: None,
             last_device_poll: now,
@@ -585,8 +592,12 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep: None });
-        self.model.remove_effect(inst, index);
+        // The very plugin is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
+        let (keep, kept) = self.channel_for_a_plugin();
+        let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep });
+        if let Some(slot) = self.model.remove_effect(inst, index) {
+            self.took_out(Inverse::Effect { at: ChainAt::Lane(inst), index, slot, kept });
+        }
         true
     }
 
@@ -627,8 +638,11 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index, keep: None });
-        self.model.remove_bus_effect(group, index);
+        let (keep, kept) = self.channel_for_a_plugin();
+        let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index, keep });
+        if let Some(slot) = self.model.remove_bus_effect(group, index) {
+            self.took_out(Inverse::Effect { at: ChainAt::Bus(group), index, slot, kept });
+        }
         true
     }
 
@@ -1060,6 +1074,10 @@ impl Controller {
     /// that nothing is still calling into a plugin.
     pub fn shutdown(mut self) {
         self.devices = None;
+        // What the history holds of plugins goes now, before the runtime does (a field, dropped when `self` is, which is before the history is): the libraries
+        // that a plugin came from have to be there when it is dropped.
+        self.history.clear();
+        self.taken_last = Journal::default();
         self.reap();
     }
 }

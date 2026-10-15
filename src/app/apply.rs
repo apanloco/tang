@@ -2569,7 +2569,7 @@ type = "midi"
                 "RemoveModTarget inst=0 mod=1 target=0",
                 "RemoveModTarget inst=0 mod=0 target=0",
                 "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveEffect inst=0 index=0",
+                "RemoveEffect inst=0 index=0 keep",
             ]
         );
         let chain: Vec<_> = ctl.model.instruments[0].effects.iter().map(|e| e.name.as_str()).collect();
@@ -2585,7 +2585,7 @@ type = "midi"
         sent(&engine);
         let bus = ctl.model.groups[0].effects[0].node;
         assert_eq!(remove(&mut ctl, bus), Ok(Applied::restructured(1)));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0"]);
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0 keep"]);
         let buses: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(buses, ["Reverb"]);
         ctl.model.check_ids().unwrap();

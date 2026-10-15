@@ -521,6 +521,8 @@ fn run_session(
             piano_filter,
             midi_monitor,
             telemetry,
+            // (The audio thread takes a command within a block or two, 5 to 20 ms: this is for one that is stalled, which an undo then does without.)
+            recovery_wait: std::time::Duration::from_millis(250),
         },
         Some(source.clone()),
     );

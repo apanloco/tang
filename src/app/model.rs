@@ -730,7 +730,6 @@ impl SessionModel {
     /// thread's `InsertEffect` does it. The targets on the effects at that place and after it, the lane's own modulators' and, if the lane is a member of a
     /// group, the group's, are told the slot they have now, before it goes in, so that they keep pointing at the same plugins. The place it went to; `None`,
     /// and nothing changed, if there is no such lane.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
     pub fn insert_effect_at(&mut self, inst: usize, index: usize, effect: PluginSlot) -> Option<usize> {
         let member_of = lane_member_ordinal(&self.instruments, inst);
         let lane = self.instruments.get_mut(inst)?;
@@ -748,7 +747,6 @@ impl SessionModel {
     /// Put a plugin into group `group`'s bus at `index` (the last place, for one past the end): what `remove_bus_effect` took out, put back, the way the
     /// audio thread's `InsertGroupEffect` does it: the group's cables to the bus effects at that place and after it are told the place they have now, before
     /// it goes in. The place it went to; `None`, and nothing changed, if there is no such group.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
     pub fn insert_bus_effect_at(&mut self, group: usize, index: usize, effect: PluginSlot) -> Option<usize> {
         let bus = self.groups.get_mut(group)?;
         let place = index.min(bus.effects.len());
@@ -1513,7 +1511,6 @@ pub fn fixup_cross_mod_after_remove(modulators: &mut [ModulatorSlot], removed_in
 
 /// Mirror of the audio thread's `shift_group_bus_after_insert`: after a bus effect is put in at `at`, bump the `GroupBus` targets that pointed at that
 /// effect or a later one, so they keep pointing at the same effects (the inverse of `fixup_group_bus_after_remove`).
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
 pub fn shift_group_bus_after_insert(modulators: &mut [ModulatorSlot], at: usize) {
     use crate::plugin::chain::ModTargetKind;
     for m in modulators.iter_mut() {
@@ -1749,7 +1746,6 @@ pub fn fixup_slots_after_remove(modulators: &mut [ModulatorSlot], removed: usize
 /// Session-model mirror of the audio thread's `shift_slots_after_insert`: after an effect is put in a lane's chain at effect index `at`, bump the
 /// plugin-param targets at the slots of that effect and the ones after it (a slot is an effect index and one more), so every target still points at the same
 /// plugin (the inverse of `fixup_slots_after_remove`). Slot 0, the instrument, never moves.
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
 pub fn shift_slots_after_insert(modulators: &mut [ModulatorSlot], at: usize) {
     use crate::plugin::chain::ModTargetKind;
     for m in modulators.iter_mut() {
@@ -1808,7 +1804,6 @@ pub fn fixup_member_slots_after_remove(modulators: &mut [ModulatorSlot], member:
 /// Session-model mirror of the audio thread's `shift_member_slots_after_insert`: after an effect is put in member `member`'s chain at effect index `at`, bump
 /// that member's group targets at the slots of that effect and the ones after it (the inverse of `fixup_member_slots_after_remove`). Other members' targets
 /// and slot 0, the instrument, never move.
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller puts an effect back with these, built next"))]
 pub fn shift_member_slots_after_insert(modulators: &mut [ModulatorSlot], member: usize, at: usize) {
     use crate::plugin::chain::ModTargetKind;
     for m in modulators.iter_mut() {
