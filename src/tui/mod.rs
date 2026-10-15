@@ -3654,9 +3654,10 @@ fn render_selector_popup(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    // (The format is a column wider than `Built-in`, which is the longest, so that it does not run into the number of parameters.)
     let columns: &[(&str, u16)] = &[
-        ("Name", inner.width.saturating_sub(22)),
-        ("Format", 8),
+        ("Name", inner.width.saturating_sub(23)),
+        ("Format", 9),
         ("Params", 7),
         ("Presets", 7),
     ];

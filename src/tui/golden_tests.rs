@@ -544,6 +544,20 @@ fn session_filter_param_focus() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn the_selector_keeps_the_format_and_the_number_of_parameters_apart() {
+    // (Finding f02: `Built-in` filled its column, and a row read `Built-in4`.)
+    let mut h = Harness::new(scene_split());
+    h.start_scan();
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.press(KeyCode::Char('a'));
+    let frame = h.dump();
+    assert!(frame.contains("Built-in"), "{frame}");
+    for digit in '0'..='9' {
+        assert!(!frame.contains(&format!("Built-in{digit}")), "a row reads `Built-in{digit}`: {frame}");
+    }
+}
+
+#[test]
 fn popup_effect_selector_while_scanning() {
     // `a` on an instrument: the effect picker, mid-scan, with the built-in
     // catalog already in.
