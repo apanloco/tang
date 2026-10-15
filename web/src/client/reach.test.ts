@@ -152,11 +152,16 @@ describe("which settings of other modulators a modulator can be drawn to", () =>
     const lfo = (id: number): Node => ({ id, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
     const envelope: Node = { id: 21, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 } };
     const control: Node = { id: 22, parent: 0, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
-    const graph = rack(lfo(20), envelope, control);
+    const knob: Node = { id: 23, parent: 0, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.5 } };
+    const graph = rack(lfo(20), envelope, control, knob);
     const types = (id: number, of: number): string[] => fieldsOf(graph, id).filter((found) => found.node === of).map((found) => found.port.type);
     expect(types(20, 21)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(types(21, 20)).toEqual(["rate"]);
     expect(types(20, 22)).toEqual([]);
+    // A macro's value is turned by a person: no cable ends at it. It can drive the settings of the others', as any modulator can.
+    expect(types(20, 23)).toEqual([]);
+    expect(types(23, 20)).toEqual(["rate"]);
+    expect(types(23, 21)).toEqual(["attack", "decay", "sustain", "release"]);
     // (The tracer's own LFO is in the lane too: it has its rate, and the depth of its cable.)
     expect(types(20, 2)).toEqual(["rate", "depth"]);
   });

@@ -136,9 +136,10 @@ function withSetting(node: Node, field: ModulatorField, value: number): Node | s
       return waveform === undefined ? `${value} is not a waveform` : { ...node, source: { ...source, waveform } };
     }
   }
-  if (source.type === "envelope" && field !== "rate" && field !== "waveform") {
+  if (source.type === "envelope" && (field === "attack" || field === "decay" || field === "sustain" || field === "release")) {
     return { ...node, source: { ...source, [field]: value } };
   }
+  if (source.type === "macro" && field === "value") return { ...node, source: { ...source, value } };
   return `${field} does not apply to node ${node.id}`;
 }
 

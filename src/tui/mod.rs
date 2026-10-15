@@ -279,6 +279,7 @@ struct TargetSelectorState {
 enum ModulateChoice {
     NewLfo,
     NewEnvelope,
+    NewMacro,
     Existing(usize),
 }
 
@@ -929,10 +930,11 @@ impl State {
         let (param_index, param_name) = (param.index, param.name.clone());
 
         // Choices: new LFO, new envelope, then each existing lane modulator.
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
+        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope, ModulateChoice::NewMacro];
         let mut items = vec![
             FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
             FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
+            FilterListItem { cells: vec![format!("New macro → {param_name}")], index: 2 },
         ];
         if let Some(node) = self.ctl.model.instruments.get(inst) {
             for (i, m) in node.modulators.iter().enumerate() {
@@ -988,10 +990,11 @@ impl State {
 
         // Choices: new LFO / envelope, then each sibling modulator in the same
         // rack except this one (no self-modulation).
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
+        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope, ModulateChoice::NewMacro];
         let mut items = vec![
             FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
             FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
+            FilterListItem { cells: vec![format!("New macro → {param_name}")], index: 2 },
         ];
         let rack_len = match scope {
             ModulatorLocation::Lane(inst) => self.ctl.model.instruments.get(inst).map_or(0, |n| n.modulators.len()),
@@ -1038,6 +1041,7 @@ impl State {
         let driver = match choice {
             ModulateChoice::NewLfo => Driver::New(ModulatorKind::Lfo, None),
             ModulateChoice::NewEnvelope => Driver::New(ModulatorKind::Envelope, None),
+            ModulateChoice::NewMacro => Driver::New(ModulatorKind::Macro, None),
             ModulateChoice::Existing(i) => Driver::Existing(i),
         };
         self.bind(ms.scope, driver, &ms.target_kind);
@@ -1135,10 +1139,11 @@ impl State {
         };
         let (param_index, param_name) = (param.index, param.name.clone());
 
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
+        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope, ModulateChoice::NewMacro];
         let mut items = vec![
             FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
             FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
+            FilterListItem { cells: vec![format!("New macro → {param_name}")], index: 2 },
         ];
         if let Some(node) = self.ctl.model.groups.get(group) {
             for (i, m) in node.modulators.iter().enumerate() {
@@ -4071,6 +4076,7 @@ fn modulator_field_label(field: ModulatorField) -> &'static str {
         ModulatorField::Decay => "Decay (s)",
         ModulatorField::Sustain => "Sustain",
         ModulatorField::Release => "Release (s)",
+        ModulatorField::Value => "Value",
     }
 }
 
@@ -4082,6 +4088,7 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
         ModSourceSlot::Lfo { .. } => m.source.label(),
         ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
         ModSourceSlot::MidiLearn { .. } => "MIDI".to_string(),
+        ModSourceSlot::Macro { .. } => "Macro".to_string(),
     };
     let row = |name: String, index: usize, min: f32, max: f32, default: f32, value: f32, kind: ParamKind| ParamSlot {
         name,
@@ -4094,7 +4101,7 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
         ..Default::default()
     };
     // What a modulator of each kind starts as, which a row's default is.
-    let (new_lfo, new_envelope) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope());
+    let (new_lfo, new_envelope, new_macro) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro());
     let rows = (0..modulator_param_len(m))
         .filter_map(|position| {
             Some(match modulator_row(m, position)? {
@@ -4110,7 +4117,7 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
                 }
                 ModulatorRow::Setting(field) => {
                     let (min, max) = field.range();
-                    let default = new_lfo.setting(field).or_else(|| new_envelope.setting(field)).unwrap_or(min);
+                    let default = new_lfo.setting(field).or_else(|| new_envelope.setting(field)).or_else(|| new_macro.setting(field)).unwrap_or(min);
                     row(modulator_field_label(field).to_string(), position, min, max, default, m.source.setting(field)?, ParamKind::Float)
                 }
                 // A control's source, shown and not edited.
@@ -4517,7 +4524,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  Shift+←/→  Fine adjust (1%)".into(),
         "  Ctrl+←/→   Coarse adjust (10%)".into(),
         "  Enter      Type a value".into(),
-        "  m          Modulate this parameter (new/existing modulator)".into(),
+        "  m          Modulate this parameter (a new LFO, envelope or macro, or one that is there)".into(),
         "  l          MIDI learn: bind the next CC / pitch-bend / aftertouch".into(),
         "  /          Search parameters".into(),
         "  Esc        Clear filter / back to chain".into(),

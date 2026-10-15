@@ -276,6 +276,31 @@ describe("the patch", () => {
     expect(within(control).getByText("CC 74", { selector: ".tang-node__detail" })).toBeTruthy();
   });
 
+  test("gives a macro one knob, its value, which is turned on its node, with no place for a cable on it and no button that modulates it, and says nothing of its kind twice", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    snapshot.graph.nodes.push({ id: 90, parent: 1, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } });
+    const { requests, clock } = await rig(<PatchView />, { snapshot });
+    const knob = await nodeOf(90);
+    expect(controlsIn(knob)).toEqual(["Value"]);
+    expect(Array.from(knob.querySelectorAll('[role="slider"]')).map((control) => control.getAttribute("aria-valuetext"))).toContain("0.25");
+    // (Its name is its kind: no badge says it again.)
+    expect(knob.querySelector(".tang-node__badge")).toBeNull();
+    // What drives a setting of an LFO or an envelope has a place on the knob and a button that modulates it; a macro's value is turned by a person.
+    expect(knob.querySelector('.react-flow__handle[data-handleid="value"]')).toBeNull();
+    expect(within(knob).queryByRole("button", { name: /^Modulate/ })).toBeNull();
+    expect(within(await nodeOf(lfo.id)).getByRole("button", { name: "Modulate rate" })).toBeTruthy();
+    // It draws what it puts out, like the others.
+    expect(within(knob).getByRole("meter", { name: "Macro output" })).toBeTruthy();
+    // Turned, it sends the value as a setting of the macro.
+    fireEvent.keyDown(within(knob).getByRole("slider", { name: "Value" }), { key: "ArrowUp" });
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent)).toEqual([{ type: "setModulatorField", node: 90, field: "value", value: expect.closeTo(0.26, 9) as unknown }]);
+    });
+  });
+
   test("says what a control is bound to as soon as it is bound, though the settings of a modulator do not render its node", async () => {
     const snapshot: Snapshot = structuredClone(tracerSnapshot);
     snapshot.graph.nodes.push({ id: 91, parent: 1, name: "MIDI (learning…)", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } });

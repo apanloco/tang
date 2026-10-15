@@ -422,13 +422,14 @@ mod typescript {
     /// Every gain and every modulator setting, to write the range of each. (One left out
     /// is a key missing in the `Record` that is generated, which the web's typecheck refuses.)
     const GAINS: [Gain; 4] = [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan];
-    const MODULATOR_FIELDS: [ModulatorField; 6] = [
+    const MODULATOR_FIELDS: [ModulatorField; 7] = [
         ModulatorField::Rate,
         ModulatorField::Waveform,
         ModulatorField::Attack,
         ModulatorField::Decay,
         ModulatorField::Sustain,
         ModulatorField::Release,
+        ModulatorField::Value,
     ];
 
     /// The entries of a TypeScript object that says `[min, max]` for each of `all`, by the
@@ -444,15 +445,15 @@ mod typescript {
     }
 
     /// The entries of a TypeScript object that says what each setting of a modulator is when the
-    /// modulator is new: what a new LFO and a new envelope start as.
+    /// modulator is new: what a new LFO, a new envelope and a new macro start as.
     fn default_entries() -> String {
         use crate::app::model::ModSourceSlot;
-        let (lfo, envelope) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope());
+        let (lfo, envelope, knob) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro());
         MODULATOR_FIELDS
             .iter()
             .map(|&field| {
                 let name = serde_json::to_value(field).unwrap();
-                let value = lfo.setting(field).or_else(|| envelope.setting(field)).expect("a new LFO or a new envelope has every setting");
+                let value = lfo.setting(field).or_else(|| envelope.setting(field)).or_else(|| knob.setting(field)).expect("a new LFO, a new envelope or a new macro has every setting");
                 format!("  {}: {value},\n", name.as_str().expect("a unit variant is a string"))
             })
             .collect()
@@ -636,7 +637,7 @@ mod typescript {
         // (Not `0.009999999776482582`: an f32 is written as the shortest number that is it.)
         assert_eq!(
             range_entries(&MODULATOR_FIELDS, ModulatorField::range),
-            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n"
+            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n"
         );
     }
 
@@ -644,7 +645,7 @@ mod typescript {
     fn the_taper_of_a_modulator_setting_is_written_for_every_setting() {
         assert_eq!(
             taper_entries(),
-            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n"
+            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n"
         );
     }
 
@@ -652,7 +653,7 @@ mod typescript {
     fn what_a_new_modulator_starts_as_is_written_for_every_setting() {
         assert_eq!(
             default_entries(),
-            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n"
+            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n"
         );
     }
 

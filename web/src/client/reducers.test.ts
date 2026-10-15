@@ -43,6 +43,12 @@ function withEnvelope(): { snapshot: Snapshot; envelope: Node; learn: Node } {
   return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, envelope, learn] } }, envelope, learn };
 }
 
+/** The tracer with a macro at 0.25 added, for the setting that only a macro has. */
+function withMacro(): { snapshot: Snapshot; knob: Node } {
+  const knob: Node = { id: 43, parent: oscillator.id, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
+  return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, knob] } }, knob };
+}
+
 function sourceOf(snapshot: Snapshot, node: Node) {
   const found = snapshot.graph.nodes.find((n) => n.id === node.id);
   if (found?.kind !== "modulator") throw new Error("not a modulator");
@@ -488,6 +494,29 @@ describe("a modulator field set", () => {
     for (const [field, expected] of stages) {
       const after = applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: envelope.id, field, value: values[field] });
       expect(sourceOf(after, envelope), field).toEqual({ type: "envelope", ...expected });
+    }
+  });
+
+  test("sets the value of a macro, and changes nothing else of it or of the graph", () => {
+    const { snapshot, knob } = withMacro();
+    const after = applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: knob.id, field: "value", value: 0.8 });
+    expect(sourceOf(after, knob)).toEqual({ type: "macro", value: 0.8 });
+    expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
+    expect(after.graph.nodes.find((n) => n.id === lfo.id)).toBe(lfo);
+    expect(after.graph.edges).toBe(snapshot.graph.edges);
+    expect(sourceOf(snapshot, knob), "the snapshot it was applied to").toEqual({ type: "macro", value: 0.25 });
+    expect(after.graph.nodes.find((n) => n.id === knob.id)).toMatchObject({ name: "Macro", parent: oscillator.id });
+  });
+
+  test("is refused by a macro for each of the settings that it has not, and by every other kind for its value", () => {
+    const { snapshot, knob } = withMacro();
+    const { snapshot: more, envelope, learn } = withEnvelope();
+    for (const field of ["rate", "waveform", "attack", "decay", "sustain", "release"] as const) {
+      expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: knob.id, field, value: 0.5 }), field).toEqual({ ok: false, reason: `${field} does not apply to node ${knob.id}` });
+    }
+    for (const node of [lfo.id, envelope.id, learn.id]) {
+      const snapshotOf = node === lfo.id ? snapshot : more;
+      expect(applyEvent(snapshotOf, { rev: 1, type: "modulatorFieldSet", node, field: "value", value: 0.5 }), `node ${node}`).toEqual({ ok: false, reason: `value does not apply to node ${node}` });
     }
   });
 

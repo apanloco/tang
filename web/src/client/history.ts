@@ -157,7 +157,7 @@ export interface Removed {
 export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "barrier" | "nothing";
 
 /** What a button that adds a modulator says it adds (`ModulatorKind::label`). */
-const MODULATOR_LABELS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
+const MODULATOR_LABELS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control", macro: "a macro" };
 
 /**
  * The intent that takes out what `added`, an add that was carried out, made: the one node, or the one cable, as it is in `snapshot`; or null if it
@@ -225,6 +225,7 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
     if (field === "sustain") return source.sustain;
     if (field === "release") return source.release;
   }
+  if (source.type === "macro" && field === "value") return source.value;
   return undefined;
 }
 

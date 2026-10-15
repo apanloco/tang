@@ -82,7 +82,8 @@ describe("the settings of a modulator and the depths of its cables", () => {
     source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
   };
   const control: Node = { id: 42, parent: oscillator.id, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
-  const withMore = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, envelope, control] } });
+  const macro: Node = { id: 43, parent: oscillator.id, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
+  const withMore = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, envelope, control, macro] } });
 
   test("an LFO's rate, and its waveform as the index the intent takes", () => {
     expect(modulatorFieldOf(state, lfo.id, "rate")).toBe(0.5);
@@ -91,6 +92,13 @@ describe("the settings of a modulator and the depths of its cables", () => {
     const node = saw.graph.nodes.find((n) => n.id === lfo.id);
     if (node?.kind === "modulator" && node.source.type === "lfo") node.source.waveform = "saw";
     expect(modulatorFieldOf(stateOf(saw), lfo.id, "waveform")).toBe(2);
+  });
+
+  test("the value of a macro, which is the only setting it has", () => {
+    expect(modulatorFieldOf(withMore, macro.id, "value")).toBe(0.25);
+    for (const field of ["rate", "waveform", "attack", "decay", "sustain", "release"] as const) expect(modulatorFieldOf(withMore, macro.id, field), field).toBeUndefined();
+    // (And an LFO, an envelope and a control have no value.)
+    expect([lfo.id, envelope.id, control.id].map((id) => modulatorFieldOf(withMore, id, "value"))).toEqual([undefined, undefined, undefined]);
   });
 
   test("the stages of an envelope", () => {

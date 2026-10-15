@@ -104,6 +104,7 @@ fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> 
                     pitch_bend: matches!(source, Some(MidiBindSource::PitchBend)),
                     aftertouch: matches!(source, Some(MidiBindSource::Aftertouch)),
                 },
+                ModSourceSlot::Macro { value } => SaveModSource::Macro { value: *value },
             };
             SaveModulator {
                 source,
@@ -392,6 +393,35 @@ pinned = ["cutoff", "resonance"]
         let mut run = load("[[instrument]]\nplugin = \"builtin:osc\"\n");
         run.model.instruments[0].instrument.as_mut().unwrap().current_preset = Some("Warm Pad".into());
         assert!(saved(&run.model).contains("preset = \"Warm Pad\""));
+    }
+
+    const MACROS: &str = "[[group]]\n[[group.modulator]]\ntype = \"macro\"\nvalue = 0.5\n\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.25\n";
+
+    #[test]
+    fn a_macro_is_saved_with_its_value_and_loaded_again_the_same_in_a_lane_and_in_a_group() {
+        let first = load(MACROS);
+        let file = saved(&first.model);
+        assert_eq!(file.matches("type = \"macro\"").count(), 2, "{file}");
+        assert!(file.contains("value = 0.25") && file.contains("value = 0.5"), "{file}");
+        let second = load(&file);
+        assert_eq!(first.commands, second.commands);
+        assert_eq!(saved(&second.model), file, "a second save is the same file");
+    }
+
+    #[test]
+    fn a_macro_that_is_turned_is_saved_at_the_value_it_has_and_a_macro_at_rest_says_so() {
+        let mut run = load(MACROS);
+        run.model.instruments[0].modulators[0].source = ModSourceSlot::Macro { value: 0.8 };
+        run.model.groups[0].modulators[0].source = ModSourceSlot::Macro { value: 0.0 };
+        let file = saved(&run.model);
+        assert!(file.contains("value = 0.8") && file.contains("value = 0.0"), "{file}");
+        assert!(!file.contains("value = 0.25") && !file.contains("value = 0.5"), "{file}");
+    }
+
+    #[test]
+    fn the_other_modulators_are_saved_with_no_value() {
+        let file = saved(&load(MIDI).model);
+        assert!(!file.contains("value ="), "{file}");
     }
 
     #[test]

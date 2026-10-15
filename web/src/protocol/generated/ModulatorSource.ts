@@ -2,4 +2,4 @@
 import type { MidiControl } from "./MidiControl";
 import type { Waveform } from "./Waveform";
 
-export type ModulatorSource = { "type": "lfo", waveform: Waveform, rate: number, } | { "type": "envelope", attack: number, decay: number, sustain: number, release: number, } | { "type": "midiLearn", control: MidiControl | null, learning: boolean, };
+export type ModulatorSource = { "type": "lfo", waveform: Waveform, rate: number, } | { "type": "envelope", attack: number, decay: number, sustain: number, release: number, } | { "type": "midiLearn", control: MidiControl | null, learning: boolean, } | { "type": "macro", value: number, };

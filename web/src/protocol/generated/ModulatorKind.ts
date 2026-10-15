@@ -3,4 +3,4 @@
 /**
  * What a new modulator is.
  */
-export type ModulatorKind = "lfo" | "envelope" | "midiLearn";
+export type ModulatorKind = "lfo" | "envelope" | "midiLearn" | "macro";

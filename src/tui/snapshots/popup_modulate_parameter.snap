@@ -17,8 +17,8 @@ source: src/tui/golden_tests.rs
 │╰ ~ LFO 0.2Hz triangle → Filt│Modulator                                                 │                             │
 │                             │New LFO → cutoff                                          │                             │
 │                             │New envelope → cutoff                                     │                             │
+│                             │New macro → cutoff                                        │                             │
 │                             │attach → LFO 0.2Hz triangle                               │                             │
-│                             │                                                          │                             │
 │                             │                                                          │                             │
 │                             │                                                          │                             │
 │                             │                                                          │                             │

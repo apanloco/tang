@@ -191,6 +191,7 @@ impl Snapshot {
                     (ModulatorSource::Envelope { decay, .. }, ModulatorField::Decay) => *decay = *value,
                     (ModulatorSource::Envelope { sustain, .. }, ModulatorField::Sustain) => *sustain = *value,
                     (ModulatorSource::Envelope { release, .. }, ModulatorField::Release) => *release = *value,
+                    (ModulatorSource::Macro { value: set }, ModulatorField::Value) => *set = *value,
                     _ => return Err(DoesNotFit(format!("{field:?} does not apply to node {}", node.0))),
                 }
             }
@@ -726,6 +727,22 @@ type = "envelope"
     }
 
     #[test]
+    fn a_macro_that_is_turned_is_turned_in_the_snapshot_as_it_is_in_the_session_and_has_no_rate() {
+        let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.25\n", None);
+        let mut told = ctl.snapshot();
+        let knob = ctl.model.instruments[0].modulators[0].node;
+        let applied = ctl.apply(Intent::SetModulatorField { node: knob, field: ModulatorField::Value, value: 0.8 }).unwrap();
+        told.apply(&applied).unwrap();
+        assert_eq!(told, ctl.snapshot());
+        let found = told.graph.nodes.iter().find(|n| n.id == knob).unwrap();
+        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.8 } });
+        let before = told.clone();
+        let error = told.apply(&Applied::of(2, vec![Event::ModulatorFieldSet { node: knob, field: ModulatorField::Rate, value: 1.0 }])).unwrap_err().to_string();
+        assert!(error.contains("does not apply"), "{error}");
+        assert_eq!(told, before);
+    }
+
+    #[test]
     fn an_event_that_does_not_fit_what_it_names_is_refused_and_changes_nothing() {
         let ctl = controller(APPLY, None);
         let mut told = ctl.snapshot();
@@ -749,6 +766,8 @@ type = "envelope"
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Attack, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Rate, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Waveform, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Value, value: 0.5 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: n.envelope, field: ModulatorField::Value, value: 0.5 }, "does not apply"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 6.0 }, "6 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 7.0 }, "7 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 1.5 }, "1.5 is not a waveform"),

@@ -5,7 +5,7 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, rate_command};
+use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, macro_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::journal::{Inverse, Journal, RowBefore};
@@ -369,6 +369,11 @@ impl Controller {
                     _ => *release = value,
                 }
                 envelope_command(at, index, (*attack, *decay, *sustain, *release))
+            }
+            // (A macro has nothing but its value, so the engine is given a macro of the new one in place of the old.)
+            (ModSourceSlot::Macro { value: set }, ModulatorField::Value) => {
+                *set = value;
+                macro_command(at, index, value)
             }
             _ => return Err(invalid(format!("{field:?} does not apply to that modulator"))),
         };
@@ -1549,6 +1554,98 @@ rate = 1.0
         assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate } if rate == 7.5));
     }
 
+    /// A group with a macro at 0.5 and a lane in it with a macro at 0.25.
+    const MACROS: &str = r#"
+[[group]]
+[[group.modulator]]
+type = "macro"
+value = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "macro"
+value = 0.25
+"#;
+
+    fn macros() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(MACROS).model, handles, None))
+    }
+
+    fn lane_macro(ctl: &Controller) -> f32 {
+        match &ctl.model.instruments[0].modulators[0].source {
+            ModSourceSlot::Macro { value } => *value,
+            other => panic!("{other:?} is not a macro"),
+        }
+    }
+
+    #[test]
+    fn set_modulator_field_value_sets_a_lane_macro_in_the_model_and_gives_the_engine_a_macro_of_that_value() {
+        let (engine, mut ctl) = macros();
+        sent(&engine);
+        let knob = lane_mod(&ctl, 0);
+        let applied = field(&mut ctl, knob, ModulatorField::Value, 0.75).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::ModulatorFieldSet { node: knob, field: ModulatorField::Value, value: 0.75 }]));
+        assert_eq!(lane_macro(&ctl), 0.75);
+        assert_eq!(sent(&engine), ["SetModulatorSource inst=0 mod=0 source=Macro { value: 0.75 }"]);
+        assert!(ctl.dirty);
+        assert_eq!(ctl.rev, 1);
+    }
+
+    #[test]
+    fn set_modulator_field_value_reaches_a_group_macro_by_the_groups_command_and_leaves_the_lanes_alone() {
+        let (engine, mut ctl) = macros();
+        sent(&engine);
+        let knob = group_mod(&ctl, 0);
+        field(&mut ctl, knob, ModulatorField::Value, 0.1).unwrap();
+        assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::Macro { value } if value == 0.1));
+        assert_eq!(lane_macro(&ctl), 0.25, "the lane's macro is another modulator");
+        assert_eq!(sent(&engine), ["SetGroupModulatorSource group=0 mod=0 source=Macro { value: 0.1 }"]);
+    }
+
+    #[test]
+    fn the_value_of_a_macro_is_held_between_nothing_and_one_and_a_number_that_is_not_one_is_refused() {
+        let (engine, mut ctl) = macros();
+        let knob = lane_mod(&ctl, 0);
+        let told = |applied: Applied| match applied.events[0] {
+            Event::ModulatorFieldSet { value, .. } => value,
+            ref other => panic!("{other:?}"),
+        };
+        for (asked, got) in [(1.5, 1.0), (-0.5, 0.0), (0.0, 0.0), (1.0, 1.0), (0.3, 0.3)] {
+            assert_eq!(told(field(&mut ctl, knob, ModulatorField::Value, asked).unwrap()), got, "{asked}");
+            assert_eq!(lane_macro(&ctl), got, "{asked}");
+        }
+        sent(&engine);
+        let rev = ctl.rev;
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(matches!(field(&mut ctl, knob, ModulatorField::Value, bad), Err(IntentError::Invalid(_))), "{bad}");
+        }
+        assert_eq!((lane_macro(&ctl), ctl.rev), (0.3, rev), "a refusal changes nothing");
+        assert_eq!(sent(&engine), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_macro_has_no_rate_and_an_lfo_has_no_value() {
+        let (engine, mut ctl) = macros();
+        let knob = lane_mod(&ctl, 0);
+        let group_knob = group_mod(&ctl, 0);
+        sent(&engine);
+        for setting in [ModulatorField::Rate, ModulatorField::Waveform, ModulatorField::Attack, ModulatorField::Sustain] {
+            assert!(matches!(field(&mut ctl, knob, setting, 0.5), Err(IntentError::Invalid(_))), "{setting:?}");
+            assert!(matches!(field(&mut ctl, group_knob, setting, 0.5), Err(IntentError::Invalid(_))), "{setting:?}");
+        }
+        let (_engine, mut ctl_with_lfo) = modulated();
+        let lfo = lane_mod(&ctl_with_lfo, 0);
+        let envelope = lane_mod(&ctl_with_lfo, 1);
+        for modulator in [lfo, envelope, group_mod(&ctl_with_lfo, 0)] {
+            assert!(matches!(field(&mut ctl_with_lfo, modulator, ModulatorField::Value, 0.5), Err(IntentError::Invalid(_))), "{modulator:?}");
+        }
+        assert_eq!((lane_macro(&ctl), ctl.rev), (0.25, 0), "nothing changed");
+        assert_eq!(sent(&engine), Vec::<String>::new());
+    }
+
     #[test]
     fn set_modulator_field_clamps_to_each_fields_range_and_rounds_the_waveform() {
         let (_engine, mut ctl) = modulated();
@@ -1826,7 +1923,7 @@ rate = 1.0
         let (engine, mut ctl) = controller();
         sent(&engine);
         let empty = node(&ctl, NodePath::Instrument(1));
-        for kind in [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn] {
+        for kind in [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro] {
             add(&mut ctl, empty, kind).unwrap();
         }
         let rack = &ctl.model.instruments[1].modulators;
@@ -1836,15 +1933,17 @@ rate = 1.0
             ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)
         ));
         assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
+        assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "at rest: it moves nothing until it is turned");
         assert_eq!(
             sent(&engine),
             [
                 "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }".to_string(),
                 "InsertModulator inst=1 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }".to_string(),
                 "InsertModulator inst=1 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
+                "InsertModulator inst=1 index=3 source=Macro { value: 0.0 }".to_string(),
             ]
         );
-        assert_eq!(ctl.rev, 3);
+        assert_eq!(ctl.rev, 4);
         ctl.model.check_ids().unwrap();
     }
 
@@ -1904,15 +2003,17 @@ rate = 1.0
         let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
         let (volume, _) = param(&ctl, NodePath::Instrument(0), "volume");
         let (pan, _) = param(&ctl, NodePath::Instrument(0), "pan");
+        let (attack, _) = param(&ctl, NodePath::Instrument(0), "attack");
         let osc = lane(&ctl);
-        for (param, kind) in [(detune, ModulatorKind::Lfo), (volume, ModulatorKind::Envelope), (pan, ModulatorKind::MidiLearn)] {
+        for (param, kind) in [(detune, ModulatorKind::Lfo), (volume, ModulatorKind::Envelope), (pan, ModulatorKind::MidiLearn), (attack, ModulatorKind::Macro)] {
             modulate(&mut ctl, osc, Port::Param { index: param }, kind, None).unwrap();
         }
         let rack = &ctl.model.instruments[0].modulators;
         assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
         assert!(matches!(rack[1].source, ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)));
         assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
-        assert_eq!(rack.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1, 1]);
+        assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "at rest, so that the cable moves nothing until the macro is turned");
+        assert_eq!(rack.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1, 1, 1]);
         ctl.model.check_ids().unwrap();
     }
 

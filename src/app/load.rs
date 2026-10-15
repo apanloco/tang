@@ -809,6 +809,12 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
             };
             (source, desc)
         }
+        "macro" => {
+            // (The number is held to the knob's range: a file can say what the knob cannot be at.)
+            let (min, max) = crate::app::intent::ModulatorField::Value.range();
+            let value = (mod_config.value as f32).clamp(min, max);
+            (ModSourceSlot::Macro { value }, format!("macro at {value:.2}"))
+        }
         _ => {
             // Default: LFO.
             let waveform = plugin::chain::LfoWaveform::from_str(&mod_config.waveform)
@@ -1543,6 +1549,56 @@ mod tests {
         assert_eq!(run.model.instruments.len(), 2);
         assert_eq!(run.model.instruments[0].range, Some((12, 59)));
         assert_eq!(run.model.instruments[1].modulators[0].targets[0].depth, 0.15);
+    }
+
+    /// A group with a macro at 0.5, and a lane in it with a macro at 0.25 that drives the oscillator's `detune`.
+    const MACROS: &str = r#"
+[[group]]
+[[group.modulator]]
+type = "macro"
+value = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "macro"
+value = 0.25
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.4
+"#;
+
+    #[test]
+    fn a_macro_is_loaded_at_the_value_the_file_gives_it_in_a_lane_and_in_a_group_and_the_engine_is_given_it() {
+        let run = load(MACROS);
+        assert!(matches!(run.model.instruments[0].modulators[0].source, ModSourceSlot::Macro { value } if value == 0.25));
+        assert!(matches!(run.model.groups[0].modulators[0].source, ModSourceSlot::Macro { value } if value == 0.5));
+        assert!(run.commands.contains(&"InsertModulator inst=0 index=0 source=Macro { value: 0.25 }".to_string()), "{:#?}", run.commands);
+        assert!(run.commands.contains(&"InsertGroupModulator group=0 index=0 source=Macro { value: 0.5 }".to_string()), "{:#?}", run.commands);
+        // Its cable is a cable like any other.
+        assert_eq!(run.model.instruments[0].modulators[0].targets.len(), 1);
+        assert!(run.commands.iter().any(|c| c.starts_with("AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.400")), "{:#?}", run.commands);
+    }
+
+    #[test]
+    fn a_macro_that_has_no_value_is_at_rest_and_a_value_beyond_its_range_is_held_in_it() {
+        let value_of = |text: &str| match load(text).model.instruments[0].modulators[0].source {
+            ModSourceSlot::Macro { value } => value,
+            ref other => panic!("{other:?}"),
+        };
+        let lane = |value: &str| format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\n{value}");
+        assert_eq!(value_of(&lane("")), 0.0);
+        assert_eq!(value_of(&lane("value = 1.5\n")), 1.0);
+        assert_eq!(value_of(&lane("value = -2.0\n")), 0.0);
+        assert_eq!(value_of(&lane("value = 0.75\n")), 0.75);
+    }
+
+    #[test]
+    fn a_macro_value_that_is_not_a_finite_number_is_refused_with_its_place() {
+        let Err(error) = try_load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = nan\n") else { panic!("a value that is not a number is refused") };
+        let error = format!("{error:#}");
+        assert!(error.contains("instrument[0].modulator[0].value") && error.contains("is not a finite number"), "{error}");
     }
 
     #[test]

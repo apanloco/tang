@@ -172,6 +172,9 @@ pub struct ModulatorConfig {
     pub sustain: f64,
     #[serde(default = "default_release")]
     pub release: f64,
+    /// For `type = "macro"`: the value the knob is at, 0 to 1 (held to it when the session is loaded). A macro that has none is at rest.
+    #[serde(default)]
+    pub value: f64,
     /// For `type = "midi"`: the bound CC number (mutually exclusive with
     /// `midi_pitch_bend` / `midi_aftertouch`). Absent = unbound (armed for
     /// learning on load).
@@ -734,6 +737,8 @@ pub enum SaveModSource {
     /// `aftertouch` select the wheel or key pressure. All unset = unbound
     /// (still learning).
     MidiLearn { cc: Option<u8>, pitch_bend: bool, aftertouch: bool },
+    /// A macro: the number it is set to.
+    Macro { value: f32 },
 }
 
 pub struct SaveModulator {
@@ -945,6 +950,8 @@ struct ModulatorOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     release: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     midi_cc: Option<u8>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     midi_pitch_bend: bool,
@@ -1121,6 +1128,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     decay: None,
                     sustain: None,
                     release: None,
+                    value: None,
                     midi_cc: None,
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
@@ -1135,6 +1143,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     decay: Some(clean_f64(*decay)),
                     sustain: Some(clean_f64(*sustain)),
                     release: Some(clean_f64(*release)),
+                    value: None,
                     midi_cc: None,
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
@@ -1149,9 +1158,25 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     decay: None,
                     sustain: None,
                     release: None,
+                    value: None,
                     midi_cc: *cc,
                     midi_pitch_bend: *pitch_bend,
                     midi_aftertouch: *aftertouch,
+                    targets,
+                    ui,
+                },
+                SaveModSource::Macro { value } => ModulatorOut {
+                    mod_type: "macro".into(),
+                    waveform: None,
+                    rate: None,
+                    attack: None,
+                    decay: None,
+                    sustain: None,
+                    release: None,
+                    value: Some(clean_f64(*value)),
+                    midi_cc: None,
+                    midi_pitch_bend: false,
+                    midi_aftertouch: false,
                     targets,
                     ui,
                 },

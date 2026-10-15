@@ -1113,6 +1113,10 @@ pub enum ModSourceSlot {
         source: Option<crate::plugin::chain::MidiBindSource>,
         learning: bool,
     },
+    /// A number that the person sets, 0 to 1: a knob that drives what has a cable from it.
+    Macro {
+        value: f32,
+    },
 }
 
 impl ModSourceSlot {
@@ -1132,12 +1136,18 @@ impl ModSourceSlot {
         ModSourceSlot::MidiLearn { source: None, learning: true }
     }
 
+    /// A macro at rest: it drives nothing until it is turned.
+    pub fn new_macro() -> Self {
+        ModSourceSlot::Macro { value: 0.0 }
+    }
+
     /// What the modulator's node is called for a client: its kind, or what a control
     /// is bound to. Not its settings, which a client is told when they change and
     /// which a name would have to follow (`label` has them, for the TUI).
     pub fn node_name(&self) -> String {
         match self {
             ModSourceSlot::Lfo { .. } => "LFO".to_string(),
+            ModSourceSlot::Macro { .. } => "Macro".to_string(),
             other => other.label(),
         }
     }
@@ -1155,6 +1165,7 @@ impl ModSourceSlot {
                 None if *learning => "MIDI (learning…)".to_string(),
                 None => "MIDI (unbound)".to_string(),
             },
+            ModSourceSlot::Macro { value } => format!("Macro {value:.2}"),
         }
     }
 }
@@ -1397,6 +1408,7 @@ impl ModSourceSlot {
                 &[R::Type, R::Setting(F::Attack), R::Setting(F::Decay), R::Setting(F::Sustain), R::Setting(F::Release), R::Separator]
             }
             ModSourceSlot::MidiLearn { .. } => &[R::Info, R::Separator],
+            ModSourceSlot::Macro { .. } => &[R::Setting(F::Value), R::Separator],
         }
     }
 
@@ -1409,6 +1421,7 @@ impl ModSourceSlot {
             (ModSourceSlot::Envelope { decay, .. }, ModulatorField::Decay) => Some(*decay),
             (ModSourceSlot::Envelope { sustain, .. }, ModulatorField::Sustain) => Some(*sustain),
             (ModSourceSlot::Envelope { release, .. }, ModulatorField::Release) => Some(*release),
+            (ModSourceSlot::Macro { value }, ModulatorField::Value) => Some(*value),
             _ => None,
         }
     }
@@ -1485,6 +1498,8 @@ pub fn modulator_row_to_cross_mod(
                 ModulatorField::Release => (K::ModulatorRelease { mod_index }, "release"),
                 // (It has a row of its own, `ModulatorRow::Waveform`, which is not a number for a control to move.)
                 ModulatorField::Waveform => return None,
+                // (A macro's value is turned by a person: a cable that drives it is not built.)
+                ModulatorField::Value => return None,
             };
             let (min, max) = field.range();
             Some((kind, min, max, m.source.setting(field)?, format!("Mod {mod_index} {name}")))
@@ -1914,6 +1929,7 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
             value: 0.0,
             learning: *learning,
         },
+        ModSourceSlot::Macro { value } => crate::plugin::chain::ModSource::Macro { value: *value },
     }
 }
 
@@ -4279,6 +4295,27 @@ depth = 0.5
     }
 
     #[test]
+    fn a_macro_goes_to_the_audio_thread_as_a_macro_of_its_value() {
+        assert!(matches!(mod_source_slot_to_graph(&ModSourceSlot::Macro { value: 0.4 }), ModSource::Macro { value } if value == 0.4));
+        assert!(matches!(mod_source_slot_to_graph(&ModSourceSlot::new_macro()), ModSource::Macro { value } if value == 0.0));
+    }
+
+    #[test]
+    fn a_new_macro_is_at_rest() {
+        assert!(matches!(ModSourceSlot::new_macro(), ModSourceSlot::Macro { value } if value == 0.0));
+    }
+
+    #[test]
+    fn a_macro_is_labelled_with_its_value_and_its_node_is_called_a_macro_whatever_the_value() {
+        assert_eq!(ModSourceSlot::Macro { value: 0.5 }.label(), "Macro 0.50");
+        assert_eq!(ModSourceSlot::Macro { value: 0.0 }.label(), "Macro 0.00");
+        assert_eq!(ModSourceSlot::Macro { value: 1.0 }.label(), "Macro 1.00");
+        // (A node's name is its kind: a client is told the settings when they change, and a name would have to follow them.)
+        assert_eq!(ModSourceSlot::Macro { value: 0.5 }.node_name(), "Macro");
+        assert_eq!(ModSourceSlot::Macro { value: 0.9 }.node_name(), "Macro");
+    }
+
+    #[test]
     fn new_modulators_start_as_a_sine_of_one_hertz_or_the_default_envelope() {
         use crate::plugin::chain::LfoWaveform;
         assert!(matches!(
@@ -4367,6 +4404,44 @@ depth = 0.5
 
         // Past the last row there is nothing to edit.
         assert_eq!(modulator_param_range(&m, modulator_param_len(&m)), None);
+    }
+
+    fn knob(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
+        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::Macro { value: 0.25 }, targets, output: None }
+    }
+
+    #[test]
+    fn the_pane_of_a_macro_has_its_value_and_then_its_targets_and_no_type_to_turn() {
+        use ModulatorField as F;
+        use ModulatorRow::*;
+        let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
+        let m = knob(two());
+        let rows: Vec<_> = (0..=modulator_param_len(&m)).map(|r| modulator_row(&m, r)).collect();
+        assert_eq!(rows, [Some(Setting(F::Value)), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]);
+        assert_eq!(modulator_param_range(&m, 0), Some((0.0, 1.0)));
+        assert!(!modulator_param_is_enum(&m, 0), "a number, not a choice");
+        assert_eq!(modulator_param_len(&knob(vec![])), 2);
+        // The value is the macro's setting, and it has no other: no rate, no stage.
+        assert_eq!(m.source.setting(F::Value), Some(0.25));
+        for field in [F::Rate, F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release] {
+            assert_eq!(m.source.setting(field), None, "{field:?}");
+        }
+        // An LFO and an envelope have no value.
+        assert_eq!(lfo(vec![]).source.setting(F::Value), None);
+        assert_eq!(adsr(vec![]).source.setting(F::Value), None);
+        // The row makes the intent that sets it.
+        assert_eq!(m.row_intent(0, |value| value * 2.0), Some(Intent::SetModulatorField { node: NodeId(7), field: F::Value, value: 0.5 }));
+        assert_eq!(m.row_intent(1, |value| value), None, "the separator");
+    }
+
+    #[test]
+    fn the_value_of_a_macro_is_no_setting_that_a_cable_can_drive_and_the_depths_of_its_cables_are() {
+        let m = knob(vec![target(K::PluginParam { slot: 0, param_index: 0 })]);
+        assert_eq!(modulator_row_to_cross_mod(&m, 3, 0), None, "the value is turned by a person");
+        assert_eq!(modulator_row_to_cross_mod(&m, 3, 1), None, "the separator");
+        let (kind, min, max, base, label) = modulator_row_to_cross_mod(&m, 3, 2).unwrap();
+        assert!(matches!(kind, K::ModulatorDepth { mod_index: 3, target_index: 0 }), "{kind:?}");
+        assert_eq!((min, max, base, label.as_str()), (DEPTH_MIN, DEPTH_MAX, 0.5, "Mod 3 depth 0"));
     }
 
     #[test]

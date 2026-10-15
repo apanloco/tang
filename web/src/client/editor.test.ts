@@ -97,6 +97,13 @@ describe("adding a modulator", () => {
     expect(client.state.snapshot).toEqual(tracerSnapshot);
   });
 
+  test("says a macro that it could not add is a macro", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addModulator(filter.id, "macro")).toBeNull();
+    expect(said(notices)).toEqual(["Could not add a macro to Filter: a modulator goes in a lane or in a group"]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
   test("with no connection says so", async () => {
     const { client, notices, editor } = await open();
     client.stop();

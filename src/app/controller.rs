@@ -133,6 +133,16 @@ pub(super) fn envelope_command(at: ModulatorLocation, index: usize, (attack, dec
     }
 }
 
+/// The command that gives the audio thread a macro of `value` in the place of the macro at `index` of the rack at `at`: a macro has nothing in the engine but its value,
+/// so a new one is all that a change of the value is.
+pub(super) fn macro_command(at: ModulatorLocation, index: usize, value: f32) -> GraphCommand {
+    let source = crate::plugin::chain::ModSource::Macro { value };
+    match at {
+        ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorSource { inst, mod_index: index, source },
+        ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorSource { group, mod_index: index, source },
+    }
+}
+
 /// The command that gives the audio thread the depth of cable `target_index` of the modulator at `mod_index` of the rack at `at`.
 pub(super) fn depth_command(at: ModulatorLocation, mod_index: usize, target_index: usize, depth: f32) -> GraphCommand {
     match at {

@@ -7,6 +7,7 @@ import type { Modulation } from "./modulation";
 
 const lfo = (amount: number): Modulation => ({ source: { type: "lfo", waveform: "sine", rate: 1 }, amount });
 const envelope = (amount: number): Modulation => ({ source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, amount });
+const macro = (amount: number): Modulation => ({ source: { type: "macro", value: 0.5 }, amount });
 const midi = (control: Extract<ModulatorSource, { type: "midiLearn" }>["control"], amount: number): Modulation => ({
   source: { type: "midiLearn", control, learning: false },
   amount,
@@ -54,6 +55,14 @@ describe("how far modulation swings a parameter", () => {
     expect(modulationExtent(2, 0, 10, [midi({ type: "cc", number: 74 }, 0.5)])).toEqual({ low: 2, high: 7 });
     expect(modulationExtent(2, 0, 10, [midi({ type: "aftertouch" }, 0.25)])).toEqual({ low: 2, high: 4.5 });
     expect(modulationExtent(2, 0, 10, [midi({ type: "cc", number: 1 }, -0.5)])).toEqual({ low: 0, high: 2 });
+  });
+
+  test("goes up from the base by depth × range for a macro, which rests at nothing as a CC does, and down for a negative depth", () => {
+    expect(modulationExtent(2, 0, 10, [macro(0.5)])).toEqual({ low: 2, high: 7 });
+    expect(modulationExtent(2, 0, 10, [macro(-0.5)])).toEqual({ low: 0, high: 2 });
+    // (It does not wobble both ways: an LFO of the same depth does.)
+    expect(modulationExtent(2, 0, 10, [lfo(0.5)])).toEqual({ low: 0, high: 7 });
+    expect(modulationExtent(2, 0, 10, [macro(0.25)])).toEqual({ low: 2, high: 4.5 });
   });
 
   test("goes both ways from the base for the pitch bend, which rests in the middle", () => {

@@ -194,6 +194,8 @@ pub enum ModulatorKind {
     Envelope,
     /// A hardware control, waiting for the next one that comes in to bind to.
     MidiLearn,
+    /// A knob on the screen, at rest (0): a number that the person sets and nothing else moves, that drives every parameter with a cable from it.
+    Macro,
 }
 
 impl ModulatorKind {
@@ -203,6 +205,7 @@ impl ModulatorKind {
             ModulatorKind::Lfo => ModSourceSlot::new_lfo(),
             ModulatorKind::Envelope => ModSourceSlot::new_envelope(),
             ModulatorKind::MidiLearn => ModSourceSlot::new_midi_learn(),
+            ModulatorKind::Macro => ModSourceSlot::new_macro(),
         }
     }
 
@@ -212,6 +215,7 @@ impl ModulatorKind {
             ModSourceSlot::Lfo { .. } => ModulatorKind::Lfo,
             ModSourceSlot::Envelope { .. } => ModulatorKind::Envelope,
             ModSourceSlot::MidiLearn { .. } => ModulatorKind::MidiLearn,
+            ModSourceSlot::Macro { .. } => ModulatorKind::Macro,
         }
     }
 
@@ -221,6 +225,7 @@ impl ModulatorKind {
             ModulatorKind::Lfo => "an LFO",
             ModulatorKind::Envelope => "an envelope",
             ModulatorKind::MidiLearn => "a MIDI control",
+            ModulatorKind::Macro => "a macro",
         }
     }
 }
@@ -242,6 +247,8 @@ pub enum ModulatorField {
     Sustain,
     /// An envelope's release time, in seconds: 0.001 to 10.
     Release,
+    /// A macro's value: 0 to 1.
+    Value,
 }
 
 impl ModulatorField {
@@ -254,6 +261,7 @@ impl ModulatorField {
             ModulatorField::Decay => "decay",
             ModulatorField::Sustain => "sustain",
             ModulatorField::Release => "release",
+            ModulatorField::Value => "value",
         }
     }
 
@@ -263,7 +271,7 @@ impl ModulatorField {
             ModulatorField::Rate => (0.01, 50.0),
             ModulatorField::Waveform => (0.0, (crate::plugin::chain::LfoWaveform::ALL.len() - 1) as f32),
             ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => (0.001, 10.0),
-            ModulatorField::Sustain => (0.0, 1.0),
+            ModulatorField::Sustain | ModulatorField::Value => (0.0, 1.0),
         }
     }
 
@@ -272,7 +280,7 @@ impl ModulatorField {
     pub fn taper(self) -> Taper {
         match self {
             ModulatorField::Rate | ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => Taper::Log,
-            ModulatorField::Waveform | ModulatorField::Sustain => Taper::Linear,
+            ModulatorField::Waveform | ModulatorField::Sustain | ModulatorField::Value => Taper::Linear,
         }
     }
 }
@@ -458,10 +466,26 @@ mod tests {
     }
 
     #[test]
+    fn a_macro_is_made_at_rest_and_is_the_kind_that_it_says() {
+        let source = ModulatorKind::Macro.source();
+        assert!(matches!(source, ModSourceSlot::Macro { value } if value == 0.0), "{source:?}");
+        assert_eq!(ModulatorKind::of(&source), ModulatorKind::Macro);
+        assert_eq!(ModulatorKind::Macro.label(), "a macro");
+    }
+
+    #[test]
+    fn the_value_of_a_macro_runs_from_nothing_to_one() {
+        assert_eq!(ModulatorField::Value.range(), (0.0, 1.0));
+        assert_eq!(ModulatorField::Value.label(), "value");
+        assert_eq!(wire(&ModulatorField::Value), json!("value"));
+        assert_eq!(serde_json::from_value::<ModulatorField>(json!("value")).unwrap(), ModulatorField::Value);
+    }
+
+    #[test]
     fn the_settings_that_run_over_decades_are_turned_on_a_log_scale_and_the_others_on_a_linear_one() {
-        use ModulatorField::{Attack, Decay, Rate, Release, Sustain, Waveform};
+        use ModulatorField::{Attack, Decay, Rate, Release, Sustain, Value, Waveform};
         use Taper::{Linear, Log};
-        for (field, taper) in [(Rate, Log), (Waveform, Linear), (Attack, Log), (Decay, Log), (Sustain, Linear), (Release, Log)] {
+        for (field, taper) in [(Rate, Log), (Waveform, Linear), (Attack, Log), (Decay, Log), (Sustain, Linear), (Release, Log), (Value, Linear)] {
             assert_eq!(field.taper(), taper, "{field:?}");
             // A log scale has no zero: what runs over decades has a lowest value above it.
             if taper == Log {
@@ -615,8 +639,8 @@ mod tests {
 
     #[test]
     fn every_kind_of_modulator_has_its_own_name() {
-        let names: Vec<Value> = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn].iter().map(wire).collect();
-        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn")]);
+        let names: Vec<Value> = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro].iter().map(wire).collect();
+        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn"), json!("macro")]);
         for name in names {
             assert!(serde_json::from_value::<ModulatorKind>(name).is_ok());
         }

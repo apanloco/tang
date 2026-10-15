@@ -25,6 +25,7 @@ export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, nu
   decay: [0.001, 10],
   sustain: [0, 1],
   release: [0.001, 10],
+  value: [0, 1],
 };
 
 /** What each setting of a modulator is when the modulator is new (`ModSourceSlot::new_lfo`, `new_envelope`): where a double click puts a knob. */
@@ -35,6 +36,7 @@ export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {
   decay: 0.3,
   sustain: 0.7,
   release: 0.5,
+  value: 0,
 };
 
 /** How a setting of a modulator is turned: a rate and a time run over decades, which a knob turns by ratios (`ModulatorField::taper`). */
@@ -45,6 +47,7 @@ export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = 
   decay: "log",
   sustain: "linear",
   release: "log",
+  value: "linear",
 };
 
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */

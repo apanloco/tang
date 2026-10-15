@@ -139,6 +139,8 @@ pub enum ModulatorSource {
     /// A hardware control. `control` is null until one is bound; `learning` is
     /// true while it waits for the next control to come in.
     MidiLearn { control: Option<MidiControl>, learning: bool },
+    /// A knob: a number that a person sets, 0 to 1.
+    Macro { value: f32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -434,6 +436,7 @@ fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
         ModSourceSlot::MidiLearn { source, learning } => {
             ModulatorSource::MidiLearn { control: source.map(MidiControl::from), learning: *learning }
         }
+        ModSourceSlot::Macro { value } => ModulatorSource::Macro { value: *value },
     };
     Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
 }
@@ -813,6 +816,17 @@ depth = 0.1
             model.instruments[0].modulators[1].source = slot;
             assert_eq!(node(&model.graph(), envelope).name, expected);
         }
+    }
+
+    #[test]
+    fn a_macro_is_a_node_called_a_macro_whatever_its_value_and_says_its_value() {
+        let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.25\n").model;
+        let knob = model.instruments[0].modulators[0].node;
+        let graph = model.graph();
+        let found = node(&graph, knob);
+        assert_eq!(found.name, "Macro");
+        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.25 } });
+        assert_eq!(found.parent, Some(model.instruments[0].node));
     }
 
     #[test]
@@ -1510,6 +1524,7 @@ depth = 0.2
             serde_json::to_value(ModulatorSource::MidiLearn { control: Some(MidiControl::Cc { number: 74 }), learning: false }).unwrap(),
             json!({"type": "midiLearn", "control": {"type": "cc", "number": 74}, "learning": false})
         );
+        assert_eq!(serde_json::to_value(ModulatorSource::Macro { value: 0.25 }).unwrap(), json!({"type": "macro", "value": 0.25}));
         assert_eq!(serde_json::to_value(MidiControl::PitchBend).unwrap(), json!({"type": "pitchBend"}));
         assert_eq!(
             serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5 })

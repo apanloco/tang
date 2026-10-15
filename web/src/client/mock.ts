@@ -103,15 +103,21 @@ function noNode(id: NodeId): Outcome {
   return { error: { code: "notFound", message: `there is no node ${id}` } };
 }
 
+/** The settings that a modulator of each kind has (`ModSourceSlot::setting`). */
+const FIELDS_OF: Record<ModulatorSource["type"], readonly ModulatorField[]> = {
+  lfo: ["rate", "waveform"],
+  envelope: ["attack", "decay", "sustain", "release"],
+  midiLearn: [],
+  macro: ["value"],
+};
+
 /** A setting of a modulator: clamped to its range, rounded if it is an index, and only if the modulator has it. */
 function fieldOutcome(node: Node, field: ModulatorField, value: number): Outcome {
   if (node.kind !== "modulator") return invalid("that node is not a modulator");
   if (!holds(value)) return invalid(`${shown(value)} is not a value for ${variant(field)}`);
   const [low, high] = MODULATOR_FIELD_RANGES[field];
   const clamped = clamp(value, low, high);
-  const { type } = node.source;
-  const fits = type === "lfo" ? field === "rate" || field === "waveform" : type === "envelope" && field !== "rate" && field !== "waveform";
-  if (!fits) return invalid(`${variant(field)} does not apply to that modulator`);
+  if (!FIELDS_OF[node.source.type].includes(field)) return invalid(`${variant(field)} does not apply to that modulator`);
   return { event: { type: "modulatorFieldSet", node: node.id, field, value: field === "waveform" ? roundIn32Bits(clamped) : clamped } };
 }
 
@@ -200,7 +206,7 @@ function withEntry(nodes: readonly Node[], cables: readonly Edge[], modulation: 
 /**
  * What a modulator that puts out `output` adds, at depth `amount`, to a value that the user set to `base` in the range `min`…`max`: the engine's law (`Modulator::target_offset`). An LFO swings the
  * value around where the user set it, by depth times the range; an envelope's peak is that value, and it is taken from below it; a control that is not bound adds nothing, a CC and key pressure
- * start from nothing, and the pitch bend wheel goes both ways from its middle.
+ * start from nothing, and the pitch bend wheel goes both ways from its middle; a macro starts from nothing as a CC does.
  */
 function offsetOf(source: Node | undefined, output: number, amount: number, base: number, min: number, max: number): number {
   const modulator = source?.kind === "modulator" ? source.source : undefined;
@@ -454,6 +460,7 @@ const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSou
   lfo: { name: "LFO", source: { type: "lfo", waveform: "sine", rate: 1 } },
   envelope: { name: "ADSR", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } },
   midiLearn: { name: "MIDI (learning…)", source: { type: "midiLearn", control: null, learning: true } },
+  macro: { name: "Macro", source: { type: "macro", value: 0 } },
 };
 
 /**
@@ -1282,6 +1289,9 @@ export class MockServer {
       // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, and the pitch bend wheel in the middle.)
       case "midiLearn":
         return source.control?.type === "pitchBend" ? 0.5 : 0;
+      // (A macro puts out the number it is set to, and nothing moves it but a person.)
+      case "macro":
+        return source.value;
     }
   }
 

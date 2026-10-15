@@ -24,7 +24,7 @@ function quoted(text: string): string {
   return JSON.stringify(characters.length > NOTICE_NAME ? `${characters.slice(0, NOTICE_NAME).join("")}…` : text);
 }
 
-const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
+const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control", macro: "a macro" };
 
 /**
  * How deep the cable of a control that learns starts, as the TUI's `l` gives it: the whole range, since a controller that is moved offsets the

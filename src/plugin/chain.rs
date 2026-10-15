@@ -519,7 +519,7 @@ fn parse_learnable(bytes: [u8; 3]) -> Option<(MidiBindSource, f32, f32)> {
     }
 }
 
-/// Modulation source: an LFO, an ADSR envelope, or a learned MIDI control.
+/// Modulation source: an LFO, an ADSR envelope, a learned MIDI control, or a macro.
 #[derive(Debug, Clone)]
 pub enum ModSource {
     Lfo {
@@ -543,6 +543,11 @@ pub enum ModSource {
         source: Option<MidiBindSource>,
         value: f32,
         learning: bool,
+    },
+    /// A number that the user sets (0..1) and nothing else moves: a knob on the screen that drives every target that has a cable from it. It offsets
+    /// its targets as a CC does (the rest, 0, adds nothing; full adds `depth` of the range), so that a new one moves nothing until it is turned.
+    Macro {
+        value: f32,
     },
 }
 
@@ -695,6 +700,7 @@ impl Modulator {
                 }
                 self.last_output = *value;
             }
+            ModSource::Macro { value } => self.last_output = *value,
         }
     }
 
@@ -733,6 +739,8 @@ impl Modulator {
                 };
                 deflection * depth * (max - min)
             }
+            // Unipolar and additive around the base, like a CC: at rest (0) it adds nothing.
+            ModSource::Macro { .. } => self.last_output * depth * (max - min),
         }
     }
 
@@ -6345,6 +6353,39 @@ mod tests {
         );
     }
 
+    /// A group macro offsets a member instrument's parameter as a lane's does: the base 0.5 and a value of 0.5 at a depth of 0.4 make 0.7, which
+    /// ParamTrackingInstrument sounds as audio. (Its value is set by giving the group a macro of another value, as a lane's is.)
+    #[test]
+    fn a_group_macro_drives_a_member_param_and_its_value_is_changed_by_giving_the_group_another() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
+        let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx.send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: ModSource::Macro { value: 0.5 } }).unwrap();
+        cmd_tx
+            .send(GraphCommand::AddGroupModTarget {
+                group: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
+                    depth: 0.4,
+                    base_value: 0.5,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                    effective: None,
+                },
+            })
+            .unwrap();
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        assert!(close(out[0][0], 0.7), "{}", out[0][0]);
+        cmd_tx.send(GraphCommand::SetGroupModulatorSource { group: 0, mod_index: 0, source: ModSource::Macro { value: 1.0 } }).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert!(close(out[0][0], 0.9), "{}", out[0][0]);
+    }
+
     /// A group modulator can drive one of the group's own bus effects. Here a square
     /// LFO (always +1) at depth -1 pulls a bus ParamScaleEffect's gain (base 1.0) to
     /// 0, silencing the bus. The instrument sounds while a note is held, and the bus
@@ -8382,6 +8423,88 @@ mod tests {
     }
 
     #[test]
+    fn a_macro_publishes_the_value_it_is_set_to_and_no_note_or_control_moves_it() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, ModSource::Macro { value: 0.7 });
+        rig.process(&[]);
+        assert_eq!(rig.read(output), 0.7);
+        rig.process(&[note_on(60), (0, [0xB0, 74, 127]), (0, [0xE0, 0, 127])]);
+        assert_eq!(rig.read(output), 0.7);
+        rig.process(&[note_off(60)]);
+        assert_eq!(rig.read(output), 0.7);
+    }
+
+    #[test]
+    fn a_macros_target_is_the_base_with_the_value_times_the_depth_of_the_range_added_to_it() {
+        // The base is 0.5 and the range is 1: half of the depth of 0.4 above it for a depth of 0.4, and below it for -0.4.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::Macro { value: 0.5 });
+        let up = rig.gain_target(0, 0.4);
+        rig.process(&[]);
+        assert!(close(rig.read(up), 0.7), "{}", rig.read(up));
+
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::Macro { value: 0.5 });
+        let down = rig.gain_target(0, -0.4);
+        rig.process(&[]);
+        assert!(close(rig.read(down), 0.3), "{}", rig.read(down));
+    }
+
+    #[test]
+    fn a_macro_moves_what_it_drives_by_the_depth_of_the_range_that_it_has() {
+        // A parameter that runs from 0 to 0.5, set to 0.1: half of the depth of 0.4 of that range is 0.1 above it.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::Macro { value: 0.5 });
+        let effective = rig.slot();
+        let target = ModTarget { kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 }, depth: 0.4, base_value: 0.1, param_min: 0.0, param_max: 0.5, effective: Some(effective) };
+        rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.2), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn a_macro_can_drive_the_rate_of_an_lfo_by_a_fraction_of_the_knobs_travel() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::Macro { value: 0.5 });
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
+        let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.2, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        // Half of the macro's depth of 0.2 is a tenth of the travel of the rate, which is turned on a log scale, up from the 2 Hz that the user set.
+        let expected = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.1, 0.01, 50.0);
+        assert!(near(rig.read(rate), expected), "{} for {expected}", rig.read(rate));
+    }
+
+    #[test]
+    fn a_macro_at_rest_leaves_what_it_drives_where_the_user_set_it() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::Macro { value: 0.0 });
+        let effective = rig.gain_target(0, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.5), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn a_macro_at_full_moves_what_it_drives_by_the_depth_of_the_range_and_stops_at_the_end_of_it() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::Macro { value: 1.0 });
+        let effective = rig.gain_target(0, 3.0);
+        rig.process(&[]);
+        assert_eq!(rig.read(effective), 1.0, "three times the range from 0.5 stops at the top");
+    }
+
+    #[test]
+    fn the_value_of_a_macro_is_changed_by_giving_it_a_macro_of_another_value_and_the_next_buffer_has_it() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, ModSource::Macro { value: 0.2 });
+        let effective = rig.gain_target(0, 0.5);
+        rig.process(&[]);
+        assert!(close(rig.read(output), 0.2) && close(rig.read(effective), 0.6), "{} {}", rig.read(output), rig.read(effective));
+        rig.cmd_tx.send(GraphCommand::SetModulatorSource { inst: 0, mod_index: 0, source: ModSource::Macro { value: 0.8 } }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(output), 0.8) && close(rig.read(effective), 0.9), "{} {}", rig.read(output), rig.read(effective));
+    }
+
+    #[test]
     fn modulators_on_the_same_parameter_share_one_effective_value() {
         let mut rig = Rig::new();
         rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // a square at phase 0: always +1
@@ -8647,7 +8770,7 @@ mod tests {
                     CrossModField::Sustain => sustain,
                     _ => release,
                 },
-                ModSource::MidiLearn { .. } => panic!("the member's modulator is an LFO or an envelope"),
+                ModSource::MidiLearn { .. } | ModSource::Macro { .. } => panic!("the member's modulator is an LFO or an envelope"),
             };
             assert!(near(value, expected), "{field:?}: {value} for {expected}");
         }

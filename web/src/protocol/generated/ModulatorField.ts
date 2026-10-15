@@ -3,4 +3,4 @@
 /**
  * A setting of a modulator, by name.
  */
-export type ModulatorField = "rate" | "waveform" | "attack" | "decay" | "sustain" | "release";
+export type ModulatorField = "rate" | "waveform" | "attack" | "decay" | "sustain" | "release" | "value";

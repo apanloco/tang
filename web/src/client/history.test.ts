@@ -185,6 +185,7 @@ describe("what an add is to the history", () => {
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "lfo" })).toBe("add an LFO");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "envelope" })).toBe("add an envelope");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "midiLearn" })).toBe("add a MIDI control");
+    expect(labelOf({ type: "addModulator", parent: lane0, kind: "macro" })).toBe("add a macro");
     expect(labelOf({ type: "addModEdge", modulator: nodeOf("LFO"), to: { node: lane0, port: { type: "param", index: 1 } } })).toBe("draw a cable");
     expect(labelOf({ type: "addGroup", members: [] })).toBe("add a group");
     expect(labelOf({ type: "setLaneGroup", node: lane1, group: other })).toBe("put a lane in a group");
@@ -311,6 +312,9 @@ describe("what a removal is to the history", () => {
       const control: Node = { id: 9_000, parent: lane0.id, name: "MIDI", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } };
       const withControl = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, control] } };
       expect(plan({ type: "removeNode", node: control.id }, withControl)).toEqual({ removed: { label: "remove a MIDI control", intent: { type: "removeNode", node: control.id }, at: 7 } });
+      const knob: Node = { id: 9_001, parent: lane0.id, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
+      const withKnob = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, knob] } };
+      expect(plan({ type: "removeNode", node: knob.id }, withKnob)).toEqual({ removed: { label: "remove a macro", intent: { type: "removeNode", node: knob.id }, at: 7 } });
     });
 
     test("is no step for a node that is not there, which is refused", () => {
@@ -334,6 +338,29 @@ describe("what a removal is to the history", () => {
       expect(plan({ type: "removeNode", node: lfo.id }, cycle)).toBe("barrier");
       expect(plan({ type: "removeNode", node: envelope.id }, cycle)).toBe("barrier");
     });
+  });
+});
+
+describe("what turning a macro is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const [lane0] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
+  const someLfo = snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "lfo");
+  if (!lane0 || !someLfo) throw new Error("the fixture has a lane and an LFO");
+  const knob: Node = { id: 9_100, parent: lane0.id, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
+  const withKnob: Snapshot = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, knob] } };
+  const plan = (intent: Intent): ReturnType<typeof planOf> => planOf(withKnob, intent, 7, builtinCatalog);
+
+  test("is a step in the words of the setting that puts the value back to what it was and does it again", () => {
+    const planned = plan({ type: "setModulatorField", node: knob.id, field: "value", value: 0.8 });
+    if (typeof planned !== "object" || !("step" in planned)) throw new Error("a step");
+    expect(planned.step.label).toBe("set value");
+    expect(planned.step.undo).toEqual([{ type: "setModulatorField", node: knob.id, field: "value", value: 0.25 }]);
+    expect(planned.step.redo).toEqual([{ type: "setModulatorField", node: knob.id, field: "value", value: 0.8 }]);
+  });
+
+  test("is no step for a modulator that has no value, and a rate is no step for a macro: the intents are refused", () => {
+    expect(plan({ type: "setModulatorField", node: someLfo.id, field: "value", value: 0.8 })).toBe("nothing");
+    expect(plan({ type: "setModulatorField", node: knob.id, field: "rate", value: 2 })).toBe("nothing");
   });
 });
 

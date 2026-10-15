@@ -19,7 +19,7 @@ use crate::app::controller::Controller;
 use crate::app::graph::{NoteRange, Port};
 use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind};
 use crate::app::journal::Journal;
-use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PluginSlot};
+use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
 
 /// How long after one change of a thing the next change of it may come and still be the same step.
@@ -549,15 +549,7 @@ impl Controller {
     /// The value of a setting of the modulator in `node`, if its kind has it.
     fn field_value(&self, node: NodeId, field: ModulatorField) -> Option<f32> {
         let NodePath::Modulator { at, index } = self.model.locate(node)? else { return None };
-        match (&self.model.modulators(at)?.get(index)?.source, field) {
-            (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => Some(*rate),
-            (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => Some(waveform.to_index() as f32),
-            (ModSourceSlot::Envelope { attack, .. }, ModulatorField::Attack) => Some(*attack),
-            (ModSourceSlot::Envelope { decay, .. }, ModulatorField::Decay) => Some(*decay),
-            (ModSourceSlot::Envelope { sustain, .. }, ModulatorField::Sustain) => Some(*sustain),
-            (ModSourceSlot::Envelope { release, .. }, ModulatorField::Release) => Some(*release),
-            _ => None,
-        }
+        self.model.modulators(at)?.get(index)?.source.setting(field)
     }
 
     /// The depth of the cable `edge`.
@@ -2600,6 +2592,52 @@ depth = 0.9
         assert_eq!(every_modulator_is_put_back("CABLES_THAT_DRIVE_EACH_OTHER", testutil::CABLES_THAT_DRIVE_EACH_OTHER), (0, 2));
     }
 
+    const MACROS: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.25\n[[instrument.modulator.target]]\nparam = \"detune\"\ndepth = 0.4\n";
+
+    fn macro_value(ctl: &Controller) -> f32 {
+        match ctl.model.instruments[0].modulators[0].source {
+            ModSourceSlot::Macro { value } => value,
+            ref other => panic!("{other:?} is not a macro"),
+        }
+    }
+
+    #[test]
+    fn the_value_of_a_macro_is_put_back_and_done_again_and_a_drag_of_it_is_one_step() {
+        let (engine, mut ctl, clock) = controller_over(load(MACROS).model);
+        let knob = ctl.model.instruments[0].modulators[0].node;
+        for value in [0.4, 0.6, 0.8] {
+            ctl.apply(Intent::SetModulatorField { node: knob, field: ModulatorField::Value, value }).unwrap();
+            clock.advance(Duration::from_millis(50));
+        }
+        sent(&engine);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set value"));
+        ctl.undo().unwrap();
+        assert_eq!(macro_value(&ctl), 0.25);
+        assert_eq!(sent(&engine), ["SetModulatorSource inst=0 mod=0 source=Macro { value: 0.25 }"]);
+        assert_eq!(undo_label(&ctl), None, "the drag was one step");
+        ctl.redo().unwrap();
+        assert_eq!(macro_value(&ctl), 0.8);
+        assert_eq!(sent(&engine), ["SetModulatorSource inst=0 mod=0 source=Macro { value: 0.8 }"]);
+    }
+
+    #[test]
+    fn a_macro_that_is_taken_out_is_put_back_at_the_value_it_had_with_its_cable_in_the_words_of_the_button_that_adds_one() {
+        let (engine, mut ctl, clock) = controller_over(load(MACROS).model);
+        let knob = ctl.model.instruments[0].modulators[0].node;
+        ctl.apply(Intent::SetModulatorField { node: knob, field: ModulatorField::Value, value: 0.8 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::RemoveNode { node: knob }).unwrap();
+        assert!(ctl.model.instruments[0].modulators.is_empty());
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove a macro"));
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(macro_value(&ctl), 0.8, "the value it had, and not the one it was loaded with");
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1, "with its cable");
+        assert_eq!(ctl.model.instruments[0].modulators[0].node, knob, "under the id it had");
+        let commands = sent(&engine);
+        assert_eq!(commands.first().map(String::as_str), Some("InsertModulator inst=0 index=0 source=Macro { value: 0.8 }"), "{commands:?}");
+    }
+
     #[test]
     fn a_modulator_that_is_taken_out_is_a_step_in_the_words_of_the_button_that_adds_one_like_it() {
         let (_engine, mut ctl, _clock) = controller_over(load(MODULATORS).model);
@@ -4598,6 +4636,24 @@ size = 0.5
                 add_modulator(g0, ModulatorKind::Lfo),
                 cable(fresh(1), bus, bus_resonance),
                 cable(fresh(1), lane0, detune),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a macro is added with a cable, turned, taken out and put back at the value it had",
+            vec![
+                add_modulator(lane0, ModulatorKind::Macro),
+                cable(fresh(0), lane0, detune),
+                field(fresh(0), ModulatorField::Value, 0.75),
+                field(fresh(0), ModulatorField::Value, 0.5),
+                Op::Do(Intent::RemoveNode { node: fresh(0) }),
                 undo(),
                 undo(),
                 undo(),

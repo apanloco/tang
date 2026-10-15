@@ -9,7 +9,7 @@ import type { Edge, Node, Param, Port, Snapshot } from "../../protocol";
 import { dragged } from "../../ui/knob-geometry";
 import { angleOf, arcPath, fractionOf, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { CableDepthControl, GainControl, ModulatorFieldControl, ParamControl, ParamRow, sameModulations, sameParamFacts, WaveformControl } from "./controls";
+import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ParamControl, ParamRow, sameModulations, sameParamFacts, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -414,6 +414,82 @@ function withEnvelope(): { snapshot: Snapshot; envelope: Node } {
 }
 
 const lfo = nodeNamed(tracerSnapshot, "LFO");
+
+/** The tracer with a macro at 0.25 in it. */
+function withMacro(): { snapshot: Snapshot; knob: Node } {
+  const knob: Node = { id: 91, parent: 0, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
+  const snapshot: Snapshot = structuredClone(tracerSnapshot);
+  snapshot.graph.nodes.push(knob);
+  return { snapshot, knob };
+}
+
+describe("the value of a macro", () => {
+  test("is a knob from nothing to one, at the value the macro has, written as a number", async () => {
+    const { snapshot, knob } = withMacro();
+    await rig(<MacroValueControl node={knob.id} />, { snapshot });
+    const value = slider("Value");
+    expect([value.getAttribute("aria-valuemin"), value.getAttribute("aria-valuemax"), value.getAttribute("aria-valuenow")]).toEqual(["0", "1", "0.25"]);
+    expect(value.getAttribute("aria-valuetext")).toBe("0.25");
+  });
+
+  test("shows what it is dragged to at once and sends it as the macro's value on the frame, once", async () => {
+    const { snapshot, knob } = withMacro();
+    const { requests, clock } = await rig(<MacroValueControl node={knob.id} />, { snapshot });
+    // (A drag of 50 pixels is a quarter of the range: 0.25 and a quarter is half.)
+    drag(slider("Value"), 50);
+    expect(Number(slider("Value").getAttribute("aria-valuenow"))).toBeCloseTo(0.5, 9);
+    await settle();
+    expect(requests()).toEqual([]); // not before the frame
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setModulatorField", node: knob.id, field: "value", value: expect.closeTo(0.5, 9) as unknown });
+  });
+
+  test("goes back to nothing, which is what a new macro has, on a double click", async () => {
+    const { snapshot, knob } = withMacro();
+    const { requests } = await rig(<MacroValueControl node={knob.id} />, { snapshot });
+    fireEvent.doubleClick(slider("Value"));
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setModulatorField", node: knob.id, field: "value", value: 0 } }]);
+    });
+  });
+
+  test("sends a key press at once, a hundredth of the range on", async () => {
+    const { snapshot, knob } = withMacro();
+    const { requests } = await rig(<MacroValueControl node={knob.id} />, { snapshot });
+    fireEvent.keyDown(slider("Value"), { key: "ArrowUp" });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setModulatorField", node: knob.id, field: "value", value: expect.closeTo(0.26, 9) as unknown });
+  });
+
+  test("follows a change somebody else makes (the TUI, another browser)", async () => {
+    const { snapshot, knob } = withMacro();
+    const { server } = await rig(<MacroValueControl node={knob.id} />, { snapshot });
+    act(() => {
+      server.apply({ type: "setModulatorField", node: knob.id, field: "value", value: 0.9 });
+    });
+    await waitFor(() => {
+      expect(slider("Value").getAttribute("aria-valuenow")).toBe("0.9");
+    });
+  });
+
+  test("shows nothing for a node that has no value: an LFO, a node that is not a modulator, or one that is not there", async () => {
+    const { view } = await rig(
+      <div data-testid="where">
+        <MacroValueControl node={lfo.id} />
+        <MacroValueControl node={filter.id} />
+        <MacroValueControl node={4242} />
+      </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+});
 
 describe("a number of a modulator", () => {
   test("is a knob over the range the controller clamps to, at the value the modulator has, in its unit", async () => {

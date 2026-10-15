@@ -17,6 +17,8 @@ export function kindOf(source: ModulatorSource): string {
       return "Envelope";
     case "midiLearn":
       return "MIDI";
+    case "macro":
+      return "Macro";
   }
 }
 
@@ -29,6 +31,8 @@ export function settingsOf(source: ModulatorSource): readonly ModulatorField[] {
       return ["attack", "decay", "sustain", "release"];
     case "midiLearn":
       return [];
+    case "macro":
+      return ["value"];
   }
 }
 

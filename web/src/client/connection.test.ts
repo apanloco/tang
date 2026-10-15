@@ -222,10 +222,30 @@ describe("a request", () => {
     }
     const node = client.state.snapshot?.graph.nodes.find((n) => n.id === envelope.id);
     expect(node?.kind === "modulator" && node.source).toEqual({ type: "envelope", attack: 10, decay: 0.001, sustain: 1, release: 2.5 });
-    // (an envelope has no rate and no waveform)
-    for (const field of ["rate", "waveform"] as const) {
+    // (an envelope has no rate, no waveform and no value)
+    for (const field of ["rate", "waveform", "value"] as const) {
       await expect(client.request({ type: "setModulatorField", node: envelope.id, field, value: 1 })).rejects.toMatchObject({ code: "invalid" });
     }
+  });
+
+  test("sets the value of a macro, held between nothing and one, and a macro has no rate, no stage and no waveform", async () => {
+    const knob: Node = { id: 43, parent: 0, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
+    const snapshot = { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, knob] } };
+    const client = await open(new MockServer({ snapshot }));
+    const value = (): number | undefined => {
+      const node = client.state.snapshot?.graph.nodes.find((n) => n.id === knob.id);
+      return node?.kind === "modulator" && node.source.type === "macro" ? node.source.value : undefined;
+    };
+    for (const [asked, got] of [[0.75, 0.75], [4, 1], [-3, 0], [0.5, 0.5]] as const) {
+      await client.request({ type: "setModulatorField", node: knob.id, field: "value", value: asked });
+      expect(value(), `asked ${String(asked)}`).toBe(got);
+    }
+    for (const field of ["rate", "waveform", "attack", "decay", "sustain", "release"] as const) {
+      await expect(client.request({ type: "setModulatorField", node: knob.id, field, value: 0.5 }), field).rejects.toMatchObject({ code: "invalid" });
+    }
+    // (And the settings of the others do not include a value.)
+    await expect(client.request({ type: "setModulatorField", node: lfo.id, field: "value", value: 0.5 })).rejects.toMatchObject({ code: "invalid", message: "Value does not apply to that modulator" });
+    expect(value()).toBe(0.5);
   });
 
   test("that the server rejects fails with its code, and changes nothing", async () => {
@@ -492,15 +512,16 @@ describe("adding a modulator", () => {
   test("makes each kind what the controller makes it", async () => {
     const server = new MockServer();
     const client = await open(server);
-    for (const kind of ["lfo", "envelope", "midiLearn"] as const) await client.request({ type: "addModulator", parent: lane.id, kind });
-    const added = nodesOf(client).slice(3, 6);
-    expect(added.map((n) => n.name)).toEqual(["LFO", "ADSR", "MIDI (learning…)"]);
+    for (const kind of ["lfo", "envelope", "midiLearn", "macro"] as const) await client.request({ type: "addModulator", parent: lane.id, kind });
+    const added = nodesOf(client).slice(3, 7);
+    expect(added.map((n) => n.name)).toEqual(["LFO", "ADSR", "MIDI (learning…)", "Macro"]);
     expect(added.map((n) => (n.kind === "modulator" ? n.source : null))).toEqual([
       { type: "lfo", waveform: "sine", rate: 1 },
       { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
       { type: "midiLearn", control: null, learning: true },
+      { type: "macro", value: 0 },
     ]);
-    expect(added.map((n) => n.id)).toEqual([3, 4, 5]);
+    expect(added.map((n) => n.id)).toEqual([3, 4, 5, 6]);
     expect(names(client).at(-1)).toBe("Master");
   });
 
@@ -2924,6 +2945,31 @@ describe("what a MIDI control puts out and does in the mock engine, which has no
       await until(() => rate() === MODULATOR_FIELD_DEFAULTS.rate, `the rate where the user set it, for ${JSON.stringify(control)}`);
       client.stop();
     }
+  });
+});
+
+describe("what a macro puts out and does in the mock engine: the number it is set to, which moves what it drives up from where the user set it", () => {
+  const withMacro = (value: number): Snapshot => {
+    // The tracer's LFO is a macro of this value: its cable to the cutoff (the user set it to 0.5) is at depth 0.4.
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Macro", source: { type: "macro" as const, value } } : node));
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  };
+  const cutoffOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 0 }, "effective");
+  const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+
+  test.each([[0], [0.25], [1]])("puts out its value, %s, and sets the cutoff to the user's value and the value times the depth of the range above it", async (value) => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withMacro(value) }), { telemetry: ["modulation"] });
+    await until(() => Math.abs((cutoffOf(client) ?? 9) - (0.5 + 0.4 * value)) < 1e-5, `the cutoff for a macro of ${String(value)}`);
+    expect(outputOf(client)).toBeCloseTo(value, 6);
+  });
+
+  test("moves what it drives when its value is set, and nothing else does", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withMacro(0) }), { telemetry: ["modulation"] });
+    await until(() => cutoffOf(client) === 0.5, "the cutoff where the user set it, with the macro at nothing");
+    await client.request({ type: "setModulatorField", node: lfo.id, field: "value", value: 0.5 });
+    await until(() => Math.abs((cutoffOf(client) ?? 9) - 0.7) < 1e-5, "the cutoff with the macro at a half");
+    await client.request({ type: "setModulatorField", node: lfo.id, field: "value", value: 1 });
+    await until(() => Math.abs((cutoffOf(client) ?? 9) - 0.9) < 1e-5, "the cutoff with the macro at full");
   });
 });
 

@@ -5,6 +5,7 @@ import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, s
 
 const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5 };
 const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
+const macro: ModulatorSource = { type: "macro", value: 0.25 };
 type Control = Extract<ModulatorSource, { type: "midiLearn" }>;
 const midi = (control: Control["control"], learning = false): Control => ({ type: "midiLearn", control, learning });
 
@@ -13,12 +14,14 @@ describe("a modulator in words", () => {
     expect(kindOf(lfo)).toBe("LFO");
     expect(kindOf(envelope)).toBe("Envelope");
     expect(kindOf(midi(null))).toBe("MIDI");
+    expect(kindOf(macro)).toBe("Macro");
   });
 
   test("has the settings that its kind has, in the order they are shown", () => {
     expect(settingsOf(lfo)).toEqual(["rate", "waveform"]);
     expect(settingsOf(envelope)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(settingsOf(midi({ type: "cc", number: 74 }))).toEqual([]);
+    expect(settingsOf(macro)).toEqual(["value"]);
   });
 
   test("says what a MIDI control is bound to, or that it is not", () => {
@@ -56,6 +59,10 @@ describe("the scale of a modulator's output", () => {
     expect(outputScale(midi(null))).toEqual({ min: 0, max: 1, centred: false });
   });
 
+  test("goes from nothing up for a macro, which is a level", () => {
+    expect(outputScale(macro)).toEqual({ min: 0, max: 1, centred: false });
+  });
+
   test("goes both ways from the middle of 0 to 1 for the pitch bend, which rests there", () => {
     expect(outputScale(midi({ type: "pitchBend" }))).toEqual({ min: 0, max: 1, centred: true });
   });
@@ -81,10 +88,11 @@ describe("the range a modulator's output goes over", () => {
     expect(outputRange("lfo")).toEqual({ min: -1, max: 1 });
     expect(outputRange("envelope")).toEqual({ min: 0, max: 1 });
     expect(outputRange("midiLearn")).toEqual({ min: 0, max: 1 });
+    expect(outputRange("macro")).toEqual({ min: 0, max: 1 });
   });
 
   test("is the range of the scale the output is drawn over, whatever the source is", () => {
-    for (const source of [lfo, envelope, midi(null), midi({ type: "cc", number: 1 }), midi({ type: "pitchBend" }), midi({ type: "aftertouch" })]) {
+    for (const source of [lfo, envelope, macro, midi(null), midi({ type: "cc", number: 1 }), midi({ type: "pitchBend" }), midi({ type: "aftertouch" })]) {
       const { min, max } = outputScale(source);
       expect(outputRange(source.type), source.type).toEqual({ min, max });
     }

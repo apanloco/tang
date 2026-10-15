@@ -396,7 +396,7 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
  * click puts it back to and how its knob is spread (a rate and the times of an envelope run over
  * decades, a level does not) are the controller's (`MODULATOR_FIELD_RANGES`, `_DEFAULTS`, `_SCALES`).
  */
-const NUMBERS: Record<Exclude<ModulatorField, "waveform">, { label: string; format: (value: number) => string }> = {
+const NUMBERS: Record<Exclude<ModulatorField, "waveform" | "value">, { label: string; format: (value: number) => string }> = {
   rate: { label: "Rate", format: (value) => `${formatValue(value)} Hz` },
   attack: { label: "Attack", format: seconds },
   decay: { label: "Decay", format: seconds },
@@ -409,7 +409,7 @@ const NUMBERS: Record<Exclude<ModulatorField, "waveform">, { label: string; form
  * rate, to a stage), and it shows that as a parameter's knob does: the ring from where the cable can take it (the last cable's alone:
  * the engine writes a setting once for each cable and the last stands) and the dot where the engine says it is.
  */
-export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: Exclude<ModulatorField, "waveform"> }) {
+export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: Exclude<ModulatorField, "waveform" | "value"> }) {
   const client = useClient();
   const frames = useFrames();
   const control = useDrive().modulatorField(node, field);
@@ -440,6 +440,38 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
         control.commit();
       }}
       readEffective={readEffective}
+      frames={frames}
+    />
+  );
+});
+
+/**
+ * The value of a macro: a knob that a person turns and nothing else moves, so that it has no place for a cable on its edge and no ring and no dot (what
+ * it drives shows them). The other modulators' numbers (`ModulatorFieldControl`) can be driven by a cable.
+ */
+export const MacroValueControl = memo(function MacroValueControl({ node }: { node: NodeId }) {
+  const frames = useFrames();
+  const control = useDrive().modulatorField(node, "value");
+  const stored = useClientState((state) => modulatorFieldOf(state, node, "value"));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  const [min, max] = MODULATOR_FIELD_RANGES.value;
+  return (
+    <Knob
+      label="Value"
+      value={shown}
+      min={min}
+      max={max}
+      scale={MODULATOR_FIELD_SCALES.value}
+      defaultValue={MODULATOR_FIELD_DEFAULTS.value}
+      format={formatValue}
+      onChange={(value) => {
+        control.set(value);
+      }}
+      onCommit={() => {
+        control.commit();
+      }}
       frames={frames}
     />
   );
@@ -529,6 +561,14 @@ export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, f
     return (
       <div className="tang-cell">
         <WaveformControl node={node} />
+      </div>
+    );
+  }
+  // (A macro's value is turned by a person: no cable ends at it, and no modulator is made for it.)
+  if (field === "value") {
+    return (
+      <div className="tang-cell">
+        <MacroValueControl node={node} />
       </div>
     );
   }

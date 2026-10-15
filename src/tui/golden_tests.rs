@@ -2490,7 +2490,8 @@ fn the_modulate_popup_can_make_an_envelope_instead() {
 fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     let mut h = on_the_bass_filters_cutoff();
     h.press(KeyCode::Down); // the filter's resonance, which the bass's LFO does not drive
-    h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+    // (The popup lists a new LFO, a new envelope and a new macro before the modulators that are there.)
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"],
@@ -2506,7 +2507,7 @@ fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
 fn the_modulate_popup_does_not_attach_a_parameter_to_a_modulator_that_drives_it_already() {
     // (The controller refuses the second cable between the two, in the browser as here.)
     let mut h = on_the_bass_filters_cutoff();
-    h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
     assert!(h.commands().is_empty());
     assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the LFO's cable to the cutoff, and no more");
     assert_eq!(h.s.ctl.history_state().undo, None);
@@ -2594,10 +2595,10 @@ fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_
 
 #[test]
 fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_whichever_place_it_has_in_its_rack() {
-    // The envelope again: the popup lists a new LFO, a new envelope, and then the three that are there.
+    // The envelope again: the popup lists a new LFO, a new envelope, a new macro, and then the three that are there.
     let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
     h.goto(TreeAddress::Instrument(0));
-    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 4).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
@@ -3565,6 +3566,133 @@ fn new_modulators_and_groups_get_ids_of_their_own() {
     let added: Vec<_> = after.iter().filter(|id| !before.contains(id)).collect();
     assert_eq!(added.len(), 5, "two `m`, two `l` and a group: {added:?}");
     assert!(before.iter().all(|id| after.contains(id)));
+}
+
+// ---------------------------------------------------------------------------
+// A macro: a knob that drives what has a cable from it
+// ---------------------------------------------------------------------------
+
+/// One oscillator with a filter, and a macro at 0.25 with a cable to the filter's cutoff.
+fn scene_macro() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "macro"
+value = 0.25
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+"#
+}
+
+#[test]
+fn a_macro_is_in_the_tree_with_its_value_and_what_it_drives() {
+    let h = Harness::new(scene_macro());
+    assert!(h.tree().iter().any(|line| line.contains("~ Macro 0.25 → Filter: cutoff (40%)")), "{:#?}", h.tree());
+}
+
+#[test]
+fn the_modulate_popup_has_a_new_macro_that_is_made_at_rest_with_a_cable_to_the_parameter_as_one_step() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 2);
+    let popup = h.dump();
+    assert!(popup.contains("New LFO → cutoff") && popup.contains("New envelope → cutoff") && popup.contains("New macro → cutoff"), "{popup}");
+    h.press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.instruments[2].modulators;
+    assert_eq!(rack.len(), 2);
+    assert!(matches!(rack[1].source, ModSourceSlot::Macro { value } if value == 0.0), "{:?}", rack[1].source);
+    assert_eq!(rack[1].targets.len(), 1);
+    let commands = h.commands();
+    assert_eq!(commands[0], "InsertModulator inst=2 index=1 source=Macro { value: 0.0 }", "{commands:?}");
+    assert!(commands[1].starts_with("AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }"), "{commands:?}");
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the macro and the cable to it are one thing");
+}
+
+#[test]
+fn the_modulate_popup_on_a_bus_parameter_can_make_a_macro_in_the_groups_rack() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 2).press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.groups[0].modulators;
+    assert_eq!(rack.len(), 3, "the two the pad has, and the macro");
+    assert!(matches!(rack[2].source, ModSourceSlot::Macro { value } if value == 0.0), "{:?}", rack[2].source);
+    assert_eq!(rack[2].targets.len(), 1);
+    assert_eq!(h.commands()[0], "InsertGroupModulator group=0 index=2 source=Macro { value: 0.0 }");
+}
+
+#[test]
+fn the_pane_of_a_macro_has_its_value_and_its_targets() {
+    let mut h = Harness::new(scene_macro());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    assert_golden("macro_pane", &mut h);
+}
+
+#[test]
+fn left_and_right_turn_a_macro_by_a_twentieth_and_the_engine_is_given_a_macro_of_the_value() {
+    let mut h = Harness::new(scene_macro());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);
+    h.press(KeyCode::Right);
+    let commands = h.commands();
+    assert!(commands.len() == 1 && commands[0].starts_with("SetModulatorSource inst=0 mod=0 source=Macro { value: 0.3"), "{commands:?}");
+    assert!((macro_value(&h) - 0.3).abs() < 1e-6, "{}", macro_value(&h));
+    assert!(h.tree().iter().any(|line| line.contains("Macro 0.30")), "{:#?}", h.tree());
+    h.press(KeyCode::Left).press(KeyCode::Left);
+    assert!((macro_value(&h) - 0.2).abs() < 1e-6, "{}", macro_value(&h));
+    // The value stops at the ends of its range.
+    h.press_n(KeyCode::Left, 10);
+    assert_eq!(macro_value(&h), 0.0);
+    h.press_n(KeyCode::Right, 30);
+    assert_eq!(macro_value(&h), 1.0);
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn a_value_typed_into_a_macro_is_set_and_kept_between_nothing_and_one() {
+    let mut h = Harness::new(scene_macro());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);
+    enter_value(&mut h, "0.5");
+    assert_eq!(macro_value(&h), 0.5);
+    assert_eq!(h.commands(), ["SetModulatorSource inst=0 mod=0 source=Macro { value: 0.5 }"]);
+    enter_value(&mut h, "7");
+    assert_eq!(macro_value(&h), 1.0);
+}
+
+fn macro_value(h: &Harness) -> f32 {
+    match h.s.ctl.model.instruments[0].modulators[0].source {
+        ModSourceSlot::Macro { value } => value,
+        ref other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn m_on_the_value_of_a_macro_opens_nothing_and_m_on_the_depth_of_its_cable_does() {
+    let mut h = Harness::new(scene_macro());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);
+    h.press(KeyCode::Char('m'));
+    assert!(h.s.modulate.is_none(), "the value is turned by a person: no modulator drives it");
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+    h.press(KeyCode::Char('m'));
+    assert!(h.s.modulate.is_some(), "the depth of a cable can be driven");
+    assert!(h.dump().contains("New macro → "), "a macro can be what drives it");
+}
+
+#[test]
+fn a_macro_is_taken_out_with_d_and_put_back_by_ctrl_z_at_the_value_it_had() {
+    let mut h = Harness::new(scene_macro());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);
+    h.press(KeyCode::Right).press(KeyCode::Esc);
+    h.press(KeyCode::Char('d'));
+    assert!(h.s.ctl.model.instruments[0].modulators.is_empty());
+    assert!(!h.tree().iter().any(|line| line.contains("Macro")), "{:#?}", h.tree());
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("remove a macro"));
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!((macro_value(&h) - 0.3).abs() < 1e-6, "{}", macro_value(&h));
+    assert_eq!(h.s.ctl.model.instruments[0].modulators[0].targets.len(), 1, "with its cable");
 }
 
 #[test]
@@ -5260,7 +5388,7 @@ mod undo_and_redo {
     fn the_modulate_popup_with_a_modulator_that_is_there_is_a_step_of_a_cable() {
         let mut h = on_the_bass_filters_cutoff();
         h.press(KeyCode::Down); // the filter's resonance
-        h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+        h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("draw a cable"));
         ctrl_z(&mut h);
         assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the cable of the LFO that was there");

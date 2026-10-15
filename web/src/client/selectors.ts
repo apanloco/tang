@@ -179,7 +179,7 @@ export function gainOf(state: ClientState, id: NodeId, gain: Gain): number | und
 /**
  * The value of a setting of the modulator in node `id`, if it has that setting (`withSetting` in
  * reducers.ts is the other way round): an LFO's rate, or its waveform as the index the intent
- * takes, or a stage of an envelope.
+ * takes, a stage of an envelope, or a macro's value.
  */
 export function modulatorFieldOf(state: ClientState, id: NodeId, field: ModulatorField): number | undefined {
   const node = nodeById(state, id);
@@ -192,6 +192,7 @@ export function modulatorFieldOf(state: ClientState, id: NodeId, field: Modulato
   if (source.type === "envelope") {
     if (field === "attack" || field === "decay" || field === "sustain" || field === "release") return source[field];
   }
+  if (source.type === "macro" && field === "value") return source.value;
   return undefined;
 }
 
