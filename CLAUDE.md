@@ -893,6 +893,8 @@ numeric `params` values (the index into the label list).
 | `r` | Record/stop pattern for current instrument |
 | `Ctrl+R` | Clear the pattern of the selected instrument or pattern (chain focus; `d` on the pattern does the same) |
 | `b` | Set global BPM (opens value entry popup) |
+| `o` | Show / hide the scope of the node under the chain cursor, in a strip under the chain and the parameters (see "Scope tab"; a terminal of 24 rows or more) |
+| `O` | Wave or spectrum of that scope |
 | `Ctrl+S` | Save session (to the file it was loaded from) |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves in the current session's directory) |
 | `Ctrl+Z` | Undo the last thing done (the history of the controller, which the browser's Undo has too; not heard while a popup is open) |
@@ -1122,10 +1124,21 @@ The output as it goes by, drawn on a braille canvas as a **wave** or as a **spec
 - The frames are copied from the scope ring (`telemetry::ScopeRing`, see "Architecture") on every frame that is drawn while the tab is shown, about ten a second, so that a wave that moves fast is seen in steps. The choices
   are the tab's own: they are not saved with the session, and not told to the audio thread or to the browsers (a browser's scope has its own).
 
-TODO: a scope for each lane and group in the terminal (the page has one for each node since step 46: the engine has eight rings that the controller gives to the nodes that are watched, `docs/web-ui.md` D47; the Scope tab's
-ring is the master mix), a reading of the pitch (a bin of the spectrum is 23 Hz wide: the peak could be
-interpolated between bins), a vertical zoom for a quiet sound (the tracer's wave, at its oscillator volume of 0.1, is two pixels high on the page's scope), and a key that freezes the picture.
-The page keeps the view and the time base in the master node, so that a reload goes back to the wave at 21 ms.
+**The scope of a node** (step 47, `docs/web-ui.md` D47; `o` on the Session tab). The picture of the page's scope in a node, in a strip of ten rows under the chain and the parameters (`scope_view::Strip`, `STRIP_ROWS`): what comes out of the
+node under the chain cursor, as a wave or a spectrum, drawn as the Scope tab draws (`scope_view::paint`), with the node's name, the view, the time base and the loudest sample in the top line of its box and the keys in the bottom. The node is an
+instrument that has a plugin (after its volume), an effect (after its mix), a group (after its pan) or an effect of a group's bus (after its mix); what has no signal, a modulator, a pattern and a lane that has no instrument, says so in the box
+(`No signal here…`), and so does a node that no ring is left for (`No ring is free…`: the engine has eight rings, for the terminal and every browser together, `Controller::probe_ring` says which a node has). `o` shows the strip and takes it away,
+`O` chooses wave or spectrum; both are the strip's own (not the Scope tab's, not saved, not told to the audio thread or to the browsers), and a terminal that has not room for the strip and twelve rows of the chain and the parameters (24 rows in
+all: `split_for_strip`) shows the chain and the parameters and nothing else. The engine listens to a node only while somebody watches it, so the strip watches the node under the cursor, and only while it is shown and the Session tab is: every tick
+of the loop (a turn of it begins with one, after the events of the terminal and the requests of the browsers, so that a node that a browser took out is let go of) calls `Strip::sync`, which asks `Controller::set_probes(Watcher::TERMINAL, …)` when the
+node is another, and forgets the picture of the node that was watched (a spectrum falls slowly, and the levels of one node would be seen under the name of the next). `Watcher::TERMINAL` is the terminal's own number, the highest there is: the
+owner of the web interface lets go of the watchers of the connections that have closed (`Owner::refresh_probes`) and keeps this one, so that `tang --web` has both. The frames are copied from the node's ring on every frame that is drawn
+(`Strip::take`), about ten a second.
+
+TODO: a time base for the strip (it is 21 ms; `Left` and `Right` are the parameters' on the Session tab), `o` in the action bar of the Session tab (its hints are in about a hundred snapshots; the Help tab lists it) and a word where a
+terminal is too short for the strip (it shows nothing then), and the scope's choices and the strip's being on kept with the session or the config (the page's are not either: Open question 8).
+TODO: a reading of the pitch (a bin of the spectrum is 23 Hz wide: the peak could be interpolated between bins), a vertical zoom for a quiet sound (the tracer's wave, at its oscillator volume of 0.1, is two pixels high on the page's scope),
+and a key that freezes the picture. The page keeps the view and the time base in the master node, so that a reload goes back to the wave at 21 ms.
 
 ### Help tab
 
@@ -1582,9 +1595,10 @@ for the `scope` channel (see "Web UI"). Before the first buffer it is silence.
 **The probes.** Besides the master's ring the audio thread has a pool of eight (`telemetry::PROBES`, `Telemetry.probes`: rings of the same kind) for the signal at the output of a node: of a lane's instrument (after
 its volume), of each effect (after its mix) and of a group (after its pan; a bus effect, after its mix), stored by taps in `InstrumentLane` and `Group::finish` into the ring that the controller has told the audio thread the node has
 (`GraphCommand::SetProbe { target, ring }`, `ClearProbes`; a lane or a group that nothing listens to has an empty list of taps, a check at each stage). The controller says which ring each watched node has (`Controller::set_probes(Watcher, &[NodeId])`,
-`src/app/probes.rs`: a watcher is a client of the web interface, two watchers of a node share its ring, a node that no ring is left for has one when one is free, and what has no signal has none: a modulator, a lane that has no
+`src/app/probes.rs`: a watcher is a client of the web interface or the terminal, two watchers of a node share its ring, a node that no ring is left for has one when one is free, and what has no signal has none: a modulator, a lane that has no
 instrument, the master) and keeps the audio thread's taps where the nodes are as the structure of the session changes (`reconcile_probes`, from `conclude` and `poll`). Which node a ring is for is in the telemetry
-(`Telemetry::probe_node`) for the pusher, which sends each client the frames of the nodes it watches (channel 4: see "Web UI"). With the `web` feature or in tests only: the terminal has no scope for a node (the TODO under "Scope tab").
+(`Telemetry::probe_node`) for the pusher, which sends each client the frames of the nodes it watches (channel 4: see "Web UI"). The terminal is a watcher too, `Watcher::TERMINAL`, for the scope of a node on its Session tab (see "Scope tab"), so the
+probes are in every build; `keep_probes_of`, which the owner of the web interface calls for the connections that have closed, is with the `web` feature or in tests only.
 
 MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop, the
 `play` loop and the headless loop of `serve`) looks for new devices about once a
