@@ -7,49 +7,45 @@ use crate::plugin::chain::AudioGraph;
 /// Standard MIDI messages are 1–3 bytes; we use a fixed array to avoid heap allocation.
 pub type MidiEvent = (u64, [u8; 3]);
 
-/// Select the best audio host for the current platform.
-/// On Linux, prefer JACK (PipeWire exposes a JACK interface) to avoid the
-/// ALSA compatibility layer which can destabilize PipeWire's global quantum.
+/// Select the audio host for the current platform.
+/// On Linux the default is ALSA, which PipeWire serves as an ordinary stream
+/// with its own buffer: if tang misses a deadline only tang glitches, and
+/// WirePlumber moves it to a new default device like any other app. `--jack`
+/// instead runs tang inside PipeWire's graph cycle through the JACK bridge,
+/// which avoids that extra buffer but lets a late tang cycle glitch every app.
 #[cfg(target_os = "linux")]
-fn select_audio_host(buffer_size: u32, sample_rate: u32) -> cpal::Host {
-    let available = cpal::available_hosts();
-    if available.contains(&cpal::HostId::Jack) {
-        // Request our latency from PipeWire as a cooperative hint. PIPEWIRE_LATENCY
-        // is per-client: PipeWire negotiates the global quantum as the min across
-        // active clients, and other apps recover when ours is paused or xruns.
-        // PIPEWIRE_QUANTUM, by contrast, would force the global quantum and make
-        // tang's xruns crackle YouTube and every other PipeWire client.
-        let latency = format!("{buffer_size}/{sample_rate}");
-        // SAFETY: called once at startup before other threads read env vars.
-        unsafe { std::env::set_var("PIPEWIRE_LATENCY", &latency) };
-        log::info!("Set PIPEWIRE_LATENCY={latency}");
+fn select_audio_host(jack: bool, buffer_size: u32, sample_rate: u32) -> anyhow::Result<cpal::Host> {
+    // Request our latency from PipeWire as a cooperative hint. PIPEWIRE_LATENCY
+    // is per-client: PipeWire negotiates the global quantum as the min across
+    // active clients, and other apps recover when ours is paused or xruns.
+    // PIPEWIRE_QUANTUM, by contrast, would force the global quantum. Without
+    // the hint, PipeWire's ALSA plugin requests cpal's period size, which is a
+    // quarter of the buffer, and drags the global quantum down with it.
+    let latency = format!("{buffer_size}/{sample_rate}");
+    // SAFETY: called once at startup before other threads read env vars.
+    unsafe { std::env::set_var("PIPEWIRE_LATENCY", &latency) };
+    log::info!("Set PIPEWIRE_LATENCY={latency}");
 
-        match cpal::host_from_id(cpal::HostId::Jack) {
-            Ok(h) => {
-                // Verify JACK can actually find an output device before committing.
-                // Without PipeWire's JACK bridge (pw-jack or ld.so.conf), the host
-                // object is created but cannot connect to any server.
-                if h.default_output_device().is_some() {
-                    log::info!("Using JACK audio host (PipeWire)");
-                    return h;
-                }
-                log::warn!("JACK host has no output devices, falling back to ALSA");
-            }
-            Err(_) => {
-                log::warn!("JACK host unavailable, falling back to ALSA");
-            }
-        }
-        // SAFETY: same single-threaded startup context.
-        unsafe { std::env::remove_var("PIPEWIRE_LATENCY") };
+    if !jack {
+        log::info!("Using ALSA audio host");
+        return Ok(cpal::default_host());
     }
-    log::info!("Using default audio host (ALSA)");
-    cpal::default_host()
+
+    let host = cpal::host_from_id(cpal::HostId::Jack)
+        .map_err(|e| anyhow::anyhow!("JACK host unavailable: {e}"))?;
+    // Without PipeWire's JACK bridge (pw-jack or ld.so.conf), the host object
+    // is created but cannot connect to any server.
+    if host.default_output_device().is_none() {
+        anyhow::bail!("JACK host has no output devices (run with pw-jack, or install PipeWire's JACK ld.so.conf)");
+    }
+    log::info!("Using JACK audio host (PipeWire)");
+    Ok(host)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn select_audio_host(_buffer_size: u32, _sample_rate: u32) -> cpal::Host {
+fn select_audio_host(_jack: bool, _buffer_size: u32, _sample_rate: u32) -> anyhow::Result<cpal::Host> {
     log::info!("Using default audio host");
-    cpal::default_host()
+    Ok(cpal::default_host())
 }
 
 /// Attempt to promote the current thread to SCHED_FIFO real-time scheduling.
@@ -183,10 +179,11 @@ impl AudioEngine {
         mut graph: AudioGraph,
         midi_rx: Receiver<MidiEvent>,
         device_name: Option<&str>,
+        jack: bool,
         sample_rate: u32,
         buffer_size: u32,
     ) -> anyhow::Result<Self> {
-        let host = select_audio_host(buffer_size, sample_rate);
+        let host = select_audio_host(jack, buffer_size, sample_rate)?;
 
         let device = if let Some(name) = device_name {
             host.output_devices()?

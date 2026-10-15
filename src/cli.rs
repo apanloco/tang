@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 
 /// Default audio buffer size in frames.
 ///
-/// On Linux, audio goes through PipeWire's JACK bridge, which runs every client
-/// on one driver graph at a single global quantum equal to the *smallest* latency
+/// On Linux, audio goes through PipeWire (via ALSA or the JACK bridge), which runs
+/// every client on one driver graph at a single global quantum equal to the *smallest* latency
 /// any active client requests. A small buffer here would drag the whole system's
 /// quantum down and make other apps (YouTube, etc.) chop. 1024 matches PipeWire's
 /// typical default global quantum, so Tang doesn't disturb anything else; pass
@@ -23,6 +23,11 @@ pub struct Cli {
     /// Audio output device name (default: system default)
     #[arg(long)]
     pub audio_device: Option<String>,
+
+    /// Linux: play through PipeWire's JACK bridge instead of ALSA. Lower
+    /// latency, but a late tang cycle glitches every other app's audio.
+    #[arg(long)]
+    pub jack: bool,
 
     /// MIDI input device name filter (default: open all)
     #[arg(long)]

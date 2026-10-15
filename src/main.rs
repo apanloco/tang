@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
     let Cli {
         session,
         audio_device,
+        jack,
         midi_device,
         buffer_size,
         sample_rate,
@@ -85,7 +86,7 @@ fn main() -> anyhow::Result<()> {
     } = cli;
 
     match command {
-        None => run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, true),
+        None => run_session(session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, true),
         Some(Command::Enumerate(target)) => {
             env_logger::init();
             match target {
@@ -141,7 +142,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Play { session: play_session }) => {
-            run_session(play_session, audio_device, midi_device, buffer_size, sample_rate, debug, false)
+            run_session(play_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, false)
         }
     }
 }
@@ -686,6 +687,7 @@ fn load_group_modulators(
 fn run_session(
     session: Option<String>,
     audio_device: Option<String>,
+    jack: bool,
     midi_device: Option<String>,
     buffer_size: u32,
     sample_rate: u32,
@@ -817,6 +819,7 @@ fn run_session(
         graph,
         midi_rx,
         audio_device.as_deref(),
+        jack,
         sample_rate,
         buffer_size,
     )?;

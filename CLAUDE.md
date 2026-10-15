@@ -28,6 +28,7 @@ These flags apply to both the TUI and the `play` subcommand:
 |------|---------|--------|
 | `--midi-device <name>` | all inputs | Open only the named MIDI input |
 | `--audio-device <name>` | system default | Use the named audio output |
+| `--jack` | off | Linux: play through PipeWire's JACK bridge instead of ALSA (see "Audio host selection") |
 | `--buffer-size <frames>` | 1024 (Linux), 256 (macOS/Windows) | Audio buffer size in frames |
 | `--sample-rate <hz>` | 48000 | Sample rate |
 | `--debug` | off | Show a live incoming-MIDI monitor at the bottom of the TUI (diagnoses what a controller actually sends) |
@@ -994,37 +995,48 @@ MIDI devices are hot-pluggable — main thread polls for new devices every ~1s.
 
 ## Audio host selection
 
-Tang uses cpal for audio output. The host backend is selected at startup with
-automatic fallback:
+Tang uses cpal for audio output.
 
-| Platform | Preferred | Fallback | Notes |
-|----------|-----------|----------|-------|
-| Linux | JACK (via PipeWire) | ALSA | JACK avoids PipeWire's ALSA compatibility layer, which can destabilize the global audio quantum at small buffer sizes |
-| macOS | CoreAudio | — | Native, no fallback needed |
-| Windows | WASAPI | — | Native, no fallback needed |
+| Platform | Default | Opt-in | Notes |
+|----------|---------|--------|-------|
+| Linux | ALSA (served by PipeWire) | JACK (`--jack`, via PipeWire) | See below |
+| macOS | CoreAudio | — | Native |
+| Windows | WASAPI | — | Native |
 
-On Linux, the JACK host is only used if it can find an output device. This
-requires PipeWire's JACK bridge — either via `pw-jack tang` or by installing
-the system-wide `ld.so.conf` redirect:
+On Linux both hosts go through PipeWire; they differ in how Tang joins its
+graph:
 
-```bash
-sudo cp /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf /etc/ld.so.conf.d/
-sudo ldconfig
-```
+- **ALSA (default).** ALSA's `default` device is PipeWire's ALSA plugin, so
+  Tang is an ordinary stream with its own buffer, like Spotify or YouTube. If
+  Tang misses a deadline (heavy plugin, CPU spike), only Tang glitches, and
+  WirePlumber moves it to the new default device when headphones connect or
+  disconnect. The cost is that buffer: roughly one extra `--buffer-size` of
+  latency.
+- **JACK (`--jack`).** Tang runs inside PipeWire's graph cycle, so there is
+  no extra buffer, but PipeWire waits for Tang every cycle: a late Tang cycle
+  glitches every app (YouTube, Teams, …). Requires PipeWire's JACK bridge,
+  either via `pw-jack tang` or the system-wide `ld.so.conf` redirect;
+  `--jack` errors out if it is missing:
 
-Without this, Tang falls back to ALSA transparently.
+  ```bash
+  sudo cp /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf /etc/ld.so.conf.d/
+  sudo ldconfig
+  ```
+
+Both set `PIPEWIRE_LATENCY=<buffer-size>/<sample-rate>`, a per-client hint
+(PipeWire runs the global quantum at the smallest latency any client asks
+for). Without it, the ALSA route requests cpal's period size, a quarter of
+the buffer (cpal splits an ALSA buffer into four periods), which would drag
+the whole system down to a 256-frame quantum at the default buffer size.
 
 **Following the default sink (JACK).** cpal links Tang's output ports to
 `system:playback_*` once at stream start. PipeWire's JACK bridge resolves that
 alias to the current default sink, but the links are fixed, and WirePlumber
-does not move JACK clients to a new default the way it moves ordinary streams
-(e.g. Spotify). So when `--audio-device` is not given, a watcher thread
-(`follow_default_sink` in `src/audio.rs`) re-resolves `system:playback_*`
-about once a second through its own JACK client and relinks Tang's ports when
-the default changes, e.g. when Bluetooth or USB headphones connect or
-disconnect. It only removes the links it made, so extra manual links (qpwgraph)
-survive. The ALSA fallback goes through PipeWire as an ordinary stream, so it
-should follow the default on its own (untested).
+does not move JACK clients to a new default. So with `--jack` and no
+`--audio-device`, a watcher thread (`follow_default_sink` in `src/audio.rs`)
+re-resolves `system:playback_*` about once a second through its own JACK
+client and relinks Tang's ports when the default changes. It only removes the
+links it made, so extra manual links (qpwgraph) survive.
 
 TODO: follow the default device on macOS/Windows (cpal binds the stream to one
 device, so this would mean rebuilding the stream).
