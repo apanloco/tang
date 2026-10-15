@@ -384,6 +384,21 @@ impl ModTargetKind {
             | ModTargetKind::GroupMemberMod { .. } => None,
         }
     }
+
+    /// Whether the target drives a setting that is turned on a log scale (an LFO's rate, an envelope's attack, decay and release: `ModulatorField::taper`), whose
+    /// knob runs over decades. A cable moves such a setting a fraction of the knob's travel, in ratios (`Modulator::modulated_value`); the rest, a parameter of a plugin, a
+    /// sustain and the depth of a cable, it moves a fraction of the range.
+    fn is_turned_on_a_log_scale(&self) -> bool {
+        match self {
+            ModTargetKind::ModulatorRate { .. } | ModTargetKind::ModulatorAttack { .. } | ModTargetKind::ModulatorDecay { .. } | ModTargetKind::ModulatorRelease { .. } => true,
+            ModTargetKind::GroupMemberMod { field, .. } => field.is_turned_on_a_log_scale(),
+            ModTargetKind::PluginParam { .. }
+            | ModTargetKind::GroupMember { .. }
+            | ModTargetKind::GroupBus { .. }
+            | ModTargetKind::ModulatorDepth { .. }
+            | ModTargetKind::ModulatorSustain { .. } => false,
+        }
+    }
 }
 
 /// A modulation target: one parameter on the parent plugin or a sibling modulator.
@@ -635,13 +650,14 @@ impl Modulator {
     /// trying to push past an already-maxed value (offsets above the base
     /// would just clamp at param_max and do nothing).
     fn target_offset(&self, target: &ModTarget) -> f32 {
+        self.offset(target.depth, target.base_value, target.param_min, target.param_max)
+    }
+
+    /// The offset of `target_offset`, for a cable of `depth` on a value whose base is `base` between `min` and `max`.
+    fn offset(&self, depth: f32, base: f32, min: f32, max: f32) -> f32 {
         match &self.source {
-            ModSource::Lfo { .. } => {
-                self.last_output * target.depth * (target.param_max - target.param_min)
-            }
-            ModSource::Envelope { .. } => {
-                -(1.0 - self.last_output) * target.depth * (target.base_value - target.param_min)
-            }
+            ModSource::Lfo { .. } => self.last_output * depth * (max - min),
+            ModSource::Envelope { .. } => -(1.0 - self.last_output) * depth * (base - min),
             // Unbound (armed for learning, or bound to nothing yet): leave the
             // parameter at its base, so arming learn doesn't move the sound
             // before you've touched a control.
@@ -652,14 +668,31 @@ impl Modulator {
             //   - pitch bend is bipolar (centre = 0, ±full bend = ±depth·range)
             //   - a CC / pressure is unipolar (0 = 0, full = +depth·range)
             ModSource::MidiLearn { source: Some(src), .. } => {
-                let range = target.param_max - target.param_min;
                 let deflection = match src {
                     MidiBindSource::PitchBend => (self.last_output - 0.5) * 2.0,
                     MidiBindSource::Cc(_) | MidiBindSource::Aftertouch => self.last_output,
                 };
-                deflection * target.depth * range
+                deflection * depth * (max - min)
             }
         }
+    }
+
+    /// What this modulator alone sets what `target` drives to, from the user's value, kept to its range: the write of a cable to a setting of a modulator, where the
+    /// last of the cables that drive it stands (`apply_cross_mod`).
+    ///
+    /// A setting that is turned on a log scale (a rate, an attack, a decay, a release) is moved in ratios: the law of `target_offset` is the same, but over the knob's
+    /// travel, from 0 at the lowest value to 1 at the highest, where equal steps are equal ratios, so that a depth of 0.1 moves it a tenth of the knob either way. (Over the
+    /// range in seconds or hertz it was nothing at the bottom of the knob and everything at the top.) A range that starts at nothing has no decades to move by, and is
+    /// moved by the range, as the knob of such a setting is turned by distances.
+    fn modulated_value(&self, target: &ModTarget) -> f32 {
+        let (min, max) = (target.param_min, target.param_max);
+        if target.kind.is_turned_on_a_log_scale() && min > 0.0 && max > min {
+            let decades = (max / min).ln();
+            let at = ((target.base_value.max(min) / min).ln() / decades).clamp(0.0, 1.0);
+            let moved = (at + self.offset(target.depth, at, 0.0, 1.0)).clamp(0.0, 1.0);
+            return (min * (moved * decades).exp()).clamp(min, max);
+        }
+        (target.base_value + self.target_offset(target)).clamp(min, max)
     }
 }
 
@@ -686,9 +719,7 @@ fn apply_cross_mod(modulators: &mut [Modulator], mods_to_apply: &mut Vec<CrossMo
             if tgt_mod_idx == src_idx {
                 continue;
             }
-            let modulated = (target.base_value + src.target_offset(target))
-                .clamp(target.param_min, target.param_max);
-            mods_to_apply.push((tgt_mod_idx, field, modulated));
+            mods_to_apply.push((tgt_mod_idx, field, src.modulated_value(target)));
         }
     }
 
@@ -812,6 +843,13 @@ pub enum CrossModField {
     Sustain,
     Release,
     Depth(usize),
+}
+
+impl CrossModField {
+    /// Whether the knob of the setting runs over decades (see `ModTargetKind::is_turned_on_a_log_scale`).
+    fn is_turned_on_a_log_scale(self) -> bool {
+        matches!(self, CrossModField::Rate | CrossModField::Attack | CrossModField::Decay | CrossModField::Release)
+    }
 }
 
 /// Publish `value`, what a parameter was just set to, into the slot of every
@@ -1468,8 +1506,7 @@ fn collect_group_member_mod_writes(
                     let Some(lane) = group_member_lane(instruments, gi, member) else {
                         continue;
                     };
-                    let value =
-                        (t.base_value + m.target_offset(t)).clamp(t.param_min, t.param_max);
+                    let value = m.modulated_value(t);
                     out.push(GroupMemberModWrite {
                         lane,
                         mod_index,
@@ -7703,8 +7740,9 @@ mod tests {
         rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
         let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.1, 2.0, 0.01, 50.0);
         rig.process(&[]);
-        // The LFO's +1 times the depth of the range (0.01 to 50) on top of the 2 Hz the user set.
-        assert!(close(rig.read(rate), 2.0 + 0.1 * (50.0 - 0.01)), "{}", rig.read(rate));
+        // The LFO's +1 times the depth, a tenth of the knob's travel (the rate is turned on a log scale, 0.01 to 50 Hz), up from the 2 Hz the user set.
+        let expected = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.1, 0.01, 50.0);
+        assert!(near(rig.read(rate), expected), "{} for {expected}", rig.read(rate));
     }
 
     #[test]
@@ -7714,16 +7752,19 @@ mod tests {
         rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
         let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.5, 2.0, 0.01, 50.0);
         rig.process(&[]);
-        // Idle: the user's value less depth of the way down to the lowest, 2 - 0.5 x (2 - 0.01).
-        assert!(close(rig.read(rate), 2.0 - 0.5 * (2.0 - 0.01)), "{}", rig.read(rate));
+        // Idle: the user's value less depth of the way down the knob to the lowest (the rate is turned on a log scale).
+        let at = place_on_decades(2.0, 0.01, 50.0);
+        let expected = value_on_decades(at - 0.5 * at, 0.01, 50.0);
+        assert!(near(rig.read(rate), expected), "{} for {expected}", rig.read(rate));
         rig.process(&[note_on(60)]);
         let level = FRAMES as f32 / 48000.0 / 0.01;
-        assert!(close(rig.read(rate), 2.0 - 0.5 * (1.0 - level) * (2.0 - 0.01)), "{}", rig.read(rate));
+        let expected = value_on_decades(at - 0.5 * (1.0 - level) * at, 0.01, 50.0);
+        assert!(near(rig.read(rate), expected), "{} for {expected}", rig.read(rate));
     }
 
     #[test]
     fn a_cable_to_each_stage_of_an_envelope_publishes_the_stage_it_was_set_to() {
-        // The square LFO is always +1: each stage is what the user set plus the depth of its range.
+        // The square LFO is always +1: each stage is what the user set plus the depth of its range, and for a time, which is turned on a log scale, plus the depth of the knob's travel.
         for (kind, base, (min, max), depth) in [
             (ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.01, (0.001, 10.0), 0.01),
             (ModTargetKind::ModulatorDecay { mod_index: 1 }, 0.1, (0.001, 10.0), 0.02),
@@ -7735,7 +7776,219 @@ mod tests {
             rig.lane_modulator(1, adsr(0.01));
             let stage = rig.field_target(0, kind.clone(), depth, base, min, max);
             rig.process(&[]);
-            assert!(close(rig.read(stage), base + depth * (max - min)), "{kind:?}: {}", rig.read(stage));
+            let expected = if matches!(kind, ModTargetKind::ModulatorSustain { .. }) {
+                base + depth * (max - min)
+            } else {
+                value_on_decades(place_on_decades(base, min, max) + depth, min, max)
+            };
+            assert!(near(rig.read(stage), expected), "{kind:?}: {} for {expected}", rig.read(stage));
+        }
+    }
+
+    // -- Settings that are turned on a log scale (an LFO's rate, an envelope's attack, decay and release) --
+    //
+    // The knob of such a setting runs over decades and the depth of a cable is a fraction of the knob's travel, so a cable moves the setting in ratios, a depth of 0.1
+    // a tenth of the travel either way: the swing is as far up the knob as it is down it. (It was a fraction of the range in seconds or hertz, which on a knob that
+    // runs over decades is nothing at the bottom and the whole of the top: an LFO at half depth on an attack of 10 ms swung it from the lowest value to 5 s.)
+
+    /// Where `value` is on a scale of decades from `min` to `max`, 0 to 1, as the knob of a rate or a time shows it.
+    fn place_on_decades(value: f32, min: f32, max: f32) -> f32 {
+        (value / min).ln() / (max / min).ln()
+    }
+
+    /// The value at a place on that scale.
+    fn value_on_decades(place: f32, min: f32, max: f32) -> f32 {
+        min * (max / min).powf(place)
+    }
+
+    /// A value to within what 32-bit numbers keep of a power.
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 1e-4 * b.abs().max(1.0)
+    }
+
+    /// The settings that are turned on a log scale, each as the kind of cable that drives it, the modulator it is a setting of, what the user set it to and its range.
+    fn log_settings() -> [(ModTargetKind, ModSource, f32, (f32, f32)); 4] {
+        [
+            (ModTargetKind::ModulatorRate { mod_index: 1 }, lfo(LfoWaveform::Sine, 2.0), 2.0, (0.01, 50.0)),
+            (ModTargetKind::ModulatorAttack { mod_index: 1 }, adsr(0.01), 0.01, (0.001, 10.0)),
+            (ModTargetKind::ModulatorDecay { mod_index: 1 }, adsr(0.01), 0.3, (0.001, 10.0)),
+            (ModTargetKind::ModulatorRelease { mod_index: 1 }, adsr(0.01), 0.5, (0.001, 10.0)),
+        ]
+    }
+
+    #[test]
+    fn an_lfo_on_a_setting_that_is_turned_on_a_log_scale_moves_it_a_fraction_of_the_knobs_travel_either_way() {
+        for (kind, target, base, (min, max)) in log_settings() {
+            for depth in [0.1, -0.1, 0.3] {
+                let mut rig = Rig::new();
+                rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+                rig.lane_modulator(1, target.clone());
+                let setting = rig.field_target(0, kind.clone(), depth, base, min, max);
+                rig.process(&[]);
+                let place = (place_on_decades(base, min, max) + depth).clamp(0.0, 1.0);
+                let expected = value_on_decades(place, min, max);
+                assert!(near(rig.read(setting), expected), "{kind:?} at depth {depth}: {} for {expected}", rig.read(setting));
+            }
+        }
+    }
+
+    #[test]
+    fn an_lfo_swings_a_setting_that_is_turned_on_a_log_scale_as_far_up_the_knob_as_down_it() {
+        // The ends of the swing, as places on the knob, are as far from the place of the set value either side.
+        let (kind, base, (min, max)) = (ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.1, (0.001, 10.0));
+        let place_after = |depth: f32| {
+            let mut rig = Rig::new();
+            rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+            rig.lane_modulator(1, adsr(base));
+            let setting = rig.field_target(0, kind.clone(), depth, base, min, max);
+            rig.process(&[]);
+            place_on_decades(rig.read(setting), min, max)
+        };
+        let (up, down) = (place_after(0.2), place_after(-0.2));
+        let at = place_on_decades(base, min, max);
+        assert!(((up - at) - (at - down)).abs() < 1e-4, "{up} and {down} round {at}");
+        assert!((up - at - 0.2).abs() < 1e-4, "a fifth of the knob: {}", up - at);
+    }
+
+    #[test]
+    fn an_envelope_on_a_setting_that_is_turned_on_a_log_scale_pulls_it_down_a_fraction_of_the_travel_to_the_lowest_value() {
+        for (kind, target, base, (min, max)) in log_settings() {
+            let mut rig = Rig::new();
+            rig.lane_modulator(0, adsr(0.01));
+            rig.lane_modulator(1, target);
+            let setting = rig.field_target(0, kind.clone(), 0.5, base, min, max);
+            rig.process(&[]);
+            // Idle: the user's value is the envelope's peak, and the rest is half the way down the knob to the lowest value.
+            let at = place_on_decades(base, min, max);
+            assert!(near(rig.read(setting), value_on_decades(at - 0.5 * at, min, max)), "{kind:?}: {}", rig.read(setting));
+            // A buffer into the attack the envelope is `level` of the way up.
+            rig.process(&[note_on(60)]);
+            let level = FRAMES as f32 / 48000.0 / 0.01;
+            assert!(near(rig.read(setting), value_on_decades(at - 0.5 * (1.0 - level) * at, min, max)), "{kind:?}: {}", rig.read(setting));
+        }
+    }
+
+    #[test]
+    fn a_midi_control_on_a_setting_that_is_turned_on_a_log_scale_adds_a_fraction_of_the_travel_and_nothing_at_rest() {
+        let mut rig = Rig::new();
+        let control = ModSource::MidiLearn { source: Some(MidiBindSource::Cc(74)), value: 0.0, learning: false };
+        rig.lane_modulator(0, control);
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
+        let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.2, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        assert!(near(rig.read(rate), 2.0), "at rest it is what the user set: {}", rig.read(rate));
+        rig.process(&[(0, [0xB0, 74, 127])]);
+        let expected = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.2, 0.01, 50.0);
+        assert!(near(rig.read(rate), expected), "{} for {expected}", rig.read(rate));
+    }
+
+    #[test]
+    fn a_setting_that_is_turned_on_a_log_scale_stops_at_the_ends_of_its_range() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, adsr(0.01));
+        let top = rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, 3.0, 0.01, 0.001, 10.0);
+        rig.process(&[]);
+        assert!(near(rig.read(top), 10.0), "{}", rig.read(top));
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, adsr(0.01));
+        let bottom = rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, -3.0, 0.01, 0.001, 10.0);
+        rig.process(&[]);
+        assert!(near(rig.read(bottom), 0.001), "{}", rig.read(bottom));
+    }
+
+    #[test]
+    fn a_setting_that_has_a_range_of_one_value_stays_there() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, adsr(0.01));
+        let attack = rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.1, 1.0, 1.0, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(attack), 1.0), "{}", rig.read(attack));
+    }
+
+    #[test]
+    fn a_setting_that_has_a_range_from_nothing_is_moved_by_the_range_as_there_are_no_decades_in_it() {
+        // (A scale of decades has no zero: a cable made to one that starts there goes by the range, and does not come out as not a number.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, adsr(0.01));
+        let attack = rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.1, 0.5, 0.0, 10.0);
+        rig.process(&[]);
+        assert!(close(rig.read(attack), 0.5 + 0.1 * 10.0), "{}", rig.read(attack));
+    }
+
+    #[test]
+    fn a_sustain_and_a_depth_are_still_moved_by_a_fraction_of_their_range() {
+        // They are turned by distances, not by ratios: the stage of the envelope that is a level and the depth of a cable.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, adsr(0.01));
+        let sustain = rig.field_target(0, ModTargetKind::ModulatorSustain { mod_index: 1 }, 0.2, 0.5, 0.0, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(sustain), 0.7), "{}", rig.read(sustain));
+        // (And one whose range starts above nothing, which the range from nothing would not tell from one on decades.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        rig.lane_modulator(1, adsr(0.01));
+        let sustain = rig.field_target(0, ModTargetKind::ModulatorSustain { mod_index: 1 }, 0.2, 0.5, 0.1, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(sustain), 0.5 + 0.2 * 0.9), "{}", rig.read(sustain));
+    }
+
+    #[test]
+    fn a_group_modulator_moves_each_setting_of_a_members_modulator_that_is_turned_on_a_log_scale_a_fraction_of_the_knobs_travel_and_a_sustain_a_fraction_of_its_range() {
+        for (field, member_source, base, (min, max)) in [
+            (CrossModField::Rate, lfo(LfoWaveform::Sine, 10.0), 10.0, (0.01, 50.0)),
+            (CrossModField::Attack, adsr(0.01), 0.01, (0.001, 10.0)),
+            (CrossModField::Decay, adsr(0.01), 0.3, (0.001, 10.0)),
+            (CrossModField::Release, adsr(0.01), 0.5, (0.001, 10.0)),
+            (CrossModField::Sustain, adsr(0.01), 0.5, (0.1, 1.0)),
+        ] {
+            let (mut graph, cmd_tx, _rr) = make_graph(2);
+            swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
+            cmd_tx.send(GraphCommand::AddGroup).unwrap();
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+            cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: member_source }).unwrap();
+            cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) }).unwrap(); // always +1
+            let target = ModTarget {
+                kind: ModTargetKind::GroupMemberMod { member: 0, mod_index: 0, field },
+                depth: 0.1,
+                base_value: base,
+                param_min: min,
+                param_max: max,
+                effective: None,
+            };
+            cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+            graph.process(&[], &mut make_output()).unwrap();
+            // (A sustain is a level, turned by distances: it goes by the range.)
+            let expected = if field == CrossModField::Sustain { base + 0.1 * (max - min) } else { value_on_decades(place_on_decades(base, min, max) + 0.1, min, max) };
+            let value = match graph.instruments[0].modulators[0].source {
+                ModSource::Lfo { rate, .. } => rate,
+                ModSource::Envelope { attack, decay, sustain, release, .. } => match field {
+                    CrossModField::Attack => attack,
+                    CrossModField::Decay => decay,
+                    CrossModField::Sustain => sustain,
+                    _ => release,
+                },
+                ModSource::MidiLearn { .. } => panic!("the member's modulator is an LFO or an envelope"),
+            };
+            assert!(near(value, expected), "{field:?}: {value} for {expected}");
+        }
+    }
+
+    #[test]
+    fn a_value_beyond_the_range_of_a_setting_that_is_turned_on_a_log_scale_is_taken_at_the_end_of_it() {
+        // (A session file can say 20 s for an attack that runs to 10, or a number that is not a time at all. The knob puts such a value at its end, and so does the law: there is
+        // no logarithm of what is not above nothing, and a negative number would come out as not a number.)
+        for (base, depth, expected) in [(20.0, -0.1, value_on_decades(0.9, 0.001, 10.0)), (20.0, 0.1, 10.0), (-1.0, 0.1, value_on_decades(0.1, 0.001, 10.0)), (-1.0, -0.1, 0.001)] {
+            let mut rig = Rig::new();
+            rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+            rig.lane_modulator(1, adsr(0.01));
+            let attack = rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, depth, base, 0.001, 10.0);
+            rig.process(&[]);
+            assert!(near(rig.read(attack), expected), "{base} at depth {depth}: {} for {expected}", rig.read(attack));
         }
     }
 
@@ -7850,7 +8103,9 @@ mod tests {
         let first = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.1, 2.0, 0.01, 50.0);
         let second = rig.field_target(2, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.3, 2.0, 0.01, 50.0);
         rig.process(&[]);
-        assert!(close(rig.read(second), 2.0 + 0.3 * (50.0 - 0.01)), "{}", rig.read(second));
+        // (A rate is turned on a log scale: the cable moves it 0.3 of the knob's travel, `place_on_decades`.)
+        let expected = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.3, 0.01, 50.0);
+        assert!(near(rig.read(second), expected), "{} for {expected}", rig.read(second));
         assert_eq!(rig.read(first), rig.read(second));
     }
 
@@ -8081,7 +8336,9 @@ mod tests {
         let target = ModTarget { kind: ModTargetKind::ModulatorRate { mod_index: 1 }, depth: 0.3, base_value: 1.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
         g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
         g.rig.process(&[]);
-        assert!(close(g.rig.read(slot), 1.0 + 0.3 * (50.0 - 0.01)), "{}", g.rig.read(slot));
+        // The group's LFO is a square at +1: the rate is turned on a log scale, and 0.3 of the knob's travel is a long way up it.
+        let expected = value_on_decades(place_on_decades(1.0, 0.01, 50.0) + 0.3, 0.01, 50.0);
+        assert!(near(g.rig.read(slot), expected), "{} for {expected}", g.rig.read(slot));
     }
 
     #[test]
@@ -8093,14 +8350,16 @@ mod tests {
         let target = ModTarget { kind: field, depth: 0.1, base_value: 2.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
         g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
         g.rig.process(&[]);
-        // The group's LFO is a square at +1: 2 Hz and a tenth of the range.
-        assert!(close(g.rig.read(slot), 2.0 + 0.1 * (50.0 - 0.01)), "{}", g.rig.read(slot));
+        // The group's LFO is a square at +1: 2 Hz and a tenth of the knob's travel (the rate is turned on a log scale).
+        let expected = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.1, 0.01, 50.0);
+        assert!(near(g.rig.read(slot), expected), "{} for {expected}", g.rig.read(slot));
         // A cable of the member's own to the same setting is applied after the group's, and wins: that is what the setting ends up as.
         g.rig.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 1, source: lfo(LfoWaveform::Square, 0.0) }).unwrap();
         let own = ModTarget { kind: ModTargetKind::ModulatorRate { mod_index: 0 }, depth: 0.3, base_value: 2.0, param_min: 0.01, param_max: 50.0, effective: None };
         g.rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 1, target: own }).unwrap();
         g.rig.process(&[]);
-        assert!(close(g.rig.read(slot), 2.0 + 0.3 * (50.0 - 0.01)), "{}", g.rig.read(slot));
+        let expected = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.3, 0.01, 50.0);
+        assert!(near(g.rig.read(slot), expected), "{} for {expected}", g.rig.read(slot));
     }
 
     #[test]
