@@ -4040,9 +4040,12 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn a_step_counts_the_plugins_of_the_lane_and_of_the_group_it_is_to_be_handed_and_none_once_it_has_let_go_of_them() {
+    fn a_step_counts_the_plugins_of_the_effect_the_lane_and_the_group_it_is_to_be_handed_and_none_once_it_has_let_go_of_them() {
         let (mut ctl, mut graph) = controller_over_an_audio_thread(GROUPS_AMONG_LANES);
-        // A group (two plugins on its bus), and then a lane (an instrument and a filter: lane 1, which is in the second group, now the first).
+        // An effect (the filter of lane 2, one plugin), a group (two plugins on its bus) and a lane (an instrument and a filter: lane 1, which is in the second group, now the first).
+        let effect = node(&ctl, NodePath::Effect { inst: 2, index: 0 });
+        ctl.apply(Intent::RemoveNode { node: effect }).unwrap();
+        graph.drain_commands();
         let group = node(&ctl, NodePath::Group(0));
         ctl.apply(Intent::RemoveNode { node: group }).unwrap();
         graph.drain_commands();
@@ -4052,12 +4055,12 @@ plugin = "builtin:osc"
         let kept = |ctl: &Controller| -> Vec<Option<usize>> {
             ctl.history.undo.iter().map(|step| if let Taken::Held(journal) = &step.taken { Some(journal.plugins_kept()) } else { None }).collect()
         };
-        assert_eq!(kept(&ctl), [Some(2), Some(2)]);
+        assert_eq!(kept(&ctl), [Some(1), Some(2), Some(2)]);
         for step in &mut ctl.history.undo {
             let Taken::Held(journal) = &mut step.taken else { panic!("a removal holds what it took out") };
             journal.let_go_of_plugins();
         }
-        assert_eq!(kept(&ctl), [Some(0), Some(0)], "what was let go of is not kept, and does not count against what is");
+        assert_eq!(kept(&ctl), [Some(0), Some(0), Some(0)], "what was let go of is not kept, and does not count against what is");
     }
 
     /// A step of a script: an intent, or time going by (in milliseconds).
