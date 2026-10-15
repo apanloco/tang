@@ -505,6 +505,22 @@ what the cables that drive it work from (`update_cross_mod_base`: for a depth,
 since f133, which had been left out, so that the cross-mod wrote the depth back
 to what it was around the old value every buffer, and the slider did nothing).
 
+A field that is turned on a log scale (the knob of an LFO's rate, 0.01 to 50 Hz,
+and of an envelope's attack, decay and release, 0.001 to 10 s, runs over decades:
+`ModulatorField::taper`) is moved on that scale, so the cable's `depth` is a
+fraction of the knob's travel and not of the range in seconds or hertz. The
+user's value is put at its place on the knob (`ln(value / min) / ln(max / min)`),
+the source offsets that place by the laws above (an LFO plus or minus `depth`, an
+envelope from `depth` of the way down to the value the user set, a MIDI control
+as before) with the knob's travel, 0 to 1, as the range, and the result goes back
+to a value (`Modulator::modulated_value`, which `apply_cross_mod` and a group's cable to
+a member's modulator use). A swing is as far up the knob as down it: an LFO at
+depth 0.5 on an attack of 10 ms goes from 1 ms to 1 s (it went from 1 ms to 5 s,
+and sat at 1 ms for half of each turn). A sustain and the depth of a cable are
+levels and go by the range, as does a range that starts at nothing (there are no
+decades in it). A saved session's cross-mod cable to a rate, an attack, a decay or a
+release means a fraction of the knob now, and no longer of the range.
+
 ### Node positions (`ui`)
 
 A front-end that draws the session as a canvas (the browser, see "Web UI") keeps where each node is in the session
@@ -1915,6 +1931,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   not the session's). The page asks the server for the `scope` telemetry channel while the master node is on it (`Client.watchTelemetry`: counted, and asked again on every connection), works the spectrum out itself
   (`client/fft.ts`: the server sends samples, and a spectrum of them is a drawing too) and is told what the frequencies are by `Meta.sampleRate`. The mock engine's scope sounds like the notes that are held. The terminal's
   Scope tab draws the same (see "Scope tab").
+  Step 43 made the ring and the dot of a rate, an attack, a decay and a release follow the engine's law for such a setting, a fraction of the knob's travel (see "Cross-modulation"):
+  `settingExtent` takes the scale of the setting, the mock engine does as the engine does, and how a range is spread over a knob is in `client/travel.ts`, which `ui/knob-geometry.ts` exports too.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
