@@ -3059,7 +3059,7 @@ plugin = "builtin:reverb"
             }
         }
         let before = picture(&ctl);
-        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid("Reverb has 1 audio outputs, and an effect here needs 2".to_string()));
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid("Reverb has 1 audio output, and an effect here needs 2".to_string()));
         assert_eq!(picture(&ctl), before);
         assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None));
     }

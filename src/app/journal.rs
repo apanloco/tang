@@ -29,10 +29,10 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::apply::{Done, PluginAt};
-use crate::app::controller::{has_audio_output, ChainAt, Controller};
+use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
 use crate::app::model::{mod_source_slot_to_graph, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
-use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper, CHAIN_CHANNELS};
+use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
 
@@ -182,15 +182,6 @@ pub(super) fn lane_words(lane: &InstrumentNode) -> String {
     lane.instrument.as_ref().map_or_else(|| "an empty lane".to_string(), |instrument| format!("the lane of {}", instrument.name))
 }
 
-/// An effect has as many audio outputs as the chains have channels, or there is no place for it.
-fn outputs_of_an_effect(effect: &dyn Plugin, slot: &PluginSlot) -> Result<(), IntentError> {
-    let outputs = effect.audio_output_count();
-    if outputs != CHAIN_CHANNELS {
-        return Err(IntentError::Invalid(format!("{} has {outputs} audio outputs, and an effect here needs {CHAIN_CHANNELS}", slot.name)));
-    }
-    Ok(())
-}
-
 /// A cable as the audio thread is told of it when it goes in, centred on `base_value`.
 fn cable_for_the_audio_thread(slot: &ModTargetSlot, base_value: f32) -> ModTarget {
     ModTarget { kind: slot.kind.clone(), depth: slot.depth, base_value, param_min: slot.param_min, param_max: slot.param_max, effective: slot.effective }
@@ -274,7 +265,7 @@ impl Controller {
                 .iter()
                 .map(|slot| {
                     let loaded = self.reload_plugin(slot)?;
-                    outputs_of_an_effect(&*loaded, slot)?;
+                    outputs_fit_the_chain(&slot.name, loaded.audio_output_count())?;
                     Ok(loaded)
                 })
                 .collect::<Result<Vec<_>, IntentError>>()?;
@@ -300,7 +291,7 @@ impl Controller {
                 .iter()
                 .map(|slot| {
                     let loaded = self.reload_plugin(slot)?;
-                    outputs_of_an_effect(&*loaded, slot)?;
+                    outputs_fit_the_chain(&slot.name, loaded.audio_output_count())?;
                     Ok(loaded)
                 })
                 .collect::<Result<Vec<_>, IntentError>>()?;
@@ -390,7 +381,7 @@ impl Controller {
         for inverse in &mut journal.inverses {
             match inverse {
                 Inverse::Effect { slot, kept, .. } => {
-                    let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline, outputs_of_an_effect)?;
+                    let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline, |plugin, slot| outputs_fit_the_chain(&slot.name, plugin.audio_output_count()))?;
                     *kept = Kept::InHand(plugin);
                 }
                 Inverse::Instrument { before: Some(Replaced { slot, kept, .. }), .. } => {

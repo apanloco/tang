@@ -186,6 +186,17 @@ pub(super) fn has_audio_output(instrument: &dyn Plugin) -> Result<(), IntentErro
     Ok(())
 }
 
+/// An effect has as many audio outputs as the chains have channels (`CHAIN_CHANNELS`), or there is no place for it: the audio thread turns one that has not
+/// away (it logs why and hands the plugin back), so a model that kept it would list a plugin that is not in the audio path. The one rule of the selector,
+/// of undo and of the loader; `name` is what the refusal calls the plugin.
+pub(super) fn outputs_fit_the_chain(name: &str, outputs: usize) -> Result<(), IntentError> {
+    if outputs != CHAIN_CHANNELS {
+        let s = if outputs == 1 { "" } else { "s" };
+        return Err(IntentError::Invalid(format!("{name} has {outputs} audio output{s}, and an effect here needs {CHAIN_CHANNELS}")));
+    }
+    Ok(())
+}
+
 pub struct Controller {
     /// The instrument lanes and the submix groups.
     pub model: SessionModel,
@@ -562,14 +573,7 @@ impl Controller {
             ChainAt::Bus(group) => self.model.groups.get(group).map(|g| g.effects.len()),
         };
         let Some(index) = index else { return Err(IntentError::Invalid("there is no such chain".to_string())) };
-        let outputs = loaded.audio_output_count();
-        if outputs != CHAIN_CHANNELS {
-            return Err(IntentError::Invalid(format!(
-                "{} has {outputs} audio output{}, and an effect here needs {CHAIN_CHANNELS}",
-                loaded.name(),
-                if outputs == 1 { "" } else { "s" }
-            )));
-        }
+        outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
         // (The node is made last: a plugin that is turned away leaves no gap in the ids.)
         let mut slot = fresh_slot(loaded.as_mut(), source, self.model.alloc_node());
         slot.mix = default_effect_mix(source);
@@ -3414,6 +3418,15 @@ group = 1
         // (The audio thread would turn it away as well, and the model would be left with an effect that is not there.)
         assert!(sent(&engine).is_empty());
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn a_chain_has_a_place_for_an_effect_with_as_many_outputs_as_it_has_channels_and_for_no_other() {
+        assert_eq!(outputs_fit_the_chain("Reverb", CHAIN_CHANNELS), Ok(()));
+        let refusal = |outputs: usize| outputs_fit_the_chain("Reverb", outputs).expect_err("not as many as the chain has").to_string();
+        assert_eq!(refusal(1), "Reverb has 1 audio output, and an effect here needs 2");
+        assert_eq!(refusal(0), "Reverb has 0 audio outputs, and an effect here needs 2");
+        assert_eq!(refusal(6), "Reverb has 6 audio outputs, and an effect here needs 2");
     }
 
     #[test]
