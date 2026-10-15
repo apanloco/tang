@@ -6,7 +6,7 @@
 // every browser draws the node there. The nodes that are not moved are where the layout puts them, and stay there when the session
 // changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
 // the nodes to be arranged again.
-import { Background, ControlButton, Controls, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
+import { Background, Controls, Panel, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
 import type { Connection, Edge, EdgeTypes, NodeTypes, OnConnectStart } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -50,6 +50,9 @@ const SHOW_WITHIN_MS = 3000;
 
 /** How long the canvas takes to move to a node. */
 const MOVE_MS = 250;
+
+/** The room that the canvas leaves round the nodes when it fits them in the view (a share of the view). */
+const FIT_PADDING = 0.12;
 
 /** How far (in pixels) the pointer has to go with a node before it is a drag: a click on a node's header is not a move. */
 const DRAG_THRESHOLD = 3;
@@ -109,15 +112,34 @@ function ShowWhatWasAdded({ graph, flow }: { graph: Graph | null; flow: Flow }) 
   return null;
 }
 
+/**
+ * Moves the canvas to show every node when the nodes have been arranged again (a layout puts them where they were not, and the strips are taller than what was in the view), once
+ * the nodes are where they will be: not while the places that were given are being given back. `requests` counts the times the nodes were asked to be arranged. Draws nothing; it is in
+ * the canvas for the instance of it (`useReactFlow`).
+ */
+function FitWhenArranged({ requests, arranging }: { requests: number; arranging: boolean }) {
+  const canvas = useReactFlow();
+  const shown = useRef(0);
+  useEffect(() => {
+    if (arranging || requests === shown.current) return;
+    shown.current = requests;
+    void canvas.fitView({ padding: FIT_PADDING, maxZoom: 1, duration: MOVE_MS });
+  }, [canvas, requests, arranging]);
+  return null;
+}
+
 export function PatchView() {
   // The canvas is laid out again when something other than a value changed.
   const graph = useClientSelection((state) => state.snapshot?.graph ?? null, sameGraphStructure);
-  const { flow, arrangeAgain } = useLayout(graph);
+  const { flow, arranging, arrangeAgain } = useLayout(graph);
+  // How many times the nodes have been asked to be arranged again, for the canvas to be moved to show them.
+  const [arrangements, setArrangements] = useState(0);
   const editor = useEditor();
   // Whether there is anything to arrange again: a node that has been moved, or one that is not where the layout would have it.
   const anyMoved = graph?.nodes.some((node) => node.ui !== undefined) ?? false;
   const arrange = useCallback(() => {
     arrangeAgain();
+    setArrangements((count) => count + 1);
     // (If one is refused the page says so: `Editor` puts the reason among the notices.)
     void editor.resetLayout();
   }, [arrangeAgain, editor]);
@@ -186,7 +208,7 @@ export function PatchView() {
               edgeTypes={EDGE_TYPES}
               colorMode="dark"
               fitView
-              fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
+              fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1 }}
               minZoom={0.2}
               maxZoom={1.5}
               connectionRadius={40}
@@ -200,12 +222,21 @@ export function PatchView() {
               deleteKeyCode={null}
             >
               <Background gap={24} />
-              <Controls showInteractive={false}>
-                <ControlButton title="Arrange the nodes again" aria-label="Arrange the nodes again" disabled={!anyMoved && flow.arranged} onClick={arrange}>
-                  <span aria-hidden="true">↺</span>
-                </ControlButton>
-              </Controls>
+              <Controls showInteractive={false} />
+              <Panel position="top-right">
+                <button
+                  type="button"
+                  className="tang-patch__arrange"
+                  title="Put every node where the layout has it, and give back the places that were moved"
+                  aria-label="Arrange the nodes again"
+                  disabled={!anyMoved && flow.arranged}
+                  onClick={arrange}
+                >
+                  Arrange
+                </button>
+              </Panel>
               <ShowWhatWasAdded graph={graph} flow={flow} />
+              <FitWhenArranged requests={arrangements} arranging={arranging} />
             </ReactFlow>
           </ConnectingContext.Provider>
         </div>

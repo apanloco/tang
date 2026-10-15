@@ -26,6 +26,8 @@ const anyPlaced = (graph: Graph | null): boolean => graph?.nodes.some((node) => 
 
 export interface Layout {
   flow: Flow;
+  /** The nodes that a person had placed are being given back to the layout: what is laid out now is not what they will be when the last is (`Laid.arranging`). */
+  arranging: boolean;
   /** Lay the nodes out from nothing: every node that is not placed by a person goes where the layout puts it. */
   arrangeAgain: () => void;
 }
@@ -43,5 +45,5 @@ export function useLayout(graph: Graph | null): Layout {
   const arrangeAgain = useCallback(() => {
     setLaid((now) => ({ graph: now.graph, flow: now.graph ? toFlow(now.graph) : NO_FLOW, arranging: anyPlaced(now.graph) }));
   }, []);
-  return { flow: current.flow, arrangeAgain };
+  return { flow: current.flow, arranging: current.arranging, arrangeAgain };
 }

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
-import { addEnvelope, drag, expectNodesApart, output, setting, still } from "./canvas";
+import { addEnvelope, drag, expectNodesApart, nodeBoxes, output, setting, still } from "./canvas";
 import { test } from "./own";
 
 // Moving the nodes of the patch, on the real program (a program of its own: where a node is put is in the file it saves).
@@ -112,16 +112,23 @@ async function placesByName(page: Page): Promise<Record<string, { x: number; y: 
   });
 }
 
-test("a cable drawn to the setting of another modulator leaves every node where it is, and the button of the canvas puts them where the layout has them", async ({ page, own }) => {
+test("a cable drawn to the setting of another modulator leaves every node where it is, and the button that says Arrange puts them where the layout has them", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
   const lfo = nodeNamed(page, "LFO");
   await expect(lfo).toBeVisible();
 
-  // The button has nothing to do yet.
+  // The button is there, says what it does, has nothing to do yet, and is over none of the nodes.
   const arrange = page.getByRole("button", { name: "Arrange the nodes again" });
+  await expect(arrange).toHaveText("Arrange");
   await expect(arrange).toBeDisabled();
+  const button = await arrange.boundingBox();
+  if (!button) throw new Error("the button is not on the page");
+  for (const other of await nodeBoxes(page)) {
+    const apart = button.x + button.width <= other.left || other.left + other.width <= button.x || button.y + button.height <= other.top || other.top + other.height <= button.y;
+    expect(apart, `the button and ${other.name}`).toBe(true);
+  }
 
   const first = await placesByName(page);
   expect(Object.keys(first).sort()).toEqual(["LFO", "Filter", "Master", "Oscillator"].sort());
@@ -147,4 +154,14 @@ test("a cable drawn to the setting of another modulator leaves every node where 
   const arranged = await placesByName(page);
   expect(arranged.LFO?.y).toBeLessThan(arranged.ADSR?.y ?? 0);
   expect(arranged.ADSR?.y).toBeLessThan(arranged.Oscillator?.y ?? 0);
+
+  // The canvas is moved to show them: the layout is a row taller than what was in the view, and every node is in it.
+  const view = await page.locator(".react-flow").boundingBox();
+  if (!view) throw new Error("the canvas is not on the page");
+  await expect
+    .poll(
+      async () => (await nodeBoxes(page)).filter((box) => box.left < view.x - 1 || box.top < view.y - 1 || box.left + box.width > view.x + view.width + 1 || box.top + box.height > view.y + view.height + 1).map((box) => box.name),
+      { message: "every node is in the view" },
+    )
+    .toEqual([]);
 });

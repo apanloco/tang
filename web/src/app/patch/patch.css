@@ -582,3 +582,29 @@
 .tang-port--mod {
   cursor: crosshair;
 }
+
+/* The button that arranges the nodes again, at the corner of the canvas (it looks as the buttons of the bar do). */
+.tang-patch__arrange {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  cursor: pointer;
+}
+
+.tang-patch__arrange:hover:not(:disabled) {
+  border-color: var(--tang-modulation);
+}
+
+.tang-patch__arrange:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-patch__arrange:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
