@@ -1,14 +1,14 @@
 // Telemetry on the client: decoding the binary frames, knowing which value is which,
 // and holding the latest of each channel where a drawing loop can read it without
 // going through any framework's state (docs/web-ui.md §6 and §9.4).
-import { FRAME_HEADER_LEN } from "../protocol";
+import { FRAME_HEADER_LEN, SCOPE_FRAME_LENGTH } from "../protocol";
 import type { NodeId, Port, SlotKind, TelemetryChannel, TelemetryLayout } from "../protocol";
 
 /** The channel numbers of a frame's header, in order. */
-const CHANNELS: readonly TelemetryChannel[] = ["meters", "modulation", "held"];
+const CHANNELS: readonly TelemetryChannel[] = ["meters", "modulation", "held", "scope"];
 
-/** The channels whose values are the entries of a list in the layout (the held notes follow none). */
-export type LayoutChannel = Exclude<TelemetryChannel, "held">;
+/** The channels whose values are the entries of a list in the layout (the held notes and the scope follow none). */
+export type LayoutChannel = Exclude<TelemetryChannel, "held" | "scope">;
 const LAYOUT_CHANNELS: readonly LayoutChannel[] = ["meters", "modulation"];
 
 /** How many notes there are: a frame of the held notes has a value for each of them, at the place of its number. */
@@ -17,7 +17,7 @@ export const NOTES = 128;
 /** One telemetry frame: the current values of one channel. */
 export interface Frame {
   channel: TelemetryChannel;
-  /** The `rev` of the layout the values follow (0 for the held notes, which follow none). */
+  /** The `rev` of the layout the values follow (0 for the held notes and the scope, which follow none). */
   layoutRev: number;
   /** Value *i* belongs to entry *i* of the channel's list in that layout. */
   values: Float32Array;
@@ -77,13 +77,18 @@ export class TelemetryIndex {
 /**
  * The latest values of each channel. A channel's array is made when the layout is set
  * and written in place by every frame after it, so a loop that has read it once
- * always sees the newest values. (The held notes follow no layout: their array is there
- * from the start, a value for each note, and is not reset by a layout.)
+ * always sees the newest values. (The held notes and the scope follow no layout: their arrays are there
+ * from the start, a value for each note and the frames of the two sides of the output, and are not reset by a layout.)
  */
 export class TelemetryBuffers {
   #index: TelemetryIndex | null = null;
-  readonly #latest = new Map<TelemetryChannel, Float32Array>([["held", new Float32Array(NOTES)]]);
-  /** The channels that have had a frame of the layout that is set (the held notes: a frame at all). */
+  readonly #latest = new Map<TelemetryChannel, Float32Array>([
+    ["held", new Float32Array(NOTES)],
+    ["scope", new Float32Array(2 * SCOPE_FRAME_LENGTH)],
+  ]);
+  /** How many frames each channel has had taken. */
+  readonly #counts = new Map<TelemetryChannel, number>();
+  /** The channels that have had a frame of the layout that is set (the held notes and the scope: a frame at all). */
   readonly #heard = new Set<TelemetryChannel>();
   #frames = 0;
 
@@ -114,11 +119,12 @@ export class TelemetryBuffers {
    */
   accept(frame: Frame): boolean {
     const latest = this.#latest.get(frame.channel);
-    // (The held notes follow no layout: a frame of them is one value for each of the notes, and is taken at any time.)
-    const fits = frame.channel === "held" ? true : this.#index?.layout.rev === frame.layoutRev;
+    // (The held notes and the scope follow no layout: a frame of them is taken at any time, if it is the length it should be.)
+    const fits = frame.channel === "held" || frame.channel === "scope" ? true : this.#index?.layout.rev === frame.layoutRev;
     if (!fits || latest?.length !== frame.values.length) return false;
     latest.set(frame.values);
     this.#heard.add(frame.channel);
+    this.#counts.set(frame.channel, (this.#counts.get(frame.channel) ?? 0) + 1);
     this.#frames += 1;
     return true;
   }
@@ -152,9 +158,22 @@ export class TelemetryBuffers {
     this.#latest.get("held")?.fill(0);
   }
 
+  /**
+   * Forget what the scope had, in the array a reader already holds: the connection that told is gone, and what the output is now is not known until a frame says
+   * (a picture that stays on the screen is of a sound that is not there).
+   */
+  forgetScope(): void {
+    this.#latest.get("scope")?.fill(0);
+  }
+
   /** How many frames have been taken: a loop can tell whether there is anything new. */
   get frames(): number {
     return this.#frames;
+  }
+
+  /** How many frames of `channel` have been taken: a drawing of one channel can tell whether there is anything new for it. */
+  framesOf(channel: TelemetryChannel): number {
+    return this.#counts.get(channel) ?? 0;
   }
 
   #sameLengths(layout: TelemetryLayout): boolean {

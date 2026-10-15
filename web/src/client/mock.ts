@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL } from "../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -882,7 +882,7 @@ function shape(waveform: "sine" | "triangle" | "saw" | "square", phase: number):
 }
 
 /** The number of a channel in the header of its frames. */
-const CHANNEL_NUMBERS: Record<TelemetryChannel, number> = { meters: 0, modulation: 1, held: 2 };
+const CHANNEL_NUMBERS: Record<TelemetryChannel, number> = { meters: 0, modulation: 1, held: 2, scope: 3 };
 
 /** The bytes of a telemetry frame, as the server writes them (`telemetry_frame`). */
 function frameBytes(channel: TelemetryChannel, layoutRev: number, values: readonly number[]): ArrayBuffer {
@@ -1214,6 +1214,8 @@ export class MockServer {
       const held = this.heldNotes;
       return frameBytes(channel, 0, Array.from({ length: 128 }, (_, note) => (held.has(note) ? 1 : 0)));
     }
+    // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's. The mock hears nothing yet.)
+    if (channel === "scope") return frameBytes(channel, 0, new Array<number>(2 * SCOPE_FRAME_LENGTH).fill(0));
     const { telemetry } = this.#snapshot;
     const nodes = this.#snapshot.graph.nodes;
     const outputOf = (id: NodeId): number => {

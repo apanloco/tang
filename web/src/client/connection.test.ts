@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT } from "../protocol";
+import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, SCOPE_FRAME_LENGTH } from "../protocol";
 import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError, SLOW_AFTER } from "./connection";
 import type { ClientOptions, Transport, TransportFactory } from "./connection";
@@ -2069,6 +2069,34 @@ describe("the held notes", () => {
     player.noteOn(60);
     await quiet(60);
     expect(player.telemetry.has("held")).toBe(false);
+  });
+});
+
+describe("the scope", () => {
+  test("is told to a client that asks for it as the two sides of the output, as long as the real server's", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const watcher = await open(server, { telemetry: ["scope"] });
+    await until(() => watcher.telemetry.has("scope"), "the first frame");
+    expect(watcher.telemetry.values("scope")?.length).toBe(2 * SCOPE_FRAME_LENGTH);
+  });
+
+  test("is a frame as the server makes it: channel 3, no layout, the left side and then the right", () => {
+    const server = new MockServer();
+    server.apply(cutoff(0.25));
+    const bytes = server.frame("scope", 0, new Map(), 0);
+    expect(new Uint8Array(bytes)[0]).toBe(3);
+    const decoded = decodeFrame(bytes);
+    expect(decoded?.channel).toBe("scope");
+    expect(decoded?.layoutRev).toBe(0);
+    expect(decoded?.values).toHaveLength(2 * SCOPE_FRAME_LENGTH);
+  });
+
+  test("is not told to a client that did not ask for it", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const player = await open(server, { telemetry: ["meters"] });
+    await until(() => player.telemetry.has("meters"), "the meters");
+    await quiet(60);
+    expect(player.telemetry.has("scope")).toBe(false);
   });
 });
 

@@ -50,5 +50,6 @@ export {
   PROTOCOL,
   SCALE_KINDS,
   SCALE_ROOTS,
+  SCOPE_FRAME_LENGTH,
   WAVEFORMS,
 } from "./generated/constants";

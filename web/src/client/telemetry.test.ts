@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import { SCOPE_FRAME_LENGTH } from "../protocol";
 import type { TelemetryLayout } from "../protocol";
 import { MASTER, nodeNamed, tracerSnapshot } from "./fixtures";
 import { decodeFrame, portKey, TelemetryBuffers, TelemetryIndex } from "./telemetry";
@@ -33,10 +34,19 @@ describe("decoding a frame", () => {
     expect(Array.from(decoded?.values ?? [])).toEqual([1, -2.5, 0.25]);
   });
 
-  test("knows the meters from the modulation and from the held notes", () => {
+  test("knows the meters from the modulation, from the held notes and from the scope", () => {
     expect(decodeFrame(frame(0, 7, []))?.channel).toBe("meters");
     expect(decodeFrame(frame(1, 7, []))?.channel).toBe("modulation");
     expect(decodeFrame(frame(2, 0, []))?.channel).toBe("held");
+    expect(decodeFrame(frame(3, 0, []))?.channel).toBe("scope");
+  });
+
+  test("reads the scope as the Rust side writes it: the values of the left side and then the right, no layout", () => {
+    // The bytes of `telemetry_frame(Scope, 0, &[0.0, 1.0])`, which the Rust test `a_telemetry_frame_is_a_small_header_and_little_endian_floats` writes out.
+    const decoded = decodeFrame(new Uint8Array([3, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f]));
+    expect(decoded?.channel).toBe("scope");
+    expect(decoded?.layoutRev).toBe(0);
+    expect(Array.from(decoded?.values ?? [])).toEqual([0, 1]);
   });
 
   test("reads the held notes as the Rust side writes them: a value for each note, no layout", () => {
@@ -63,7 +73,7 @@ describe("decoding a frame", () => {
   test("gives null for what is not a frame", () => {
     expect(decodeFrame(new ArrayBuffer(0))).toBeNull();
     expect(decodeFrame(new ArrayBuffer(7))).toBeNull();
-    expect(decodeFrame(frame(3, 1, [1]))).toBeNull(); // a channel this client does not know
+    expect(decodeFrame(frame(4, 1, [1]))).toBeNull(); // a channel this client does not know
     expect(decodeFrame(frame(255, 1, []))).toBeNull();
     const short = new Uint8Array(frame(0, 1, [1, 2])).subarray(0, 12); // says two values, has one
     expect(decodeFrame(short)).toBeNull();
@@ -183,6 +193,91 @@ describe("the held notes in the buffers", () => {
     expect(buffers.accept(decodeFrame(frame(0, layout.rev, values)) ?? never())).toBe(true);
     buffers.accept(noteFrame(60));
     buffers.forgetHeld();
+    expect(Array.from(buffers.values("meters") ?? [])).toEqual(values);
+  });
+});
+
+describe("the scope in the buffers", () => {
+  /** A frame of the scope: `SCOPE_FRAME_LENGTH` values of the left side, with the one given last, and then as many of the right. */
+  const scopeFrame = (lastLeft = 0, lastRight = 0) => {
+    const values = new Array<number>(2 * SCOPE_FRAME_LENGTH).fill(0);
+    values[SCOPE_FRAME_LENGTH - 1] = lastLeft;
+    values[2 * SCOPE_FRAME_LENGTH - 1] = lastRight;
+    return decodeFrame(frame(3, 0, values)) ?? never();
+  };
+
+  test("are known before there is a layout and follow none: a frame is taken, the left side and then the right", () => {
+    const buffers = new TelemetryBuffers();
+    expect(buffers.has("scope")).toBe(false);
+    expect(buffers.accept(scopeFrame(0.5, -0.25))).toBe(true);
+    expect(buffers.has("scope")).toBe(true);
+    const values = buffers.values("scope");
+    expect(values?.length).toBe(2 * SCOPE_FRAME_LENGTH);
+    expect([values?.[SCOPE_FRAME_LENGTH - 1], values?.[2 * SCOPE_FRAME_LENGTH - 1]]).toEqual([0.5, -0.25]);
+    expect(buffers.frames).toBe(1);
+  });
+
+  test("are taken into the array a reader already holds", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(scopeFrame(0.5));
+    const mine = buffers.values("scope");
+    buffers.accept(scopeFrame(0.75));
+    expect(buffers.values("scope")).toBe(mine);
+    expect(mine?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.75);
+  });
+
+  test("refuse a frame that is not a scope's length, and keep what they have", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(scopeFrame(0.5));
+    const short = decodeFrame(frame(3, 0, new Array<number>(2 * SCOPE_FRAME_LENGTH - 1).fill(1))) ?? never();
+    const long = decodeFrame(frame(3, 0, new Array<number>(2 * SCOPE_FRAME_LENGTH + 1).fill(1))) ?? never();
+    expect([buffers.accept(short), buffers.accept(long)]).toEqual([false, false]);
+    expect(buffers.values("scope")?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.5);
+    expect(buffers.frames).toBe(1);
+  });
+
+  test("are not forgotten when the layout changes, which they do not follow", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(scopeFrame(0.5));
+    buffers.setLayout(layout);
+    buffers.setLayout({ ...layout, rev: layout.rev + 1 });
+    expect(buffers.has("scope")).toBe(true);
+    expect(buffers.values("scope")?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.5);
+  });
+
+  test("are counted by the frames of their own, so that a drawing can tell that there is a new one", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.setLayout(layout);
+    expect([buffers.framesOf("scope"), buffers.framesOf("meters")]).toEqual([0, 0]);
+    buffers.accept(scopeFrame());
+    buffers.accept(scopeFrame());
+    buffers.accept(decodeFrame(frame(0, layout.rev, layout.meters.map(() => 0))) ?? never());
+    expect([buffers.framesOf("scope"), buffers.framesOf("meters"), buffers.framesOf("held"), buffers.frames]).toEqual([2, 1, 0, 3]);
+    buffers.accept(decodeFrame(frame(3, 0, [1, 2, 3])) ?? never());
+    expect(buffers.framesOf("scope"), "a frame that was refused is not counted").toBe(2);
+  });
+
+  test("can be forgotten, in the array a reader already holds, and are known again by the next frame", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(scopeFrame(0.5, 0.25));
+    const mine = buffers.values("scope");
+    buffers.forgetScope();
+    expect(buffers.values("scope")).toBe(mine);
+    expect(Array.from(mine ?? []).every((value) => value === 0)).toBe(true);
+    expect(buffers.has("scope")).toBe(true);
+    buffers.accept(scopeFrame(0.75));
+    expect(mine?.[SCOPE_FRAME_LENGTH - 1]).toBe(0.75);
+  });
+
+  test("being forgotten leaves the held notes and the other channels as they are", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.setLayout(layout);
+    buffers.accept(decodeFrame(frame(2, 0, new Array<number>(128).fill(1))) ?? never());
+    const values = layout.meters.map((_, i) => i + 1);
+    buffers.accept(decodeFrame(frame(0, layout.rev, values)) ?? never());
+    buffers.accept(scopeFrame(0.5));
+    buffers.forgetScope();
+    expect(buffers.isHeld(60)).toBe(true);
     expect(Array.from(buffers.values("meters") ?? [])).toEqual(values);
   });
 });

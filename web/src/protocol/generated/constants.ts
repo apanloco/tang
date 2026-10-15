@@ -87,6 +87,9 @@ export const PINNED_LIMIT = 64;
 /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */
 export const NAME_LIMIT = 64;
 
+/** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */
+export const SCOPE_FRAME_LENGTH = 2048;
+
 /** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */
 export const HISTORY_SAME_STEP = 1;
 

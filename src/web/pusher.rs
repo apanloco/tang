@@ -18,14 +18,14 @@ use tokio::sync::watch;
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::app::layout::{SlotKind, TelemetryLayout};
-use crate::app::protocol::{TelemetryChannel, telemetry_frame};
+use crate::app::protocol::{SCOPE_FRAME_LENGTH, TelemetryChannel, telemetry_frame};
 use crate::held_notes::HeldNotes;
 use crate::telemetry::Telemetry;
 use crate::web::Shared;
 use crate::web::hub::{Hub, Outgoing};
 
 /// Every channel there is, in the order of their numbers.
-const CHANNELS: [TelemetryChannel; 3] = [TelemetryChannel::Meters, TelemetryChannel::Modulation, TelemetryChannel::Held];
+const CHANNELS: [TelemetryChannel; 4] = [TelemetryChannel::Meters, TelemetryChannel::Modulation, TelemetryChannel::Held, TelemetryChannel::Scope];
 
 /// The frame of `channel`: the value of every entry of its list in `layout`, in order,
 /// as the atomics hold it now. A count (how many buffers clipped) goes as a float, which
@@ -36,6 +36,7 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
         TelemetryChannel::Meters => &layout.meters,
         TelemetryChannel::Modulation => &layout.modulation,
         TelemetryChannel::Held => return held_frame(held),
+        TelemetryChannel::Scope => return scope_frame(telemetry),
     };
     let values: Vec<f32> = entries
         .iter()
@@ -53,6 +54,16 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
 pub fn held_frame(held: &HeldNotes) -> Vec<u8> {
     let values: Vec<f32> = (0..128u8).map(|note| if held.is_held(note) { 1.0 } else { 0.0 }).collect();
     telemetry_frame(TelemetryChannel::Held, 0, &values)
+}
+
+/// The frame of the scope: the latest frames of the output, the left side and then the right, `SCOPE_FRAME_LENGTH` of each, the latest last. It is as long
+/// every time (silence before the first frames) and follows no layout. (The client finds the place to start a picture of the wave at: a stable one is
+/// a matter of where the wave goes up through the middle, which is the page's to look for in what it is given.)
+pub fn scope_frame(telemetry: &Telemetry) -> Vec<u8> {
+    let mut values = vec![0.0f32; 2 * SCOPE_FRAME_LENGTH];
+    let (left, right) = values.split_at_mut(SCOPE_FRAME_LENGTH);
+    telemetry.scope.latest(left, right);
+    telemetry_frame(TelemetryChannel::Scope, 0, &values)
 }
 
 /// One turn: queue a frame for the clients of each channel that somebody wants.
@@ -85,7 +96,7 @@ mod tests {
 
     use super::*;
     use crate::app::layout::LayoutEntry;
-    use crate::app::protocol::FRAME_HEADER_LEN;
+    use crate::app::protocol::{FRAME_HEADER_LEN, SCOPE_FRAME_LENGTH};
     use crate::app::testutil::load;
     use crate::held_notes::HeldNotes;
     use crate::telemetry::Slot;
@@ -230,6 +241,51 @@ plugin = "builtin:osc"
         assert_eq!((frames[0][0], decode(&frames[0]).values[64]), (2, 1.0));
         let others = binary(&mut meters_queue);
         assert_eq!((others.len(), others[0][0]), (1, 0), "the meters, and not the notes");
+        assert!(binary(&mut idle_queue).is_empty());
+    }
+
+    /// `n` frames of a ramp from `from`: the left side counts up and the right side is its negative.
+    fn ramp(from: usize, n: usize) -> Vec<Vec<f32>> {
+        vec![(from..from + n).map(|i| i as f32).collect(), (from..from + n).map(|i| -(i as f32)).collect()]
+    }
+
+    #[test]
+    fn the_scope_is_a_frame_of_the_latest_frames_of_the_output_the_left_side_and_then_the_right() {
+        let telemetry = Telemetry::new();
+        telemetry.scope.push(&ramp(0, 3000));
+        let decoded = decode(&scope_frame(&telemetry));
+        assert_eq!((decoded.channel, decoded.flags, decoded.rev), (3, 0, 0), "no layout");
+        let n = SCOPE_FRAME_LENGTH;
+        assert_eq!(decoded.values.len(), 2 * n, "a side and then the other");
+        let left: Vec<f32> = (3000 - n..3000).map(|i| i as f32).collect();
+        assert_eq!(decoded.values[..n], left[..]);
+        assert!(decoded.values[n..].iter().zip(&left).all(|(right, left)| *right == -left), "the right side follows the left");
+    }
+
+    #[test]
+    fn a_scope_that_has_nothing_yet_is_a_frame_of_silence_as_long_as_any() {
+        let decoded = decode(&scope_frame(&Telemetry::new()));
+        assert_eq!(decoded.values, vec![0.0; 2 * SCOPE_FRAME_LENGTH]);
+    }
+
+    #[test]
+    fn the_scope_goes_to_the_clients_that_ask_for_it_and_to_no_others() {
+        let hub = Hub::new(16);
+        let (scope, mut scope_queue) = hub.connect();
+        let (meters, mut meters_queue) = hub.connect();
+        let (_idle, mut idle_queue) = hub.connect();
+        hub.set_channels(scope, &[TelemetryChannel::Scope]);
+        hub.set_channels(meters, &[TelemetryChannel::Meters]);
+        let telemetry = Telemetry::new();
+        telemetry.scope.push(&[vec![0.5; 100]]);
+        push_once(&hub, &Shared::new(0, layout()), &telemetry, &HeldNotes::new());
+        let frames = binary(&mut scope_queue);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0][0], 3);
+        let decoded = decode(&frames[0]);
+        assert_eq!((decoded.values[SCOPE_FRAME_LENGTH - 1], decoded.values[2 * SCOPE_FRAME_LENGTH - 1]), (0.5, 0.5), "the last frame of each side");
+        let others = binary(&mut meters_queue);
+        assert_eq!((others.len(), others[0][0]), (1, 0), "the meters, and not the scope");
         assert!(binary(&mut idle_queue).is_empty());
     }
 

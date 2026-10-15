@@ -101,7 +101,14 @@ pub enum TelemetryChannel {
     /// browser): 128 values, the note numbers being their places, 1 for a note that is held and 0
     /// for the rest. It follows no layout (its `layout_rev` is 0).
     Held,
+    /// The last frames of the output mix, for a scope: `SCOPE_FRAME_LENGTH` values of the left side, the latest last, and then as many of the
+    /// right side (`telemetry::ScopeRing`). It follows no layout (its `layout_rev` is 0).
+    Scope,
 }
+
+/// How many frames of each side a scope frame has: what a reader may take of the engine's ring at once (`telemetry::SCOPE_READ_MAX`), 43 ms at 48 kHz.
+#[cfg_attr(not(feature = "web"), expect(dead_code, reason = "only the web runtime sends scope frames"))]
+pub const SCOPE_FRAME_LENGTH: usize = crate::telemetry::SCOPE_READ_MAX;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
@@ -153,15 +160,16 @@ pub const FRAME_HEADER_LEN: usize = 8;
 
 /// A telemetry frame, the binary message that carries the current values of one
 /// channel: `u8 channel | u8 flags | u16 n | u32 layout_rev | n × f32`, all little
-/// endian. `channel` is 0 for the meters, 1 for the modulation and 2 for the held notes, `flags` is 0
+/// endian. `channel` is 0 for the meters, 1 for the modulation, 2 for the held notes and 3 for the scope, `flags` is 0
 /// (reserved), `layout_rev` is the `rev` of the `TelemetryLayout` the values follow:
-/// value *i* is that of entry *i* of the channel's list in it (the held notes follow none: 0).
+/// value *i* is that of entry *i* of the channel's list in it (the held notes and the scope follow none: 0).
 pub fn telemetry_frame(channel: TelemetryChannel, layout_rev: u32, values: &[f32]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + values.len() * 4);
     frame.push(match channel {
         TelemetryChannel::Meters => 0,
         TelemetryChannel::Modulation => 1,
         TelemetryChannel::Held => 2,
+        TelemetryChannel::Scope => 3,
     });
     frame.push(0);
     frame.extend_from_slice(&(values.len().min(u16::MAX as usize) as u16).to_le_bytes());
@@ -229,7 +237,7 @@ mod message_tests {
             ("a note past a byte", json!({"type": "noteOn", "note": 300, "velocity": 100})),
             ("a request with no id", json!({"type": "request", "intent": {"type": "setParam", "node": 1, "param": 0, "value": 0.5}})),
             ("a request whose intent is nonsense", json!({"type": "request", "reqId": 1, "intent": {"type": "explode"}})),
-            ("a channel that does not exist", json!({"type": "telemetry", "channels": ["scope"]})),
+            ("a channel that does not exist", json!({"type": "telemetry", "channels": ["spectrum"]})),
         ];
         for (what, json) in bad {
             assert!(serde_json::from_value::<ClientMessage>(json).is_err(), "{what}");
@@ -312,6 +320,12 @@ mod message_tests {
     }
 
     #[test]
+    fn the_telemetry_channels_are_named_by_what_they_carry() {
+        let names: Vec<Value> = [TelemetryChannel::Meters, TelemetryChannel::Modulation, TelemetryChannel::Held, TelemetryChannel::Scope].iter().map(wire).collect();
+        assert_eq!(names, ["meters", "modulation", "held", "scope"].map(Value::from));
+    }
+
+    #[test]
     fn an_intent_error_says_what_it_was_in_a_code_and_a_sentence() {
         let missing = WireError::from(&IntentError::NotFound(NodeId(9)));
         assert_eq!((missing.code, missing.message.as_str()), (ErrorCode::NotFound, "there is no node 9"));
@@ -333,6 +347,7 @@ mod message_tests {
         assert_eq!(values, [1.0, -2.5, 0.25]);
         assert_eq!(telemetry_frame(TelemetryChannel::Meters, 0, &[])[0], 0, "the meters channel");
         assert_eq!(telemetry_frame(TelemetryChannel::Held, 0, &[0.0, 1.0])[0], 2, "the held notes' channel");
+        assert_eq!(telemetry_frame(TelemetryChannel::Scope, 0, &[0.0, 1.0])[0], 3, "the scope's channel");
         assert_eq!(telemetry_frame(TelemetryChannel::Meters, 0, &[]).len(), FRAME_HEADER_LEN);
     }
 
@@ -508,6 +523,8 @@ mod typescript {
                  export const PINNED_LIMIT = {};\n\n\
                  /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */\n\
                  export const NAME_LIMIT = {};\n\n\
+                 /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */\n\
+                 export const SCOPE_FRAME_LENGTH = {};\n\n\
                  /** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */\n\
                  export const HISTORY_SAME_STEP = {};\n\n\
                  /** How many steps the history keeps, the oldest going (`history::MAX_STEPS`). */\n\
@@ -525,6 +542,7 @@ mod typescript {
                 crate::session::NodeUi::PARTS,
                 crate::app::model::MAX_PINNED,
                 crate::app::model::MAX_NAME,
+                super::SCOPE_FRAME_LENGTH,
                 crate::app::history::SAME_STEP.as_secs_f64(),
                 crate::app::history::MAX_STEPS,
             ),
@@ -632,6 +650,14 @@ mod typescript {
         let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
         assert!(constants.contains("export const NODE_UI_LIMIT = 100000;\n"), "{constants}");
         assert!(constants.contains("export const NODE_UI_PARTS = 10;\n"), "{constants}");
+    }
+
+    #[test]
+    fn the_length_of_what_a_scope_frame_has_of_each_side_is_in_the_constants() {
+        let dir = tempfile::tempdir().unwrap();
+        export_typescript(dir.path()).unwrap();
+        let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
+        assert!(constants.contains("export const SCOPE_FRAME_LENGTH = 2048;\n"), "{constants}");
     }
 
     #[test]
