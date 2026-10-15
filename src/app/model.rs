@@ -154,6 +154,9 @@ fn sibling_field(kind: &ModTargetKind) -> Option<(usize, CrossModField)> {
 
 /// The tempo of a session none of whose patterns has been recorded, in beats a minute.
 pub const DEFAULT_BPM: f32 = 120.0;
+/// The slowest and the fastest tempo there can be, in beats a minute: a tempo that a session file has is held to them, as is one that is set.
+pub const BPM_MIN: f32 = 20.0;
+pub const BPM_MAX: f32 = 300.0;
 
 /// What a front-end edits: the instrument lanes and the submix groups.
 #[derive(Debug)]
@@ -186,7 +189,19 @@ impl Default for SessionModel {
     }
 }
 
+/// The tempo a session comes to when its file says none: that of the first of its lanes that has a recorded pattern, else `DEFAULT_BPM`, held
+/// to the tempos there can be.
+pub fn tempo_of_patterns(lanes: &[InstrumentNode]) -> f32 {
+    lanes.iter().find_map(|lane| lane.pattern.as_ref()).map_or(DEFAULT_BPM, |pattern| pattern.bpm.clamp(BPM_MIN, BPM_MAX))
+}
+
 impl SessionModel {
+    /// The `bpm` that a save writes: none when a load would come to this tempo anyway (`tempo_of_patterns`), so that the files of sessions that never
+    /// set one are as they were.
+    pub fn bpm_to_save(&self) -> Option<f32> {
+        (self.bpm != tempo_of_patterns(&self.instruments)).then_some(self.bpm)
+    }
+
     /// Where the master mix is drawn, if it has been placed.
     pub fn master_ui(&self) -> Option<NodeUi> {
         self.ui.get(&NodeId::MASTER).copied()
@@ -2001,6 +2016,38 @@ mod tests {
         let mut model = SessionModel::default();
         let first = model.alloc_node();
         assert_ne!(model.alloc_node(), first);
+    }
+
+    #[test]
+    fn a_new_model_is_at_120_beats_a_minute() {
+        assert_eq!(SessionModel::default().bpm, 120.0);
+    }
+
+    #[test]
+    fn the_tempo_is_saved_only_when_a_load_would_not_come_to_it() {
+        let pattern = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = 90.0\nlength_beats = 4.0\nenabled = true\n";
+        let mut plain = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        assert_eq!(plain.bpm_to_save(), None, "120 is what a session with no pattern is at");
+        plain.bpm = 100.0;
+        assert_eq!(plain.bpm_to_save(), Some(100.0));
+
+        let mut patterned = load(pattern).model;
+        assert_eq!(patterned.bpm_to_save(), None, "90 is the first pattern's");
+        patterned.bpm = 120.0;
+        assert_eq!(patterned.bpm_to_save(), Some(120.0), "(a 120 that a load would not come to is written)");
+        patterned.bpm = 90.0;
+        patterned.instruments[0].pattern = None;
+        assert_eq!(patterned.bpm_to_save(), Some(90.0), "without the pattern a load would be at 120");
+    }
+
+    #[test]
+    fn the_tempo_of_patterns_is_that_of_the_first_and_held_to_the_tempos_there_can_be() {
+        let lane = |bpm: &str| format!("[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = {bpm}\nlength_beats = 4.0\nenabled = true\n");
+        let tempo = |text: &str| tempo_of_patterns(&load(text).model.instruments);
+        assert_eq!(tempo(&format!("[[instrument]]\nplugin = \"builtin:osc\"\n{}{}", lane("140.0"), lane("90.0"))), 140.0, "the first lane that has a pattern decides");
+        assert_eq!(tempo(&lane("5.0")), 20.0);
+        assert_eq!(tempo(&lane("1000.0")), 300.0);
+        assert_eq!(tempo("[[instrument]]\nplugin = \"builtin:osc\"\n"), 120.0);
     }
 
     #[test]

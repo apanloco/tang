@@ -1076,7 +1076,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller();
         let instrument = lane(&ctl);
         range(&mut ctl, instrument, 40, 90).unwrap();
-        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None).unwrap();
+        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None, None).unwrap();
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
@@ -3227,6 +3227,16 @@ type = "midi"
     }
 
     #[test]
+    fn save_as_writes_the_tempo_as_a_save_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_with_file(&dir.path().join("song.toml"));
+        ctl.model.bpm = 87.5;
+        ctl.apply(save_as("copy")).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("copy.toml")).unwrap();
+        assert_eq!(load(&text).model.bpm, 87.5);
+    }
+
+    #[test]
     fn save_as_the_name_the_session_has_is_a_save_though_the_file_is_there() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("song.toml");
@@ -3490,7 +3500,7 @@ type = "midi"
         let (sustain, _) = param(&ctl, NodePath::Instrument(0), "sustain");
         let saved = |ctl: &Controller| {
             let (instruments, groups) = crate::app::save::to_save(&ctl.model);
-            crate::session::to_toml(&instruments, &groups, None, None).unwrap()
+            crate::session::to_toml(&instruments, &groups, None, None, None).unwrap()
         };
         assert!(!saved(&ctl).contains("pinned"), "{}", saved(&ctl));
         pin(&mut ctl, osc, &[sustain, detune]).unwrap();

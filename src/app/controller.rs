@@ -991,8 +991,8 @@ impl Controller {
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
         match mode {
-            FileMode::Replace => session::save(path, &instruments, &groups, Some(&piano), self.model.master_ui())?,
-            FileMode::CreateNew => session::save_new(path, &instruments, &groups, Some(&piano), self.model.master_ui())?,
+            FileMode::Replace => session::save(path, &instruments, &groups, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
+            FileMode::CreateNew => session::save_new(path, &instruments, &groups, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
         }
         self.dirty = false;
         log::info!("Session saved to {}", path.display());
@@ -2021,6 +2021,31 @@ type = "lfo"
         let piano = session::parse(&text).unwrap().piano.expect("the piano settings are saved");
         assert_eq!((piano.scale.as_deref(), piano.locked), (Some("D dorian"), true));
         testutil::assert_same_model("the saved file", &ctl.model, &load(&text).model);
+    }
+
+    #[test]
+    fn save_writes_the_tempo_and_a_load_gives_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let mut ctl = controller_with_file(&path);
+        ctl.model.bpm = 87.5;
+        ctl.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(session::parse(&text).unwrap().bpm, Some(87.5));
+        assert_eq!(load(&text).model.bpm, 87.5, "(a session of no patterns would be at 120 without it)");
+        testutil::assert_same_model("the saved file", &ctl.model, &load(&text).model);
+    }
+
+    #[test]
+    fn save_writes_no_tempo_for_a_session_that_has_not_set_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let mut ctl = controller_with_file(&path);
+        ctl.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("bpm"), "{text}");
+        assert_eq!(session::parse(&text).unwrap().bpm, None);
     }
 
     #[test]
@@ -3470,7 +3495,7 @@ group = 1
         ctl.put_instrument(0, "builtin:osc").unwrap();
         assert!(ctl.model.instruments[0].remap.is_empty());
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0, "a plugin of its own has the usual range until it is told otherwise");
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 
@@ -3482,7 +3507,7 @@ group = 1
         assert!(ctl.clear_instrument(0));
         assert!(ctl.model.instruments[0].remap.is_empty(), "the audio thread drops the remapper with the plugin");
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0);
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 

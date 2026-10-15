@@ -653,6 +653,23 @@ ui = { x = 376, y = 0 }
   to a single value (last channel wins) — true per-voice expression would need
   voice-level modulation.
 
+### Tempo
+
+```toml
+bpm = 96.0              # optional: the tempo patterns are recorded at, in beats a minute (20 to 300)
+
+[[instrument]]
+plugin = "builtin:osc"
+```
+
+A top-level key, before every table. It is the tempo that the next pattern is recorded at (the metronome's count-in and
+the length of the recording are counted in it) and the one that the TUI shows (`120 BPM`, set with `b`). A session whose file
+has none is at the tempo of its first recorded pattern (`[instrument.pattern] bpm`, below), or at 120 if it has none. A tempo
+that is out of 20 to 300 is held to it when the session is loaded, and a value that is not a number (a string, `nan`, `inf`)
+refuses the session, as every number does. The audio thread is told the tempo once when the session is loaded, if the file says
+one or has a pattern (`SessionModel::bpm`, set by the loader). A save writes `bpm` only when a load would not come to that tempo
+anyway (`SessionModel::bpm_to_save`), so that the files of sessions that never set one are as they were.
+
 ### Pattern recorder/player
 
 Each instrument can have a recorded MIDI pattern. Recording captures note events
@@ -685,7 +702,7 @@ note = "C4"
 velocity = 0
 ```
 
-- `bpm` — tempo used for pattern timing (default: 120)
+- `bpm` — the tempo the pattern was recorded at: its length in frames is `length_beats` counted in it (default: 120)
 - `length_beats` — pattern length in beats (default: 4 = 1 bar in 4/4)
 - `base_note` — reference note for transposition (set to the lowest recorded
   note)

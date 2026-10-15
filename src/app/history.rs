@@ -2015,7 +2015,7 @@ depth = 0.4
     /// What `Ctrl+S` would write.
     fn written(ctl: &Controller) -> String {
         let (instruments, groups) = crate::app::save::to_save(&ctl.model);
-        crate::session::to_toml(&instruments, &groups, None, None).unwrap()
+        crate::session::to_toml(&instruments, &groups, None, None, None).unwrap()
     }
 
     fn cable_edge(ctl: &Controller, modulator: usize, cable: usize) -> EdgeId {

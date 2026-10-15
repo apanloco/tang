@@ -100,6 +100,9 @@ pub struct SessionConfig {
     pub piano: Option<PianoConfig>,
     /// Where the master mix is drawn (`[ui] master = { x, y }`).
     pub master_ui: Option<NodeUi>,
+    /// The tempo the session is at, in beats a minute (the top-level `bpm`); none for a file that has not one, which
+    /// the loader gives the tempo of its first recorded pattern.
+    pub bpm: Option<f32>,
 }
 
 /// A submix group: members are the instruments whose `group` index points here.
@@ -297,6 +300,8 @@ struct SessionRaw {
     piano: Option<PianoConfig>,
     #[serde(default, deserialize_with = "lenient_table")]
     ui: Option<toml::Table>,
+    #[serde(default)]
+    bpm: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -490,7 +495,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
         });
     }
     let master_ui = raw.ui.and_then(|mut table| table.remove("master")).and_then(node_ui_of);
-    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui })
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32) })
 }
 
 /// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
@@ -784,6 +789,8 @@ pub struct SaveEffect {
 /// Serialization output: flat [[instrument]] format.
 #[derive(Serialize)]
 struct SessionOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bpm: Option<f64>,
     #[serde(rename = "instrument")]
     instruments: Vec<InstrumentSlotOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "group")]
@@ -1202,8 +1209,10 @@ pub fn to_toml(
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
+    bpm: Option<f32>,
 ) -> anyhow::Result<String> {
     let session = SessionOut {
+        bpm: bpm.map(clean_f64),
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         ui: master_ui.map(|ui| UiOut { master: ui.into() }),
         groups: groups
@@ -1397,8 +1406,9 @@ pub fn save(
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
+    bpm: Option<f32>,
 ) -> anyhow::Result<()> {
-    write_session(path, instruments, groups, piano, master_ui, false)
+    write_session(path, instruments, groups, piano, master_ui, bpm, false)
 }
 
 /// As `save`, for a file that is not there yet: the write itself fails, with an `io::Error` of kind `AlreadyExists` in the error, if the path is taken
@@ -1410,8 +1420,9 @@ pub fn save_new(
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
+    bpm: Option<f32>,
 ) -> anyhow::Result<()> {
-    write_session(path, instruments, groups, piano, master_ui, true)
+    write_session(path, instruments, groups, piano, master_ui, bpm, true)
 }
 
 fn write_session(
@@ -1420,9 +1431,10 @@ fn write_session(
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
+    bpm: Option<f32>,
     create_new: bool,
 ) -> anyhow::Result<()> {
-    let content = to_toml(instruments, groups, piano, master_ui)?;
+    let content = to_toml(instruments, groups, piano, master_ui, bpm)?;
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
@@ -1794,7 +1806,7 @@ range = "C4-C8"
             },
         ];
 
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
 
         // Reload and verify
         let config = load(path.to_str().unwrap()).unwrap();
@@ -1839,7 +1851,7 @@ range = "C4-C8"
             ui: None,
         }];
 
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1888,7 +1900,7 @@ range = "C4-C8"
             ui: None,
         }];
 
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -1939,7 +1951,7 @@ range = "C4-C8"
             ui: None,
         }];
 
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("type = \"midi\""), "expected midi modulator:\n{raw}");
         assert!(raw.contains("midi_cc = 74"), "expected bound CC:\n{raw}");
@@ -1990,7 +2002,7 @@ range = "C4-C8"
             ui: None,
         }];
 
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("midi_aftertouch = true"), "expected aftertouch binding:\n{raw}");
 
@@ -2042,7 +2054,7 @@ range = "C4-C8"
             pattern: None,
             ui: None,
         }];
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("slot = 1"), "saved target should record its slot:\n{raw}");
@@ -2095,7 +2107,7 @@ range = "C4-C8"
             modulators: vec![],
             ui: None,
         }];
-        save(&path, &instruments, &groups, None, None).unwrap();
+        save(&path, &instruments, &groups, None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[[group]]"), "expected a [[group]] section:\n{raw}");
@@ -2182,7 +2194,7 @@ range = "C4-C8"
             }],
             ui: None,
         }];
-        save(&path, &[member], &groups, None, None).unwrap();
+        save(&path, &[member], &groups, None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[[group.modulator]]"), "expected group modulator:\n{raw}");
@@ -2243,7 +2255,7 @@ range = "C4-C8"
             ui: None,
         }];
 
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
 
         // Output should use inline tables and stable alphabetical ordering.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -2362,7 +2374,7 @@ plugin = "builtin:osc"
             modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 }, targets: vec![], ui: at(800.0, -120.5) }],
             ui: at(800.0, 40.0),
         };
-        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], None, at(1200.0, 300.0)).unwrap();
+        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], None, at(1200.0, 300.0), None).unwrap();
         // Whole numbers are written without a point, and it is one line for a node, in the table of the node.
         assert!(text.contains("ui = { x = 80, y = 120 }"), "{text}");
         assert_eq!(text.matches("ui = { x = 80, y = 120 }").count(), 3, "the lane, its effect and its modulator: {text}");
@@ -2428,7 +2440,7 @@ plugin = "builtin:osc"
             modulators: vec![],
             ui: None,
         };
-        let text = to_toml(&[lane], &[group], None, None).unwrap();
+        let text = to_toml(&[lane], &[group], None, None, None).unwrap();
         for line in [r#"pinned = ["sustain", "detune"]"#, r#"pinned = ["cutoff"]"#, r#"pinned = ["mix", "width"]"#] {
             assert_eq!(text.lines().filter(|l| *l == line).count(), 1, "{line} in\n{text}");
         }
@@ -2439,7 +2451,7 @@ plugin = "builtin:osc"
         assert_eq!(config.instruments[0].effects[0].pinned, ["cutoff"]);
         assert_eq!(config.groups[0].effects[0].pinned, ["mix", "width"]);
         // With none pinned there is no line: a file is as it always was.
-        let plain = to_toml(&[placed_lane(None)], &[], None, None).unwrap();
+        let plain = to_toml(&[placed_lane(None)], &[], None, None, None).unwrap();
         assert!(!plain.contains("pinned"), "{plain}");
     }
 
@@ -2463,10 +2475,10 @@ plugin = "builtin:osc"
 
     #[test]
     fn a_node_without_a_position_is_written_as_it_always_was() {
-        let text = to_toml(&[placed_lane(None)], &[], None, None).unwrap();
+        let text = to_toml(&[placed_lane(None)], &[], None, None, None).unwrap();
         assert!(!text.lines().any(|line| line.starts_with("ui ") || line == "[ui]"), "{text}");
         // (The same session with positions has the same lines besides the positions.)
-        let placed = to_toml(&[placed_lane(Some(NodeUi { x: 1.0, y: 2.0 }))], &[], None, None).unwrap();
+        let placed = to_toml(&[placed_lane(Some(NodeUi { x: 1.0, y: 2.0 }))], &[], None, None, None).unwrap();
         let without: Vec<&str> = placed.lines().filter(|line| !line.starts_with("ui = ")).collect();
         assert_eq!(without.join("\n") + "\n", text);
     }
@@ -2474,7 +2486,7 @@ plugin = "builtin:osc"
     #[test]
     fn a_position_with_decimals_is_written_the_way_it_was_typed() {
         // (Not `0.10000000149011612`: an f32 is written as the shortest number that is it.)
-        let text = to_toml(&[placed_lane(Some(NodeUi { x: 12.3, y: -0.1 }))], &[], None, None).unwrap();
+        let text = to_toml(&[placed_lane(Some(NodeUi { x: 12.3, y: -0.1 }))], &[], None, None, None).unwrap();
         assert!(text.contains("ui = { x = 12.3, y = -0.1 }"), "{text}");
     }
 
@@ -2502,7 +2514,7 @@ plugin = "builtin:osc"
             ui: None,
         }];
         let piano = PianoConfig { scale: Some("F# dorian".into()), locked: false };
-        save(&path, &instruments, &[], Some(&piano), None).unwrap();
+        save(&path, &instruments, &[], Some(&piano), None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[piano]"));
@@ -2528,7 +2540,7 @@ plugin = "builtin:osc"
             pattern: None,
             ui: None,
         };
-        save(&path, &[lane], &[], None, None).unwrap();
+        save(&path, &[lane], &[], None, None, None).unwrap();
         assert_eq!(load(path.to_str().unwrap()).unwrap().instruments.len(), 1);
     }
 
@@ -2562,12 +2574,12 @@ plugin = "builtin:osc"
     #[test]
     fn a_session_saved_as_a_new_file_is_what_a_save_writes_and_is_made_where_the_directory_is_not_yet() {
         let dir = tempfile::tempdir().unwrap();
-        save_new(&dir.path().join("new.toml"), &one_lane(), &[], None, None).unwrap();
-        save(&dir.path().join("same.toml"), &one_lane(), &[], None, None).unwrap();
+        save_new(&dir.path().join("new.toml"), &one_lane(), &[], None, None, None).unwrap();
+        save(&dir.path().join("same.toml"), &one_lane(), &[], None, None, None).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("new.toml")).unwrap(), std::fs::read_to_string(dir.path().join("same.toml")).unwrap());
         // (A new session's home is a directory that may not be there yet.)
         let nested = dir.path().join("sessions").join("new.toml");
-        save_new(&nested, &one_lane(), &[], None, None).unwrap();
+        save_new(&nested, &one_lane(), &[], None, None, None).unwrap();
         assert_eq!(load(nested.to_str().unwrap()).unwrap().instruments.len(), 1);
     }
 
@@ -2577,16 +2589,16 @@ plugin = "builtin:osc"
         let dir = tempfile::tempdir().unwrap();
         let taken = dir.path().join("taken.toml");
         std::fs::write(&taken, "another session").unwrap();
-        let error = save_new(&taken, &one_lane(), &[], None, None).expect_err("the file is there");
+        let error = save_new(&taken, &one_lane(), &[], None, None, None).expect_err("the file is there");
         assert!(path_is_taken(&error), "{error:#}");
         assert_eq!(std::fs::read_to_string(&taken).unwrap(), "another session", "what was there is as it was");
 
         // A folder is a path that is taken.
         std::fs::create_dir(dir.path().join("folder.toml")).unwrap();
-        assert!(path_is_taken(&save_new(&dir.path().join("folder.toml"), &one_lane(), &[], None, None).expect_err("a folder is there")));
+        assert!(path_is_taken(&save_new(&dir.path().join("folder.toml"), &one_lane(), &[], None, None, None).expect_err("a folder is there")));
 
         // A save, which is for the session's own file, writes over it.
-        save(&taken, &one_lane(), &[], None, None).unwrap();
+        save(&taken, &one_lane(), &[], None, None, None).unwrap();
         assert!(std::fs::read_to_string(&taken).unwrap().contains("builtin:sine"));
     }
 
@@ -2599,7 +2611,7 @@ plugin = "builtin:osc"
         std::fs::write(dir.path().join("precious.toml"), "keep me").unwrap();
         std::os::unix::fs::symlink(dir.path().join("precious.toml"), dir.path().join("link.toml")).unwrap();
         for link in ["dangling.toml", "link.toml"] {
-            let error = save_new(&dir.path().join(link), &one_lane(), &[], None, None).expect_err("a link is a path that is taken");
+            let error = save_new(&dir.path().join(link), &one_lane(), &[], None, None, None).expect_err("a link is a path that is taken");
             assert!(path_is_taken(&error), "{link}: {error:#}");
         }
         assert!(!dir.path().join("nowhere").exists(), "what the link leads to was not made");
@@ -2634,16 +2646,46 @@ plugin = "builtin:osc"
         };
 
         let locked = PianoConfig { scale: Some("C major".into()), locked: true };
-        save(&path, &instruments(), &[], Some(&locked), None).unwrap();
+        save(&path, &instruments(), &[], Some(&locked), None, None).unwrap();
         let config = load(path.to_str().unwrap()).unwrap();
         assert!(config.piano.expect("piano section").locked);
 
         // Highlight mode is the default and stays out of the file.
         let open = PianoConfig { scale: Some("C major".into()), locked: false };
-        save(&path, &instruments(), &[], Some(&open), None).unwrap();
+        save(&path, &instruments(), &[], Some(&open), None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("locked"), "{raw}");
         assert!(!load(path.to_str().unwrap()).unwrap().piano.expect("piano section").locked);
+    }
+
+    #[test]
+    fn the_tempo_is_a_top_level_key_that_a_save_writes_and_a_load_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tempo.toml");
+        save(&path, &one_lane(), &[], None, None, Some(96.5)).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.starts_with("bpm = 96.5\n"), "it comes before every table: {raw}");
+        assert_eq!(load(path.to_str().unwrap()).unwrap().bpm, Some(96.5));
+
+        // A session that has no tempo has no key, and reads as having none.
+        save(&path, &one_lane(), &[], None, None, None).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("bpm"), "{raw}");
+        assert_eq!(load(path.to_str().unwrap()).unwrap().bpm, None);
+    }
+
+    #[test]
+    fn a_tempo_is_written_as_it_was_typed() {
+        // (100.1 as the 32-bit number it is would be 100.0999984741211.)
+        let text = to_toml(&one_lane(), &[], None, None, Some(100.1)).unwrap();
+        assert!(text.starts_with("bpm = 100.1\n"), "{text}");
+    }
+
+    #[test]
+    fn a_tempo_that_is_not_a_number_is_refused() {
+        for text in ["bpm = \"fast\"", "bpm = true", "bpm = nan", "bpm = inf"] {
+            assert!(parse(&format!("{text}\n[[instrument]]\nplugin = \"builtin:osc\"\n")).is_err(), "{text}");
+        }
     }
 
     #[test]
@@ -2677,7 +2719,7 @@ plugin = "builtin:osc"
             }),
             ui: None,
         }];
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("transpose = \"in_key\""));
@@ -2689,7 +2731,7 @@ plugin = "builtin:osc"
         // Chromatic (default) round-trips without writing the field.
         let mut instruments = instruments;
         instruments[0].pattern.as_mut().unwrap().in_key = false;
-        save(&path, &instruments, &[], None, None).unwrap();
+        save(&path, &instruments, &[], None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("transpose"));
         let config = load(path.to_str().unwrap()).unwrap();

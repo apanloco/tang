@@ -170,7 +170,7 @@ velocity = 100
     /// The file a save of this model writes.
     fn saved(model: &SessionModel) -> String {
         let (instruments, groups) = to_save(model);
-        session::to_toml(&instruments, &groups, None, model.master_ui()).unwrap()
+        session::to_toml(&instruments, &groups, None, model.master_ui(), model.bpm_to_save()).unwrap()
     }
 
     #[test]

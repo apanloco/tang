@@ -13,8 +13,8 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    DEFAULT_BPM, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
-    ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
+    BPM_MAX, BPM_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
+    ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph, tempo_of_patterns,
 };
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
 use crate::session::NodeUi;
@@ -515,7 +515,6 @@ pub fn load_session(
                 base_note: p.base_note,
                 in_key: p.in_key,
             });
-            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm: p.bpm });
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLength {
                 inst: inst_idx,
                 beats: p.length_beats,
@@ -601,8 +600,13 @@ pub fn load_session(
         groups[g_idx].modulators = mods;
     }
 
-    // The tempo of a session is that of its first recorded pattern.
-    let bpm = instruments.iter().find_map(|lane| lane.pattern.as_ref()).map_or(DEFAULT_BPM, |pattern| pattern.bpm);
+    // The tempo of a session is its `bpm`, or that of its first recorded pattern if it has none, held to the tempos there can be.
+    // The audio thread is told it once, and only if the session says one (it starts at `DEFAULT_BPM`): each pattern says the
+    // tempo that it was recorded at, and the last of them was what the audio thread was left with.
+    let bpm = config.bpm.map_or_else(|| tempo_of_patterns(&instruments), |bpm| bpm.clamp(BPM_MIN, BPM_MAX));
+    if config.bpm.is_some() || instruments.iter().any(|lane| lane.pattern.is_some()) {
+        let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm });
+    }
     Ok(SessionModel { instruments, groups, ids, slots, ui, bpm })
 }
 
@@ -1086,7 +1090,7 @@ fn load_group_modulators(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, SETTINGS, load, try_load};
+    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, Run, SETTINGS, load, try_load};
 
     #[test]
     fn plugin_slots_hide_locked_parameters_and_turn_labelled_ones_into_enums() {
@@ -1954,12 +1958,13 @@ mod_rate = 7
                 // Then transpose and the pattern (120000 / 90 bpm * 2 beats at 48 kHz = 64000 frames).
                 "SetTranspose inst=0 semitones=-12",
                 "SetPattern inst=0 events=2 length_samples=64000 base_note=Some(60) in_key=true",
-                "SetGlobalBpm bpm=90.0",
                 "SetPatternLength inst=0 beats=2.0",
                 "SetPatternEnabled inst=0 enabled=true",
                 "SetPatternLooping inst=0 looping=false",
                 // A lane with no plugin is still a lane.
                 "AddInstrument range=None",
+                // The tempo is told once, when everything else has been (it is the first pattern's, 90).
+                "SetGlobalBpm bpm=90.0",
             ]
         );
         let lane = &run.model.instruments[0];
@@ -2005,11 +2010,68 @@ mod_rate = 7
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
                 "SetPattern inst=0 events=2 length_samples=115200 base_note=Some(60) in_key=false",
-                "SetGlobalBpm bpm=100.0",
                 "SetPatternLength inst=0 beats=4.0",
                 "SetPatternEnabled inst=0 enabled=false",
+                "SetGlobalBpm bpm=100.0",
             ]
         );
+    }
+
+    /// Every `SetGlobalBpm` that a session sent the audio thread, as the tempo it says.
+    fn tempo_commands(run: &Run) -> Vec<String> {
+        run.commands.iter().filter(|command| command.starts_with("SetGlobalBpm")).cloned().collect()
+    }
+
+    #[test]
+    fn the_tempo_of_a_session_is_its_bpm_and_the_audio_thread_is_told_it_once() {
+        let run = load("bpm = 96.5\n[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert_eq!(run.model.bpm, 96.5);
+        assert_eq!(tempo_commands(&run), ["SetGlobalBpm bpm=96.5"]);
+    }
+
+    #[test]
+    fn the_bpm_of_a_session_is_the_tempo_whatever_its_patterns_were_recorded_at() {
+        // (SETTINGS has a pattern that was recorded at 90: it stays, and its length is counted in it.)
+        let run = load(&format!("bpm = 100.0\n{SETTINGS}"));
+        assert_eq!(run.model.bpm, 100.0);
+        assert_eq!(run.model.instruments[0].pattern.as_ref().unwrap().bpm, 90.0);
+        assert!(run.commands.contains(&"SetPattern inst=0 events=2 length_samples=64000 base_note=Some(60) in_key=true".to_string()), "{:#?}", run.commands);
+        assert_eq!(tempo_commands(&run), ["SetGlobalBpm bpm=100.0"]);
+    }
+
+    #[test]
+    fn the_audio_thread_is_told_the_first_patterns_tempo_once_when_there_is_no_bpm() {
+        let lane = |bpm: &str| {
+            format!("[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = {bpm}\nlength_beats = 4.0\nenabled = true\n")
+        };
+        let run = load(&format!("{}{}", lane("90.0"), lane("140.0")));
+        assert_eq!(run.model.bpm, 90.0);
+        assert_eq!(tempo_commands(&run), ["SetGlobalBpm bpm=90.0"], "(it was the last pattern's, 140, that the audio thread was left with)");
+        assert_eq!(run.model.instruments[1].pattern.as_ref().unwrap().bpm, 140.0, "each pattern keeps its own");
+    }
+
+    #[test]
+    fn a_session_with_no_tempo_at_all_tells_the_audio_thread_none() {
+        let run = load("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert_eq!(run.model.bpm, 120.0);
+        assert_eq!(tempo_commands(&run), Vec::<String>::new(), "it starts at 120");
+    }
+
+    #[test]
+    fn a_pattern_recorded_at_a_tempo_there_cannot_be_gives_the_session_the_nearest_one_and_keeps_its_own() {
+        let run = load("[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = 5.0\nlength_beats = 4.0\nenabled = true\n");
+        assert_eq!(run.model.bpm, 20.0);
+        assert_eq!(run.model.instruments[0].pattern.as_ref().unwrap().bpm, 5.0);
+        assert_eq!(tempo_commands(&run), ["SetGlobalBpm bpm=20.0"]);
+    }
+
+    #[test]
+    fn the_bpm_of_a_file_is_held_to_the_tempos_there_can_be() {
+        for (text, tempo) in [("0", 20.0), ("-5", 20.0), ("19.9", 20.0), ("20", 20.0), ("133.3", 133.3), ("300", 300.0), ("301", 300.0), ("1e30", 300.0)] {
+            let run = load(&format!("bpm = {text}\n[[instrument]]\nplugin = \"builtin:osc\"\n"));
+            assert_eq!(run.model.bpm, tempo, "bpm = {text}");
+            assert_eq!(tempo_commands(&run), [format!("SetGlobalBpm bpm={tempo:?}")], "bpm = {text}");
+        }
     }
 
     fn tempo_of(session: &str) -> f32 {
