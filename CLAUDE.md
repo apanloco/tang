@@ -1786,7 +1786,14 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`depth-<id>`: `DepthPort`, `depthHandle`) where a cable from another modulator ends to drive how deep that one goes: it is dragged to the port (the whole row takes it while one is dragged) or picked
   from the list at the foot of a modulator, under the modulator whose cables they are (`depth → Filter: cutoff`); the modulator that drives the depth of another's cable is a row above that one, as for a setting;
   the cable is drawn round the node it ends at, with its slider on the run under what drives it (`cableRoute`); and a cable that ends at a depth is told by the cable whose depth it is (`ADSR → depth of LFO → Filter: cutoff`:
-  `endLabel`, `cableWords` in `client/names.ts`, which the editor uses as well for what it says of a refusal). What the controller
+  `endLabel`, `cableWords` in `client/names.ts`, which the editor uses as well for what it says of a refusal). Step 37 put the TUI's `m` and `l` on the page: every knob (a parameter of a plugin that is
+  shown as a knob, and the rate and the stages of a modulator), every row of the ⚙ panel and every row of a modulator's cables has a `~` button (`ModulateMenu`, `app/patch/ModulateMenu.tsx`: quiet until the pointer or the
+  focus is on the control, in the corner of its knob) with a menu of a new LFO, a new envelope and a new MIDI control, under "New", and of the modulators that are there and can still drive it, under "Attach". A new
+  one is made for the control with its cable in one intent, `Modulate` (`Editor.modulate`: a MIDI control is armed to learn and its cable is at the whole range, as the TUI's `l` has it, the others at half depth; the canvas is
+  shown the node it made), and goes in the rack that reaches the control (the lane's for a lane's plugin, the group's for a bus effect, the modulator's own for its rate, a stage or the depth of its cables, where it is a
+  sibling that drives it); one that is there gets a cable (`Editor.addCable`, the intent `AddModEdge`). What could drive a control is `driversOf` (`client/reach.ts`: `drivablesOf` read from the other side, tested against it
+  over two fixtures), and the menu looks it up when it is opened (`MenuButton`'s `onOpen`), not when anything changes: there is a button on every knob. A control that is chosen from a list (a waveform, a parameter whose
+  values have names) has no button, as the TUI's `m` leaves such a row out (a cable can still be dragged to its port). What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
