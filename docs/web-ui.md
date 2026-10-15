@@ -130,7 +130,8 @@ plain struct, moving it to its own thread later is a wrapper change.
 
 Known cost: blocking work (plugin loads, preset-value mirroring) blocks the
 owner, so a web client's plugin load stalls the TUI and vice versa. Phase 1
-moves loads to a worker whose completions `poll()` picks up.
+moves loads to a worker whose completions `poll()` picks up. (Until then the page
+says that it is waiting: a light for a request that is slow, step 40.)
 
 ### 3.2 Web runtime (feature `web`)
 
@@ -3489,6 +3490,26 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Tests.** Rust: the engine's 8 and the model's 1 more in each configuration, and 7 changed. Web: 1698 in 80 files (1665 at the end of 39.1); 110 in browsers (108). The mutations of each part are in its entry above.
   - **Numbers at the end of the step.** Rust 1336 tests, 1495 with the `web` feature and 22 on the real program, 1331 without the default plugin formats and 1482 with `web`, and 3 of the shell's in each; web 1698 tests in 80 files;
     110 in browsers; 359 commits on the branch before this entry.
+
+- [x] **40. The page says when the server is slow (phase 1).** A plugin that takes seconds to load (Pianoteq 9, a ROLI plugin) is loaded by the program on the thread that answers, so every request waits behind it (§3.1: the known
+  cost of the owner doing blocking work), and the page showed nothing: the menu closed, nothing happened, and a second click asked again. *Done when:* a request that has waited longer than a set time for its answer is counted by the
+  client, a light says so over the canvas for as long as there is one, and it goes when the answer comes, or the request is refused, or the connection is lost; and on the real program, with the words of the server held back, the light
+  comes and goes and moves nothing. *Not done (later steps):* what the server is doing (the plugin it loads) is not said; the terminal has no light (its loop is blocked while a plugin loads, a TODO in CLAUDE.md); and the loads are still
+  on the owner's thread (§3.1 and open question 3: a worker, with completions that `poll()` picks up).
+  - **As built (936d4bc).** `Client.slow` is a store of its own (`{ count }`), not part of `ClientState`: the state is told to every control at every change, and a request goes at every frame of a drag, where this changes only for the few
+    that are slow. Each request has a timer (`ClientOptions.slowAfter`, 400 ms: `SLOW_AFTER`) that says it is slow; a request that is answered, refused, lost with the connection or stopped is not counted any more (`#forget`, in `#settle` and
+    `#rejectPending`, one place for both). `useSlowRequests` reads the count and `BusyLight` (`app/BusyLight.tsx`) draws it: a pill, "Working…" with a spinner, over the top of the canvas in the middle (`position: absolute` in the main area, out of the
+    flow, `pointer-events: none`), for a person who has asked for less motion a ring that stands still. It is a `progressbar` with no value and not a `status`: the state of the connection is the page's one, which the tests find it by
+    (`getByRole("status")`). One light for any number of slow requests. Vitest: 12 added (8 of the count, 4 of the light). Browser: 1 on the real program (`e2e/busy.spec.ts`), with the words of the server held back in the browser
+    (`page.routeWebSocket`: what a slow answer looks like from the page): a request that is answered at once never shows the light, one that is not shows it, a node is where it was, and the answer takes it away and what was asked is
+    there. 17 mutations (9 of the client, 4 of the light, 1 of the hook, 3 of its CSS and of its place in the page), all caught; the first run left one, a time to wait that the tests could not tell from the default (each waited longer
+    than 400 ms), which a test within a quarter of a second and a test of the default settle. Looked at in Chromium on the real program.
+  - **Limits, as built.** The light says that the server is slow, not what it is doing. A drag of a knob goes on sending a request a frame while the server is behind, and the light is there for as long as any has waited 400 ms, which is true.
+    A save to a slow disk or an undo that loads a plugin again shows it too, as it should. A node that is in the middle of the top of the canvas is under the light, which takes no pointer. The threshold is one number for every kind of
+    request. Only Chromium was tried.
+  - **Tests.** Web: 1710 in 81 files (1698 in 80); 111 in browsers (110); Rust as at the end of step 39. The mutations are in the entry above.
+  - **Numbers at the end of the step.** Rust 1336 tests, 1495 with the `web` feature and 22 on the real program, 1331 without the default plugin formats and 1482 with `web`, and 3 of the shell's in each; web 1710 tests in 81 files;
+    111 in browsers; 361 commits on the branch before this entry.
 
 ## 13. Later: track B (`builtin:patch`)
 
