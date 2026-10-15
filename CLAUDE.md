@@ -852,6 +852,15 @@ numeric `params` values (the index into the label list).
 | `Ctrl+Z` | Undo the last thing done (the history of the controller, which the browser's Undo has too; not heard while a popup is open) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 
+A step of `Left` / `Right` is a twentieth of the range of the row (a hundredth with `Shift`, a tenth with
+`Ctrl`). The rate of an LFO and the times of an envelope run over decades (0.01 to 50 Hz, 1 ms to 10 s), so
+for them the range is a ratio and a step multiplies by that fraction of it: a rate by 1.53 (1.09 with `Shift`, 2.34 with
+`Ctrl`), a time by 1.58 (1.10, 2.51), and `Left` divides by the same, so a step up and a step down of one size give back
+the value. It is the scale that the page's knobs turn them on (`ModulatorField::taper`, which the page reads from
+the generated constants). A sustain and the depth of a cable move by 0.05 (0.01, 0.10).
+TODO: the bar of a rate or a time is still linear (0.01 to 50 Hz in one scale) though a step on it is a ratio, and so is a drag
+on it with the mouse; a bar and a drag on the log scale would match a step and the page's knob.
+
 Mouse: click to select, drag a parameter bar to set its value, drag the
 parameter scrollbar to scroll. Mouse wheel scrolls the parameter list and the
 Help tab.

@@ -35,7 +35,7 @@ use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
-use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind};
+use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, Taper};
 use crate::app::model::{
     DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
@@ -1332,12 +1332,15 @@ impl State {
         self.apply(intent);
     }
 
-    fn adjust_param(&mut self, delta: f32) {
+    /// Step the selected row up (`direction` 1) or down (-1) by what `modifiers` say: a plugin's parameter by that fraction of its range, a modulator's
+    /// setting by the law of its scale (`stepped`).
+    fn adjust_param(&mut self, direction: f32, modifiers: KeyModifiers) {
         let sel = self.chain_state.selected;
         if sel >= self.tree_entries.len() {
             return;
         }
         let addr = self.tree_entries[sel].address;
+        let delta = direction * param_step(self, modifiers);
 
         // Group bus effect params take a dedicated command (no instrument).
         if let TreeAddress::GroupEffect { .. } = addr {
@@ -1351,7 +1354,7 @@ impl State {
 
         // The rows of a modulator, a lane's or a group's.
         if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } = addr {
-            self.step_modulator_row(addr, self.param_state.selected, delta);
+            self.step_modulator_row(addr, self.param_state.selected, direction, step_fraction(modifiers));
             return;
         }
 
@@ -1454,19 +1457,25 @@ impl State {
     /// number or the depth the row is, one waveform along, or, on the Type row, the other
     /// kind of source. What a row is, its range and the commands the engine gets are the
     /// intents'; a row that is none of these does nothing.
-    fn step_modulator_row(&mut self, addr: TreeAddress, row: usize, delta: f32) {
+    fn step_modulator_row(&mut self, addr: TreeAddress, row: usize, direction: f32, fraction: f32) {
         let Some(m) = self.modulator_at(addr) else { return };
         let intent = match modulator_row(m, row) {
             Some(ModulatorRow::Type) => return self.switch_modulator_source(addr),
             Some(ModulatorRow::Waveform) => {
                 let ModSourceSlot::Lfo { waveform, .. } = m.source else { return };
-                let next = if delta > 0.0 { waveform.next() } else { waveform.prev() };
+                let next = if direction > 0.0 { waveform.next() } else { waveform.prev() };
                 Intent::SetModulatorField { node: m.node, field: ModulatorField::Waveform, value: next.to_index() as f32 }
             }
-            _ => match m.row_intent(row, |value| value + delta) {
-                Some(intent) => intent,
-                None => return,
-            },
+            row_kind => {
+                let field = match row_kind {
+                    Some(ModulatorRow::Setting(field)) => Some(field),
+                    _ => None,
+                };
+                match m.row_intent(row, |value| stepped(field, value, direction, fraction)) {
+                    Some(intent) => intent,
+                    None => return,
+                }
+            }
         };
         self.apply(intent);
     }
@@ -2721,12 +2730,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // Parameter adjustment.
         KeyCode::Left if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
-            let step = param_step(s, modifiers);
-            s.adjust_param(-step);
+            s.adjust_param(-1.0, modifiers);
         }
         KeyCode::Right if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
-            let step = param_step(s, modifiers);
-            s.adjust_param(step);
+            s.adjust_param(1.0, modifiers);
         }
 
         // Reorder effects / reorder instruments.
@@ -2919,9 +2926,9 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                                 if x >= enum_start && x < enum_end {
                                     let mid = enum_start + (enum_end - enum_start) / 2;
                                     if x < mid {
-                                        s.adjust_param(-1.0);
+                                        s.adjust_param(-1.0, KeyModifiers::NONE);
                                     } else {
-                                        s.adjust_param(1.0);
+                                        s.adjust_param(1.0, KeyModifiers::NONE);
                                     }
                                 }
                             } else if let Some(val) = bar_value_at(x, s.areas.param_inner) {
@@ -4028,12 +4035,31 @@ fn param_step(s: &State, modifiers: KeyModifiers) -> f32 {
         1.0
     };
 
+    range * step_fraction(modifiers)
+}
+
+/// How far a press of Left or Right goes, as a fraction of the range of the row: a twentieth, a hundredth with Shift, a tenth with Ctrl.
+fn step_fraction(modifiers: KeyModifiers) -> f32 {
     if modifiers.contains(KeyModifiers::CONTROL) {
-        range * 0.10
+        0.10
     } else if modifiers.contains(KeyModifiers::SHIFT) {
-        range * 0.01
+        0.01
     } else {
-        range * 0.05
+        0.05
+    }
+}
+
+/// What a step of `direction` (1 up, -1 down) by `fraction` of the range of a modulator's row makes of `value`. A setting that runs over decades (`Taper::Log`:
+/// a rate, a time) is multiplied by that fraction of the ratio of its ends, so that a step goes as far on a knob wherever on it the value is; a level, and the
+/// depth of a cable (a fraction of what it drives), move by the fraction of one. (A value below the lowest, which a file may give, steps from the lowest:
+/// a ratio of nothing is nothing.)
+fn stepped(field: Option<ModulatorField>, value: f32, direction: f32, fraction: f32) -> f32 {
+    match field {
+        Some(field) if field.taper() == Taper::Log => {
+            let (min, max) = field.range();
+            value.max(min) * (max / min).powf(direction * fraction)
+        }
+        _ => value + direction * fraction,
     }
 }
 

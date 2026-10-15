@@ -2323,23 +2323,58 @@ fn lfo_waveform(source: &ModSourceSlot) -> crate::plugin::chain::LfoWaveform {
 }
 
 #[test]
-fn left_and_right_step_an_lfos_rate_by_a_twentieth_with_shift_a_hundredth_with_ctrl_a_tenth() {
-    // (The step is that of a range of 1, whatever the range of the row: here 0.01 to 50.)
+fn left_and_right_step_an_lfos_rate_by_a_twentieth_of_its_range_on_a_log_scale_with_shift_a_hundredth_with_ctrl_a_tenth() {
+    // (The rate runs from 0.01 to 50 Hz, a ratio of 5000, so a twentieth of it is a ratio of 5000^0.05: 1.531, 1.089 for a hundredth, 2.344 for a tenth.
+    // The values are 4 x 1.5309, x 1.0889, / 2.3437 and / 1.5309, worked out apart from the program.)
     let mut h = Harness::new(scene_split());
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
     h.press(KeyCode::Right);
-    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=4.050"]);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=6.124"]);
     h.press_with(KeyCode::Right, KeyModifiers::SHIFT);
-    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=4.060"]);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=6.668"]);
     h.press_with(KeyCode::Left, KeyModifiers::CONTROL);
-    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=3.960"]);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=2.845"]);
     h.press(KeyCode::Left);
-    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=3.910"]);
-    assert!((lfo_rate(lane_source(&h, 0, 0)) - 3.91).abs() < 1e-5);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=1.858"]);
+    assert!((lfo_rate(lane_source(&h, 0, 0)) - 1.858_458).abs() < 1e-4);
     assert!(h.s.ctl.dirty);
-    assert!(h.tree().iter().any(|l| l.contains("LFO 3.9Hz")), "the tree shows the new rate: {:#?}", h.tree());
+    assert!(h.tree().iter().any(|l| l.contains("LFO 1.9Hz")), "the tree shows the new rate: {:#?}", h.tree());
     // The other lane's LFO is as it was.
     assert_eq!(lfo_rate(lane_source(&h, 1, 0)), 7.0);
+}
+
+#[test]
+fn a_step_up_and_a_step_down_of_the_same_size_give_back_the_rate_and_the_time_that_were_there() {
+    // (Ratios, as distances do: what a Right made, the Left of the same size takes back, for each of the three sizes.)
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT, KeyModifiers::CONTROL] {
+        let mut h = Harness::new(scene_split());
+        on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+        h.press_with(KeyCode::Right, modifiers).press_with(KeyCode::Left, modifiers);
+        assert!((lfo_rate(lane_source(&h, 0, 0)) - 4.0).abs() < 1e-4, "{modifiers:?}: {}", lfo_rate(lane_source(&h, 0, 0)));
+
+        let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+        on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+        h.press_with(KeyCode::Left, modifiers).press_with(KeyCode::Right, modifiers);
+        assert!((stages(lane_source(&h, 0, 0)).3 - 0.4).abs() < 1e-4, "{modifiers:?}: {:?}", stages(lane_source(&h, 0, 0)));
+    }
+}
+
+#[test]
+fn a_rate_that_a_file_gave_below_the_lowest_is_stepped_from_the_lowest_and_the_ends_hold() {
+    // (A ratio of nothing is nothing: a rate of 0 would never leave it.)
+    let mut h = Harness::new(scene_split());
+    if let ModSourceSlot::Lfo { rate, .. } = &mut h.s.ctl.model.instruments[0].modulators[0].source {
+        *rate = 0.0;
+    }
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=0.015"]);
+    // At the lowest, a step down sends the value that stands, as at the highest.
+    enter_value(&mut h, "0.01");
+    h.commands();
+    h.press(KeyCode::Left);
+    assert_eq!(h.commands(), ["SetModulatorRate inst=0 mod=0 rate=0.010"]);
+    assert_eq!(lfo_rate(lane_source(&h, 0, 0)), 0.01);
 }
 
 #[test]
@@ -2469,7 +2504,7 @@ fn a_modulator_edited_in_the_tui_is_told_to_the_subscribers_as_events_and_not_ag
     assert_eq!(
         events,
         [
-            (1, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Rate, value: 4.05 }]),
+            (1, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Rate, value: 6.123_624 }]),
             (2, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Rate, value: 50.0 }]),
             (3, vec![Event::ModulatorFieldSet { node: osc_lfo, field: ModulatorField::Waveform, value: 1.0 }]),
             (4, vec![Event::EdgeDepthSet { edge, depth: -0.5 }]),
@@ -2501,14 +2536,15 @@ fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each
 }
 
 #[test]
-fn left_and_right_step_one_stage_of_an_envelope_and_the_engine_is_given_all_four() {
+fn left_and_right_step_one_stage_of_an_envelope_by_the_scale_of_the_stage_and_the_engine_is_given_all_four() {
     let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
     let addr = TreeAddress::Modulator { inst: 0, index: 0 };
     for (row, expected, command) in [
-        (1, (0.15, 0.2, 0.5, 0.4), "attack=0.150 decay=0.200 sustain=0.500 release=0.400"),
-        (2, (0.15, 0.25, 0.5, 0.4), "attack=0.150 decay=0.250 sustain=0.500 release=0.400"),
-        (3, (0.15, 0.25, 0.55, 0.4), "attack=0.150 decay=0.250 sustain=0.550 release=0.400"),
-        (4, (0.15, 0.25, 0.55, 0.45), "attack=0.150 decay=0.250 sustain=0.550 release=0.450"),
+        // (The times run from 1 ms to 10 s, a ratio of 10000, so a twentieth of it is a ratio of 1.5849; the level is stepped by 0.05.)
+        (1, (0.158_489, 0.2, 0.5, 0.4), "attack=0.158 decay=0.200 sustain=0.500 release=0.400"),
+        (2, (0.158_489, 0.316_979, 0.5, 0.4), "attack=0.158 decay=0.317 sustain=0.500 release=0.400"),
+        (3, (0.158_489, 0.316_979, 0.55, 0.4), "attack=0.158 decay=0.317 sustain=0.550 release=0.400"),
+        (4, (0.158_489, 0.316_979, 0.55, 0.633_957), "attack=0.158 decay=0.317 sustain=0.550 release=0.634"),
     ] {
         on_modulator_row(&mut h, addr, row);
         h.press(KeyCode::Right);
@@ -2585,7 +2621,7 @@ fn a_group_lfo_is_stepped_and_typed_with_the_commands_of_the_group() {
     let addr = TreeAddress::GroupModulator { group: 0, index: 0 };
     on_modulator_row(&mut h, addr, 2);
     h.press(KeyCode::Right);
-    assert_eq!(h.commands(), ["SetGroupModulatorRate group=0 mod=0 rate=0.550"]);
+    assert_eq!(h.commands(), ["SetGroupModulatorRate group=0 mod=0 rate=0.765"]);
     enter_value(&mut h, "99");
     assert_eq!(h.commands(), ["SetGroupModulatorRate group=0 mod=0 rate=50.000"]);
     assert_eq!(lfo_rate(group_source(&h, 0, 0)), 50.0);

@@ -269,7 +269,6 @@ impl ModulatorField {
 
     /// How its values are spread over its range when it is turned: a rate and a time run over thousands, which a linear control would crowd into its first
     /// corner, so they are turned by ratios; a level is turned by distances.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only the generated constants of the page say it so far"))]
     pub fn taper(self) -> Taper {
         match self {
             ModulatorField::Rate | ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => Taper::Log,
@@ -280,7 +279,6 @@ impl ModulatorField {
 
 /// How the values of a setting are spread over its range when it is turned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "only the generated constants of the page say it so far"))]
 pub enum Taper {
     /// Equal steps are equal distances: a level.
     Linear,
