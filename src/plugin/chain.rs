@@ -944,6 +944,53 @@ fn hand_back_lane(return_tx: &Sender<Box<dyn Plugin>>, keep: Option<Sender<KeptL
     return_the_plugins_of(return_tx, lane);
 }
 
+/// A group that the audio thread took out of the graph whole, to be put back where it was with the lanes that were its members (`GraphCommand::InsertGroup`): its bus effects and
+/// whatever they hold, its modulators, its meter, its volume and its pan. The controller asks for it (`RemoveGroup { keep }`) for the history of what was taken out.
+pub struct KeptGroup(Box<Group>);
+
+impl KeptGroup {
+    /// A group with nothing in it, which is what a test that has no audio thread hands back to the controller for the group that it took out: a group that gave up its plugins, so
+    /// that the controller loads them again. (It is not put into a graph.)
+    #[cfg(test)]
+    pub fn empty() -> KeptGroup {
+        KeptGroup(Box::new(Group::new(2)))
+    }
+
+    /// How many plugins the group holds: its bus effects.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a group for the history, built next"))]
+    pub fn plugin_count(&self) -> usize {
+        self.0.effects.len()
+    }
+
+    /// Take the bus effects out of the group, in order: to drop them, since a plugin can be big, when the history lets go of them. A group without them is not put back (the audio
+    /// thread turns it away) until it has been given effects again, `put_plugins`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a group for the history, built next"))]
+    pub fn take_plugins(&mut self) -> Vec<Box<dyn Plugin>> {
+        std::mem::take(&mut self.0.effects)
+    }
+
+    /// Give the group bus effects, as many as it has mixes for (it has kept the mixes).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a group for the history, built next"))]
+    pub fn put_plugins(&mut self, effects: Vec<Box<dyn Plugin>>) {
+        self.0.effects = effects;
+    }
+}
+
+/// Hand `group`, which was taken out of the graph, to `keep`, the channel that the main thread made for it when it wants the whole group to put it back (the controller's
+/// history), or give its bus effects to the return channel, as `hand_back` does for a plugin, when it made none, when nobody listens or when the channel is full. Never blocks.
+fn hand_back_group(return_tx: &Sender<Box<dyn Plugin>>, keep: Option<Sender<KeptGroup>>, group: Group) {
+    let mut group = match keep {
+        Some(keep) => match keep.try_send(KeptGroup(Box::new(group))) {
+            Ok(()) => return,
+            Err(unsent) => *unsent.into_inner().0,
+        },
+        None => group,
+    };
+    for effect in group.effects.drain(..) {
+        let _ = return_tx.try_send(effect);
+    }
+}
+
 /// After an effect is inserted at effect index `at`, bump plugin-param target
 /// slots so they keep pointing at the same plugins (effects at/after `at`
 /// shifted up one). Slot 0 (instrument) is untouched.
@@ -1881,9 +1928,20 @@ pub enum GraphCommand {
         slots: MeterSlots,
     },
     /// Remove a group; its members become ungrouped and higher group indices
-    /// shift down.
+    /// shift down. The group is handed to `keep` when there is one that has room and is listened to (the controller keeps it for the history, to put it back,
+    /// `InsertGroup`), and its bus effects go back by the return channel otherwise (`hand_back_group`).
     RemoveGroup {
         group: usize,
+        keep: Option<Sender<KeptGroup>>,
+    },
+    /// Put a group that `RemoveGroup { keep }` handed back into the graph at place `index` (the last place, for one past the end), as it was: the lanes that are in the groups from
+    /// that place on are told the group they are in now (one more), and the lanes in `members` (places among the lanes: one that is no lane is nobody's) are its members. A group
+    /// that has fewer bus effects than it has mixes (it gave up its plugins, `KeptGroup::take_plugins`) is turned away, and its plugins go back by the return channel.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a group back for the history, built next"))]
+    InsertGroup {
+        index: usize,
+        group: KeptGroup,
+        members: Vec<usize>,
     },
     /// Set (or clear) a lane's group membership.
     SetLaneGroup {
@@ -3773,12 +3831,9 @@ impl AudioGraph {
                         g.meter = Some(Meter::new(slots));
                     }
                 }
-                GraphCommand::RemoveGroup { group } => {
+                GraphCommand::RemoveGroup { group, keep } => {
                     if group < self.groups.len() {
-                        let mut removed = self.groups.remove(group);
-                        for effect in removed.effects.drain(..) {
-                            let _ = self.return_tx.try_send(effect);
-                        }
+                        let removed = self.groups.remove(group);
                         // Fix up lane membership: drop the removed group, shift
                         // higher group indices down.
                         for lane in self.instruments.iter_mut() {
@@ -3786,6 +3841,30 @@ impl AudioGraph {
                                 Some(g) if g == group => lane.group = None,
                                 Some(g) if g > group => lane.group = Some(g - 1),
                                 _ => {}
+                            }
+                        }
+                        hand_back_group(&self.return_tx, keep, removed);
+                    }
+                }
+                GraphCommand::InsertGroup { index, group, members } => {
+                    let mut group = *group.0;
+                    if group.effects.len() != group.mix_values.len() {
+                        // It gave up its plugins and has not been given them again.
+                        for effect in group.effects.drain(..) {
+                            let _ = self.return_tx.try_send(effect);
+                        }
+                    } else {
+                        let place = index.min(self.groups.len());
+                        // The lanes of the groups from that place on are in the one after it now, as they were before the group went.
+                        for lane in self.instruments.iter_mut() {
+                            if let Some(g) = lane.group.as_mut().filter(|g| **g >= place) {
+                                *g += 1;
+                            }
+                        }
+                        self.groups.insert(place, group);
+                        for inst in members {
+                            if let Some(lane) = self.instruments.get_mut(inst) {
+                                lane.group = Some(place);
                             }
                         }
                     }
@@ -9451,7 +9530,7 @@ mod tests {
         let (mut graph, cmd_tx, _rr) = five_lanes();
         let (keep, kept) = crossbeam_channel::bounded(1);
         cmd_tx.send(GraphCommand::RemoveInstrument { inst: 1, keep: Some(keep) }).unwrap();
-        cmd_tx.send(GraphCommand::RemoveGroup { group: 0 }).unwrap();
+        cmd_tx.send(GraphCommand::RemoveGroup { group: 0, keep: None }).unwrap();
         graph.drain_commands();
         cmd_tx.send(GraphCommand::InsertInstrument { index: 1, lane: kept.try_recv().unwrap() }).unwrap();
         graph.drain_commands();
@@ -9532,6 +9611,245 @@ mod tests {
             assert_eq!(heard, expected, "block {block}");
         }
         assert_eq!(graph.instruments[1].inst_buf.len(), 4, "a buffer for each output of the instrument it was given");
+    }
+
+    // -- A group is handed back whole, and put back --
+    //
+    // What the controller takes out of the session for the history it asks the audio thread to hand back (`RemoveGroup { keep }`): the group itself, with its bus effects and
+    // whatever they hold, its modulators, its meter, its volume and its pan, to be put back where it was with the lanes that were its members (`InsertGroup`). Its plugins go the
+    // usual way, by the return channel, when nothing asks for the group, when nobody listens or when the channel is full.
+
+    /// Three groups and five lanes: 0 and 2 are members of group 0, 1 of group 1, 4 of group 2, and 3 is in no group. A group has a bus of two effects that scale by 0.5 and 0.75, at
+    /// mixes of their own, a volume and a pan of its own, and a modulator with a cable to its first effect and one to the first parameter of its first member's instrument (group 0 has
+    /// one to its second member's too).
+    fn three_groups() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        for _ in 0..4 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        }
+        for inst in 0..5 {
+            swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(0.1 * (inst + 1) as f32));
+        }
+        for _ in 0..3 {
+            cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        }
+        for (inst, group) in [(0, 0), (1, 1), (2, 0), (4, 2)] {
+            cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(group) }).unwrap();
+        }
+        for group in 0..3 {
+            let n = (group + 1) as f32;
+            for (index, gain) in [0.5f32, 0.75].into_iter().enumerate() {
+                cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) * 0.5 + 0.1 * f64::from(n) }).unwrap();
+            }
+            cmd_tx.send(GraphCommand::SetGroupVolume { group, value: 0.5 + 0.1 * n }).unwrap();
+            cmd_tx.send(GraphCommand::SetGroupPan { group, value: 0.1 * n - 0.2 }).unwrap();
+            let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: n, phase: 0.0 };
+            cmd_tx.send(GraphCommand::InsertGroupModulator { group, index: 0, source }).unwrap();
+            add_group_cable(&cmd_tx, group, 0, cable(ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }, 0.1 * n));
+            add_group_cable(&cmd_tx, group, 0, cable(ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 }, 0.2 * n));
+        }
+        add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member: 1, slot: 0, param_index: 0 }, 0.7));
+        graph.drain_commands();
+        (graph, cmd_tx, return_rx)
+    }
+
+    /// Everything that says what the groups are, as the audio thread has it: the lanes (and the groups they are in), the groups, where the plugins are in memory, the modulators
+    /// with what they drive and what each cable is centred on.
+    fn groups_as_they_are(graph: &AudioGraph) -> String {
+        format!("{}\n{:?}", lanes_as_they_are(graph), graph.groups())
+    }
+
+    /// Group `group` taken out as the controller takes a group out: every cable of its modulators first (each by its place, the last of a modulator first), and then the group,
+    /// handed to a channel. The group, the places of the lanes that were its members, and the cables with their places.
+    fn take_group_out(graph: &mut AudioGraph, cmd_tx: &crossbeam_channel::Sender<GraphCommand>, group: usize) -> (KeptGroup, Vec<usize>, Vec<(usize, usize, ModTarget)>) {
+        let members: Vec<usize> = graph.instruments.iter().enumerate().filter(|(_, lane)| lane.group == Some(group)).map(|(inst, _)| inst).collect();
+        let mut cables = Vec::new();
+        for (mod_index, modulator) in graph.groups[group].modulators.iter().enumerate() {
+            for (target_index, t) in modulator.targets.iter().enumerate() {
+                cables.push((mod_index, target_index, ModTarget { kind: t.kind.clone(), depth: t.depth, base_value: t.base_value, param_min: t.param_min, param_max: t.param_max, effective: t.effective }));
+            }
+        }
+        for (mod_index, target_index, _) in cables.iter().rev() {
+            cmd_tx.send(GraphCommand::RemoveGroupModTarget { group, mod_index: *mod_index, target_index: *target_index }).unwrap();
+        }
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveGroup { group, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        (kept.try_recv().expect("the group is handed back"), members, cables)
+    }
+
+    /// A group put back as the controller puts it back, at `index`: the group with its members, and then the cables, the first first.
+    fn put_group_back(graph: &mut AudioGraph, cmd_tx: &crossbeam_channel::Sender<GraphCommand>, index: usize, group: KeptGroup, members: Vec<usize>, cables: Vec<(usize, usize, ModTarget)>) {
+        cmd_tx.send(GraphCommand::InsertGroup { index, group, members }).unwrap();
+        for (mod_index, target_index, target) in cables {
+            cmd_tx.send(GraphCommand::InsertGroupModTarget { group: index, mod_index, target_index, target }).unwrap();
+        }
+        graph.drain_commands();
+    }
+
+    #[test]
+    fn a_group_that_is_taken_out_with_a_channel_is_handed_to_it_whole_and_none_of_its_plugins_goes_the_usual_way() {
+        let (mut graph, cmd_tx, return_rx) = three_groups();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveGroup { group: 1, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        assert!(return_rx.try_recv().is_err(), "nothing went the usual way");
+        assert_eq!(graph.groups().len(), 2);
+        let group = kept.try_recv().expect("it went to the channel that asked for it");
+        assert_eq!(group.plugin_count(), 2, "its two bus effects");
+    }
+
+    #[test]
+    fn a_group_goes_the_usual_way_when_nothing_asks_for_it_or_nobody_listens_or_the_channel_is_full() {
+        for what in ["no channel", "nobody listens", "a full channel"] {
+            let (mut graph, cmd_tx, return_rx) = three_groups();
+            // (Held to the end of the round: the channel is open, and full, for as long as it is.)
+            let mut holders = Vec::new();
+            let keep = match what {
+                "no channel" => None,
+                "nobody listens" => {
+                    let (keep, kept) = crossbeam_channel::bounded(1);
+                    drop(kept);
+                    Some(keep)
+                }
+                _ => {
+                    let (keep, kept) = crossbeam_channel::bounded(1);
+                    assert!(keep.send(KeptGroup(Box::new(Group::new(2)))).is_ok(), "it has room for one");
+                    holders.push(kept);
+                    Some(keep)
+                }
+            };
+            cmd_tx.send(GraphCommand::RemoveGroup { group: 1, keep }).unwrap();
+            graph.drain_commands();
+            let mut given: Vec<Box<dyn Plugin>> = return_rx.try_iter().collect();
+            assert_eq!(gains_of(&mut given), [0.5, 0.75], "{what}: the bus effects go to the return channel, in order");
+            assert_eq!(graph.groups().len(), 2, "{what}");
+            if what == "a full channel" {
+                assert_eq!(holders[0].try_recv().unwrap().plugin_count(), 0, "what was in the channel is still the only thing in it");
+                assert!(holders[0].try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn a_group_that_is_not_there_hands_nothing_back_and_leaves_the_channel_empty() {
+        let (mut graph, cmd_tx, return_rx) = three_groups();
+        let before = groups_as_they_are(&graph);
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::RemoveGroup { group: 3, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        assert!(kept.try_recv().is_err() && return_rx.try_recv().is_err());
+        assert_eq!(groups_as_they_are(&graph), before);
+    }
+
+    #[test]
+    fn a_group_that_is_taken_out_and_put_back_is_where_it_was_with_the_very_plugins_its_members_and_everything_it_had() {
+        for group in 0..3 {
+            let (mut graph, cmd_tx, _rr) = three_groups();
+            let before = groups_as_they_are(&graph);
+            let (kept, members, cables) = take_group_out(&mut graph, &cmd_tx, group);
+            assert_eq!(graph.groups().len(), 2, "group {group} is out");
+            let groups = graph.groups().len();
+            assert!(graph.lanes().iter().all(|lane| lane.group.is_none_or(|g| g < groups)), "no lane is in a group that is not there");
+            put_group_back(&mut graph, &cmd_tx, group, kept, members, cables);
+            assert_eq!(groups_as_they_are(&graph), before, "group {group}");
+        }
+    }
+
+    #[test]
+    fn the_lanes_are_told_the_groups_they_are_in_while_a_group_is_out_and_when_it_is_back() {
+        let (mut graph, cmd_tx, _rr) = three_groups();
+        let groups_of = |graph: &AudioGraph| graph.lanes().iter().map(|lane| lane.group).collect::<Vec<_>>();
+        assert_eq!(groups_of(&graph), [Some(0), Some(1), Some(0), None, Some(2)]);
+        // Group 0 goes: its members are in none, and the lanes of the groups after it are in the one that is before it now.
+        let (kept, members, cables) = take_group_out(&mut graph, &cmd_tx, 0);
+        assert_eq!(members, [0, 2]);
+        assert_eq!(groups_of(&graph), [None, Some(0), None, None, Some(1)]);
+        // It comes back first: the lanes of the groups after it are in the one after it again, and its members are in it again.
+        put_group_back(&mut graph, &cmd_tx, 0, kept, members, cables);
+        assert_eq!(groups_of(&graph), [Some(0), Some(1), Some(0), None, Some(2)]);
+        // The middle group goes, and comes back.
+        let (kept, members, cables) = take_group_out(&mut graph, &cmd_tx, 1);
+        assert_eq!(groups_of(&graph), [Some(0), None, Some(0), None, Some(1)]);
+        put_group_back(&mut graph, &cmd_tx, 1, kept, members, cables);
+        assert_eq!(groups_of(&graph), [Some(0), Some(1), Some(0), None, Some(2)]);
+    }
+
+    #[test]
+    fn a_group_that_is_put_back_past_the_end_is_the_last_and_members_that_are_not_there_are_not_in_it() {
+        let (mut graph, cmd_tx, _rr) = three_groups();
+        let (kept, members, cables) = take_group_out(&mut graph, &cmd_tx, 0);
+        // The lanes that were its members are lanes 0 and 2; a place past the end of the groups is the last (group 2 of three), and a member that is no lane is nobody's.
+        put_group_back(&mut graph, &cmd_tx, 99, kept, members, cables);
+        assert_eq!(graph.groups().len(), 3);
+        assert_eq!(graph.lanes().iter().map(|lane| lane.group).collect::<Vec<_>>(), [Some(2), Some(0), Some(2), None, Some(1)]);
+        let (kept, members, _cables) = take_group_out(&mut graph, &cmd_tx, 2);
+        cmd_tx.send(GraphCommand::InsertGroup { index: 2, group: kept, members: members.into_iter().chain([9]).collect() }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.lanes().iter().map(|lane| lane.group).collect::<Vec<_>>(), [Some(2), Some(0), Some(2), None, Some(1)]);
+    }
+
+    #[test]
+    fn a_group_that_is_put_back_goes_on_sounding_as_if_it_had_not_gone() {
+        let run = |put_back: bool| {
+            let (mut graph, cmd_tx, _rr) = three_groups();
+            let mut blocks = Vec::new();
+            for block in 0..4 {
+                if block == 2 && put_back {
+                    // (Between two buffers, as a command is: the bus effects hold what they hold, and the modulators are where they were.)
+                    let (kept, members, cables) = take_group_out(&mut graph, &cmd_tx, 1);
+                    put_group_back(&mut graph, &cmd_tx, 1, kept, members, cables);
+                }
+                let mut out = make_output();
+                let midi = if block == 0 { vec![note_on(60)] } else { Vec::new() };
+                graph.process(&midi, &mut out).unwrap();
+                blocks.push(out);
+            }
+            blocks
+        };
+        let played = run(false);
+        assert!(played[3][0].iter().any(|&sample| sample != 0.0), "something is heard");
+        assert_eq!(run(true), played);
+    }
+
+    #[test]
+    fn a_kept_group_gives_up_its_plugins_and_is_turned_away_without_them_and_sounds_as_it_did_with_plugins_again() {
+        let (mut graph, cmd_tx, return_rx) = three_groups();
+        let (mut kept, members, _cables) = take_group_out(&mut graph, &cmd_tx, 1);
+        let mut plugins = kept.take_plugins();
+        assert_eq!((plugins.len(), kept.plugin_count()), (2, 0));
+        assert_eq!(gains_of(&mut plugins), [0.5, 0.75]);
+        // Without them it cannot go in: its effects have their mixes and nothing to mix. (It has no plugins to hand back.)
+        cmd_tx.send(GraphCommand::InsertGroup { index: 1, group: kept, members: members.clone() }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.groups().len(), 2);
+        assert!(return_rx.try_recv().is_err());
+        // Nor with fewer effects than it has mixes: it is turned away, and the plugins it was given go back by the return channel.
+        let (mut kept, members, _cables) = take_group_out(&mut graph, &cmd_tx, 0);
+        let mut taken = kept.take_plugins();
+        taken.truncate(1);
+        kept.put_plugins(taken);
+        cmd_tx.send(GraphCommand::InsertGroup { index: 0, group: kept, members }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.groups().len(), 1);
+        assert_eq!(return_rx.try_iter().count(), 1, "its effect");
+
+        // With plugins again it goes in as it was, and the audio is what it was (the plugins here are new ones, as plugins that are loaded again are, and they are what the first were).
+        let (mut control, ..) = three_groups();
+        let (mut graph, cmd_tx, _rr) = three_groups();
+        let (mut kept, members, cables) = take_group_out(&mut graph, &cmd_tx, 1);
+        drop(kept.take_plugins());
+        kept.put_plugins(vec![Box::new(ParamScaleEffect { gain: 0.5 }), Box::new(ParamScaleEffect { gain: 0.75 })]);
+        assert_eq!(kept.plugin_count(), 2);
+        put_group_back(&mut graph, &cmd_tx, 1, kept, members, cables);
+        assert_eq!(graph.groups(), control.groups());
+        for block in 0..3 {
+            let (mut heard, mut expected) = (make_output(), make_output());
+            let midi = if block == 0 { vec![note_on(60)] } else { Vec::new() };
+            graph.process(&midi, &mut heard).unwrap();
+            control.process(&midi, &mut expected).unwrap();
+            assert_eq!(heard, expected, "block {block}");
+        }
     }
 
     // -- Lanes change places --

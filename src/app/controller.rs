@@ -686,7 +686,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             driven.extend(self.take_out(edge).into_iter().flatten());
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveGroup { group });
+        let _ = self.cmd_tx.send(GraphCommand::RemoveGroup { group, keep: None });
         self.model.remove_group(group);
         self.give_back(driven);
         true

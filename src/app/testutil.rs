@@ -27,7 +27,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
     use GraphCommand as C;
     match cmd {
         C::AddGroup => "AddGroup".to_string(),
-        C::RemoveGroup { group } => format!("RemoveGroup group={group}"),
+        C::RemoveGroup { group, keep } => format!("RemoveGroup group={group}{}", if keep.is_some() { " keep" } else { "" }),
+        C::InsertGroup { index, group, members } => format!("InsertGroup index={index} plugins={} members={members:?}", group.plugin_count()),
         C::SetGroupVolume { group, value } => format!("SetGroupVolume group={group} value={value:.3}"),
         C::SetGroupPan { group, value } => format!("SetGroupPan group={group} value={value:.3}"),
         C::SetGroupMix { group, index, value } => {
@@ -171,11 +172,17 @@ pub fn described(commands: impl IntoIterator<Item = GraphCommand>) -> Vec<String
     commands.into_iter().inspect(answer).filter(|c| !is_telemetry(c)).map(|c| describe(&c)).collect()
 }
 
-/// What the audio thread would do for a command that asks something of it, for a test that has none: a lane that is taken out is handed to the channel that asks for it,
-/// with no plugins in it (a lane that gave up its plugins, which the controller loads again to put the lane back).
+/// What the audio thread would do for a command that asks something of it, for a test that has none: a lane or a group that is taken out is handed to the channel that asks
+/// for it, with no plugins in it (one that gave up its plugins, which the controller loads again to put it back).
 fn answer(command: &GraphCommand) {
-    if let GraphCommand::RemoveInstrument { keep: Some(keep), .. } = command {
-        let _ = keep.try_send(crate::plugin::chain::KeptLane::empty());
+    match command {
+        GraphCommand::RemoveInstrument { keep: Some(keep), .. } => {
+            let _ = keep.try_send(crate::plugin::chain::KeptLane::empty());
+        }
+        GraphCommand::RemoveGroup { keep: Some(keep), .. } => {
+            let _ = keep.try_send(crate::plugin::chain::KeptGroup::empty());
+        }
+        _ => {}
     }
 }
 
