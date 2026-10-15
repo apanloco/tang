@@ -744,11 +744,10 @@ watch it without resetting it. Clips from before the TUI started do not light it
 |---|-----|-------------|
 | 1 | Session | Instrument and effects chain editor with parameter control |
 | 2 | Piano | Virtual piano using computer keyboard |
-| 3 | Oscilloscope | Real-time waveform of audio output |
+| 3 | Scope | The output as a wave or as a spectrum (see "Scope tab") |
 | 4 | Help | Keybindings and usage reference (static, scrollable) |
 
-TODO: the Oscilloscope tab is a placeholder and will draw the live waveform. The
-Piano tab draws the keyboard, the scale and the notes being held (see "Piano
+TODO: the Piano tab draws the keyboard, the scale and the notes being held (see "Piano
 tab"), but takes no note input yet.
 
 ### Global keybindings
@@ -1073,6 +1072,28 @@ TODO: Capture letter keys on the Piano tab for note input via the
 virtual piano (currently the Piano tab is read-only — notes still play
 from the global virtual piano which is only wired up in `play` mode).
 
+### Scope tab
+
+The output as it goes by, drawn on a braille canvas as a **wave** or as a **spectrum**: the picture of the page's scope on the master node (see "Web UI"), with the same trigger, time bases and spectrum
+(`src/tui/scope_view.rs`: pure functions that have the tests of `web/src/client/scope.ts` and `fft.ts`). A line on top says what is shown and the loudest sample of the picture
+(`Peak: -6.0 dB`: decibels below full scale, `+3.5 dB` in red when the output clips, a dash for silence), the picture is in a box, and the keys are under it.
+
+| Key | Action |
+|-----|--------|
+| `v` | Wave or spectrum |
+| `Left` / `Right` | A shorter / longer time base for the wave: 256, 512, 1024 or 2048 samples across (5, 11, 21 and 43 ms at 48 kHz; it starts at 1024) |
+
+- **Wave.** The left side in teal, and the right side under it in green where it is not the same (a mono sound is one line). It is drawn from where the left side goes up through the middle after having been 0.02 under it
+  (so that a wobble is not a wave), which makes a wave that goes round again and again stand still; with no such place (silence, a wave that stays on one side) it is the latest frames. Lines at 0.5, 0 and −0.5.
+- **Spectrum.** The mix of the two sides: a Hann window and a 2048-point FFT of the latest 2048 frames (a bin is 23 Hz at 48 kHz, so that the low notes are a few bins wide), from 20 Hz to 20 kHz on a logarithmic axis and from 0 to −90 dB,
+  with lines at 100 Hz, 1 kHz and 10 kHz and at every 20 dB. A level falls 40 dB a second when the sound is quieter than it was (a wait of more than a quarter of a second between two looks is made up for a quarter of a second of the fall).
+- The frames are copied from the scope ring (`telemetry::ScopeRing`, see "Architecture") on every frame that is drawn while the tab is shown, about ten a second, so that a wave that moves fast is seen in steps. The choices
+  are the tab's own: they are not saved with the session, and not told to the audio thread or to the browsers (a browser's scope has its own).
+
+TODO: a scope for each lane and group (the ring is the master mix, `docs/web-ui.md` D43), a reading of the pitch (a bin of the spectrum is 23 Hz wide: the peak could be
+interpolated between bins), a vertical zoom for a quiet sound (the tracer's wave, at its oscillator volume of 0.1, is two pixels high on the page's scope), and a key that freezes the picture.
+The page keeps the view and the time base in the master node, so that a reload goes back to the wave at 21 ms.
+
 ### Help tab
 
 Static text showing all keybindings and usage reference. Scrollable with
@@ -1334,7 +1355,8 @@ has items without telemetry. The audio thread only stores (relaxed atomics, no
 allocation, no lock). Lanes, groups, modulators and targets are created through
 the loader or `Controller::{add_lane, add_group, add_modulator, add_target}`,
 which allocate and send the slots; `SessionModel::check_ids` verifies them. The
-`CLIP` light is the only reader so far.
+`CLIP` light is the only reader of the meters' counts so far. Besides the slots, `Telemetry` has
+the scope ring, the last frames of the master mix (see "Architecture").
 
 Loading a preset clears all parameter overrides for that slot. The preset
 sets every parameter to its own values, so previous overrides are discarded.
@@ -1519,7 +1541,10 @@ Audio thread logging uses `log::debug!()` for per-event messages (filtered out a
 Info level) and `log::info!()` only once on first callback. No real-time safety issue at
 default log levels.
 
-TODO: Mirror audio output into a lock-free ring buffer for the oscilloscope display.
+**The scope ring.** The audio thread keeps the last 8192 frames of the output mix (`telemetry::ScopeRing`, `Telemetry.scope`: 170 ms at 48 kHz, both sides, every sample a 32-bit cell of its own), stored at the end of
+`AudioGraph::process`, after the master meter, with no lock and no allocation, and any thread copies the latest frames out (`latest`: at most `SCOPE_READ_MAX`, 2048, a quarter of the ring, so that what is read is not written over
+while it is read; a copy that the writer overtook is made again, up to three times, and then taken as it is). The TUI's Scope tab reads it on every frame that it draws, and the web runtime's pusher on every tick for a client that has asked
+for the `scope` channel (see "Web UI"). Before the first buffer it is silence.
 
 MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop, the
 `play` loop and the headless loop of `serve`) looks for new devices about once a
@@ -1762,14 +1787,14 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   follows the catalog (`history { undo, redo }`, step 32: the words of a button or null, told again when they change, before the
   answer to the request that changed them); the
   telemetry frames are made by `web::pusher` at 30 Hz for the channels a client
-  asked for (`meters`, `modulation` and `held`: a value for each of the 128 notes, 1 for a note that
-  is held, from the same bits the Piano tab reads). `NoteInput` (`src/note_input.rs`) is the one note path of hardware
+  asked for (`meters`, `modulation`, `held`: a value for each of the 128 notes, 1 for a note that
+  is held, from the same bits the Piano tab reads, and `scope`: the latest 2048 frames of the output mix, the left side and then the right, 16 KB a frame, made only while a client asks for it). `NoteInput` (`src/note_input.rs`) is the one note path of hardware
   MIDI, the virtual piano and the browser: the Piano tab's filter, the held-notes
   bits and the channel to the audio thread, with the notes a WebSocket holds ended
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 32): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 42): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1885,7 +1910,11 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   is the connection's); nothing is blocked by it, and it does not say what is being done. Step 41 made the ring of a parameter that a lane's modulators and its
   group's both drive the lane's alone (`modulationsOn`, from the engine's order of writes: see "Application order" under "Group modulators"), made the mock engine's value
   of a parameter that several cables drive the engine's own (each cable's offset made from the value the user set and added, not chained), and had its MIDI control (the mock
-  has no MIDI) rest where the engine's does.
+  has no MIDI) rest where the engine's does. Step 42 gave the master node a scope under its meter (`ui/LiveScope`, drawn on a canvas and not by React: the wave of the output from where it goes up through the middle, so that a wave that goes
+  round again and again stands still, with the right side under it where it is not the same, or its spectrum, whose levels fall slowly; two choices under it, the view and for the wave a time base of 5 to 43 ms, which are the viewer's own and
+  not the session's). The page asks the server for the `scope` telemetry channel while the master node is on it (`Client.watchTelemetry`: counted, and asked again on every connection), works the spectrum out itself
+  (`client/fft.ts`: the server sends samples, and a spectrum of them is a drawing too) and is told what the frequencies are by `Meta.sampleRate`. The mock engine's scope sounds like the notes that are held. The terminal's
+  Scope tab draws the same (see "Scope tab").
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
