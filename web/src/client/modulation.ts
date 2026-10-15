@@ -3,7 +3,11 @@
 // between which values they can swing it. The laws are the engine's, read from
 // `Modulator::target_offset` in `src/plugin/chain.rs`: every modulator adds an offset to the
 // parameter's base value, the offsets add up, and the sum is clamped to the parameter's range.
-import type { Graph, ModulatorSource, NodeId } from "../protocol";
+// A setting of a modulator (an LFO's rate, a stage of an envelope, the depth of a cable) is
+// different: its cables each write it from the value the user set, and the last stands
+// (`apply_cross_mod`), so `settingExtent` is the extent of the last cable alone.
+import type { Graph, ModulatorSource, NodeId, Port } from "../protocol";
+import { samePort } from "./reach";
 
 /** One modulator driving a parameter: what it is, and its depth (-1 to 1) on that parameter. */
 export interface Modulation {
@@ -11,15 +15,24 @@ export interface Modulation {
   amount: number;
 }
 
-/** The modulators that drive parameter `index` of the plugin in `node`, in the order of the graph's edges. */
-export function modulationsOn(graph: Graph, node: NodeId, index: number): Modulation[] {
+/**
+ * The modulators that drive the place `port` of `node`: a parameter of its plugin, a setting of a modulator, the depth of one of its
+ * cables. In the order of the graph's edges, which is the order the engine writes them in (a group's cables, then a lane's, each
+ * modulator's in the order of the rack).
+ */
+export function modulationsAt(graph: Graph, node: NodeId, port: Port): Modulation[] {
   const found: Modulation[] = [];
   for (const edge of graph.edges) {
-    if (edge.kind !== "modulation" || edge.to.node !== node || edge.to.port.type !== "param" || edge.to.port.index !== index) continue;
+    if (edge.kind !== "modulation" || edge.to.node !== node || !samePort(edge.to.port, port)) continue;
     const modulator = graph.nodes.find((candidate) => candidate.id === edge.from.node);
     if (modulator?.kind === "modulator") found.push({ source: modulator.source, amount: edge.amount });
   }
   return found;
+}
+
+/** The modulators that drive parameter `index` of the plugin in `node`, in the order of the graph's edges. */
+export function modulationsOn(graph: Graph, node: NodeId, index: number): Modulation[] {
+  return modulationsAt(graph, node, { type: "param", index });
 }
 
 /** The lowest and highest offset one modulator can add to `base` on a parameter of range `min`…`max`; null if it adds none. */
@@ -62,4 +75,19 @@ export function modulationExtent(
   const clamp = (value: number) => Math.min(Math.max(value, min), max);
   const extent = { low: clamp(base + low), high: clamp(base + high) };
   return extent.low === extent.high ? undefined : extent;
+}
+
+/**
+ * The lowest and highest value modulation can give a setting of a modulator whose set value is `base`, over the range `min`…`max` of the
+ * setting, or undefined when it cannot move it. Not a sum, as for a parameter: the engine writes the setting once for each cable that
+ * drives it, each from the set value (`base + offset`, clamped), and the one written last stands, so this is the extent of the last
+ * cable alone (an unbound MIDI control, the last of them, writes the set value itself).
+ */
+export function settingExtent(
+  base: number,
+  min: number,
+  max: number,
+  modulations: readonly Modulation[],
+): { low: number; high: number } | undefined {
+  return modulationExtent(base, min, max, modulations.slice(-1));
 }

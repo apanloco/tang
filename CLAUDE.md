@@ -1854,6 +1854,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   file goes (`session::plain_file_name`: the page has no rule of its own; the mock engine has it written out, `client/filenames.ts`, pinned to the
   controller's name by name by `fixtures/filenames.json`, 67 names); a refusal is said among the notices (the name in quotes, cut after 24 characters) and the field stays, Escape and Cancel leave, and
   `Control+Shift+S` and `Command+Shift+S` open it (Control+S is still the save). The bar takes a second row in a window too narrow for all of it (`flex-wrap`).
+  Step 39 drew what a cable to a modulator's own setting does to it: the knob of an LFO's rate or of a stage of an envelope has the ring and the dot that a
+  parameter's knob has (`ModulatorFieldControl`: the dot is the telemetry's value of the setting, which the engine publishes and the layout names at the port the
+  cable ends at, and the ring is `settingExtent`, the extent of the last cable alone, since the engine's writes to a setting are last-wins and not summed as a
+  parameter's are), and the slider of a cable whose depth another cable drives has a bar under it, from the middle, for the depth the engine makes of it
+  (`CableDepthControl`, a `LiveBar`; the slider stays what the user set). The controller gives every cable a slot for that value (`Controller::add_target` and
+  the loader), and the mock engine does as it does.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
@@ -1913,8 +1919,8 @@ page saves the session (18), puts effects (19) and instruments (20) in the chain
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
 they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27), moves
 effects along their chains (28), draws the shape of an envelope (29) and lets a person choose the knobs of a node (30);
-steps 31 to 38 followed (groups from the page (31), undo in four steps (32 to 35), cables to the depth of a cable (36), a modulator made for a
-knob from the knob (37) and Save as (38): see "Frontend" above and `docs/web-ui.md` §12).
+steps 31 to 39 followed (groups from the page (31), undo in four steps (32 to 35), cables to the depth of a cable (36), a modulator made for a
+knob from the knob (37), Save as (38) and the ring and the dot of a setting that a cable drives (39): see "Frontend" above and `docs/web-ui.md` §12).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
@@ -1924,7 +1930,8 @@ of its name changes name with its place (Filter 3 becomes Filter 4, and the one 
 the node, by its id, would keep it, but would number a loaded session's nodes out of the order they are drawn in.
 TODO: a trace of an LFO faster than 15 Hz aliases: the telemetry is 30 values a second (the engine's blocks are much shorter); a telemetry
 channel of the lowest and highest output of each block, or a faster one, would draw it.
-TODO: the slider of a cable that ends at a depth shows the depth that was set and not what the cables that drive it make of it: a cable to a modulator's own field has no slot of telemetry.
+TODO: the bar under the slider of a cable whose depth is driven says where the engine has the depth, but not how far the cables that drive it can swing it (a knob's ring); a
+slider has no room for one, and the bar's scale is the slider's whole width while the thumb's travel is inset by half a thumb at each end.
 TODO: replacing an instrument takes out every cable that drove the old one; keep the ones whose
 parameter the new plugin has under the same name (a vibrato on `detune` could survive a change of
 oscillator): a cable would have to be drawn again with the new plugin's index.

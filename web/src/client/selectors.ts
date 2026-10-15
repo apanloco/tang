@@ -213,6 +213,12 @@ export function cableDepthOf(state: ClientState, id: EdgeId): number | undefined
   return cable?.kind === "modulation" ? cable.amount : undefined;
 }
 
+/** The modulator the modulation cable with this id starts at, if there is one: the node that the depth of the cable is a setting of (the layout of the telemetry names its value there). */
+export function cableSourceOf(state: ClientState, id: EdgeId): NodeId | undefined {
+  const cable = state.snapshot?.graph.edges.find((edge) => edge.kind === "modulation" && edge.id === id);
+  return cable?.kind === "modulation" ? cable.from.node : undefined;
+}
+
 /** Whether the parameter `index` is one that node `id` shows as a knob for its plugin: pinned to it, or among the first few if none are pinned (`shownParams`). */
 export function isKnob(state: ClientState, id: NodeId, index: number): boolean {
   const node = nodeById(state, id);

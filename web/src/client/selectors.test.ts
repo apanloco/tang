@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, chainPlaceOf, envelopeStagesOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
+import { cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -122,6 +122,14 @@ describe("the settings of a modulator and the depths of its cables", () => {
     expect(cableDepthOf(state, 0)).toBe(0.4);
     expect(cableDepthOf(state, 12345)).toBeUndefined();
     expect(cableDepthOf(stateOf(null), 0)).toBeUndefined();
+  });
+
+  test("the modulator a cable starts at, by the id of the cable: the node whose depth setting the cable's slot is named at", () => {
+    expect(cableSourceOf(state, 0)).toBe(lfo.id);
+    expect(cableSourceOf(state, 12345)).toBeUndefined();
+    expect(cableSourceOf(stateOf(null), 0)).toBeUndefined();
+    // (And not of an edge that is not a cable of modulation.)
+    expect(cableSourceOf(state, 1)).toBeUndefined();
   });
 
   test("no depth of an edge that is not a cable of modulation", () => {

@@ -5,11 +5,11 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { nodeNamed, tracerSnapshot } from "../../client/fixtures";
 import type { Modulation } from "../../client/modulation";
-import type { Node, Param, Snapshot } from "../../protocol";
+import type { Edge, Node, Param, Port, Snapshot } from "../../protocol";
 import { dragged } from "../../ui/knob-geometry";
-import { angleOf, arcPath, pointAt } from "../../ui/knob-geometry";
+import { angleOf, arcPath, fractionOf, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { GainControl, ModulatorFieldControl, ParamControl, ParamRow, sameModulations, sameParamFacts, WaveformControl } from "./controls";
+import { CableDepthControl, GainControl, ModulatorFieldControl, ParamControl, ParamRow, sameModulations, sameParamFacts, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -573,6 +573,252 @@ describe("a number of a modulator", () => {
     await waitFor(() => {
       expect(renders).toBeGreaterThan(settled);
     });
+  });
+});
+
+describe("the modulation of a number of a modulator", () => {
+  const cableTo = (from: number, to: number, port: Port, amount: number, id: number): Edge => ({
+    kind: "modulation",
+    id,
+    amount,
+    from: { node: from, port: { type: "modOut" } },
+    to: { node: to, port },
+  });
+  const ringOf = (root: HTMLElement) => root.querySelector(".tang-knob__ring")?.getAttribute("d");
+  /** The rate of the tracer's LFO is 0.5 Hz, over 0.01 to 50 and a knob of decades. */
+  const rateFraction = (hertz: number) => fractionOf(hertz, 0.01, 50, "log");
+  /** The same, of a second LFO and of a control that is not bound, which can drive it as well. */
+  const second: Node = { id: 91, parent: 0, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+  const unbound: Node = { id: 92, parent: 0, name: "Control", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } };
+  /** The tracer with an envelope (90), an LFO (91) and a control (92) that can be given cables. */
+  const crowded = (cables: Edge[]): Snapshot => {
+    const { snapshot } = withEnvelope();
+    snapshot.graph.nodes.push(second, unbound);
+    snapshot.graph.edges.push(...cables);
+    return snapshot;
+  };
+  /** Turn frames by hand, with real time between them for the mock's telemetry to come (not inside `waitFor`: see the envelope's test of its dot). */
+  const until = async (clock: { tick: (time: number) => void }, condition: () => boolean, what: string): Promise<void> => {
+    const deadline = Date.now() + 2000;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error(`gave up waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      act(() => {
+        clock.tick(performance.now());
+      });
+    }
+  };
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-3;
+
+  test("is a ring around the knob from where the cable that ends at it can take it, over the setting's range and on its decades", async () => {
+    // The envelope is at its peak at the 0.5 Hz the user set, and the cable at half depth pulls it down half the way to 0.01 Hz when the envelope is at rest.
+    const { view } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: crowded([cableTo(90, lfo.id, { type: "rate" }, 0.5, 9)]) });
+    expect(ringOf(view.container)).toBe(arcPath(24, 21.5, rateFraction(0.255), rateFraction(0.5)));
+  });
+
+  test("is that of the cable that is last, as the engine writes the cables one after another and the last stands, whichever the others", async () => {
+    const lfoLast = crowded([cableTo(90, lfo.id, { type: "rate" }, 0.5, 9), cableTo(91, lfo.id, { type: "rate" }, 0.1, 10)]);
+    const first = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: lfoLast });
+    // The LFO's: ±0.1 of the range of 49.99 Hz around the 0.5, cut off at the lowest.
+    expect(ringOf(first.view.container)).toBe(arcPath(24, 21.5, 0, rateFraction(0.5 + 0.1 * 49.99)));
+    cleanup();
+    const envelopeLast = crowded([cableTo(91, lfo.id, { type: "rate" }, 0.1, 9), cableTo(90, lfo.id, { type: "rate" }, 0.5, 10)]);
+    const second = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: envelopeLast });
+    expect(ringOf(second.view.container)).toBe(arcPath(24, 21.5, rateFraction(0.255), rateFraction(0.5)));
+  });
+
+  test("is not there for a setting that nothing drives, or one whose last cable is a control that is not bound, which writes the set value over the others", async () => {
+    const free = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: crowded([cableTo(90, lfo.id, { type: "attack" }, 0.5, 9)]) });
+    expect(ringOf(free.view.container)).toBeUndefined();
+    cleanup();
+    const bound = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: crowded([cableTo(90, lfo.id, { type: "rate" }, 0.5, 9), cableTo(92, lfo.id, { type: "rate" }, 0.5, 10)]) });
+    expect(ringOf(bound.view.container)).toBeUndefined();
+  });
+
+  test("is the ring of a stage of an envelope over that stage's own range: a level is on a line, a time on decades", async () => {
+    // The LFO drives the sustain (0.7, over 0 to 1) at 0.2 and the release (2 s, over 0.001 to 10) at 0.1.
+    const snapshot = crowded([cableTo(91, 90, { type: "sustain" }, 0.2, 9), cableTo(91, 90, { type: "release" }, 0.1, 10)]);
+    const { view } = await rig(
+      <>
+        <ModulatorFieldControl node={90} field="sustain" />
+        <ModulatorFieldControl node={90} field="release" />
+      </>,
+      { snapshot },
+    );
+    const rings = [...view.container.querySelectorAll(".tang-knob__ring")].map((ring) => ring.getAttribute("d"));
+    expect(rings).toEqual([arcPath(24, 21.5, 0.5, 0.9), arcPath(24, 21.5, fractionOf(2 - 0.1 * 9.999, 0.001, 10, "log"), fractionOf(2 + 0.1 * 9.999, 0.001, 10, "log"))]);
+  });
+
+  test("moves with the value the user sets", async () => {
+    const { view } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: crowded([cableTo(90, lfo.id, { type: "rate" }, 0.5, 9)]) });
+    drag(slider("Rate"), 50);
+    const set = Number(slider("Rate").getAttribute("aria-valuenow"));
+    expect(set).toBeGreaterThan(0.5);
+    expect(ringOf(view.container)).toBe(arcPath(24, 21.5, rateFraction(set - 0.5 * (set - 0.01)), rateFraction(set)));
+  });
+
+  test("is the dot where the engine says the setting is, taken from the telemetry on the frame, and follows what the user sets", async () => {
+    const { view, client, clock, server } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: withEnvelope().snapshot });
+    // An envelope at rest, drawn to the rate: half the way down from the 0.5 Hz the user set to the lowest, 0.01 Hz.
+    await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "rate" } } });
+    const at = () => ({ x: dotOf(view.container).x, y: dotOf(view.container).y });
+    const rest = pointAt(24, 18, angleOf(rateFraction(0.255)));
+    await until(clock, () => dotOf(view.container).visible && near(at().x, rest.x) && near(at().y, rest.y), "the dot at 0.255 Hz");
+    // And where it goes when the user sets another rate: 4 Hz is pulled to 2.005.
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "rate", value: 4 });
+    });
+    const moved = pointAt(24, 18, angleOf(rateFraction(2.005)));
+    await until(clock, () => near(at().x, moved.x) && near(at().y, moved.y), "the dot at 2.005 Hz");
+  });
+
+  test("is the dot of a stage of an envelope, where the LFO that drives it puts it: the user's value and what its peak adds, cut off at the end of the range", async () => {
+    const { view, client, clock, time } = await rig(<ModulatorFieldControl node={90} field="attack" />, { snapshot: withEnvelope().snapshot });
+    await client.request({ type: "addModEdge", modulator: lfo.id, to: { node: 90, port: { type: "attack" } } });
+    time.seconds = 0.5; // the LFO (0.5 Hz) is at its peak: 0.01 s and 0.5 of the range of 9.999 s
+    const peak = pointAt(24, 18, angleOf(fractionOf(0.01 + 0.5 * 9.999, 0.001, 10, "log")));
+    await until(clock, () => dotOf(view.container).visible && near(dotOf(view.container).x, peak.x) && near(dotOf(view.container).y, peak.y), "the dot at the peak");
+  });
+
+  test("has no dot for a setting that nothing drives", async () => {
+    const { view, client, clock } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />);
+    await waitFor(() => {
+      expect(client.telemetry.has("modulation")).toBe(true);
+    });
+    act(() => {
+      clock.tick(100);
+    });
+    expect(dotOf(view.container).visible).toBe(false);
+  });
+
+  test("does not render the control again for the telemetry, however many frames come, but does for a depth that changes the ring", async () => {
+    let renders = 0;
+    const { server, client, clock, time } = await rig(
+      <Profiler id="rate" onRender={() => (renders += 1)}>
+        <ModulatorFieldControl node={lfo.id} field="rate" />
+      </Profiler>,
+      { snapshot: crowded([cableTo(91, lfo.id, { type: "rate" }, 0.1, 9)]) },
+    );
+    await waitFor(() => {
+      expect(client.telemetry.has("modulation")).toBe(true);
+    });
+    const settled = renders;
+    for (let frame = 1; frame <= 40; frame += 1) {
+      time.seconds = frame / 40;
+      await new Promise((resolve) => setTimeout(resolve, 6)); // the engine makes a frame every 5 ms
+      act(() => {
+        clock.tick(frame * 16);
+      });
+    }
+    expect(client.telemetry.frames).toBeGreaterThan(10);
+    expect(renders).toBe(settled);
+    act(() => {
+      server.apply({ type: "setEdgeDepth", edge: 9, depth: 0.3 });
+    });
+    await waitFor(() => {
+      expect(renders).toBeGreaterThan(settled);
+    });
+  });
+});
+
+describe("the depth of a cable that another cable drives", () => {
+  const name = "LFO to cutoff";
+  const meter = () => screen.queryByRole("meter", { name: `Depth of ${name}, as modulated` });
+  /** The cable 0 of the tracer, which the LFO draws to the filter's cutoff at 0.4, and an envelope (90) that can drive how deep it goes. */
+  const rigged = () => rig(<CableDepthControl edge={0} label={name} />, { snapshot: withEnvelope().snapshot });
+  const until = async (clock: { tick: (time: number) => void }, condition: () => boolean, what: string): Promise<void> => {
+    const deadline = Date.now() + 2000;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error(`gave up waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      act(() => {
+        clock.tick(performance.now());
+      });
+    }
+  };
+
+  test("is a slider at the depth the user set, and has nothing that says what the engine makes of it while nothing drives it", async () => {
+    await rigged();
+    expect(slider(`Depth of ${name}`).getAttribute("aria-valuetext")).toBe("40%");
+    expect(meter()).toBeNull();
+  });
+
+  test("has a bar under the slider that says the depth the engine has made of it, from the middle, once a cable drives it (f118)", async () => {
+    const { client, clock } = await rigged();
+    // The envelope at rest pulls it down half the way from the 0.4 the user set to the lowest depth, -1: to -0.3.
+    await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "depth", edge: 0 } } });
+    const bar = await screen.findByRole("meter", { name: `Depth of ${name}, as modulated` });
+    expect([bar.getAttribute("aria-valuemin"), bar.getAttribute("aria-valuemax"), bar.hasAttribute("data-centred")]).toEqual(["-1", "1", true]);
+    await until(clock, () => Math.abs(Number(bar.getAttribute("aria-valuenow")) + 0.3) < 1e-3, "the depth the engine has made of it");
+    expect(bar.getAttribute("aria-valuetext")).toBe("-30%");
+    // The slider is still the user's: 40%.
+    expect(slider(`Depth of ${name}`).getAttribute("aria-valuetext")).toBe("40%");
+  });
+
+  test("is the bar of the cable whose depth is driven and of no other: each cable's depth is its own setting, named by the cable", async () => {
+    // A second cable of the LFO, to the resonance (9), and the envelope drives how deep that one goes.
+    const { snapshot } = withEnvelope();
+    snapshot.graph.edges.push({ kind: "modulation", id: 9, amount: 0.2, from: { node: lfo.id, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 1 } } });
+    const { client, clock } = await rig(
+      <>
+        <CableDepthControl edge={0} label="first" />
+        <CableDepthControl edge={9} label="second" />
+      </>,
+      { snapshot },
+    );
+    await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "depth", edge: 9 } } });
+    const bar = await screen.findByRole("meter", { name: "Depth of second, as modulated" });
+    expect(screen.queryByRole("meter", { name: "Depth of first, as modulated" })).toBeNull();
+    // The envelope at rest pulls the 0.2 the user set half the way down to -1: -0.4.
+    await until(clock, () => Math.abs(Number(bar.getAttribute("aria-valuenow")) + 0.4) < 1e-3, "the depth of the second cable");
+  });
+
+  test("follows the depth the user sets", async () => {
+    const { client, clock, server } = await rigged();
+    await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "depth", edge: 0 } } });
+    const bar = await screen.findByRole("meter", { name: `Depth of ${name}, as modulated` });
+    act(() => {
+      server.apply({ type: "setEdgeDepth", edge: 0, depth: 0.8 });
+    });
+    // 0.8 less half the way down to -1: -0.1.
+    await until(clock, () => Math.abs(Number(bar.getAttribute("aria-valuenow")) + 0.1) < 1e-3, "the depth for the new value");
+  });
+
+  test("goes when the cable that drove it is taken out", async () => {
+    const { client } = await rigged();
+    await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "depth", edge: 0 } } });
+    await screen.findByRole("meter", { name: `Depth of ${name}, as modulated` });
+    const driving = client.state.snapshot?.graph.edges.findLast((e) => e.kind === "modulation" && e.to.port.type === "depth");
+    if (driving?.kind !== "modulation") throw new Error("the cable is not there");
+    await client.request({ type: "removeEdge", edge: driving.id });
+    await waitFor(() => {
+      expect(meter()).toBeNull();
+    });
+  });
+
+  test("does not render the control again for the telemetry, however many frames come", async () => {
+    let renders = 0;
+    const { client, clock, time } = await rig(
+      <Profiler id="depth" onRender={() => (renders += 1)}>
+        <CableDepthControl edge={0} label={name} />
+      </Profiler>,
+      { snapshot: withEnvelope().snapshot },
+    );
+    await client.request({ type: "addModEdge", modulator: 90, to: { node: lfo.id, port: { type: "depth", edge: 0 } } });
+    await screen.findByRole("meter", { name: `Depth of ${name}, as modulated` });
+    await waitFor(() => {
+      expect(client.telemetry.has("modulation")).toBe(true);
+    });
+    const settled = renders;
+    for (let frame = 1; frame <= 40; frame += 1) {
+      time.seconds = frame / 40;
+      await new Promise((resolve) => setTimeout(resolve, 6)); // the engine makes a frame every 5 ms
+      act(() => {
+        clock.tick(frame * 16);
+      });
+    }
+    expect(client.telemetry.frames).toBeGreaterThan(10);
+    expect(renders).toBe(settled);
   });
 });
 

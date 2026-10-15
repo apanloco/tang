@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, ModulatorSource, Node } from "../protocol";
 import { tracerSnapshot } from "./fixtures";
-import { modulationExtent, modulationsOn } from "./modulation";
+import { modulationExtent, modulationsAt, modulationsOn, settingExtent } from "./modulation";
 import type { Modulation } from "./modulation";
 
 const lfo = (amount: number): Modulation => ({ source: { type: "lfo", waveform: "sine", rate: 1 }, amount });
@@ -84,6 +84,71 @@ describe("how far modulation swings a parameter", () => {
 
   test("is nothing for a parameter with no range", () => {
     expect(modulationExtent(3, 3, 3, [lfo(0.5)])).toBeUndefined();
+  });
+});
+
+describe("how far modulation swings a setting of a modulator", () => {
+  test("is that of the cable that writes last alone: the engine writes a setting once for each cable, each from the value the user set, and the last stands", () => {
+    // An LFO at 0.1 of the range 0 to 10 of a setting set to 5, and an envelope at 0.5, which rises to it: the one that is later is the one that counts.
+    expect(settingExtent(5, 0, 10, [lfo(0.1), envelope(0.5)])).toEqual({ low: 2.5, high: 5 });
+    expect(settingExtent(5, 0, 10, [envelope(0.5), lfo(0.1)])).toEqual({ low: 4, high: 6 });
+  });
+
+  test("is what one cable does to a parameter when only one drives it, whatever the source", () => {
+    for (const only of [lfo(0.4), envelope(0.5), envelope(-0.5), midi({ type: "cc", number: 74 }, 0.5), midi({ type: "pitchBend" }, 0.25)]) {
+      expect(settingExtent(5, 0, 10, [only])).toEqual(modulationExtent(5, 0, 10, [only]));
+    }
+  });
+
+  test("stops at the ends of the range of the setting, as the engine clamps", () => {
+    expect(settingExtent(9, 0, 10, [lfo(0.5)])).toEqual({ low: 4, high: 10 });
+  });
+
+  test("is nothing when nothing drives it, or when the cable that writes last is a control that is not bound: it writes the set value over the others", () => {
+    expect(settingExtent(5, 0, 10, [])).toBeUndefined();
+    expect(settingExtent(5, 0, 10, [lfo(0.1), midi(null, 0.5)])).toBeUndefined();
+    // (One that is not the last changes nothing.)
+    expect(settingExtent(5, 0, 10, [midi(null, 0.5), lfo(0.1)])).toEqual({ low: 4, high: 6 });
+  });
+});
+
+describe("the modulators that drive a place on a modulator", () => {
+  const modulator = (id: number, source: ModulatorSource): Node => ({ id, parent: 0, name: `Modulator ${String(id)}`, kind: "modulator", source });
+  const driven = modulator(60, { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 });
+  const driver = modulator(61, { type: "lfo", waveform: "sine", rate: 2 });
+  const other = modulator(62, { type: "envelope", attack: 0.2, decay: 0.2, sustain: 0.6, release: 0.2 });
+  const cable = (from: number, to: Edge["to"], amount: number, id: number): Edge => ({ kind: "modulation", id, amount, from: { node: from, port: { type: "modOut" } }, to });
+  const graph: Graph = {
+    nodes: [driven, driver, other],
+    edges: [
+      cable(61, { node: 60, port: { type: "attack" } }, 0.3, 1),
+      cable(62, { node: 60, port: { type: "attack" } }, -0.5, 2),
+      cable(62, { node: 60, port: { type: "release" } }, 0.25, 3),
+      cable(61, { node: 60, port: { type: "depth", edge: 7 } }, 0.1, 4),
+      cable(62, { node: 60, port: { type: "depth", edge: 8 } }, 0.2, 5),
+      cable(61, { node: 60, port: { type: "param", index: 0 } }, 0.9, 6),
+    ],
+  };
+  const summary = (found: readonly Modulation[]): [string, number][] => found.map((m) => [m.source.type, m.amount]);
+
+  test("are those whose cables end at the setting, in the order of the graph's edges, with their depths", () => {
+    expect(summary(modulationsAt(graph, 60, { type: "attack" }))).toEqual([["lfo", 0.3], ["envelope", -0.5]]);
+    expect(summary(modulationsAt(graph, 60, { type: "release" }))).toEqual([["envelope", 0.25]]);
+  });
+
+  test("are those of the cable's depth, for the port of that cable and no other", () => {
+    expect(summary(modulationsAt(graph, 60, { type: "depth", edge: 7 }))).toEqual([["lfo", 0.1]]);
+    expect(summary(modulationsAt(graph, 60, { type: "depth", edge: 8 }))).toEqual([["envelope", 0.2]]);
+    expect(modulationsAt(graph, 60, { type: "depth", edge: 9 })).toEqual([]);
+  });
+
+  test("are none for a setting nothing drives, a node that has none, or a node that is not there; a parameter's number is not a setting", () => {
+    expect(modulationsAt(graph, 60, { type: "decay" })).toEqual([]);
+    expect(modulationsAt(graph, 61, { type: "rate" })).toEqual([]);
+    expect(modulationsAt(graph, 12345, { type: "attack" })).toEqual([]);
+    // (And a parameter is the same place as `modulationsOn` says.)
+    expect(summary(modulationsAt(graph, 60, { type: "param", index: 0 }))).toEqual([["lfo", 0.9]]);
+    expect(modulationsOn(graph, 60, 0)).toEqual(modulationsAt(graph, 60, { type: "param", index: 0 }));
   });
 });
 

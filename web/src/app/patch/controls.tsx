@@ -5,12 +5,12 @@
 import { Handle, Position } from "@xyflow/react";
 import { memo, useContext, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import { modulationExtent, modulationsOn } from "../../client/modulation";
+import { modulationExtent, modulationsAt, modulationsOn, settingExtent } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
 import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
-import { cableDepthOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameGroupChoices } from "../../client/selectors";
+import { cableDepthOf, cableSourceOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameGroupChoices } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -404,16 +404,24 @@ const NUMBERS: Record<Exclude<ModulatorField, "waveform">, { label: string; form
   release: { label: "Release", format: seconds },
 };
 
-/** A number of a modulator: an LFO's rate, a stage of an envelope. */
+/**
+ * A number of a modulator: an LFO's rate, a stage of an envelope. A modulator can drive it as it drives a parameter (a cable to the
+ * rate, to a stage), and it shows that as a parameter's knob does: the ring from where the cable can take it (the last cable's alone:
+ * the engine writes a setting once for each cable and the last stands) and the dot where the engine says it is.
+ */
 export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: Exclude<ModulatorField, "waveform"> }) {
+  const client = useClient();
   const frames = useFrames();
   const control = useDrive().modulatorField(node, field);
   const stored = useClientState((state) => modulatorFieldOf(state, node, field));
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const modulations = useClientSelection((state) => (state.snapshot ? modulationsAt(state.snapshot.graph, node, { type: field }) : []), sameModulations);
+  const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, { type: field }, "effective"), [client, node, field]);
   const shown = pending ?? stored;
+  const [min, max] = MODULATOR_FIELD_RANGES[field];
+  const ring = useMemo(() => (shown !== undefined ? settingExtent(shown, min, max, modulations) : undefined), [shown, min, max, modulations]);
   if (shown === undefined) return null;
   const { label, format } = NUMBERS[field];
-  const [min, max] = MODULATOR_FIELD_RANGES[field];
   return (
     <Knob
       label={label}
@@ -423,12 +431,14 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
       scale={MODULATOR_FIELD_SCALES[field]}
       defaultValue={MODULATOR_FIELD_DEFAULTS[field]}
       format={format}
+      modulation={ring}
       onChange={(value) => {
         control.set(value);
       }}
       onCommit={() => {
         control.commit();
       }}
+      readEffective={readEffective}
       frames={frames}
     />
   );
@@ -538,11 +548,19 @@ export const percent = (depth: number): string => `${String(Math.round(depth * 1
  * and set in a stroke: a knob is more than the cable has room for). `label` says what the
  * cable joins. It is turned like any control: what the user has set is shown until the engine
  * has answered, at most one intent goes in a frame, and one that ends a gesture goes at once.
+ * Another cable can drive the depth (an envelope that fades a vibrato in): the slider is still
+ * what the user set, and a bar under it, from the middle, says what the engine makes of it.
  */
 export const CableDepthControl = memo(function CableDepthControl({ edge, label }: { edge: EdgeId; label: string }) {
+  const client = useClient();
+  const frames = useFrames();
   const control = useDrive().cableDepth(edge);
   const stored = useClientState((state) => cableDepthOf(state, edge));
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  // The depth is a setting of the modulator the cable starts at: that is the node its value is named at, and a cable that ends there drives it.
+  const owner = useClientState((state) => cableSourceOf(state, edge));
+  const driven = useClientState((state) => (state.snapshot && owner !== undefined ? modulationsAt(state.snapshot.graph, owner, { type: "depth", edge }).length > 0 : false));
+  const readEffective = useMemo(() => (owner !== undefined ? slotReader(client.telemetry, "modulation", owner, { type: "depth", edge }, "effective") : undefined), [client, owner, edge]);
   const shown = pending ?? stored;
   if (shown === undefined) return null;
   const [min, max] = DEPTH_RANGE;
@@ -551,22 +569,25 @@ export const CableDepthControl = memo(function CableDepthControl({ edge, label }
   };
   return (
     <label className="tang-depth">
-      <input
-        type="range"
-        className="tang-depth__slider"
-        aria-label={`Depth of ${label}`}
-        aria-valuetext={percent(shown)}
-        min={min}
-        max={max}
-        step={0.01}
-        value={shown}
-        onChange={(event) => {
-          control.set(event.target.valueAsNumber);
-        }}
-        onPointerUp={commit}
-        onKeyUp={commit}
-        onBlur={commit}
-      />
+      <span className="tang-depth__body">
+        <input
+          type="range"
+          className="tang-depth__slider"
+          aria-label={`Depth of ${label}`}
+          aria-valuetext={percent(shown)}
+          min={min}
+          max={max}
+          step={0.01}
+          value={shown}
+          onChange={(event) => {
+            control.set(event.target.valueAsNumber);
+          }}
+          onPointerUp={commit}
+          onKeyUp={commit}
+          onBlur={commit}
+        />
+        {driven && readEffective ? <LiveBar label={`Depth of ${label}, as modulated`} read={readEffective} min={min} max={max} centred format={percent} frames={frames} /> : null}
+      </span>
       {/* (Not an `<output>`, which is a status to a screen reader: the slider has said it.) */}
       <span className="tang-depth__value" aria-hidden="true">
         {percent(shown)}
