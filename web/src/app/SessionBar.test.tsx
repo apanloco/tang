@@ -38,6 +38,19 @@ async function change(rig: Awaited<ReturnType<typeof bar>>): Promise<void> {
 const saveButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>("button", { name: "Save" });
 
 describe("the bar of the session", () => {
+  test("has the tempo of the session, which it keeps up with", async () => {
+    const made = await bar({ bpm: 96.5 });
+    expect(screen.getByRole<HTMLInputElement>("spinbutton", { name: "Tempo" }).value).toBe("96.5");
+    act(() => {
+      made.server.apply({ type: "setBpm", bpm: 100 });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLInputElement>("spinbutton", { name: "Tempo" }).value).toBe("100");
+    });
+    // (It is a change that is not saved, like any other.)
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+  });
+
   test("names the file the session is saved to, and says it has nothing unsaved, with a button that has nothing to do", async () => {
     await bar();
     expect(screen.getByText("tracer.toml")).toBeTruthy();

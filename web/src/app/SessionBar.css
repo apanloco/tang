@@ -63,3 +63,35 @@
   outline: 2px solid var(--tang-scale);
   outline-offset: 1px;
 }
+
+/* (The tempo: a field of a few digits and its unit.) */
+.tang-tempo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-tempo__unit {
+  color: var(--tang-text-muted);
+}
+
+.tang-tempo__field {
+  width: 4em;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  text-align: right;
+}
+
+.tang-tempo__field:hover {
+  border-color: var(--tang-modulation);
+}
+
+.tang-tempo__field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
