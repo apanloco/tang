@@ -363,6 +363,17 @@ VST3 and LV2 backends fill the metadata in (phase 1). The filter's cutoff has no
 unit on purpose: its value is a position on an exponential scale, not a
 frequency, so "0.37 Hz" would lie.
 
+*As built (the VST3 adapter, after step 38):* not flags that a client has to read, but a list that leaves out what a person should not be
+shown: a parameter that the plugin hides (`kIsHidden`) or says is read only (`kIsReadOnly`), and the placeholders that a plugin makes so that a
+host can send MIDI controllers through its parameters (a parameter for each of 16 channels and 130 controllers, which its `IMidiMapping` points
+at, and that cannot be automated: `is_listed`). Found by looking at the plugins on this machine, which all do it: 2,080 of Pianoteq 9's 2,294
+parameters were "MIDI CC 3|47" (214 of its own are left), 2,080 of ROLI Airwave Player's 2,089 (9 are left), 2,078 of ROLI Studio Drums'
+2,156 (78) and 2,080 of Traveler's 2,450 (370); they were 91% to 99.6% of the list in the ⚙ panel and in the terminal. The routing of
+the controllers is unchanged (it goes by the parameter's id, not by the list), and a real parameter that a controller is mapped to can be
+automated and stays. The count that `tang enumerate` and the selector show is the same number. Units, step counts and groups are not
+reported yet: the units that a VST3 plugin gives (`dB`, `Hz`) name what its display text shows, and not its plain range, which is 0 to 1 for
+all of Pianoteq's, so "0.44 dB" would lie as "0.37 Hz" would for the filter. CLAP and LV2 do not leave anything out yet.
+
 **Open:** value → display text needs the plugin instance, which the audio thread
 owns. Options: a main-thread shadow instance (which also replaces the
 preset-mirror hack), static formatting tables for builtins, or number + unit for

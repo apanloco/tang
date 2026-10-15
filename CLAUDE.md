@@ -1601,6 +1601,13 @@ How Tang handles common plugin I/O mismatches:
   the first stereo pair (channels 1-2) and discards the rest. This is the standard
   main mix output for all known multi-output instruments.
 
+- **VST3 parameter lists**: a VST3 plugin's parameters are listed without those that it hides (`kIsHidden`) or says are read only
+  (`kIsReadOnly`), and without the placeholders that it makes so that a host can send MIDI controllers through its parameters: the
+  parameters that its `IMidiMapping` points at, over 16 channels and 130 controllers, that cannot be automated (`is_listed`,
+  `midi_controller_parameters` in `src/plugin/vst3.rs`). Pianoteq 9 has 2,080 of them among its 2,294 and ROLI Airwave Player 2,080
+  among 2,089, so what is left is 214 and 9; `tang enumerate` counts what is listed. The routing of controllers to the plugin is
+  by parameter id and is as it was. (A test of Pianoteq 9 is `#[ignore]`d: `cargo test -- --ignored`, with it installed.)
+
 - **Sidechain inputs**: effects with more audio inputs than the chain provides
   (e.g. Calf Reverb with 2 audio + 1 sidechain = 3 inputs) get silence on the
   extra ports. Sidechaining is not supported.
