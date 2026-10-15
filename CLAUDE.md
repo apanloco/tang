@@ -43,6 +43,9 @@ expressive controller emits — e.g. whether a hard key press sends Channel
 Pressure (learnable) or is routed to a CC. Implemented as a lock-free-ish
 `Arc<MidiMonitor>` (`src/midi_monitor.rs`) written by the MIDI input thread and
 read by the render loop; a no-op when the flag is off.
+TODO: `--debug` is a global flag, so `play` and `serve` take it, but only the TUI draws the tally: there the monitor is
+written by the MIDI input thread and read by nothing, and the flag changes nothing that can be seen. `play` could print the
+lines the monitor keeps, or the two could refuse the flag.
 
 **`--web[=<addr>]`** (the TUI only; needs a build with `--features web`, without
 which it is refused before the session is loaded) serves the session to browsers
