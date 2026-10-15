@@ -128,7 +128,9 @@ impl Harness {
         self.s.tree_entries.iter().map(|e| e.label.as_str()).collect()
     }
 
-    /// Move the chain cursor onto `addr` with real Up/Down presses.
+    /// Move the chain cursor onto `addr` with real Up/Down presses. A press moves it one
+    /// entry, so more presses than the tree has entries means the keys go somewhere else
+    /// (the focus is in the parameter pane): that panics, where pressing on would not end.
     fn goto(&mut self, addr: TreeAddress) -> &mut Self {
         let target = self
             .s
@@ -136,12 +138,17 @@ impl Harness {
             .iter()
             .position(|e| e.address == addr)
             .unwrap_or_else(|| panic!("{addr:?} is not in the tree"));
-        while self.s.chain_state.selected < target {
-            self.press(KeyCode::Down);
+        for _ in 0..self.s.tree_entries.len() {
+            let at = self.s.chain_state.selected;
+            if at == target {
+                break;
+            }
+            self.press(if at < target { KeyCode::Down } else { KeyCode::Up });
         }
-        while self.s.chain_state.selected > target {
-            self.press(KeyCode::Up);
-        }
+        assert_eq!(
+            self.s.chain_state.selected, target,
+            "the chain cursor did not reach {addr:?} (is the focus in the parameter pane?)"
+        );
         self
     }
 
@@ -2674,13 +2681,16 @@ fn the_tui_reaps_plugins_the_audio_thread_hands_back() {
 fn on_modulator_row(h: &mut Harness, addr: TreeAddress, row: usize) {
     h.goto(addr);
     h.press(KeyCode::Enter);
-    while h.s.param_state.selected < row {
-        h.press(KeyCode::Down);
+    // A press moves the selection a row, so the presses it takes are the distance to `row`, which
+    // is at most `row` or the row it starts on; a pane that has no `row` would be pressed at for ever.
+    for _ in 0..row.max(h.s.param_state.selected) {
+        let at = h.s.param_state.selected;
+        if at == row {
+            break;
+        }
+        h.press(if at < row { KeyCode::Down } else { KeyCode::Up });
     }
-    while h.s.param_state.selected > row {
-        h.press(KeyCode::Up);
-    }
-    assert_eq!(h.s.param_state.selected, row);
+    assert_eq!(h.s.param_state.selected, row, "the pane has no row {row}");
 }
 
 /// Enter a value in the popup of the row the cursor is on.
@@ -2689,6 +2699,26 @@ fn enter_value(h: &mut Harness, text: &str) {
     assert!(h.s.editing.is_some(), "the value popup opens");
     h.press_n(KeyCode::Backspace, 8).type_chars(text).press(KeyCode::Enter);
     assert!(h.s.editing.is_none(), "and closes");
+}
+
+// The moves above press keys until the cursor is where it was asked to be. A key that goes to
+// the other pane, or a row that is not there, used to keep them pressing for ever: a test that
+// asked for one never ended.
+
+#[test]
+#[should_panic(expected = "did not reach")]
+fn goto_panics_with_a_message_when_the_focus_is_in_the_parameter_pane() {
+    let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Enter); // the focus is in the parameter pane, where Up and Down move
+    h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+}
+
+#[test]
+#[should_panic(expected = "has no row 99")]
+fn on_modulator_row_panics_with_a_message_when_the_pane_has_no_such_row() {
+    let mut h = Harness::new(LANE_ENVELOPE_AND_CONTROL);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 99);
 }
 
 /// A lane with an envelope (A 0.1, D 0.2, S 0.5, R 0.4) and a MIDI control bound to CC 74,
