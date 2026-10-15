@@ -61,9 +61,6 @@ use crate::telemetry::Telemetry;
 /// How often `poll` looks for newly connected devices.
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The tempo of a session none of whose patterns has been recorded.
-const DEFAULT_BPM: f32 = 120.0;
-
 /// What a `poll` changed, for the front-end to redraw from.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Polled {
@@ -222,8 +219,6 @@ pub struct Controller {
     pub session_path: Option<PathBuf>,
     /// The session differs from what was last saved.
     pub dirty: bool,
-    /// The tempo patterns are recorded and played at.
-    pub global_bpm: f32,
     /// How many intents have been applied (`Controller::apply`).
     pub rev: u64,
     /// The installed plugins, for the selector popups. Empty until
@@ -265,16 +260,6 @@ pub struct Controller {
     pub(super) probes: super::probes::Probes,
 }
 
-/// The tempo a session starts at: that of the first lane with a recorded
-/// pattern, else `DEFAULT_BPM`.
-fn initial_bpm(model: &SessionModel) -> f32 {
-    model
-        .instruments
-        .iter()
-        .find_map(|lane| lane.pattern.as_ref())
-        .map_or(DEFAULT_BPM, |pattern| pattern.bpm)
-}
-
 impl Controller {
     /// A controller for a freshly loaded session: nothing has changed yet.
     pub fn new(model: SessionModel, engine: EngineHandles, session_path: Option<PathBuf>) -> Self {
@@ -303,7 +288,6 @@ impl Controller {
             recovery_wait,
         } = engine;
         Controller {
-            global_bpm: initial_bpm(&model),
             rev: 0,
             catalog: Catalog::default(),
             model,
@@ -1067,7 +1051,7 @@ impl Controller {
         // Re-recording replaces the events but keeps the transpose mode.
         let in_key = lane.pattern.as_ref().is_some_and(|p| p.in_key);
         lane.pattern = Some(PatternState {
-            bpm: self.global_bpm,
+            bpm: self.model.bpm,
             length_beats: recording.length_beats,
             looping: recording.looping,
             base_note: recording.base_note,
@@ -1221,30 +1205,6 @@ mod tests {
         ctl.shutdown();
         let order = log.lock().unwrap().clone();
         assert_eq!(order, ["devices closed", "plugin dropped"]);
-    }
-
-    fn tempo_of(session: &str) -> f32 {
-        let (handles, _engine) = testutil::stub_engine();
-        Controller::new(load(session).model, handles, None).global_bpm
-    }
-
-    #[test]
-    fn the_tempo_starts_at_the_first_recorded_patterns() {
-        let lane = |bpm: &str| {
-            format!(
-                "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = {bpm}\nlength_beats = 4.0\nenabled = true\n"
-            )
-        };
-        let plain = "[[instrument]]\nplugin = \"builtin:osc\"\n";
-        // The first lane that has a pattern decides, not the first lane.
-        assert_eq!(tempo_of(&format!("{plain}{}{}", lane("90.0"), lane("140.0"))), 90.0);
-        assert_eq!(tempo_of(&lane("140.0")), 140.0);
-    }
-
-    #[test]
-    fn the_tempo_is_120_without_a_recorded_pattern() {
-        assert_eq!(tempo_of("[[instrument]]\nplugin = \"builtin:osc\"\n"), 120.0);
-        assert_eq!(tempo_of(""), 120.0);
     }
 
     #[test]
@@ -1464,7 +1424,7 @@ plugin = "builtin:reverb"
         ctl.subscribe(follower);
 
         // What the TUI's `b` does: the model is edited, and no intent is applied.
-        ctl.global_bpm = 90.0;
+        ctl.model.bpm = 90.0;
         assert!(ctl.resync());
 
         assert_eq!(ctl.rev, 1, "a revision of its own");
@@ -1520,7 +1480,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller_for(TWO_LANES);
         let mirror = Mirror::join(&mut ctl);
         ctl.apply(volume(&ctl, 0.5)).unwrap();
-        ctl.global_bpm = 90.0;
+        ctl.model.bpm = 90.0;
         assert!(ctl.resync());
         ctl.apply(volume(&ctl, 0.25)).unwrap();
         assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2), Heard::Applied(3)]);
@@ -1531,14 +1491,14 @@ plugin = "builtin:reverb"
     #[test]
     fn nobody_is_told_while_nobody_listens_and_a_subscriber_starts_from_the_session_as_it_is() {
         let (_engine, mut ctl) = controller_for(TWO_LANES);
-        ctl.global_bpm = 80.0;
+        ctl.model.bpm = 80.0;
         assert!(!ctl.resync(), "there is nobody to tell");
         assert_eq!(ctl.rev, 0, "and no revision is spent on it");
 
         let mirror = Mirror::join(&mut ctl);
         assert_eq!(mirror.copy().meta.bpm, 80.0);
         assert!(!ctl.resync(), "it has what the session has");
-        ctl.global_bpm = 100.0;
+        ctl.model.bpm = 100.0;
         assert!(ctl.resync());
         assert_eq!(mirror.copy().meta.bpm, 100.0);
     }
@@ -1549,7 +1509,7 @@ plugin = "builtin:reverb"
         let mirror = Mirror::join(&mut ctl);
         // (No popup or file should let one in, but a plugin may report one, and NaN is not
         // equal to itself: a snapshot that holds one differs from every other, itself too.)
-        ctl.global_bpm = f32::NAN;
+        ctl.model.bpm = f32::NAN;
         assert!(ctl.resync(), "it is a change");
         for _ in 0..5 {
             assert!(!ctl.resync(), "and it has been told");
@@ -1563,7 +1523,7 @@ plugin = "builtin:reverb"
         assert_eq!(mirror.heard(), [Heard::Resynced(1), Heard::Resynced(2)]);
         assert!(!ctl.resync());
         // And a number that is one again is a change.
-        ctl.global_bpm = 100.0;
+        ctl.model.bpm = 100.0;
         assert!(ctl.resync());
         assert_eq!(mirror.copy().meta.bpm, 100.0);
         assert!(!ctl.resync());
@@ -1575,7 +1535,7 @@ plugin = "builtin:reverb"
         let (sink, _heard) = recorder();
         let id = ctl.subscribe(sink);
         assert!(ctl.unsubscribe(id));
-        ctl.global_bpm = 70.0;
+        ctl.model.bpm = 70.0;
         assert!(!ctl.resync(), "nobody is left");
 
         let mirror = Mirror::join(&mut ctl);
@@ -1587,7 +1547,7 @@ plugin = "builtin:reverb"
     fn subscribers_share_what_they_have_been_told_so_a_late_one_may_be_told_again() {
         let (_engine, mut ctl) = controller_for(TWO_LANES);
         let early = Mirror::join(&mut ctl);
-        ctl.global_bpm = 90.0; // not told yet
+        ctl.model.bpm = 90.0; // not told yet
         let late = Mirror::join(&mut ctl);
         assert_eq!(late.copy().meta.bpm, 90.0, "it started from the session as it is");
         assert_eq!(early.copy().meta.bpm, 120.0);
@@ -1829,7 +1789,7 @@ plugin = "builtin:reverb"
     fn poll_with_nothing_to_report_tells_nobody_anything() {
         let (_engine, mut ctl) = controller_for(TWO_LANES);
         let mirror = Mirror::join(&mut ctl);
-        ctl.global_bpm = 90.0; // a change nobody has told them of: `poll` is not what finds it
+        ctl.model.bpm = 90.0; // a change nobody has told them of: `poll` is not what finds it
         assert_eq!(ctl.poll(), Polled::default());
         assert!(mirror.heard().is_empty());
     }
@@ -1848,7 +1808,7 @@ plugin = "builtin:reverb"
         let (engine, mut ctl) = controller_for(TWO_LANES);
         // It carries the tempo the session has when the recording ends, and the
         // player's loop setting.
-        ctl.global_bpm = 95.0;
+        ctl.model.bpm = 95.0;
         engine.pattern_tx.send(PatternNotification { looping: false, ..recording(1) }).unwrap();
         assert_eq!(ctl.poll(), CHANGED_MODEL);
 

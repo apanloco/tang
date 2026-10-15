@@ -152,8 +152,11 @@ fn sibling_field(kind: &ModTargetKind) -> Option<(usize, CrossModField)> {
     }
 }
 
+/// The tempo of a session none of whose patterns has been recorded, in beats a minute.
+pub const DEFAULT_BPM: f32 = 120.0;
+
 /// What a front-end edits: the instrument lanes and the submix groups.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SessionModel {
     pub instruments: Vec<InstrumentNode>,
     pub groups: Vec<GroupNode>,
@@ -165,6 +168,22 @@ pub struct SessionModel {
     /// reused, so what is left here of a node that has gone is never read: `graph()` and the save look up the nodes
     /// there are.
     pub ui: BTreeMap<NodeId, NodeUi>,
+    /// The tempo that patterns are recorded at, in beats a minute: that of the first recorded pattern of a session that is loaded
+    /// (`DEFAULT_BPM` if it has none).
+    pub bpm: f32,
+}
+
+impl Default for SessionModel {
+    fn default() -> Self {
+        SessionModel {
+            instruments: Vec::new(),
+            groups: Vec::new(),
+            ids: NodeIds::default(),
+            slots: SlotAllocator::default(),
+            ui: BTreeMap::new(),
+            bpm: DEFAULT_BPM,
+        }
+    }
 }
 
 impl SessionModel {

@@ -2219,7 +2219,7 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Enter => {
             if let Some(val) = parse_number(&edit.input.value) {
                 let bpm = val.clamp(edit.param_min, edit.param_max);
-                s.ctl.global_bpm = bpm;
+                s.ctl.model.bpm = bpm;
                 let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
                 // Update all pattern states
                 for inst_node in &mut s.ctl.model.instruments {
@@ -2610,7 +2610,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         // Start recording: create pattern state if needed
                         if inst_node.pattern.is_none() {
                             inst_node.pattern = Some(PatternState {
-                                bpm: s.ctl.global_bpm,
+                                bpm: s.ctl.model.bpm,
                                 length_beats: 4.0,
                                 looping: true,
                                 base_note: None,
@@ -2621,7 +2621,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             });
                         }
                         // Send BPM and length first
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.ctl.global_bpm });
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.ctl.model.bpm });
                         let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
                             inst,
                             beats: inst_node.pattern.as_ref().unwrap().length_beats,
@@ -2638,7 +2638,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // 'b' — edit BPM.
         KeyCode::Char('b') if s.active_tab == 0 && !s.focus_params => {
             s.bpm_editing = Some(EditState {
-                input: TextInputState::new(&format!("{:.0}", s.ctl.global_bpm)),
+                input: TextInputState::new(&format!("{:.0}", s.ctl.model.bpm)),
                 param_name: "BPM".to_string(),
                 param_min: 20.0,
                 param_max: 300.0,
@@ -3144,7 +3144,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     // The right side of the tab bar: the web interface when there is one, the CLIP
     // light while it is lit, then the BPM. The web label gives way first: it is
     // shortened, or left out, to keep clear of the tabs.
-    let bpm_text = format!("{:.0} BPM", s.ctl.global_bpm);
+    let bpm_text = format!("{:.0} BPM", s.ctl.model.bpm);
     let clip_text = if s.clip.is_lit() { "CLIP  " } else { "" };
     let tabs_width = tab_names.iter().map(|name| name.chars().count()).sum::<usize>() + 3 * (tab_names.len() - 1);
     // (The tabs, a gap of two, the label, two blanks after it, the rest, and a blank at the edge.)

@@ -490,7 +490,7 @@ impl Controller {
                 let place = self.model.insert_lane_at(index, lane);
                 let _ = self.cmd_tx.send(GraphCommand::InsertInstrument { index: place, lane: kept });
                 // (Its pattern player has the tempo that was there when it went: the lanes are all told the one there is now.)
-                let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: self.global_bpm });
+                let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: self.model.bpm });
             }
             Inverse::Group { index, group, members, kept: Kept::InHand(kept) } => {
                 // (The members are lanes, where they were: what was done after the removal was undone first.)

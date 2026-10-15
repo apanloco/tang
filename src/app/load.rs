@@ -13,7 +13,7 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
+    DEFAULT_BPM, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
     ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
 };
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
@@ -601,7 +601,9 @@ pub fn load_session(
         groups[g_idx].modulators = mods;
     }
 
-    Ok(SessionModel { instruments, groups, ids, slots, ui })
+    // The tempo of a session is that of its first recorded pattern.
+    let bpm = instruments.iter().find_map(|lane| lane.pattern.as_ref()).map_or(DEFAULT_BPM, |pattern| pattern.bpm);
+    Ok(SessionModel { instruments, groups, ids, slots, ui, bpm })
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
@@ -2008,6 +2010,29 @@ mod_rate = 7
                 "SetPatternEnabled inst=0 enabled=false",
             ]
         );
+    }
+
+    fn tempo_of(session: &str) -> f32 {
+        load(session).model.bpm
+    }
+
+    #[test]
+    fn the_tempo_starts_at_the_first_recorded_patterns() {
+        let lane = |bpm: &str| {
+            format!(
+                "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = {bpm}\nlength_beats = 4.0\nenabled = true\n"
+            )
+        };
+        let plain = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        // The first lane that has a pattern decides, not the first lane.
+        assert_eq!(tempo_of(&format!("{plain}{}{}", lane("90.0"), lane("140.0"))), 90.0);
+        assert_eq!(tempo_of(&lane("140.0")), 140.0);
+    }
+
+    #[test]
+    fn the_tempo_is_120_without_a_recorded_pattern() {
+        assert_eq!(tempo_of("[[instrument]]\nplugin = \"builtin:osc\"\n"), 120.0);
+        assert_eq!(tempo_of(""), 120.0);
     }
 
     #[test]

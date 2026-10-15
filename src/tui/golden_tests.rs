@@ -1101,7 +1101,7 @@ fn a_tempo_that_is_not_a_number_is_not_taken() {
         let mut h = Harness::new(scene_split());
         h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars(text).press(KeyCode::Enter);
         assert!(h.s.bpm_editing.is_none(), "{text}: the popup closes");
-        assert_eq!(h.s.ctl.global_bpm, 120.0, "{text}");
+        assert_eq!(h.s.ctl.model.bpm, 120.0, "{text}");
         assert_eq!(h.commands(), Vec::<String>::new(), "{text}");
         assert!(!h.s.ctl.dirty, "{text}");
     }
@@ -4305,7 +4305,7 @@ mod with_web {
                 // What the browser set and the TUI changed after it, in the model and so on the screen.
                 let cutoff = h.s.ctl.model.instruments[0].effects[0].params[0].value;
                 assert!(cutoff < 0.9 && cutoff > 0.8, "{cutoff}");
-                assert_eq!(h.s.ctl.global_bpm, 90.0);
+                assert_eq!(h.s.ctl.model.bpm, 90.0);
                 assert_eq!(h.s.ctl.model.instruments.len(), 2, "the lane");
                 assert_eq!(h.s.ctl.rev, 5, "an intent from the browser, two from the TUI (the lane is told with a snapshot after it), and a snapshot for the tempo");
                 let bar = tab_bar(h);

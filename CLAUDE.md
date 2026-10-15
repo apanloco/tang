@@ -1188,7 +1188,9 @@ Every user action (preset load, parameter tweak, plugin add/remove, reorder)
 updates both the session model (for saving) and sends a command to the audio
 thread (for playback). The dirty indicator is driven by this model. The model
 types and the helpers that keep their indices in step with the audio graph live
-in `src/app/model.rs`. The model, the session path, the dirty flag, the tempo,
+in `src/app/model.rs`, and the tempo that patterns are recorded at is the model's
+(`SessionModel::bpm`: the first recorded pattern's, 120 for a session with none). The
+model, the session path, the dirty flag,
 the plugin catalog and the engine handles (command channel, plugin runtime,
 notification receivers, the state shared with the note senders) belong to
 `app::controller::Controller`; the TUI reaches them through `State::ctl`. The

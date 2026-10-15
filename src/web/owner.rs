@@ -489,7 +489,7 @@ mod tests {
         said(&mut queue);
 
         // The tempo, set in the TUI's popup.
-        rig.ctl.global_bpm = 90.0;
+        rig.ctl.model.bpm = 90.0;
         assert!(rig.ctl.resync());
         let told = said(&mut queue);
         assert_eq!(types(&told), ["snapshot"]);

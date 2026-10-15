@@ -241,7 +241,7 @@ impl Controller {
             meta: Meta {
                 dirty: self.dirty,
                 file: self.session_file_name(),
-                bpm: self.global_bpm,
+                bpm: self.model.bpm,
                 sample_rate: self.sample_rate,
                 piano: PianoMeta::new(self.piano_filter.scale(), matches!(self.piano_filter.mode(), PianoMode::Locked)),
             },
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn the_tempo_and_the_piano_are_in_the_snapshot() {
         let mut ctl = controller(GROUPS, None);
-        ctl.global_bpm = 93.5;
+        ctl.model.bpm = 93.5;
         ctl.piano_filter.set_scale(ScaleSetting::parse("F# dorian").unwrap());
         ctl.piano_filter.set_mode(PianoMode::Locked);
         let meta = ctl.snapshot().meta;

@@ -3463,7 +3463,7 @@ depth = 0.6
         assert_eq!(commands, ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveInstrument inst=0 keep"]);
         // The audio thread (by hand) has handed back a lane that has no plugins of its own; undo loads them again: the lane goes in with its instrument and its effect, and
         // the cable of its group after it, and the lanes are told the tempo.
-        ctl.global_bpm = 90.0;
+        ctl.model.bpm = 90.0;
         ctl.undo().unwrap();
         let (commands, _) = engine.drain();
         assert_eq!(commands.len(), 3, "{commands:?}");
