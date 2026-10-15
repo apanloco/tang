@@ -59,6 +59,32 @@ test("a node that shows its scope is as much taller as the layout assumes, with 
   await expectNodesApart(page);
 });
 
+test("a scope that is opened where it cannot be seen moves the canvas to show it, and a scope that is in the view moves nothing", async ({ page }) => {
+  await open(page, "lanes");
+  const pane = page.locator(".tang-patch__canvas");
+  const [first, second] = [node(page, "Oscillator 1"), node(page, "Oscillator 2")];
+  // The scope of the first lane is in the view: the canvas stays where it is (the lane below is moved down for it, on the canvas).
+  const before = await first.boundingBox();
+  await first.getByRole("button", { name: "Scope of Oscillator 1" }).click();
+  await expect(first.getByRole("meter", { name: "Output of Oscillator 1" })).toBeVisible();
+  await still(second);
+  // (The node is taller by the scope, and where it is and how wide it is, which the zoom says, are what they were.)
+  const after = await first.boundingBox();
+  expect([after?.x, after?.y, after?.width]).toEqual([before?.x, before?.y, before?.width]);
+
+  // The second lane is at the foot of the view, and its scope would be under it: the canvas moves, and all of the scope is in the view after.
+  await second.getByRole("button", { name: "Scope of Oscillator 2" }).click();
+  const scope = second.getByRole("meter", { name: "Output of Oscillator 2" });
+  await expect(scope).toBeVisible();
+  await still(second);
+  const [area, shown] = [await pane.boundingBox(), await scope.boundingBox()];
+  if (!area || !shown) throw new Error("not on the page");
+  expect(shown.y, "the scope is not above the view").toBeGreaterThanOrEqual(area.y);
+  expect(shown.y + shown.height, "nor below it").toBeLessThanOrEqual(area.y + area.height);
+  expect(shown.x).toBeGreaterThanOrEqual(area.x);
+  expect(shown.x + shown.width).toBeLessThanOrEqual(area.x + area.width);
+});
+
 /** The loudest sample that a scope has on its screen: the value of its meter (nothing is silence). */
 const peakOf = async (scope: Locator): Promise<number> => Number(await scope.getAttribute("aria-valuenow"));
 
@@ -73,15 +99,9 @@ async function openProgram(page: Page, url: string): Promise<void> {
 test("the scope of an instrument is of what it puts out and the scope of an effect is of what comes out of that effect: with the filter shut the one is loud, and the filter's and the master's are nearly silent", async ({ page, own }) => {
   await openProgram(page, own.url);
   const [lane, filter] = [node(page, "Oscillator"), node(page, "Filter")];
-  await lane.getByRole("button", { name: "Scope of Oscillator" }).click();
-  await filter.getByRole("button", { name: "Scope of Filter" }).click();
-  const [laneScope, filterScope, masterScope] = [lane.getByRole("meter", { name: "Output of Oscillator" }), filter.getByRole("meter", { name: "Output of Filter" }), page.getByRole("meter", { name: "Output scope" })];
-  await expect(laneScope).toBeVisible();
-  await expect(filterScope).toBeVisible();
-  await expect.poll(async () => [await peakOf(laneScope), await peakOf(filterScope)], { message: "silence to begin with" }).toEqual([0, 0]);
-
-  // The tracer is quiet on purpose (the lane's volume is a tenth): it is put back to 1. The LFO is taken out, which gives the cutoff the value that was set, and that is turned down all the
-  // way: a low pass at 20 Hz leaves very little of a note a hundred and thirty hertz up.
+  // The sound first, while every node is in the view (a scope that is opened moves the canvas to show its node, and the LFO is out of the view then). The tracer is quiet on purpose
+  // (the lane's volume is a tenth): it is put back to 1. The LFO is taken out, which gives the cutoff the value that was set, and that is turned down all the way: a low pass at 20 Hz
+  // leaves very little of a note a hundred and thirty hertz up.
   await lane.getByRole("slider", { name: "Volume", exact: true }).dblclick();
   await page.getByRole("button", { name: "Remove LFO" }).click();
   await expect(page.getByRole("button", { name: "Remove LFO" })).toHaveCount(0);
@@ -91,6 +111,13 @@ test("the scope of an instrument is of what it puts out and the scope of an effe
   await cutoff.focus();
   await page.keyboard.press("Home");
   await expect.poll(async () => Number(await cutoff.getAttribute("aria-valuenow")), { message: "the filter is shut" }).toBe(0);
+
+  await lane.getByRole("button", { name: "Scope of Oscillator" }).click();
+  await filter.getByRole("button", { name: "Scope of Filter" }).click();
+  const [laneScope, filterScope, masterScope] = [lane.getByRole("meter", { name: "Output of Oscillator" }), filter.getByRole("meter", { name: "Output of Filter" }), page.getByRole("meter", { name: "Output scope" })];
+  await expect(laneScope).toBeVisible();
+  await expect(filterScope).toBeVisible();
+  await expect.poll(async () => [await peakOf(laneScope), await peakOf(filterScope)], { message: "silence to begin with" }).toEqual([0, 0]);
 
   await page.keyboard.down("z");
   await expect

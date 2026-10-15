@@ -30,13 +30,13 @@ export const MARGIN = 32;
 
 /**
  * Where node `id` is on the canvas, as the layout has it: its place, as wide as every node is and as tall as the layout
- * allows for it (the components' styles keep to that). Null for a node that is not there.
+ * allows for it, with the scope it shows and the rows of the cables it lists (the components' styles keep to that). Null for a node that is not there.
  */
 export function rectOf(graph: Graph, flow: Flow, id: NodeId): Rect | null {
   const placed = flow.nodes.find((node) => node.id === String(id));
   const node = graph.nodes.find((n) => n.id === id);
   if (!placed || !node) return null;
-  return { x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height: nodeHeight(node, placed.data.knobs.length) };
+  return { x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height: nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope) };
 }
 
 /**

@@ -135,10 +135,13 @@ export function PatchView() {
   const graph = useClientSelection((state) => state.snapshot?.graph ?? null, sameGraphStructure);
   // The nodes that show a scope of what comes out of them: the viewer's own, which the layout makes room for (a node that cannot show one is not drawn with it, and one that is not there is nothing).
   const [shown, setShown] = useState<ReadonlySet<NodeId>>(() => new Set());
+  // The node whose scope has just been opened: the canvas moves to show it once the layout has made room for the scope, if the scope is out of the view.
+  const opened = useRef<NodeId | null>(null);
   const scopes = useMemo<Scopes>(
     () => ({
       open: shown,
       toggle: (node) => {
+        if (!shown.has(node)) opened.current = node;
         setShown((now) => {
           const next = new Set(now);
           if (!next.delete(node)) next.add(node);
@@ -149,6 +152,14 @@ export function PatchView() {
     [shown],
   );
   const { flow, arranging, arrangeAgain } = useLayout(graph, shown);
+  const reveals = useReveals();
+  // (After the commit that has the node as tall as it is with its scope: the canvas's own effects, which keep the layout it moves by, run before this one, which is the parent's.)
+  useEffect(() => {
+    const node = opened.current;
+    if (node === null) return;
+    opened.current = null;
+    reveals.show(node);
+  }, [flow, reveals]);
   // How many times the nodes have been asked to be arranged again, for the canvas to be moved to show them.
   const [arrangements, setArrangements] = useState(0);
   const editor = useEditor();

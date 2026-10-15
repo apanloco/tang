@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
-import { nodeHeight, NODE_WIDTH, toFlow } from "./toFlow";
+import { nodeHeight, NODE_SCOPE_HEIGHT, NODE_WIDTH, toFlow } from "./toFlow";
 import { MARGIN, rectOf, viewToShow } from "./view";
 
 const SIZE = { width: 1000, height: 700 };
@@ -89,8 +89,21 @@ describe("where a node is on the canvas", () => {
     for (const node of graph.nodes) {
       const placed = flow.nodes.find((n) => n.id === String(node.id));
       const pinned = placed?.data.knobs.length ?? 0;
-      expect(rectOf(graph, flow, node.id), node.name).toEqual({ x: placed?.position.x, y: placed?.position.y, width: NODE_WIDTH, height: nodeHeight(node, pinned) });
+      expect(rectOf(graph, flow, node.id), node.name).toEqual({ x: placed?.position.x, y: placed?.position.y, width: NODE_WIDTH, height: nodeHeight(node, pinned, placed?.data.cables.length ?? 0, placed?.data.scope ?? false) });
     }
+  });
+
+  test("is as tall as the layout makes the node with the scope that it shows, and with the rows of the cables that a modulator lists", () => {
+    const graph = tracerSnapshot.graph;
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    const lfo = nodeNamed(tracerSnapshot, "LFO");
+    const closed = rectOf(graph, toFlow(graph), oscillator.id);
+    const open = rectOf(graph, toFlow(graph, undefined, new Set([oscillator.id])), oscillator.id);
+    expect((open?.height ?? 0) - (closed?.height ?? 0)).toBe(NODE_SCOPE_HEIGHT);
+    expect(open?.y).toBe(closed?.y);
+    // (The tracer's LFO drives one parameter, so that it lists a row.)
+    expect(rectOf(graph, toFlow(graph), lfo.id)?.height).toBe(nodeHeight(lfo, 0, 1));
+    expect(nodeHeight(lfo, 0, 1)).toBeGreaterThan(nodeHeight(lfo, 0, 0));
   });
 
   test("is the tracer's oscillator at the left of the strip it is in", () => {

@@ -2,7 +2,7 @@
 // The canvas moves to a node the page has added, when the node is not all in the view. (What
 // the canvas knows of itself, its size and where it is looking, is made up here: in jsdom
 // nothing has a size.)
-import { act, cleanup, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { tracerSnapshot } from "../../client/fixtures";
@@ -11,7 +11,7 @@ import { useReveals } from "../ClientProvider";
 import { rig } from "../testing";
 import { PatchView } from "./PatchView";
 import { toFlow } from "./toFlow";
-import { rectOf, viewToShow } from "./view";
+import { MARGIN, rectOf, viewToShow } from "./view";
 import type { View } from "./view";
 
 // What the canvas says of itself: set by each test. (Made before the imports, which is when the mock below is made.)
@@ -247,5 +247,105 @@ describe("showing a node the page added", () => {
     });
     expect(canvas.setViewport).not.toHaveBeenCalled();
     expect(tracerSnapshot.graph.nodes.length).toBe(4);
+  });
+});
+
+describe("showing a node whose scope is opened", () => {
+  // The oscillator, with a canvas that is just tall enough to show all of it as it is: the scope below its controls is out of the view.
+  const oscillator = 0;
+  async function openOscillator() {
+    const made = await open();
+    const closed = made.rectFor(oscillator);
+    if (!closed) throw new Error("no rectangle");
+    canvas.view = { x: MARGIN * 2, y: 0, zoom: 1 };
+    canvas.state = { width: 1000, height: closed.y + closed.height + MARGIN + 20, minZoom: 0.2 };
+    const graph = made.client.state.snapshot?.graph;
+    if (!graph) throw new Error("no session");
+    const withScope = rectOf(graph, toFlow(graph, undefined, new Set([oscillator])), oscillator);
+    if (!withScope) throw new Error("no rectangle");
+    return { ...made, closed, withScope };
+  }
+
+  test("moves the canvas to it when the scope is not all in the view: the node with its scope in the middle, at the zoom the person has", async () => {
+    const { closed, withScope } = await openOscillator();
+    // (Nothing is out of the view without the scope, which is what this is about.)
+    expect(viewToShow(closed, canvas.view, { width: 1000, height: canvas.state.height }, 0.2)).toBeNull();
+    const wanted = viewToShow(withScope, canvas.view, { width: 1000, height: canvas.state.height }, 0.2);
+    expect(wanted).not.toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Scope of Oscillator" }));
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+    });
+    expect(canvas.setViewport).toHaveBeenCalledWith(wanted, { duration: 250 });
+  });
+
+  test("does not move it when all of the node with its scope is in the view", async () => {
+    await openOscillator();
+    canvas.state = { width: 1000, height: 5000, minZoom: 0.2 };
+    fireEvent.click(await screen.findByRole("button", { name: "Scope of Oscillator" }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(canvas.setViewport).not.toHaveBeenCalled();
+  });
+
+  test("does not move it when the scope is taken away, though the node is out of the view then too: only a scope that is opened is shown", async () => {
+    const { closed } = await openOscillator();
+    // (A screen that has none of the node: it is out of the view with its scope and without.)
+    canvas.state = { width: 1000, height: closed.y / 2, minZoom: 0.2 };
+    const button = await screen.findByRole("button", { name: "Scope of Oscillator" });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+    });
+    // (The canvas is judged by where it is going until it has had its time to get there.)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    fireEvent.click(button);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not move it again when the layout changes after: a scope is shown once, when it is opened", async () => {
+    const { server } = await openOscillator();
+    fireEvent.click(await screen.findByRole("button", { name: "Scope of Oscillator" }));
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    const nodes = server.snapshot.graph.nodes.length;
+    act(() => {
+      server.apply({ type: "addModulator", parent: 0, kind: "lfo" });
+    });
+    await waitFor(() => {
+      expect(server.snapshot.graph.nodes.length).toBe(nodes + 1);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+  });
+
+  test("moves again for a scope that is opened again: each opening is a request of the person's", async () => {
+    await openOscillator();
+    const button = await screen.findByRole("button", { name: "Scope of Oscillator" });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(button);
+    // (The canvas is where it was put, and the node's scope is out of the view there again, since the canvas is as it was.)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(canvas.setViewport).toHaveBeenCalledTimes(2);
+    });
   });
 });
