@@ -2396,6 +2396,59 @@ describe("the value of a setting that two cables drive", () => {
   });
 });
 
+describe("the value of a parameter that several cables drive", () => {
+  const cutoffOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 0 }, "effective");
+  const resonanceOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 1 }, "effective");
+  /** The group that the oscillator's lane is put in, with an LFO of the group's own (a sine at its default rate) that has a cable to the cutoff and to the resonance. */
+  async function groupWithAnLfo(client: Client): Promise<void> {
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addGroup", members: [oscillator.id] });
+    const group = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.kind === "group");
+    await client.request({ type: "addModulator", parent: group?.id ?? -1, kind: "lfo" });
+    const groupLfo = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.kind === "modulator" && n.parent === group?.id);
+    for (const index of [0, 1]) await client.request({ type: "addModEdge", modulator: groupLfo?.id ?? -1, to: { node: filter.id, port: { type: "param", index } } });
+  }
+
+  test("is the user's value and what each cable makes of it, added, as the engine adds them: an envelope after an LFO takes its share of the value the user set, not of the LFO's swing", async () => {
+    // The tracer's LFO (0.5 Hz, depth 0.4) is at its top at 0.5 s and puts the cutoff, which the user set to 0.5, 0.4 up. An envelope at rest and at the default depth, 0.5, drawn
+    // after it takes half of the way from the user's value to the lowest: 0.25 off, whatever the LFO has done.
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.5 });
+    const client = await open(server, { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    const envelope = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.name === "ADSR");
+    await client.request({ type: "addModEdge", modulator: envelope?.id ?? -1, to: { node: filter.id, port: { type: "param", index: 0 } } });
+    await until(() => Math.abs((cutoffOf(client) ?? 0) - (0.5 + 0.4 - 0.25)) < 1e-5, "the cutoff with both");
+    // With a note held the envelope is at its sustain, 0.7, and takes 0.3 of the 0.5: 0.075.
+    client.noteOn(60);
+    await until(() => Math.abs((cutoffOf(client) ?? 0) - (0.5 + 0.4 - 0.075)) < 1e-5, "the cutoff with both, the envelope open");
+  });
+
+  test("is stopped at the ends of the parameter's range, as the engine clamps the sum", async () => {
+    // The LFO is at its top and puts the cutoff 0.4 up: from 0.9 that is 1.3, and the cutoff runs 0 to 1.
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.5 });
+    const client = await open(server, { telemetry: ["modulation"] });
+    await client.request(cutoff(0.9));
+    await until(() => cutoffOf(client) === 1, "the cutoff at the top of its range");
+  });
+
+  test("is what the lane's own modulators make of it alone where they drive it too: the group's offset is not added, as the engine does it", async () => {
+    // A quarter of a period of the group's LFO (1 Hz, at its top) is 0.25 s, when the lane's LFO (0.5 Hz) is at sin(pi/4) of the way: the group's LFO would add 0.5 to the cutoff.
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.25 / MODULATOR_FIELD_DEFAULTS.rate });
+    const client = await open(server, { telemetry: ["modulation"] });
+    await groupWithAnLfo(client);
+    await until(() => Math.abs((cutoffOf(client) ?? 9) - (0.5 + 0.4 * Math.sin(Math.PI / 4))) < 1e-5, "the cutoff the lane's LFO makes of it");
+  });
+
+  test("is what the group's modulators make of it where no modulator of the lane drives it", async () => {
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.25 / MODULATOR_FIELD_DEFAULTS.rate });
+    const client = await open(server, { telemetry: ["modulation"] });
+    await groupWithAnLfo(client);
+    // The group's LFO is at its top and adds its depth, 0.5, of the range of the resonance (0.5 to 10) to the 2 the user set.
+    await until(() => Math.abs((resonanceOf(client) ?? 0) - (2 + 0.5 * (10 - 0.5))) < 1e-5, "the resonance the group's LFO makes of it");
+  });
+});
+
 /** A transport to a mock server whose words to the client can be held back, and let through all at once. */
 function gated(server: MockServer): { transport: TransportFactory; hold: () => void; release: () => void } {
   let holding = false;

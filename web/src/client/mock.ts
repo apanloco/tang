@@ -1259,23 +1259,30 @@ export class MockServer {
     return clamp(value, min, max);
   }
 
-  /** The value a parameter is set to: what the user set, plus what the modulators aimed at it add. */
+  /**
+   * The value a parameter is set to: what the user set, and the offsets that the cables aimed at it make of it, each from the value the user set (an LFO or a control swings it around
+   * that value, an envelope's peak is that value) and added, as the engine does (`apply_modulators_to_chain`), and clamped. Where the lane's own modulators drive it too theirs are all that count:
+   * the group's are written first and the lane's over them, from the same value (`apply_group_mod_writes`, then the lane's modulators).
+   */
   #effective(entry: LayoutEntry, outputOf: (id: NodeId) => number): number {
-    const node = this.#snapshot.graph.nodes.find((n) => n.id === entry.node);
+    const { nodes, edges } = this.#snapshot.graph;
+    const node = nodes.find((n) => n.id === entry.node);
     if (entry.port.type !== "param") return this.#settingEffective(entry, outputOf);
     const index = entry.port.index;
     const param = node ? pluginOf(node)?.params.find((p) => p.index === index) : undefined;
     if (!param) return 0;
-    let value = param.value;
-    for (const edge of this.#snapshot.graph.edges) {
-      if (edge.kind !== "modulation" || edge.to.node !== entry.node || edge.to.port.type !== "param" || edge.to.port.index !== index) continue;
+    const drivers = edges
+      .filter(isModulation)
+      .filter((edge) => edge.to.node === entry.node && edge.to.port.type === "param" && edge.to.port.index === index)
+      .map((edge) => ({ edge, source: nodes.find((n) => n.id === edge.from.node) }));
+    const lanes = drivers.filter(({ source }) => source !== undefined && ownerOf(nodes, source) === "lane");
+    let offset = 0;
+    for (const { edge, source } of lanes.length > 0 ? lanes : drivers) {
       const output = outputOf(edge.from.node);
-      const source = this.#snapshot.graph.nodes.find((n) => n.id === edge.from.node);
       const isEnvelope = source?.kind === "modulator" && source.source.type === "envelope";
-      // An LFO or a control moves the value around where the user set it; an envelope's peak is that value.
-      value = isEnvelope ? value - edge.amount * (1 - output) * (value - param.min) : value + output * edge.amount * (param.max - param.min);
+      offset += isEnvelope ? -(1 - output) * edge.amount * (param.value - param.min) : output * edge.amount * (param.max - param.min);
     }
-    return clamp(value, param.min, param.max);
+    return clamp(param.value + offset, param.min, param.max);
   }
 }
 
