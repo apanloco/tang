@@ -919,11 +919,20 @@ Opened by `R` on a group header (range doesn't apply to groups). Titled
 Opened by `Ctrl+Shift+S`. Titled "Save As" and prefilled with the current
 session's filename.
 
-- Text input for a filename. `.toml` is appended if missing. The file is saved
-  in the current session's directory (cwd if there is no current session).
+- Text input for a filename, which goes through the intent `SaveAs { name }` (the
+  one the browser's "Save as…" asks too), so the name is checked by
+  `session::plain_file_name`: the spaces round it go, `.toml` is appended if
+  missing, and it has to be a plain file name: no `/` or `\`, none of `:*?"<>|`
+  or a control character, something before the extension, not a name that
+  Windows keeps for itself (`con`, `nul`, `com1`…), at most 255 bytes. The file is
+  saved in the current session's directory (cwd if there is no current
+  session). A file that is there already is not written over (a link that leads
+  nowhere counts as there), unless it is the session's own file: Save As to the
+  name the session has is a save.
 - `Enter` — save and close; `session_path` is updated so subsequent `Ctrl+S`
-  targets the new file. On failure (or an empty field) the popup stays open —
-  the error is shown in the popup and `session_path` keeps its old value.
+  targets the new file, and the browsers are told (`Saved { file }`). On failure
+  (or an empty field) the popup stays open — the reason is shown in the popup
+  and `session_path` keeps its old value.
 - `Escape` — cancel and close popup
 
 Distinguishing `Ctrl+Shift+S` from `Ctrl+S` requires the kitty keyboard
@@ -1049,7 +1058,7 @@ notification receivers, the state shared with the note senders) belong to
 `app::controller::Controller`; the TUI reaches them through `State::ctl`. The
 controller folds what the audio thread reports (a finished pattern recording, a
 captured MIDI-learn control) into the model, and `poll` tells the TUI what
-changed. It also saves the session (`Controller::save`, `save_as`).
+changed. It also saves the session (`Controller::save`; Save As is the intent `SaveAs`).
 
 Every node of the model (an instrument lane, an effect, a group, a bus effect, a
 modulator) has a `NodeId`: allocated by the model, never reused during a run
@@ -1082,7 +1091,13 @@ use for it, the session file keeps it, see "Node positions (`ui`)"), `RenameGrou
 without the spaces round it, at most `MAX_NAME` (64) characters and none of them a control character, and nothing gives the group back the
 name it has by default, "Group" and its number; refused, with nothing changed, for a node that is no group and for a name that is not one;
 told as `GroupRenamed`, which carries the name the group has now; the engine has no use for it, the session file keeps it, and the TUI's `R`
-on a group header asks it); `Save` (the session's own file), `Undo` and `Redo` (the history, below); and eleven that change
+on a group header asks it); `Save` (the session's own file); `SaveAs { name }` (the session written as the file that
+`session::plain_file_name` makes of `name`, beside its own file, which is its file from then on: the spaces round the name go, `.toml` is added
+unless it ends so, and it is a plain file name, no `/` or `\`, none of `:*?"<>|` or a control character, something before the extension, not a name
+Windows keeps and at most 255 bytes; refused, with nothing written and nothing changed, for a name that is not one and for a file that is there
+already, a link that leads nowhere included, unless it is the session's own (that is a save), as `IntentError::Invalid`, and a write that fails is
+`Io`; told as `Saved { file }` with the new name; no step of the history; the check for a file that is there is a look just before the write, not a
+lock; the TUI's `Ctrl+Shift+S` asks it too, and so does the page's "Save as…"), `Undo` and `Redo` (the history, below); and eleven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1633,7 +1648,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `Modulate`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
   `SetNodeUi`, `SetPinned`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
-  or a group), `Save`, `Undo` and `Redo` (see "Session state"). Effects are
+  or a group), `Save`, `SaveAs`, `Undo` and `Redo` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
   them), which the intent `AddEffect` wraps (browsers choose from the catalog the server
@@ -1793,7 +1808,13 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   shown the node it made), and goes in the rack that reaches the control (the lane's for a lane's plugin, the group's for a bus effect, the modulator's own for its rate, a stage or the depth of its cables, where it is a
   sibling that drives it); one that is there gets a cable (`Editor.addCable`, the intent `AddModEdge`). What could drive a control is `driversOf` (`client/reach.ts`: `drivablesOf` read from the other side, tested against it
   over two fixtures), and the menu looks it up when it is opened (`MenuButton`'s `onOpen`), not when anything changes: there is a button on every knob. A control that is chosen from a list (a waveform, a parameter whose
-  values have names) has no button, as the TUI's `m` leaves such a row out (a cable can still be dragged to its port). What the controller
+  values have names) has no button, as the TUI's `m` leaves such a row out (a cable can still be dragged to its port). Step 38 let the page save the session
+  under another name: a "Save as…" button after Save in the bar (`app/SaveAs.tsx`) opens a field in its place with the name of the file the session has,
+  selected; Enter or OK asks `Editor.saveAs` (the intent `SaveAs`) for the name as it was typed, and the server says what a name may be and where the
+  file goes (`session::plain_file_name`: the page has no rule of its own; the mock engine has it written out, `client/filenames.ts`, pinned to the
+  controller's name by name by `fixtures/filenames.json`, 67 names); a refusal is said among the notices (the name in quotes, cut after 24 characters) and the field stays, Escape and Cancel leave, and
+  `Control+Shift+S` and `Command+Shift+S` open it (Control+S is still the save). The bar takes a second row in a window too narrow for all of it (`flex-wrap`).
+  What the controller
   clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
@@ -1851,7 +1872,9 @@ parity) has begun, §11: the controller takes effects and modulators out of the 
 page saves the session (18), puts effects (19) and instruments (20) in the chains, loads presets (21), reaches every
 parameter of a plugin (22), sets a lane's keys (23), has the piano (24), moves the nodes of the canvas, keeping where
 they are in the session (25), draws cables between modulators (26), shows what a modulator puts out (27), moves
-effects along their chains (28), draws the shape of an envelope (29) and lets a person choose the knobs of a node (30).
+effects along their chains (28), draws the shape of an envelope (29) and lets a person choose the knobs of a node (30);
+steps 31 to 38 followed (groups from the page (31), undo in four steps (32 to 35), cables to the depth of a cable (36), a modulator made for a
+knob from the knob (37) and Save as (38): see "Frontend" above and `docs/web-ui.md` §12).
 TODO: move a node with the keyboard (React Flow's own needs a node to be selected, which the canvas keeps them from being),
 and snapping to a grid.
 TODO: make the Type row (LFO to envelope) an intent: until then a browser is given a snapshot
