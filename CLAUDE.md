@@ -1631,13 +1631,14 @@ How Tang handles common plugin I/O mismatches:
 
 - **Channel count validation**: the chains are stereo (`plugin::chain::CHAIN_CHANNELS`,
   2), and an effect must have as many audio outputs. The audio thread turns away
-  one that has not (it logs why and hands the plugin back), and
-  `Controller::add_effect` / `add_bus_effect` refuse it first, so the model never lists
-  an effect the engine does not have. The instrument may have more outputs (the first
-  two are used, the rest discarded).
-
-  TODO: a session file that names an effect with other outputs still loads, and its
-  model keeps the effect that the audio thread dropped; refuse such a session at load.
+  one that has not (it logs why and hands the plugin back), and one rule
+  (`app::controller::outputs_fit_the_chain`) refuses it first: in
+  `Controller::add_effect` / `add_bus_effect`, in undo (a plugin that is loaded
+  again) and in the loader, so the model never lists an effect the engine does not
+  have. A session file that names one is refused when it is loaded, with its place in
+  the file and the plugin's own name (`instrument[0].effect[1]: Foo has 1 audio
+  output, and an effect here needs 2`; `group[0].effect[0]: …` for a group's bus).
+  The instrument may have more outputs (the first two are used, the rest discarded).
 
 ## TUI framework
 

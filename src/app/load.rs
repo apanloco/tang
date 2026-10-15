@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crossbeam_channel::Sender;
 
+use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
     GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
     ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph,
@@ -228,6 +229,8 @@ pub fn load_session(
         for (fx_idx, effect_config) in group_config.effects.iter().enumerate() {
             let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
             let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
+            outputs_fit_the_chain(effect.name(), effect.audio_output_count())
+                .map_err(|refusal| anyhow::anyhow!("group[{g_idx}].effect[{fx_idx}]: {refusal}"))?;
             if let Some(ref preset_name) = effect_config.preset {
                 session::apply_preset(&mut effect, preset_name);
             }
@@ -408,6 +411,9 @@ pub fn load_session(
             let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
             loaded_slots += 1;
             progress(Progress::Loaded { done: loaded_slots });
+            // (The audio thread turns away an effect that has other outputs than the chain has channels, and the model would keep it: the session is refused.)
+            outputs_fit_the_chain(effect.name(), effect.audio_output_count())
+                .map_err(|refusal| anyhow::anyhow!("instrument[{inst_idx}].effect[{fx_idx}]: {refusal}"))?;
             log::info!(
                 "Loaded effect for inst={} fx={}: {}",
                 inst_idx,
@@ -1963,6 +1969,35 @@ slot = 4
     fn an_unknown_plugin_fails_the_load() {
         let err = try_load("[[instrument]]\nplugin = \"builtin:nope\"\n").expect_err("should fail");
         assert!(format!("{err:#}").contains("Unknown built-in plugin"), "{err:#}");
+    }
+
+    #[test]
+    fn an_effect_with_other_outputs_than_the_chain_has_fails_the_load_and_the_error_says_where_it_is_and_why() {
+        // (The audio thread turns such an effect away, so a model that kept it would show an effect that is not there, and the parameters of the effects after it
+        // would be told to places the engine has not, or to another effect: f68.)
+        let err = try_load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n[[instrument.effect]]\nplugin = \"builtin:mono-effect\"\n",
+        )
+        .expect_err("a chain of two channels has no place for it");
+        assert_eq!(format!("{err:#}"), "instrument[0].effect[1]: MonoEffect has 1 audio output, and an effect here needs 2");
+
+        // The place is the place in the file: the second lane's first effect.
+        let err = try_load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:mono-effect\"\n",
+        )
+        .expect_err("the same in another lane");
+        assert_eq!(format!("{err:#}"), "instrument[1].effect[0]: MonoEffect has 1 audio output, and an effect here needs 2");
+    }
+
+    #[test]
+    fn a_bus_effect_with_other_outputs_than_the_chain_has_fails_the_load_the_same_way() {
+        let err = try_load(
+            "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n[[group]]\n[[group.effect]]\nplugin = \"builtin:filter\"\n[[group.effect]]\nplugin = \"builtin:reverb\"\n\
+             [[group.effect]]\nplugin = \"builtin:mono-effect\"\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 1\n",
+        )
+        .expect_err("a group's bus is stereo too");
+        // (The second group's third effect: the place of the group and the place of the effect are told apart.)
+        assert_eq!(format!("{err:#}"), "group[1].effect[2]: MonoEffect has 1 audio output, and an effect here needs 2");
     }
 
     #[test]

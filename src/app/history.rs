@@ -3448,6 +3448,22 @@ depth = 0.6
     }
 
     #[test]
+    fn a_lane_whose_effect_is_loaded_again_with_other_outputs_than_the_chain_has_refuses_the_undo_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        // (What the model says the second lane's filter was loaded from is a plugin that loads as an effect with one audio output.)
+        ctl.model.instruments[1].effects[1].id = "builtin:mono-effect".to_string();
+        let second = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: second }).unwrap();
+        // The audio thread (by hand) hands back a lane that has no plugins of its own, so undo loads them again.
+        engine.drain();
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid("Filter has 1 audio output, and an effect here needs 2".to_string()));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step is gone, the one before it is next");
+    }
+
+    #[test]
     fn a_lane_whose_node_is_there_already_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
         let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
         ctl.apply(Intent::SetLocked { locked: true }).unwrap();
@@ -3776,6 +3792,22 @@ plugin = "builtin:osc"
             assert_eq!(picture(&ctl), before);
             assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step is gone, the one before it is next");
         }
+    }
+
+    #[test]
+    fn a_group_whose_bus_effect_is_loaded_again_with_other_outputs_than_the_chain_has_refuses_the_undo_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        let (engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        // (What the model says the filter on the first group's bus was loaded from is a plugin that loads as an effect with one audio output.)
+        ctl.model.groups[0].effects[1].id = "builtin:mono-effect".to_string();
+        let group = node(&ctl, NodePath::Group(0));
+        ctl.apply(Intent::RemoveNode { node: group }).unwrap();
+        // The audio thread (by hand) hands back a group that has no plugins of its own, so undo loads them again.
+        engine.drain();
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid("Filter has 1 audio output, and an effect here needs 2".to_string()));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step is gone, the one before it is next");
     }
 
     #[test]

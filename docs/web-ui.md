@@ -2244,7 +2244,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     (`default_effect_mix`: a filter fully wet, the rest half). The chains are stereo, a constant now
     (`plugin::chain::CHAIN_CHANNELS`), and an effect with other outputs is refused before the audio thread
     is asked: the audio thread turns it away (it logs why and hands the plugin back) and the TUI's model
-    kept the effect all the same, which is f68 (below) for what is left of it. Why a plugin did not load
+    kept the effect all the same, which the loader now refuses too (f68, fixed: below). Why a plugin did not load
     goes to the log, not to the client: what a loader says can name where a plugin is on this machine. A
     refusal changes nothing, not even the ids (the node is made last), and the TUI leaves the session
     unmarked.
@@ -2320,9 +2320,16 @@ Each step is a reviewable change; the TUI must not regress at any point.
     from the menu, saved, taken out by its button and saved again. 25 mutations (19 in the page and the mock, 6 in
     the intent), all caught (one was equivalent, an error that could not be reached after the node had been found,
     and the code was removed).
-  - **f68 (open).** A session file that names an effect with other outputs than the chain has loads, and
-    its model keeps the effect that the audio thread dropped (the loader sends the command and pushes the
-    slot without looking). CLAUDE.md has the TODO: the loader should refuse such a session.
+  - **f68 (fixed).** A session file that named an effect with other outputs than the chain has loaded, and
+    its model kept the effect that the audio thread dropped (the loader sent the command and pushed the
+    slot without looking), and the parameters of the effects after it were told to places the engine has not,
+    or to another effect (`SetParameter` addresses an effect by its place in the chain, and the chain was
+    shorter by one). The loader refuses such a session now, in the words of the place in the file and of the
+    plugin (`instrument[0].effect[1]: MonoEffect has 1 audio output, and an effect here needs 2`, and
+    `group[0].effect[0]: …` for a bus), by the one rule that the selector and undo have (`outputs_fit_the_chain`,
+    which was written twice, with two wordings, before: the refactoring is its own commit). A built-in that
+    exists in the tests only, `builtin:mono-effect`, is the effect with one output that the loader's tests load, and
+    with it two places in undo that nothing reached (a lane's or a group's plugins loaded again and looked at) have tests.
   - **Found on the way (f67), fixed first, in its own commit.** The browser test that saves failed
     once `tang serve` scanned the machine's plugins: the file it read had not changed, though the
     program said it had saved. A plugin (a ROLI one, here) changes the working directory of the whole

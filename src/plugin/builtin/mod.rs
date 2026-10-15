@@ -27,6 +27,9 @@ pub fn load(
         "square" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Square))),
         "reverb" => Ok(Box::new(Reverb::new(sample_rate))),
         "filter" => Ok(Box::new(Filter::new(sample_rate))),
+        // Only in the tests: an effect with one audio output, which the chains (stereo) have no place for.
+        #[cfg(test)]
+        "mono-effect" => Ok(Box::new(crate::app::testutil::MonoEffect)),
         _ => anyhow::bail!(
             "Unknown built-in plugin: {name:?}\n\
              Available built-ins: osc, reverb, filter\n\
