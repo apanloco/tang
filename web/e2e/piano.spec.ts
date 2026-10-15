@@ -101,7 +101,7 @@ test("the piano is under the patch: a key played with the pointer lights and sou
   await page.keyboard.up("2");
 
   // What is saved has the scale and the lock, as the TUI writes them.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved).toContain("[piano]");

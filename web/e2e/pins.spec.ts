@@ -89,7 +89,7 @@ own("what is pinned to a node is the program's: a second page and a page that is
   await expect(node(page, "Reverb").getByRole("slider", { name: "lowcut" })).toBeVisible();
 
   // The saved file has the pinned parameters of the reverb by name, in the order they were pinned, and nowhere else.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(tang.file, "utf8");
   expect(saved.match(/^pinned = /gm), saved).toHaveLength(1);
@@ -104,7 +104,7 @@ own("what is pinned to a node is the program's: a second page and a page that is
   await giveBack(otherPanel).click();
   await expect(node(page, "Reverb").getByRole("slider", { name: "width" })).toBeVisible();
   await expect(node(page, "Reverb").getByRole("slider", { name: "lowcut" })).toHaveCount(0);
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(readFileSync(tang.file, "utf8")).not.toContain("pinned");
   await other.close();

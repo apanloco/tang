@@ -67,7 +67,7 @@ test("an instrument is put in a lane from its menu, another is added in a lane o
   await page.keyboard.up("z");
 
   // What is saved has both lanes, and the first has none of the saw it had.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved.match(/\[\[instrument\]\]/g)).toHaveLength(2);

@@ -46,7 +46,7 @@ test("an effect is moved before another from its button, the program has the new
   await expect(page.getByText("Unsaved changes")).toBeVisible();
 
   // What is saved has the reverb before the filter, and the LFO's cable on the filter's new slot, the second of the lane.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved.indexOf('plugin = "builtin:reverb"')).toBeGreaterThan(-1);

@@ -104,7 +104,7 @@ own("what is done to groups is the program's: a second page sees it, and the sav
   await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 2");
 
   // The saved file has both groups, the first by its name and the second with none (it is called by its place), and the lane in the second.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(tang.file, "utf8");
   expect(saved.match(/^\[\[group\]\]/gm), saved).toHaveLength(2);
@@ -117,7 +117,7 @@ own("what is done to groups is the program's: a second page sees it, and the sav
   await expect(node(page, "Pad")).toHaveCount(0);
   await expect(node(page, "Group 1")).toBeVisible();
   await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 1");
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const after = readFileSync(tang.file, "utf8");
   expect(after.match(/^\[\[group\]\]/gm), after).toHaveLength(1);

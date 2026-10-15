@@ -57,12 +57,12 @@ test("a knob turned in one go is put back by one Undo, by the button and by the 
   await expect(redo).toBeDisabled();
 
   // What is saved is what is done: the setting is in the file; put back, it is not the value it was.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(Number(/^detune\s*=\s*(\S+)$/m.exec(readFileSync(own.file, "utf8"))?.[1])).toBeCloseTo(Number(turned), 5);
   await undo.click();
   await expect(detune).toHaveAttribute("aria-valuenow", "0");
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(/^detune\s*=\s*(?!0(\.0*)?$)\S+$/m.test(readFileSync(own.file, "utf8")), readFileSync(own.file, "utf8")).toBe(false);
   await other.close();
@@ -115,7 +115,7 @@ test("an effect that is added is taken out by Undo and put back by Redo, with wh
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -165,7 +165,7 @@ test("a cable that is taken out is put back by Undo with the depth it had, and t
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -211,7 +211,7 @@ test("a modulator that is taken out is put back by Undo with its cable and the d
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -261,7 +261,7 @@ test("an effect that is taken out is put back by Undo with the values it had and
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -320,7 +320,7 @@ test("a lane that is taken out is put back by Undo with its instrument, its effe
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -380,7 +380,7 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -441,7 +441,7 @@ test("a preset that is loaded is put back by Undo with the preset and the values
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };
@@ -498,7 +498,7 @@ test("an instrument that is replaced is put back by Undo with the values it had 
   const undo = page.getByRole("button", { name: /^Undo/ });
   const redo = page.getByRole("button", { name: /^Redo/ });
   const save = async (): Promise<string> => {
-    await page.getByRole("button", { name: /^Save/ }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
     return readFileSync(own.file, "utf8");
   };

@@ -38,7 +38,7 @@ test("a cable dragged to the depth of another is in the server's session and the
   await expect(cables(page)).toHaveCount(2);
 
   // The file has it: the envelope's cable to the LFO's cable (the first target of the first modulator of the lane), at the depth it was made at.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved).toMatch(/\[\[instrument\.modulator\.target\]\]\nmod_depth = \[0, 0\]\ndepth = 0\.5/);

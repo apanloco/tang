@@ -48,7 +48,7 @@ test("a preset is loaded into a reverb from its menu: the knobs take its values,
   await expect(menu).toHaveCount(0);
 
   // What is saved names the preset, and has none of its values as the user's own: a knob turned afterwards is.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved).toContain('preset = "Cathedral"');

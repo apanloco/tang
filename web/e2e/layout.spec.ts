@@ -81,7 +81,7 @@ test("a node dragged on the canvas stays where it is put down, a page that is op
   await expect.poll(async () => placeOf(nodeNamed(page, "Filter"))).toEqual(moved);
 
   // The saved file has the two places, each on its own node, and only those.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved.match(/^ui = \{ x = -?[\d.]+, y = -?[\d.]+ \}$/gm), saved).toHaveLength(2);
@@ -92,7 +92,7 @@ test("a node dragged on the canvas stays where it is put down, a page that is op
   await expect.poll(async () => placeOf(nodeNamed(page, "Filter"))).toEqual(laidOut);
   await expect(page.getByRole("button", { name: "Arrange the nodes again" })).toBeDisabled();
   await expect.poll(async () => placeOf(nodeNamed(other, "Filter"))).toEqual(laidOut);
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(readFileSync(own.file, "utf8")).not.toMatch(/^ui = /m);
   await other.close();

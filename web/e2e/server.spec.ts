@@ -227,7 +227,7 @@ test("the session is saved from the page, by the button and by the keys, to the 
   const resonance = page.getByRole("slider", { name: "resonance" });
   const saved = page.getByText("Saved", { exact: true });
   const unsaved = page.getByText("Unsaved changes");
-  const save = page.getByRole("button", { name: /^Save/ });
+  const save = page.getByRole("button", { name: "Save", exact: true });
 
   // A change makes the session unsaved, and the file is as it was.
   const before = readFileSync(SESSION_FILE, "utf8");
@@ -257,7 +257,7 @@ test("an effect is put in the lane from the menu, saved, and taken out again by 
   await page.goto("/");
   await expect(page.getByRole("status")).toHaveText("Connected");
   const effect = (name: string) => page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: new RegExp(`^${name}$`) }) });
-  const save = page.getByRole("button", { name: /^Save/ });
+  const save = page.getByRole("button", { name: "Save", exact: true });
   const saved = page.getByText("Saved", { exact: true });
 
   // The menu has what the program found installed: the built-ins are always there, and whatever else the machine has follows them.

@@ -28,7 +28,7 @@ async function choose(plugin: Locator, name: string, item: string): Promise<void
 }
 
 const save = async (page: Page, file: string): Promise<string> => {
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   return readFileSync(file, "utf8");
 };

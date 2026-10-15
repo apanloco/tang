@@ -35,7 +35,7 @@ async function change(rig: Awaited<ReturnType<typeof bar>>): Promise<void> {
   await rig.client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 0.5 });
 }
 
-const saveButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>("button", { name: /^Save/ });
+const saveButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>("button", { name: "Save" });
 
 describe("the bar of the session", () => {
   test("names the file the session is saved to, and says it has nothing unsaved, with a button that has nothing to do", async () => {

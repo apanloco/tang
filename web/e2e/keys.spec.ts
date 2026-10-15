@@ -57,7 +57,7 @@ test("the keys of a lane are chosen on its node: a note outside them is silent a
   await expect.poll(level, { message: "the master is quiet again" }).toBeLessThan(-50);
 
   // What is saved has the keys as the TUI writes them.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(readFileSync(own.file, "utf8")).toContain('range = "C4-B4"');
 
@@ -70,7 +70,7 @@ test("the keys of a lane are chosen on its node: a note outside them is silent a
   await page.keyboard.down("z");
   await expect.poll(level, { message: "the note that was outside the keys is heard" }).toBeGreaterThan(-50);
   await page.keyboard.up("z");
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(readFileSync(own.file, "utf8")).not.toContain("range =");
 });

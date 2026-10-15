@@ -46,7 +46,7 @@ test("a parameter that its node has no knob for is found in the panel by its nam
   await expect(page.getByText("Unsaved changes")).toBeVisible();
 
   // What is saved has it as the user's own setting of the reverb.
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(readFileSync(own.file, "utf8")).toMatch(/lowcut\s*=\s*500/);
 
