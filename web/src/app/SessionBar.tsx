@@ -1,10 +1,11 @@
 // The session as a whole, in the bar at the top of the page: the file it is saved to, whether
-// there is anything in it that is not saved, the buttons that undo and redo (`UndoRedo`), and the button
-// (and the keys: Control+S, or Command+S on a Mac) that saves it. The file is the server's own: a page
-// does not name one.
+// there is anything in it that is not saved, the buttons that undo and redo (`UndoRedo`), the button
+// (and the keys: Control+S, or Command+S on a Mac) that saves it, and the one that saves it under another
+// name (`SaveAs`). The file is the server's own: a page names a file, and the server says where it goes.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useClient, useClientState, useEditor } from "./ClientProvider";
+import { SaveAs } from "./SaveAs";
 import "./SessionBar.css";
 import { UndoRedo } from "./UndoRedo";
 
@@ -52,9 +53,10 @@ export function SessionBar() {
         {meta.dirty ? "Unsaved changes" : "Saved"}
       </span>
       <UndoRedo />
-      <button type="button" className="tang-session-bar__save" disabled={!meta.dirty || saving} title="Save the session to its file (Control+S, or Command+S)" onClick={save}>
+      <button type="button" className="tang-session-bar__button" disabled={!meta.dirty || saving} title="Save the session to its file (Control+S, or Command+S)" onClick={save}>
         Save
       </button>
+      <SaveAs />
     </div>
   );
 }

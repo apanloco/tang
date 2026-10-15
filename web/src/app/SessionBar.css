@@ -17,7 +17,7 @@
   color: var(--tang-modulation);
 }
 
-.tang-session-bar__save {
+.tang-session-bar__button {
   padding: 2px var(--tang-space-3);
   border: 1px solid var(--tang-border);
   border-radius: var(--tang-radius);
@@ -27,16 +27,39 @@
   cursor: pointer;
 }
 
-.tang-session-bar__save:hover:not(:disabled) {
+.tang-session-bar__button:hover:not(:disabled) {
   border-color: var(--tang-modulation);
 }
 
-.tang-session-bar__save:focus-visible {
+.tang-session-bar__button:focus-visible {
   outline: 2px solid var(--tang-scale);
   outline-offset: 1px;
 }
 
-.tang-session-bar__save:disabled {
+.tang-session-bar__button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* (Save as: the field that takes the place of its button, with its OK and Cancel.) */
+.tang-save-as {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-save-as__field {
+  width: 16em;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-modulation);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+}
+
+.tang-save-as__field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
 }

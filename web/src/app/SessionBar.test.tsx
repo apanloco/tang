@@ -101,10 +101,10 @@ describe("the bar of the session", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
-  test("has the buttons of Undo and Redo before the one that saves, which work on the session", async () => {
+  test("has the buttons of Undo and Redo before the one that saves and the one that saves under another name, which work on the session", async () => {
     const made = await bar();
     const buttons = screen.getAllByRole("button").map((button) => button.textContent);
-    expect(buttons).toEqual(["Undo", "Redo", "Save"]);
+    expect(buttons).toEqual(["Undo", "Redo", "Save", "Save as…"]);
     await change(made);
     await waitFor(() => {
       expect(screen.getByRole<HTMLButtonElement>("button", { name: "Undo set volume" }).disabled).toBe(false);
@@ -189,16 +189,17 @@ describe("Control+S and Command+S", () => {
     expect(saves(made)).toBe(0);
   });
 
-  test("are not for a key that is only an S, or with Alt or Shift (Save As is the terminal's, with Shift)", async () => {
+  test("are not for a key that is only an S, or with Alt, and with Shift they are not a save (they are Save as, which `SaveAs.test.tsx` has)", async () => {
     const made = await bar();
     await change(made);
     await waitFor(() => {
       expect(saveButton().disabled).toBe(false);
     });
     expect(press({})).toBe(true);
-    expect(press({ ctrlKey: true, shiftKey: true })).toBe(true);
     expect(press({ ctrlKey: true, altKey: true })).toBe(true);
-    expect(press({ metaKey: true, shiftKey: true })).toBe(true);
+    expect(press({ ctrlKey: true, shiftKey: true, altKey: true })).toBe(true);
+    expect(press({ ctrlKey: true, shiftKey: true })).toBe(false);
+    expect(press({ metaKey: true, shiftKey: true })).toBe(false);
     expect(saves(made)).toBe(0);
     expect(made.client.state.snapshot?.meta.dirty).toBe(true);
   });
