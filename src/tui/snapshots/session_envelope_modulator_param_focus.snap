@@ -40,9 +40,9 @@ aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 bbbbbbbbbbbbbbbbbbbbbbbbb........................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.............................c
 bbbbbbbbbbbbbbbbbbbbbbbb.........................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.......bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
-baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb............bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+bddddddddddddddddddddddddddddddddddddddddd.......bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
+bdddddddddddddddddddddddddddddddddddd............bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 b................................................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................c
 b................................................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 b................................................bc....................................................................c
@@ -67,9 +67,11 @@ b................................................bc.............................
 b................................................bc....................................................................c
 b................................................bc....................................................................c
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-dddddddccccc.dddccccccccc.dddcccccc
+fffffffccccc.fffccccccccc.fffcccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-
 c  fg=White bg=Reset mod=-
-d  fg=Black bg=White mod=BOLD
+d  fg=Magenta bg=Reset mod=DIM
+e  fg=Magenta bg=Reset mod=BOLD
+f  fg=Black bg=White mod=BOLD

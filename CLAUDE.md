@@ -797,7 +797,9 @@ group's own modulators (magenta, also tagged `(bus)`). A group modulator's
 target labels show `M<n> <plugin>: <param>` for a member instrument and
 `Bus <effect>: <param>` for a bus effect.
 
-The selected entry is highlighted. Unselected entries are dimmed.
+The selected entry is highlighted (bold, white). Unselected entries are dimmed. A group's header is cyan
+and a modulator magenta, a group's own included: they keep their colour, bold when selected and dimmed when not
+(`TreeEntry::color`; the other entries have none of their own).
 
 #### Parameters (right pane)
 

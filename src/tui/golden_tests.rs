@@ -5150,3 +5150,75 @@ rate = 2.0
         assert_eq!(h.s.range_edit.as_ref().map(|p| p.input.value.as_str()), Some("C2-6"));
     }
 }
+
+mod tree_colours {
+    //! The chain tree says what an entry is by its colour (CLAUDE.md, "Chain (left pane)"): a group's header is cyan and a modulator magenta, the group's own
+    //! included. Entries that are not selected are dimmed, the selected one is bold; the others have no colour of their own (f01).
+
+    use super::*;
+
+    const SCENE: &str = r#"
+[[group]]
+name = "Pad"
+[[group.modulator]]
+rate = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#;
+
+    /// The foreground and the modifiers of the first cell of `needle` in the chain pane (the left 42% of the screen: the other pane names the modulator it shows).
+    fn style_of(h: &mut Harness, needle: &str) -> (Color, Modifier) {
+        h.dump();
+        let buf = h.terminal.backend().buffer();
+        let chain_width = buf.area.width * 42 / 100;
+        for y in 0..buf.area.height {
+            let row: String = (0..chain_width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(at) = row.find(needle) {
+                let cell = &buf[(row[..at].chars().count() as u16, y)];
+                return (cell.fg, cell.modifier);
+            }
+        }
+        panic!("{needle:?} is not on the screen");
+    }
+
+    /// Each kind of entry, the place of its entry in the tree, a piece of its label, and the colour it has (none for what has none of its own).
+    fn entries() -> [(&'static str, TreeAddress, &'static str, Option<Color>); 5] {
+        [
+            ("a group's header", TreeAddress::Group(0), "▦ Pad", Some(Color::Cyan)),
+            ("a lane's modulator", TreeAddress::Modulator { inst: 0, index: 0 }, "LFO 1.0Hz", Some(Color::Magenta)),
+            ("a group's modulator", TreeAddress::GroupModulator { group: 0, index: 0 }, "LFO 0.5Hz", Some(Color::Magenta)),
+            ("an instrument", TreeAddress::Instrument(0), "♪ Oscillator  [Built-in]", None),
+            ("an effect", TreeAddress::Effect { inst: 1, index: 0 }, "fx Reverb", None),
+        ]
+    }
+
+    #[test]
+    fn a_group_header_and_a_modulator_have_their_colour_and_are_dimmed_until_selected() {
+        for (what, at, label, colour) in entries() {
+            let mut h = Harness::new(SCENE);
+            // (The cursor is on the last entry, the effect, unless that is the one looked at.)
+            let effect = TreeAddress::Effect { inst: 1, index: 0 };
+            h.goto(if at == effect { TreeAddress::Instrument(1) } else { effect });
+            let (fg, modifier) = style_of(&mut h, label);
+            match colour {
+                Some(colour) => assert_eq!((fg, modifier), (colour, Modifier::DIM), "{what} is dimmed, not selected"),
+                None => assert_eq!((fg, modifier), (DIM, Modifier::empty()), "{what} is as it was, not selected"),
+            }
+            h.goto(at);
+            let (fg, modifier) = style_of(&mut h, label);
+            match colour {
+                Some(colour) => assert_eq!((fg, modifier), (colour, Modifier::BOLD), "{what} is bold, selected"),
+                None => assert_eq!((fg, modifier), (Color::White, Modifier::BOLD), "{what} is as it was, selected"),
+            }
+        }
+    }
+}

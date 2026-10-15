@@ -38,26 +38,26 @@ source: src/tui/golden_tests.rs
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cbbbbbbbbbbbbbbb.................................cbccccccccccccccccccccccccccccccccccc.................................b
+cddddddddddddddd.................................cbccccccccccccccccccccccccccccccccccc.................................b
 cbbbbbbbbbbbbbbbbbbbbbbbbbb......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbbb.......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..............cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeecb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee..............cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaa...................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cbbbbbbbbbbbbbbbbbbbbbbb.........dddddddddddddddddddddddddddddddddddddddddddddddddddddd................................b
-cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdbbe.................................................d................................b
-c................................dfffff...............................................d................................b
-c................................daaaaaaaaa...........................................d................................b
-c................................d....................................................d................................b
-c................................d....................................................d................................b
-c................................d....................................................d................................b
-c................................d....................................................d................................b
-c................................d....................................................d................................b
-c................................d....................................................d................................b
-c................................d....................................................d................................b
-c................................dddddddddddddddddddddddddddddddddddddddddddddddddddddd................................b
+cbbbbbbbbbbbbbbbbbbbbbbb.........ffffffffffffffffffffffffffffffffffffffffffffffffffffff................................b
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeefbbg.................................................f................................b
+c................................fhhhhh...............................................f................................b
+c................................faaaaaaaaa...........................................f................................b
+c................................f....................................................f................................b
+c................................f....................................................f................................b
+c................................f....................................................f................................b
+c................................f....................................................f................................b
+c................................f....................................................f................................b
+c................................f....................................................f................................b
+c................................f....................................................f................................b
+c................................ffffffffffffffffffffffffffffffffffffffffffffffffffffff................................b
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 c................................................cb....................................................................b
@@ -67,11 +67,13 @@ c................................................cb.............................
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-eeecccccccccc.eeeccccccccccc.eeecccccc.eeeccccccc.eeeccccccccccc.eeeccccccccc.eeecccccc.eeeccccccc.eeecccccccc
+gggcccccccccc.gggccccccccccc.gggcccccc.gggccccccc.gggccccccccccc.gggccccccccc.gggcccccc.gggccccccc.gggcccccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-
 c  fg=White bg=Reset mod=-
-d  fg=Cyan bg=Reset mod=-
-e  fg=Black bg=White mod=BOLD
-f  fg=Indexed(245) bg=Reset mod=UNDERLINED
+d  fg=Cyan bg=Reset mod=DIM
+e  fg=Magenta bg=Reset mod=DIM
+f  fg=Cyan bg=Reset mod=-
+g  fg=Black bg=White mod=BOLD
+h  fg=Indexed(245) bg=Reset mod=UNDERLINED

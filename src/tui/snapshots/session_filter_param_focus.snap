@@ -38,16 +38,16 @@ source: src/tui/golden_tests.rs
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-bbbbbbbbbbbbbbbb.................................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
+bddddddddddddddd.................................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
 bbbbbbbbbbbbbbbbbbbbbbbbbbb......................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...............................c
 bbbbbbbbbbbbbbbbbbbbbbbbbb.......................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................bc....................................................................c
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc....................................................................c
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..............bc....................................................................c
+beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeebc....................................................................c
+beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee..............bc....................................................................c
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................bc....................................................................c
 baaaaaaaaaaaaaaaaaaaaaaa.........................bc....................................................................c
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bc....................................................................c
+beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee...bc....................................................................c
 b................................................bc....................................................................c
 b................................................bc....................................................................c
 b................................................bc....................................................................c
@@ -67,9 +67,11 @@ b................................................bc.............................
 b................................................bc....................................................................c
 b................................................bc....................................................................c
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-dddddddccccc.dddccccccccc.dddcccccc.dddccccccc
+fffffffccccc.fffccccccccc.fffcccccc.fffccccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-
 c  fg=White bg=Reset mod=-
-d  fg=Black bg=White mod=BOLD
+d  fg=Cyan bg=Reset mod=DIM
+e  fg=Magenta bg=Reset mod=DIM
+f  fg=Black bg=White mod=BOLD

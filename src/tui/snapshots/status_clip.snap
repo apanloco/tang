@@ -39,9 +39,9 @@ source: src/tui/golden_tests.rs
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb............................................................ccccccbbbbbbbb
 ddddddddddddddddddddddddddddddddddddddddddddddddddbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.................dbddddddddddddddddddddddddddddddddddd.................................b
-dbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb....db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+deeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee....db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 dbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-dbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+deeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee...db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 d................................................db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 d................................................db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 d................................................db..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -67,10 +67,11 @@ d................................................db.............................
 d................................................db....................................................................b
 d................................................db....................................................................b
 ddddddddddddddddddddddddddddddddddddddddddddddddddbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-eeedddddddddd.eeeddddddddddd.eeedddddd.eeeddddddd.eeeddddddddddd.eeeddddddddd.eeedddddd.eeeddddddd.eeedddddddd
+fffdddddddddd.fffddddddddddd.fffdddddd.fffddddddd.fffddddddddddd.fffddddddddd.fffdddddd.fffddddddd.fffdddddddd
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-
 c  fg=Red bg=Reset mod=BOLD
 d  fg=White bg=Reset mod=-
-e  fg=Black bg=White mod=BOLD
+e  fg=Magenta bg=Reset mod=DIM
+f  fg=Black bg=White mod=BOLD

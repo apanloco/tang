@@ -39,9 +39,9 @@ source: src/tui/golden_tests.rs
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................c
-baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa....bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................c
+bdddddddddddddddddddddddddddddddddddddddddddd....bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................c
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................c
+beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee...bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................c
 b................................................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 b................................................bc....................................................................c
 b................................................bc....................................................................c
@@ -67,9 +67,11 @@ b................................................bc.............................
 b................................................bc....................................................................c
 b................................................bc....................................................................c
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-dddddddccccc.dddccccccccc.dddcccccc
+fffffffccccc.fffccccccccc.fffcccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-
 c  fg=White bg=Reset mod=-
-d  fg=Black bg=White mod=BOLD
+d  fg=Magenta bg=Reset mod=BOLD
+e  fg=Magenta bg=Reset mod=DIM
+f  fg=Black bg=White mod=BOLD

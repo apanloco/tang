@@ -103,8 +103,8 @@ struct TreeEntry {
     /// The node of the session the entry is of (a lane's, for its pattern). An address is a
     /// position, and what is at it changes as nodes come and go; this does not.
     node: NodeId,
-    #[allow(dead_code)]
-    color: Color,
+    /// What the tree says of the kind of entry by its colour: a group's header is cyan and a modulator magenta; the rest have none of their own.
+    color: Option<Color>,
     #[allow(dead_code)]
     indent: usize,
 }
@@ -3194,9 +3194,15 @@ fn render_session(
     let left_inner = left_block.inner(left);
     frame.render_widget(left_block, left);
 
+    // An entry that has a colour is drawn in it: dimmed, as the others are, until it is the selected one, which is bold.
     let items: Vec<ListItem> = tree_entries
         .iter()
-        .map(|e| ListItem::raw(&e.label))
+        .enumerate()
+        .map(|(i, e)| match e.color {
+            Some(color) if i == chain_state.selected => ListItem::styled(&e.label, Style::default().fg(color)),
+            Some(color) => ListItem::styled(&e.label, Style::default().fg(color).add_modifier(Modifier::DIM)),
+            None => ListItem::raw(&e.label),
+        })
         .collect();
     let mut cs = chain_state.clone();
     cs.ensure_visible(left_inner.height as usize);
@@ -4070,7 +4076,7 @@ fn push_instrument_entries(
         label: format!("{prefix}{plugin_label}{range_label}{transpose_label}"),
         address: TreeAddress::Instrument(inst_idx),
         node: inst.node,
-        color: Color::Green,
+        color: None,
         indent: 0,
     });
 
@@ -4081,18 +4087,18 @@ fn push_instrument_entries(
 
     if let Some(pat) = &inst.pattern {
         if pat.recording || !pat.events.is_empty() {
-            let (icon, color, detail) = if pat.recording {
-                ("\u{23fa}", Color::Red, "recording...".to_string())
+            let (icon, detail) = if pat.recording {
+                ("\u{23fa}", "recording...".to_string())
             } else {
                 let n = pat.events.iter().filter(|e| e.1 == 0x90).count();
                 let mode = if pat.in_key { ", in-key" } else { "" };
-                ("\u{25b6}", Color::Blue, format!("{:.0} beats, {n} notes{mode}", pat.length_beats))
+                ("\u{25b6}", format!("{:.0} beats, {n} notes{mode}", pat.length_beats))
             };
             entries.push(TreeEntry {
                 label: format!("{prefix}{} {icon} Pattern  {detail}", branch_for(child_idx)),
                 address: TreeAddress::Pattern(inst_idx),
                 node: inst.node,
-                color,
+                color: None,
                 indent: 1,
             });
             child_idx += 1;
@@ -4104,7 +4110,7 @@ fn push_instrument_entries(
             label: format!("{prefix}{} fx {}  [{}]", branch_for(child_idx), fx.name, fx.format),
             address: TreeAddress::Effect { inst: inst_idx, index: fx_idx },
             node: fx.node,
-            color: Color::Yellow,
+            color: None,
             indent: 1,
         });
         child_idx += 1;
@@ -4142,7 +4148,7 @@ fn push_instrument_entries(
             label: format!("{prefix}{} ~ {source_label}{targets}", branch_for(child_idx)),
             address: TreeAddress::Modulator { inst: inst_idx, index: mod_idx },
             node: m.node,
-            color: Color::Magenta,
+            color: Some(Color::Magenta),
             indent: 1,
         });
         child_idx += 1;
@@ -4165,7 +4171,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
             label: format!("\u{25a6} {name}{vol}"),
             address: TreeAddress::Group(g_idx),
             node: group.node,
-            color: Color::Cyan,
+            color: Some(Color::Cyan),
             indent: 0,
         });
         for (inst_idx, inst) in instruments.iter().enumerate() {
@@ -4178,7 +4184,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
                 label: format!("  fx {}  [{}]  (bus)", fx.name, fx.format),
                 address: TreeAddress::GroupEffect { group: g_idx, index: fx_idx },
                 node: fx.node,
-                color: Color::Yellow,
+                color: None,
                 indent: 1,
             });
         }
@@ -4240,7 +4246,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
                     label: format!("  ~ {source_label}{targets}  (bus)"),
                     address: TreeAddress::GroupModulator { group: g_idx, index: mod_idx },
                     node: m.node,
-                    color: Color::Magenta,
+                    color: Some(Color::Magenta),
                     indent: 1,
                 });
             }
