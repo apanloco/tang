@@ -2060,6 +2060,17 @@ pub enum GraphCommand {
         inst: usize,
         slots: MeterSlots,
     },
+    /// Store the signal at the output of a node into ring `ring` of the probe pool (`Telemetry::probes`) on every buffer, from the next, in addition to the rings that already listen
+    /// to it. A target that is not there (a lane, a group or a place in a chain that the graph has not) and a ring that the pool has not are ignored; a graph with no telemetry stores nothing.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends the probes it sets (step 46)"))]
+    SetProbe {
+        target: ProbeTarget,
+        ring: usize,
+    },
+    /// Stop every probe: no ring is stored into any more (it keeps what it has). The controller sends this and then a `SetProbe` for each probe that stays, when the places in the graph
+    /// have changed.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller clears the probes when it sets them again (step 46)"))]
+    ClearProbes,
     /// Add a new empty submix group; the new group's index is `groups.len()`.
     AddGroup,
     /// Publish a group's output (after its volume, effects and pan, before it
@@ -2887,6 +2898,59 @@ impl PatternPlayer {
 }
 
 // ---------------------------------------------------------------------------
+// Probes — the signal at the output of a node
+// ---------------------------------------------------------------------------
+
+/// Where a probe listens: the signal at the output of a node, which is stored into a ring of `Telemetry::probes` on every buffer while the probe is set
+/// (`GraphCommand::SetProbe`). The places are the ones `app::model::NodePath` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the targets of the probes it sets (step 46)"))]
+pub enum ProbeTarget {
+    /// A lane's instrument, as it goes out of the lane's volume and before its effects.
+    Instrument(usize),
+    /// An effect of a lane's chain, after its mix.
+    Effect { inst: usize, index: usize },
+    /// A group's bus, after its volume, its effects and its pan: what is added to the master.
+    Group(usize),
+    /// An effect of a group's bus, after its mix and before the group's pan.
+    GroupEffect { group: usize, index: usize },
+}
+
+/// Where in a lane or a group a signal is stored from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TapStage {
+    /// What goes out of a lane's volume (its instrument), or out of a group's pan.
+    Output,
+    /// What goes out of the effect at this place in the chain.
+    Effect(usize),
+}
+
+/// A ring of the probe pool that the signal at a stage of a lane or a group is stored into.
+#[derive(Clone, Copy, Debug)]
+struct Tap {
+    stage: TapStage,
+    ring: usize,
+}
+
+/// Add a tap, unless there are as many as there are rings (a tap is a ring's, so that there are never more: the room for them was made with the lane or the group, and
+/// the audio thread never allocates for one).
+fn add_tap(taps: &mut Vec<Tap>, stage: TapStage, ring: usize) {
+    if ring < telemetry::PROBES && taps.len() < telemetry::PROBES {
+        taps.push(Tap { stage, ring });
+    }
+}
+
+/// Store `bufs`, the signal at `stage`, into the rings that listen to it (the first two channels: the left side and the right).
+fn store_taps(taps: &[Tap], telemetry: Option<&Telemetry>, stage: TapStage, bufs: &[Vec<f32>]) {
+    let Some(telemetry) = telemetry else { return };
+    for tap in taps.iter().filter(|tap| tap.stage == stage) {
+        if let Some(ring) = telemetry.probes.get(tap.ring) {
+            ring.push(bufs);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InstrumentLane — one instrument + effect chain
 // ---------------------------------------------------------------------------
 
@@ -2912,6 +2976,8 @@ struct InstrumentLane {
     drive_scratch: Vec<ParamDrive>,
     /// Measures the lane's output; `None` publishes nothing.
     meter: Option<Meter>,
+    /// The probes that listen to this lane: its instrument after the volume, and each of its effects.
+    taps: Vec<Tap>,
     /// Pattern recorder/player for this instrument.
     pattern: PatternPlayer,
     /// Transpose in semitones applied to note events.
@@ -2946,6 +3012,7 @@ impl InstrumentLane {
             cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             drive_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             meter: None,
+            taps: Vec::with_capacity(telemetry::PROBES),
             pattern: PatternPlayer::new(48000.0),
             transpose: 0,
             group: None,
@@ -3092,6 +3159,7 @@ impl InstrumentLane {
             let mut storage = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
             let out_refs = mut_slices(inst_out, &mut storage);
             instrument.process(effective_events, &[], out_refs)?;
+            store_taps(&self.taps, telemetry, TapStage::Output, inst_out);
             self.pattern.render_metronome(inst_out, frames);
             return Ok(());
         }
@@ -3117,6 +3185,7 @@ impl InstrumentLane {
                 }
             }
         }
+        store_taps(&self.taps, telemetry, TapStage::Output, &self.inst_buf);
 
         if self.effects.is_empty() {
             // No effects — copy first num_channels from inst_buf to output
@@ -3149,7 +3218,7 @@ impl InstrumentLane {
         // Effects: alternate between buf_a and buf_b
         let mut src_is_a = true;
 
-        for (effect, &mix) in self.effects.iter_mut().zip(self.mix_values.iter()) {
+        for (index, (effect, &mix)) in self.effects.iter_mut().zip(self.mix_values.iter()).enumerate() {
             let mix = mix as f32;
 
             if src_is_a {
@@ -3169,6 +3238,7 @@ impl InstrumentLane {
                         }
                     }
                 }
+                store_taps(&self.taps, telemetry, TapStage::Effect(index), &self.buf_b);
             } else {
                 {
                     let mut in_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
@@ -3186,6 +3256,7 @@ impl InstrumentLane {
                         }
                     }
                 }
+                store_taps(&self.taps, telemetry, TapStage::Effect(index), &self.buf_a);
             }
             src_is_a = !src_is_a;
         }
@@ -3234,6 +3305,8 @@ struct Group {
     buf_b: Vec<Vec<f32>>,
     /// Measures the group's output; `None` publishes nothing.
     meter: Option<Meter>,
+    /// The probes that listen to this group: its bus after the pan, and each of its bus effects.
+    taps: Vec<Tap>,
 }
 
 impl Group {
@@ -3248,6 +3321,7 @@ impl Group {
             buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
             buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
             meter: None,
+            taps: Vec::with_capacity(telemetry::PROBES),
         }
     }
 
@@ -3265,7 +3339,7 @@ impl Group {
     /// Apply volume + the effect chain in place on `accum`, leaving the
     /// processed bus signal there. Mirrors `InstrumentLane`'s effect loop.
     // TODO: factor a shared effect-chain helper to remove this duplication.
-    fn finish(&mut self, num_channels: usize, frames: usize) -> anyhow::Result<()> {
+    fn finish(&mut self, num_channels: usize, frames: usize, telemetry: Option<&Telemetry>) -> anyhow::Result<()> {
         if (self.volume - 1.0).abs() >= f32::EPSILON {
             for ch in self.accum.iter_mut().take(num_channels) {
                 for s in ch.iter_mut() {
@@ -3275,6 +3349,7 @@ impl Group {
         }
         if self.effects.is_empty() {
             self.apply_pan(num_channels);
+            store_taps(&self.taps, telemetry, TapStage::Output, &self.accum);
             return Ok(());
         }
         for buf in self.buf_a.iter_mut().chain(self.buf_b.iter_mut()) {
@@ -3289,7 +3364,7 @@ impl Group {
             }
         }
         let mut src_is_a = true;
-        for (effect, &mix) in self.effects.iter_mut().zip(self.mix_values.iter()) {
+        for (index, (effect, &mix)) in self.effects.iter_mut().zip(self.mix_values.iter()).enumerate() {
             let mix = mix as f32;
             if src_is_a {
                 {
@@ -3307,6 +3382,7 @@ impl Group {
                         }
                     }
                 }
+                store_taps(&self.taps, telemetry, TapStage::Effect(index), &self.buf_b);
             } else {
                 {
                     let mut in_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
@@ -3323,6 +3399,7 @@ impl Group {
                         }
                     }
                 }
+                store_taps(&self.taps, telemetry, TapStage::Effect(index), &self.buf_a);
             }
             src_is_a = !src_is_a;
         }
@@ -3331,6 +3408,7 @@ impl Group {
             acc.copy_from_slice(fin);
         }
         self.apply_pan(num_channels);
+        store_taps(&self.taps, telemetry, TapStage::Output, &self.accum);
         Ok(())
     }
 
@@ -4005,6 +4083,36 @@ impl AudioGraph {
                 GraphCommand::SetGroupMeter { group, slots } => {
                     if let Some(g) = self.groups.get_mut(group) {
                         g.meter = Some(Meter::new(slots));
+                    }
+                }
+                GraphCommand::SetProbe { target, ring } => match target {
+                    ProbeTarget::Instrument(inst) => {
+                        if let Some(lane) = self.get_instrument_mut(inst) {
+                            add_tap(&mut lane.taps, TapStage::Output, ring);
+                        }
+                    }
+                    ProbeTarget::Effect { inst, index } => {
+                        if let Some(lane) = self.get_instrument_mut(inst).filter(|lane| index < lane.effects.len()) {
+                            add_tap(&mut lane.taps, TapStage::Effect(index), ring);
+                        }
+                    }
+                    ProbeTarget::Group(group) => {
+                        if let Some(g) = self.groups.get_mut(group) {
+                            add_tap(&mut g.taps, TapStage::Output, ring);
+                        }
+                    }
+                    ProbeTarget::GroupEffect { group, index } => {
+                        if let Some(g) = self.groups.get_mut(group).filter(|g| index < g.effects.len()) {
+                            add_tap(&mut g.taps, TapStage::Effect(index), ring);
+                        }
+                    }
+                },
+                GraphCommand::ClearProbes => {
+                    for lane in self.instruments.iter_mut() {
+                        lane.taps.clear();
+                    }
+                    for g in self.groups.iter_mut() {
+                        g.taps.clear();
                     }
                 }
                 GraphCommand::RemoveGroup { group, keep } => {
@@ -4800,7 +4908,7 @@ impl AudioGraph {
 
         // Run each group's volume + effect chain, then fold into the master.
         for group in self.groups.iter_mut() {
-            group.finish(self.num_channels, frames)?;
+            group.finish(self.num_channels, frames, self.telemetry.as_deref())?;
             if let (Some(telemetry), Some(fall), Some(meter)) = (&self.telemetry, fall, group.meter.as_mut()) {
                 meter.update(telemetry, &group.accum, fall);
             }
@@ -7778,6 +7886,270 @@ mod tests {
         let written = telemetry.scope.latest(&mut left, &mut right);
         assert_eq!(written, 2 * FRAMES as u64, "every frame of both buffers");
         assert!(left.iter().chain(&right).all(|s| (s - 0.75).abs() < 1e-6), "{:?}", &left[..4]);
+    }
+
+    // -- Probes: the signal at a node, in a ring of the pool that a client watches --
+
+    /// The latest `n` frames that ring `ring` of the probe pool has, as the left side and the right; what has not been stored is silence.
+    fn probed(telemetry: &Telemetry, ring: usize, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut left, mut right) = (vec![9.0; n], vec![9.0; n]);
+        telemetry.probes[ring].latest(&mut left, &mut right);
+        (left, right)
+    }
+
+    fn listen(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, target: ProbeTarget, ring: usize) {
+        cmd_tx.send(GraphCommand::SetProbe { target, ring }).unwrap();
+    }
+
+    /// What `probed_lane` makes: the graph, the commands' end, the telemetry it publishes into and the end that plugins are handed back at (kept so that it is open).
+    type ProbedLane = (AudioGraph, crossbeam_channel::Sender<GraphCommand>, Arc<Telemetry>, crossbeam_channel::Receiver<Box<dyn Plugin>>);
+
+    /// A lane with a constant instrument of 0.5 at volume 0.5, and two effects that halve what they are given, the second at half mix, publishing into a telemetry that
+    /// the test holds: 0.25 after the instrument, 0.125 after the first effect and 0.09375 after the second (half of 0.125, and half of the 0.0625 that halving it makes).
+    fn probed_lane() -> ProbedLane {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        let telemetry = Arc::new(Telemetry::new());
+        graph.set_telemetry(telemetry.clone());
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 0.5 }).unwrap();
+        insert_effect(&cmd_tx, 0, Box::new(ParamScaleEffect { gain: 0.5 }), 1.0);
+        insert_effect(&cmd_tx, 1, Box::new(ParamScaleEffect { gain: 0.5 }), 0.5);
+        (graph, cmd_tx, telemetry, return_rx)
+    }
+
+    #[test]
+    fn the_probe_pool_has_a_ring_for_each_probe_and_they_are_not_the_scope() {
+        let telemetry = Telemetry::new();
+        assert_eq!(telemetry.probes.len(), telemetry::PROBES);
+        telemetry.probes[3].push(&[vec![0.5; 16]]);
+        assert_eq!(telemetry.probes[3].latest(&mut [0.0; 16], &mut [0.0; 16]), 16);
+        for other in [0, 1, 2, 4, 7] {
+            assert_eq!(telemetry.probes[other].latest(&mut [0.0; 16], &mut [0.0; 16]), 0, "ring {other}");
+        }
+        assert_eq!(telemetry.scope.latest(&mut [0.0; 16], &mut [0.0; 16]), 0);
+    }
+
+    #[test]
+    fn a_probe_on_a_lanes_instrument_has_what_it_puts_out_after_its_volume() {
+        let (mut graph, cmd_tx, telemetry, _rr) = probed_lane();
+        listen(&cmd_tx, ProbeTarget::Instrument(0), 2);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        let (left, right) = probed(&telemetry, 2, FRAMES);
+        assert!(left.iter().chain(&right).all(|&s| s == 0.25), "{:?}", &left[..4]);
+        // (The other rings have nothing: only the one that was asked to listen does.)
+        assert_eq!(probed(&telemetry, 0, 4), (vec![0.0; 4], vec![0.0; 4]));
+        assert!(out[0].iter().all(|&s| s == 0.09375), "and the output is what the whole chain makes of it: {}", out[0][0]);
+    }
+
+    #[test]
+    fn a_probe_on_an_effect_has_what_that_effect_makes_of_the_signal_with_its_mix() {
+        let (mut graph, cmd_tx, telemetry, _rr) = probed_lane();
+        listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index: 0 }, 0);
+        listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index: 1 }, 1);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        let first = probed(&telemetry, 0, FRAMES);
+        let second = probed(&telemetry, 1, FRAMES);
+        assert!(first.0.iter().chain(&first.1).all(|&s| s == 0.125), "after the first effect: {:?}", &first.0[..4]);
+        assert!(second.0.iter().chain(&second.1).all(|&s| s == 0.09375), "after the second, at half mix: {:?}", &second.0[..4]);
+    }
+
+    #[test]
+    fn a_probe_on_an_instrument_that_nothing_follows_has_what_it_puts_out() {
+        // (A lane with no effects and no volume has a path of its own, in which the instrument renders into the output.)
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        let telemetry = Arc::new(Telemetry::new());
+        graph.set_telemetry(telemetry.clone());
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        listen(&cmd_tx, ProbeTarget::Instrument(0), 0);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        let (left, right) = probed(&telemetry, 0, FRAMES);
+        assert!(left.iter().chain(&right).all(|&s| s == 0.5), "{:?}", &left[..4]);
+        drop(return_rx);
+    }
+
+    #[test]
+    fn a_probe_on_a_group_has_what_is_added_to_the_master_and_one_on_a_bus_effect_has_the_signal_before_the_pan() {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
+        let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
+        let telemetry = Arc::new(Telemetry::new());
+        graph.set_telemetry(telemetry.clone());
+        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2));
+        swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.25));
+        swap_instrument_at(&cmd_tx, 1, ConstInstrument::new(0.5));
+        // Both lanes in a group: 0.75, at a volume of 0.5 (0.375), through an effect that halves (0.1875) and one that halves at half mix (0.140625), and all the way to the right.
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 1, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 0.5 }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: 1.0 }).unwrap();
+        listen(&cmd_tx, ProbeTarget::Group(0), 0);
+        listen(&cmd_tx, ProbeTarget::GroupEffect { group: 0, index: 0 }, 1);
+        listen(&cmd_tx, ProbeTarget::GroupEffect { group: 0, index: 1 }, 3);
+        listen(&cmd_tx, ProbeTarget::Instrument(1), 2);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        let group = probed(&telemetry, 0, FRAMES);
+        assert!(group.0.iter().all(|&s| s == 0.0) && group.1.iter().all(|&s| s == 0.140625), "the group, after its pan: {:?} {:?}", &group.0[..2], &group.1[..2]);
+        assert_eq!((out[0][0], out[1][0]), (0.0, 0.140625), "which is what reaches the output");
+        let first = probed(&telemetry, 1, FRAMES);
+        assert!(first.0.iter().chain(&first.1).all(|&s| s == 0.1875), "the first bus effect: {:?} {:?}", &first.0[..2], &first.1[..2]);
+        let second = probed(&telemetry, 3, FRAMES);
+        assert!(second.0.iter().chain(&second.1).all(|&s| s == 0.140625), "the second, before the pan: {:?} {:?}", &second.0[..2], &second.1[..2]);
+        let member = probed(&telemetry, 2, FRAMES);
+        assert!(member.0.iter().chain(&member.1).all(|&s| s == 0.5), "a member of the group, as it was put out: {:?}", &member.0[..2]);
+        drop(return_rx);
+    }
+
+    #[test]
+    fn a_probe_that_is_cleared_stores_nothing_more_and_two_rings_can_listen_to_one_node() {
+        let (mut graph, cmd_tx, telemetry, _rr) = probed_lane();
+        listen(&cmd_tx, ProbeTarget::Instrument(0), 0);
+        listen(&cmd_tx, ProbeTarget::Instrument(0), 1);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        let stored = |ring: usize| telemetry.probes[ring].latest(&mut [0.0; 4], &mut [0.0; 4]);
+        assert_eq!((stored(0), stored(1)), (FRAMES as u64, FRAMES as u64));
+        cmd_tx.send(GraphCommand::ClearProbes).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!((stored(0), stored(1)), (FRAMES as u64, FRAMES as u64), "nothing was stored after the probes were cleared");
+        // And a probe that is set again is stored into again.
+        listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index: 1 }, 1);
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!((stored(0), stored(1)), (FRAMES as u64, 2 * FRAMES as u64));
+    }
+
+    #[test]
+    fn a_probe_on_a_group_that_has_no_effects_has_what_is_added_to_the_master_and_clearing_stops_it() {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+        let (return_tx, return_rx) = crossbeam_channel::bounded(16);
+        let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
+        let telemetry = Arc::new(Telemetry::new());
+        graph.set_telemetry(telemetry.clone());
+        graph.instruments.push(InstrumentLane::new(2));
+        swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: -1.0 }).unwrap();
+        listen(&cmd_tx, ProbeTarget::Group(0), 4);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        let group = probed(&telemetry, 4, FRAMES);
+        assert!(group.0.iter().all(|&s| s == 0.25) && group.1.iter().all(|&s| s == 0.0), "volume and pan: {:?} {:?}", &group.0[..2], &group.1[..2]);
+        // (Clearing stops a group's probe as it stops a lane's.)
+        cmd_tx.send(GraphCommand::ClearProbes).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(telemetry.probes[4].latest(&mut [0.0; 4], &mut [0.0; 4]), FRAMES as u64);
+        drop(return_rx);
+    }
+
+    #[test]
+    fn more_probes_than_there_are_rings_are_not_stored_and_asking_for_them_does_not_allocate() {
+        let (mut graph, cmd_tx, _telemetry, _rr) = probed_lane();
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        // Twelve rings' worth on one node, asked for while the audio thread is watched: the pool has eight, so that the lane has room for eight listeners, which were made
+        // with the lane, and the rest are not kept.
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for ring in (0..telemetry::PROBES).cycle().take(12) {
+                listen(&cmd_tx, ProbeTarget::Instrument(0), ring);
+            }
+            graph.process(&[], &mut out).unwrap();
+        });
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn a_probe_that_cannot_be_set_is_ignored_and_nothing_breaks() {
+        let (mut graph, cmd_tx, telemetry, _rr) = probed_lane();
+        for target in [
+            ProbeTarget::Instrument(5),
+            ProbeTarget::Effect { inst: 0, index: 7 },
+            ProbeTarget::Effect { inst: 4, index: 0 },
+            ProbeTarget::Group(0),
+            ProbeTarget::GroupEffect { group: 3, index: 0 },
+        ] {
+            listen(&cmd_tx, target, 0);
+        }
+        // Rings that the pool has not, and places in the chain that the lane has not, as many as would fill the room that the lane has for listeners if they were kept: a probe that
+        // can be set after them still is.
+        for ring in telemetry::PROBES..telemetry::PROBES + 10 {
+            listen(&cmd_tx, ProbeTarget::Instrument(0), ring);
+        }
+        for index in 2..12 {
+            listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index }, 0);
+        }
+        listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index: 1 }, 3);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        for ring in (0..telemetry::PROBES).filter(|&ring| ring != 3) {
+            assert_eq!(telemetry.probes[ring].latest(&mut [0.0; 4], &mut [0.0; 4]), 0, "ring {ring}");
+        }
+        let (left, right) = probed(&telemetry, 3, FRAMES);
+        assert!(left.iter().chain(&right).all(|&s| s == 0.09375), "the one that could be set: {:?}", &left[..4]);
+        assert!(out[0].iter().all(|&s| s == 0.09375));
+    }
+
+    #[test]
+    fn listening_does_not_change_what_comes_out() {
+        let run = |probed: bool| {
+            let (mut graph, cmd_tx, _telemetry, _rr) = probed_lane();
+            if probed {
+                listen(&cmd_tx, ProbeTarget::Instrument(0), 0);
+                listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index: 0 }, 1);
+                listen(&cmd_tx, ProbeTarget::Effect { inst: 0, index: 1 }, 2);
+            }
+            let mut heard = Vec::new();
+            for buffer in 0..4 {
+                let mut out = make_output();
+                let midi = if buffer == 0 { vec![note_on(60)] } else { Vec::new() };
+                graph.process(&midi, &mut out).unwrap();
+                heard.push(out);
+            }
+            heard
+        };
+        assert_eq!(run(true), run(false));
+    }
+
+    #[test]
+    fn listening_does_not_allocate() {
+        let (mut graph, cmd_tx, _telemetry, _rr) = probed_lane();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 1.0 }).unwrap();
+        for (ring, target) in [
+            ProbeTarget::Instrument(0),
+            ProbeTarget::Effect { inst: 0, index: 0 },
+            ProbeTarget::Effect { inst: 0, index: 1 },
+            ProbeTarget::Group(0),
+            ProbeTarget::GroupEffect { group: 0, index: 0 },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            listen(&cmd_tx, target, ring);
+        }
+        let allocations = allocations_while_processing(&mut graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn a_graph_that_is_given_no_telemetry_ignores_its_probes() {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        listen(&cmd_tx, ProbeTarget::Instrument(0), 0);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 0.5));
+        drop(return_rx);
     }
 
     #[test]

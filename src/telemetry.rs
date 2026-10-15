@@ -56,16 +56,23 @@ pub const MASTER: MeterSlots = MeterSlots { peak: Slot(0), clips: Slot(1) };
 /// Slots before this are reserved for what exists once per engine (`MASTER`).
 const RESERVED: u32 = 2;
 
-/// The cells, and the last frames of the output: written by the audio thread, read by anyone.
+/// How many nodes can be probed at once: each has a ring of its own in `Telemetry::probes`, made with the telemetry, so that asking for a probe allocates nothing on
+/// any thread and the audio thread only stores into what is there.
+pub const PROBES: usize = 8;
+
+/// The cells, and the last frames of the output and of the nodes that are probed: written by the audio thread, read by anyone.
 pub struct Telemetry {
     cells: Box<[AtomicU32]>,
     /// The output mix as it was a moment ago, for a display of the waveform.
     pub scope: ScopeRing,
+    /// The signal at the output of a node as it was a moment ago, a ring for each node that is probed (the engine's taps, `GraphCommand::SetProbe`, store into the ring that
+    /// they are given; who has which is the controller's to say, and the readers' to know).
+    pub probes: Vec<ScopeRing>,
 }
 
 impl Telemetry {
     pub fn new() -> Self {
-        Telemetry { cells: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect(), scope: ScopeRing::new() }
+        Telemetry { cells: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect(), scope: ScopeRing::new(), probes: (0..PROBES).map(|_| ScopeRing::new()).collect() }
     }
 
     /// Publish a float.
