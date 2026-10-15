@@ -3491,10 +3491,11 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Numbers at the end of the step.** Rust 1336 tests, 1495 with the `web` feature and 22 on the real program, 1331 without the default plugin formats and 1482 with `web`, and 3 of the shell's in each; web 1698 tests in 80 files;
     110 in browsers; 359 commits on the branch before this entry.
 
-- [x] **40. The page says when the server is slow (phase 1).** A plugin that takes seconds to load (Pianoteq 9, a ROLI plugin) is loaded by the program on the thread that answers, so every request waits behind it (§3.1: the known
-  cost of the owner doing blocking work), and the page showed nothing: the menu closed, nothing happened, and a second click asked again. *Done when:* a request that has waited longer than a set time for its answer is counted by the
+- [x] **40. The page says when the server is slow (phase 1).** A plugin that is slow to load is loaded by the program on the thread that answers, so every request waits behind it (§3.1: the known
+  cost of the owner doing blocking work), and the page showed nothing: the menu closed, nothing happened, and a second click asked again. (None of the plugins on this machine is slow: `tang enumerate plugins` says 315 ms for Pianoteq 9,
+  348 for ROLI Airwave Player, 15 for ROLI Studio Drums and 0 for the CLAP ones, which is under the light's 400 ms. CLAUDE.md's text on the splash says that a heavyweight instrument can take seconds, and this is for a load that does.) *Done when:* a request that has waited longer than a set time for its answer is counted by the
   client, a light says so over the canvas for as long as there is one, and it goes when the answer comes, or the request is refused, or the connection is lost; and on the real program, with the words of the server held back, the light
-  comes and goes and moves nothing. *Not done (later steps):* what the server is doing (the plugin it loads) is not said; the terminal has no light (its loop is blocked while a plugin loads, a TODO in CLAUDE.md); and the loads are still
+  comes and goes and moves nothing. *Not done (later steps):* what the server is doing (the plugin it loads) is not said; the terminal says it for a plugin chosen in its selector, with a box drawn before the load (a3c454d), and not for a load that a browser asks for or an undo that loads one again (a TODO in CLAUDE.md); and the loads are still
   on the owner's thread (§3.1 and open question 3: a worker, with completions that `poll()` picks up).
   - **As built (936d4bc).** `Client.slow` is a store of its own (`{ count }`), not part of `ClientState`: the state is told to every control at every change, and a request goes at every frame of a drag, where this changes only for the few
     that are slow. Each request has a timer (`ClientOptions.slowAfter`, 400 ms: `SLOW_AFTER`) that says it is slow; a request that is answered, refused, lost with the connection or stopped is not counted any more (`#forget`, in `#settle` and
@@ -3504,6 +3505,9 @@ Each step is a reviewable change; the TUI must not regress at any point.
     (`page.routeWebSocket`: what a slow answer looks like from the page): a request that is answered at once never shows the light, one that is not shows it, a node is where it was, and the answer takes it away and what was asked is
     there. 17 mutations (9 of the client, 4 of the light, 1 of the hook, 3 of its CSS and of its place in the page), all caught; the first run left one, a time to wait that the tests could not tell from the default (each waited longer
     than 400 ms), which a test within a quarter of a second and a test of the default settle. Looked at in Chromium on the real program.
+  - **Found on the way.** The first version of this entry, of the comments and of the messages of 936d4bc and a0fd705 said that a plugin "takes seconds to load (Pianoteq 9, a ROLI plugin)": that was said from memory of the splash
+    text, and it is not what this machine does (the numbers above, from `tang enumerate plugins`). Looking at it, the terminal's part was done (a3c454d), which costs nothing for a plugin that loads at once and says what is going on for
+    one that does not. The comments and this entry say "slow" now; the two messages are as they were (they are local, but this document, the log and the memory name their hashes, which are worth more than a word).
   - **Limits, as built.** The light says that the server is slow, not what it is doing. A drag of a knob goes on sending a request a frame while the server is behind, and the light is there for as long as any has waited 400 ms, which is true.
     A save to a slow disk or an undo that loads a plugin again shows it too, as it should. A node that is in the middle of the top of the canvas is under the light, which takes no pointer. The threshold is one number for every kind of
     request. Only Chromium was tried.

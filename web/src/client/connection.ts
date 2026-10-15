@@ -105,7 +105,7 @@ export interface ClientOptions {
 /** A quarter of a second, doubling up to five seconds. */
 const defaultDelay = (attempt: number): number => Math.min(250 * 2 ** (attempt - 1), 5000);
 
-/** A request that has waited this long (milliseconds) for its answer is slow: a plugin that takes seconds to load, a file that is slow to write. */
+/** A request that has waited this long (milliseconds) for its answer is slow: a plugin that is slow to load, a file that is slow to write. */
 export const SLOW_AFTER = 400;
 
 /** What the server says before it closes a connection, when it is not worth trying again. */

@@ -12,7 +12,7 @@ import { holdable } from "./testing";
 
 afterEach(cleanup);
 
-// What the page says when the server is slow to answer what it asked (a plugin that takes seconds to load): a small "Working…" that is there for as long as
+// What the page says when the server is slow to answer what it asked (a plugin that is slow to load): a small "Working…" that is there for as long as
 // a request has waited longer than the client was told to wait, and is not there otherwise. The client counts them (`connection.test.ts`); this is what is drawn.
 
 /** The light over a mock server whose answers can be held back, for a client that calls a request slow after 30 ms. */

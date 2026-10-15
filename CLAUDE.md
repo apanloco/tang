@@ -1865,7 +1865,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   parameter's are), and the slider of a cable whose depth another cable drives has a bar under it, from the middle, for the depth the engine makes of it
   (`CableDepthControl`, a `LiveBar`; the slider stays what the user set). The controller gives every cable a slot for that value (`Controller::add_target` and
   the loader), and the mock engine does as it does. Step 40 made the page say when the server is slow to answer: a request that has waited more than 400 ms
-  (`SLOW_AFTER`) for its answer (a plugin that takes seconds to load: the program does it on the thread that answers, so everything else waits behind it) is
+  (`SLOW_AFTER`) for its answer (a plugin that is slow to load: the program does it on the thread that answers, so everything else waits behind it) is
   counted by the client (`Client.slow`, a store of its own: the client's state is told to every control at every change, and a request goes at every frame of
   a drag), and a "Working…" light shows over the top of the canvas while any is (`app/BusyLight.tsx`: a progress bar with no value, since the page's one `status`
   is the connection's); nothing is blocked by it, and it does not say what is being done.

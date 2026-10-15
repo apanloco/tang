@@ -3,8 +3,9 @@ import { expect } from "@playwright/test";
 import { node } from "./canvas";
 import { test } from "./own";
 
-// A server that is slow to answer, seen from the page, on the real program (a program of its own, which the test adds a group to): a plugin that takes seconds
-// to load is done by the program on the thread that answers, so that the page waits for its answer. There is no such plugin to load on the machine of a test,
+// A server that is slow to answer, seen from the page, on the real program (a program of its own, which the test adds a group to): a plugin that is slow
+// to load is done by the program on the thread that answers, so that the page waits for its answer. There is no such plugin on the machine of a test (they load in a third
+// of a second at most),
 // so the words of the server are held back on the way to the page instead, which is what a slow answer looks like from it.
 
 test("a request that the server is slow to answer shows Working… until it is answered, and the page is where it was meanwhile", async ({ page, own }) => {
