@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP } from "../protocol";
-import type { Edge, Event, Intent, Node, Snapshot } from "../protocol";
+import type { Edge, Event, Intent, ModulatorKind, Node, Port, Snapshot } from "../protocol";
 import { builtinCatalog, groupsFixture, historyFixture, shapeOf } from "./fixtures";
 import type { HistoryRow } from "./fixtures";
 import { History, planOf, stepOf, takesOut } from "./history";
@@ -194,6 +194,47 @@ describe("what an add is to the history", () => {
   test("is no step for a plugin that the catalog does not name, which is refused", () => {
     expect(plan({ type: "addEffect", parent: lane0, plugin: "builtin:nothing" })).toBe("nothing");
     expect(plan({ type: "addInstrument", plugin: "builtin:nothing" })).toBe("nothing");
+  });
+
+  describe("of a modulate", () => {
+    const filter = snapshot.graph.nodes.find((n) => n.kind === "effect" && n.parent === lane0 && n.name === "Filter");
+    const lfo = snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "lfo");
+    const cable = snapshot.graph.edges.find((e) => e.kind === "modulation");
+    if (filter?.kind !== "effect" || !lfo || cable?.kind !== "modulation") throw new Error("the fixture has a filter, an LFO and a cable");
+    const resonance = filter.plugin.params.find((p) => p.name === "resonance");
+    if (!resonance) throw new Error("the filter has a resonance");
+    const modulate = (node: number, port: Port, kind: ModulatorKind = "lfo"): Intent => ({ type: "modulate", to: { node, port }, kind, depth: null });
+    const param: Port = { type: "param", index: resonance.index };
+
+    test("is named as the TUI's m and l name it: modulate or learn, and the parameter by its name", () => {
+      expect(labelOf(modulate(filter.id, param, "lfo"))).toBe("modulate resonance");
+      expect(labelOf(modulate(filter.id, param, "envelope"))).toBe("modulate resonance");
+      expect(labelOf(modulate(filter.id, param, "midiLearn"))).toBe("learn resonance");
+    });
+
+    test("is named by the setting, for a setting of a modulator and the depth of a cable", () => {
+      for (const name of ["rate", "attack", "decay", "sustain", "release"] as const) {
+        expect(labelOf(modulate(lfo.id, { type: name }, "lfo")), name).toBe(`modulate ${name}`);
+        expect(labelOf(modulate(lfo.id, { type: name }, "midiLearn")), name).toBe(`learn ${name}`);
+      }
+      expect(labelOf(modulate(lfo.id, { type: "depth", edge: cable.id }, "envelope"))).toBe("modulate depth");
+      expect(labelOf(modulate(lfo.id, { type: "depth", edge: cable.id }, "midiLearn"))).toBe("learn depth");
+    });
+
+    test("is carried by its time, and an undo is made only once it is known what was made, as for any add", () => {
+      const intent = modulate(filter.id, param);
+      expect(plan(intent)).toEqual({ added: { label: "modulate resonance", intent, at: 7 } });
+    });
+
+    test("is no step for what cannot be named, which is refused: a parameter the plugin lacks, a node that has no plugin or is not there, and a port no cable ends at", () => {
+      expect(plan(modulate(filter.id, { type: "param", index: 9_999 }))).toBe("nothing");
+      expect(plan(modulate(lfo.id, param))).toBe("nothing");
+      expect(plan(modulate(pad, param))).toBe("nothing");
+      expect(plan(modulate(9_999, param))).toBe("nothing");
+      expect(plan(modulate(filter.id, { type: "modOut" }))).toBe("nothing");
+      expect(plan(modulate(filter.id, { type: "audioIn" }))).toBe("nothing");
+      expect(plan(modulate(filter.id, { type: "audioOut" }))).toBe("nothing");
+    });
   });
 
   test("is carried by its time, and an undo is made only once it is known what was made", () => {
@@ -460,6 +501,18 @@ describe("what takes out what an add made", () => {
     expect(takesOut(snapshot, addEffect, edges(cable.id))).toBeNull();
     expect(takesOut(snapshot, addEffect, { nodes: [lfo.id], edges: [cable.id] })).toBeNull();
   });
+
+  test("is the node that a modulate made, which takes its cable out with it, if the node is there and it made one cable besides", () => {
+    const modulate: Intent = { type: "modulate", to: { node: lane0, port: { type: "param", index: 1 } }, kind: "lfo", depth: null };
+    expect(takesOut(snapshot, modulate, { nodes: [lfo.id], edges: [cable.id] })).toEqual({ type: "removeNode", node: lfo.id });
+    // (Not one that did not make both, or made more of either, or whose node is not there.)
+    expect(takesOut(snapshot, modulate, nodes(lfo.id))).toBeNull();
+    expect(takesOut(snapshot, modulate, edges(cable.id))).toBeNull();
+    expect(takesOut(snapshot, modulate, nodes())).toBeNull();
+    expect(takesOut(snapshot, modulate, { nodes: [lfo.id, lane0], edges: [cable.id] })).toBeNull();
+    expect(takesOut(snapshot, modulate, { nodes: [lfo.id], edges: [cable.id, cable.id] })).toBeNull();
+    expect(takesOut(snapshot, modulate, { nodes: [9_999], edges: [cable.id] })).toBeNull();
+  });
 });
 
 describe("the mock engine's undo of what is added", () => {
@@ -537,6 +590,23 @@ describe("the mock engine's undo of what is added", () => {
     expect(graphOf(server)).toBe(withModulator);
     server.apply({ type: "redo" });
     expect(graphOf(server)).toBe(withCable);
+  });
+
+  test("takes a modulator that was made for a knob out with its cable by one undo, and puts both back under their ids by one redo", () => {
+    const server = fresh();
+    const filter = server.snapshot.graph.nodes.find((n) => n.name === "Filter" && n.parent === lane0);
+    if (!filter) throw new Error("no filter");
+    const before = graphOf(server);
+    const lfo = made(server, { type: "modulate", to: { node: filter.id, port: { type: "param", index: 1 } }, kind: "lfo", depth: 0.25 });
+    const modulated = graphOf(server);
+    expect(labels(server)).toEqual(["modulate resonance", null]);
+    server.apply({ type: "undo" });
+    expect(graphOf(server)).toBe(before);
+    expect(labels(server)).toEqual([null, "modulate resonance"]);
+    server.apply({ type: "redo" });
+    expect(graphOf(server)).toBe(modulated);
+    expect(server.snapshot.graph.nodes.some((n) => n.id === lfo.id)).toBe(true);
+    expect(labels(server)).toEqual(["modulate resonance", null]);
   });
 
   test("takes an instrument out as a lane and puts it back with its id, though the telemetry gives it new slots", () => {
@@ -998,6 +1068,7 @@ describe("the mock engine's history", () => {
       "addInstrument",
       "addModulator",
       "addModEdge",
+      "modulate",
       "addGroup",
       "setLaneGroup",
       "replaceInstrument",

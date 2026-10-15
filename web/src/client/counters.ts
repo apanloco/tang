@@ -4,11 +4,22 @@ import type { EdgeId, NodeId, Snapshot } from "../protocol";
 import { noneMade } from "./history";
 import type { Made } from "./history";
 
+/** Where the counters were (`Counters#mark`), for them to go back to (`Counters#rewind`). */
+export interface Mark {
+  readonly node: number;
+  readonly edge: number;
+  readonly slot: number;
+  readonly putBack: readonly NodeId[];
+  readonly putBackEdges: readonly EdgeId[];
+  /** How much of the log there was, if one was begun. */
+  readonly logged: { readonly nodes: number; readonly edges: number } | null;
+}
+
 /**
  * What the controller hands out and does not hand out again, however much is taken out after: the ids of
  * nodes and the telemetry slots. They go on from what the session has. One thing is handed out twice: what undo puts back has the ids it
  * had (`reuse`), so that every step of the history that names it goes on naming it; the ids are written down while a log is kept (`begin`,
- * `take`), for the step that an add leaves.
+ * `take`), for the step that an add leaves. What is handed out for something that is then refused is given back (`mark`, `rewind`): a refusal uses nothing.
  */
 export class Counters {
   #node: number;
@@ -67,5 +78,27 @@ export class Counters {
   slot(): number {
     this.#slot += 1;
     return this.#slot - 1;
+  }
+
+  /**
+   * Where the counters are now. What is made may turn out to be refused, once what it needs is in the session (a modulator that is made for a cable to
+   * be drawn from it, whose reach is read from the graph): going back to the mark (`rewind`) leaves no id and no slot used.
+   */
+  mark(): Mark {
+    const logged = this.#log ? { nodes: this.#log.nodes.length, edges: this.#log.edges.length } : null;
+    return { node: this.#node, edge: this.#edge, slot: this.#slot, putBack: [...this.#putBack], putBackEdges: [...this.#putBackEdges], logged };
+  }
+
+  /** Go back to where the counters were at `mark`: what was handed out since is handed out again, and is not in the log. */
+  rewind(mark: Mark): void {
+    this.#node = mark.node;
+    this.#edge = mark.edge;
+    this.#slot = mark.slot;
+    this.#putBack = [...mark.putBack];
+    this.#putBackEdges = [...mark.putBackEdges];
+    if (this.#log && mark.logged) {
+      this.#log.nodes.length = mark.logged.nodes;
+      this.#log.edges.length = mark.logged.edges;
+    }
   }
 }

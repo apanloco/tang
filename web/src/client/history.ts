@@ -7,7 +7,7 @@
 //
 // What is added is taken out by undo and put back by redo under the ids it had (`Made`): every step that names the node or the cable goes on naming it.
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP, WAVEFORMS } from "../protocol";
-import type { CatalogEntry, EdgeId, Gain, Graph, Intent, ModulatorField, ModulatorKind, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorField, ModulatorKind, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
 import { cablesThatGo, drivesRoundToItself, isModulation } from "./cables";
 import { cablesIntoLaneFromItsGroup } from "./membership";
 
@@ -170,8 +170,33 @@ export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent 
     return snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge) ? { type: "removeEdge", edge } : null;
   }
   const [node, ...more] = made.nodes;
-  if (node === undefined || more.length > 0 || made.edges.length > 0) return null;
+  if (node === undefined || more.length > 0) return null;
+  // A modulate makes a modulator and a cable, which goes with the modulator: it is the node that is taken out. Nothing else makes a cable besides a node.
+  if (made.edges.length !== (added.type === "modulate" ? 1 : 0)) return null;
   return snapshot.graph.nodes.some((n) => n.id === node) ? { type: "removeNode", node } : null;
+}
+
+/** What a modulate calls what it drives (as the controller does): a parameter by its name, a setting of a modulator or the depth of a cable by the name of the port; none for what is neither. */
+function drivenName(snapshot: Snapshot, to: Endpoint): string | undefined {
+  const { port } = to;
+  switch (port.type) {
+    case "param": {
+      const node = snapshot.graph.nodes.find((n) => n.id === to.node);
+      const plugin = node && (node.kind === "instrument" || node.kind === "effect") ? node.plugin : null;
+      return plugin?.params.find((p) => p.index === port.index)?.name;
+    }
+    case "rate":
+    case "attack":
+    case "decay":
+    case "sustain":
+    case "release":
+    case "depth":
+      return port.type;
+    case "modOut":
+    case "audioIn":
+    case "audioOut":
+      return undefined;
+  }
 }
 
 const GAIN_LABELS: Record<Gain, string> = { volume: "set volume", mix: "set mix", groupVolume: "set the group's volume", groupPan: "set pan" };
@@ -288,6 +313,11 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       return added(`add ${MODULATOR_LABELS[intent.kind]}`);
     case "addModEdge":
       return added("draw a cable");
+    case "modulate": {
+      // A modulator and its cable, in the words of the TUI's `m` and `l`. A target that cannot be named is refused with the rest, and no step is kept for it.
+      const name = drivenName(snapshot, intent.to);
+      return name === undefined ? "nothing" : added(`${intent.kind === "midiLearn" ? "learn" : "modulate"} ${name}`);
+    }
     case "addGroup": {
       // (A member that is no lane is refused with the rest, so it need not be looked at.)
       const leavesAGroup = intent.members.some((id) => {

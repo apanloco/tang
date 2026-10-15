@@ -65,6 +65,15 @@ pub enum Intent {
     /// is a modulator's, a setting its modulator does not have, a depth that is not one of its cables, and a
     /// modulator that drives that port already.
     AddModEdge { modulator: NodeId, to: Endpoint },
+    /// Make a modulator of `kind` for what the port `to` of a node is, and draw a cable from it to the port, as one thing: what
+    /// the TUI's `m` (a new LFO or envelope for a parameter) and `l` (a MIDI control that learns the next controller that is moved)
+    /// do. The modulator goes at the end of the rack that reaches `to`: the lane's for a plugin of the lane (its instrument or an
+    /// effect of its chain), the group's for a bus effect, and the rack a modulator is in for a setting of it (its rate, a stage of
+    /// its envelope, the depth of one of its cables), where the new one is a sibling that drives it. The cable starts at half
+    /// depth, or at `depth` (clamped as `SetEdgeDepth` clamps it) if one is given. Refused, with nothing changed (nothing is made,
+    /// and no id is used), for what `AddModEdge` refuses of a cable to `to` from a modulator that is not there yet, for a group (it
+    /// has no parameter) and for a depth that is not a number.
+    Modulate { to: Endpoint, kind: ModulatorKind, depth: Option<f32> },
     /// Put a plugin at the end of the effect chain of a lane or of a group's bus: `parent` is the node of the lane
     /// (its instrument's, which an empty lane has too) or of the group, and `plugin` the `id` of an entry of the
     /// catalog the server told (`ServerMessage::Catalog`): it is loaded by the server, which loads only what its own

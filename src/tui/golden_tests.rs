@@ -1911,8 +1911,8 @@ fn an_engine_that_clips_lights_the_clip_light_and_one_that_does_not_leaves_it_da
 // modulator) and MIDI-learn (`l` on a parameter). It asks the controller by the
 // intents a browser asks by (`AddModulator`, `AddModEdge`, `SetEdgeDepth`).
 
-/// What the target selector lists, one line for each row: the cells the list shows, then the label the target is given and the way the
-/// rack addresses it. A run of plugin parameters (a chain's) is one line, with its first.
+/// What the target selector lists, one line for each row: the cells the list shows, then the way the rack addresses the target. A run of
+/// plugin parameters (a chain's) is one line, with its first.
 fn selector_rows(h: &Harness) -> Vec<String> {
     let selector = h.s.target_selector.as_ref().expect("the selector is open");
     let mut rows: Vec<String> = Vec::new();
@@ -1926,7 +1926,7 @@ fn selector_rows(h: &Harness) -> Vec<String> {
         let row = if is_param {
             format!("params of {}", item.cells[0])
         } else {
-            format!("{} | {} | {:?}", item.cells.join(" | "), entry.label, entry.kind)
+            format!("{} | {:?}", item.cells.join(" | "), entry.kind)
         };
         if !(is_param && rows.last() == Some(&row)) {
             rows.push(row);
@@ -1942,13 +1942,13 @@ fn the_target_selector_of_a_lane_modulator_lists_the_chain_and_the_siblings_sett
     h.press(KeyCode::Char('t'));
     let expected: Vec<&str> = vec![
         "params of Oscillator",
-        "Mod | Mod 1 attack | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
-        "Mod | Mod 1 decay | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
-        "Mod | Mod 1 sustain | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
-        "Mod | Mod 1 release | Mod 1 release | ModulatorRelease { mod_index: 1 }",
-        "Mod | Mod 1 volume depth | Mod 1 volume depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
-        "Mod | Mod 1 detune depth | Mod 1 detune depth | ModulatorDepth { mod_index: 1, target_index: 1 }",
-        "Mod | Mod 2 pan depth | Mod 2 pan depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
+        "Mod | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
+        "Mod | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
+        "Mod | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
+        "Mod | Mod 1 release | ModulatorRelease { mod_index: 1 }",
+        "Mod | Mod 1 volume depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
+        "Mod | Mod 1 detune depth | ModulatorDepth { mod_index: 1, target_index: 1 }",
+        "Mod | Mod 2 pan depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
     ];
     assert_eq!(selector_rows(&h), expected);
 }
@@ -1961,23 +1961,23 @@ fn the_target_selector_of_a_group_modulator_lists_the_members_the_members_modula
     let expected: Vec<&str> = vec![
         "params of M0 Oscillator",
         "params of M1 Oscillator",
-        "M0 Mod0 | rate | M0 Mod0 rate | GroupMemberMod { member: 0, mod_index: 0, field: Rate }",
-        "M0 Mod0 | detune depth | M0 Mod0 detune depth | GroupMemberMod { member: 0, mod_index: 0, field: Depth(0) }",
-        "M0 Mod1 | attack | M0 Mod1 attack | GroupMemberMod { member: 0, mod_index: 1, field: Attack }",
-        "M0 Mod1 | decay | M0 Mod1 decay | GroupMemberMod { member: 0, mod_index: 1, field: Decay }",
-        "M0 Mod1 | sustain | M0 Mod1 sustain | GroupMemberMod { member: 0, mod_index: 1, field: Sustain }",
-        "M0 Mod1 | release | M0 Mod1 release | GroupMemberMod { member: 0, mod_index: 1, field: Release }",
-        "M0 Mod1 | volume depth | M0 Mod1 volume depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) }",
-        "M0 Mod1 | detune depth | M0 Mod1 detune depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(1) }",
-        "M0 Mod2 | pan depth | M0 Mod2 pan depth | GroupMemberMod { member: 0, mod_index: 2, field: Depth(0) }",
-        "M1 Mod0 | rate | M1 Mod0 rate | GroupMemberMod { member: 1, mod_index: 0, field: Rate }",
+        "M0 Mod0 | rate | GroupMemberMod { member: 0, mod_index: 0, field: Rate }",
+        "M0 Mod0 | detune depth | GroupMemberMod { member: 0, mod_index: 0, field: Depth(0) }",
+        "M0 Mod1 | attack | GroupMemberMod { member: 0, mod_index: 1, field: Attack }",
+        "M0 Mod1 | decay | GroupMemberMod { member: 0, mod_index: 1, field: Decay }",
+        "M0 Mod1 | sustain | GroupMemberMod { member: 0, mod_index: 1, field: Sustain }",
+        "M0 Mod1 | release | GroupMemberMod { member: 0, mod_index: 1, field: Release }",
+        "M0 Mod1 | volume depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) }",
+        "M0 Mod1 | detune depth | GroupMemberMod { member: 0, mod_index: 1, field: Depth(1) }",
+        "M0 Mod2 | pan depth | GroupMemberMod { member: 0, mod_index: 2, field: Depth(0) }",
+        "M1 Mod0 | rate | GroupMemberMod { member: 1, mod_index: 0, field: Rate }",
         "params of Bus Reverb",
-        "Mod | Mod 1 attack | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
-        "Mod | Mod 1 decay | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
-        "Mod | Mod 1 sustain | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
-        "Mod | Mod 1 release | Mod 1 release | ModulatorRelease { mod_index: 1 }",
-        "Mod | Mod 1 damping depth | Mod 1 damping depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
-        "Mod | Mod 2 volume depth | Mod 2 volume depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
+        "Mod | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
+        "Mod | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
+        "Mod | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
+        "Mod | Mod 1 release | ModulatorRelease { mod_index: 1 }",
+        "Mod | Mod 1 damping depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
+        "Mod | Mod 2 volume depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
     ];
     assert_eq!(selector_rows(&h), expected);
 }
@@ -4659,7 +4659,7 @@ mod undo_and_redo {
         ctrl_z(&mut h);
         assert_eq!(h.s.ctl.model.graph(), before);
         assert_eq!(h.s.ctl.model.instruments[2].modulators.len(), 1, "the LFO the scene has");
-        assert_eq!(h.commands().len(), 2, "the cable goes, and the LFO");
+        assert_eq!(h.commands().len(), 1, "the LFO goes, and the cable with it (the audio thread drops a modulator with its cables)");
         ctrl_y(&mut h);
         assert_eq!(h.s.ctl.model.graph(), after);
         assert_eq!(h.commands().len(), 2, "the LFO is made again, and the cable to it");

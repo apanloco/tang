@@ -79,6 +79,7 @@ impl Controller {
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
+            Intent::Modulate { to, kind, depth } => self.modulate_intent(to, kind, depth)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::MoveEffect { node, index } => self.move_effect_intent(node, index)?,
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
@@ -399,8 +400,49 @@ impl Controller {
         Ok(Done::Restructured)
     }
 
+    /// A modulator of `kind` made for what `to` is, with a cable from it to `to`, as one thing (`Intent::Modulate`). Everything that can be refused is
+    /// looked at before anything is made, as the cable of a modulator that is not there yet: the place it will have is the end of its rack, which is
+    /// where the rules of reach are told the same of it as of any other (a modulator is never in reach of itself).
+    fn modulate_intent(&mut self, to: Endpoint, kind: ModulatorKind, depth: Option<f32>) -> Result<Done, IntentError> {
+        if let Some(depth) = depth {
+            if !depth.is_finite() {
+                return Err(invalid(format!("{depth} is not a value for the depth of a cable")));
+            }
+        }
+        let at = match self.model.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+            NodePath::Instrument(inst) | NodePath::Effect { inst, .. } => ModulatorLocation::Lane(inst),
+            NodePath::GroupEffect { group, .. } => ModulatorLocation::Group(group),
+            NodePath::Modulator { at, .. } => at,
+            NodePath::Group(_) => return Err(invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
+        };
+        let index = self.model.modulators(at).map_or(0, |rack| rack.len());
+        let cable = match to.port {
+            Port::Param { index: param } => self.param_cable(at, index, to.node, param)?,
+            Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.field_cable(at, index, &to)?,
+            Port::ModOut | Port::AudioIn | Port::AudioOut => {
+                return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
+            }
+        };
+        let made = self.add_modulator(at, kind.source()).ok_or(IntentError::NotFound(to.node))?;
+        debug_assert_eq!(made, index, "a modulator goes at the end of its rack");
+        self.add_target(at, index, cable);
+        if let Some(depth) = depth {
+            let edge = self.model.modulators(at).and_then(|rack| rack.get(index)).and_then(|modulator| modulator.targets.last()).map(|target| target.edge);
+            self.set_edge_depth(edge.ok_or(IntentError::NotFound(to.node))?, depth)?;
+        }
+        Ok(Done::Restructured)
+    }
+
     /// A cable from the modulator at `index` of the rack at `at` to the parameter `param` of the plugin in `node`.
     fn add_param_cable(&mut self, at: ModulatorLocation, index: usize, node: NodeId, param: u32) -> Result<(), IntentError> {
+        let cable = self.param_cable(at, index, node, param)?;
+        self.add_target(at, index, cable);
+        Ok(())
+    }
+
+    /// What a cable from the modulator at `index` of the rack at `at` to the parameter `param` of the plugin in `node` is, if it can be drawn (the
+    /// modulator need not be there: an `index` at the end of the rack is where a new one would go). Nothing is changed.
+    fn param_cable(&mut self, at: ModulatorLocation, index: usize, node: NodeId, param: u32) -> Result<NewTarget, IntentError> {
         // The plugin has to be there, and in reach of the modulator (`param_targets`: the rule is the model's).
         let plugin = self.locate_plugin(node)?;
         if self.plugin_at(&plugin).is_none() {
@@ -418,14 +460,21 @@ impl Controller {
         if drives_it_already {
             return Err(invalid("that modulator drives that parameter already"));
         }
-        self.add_target(at, index, NewTarget::to_param(&target, NEW_CABLE_DEPTH));
-        Ok(())
+        Ok(NewTarget::to_param(&target, NEW_CABLE_DEPTH))
     }
 
     /// A cable from the modulator at `index` of the rack at `at` to a setting of another modulator (its rate, a stage of its
     /// envelope) or to the depth of one of that modulator's cables: which are in reach, and which a modulator has, is the model's
     /// (`modulators_in_reach`, `field_targets`). A modulator does not drive itself.
     fn add_field_cable(&mut self, at: ModulatorLocation, index: usize, to: &Endpoint) -> Result<(), IntentError> {
+        let cable = self.field_cable(at, index, to)?;
+        self.add_target(at, index, cable);
+        Ok(())
+    }
+
+    /// What a cable from the modulator at `index` of the rack at `at` to `to` (a setting of a modulator, or the depth of one of its cables) is, if it
+    /// can be drawn (the modulator need not be there, as for `param_cable`). Nothing is changed.
+    fn field_cable(&mut self, at: ModulatorLocation, index: usize, to: &Endpoint) -> Result<NewTarget, IntentError> {
         match self.model.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
             NodePath::Modulator { at: there, index: place } if (there, place) == (at, index) => {
                 return Err(invalid("a modulator cannot drive its own settings"));
@@ -452,8 +501,7 @@ impl Controller {
             return Err(invalid("that modulator drives that setting already"));
         }
         let FieldTarget { kind, label, base_value, param_min, param_max, .. } = target;
-        self.add_target(at, index, NewTarget { kind, slot: 0, param_name: label, depth: NEW_CABLE_DEPTH, base_value, param_min, param_max });
-        Ok(())
+        Ok(NewTarget { kind, slot: 0, param_name: label, depth: NEW_CABLE_DEPTH, base_value, param_min, param_max })
     }
 
     fn add_effect_intent(&mut self, parent: NodeId, plugin: &str) -> Result<Done, IntentError> {
@@ -1760,6 +1808,188 @@ rate = 1.0
         );
         assert_eq!(ctl.rev, 3);
         ctl.model.check_ids().unwrap();
+    }
+
+    // -- Modulate --
+
+    fn modulate(ctl: &mut Controller, node: NodeId, port: Port, kind: ModulatorKind, depth: Option<f32>) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::Modulate { to: Endpoint { node, port }, kind, depth })
+    }
+
+    #[test]
+    fn modulate_makes_a_modulator_in_the_lanes_rack_and_a_cable_from_it_to_the_parameter_as_one_intent() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let osc = lane(&ctl);
+        let applied = modulate(&mut ctl, osc, Port::Param { index: detune }, ModulatorKind::Lfo, None).unwrap();
+        // One intent is one revision, and the structure is told whole.
+        assert_eq!((applied.rev, applied.restructured, ctl.rev), (1, true, 1));
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.len(), 1);
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { .. }));
+        assert_eq!(rack[0].targets.len(), 1);
+        assert_eq!(rack[0].targets[0].kind, ModTargetKind::PluginParam { slot: 0, param_index: detune });
+        assert_eq!(rack[0].targets[0].depth, NEW_CABLE_DEPTH);
+        let commands = sent(&engine);
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands[0].starts_with("InsertModulator inst=0 index=0 source=Lfo"), "{commands:?}");
+        assert!(commands[1].starts_with(&format!("AddModTarget inst=0 mod=0 kind=PluginParam {{ slot: 0, param_index: {detune} }} depth=0.500")), "{commands:?}");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn modulate_gives_the_cable_the_depth_that_is_asked_for_clamped_as_a_depth_that_is_set_is() {
+        let (engine, mut ctl) = controller();
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let (volume, _) = param(&ctl, NodePath::Instrument(0), "volume");
+        let (pan, _) = param(&ctl, NodePath::Instrument(0), "pan");
+        let osc = lane(&ctl);
+        sent(&engine);
+        for (index, (param, asked, got)) in [(detune, 1.0, 1.0), (volume, -0.25, -0.25), (pan, 5.0, 1.0)].into_iter().enumerate() {
+            modulate(&mut ctl, osc, Port::Param { index: param }, ModulatorKind::MidiLearn, Some(asked)).unwrap();
+            assert_eq!(ctl.model.instruments[0].modulators[index].targets[0].depth, got, "{asked}");
+        }
+        // (The depth is set after the cable is drawn, as it is when it is set by itself.)
+        let commands = sent(&engine);
+        assert!(commands[1].starts_with("AddModTarget inst=0 mod=0"), "{commands:?}");
+        assert_eq!(commands[2], "SetModTargetDepth inst=0 mod=0 target=0 depth=1.000", "{commands:?}");
+        assert!(commands.contains(&"SetModTargetDepth inst=0 mod=1 target=0 depth=-0.250".to_string()), "{commands:?}");
+        assert!(commands.contains(&"SetModTargetDepth inst=0 mod=2 target=0 depth=1.000".to_string()), "{commands:?}");
+        assert_eq!(ctl.rev, 3, "a revision for each");
+    }
+
+    #[test]
+    fn modulate_makes_each_kind_of_modulator_and_a_control_is_made_armed_to_learn() {
+        let (_engine, mut ctl) = controller();
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        let (volume, _) = param(&ctl, NodePath::Instrument(0), "volume");
+        let (pan, _) = param(&ctl, NodePath::Instrument(0), "pan");
+        let osc = lane(&ctl);
+        for (param, kind) in [(detune, ModulatorKind::Lfo), (volume, ModulatorKind::Envelope), (pan, ModulatorKind::MidiLearn)] {
+            modulate(&mut ctl, osc, Port::Param { index: param }, kind, None).unwrap();
+        }
+        let rack = &ctl.model.instruments[0].modulators;
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
+        assert!(matches!(rack[1].source, ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)));
+        assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
+        assert_eq!(rack.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1, 1]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn modulate_an_effects_parameter_goes_in_its_lanes_rack_and_a_bus_effects_in_its_groups() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let reverb = NodePath::Effect { inst: 0, index: 0 };
+        let (damping, _) = param(&ctl, reverb, "damping");
+        let reverb_node = node(&ctl, reverb);
+        modulate(&mut ctl, reverb_node, Port::Param { index: damping }, ModulatorKind::Lfo, None).unwrap();
+        // The reverb is the second plugin of the lane (slot 1); the lane's modulator is in the lane's rack, though the lane is a member of the group.
+        let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(rack.len(), 1);
+        assert_eq!(rack[0].targets[0].kind, ModTargetKind::PluginParam { slot: 1, param_index: damping });
+        assert_eq!(ctl.model.groups[0].modulators.len(), 1, "the group's rack is as it was");
+
+        let bus = NodePath::GroupEffect { group: 0, index: 0 };
+        let (cutoff, _) = param(&ctl, bus, "cutoff");
+        let bus_node = node(&ctl, bus);
+        sent(&engine);
+        modulate(&mut ctl, bus_node, Port::Param { index: cutoff }, ModulatorKind::Envelope, None).unwrap();
+        let group_rack = &ctl.model.groups[0].modulators;
+        assert_eq!(group_rack.len(), 2);
+        assert_eq!(group_rack[1].targets[0].kind, ModTargetKind::GroupBus { effect_index: 0, param_index: cutoff });
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is as it was");
+        let commands = sent(&engine);
+        assert!(commands[0].starts_with("InsertGroupModulator group=0 index=1"), "{commands:?}");
+        assert!(commands[1].starts_with("AddGroupModTarget group=0 mod=1 kind=GroupBus"), "{commands:?}");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn modulate_a_modulators_own_setting_makes_a_sibling_in_the_same_rack_that_drives_it() {
+        let (engine, mut ctl) = modulated();
+        let (lane_lfo, group_lfo) = (lane_mod(&ctl, 0), group_mod(&ctl, 0));
+        let cable = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        sent(&engine);
+        // The rate of the lane's LFO, the rate of the group's, and the depth of the lane's first cable: each is driven by a sibling.
+        modulate(&mut ctl, lane_lfo, Port::Rate, ModulatorKind::Lfo, None).unwrap();
+        modulate(&mut ctl, group_lfo, Port::Rate, ModulatorKind::Envelope, None).unwrap();
+        modulate(&mut ctl, lane_lfo, Port::Depth { edge: cable }, ModulatorKind::Lfo, None).unwrap();
+        let lane_rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(lane_rack.len(), 6, "two new ones in the lane's rack, after the four it had");
+        assert_eq!(lane_rack[4].targets[0].kind, ModTargetKind::ModulatorRate { mod_index: 0 });
+        assert_eq!(lane_rack[5].targets[0].kind, ModTargetKind::ModulatorDepth { mod_index: 0, target_index: 0 });
+        let group_rack = &ctl.model.groups[0].modulators;
+        assert_eq!(group_rack.len(), 3);
+        assert_eq!(group_rack[2].targets[0].kind, ModTargetKind::ModulatorRate { mod_index: 0 });
+        let commands = sent(&engine);
+        assert!(commands[0].starts_with("InsertModulator inst=0 index=4"), "{commands:?}");
+        assert!(commands[1].starts_with("AddModTarget inst=0 mod=4 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
+        assert!(commands[2].starts_with("InsertGroupModulator group=0 index=2"), "{commands:?}");
+        assert!(commands[3].starts_with("AddGroupModTarget group=0 mod=2 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn modulate_puts_the_modulator_in_the_rack_of_the_lane_the_plugin_is_in_whichever_lane_that_is() {
+        let (engine, mut ctl) = reaching();
+        sent(&engine);
+        let racks = |ctl: &Controller| ctl.model.instruments.iter().map(|lane| lane.modulators.len()).collect::<Vec<_>>();
+        let groups = |ctl: &Controller| ctl.model.groups.iter().map(|group| group.modulators.len()).collect::<Vec<_>>();
+        let (before, groups_before) = (racks(&ctl), groups(&ctl));
+        // The filter of the lane that has none of a group's, after the control it has.
+        let filter = NodePath::Effect { inst: 3, index: 0 };
+        let (cutoff, _) = param(&ctl, filter, "cutoff");
+        let filter_node = node(&ctl, filter);
+        modulate(&mut ctl, filter_node, Port::Param { index: cutoff }, ModulatorKind::Lfo, None).unwrap();
+        assert_eq!(racks(&ctl), [before[0], before[1], before[2], before[3] + 1, before[4]]);
+        assert_eq!(ctl.model.instruments[3].modulators[before[3]].targets[0].kind, ModTargetKind::PluginParam { slot: 1, param_index: cutoff });
+        assert!(sent(&engine)[0].starts_with(&format!("InsertModulator inst=3 index={}", before[3])));
+        // The instrument of a lane that is a member of a group: the lane's rack too, and the group's is as it was.
+        let (detune, _) = param(&ctl, NodePath::Instrument(2), "detune");
+        let osc = node(&ctl, NodePath::Instrument(2));
+        modulate(&mut ctl, osc, Port::Param { index: detune }, ModulatorKind::Envelope, None).unwrap();
+        assert_eq!(racks(&ctl), [before[0], before[1], before[2] + 1, before[3] + 1, before[4]]);
+        assert_eq!(ctl.model.instruments[2].modulators[0].targets[0].kind, ModTargetKind::PluginParam { slot: 0, param_index: detune });
+        assert_eq!(groups(&ctl), groups_before);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn modulate_refuses_what_it_cannot_do_and_changes_nothing_not_even_the_ids_that_the_next_one_gets() {
+        let (engine, mut ctl) = modulated();
+        let (lane_lfo, envelope, group) = (lane_mod(&ctl, 0), lane_mod(&ctl, 1), node(&ctl, NodePath::Group(0)));
+        let lane = node(&ctl, NodePath::Instrument(0));
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        sent(&engine);
+        let racks = |ctl: &Controller| (ctl.model.instruments[0].modulators.len(), ctl.model.groups[0].modulators.len());
+        let before = racks(&ctl);
+        let refused: Vec<(&str, NodeId, Port, Option<f32>, IntentError)> = vec![
+            ("a node that is not there", NodeId(9_999), Port::Param { index: 0 }, None, IntentError::NotFound(NodeId(9_999))),
+            ("a group, which has no parameter", group, Port::Param { index: 0 }, None, invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
+            ("a parameter the plugin has not", lane, Port::Param { index: 999 }, None, invalid("the plugin has no parameter 999")),
+            ("a setting that the modulator has not", envelope, Port::Rate, None, invalid("that modulator has no rate")),
+            ("the depth of a cable that is not there", lane_lfo, Port::Depth { edge: EdgeId(9_999) }, None, IntentError::EdgeNotFound(EdgeId(9_999))),
+            ("a port that no cable ends at", lane, Port::ModOut, None, invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth")),
+            ("a depth that is no number", lane, Port::Param { index: detune }, Some(f32::NAN), invalid("NaN is not a value for the depth of a cable")),
+        ];
+        for (what, to, port, depth, error) in refused {
+            assert_eq!(modulate(&mut ctl, to, port, ModulatorKind::Lfo, depth), Err(error), "{what}");
+            assert_eq!(racks(&ctl), before, "{what}");
+            assert_eq!(ctl.rev, 0, "{what}");
+            assert!(!ctl.dirty, "{what}");
+            assert!(sent(&engine).is_empty(), "{what}");
+        }
+        ctl.model.check_ids().unwrap();
+        // The next modulator and cable have the ids that they would have had if nothing had been refused.
+        modulate(&mut ctl, lane, Port::Param { index: detune }, ModulatorKind::Lfo, None).unwrap();
+        let (_other_engine, mut other) = modulated();
+        let other_lane = node(&other, NodePath::Instrument(0));
+        modulate(&mut other, other_lane, Port::Param { index: detune }, ModulatorKind::Lfo, None).unwrap();
+        let ids = |ctl: &Controller| ctl.model.instruments[0].modulators.last().map(|m| (m.node, m.targets[0].edge, m.targets[0].effective, m.output));
+        assert_eq!(ids(&ctl), ids(&other));
     }
 
     fn remove(ctl: &mut Controller, node: NodeId) -> Result<Applied, IntentError> {

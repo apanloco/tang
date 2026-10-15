@@ -1176,6 +1176,8 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
         let edge = port.get("edge").map(|e| format!("#{e}")).unwrap_or_default();
         format!("{}{index}{edge}", text(&port["type"]))
     };
+    // A number as a script writes it: `1` where the wire says `1.0` (which no script reads back as anything but 1).
+    let number = |value: &Value| value.as_f64().map_or_else(|| value.to_string(), |n| n.to_string());
     let list = |values: &Value| values.as_array().unwrap().clone();
     let nodes: Vec<String> = list(&wire["graph"]["nodes"])
         .iter()
@@ -1190,7 +1192,7 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
     let cables: Vec<String> = edges
         .iter()
         .filter(|e| text(&e["kind"]) == "modulation")
-        .map(|e| format!("#{} {}>{} {} @{}", e["id"], e["from"]["node"], e["to"]["node"], port(&e["to"]["port"]), e["amount"]))
+        .map(|e| format!("#{} {}>{} {} @{}", e["id"], e["from"]["node"], e["to"]["node"], port(&e["to"]["port"]), number(&e["amount"])))
         .collect();
     let slots = |entries: &Value| -> Vec<String> {
         list(entries).iter().map(|e| format!("{} {} {} {}", e["slot"], e["node"], port(&e["port"]), text(&e["kind"]))).collect()

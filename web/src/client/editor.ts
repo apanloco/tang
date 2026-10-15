@@ -28,6 +28,7 @@ const DOING: Record<Intent["type"], string> = {
   removeEdge: "take out a cable",
   addModulator: "add a modulator",
   addModEdge: "draw a cable",
+  modulate: "modulate a parameter",
   addEffect: "add an effect",
   addInstrument: "add an instrument",
   replaceInstrument: "change the instrument of a lane",

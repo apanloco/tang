@@ -401,6 +401,11 @@ function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: Modulator
   const owner = snapshot.graph.nodes.find((n) => n.id === parent && n.kind !== "master");
   if (!owner) return noNode(parent);
   if (owner.kind !== "instrument" && owner.kind !== "group") return invalid("a modulator goes in a lane or in a group");
+  return { restructured: withModulator(snapshot, parent, kind, counters).session };
+}
+
+/** The session with a modulator of `kind` at the end of the rack of the lane or group `parent` (which is one), and the node it is. */
+function withModulator(snapshot: Snapshot, parent: NodeId, kind: ModulatorKind, counters: Counters): { session: Snapshot; node: Node } {
   const { nodes } = snapshot.graph;
   const strip = (n: Node): boolean => n.id === parent || (n.parent === parent && (n.kind === "effect" || n.kind === "modulator"));
   const at = nodes.findLastIndex(strip) + 1;
@@ -411,13 +416,39 @@ function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: Modulator
   const place = outputs.findLastIndex((entry) => entry.kind === "modOutput" && before.has(entry.node)) + 1;
   const entry: LayoutEntry = { slot: counters.slot(), node: added.id, port: { type: "modOut" }, kind: "modOutput" };
   const modulation = [...outputs.slice(0, place), entry, ...outputs.slice(place)];
-  return {
-    restructured: {
-      ...snapshot,
-      graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] },
-      telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation },
-    },
+  const session: Snapshot = {
+    ...snapshot,
+    graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] },
+    telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation },
   };
+  return { session, node: added };
+}
+
+/**
+ * A modulator of `kind` made for what the port `to` of a node is, with a cable from it to the port, as one change (`Controller::modulate_intent`; the TUI's `m` and
+ * `l`). It goes at the end of the rack that reaches `to`: the lane's for the plugin of a lane (its instrument or an effect of its chain), the group's for a bus effect,
+ * and the rack a modulator is in for a setting of it, where the new one is a sibling that drives it. The cable is drawn as `addModEdge` draws one (what it reaches is read
+ * from the graph, so the modulator is made first), at half depth, or at `depth` clamped as a depth that is set is; if it cannot be drawn, nothing is made and no id is used.
+ */
+function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind, depth: number | null, counters: Counters): Outcome {
+  // (In the controller's order: the number, the node, and then what the cable is refused for.)
+  if (depth !== null && !holds(depth)) return invalid(`${shown(depth)} is not a value for the depth of a cable`);
+  const target = snapshot.graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
+  if (!target) return noNode(to.node);
+  if (target.kind === "group") return invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither");
+  // The rack that reaches it: a lane's, for its instrument and the effects of its chain (which sit in it), a group's for a bus effect, and a modulator's own.
+  const parent = target.kind === "instrument" ? target.id : target.parent;
+  if (parent === null) return invalid("that node is in no lane or group");
+  const mark = counters.mark();
+  const { session, node } = withModulator(snapshot, parent, kind, counters);
+  const drawn = addModEdgeOutcome(session, node.id, to, counters);
+  if (!("restructured" in drawn)) {
+    counters.rewind(mark);
+    return drawn;
+  }
+  if (depth === null) return drawn;
+  const edges = drawn.restructured.graph.edges.map((e) => (isModulation(e) && e.from.node === node.id ? { ...e, amount: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } : e));
+  return { restructured: { ...drawn.restructured, graph: { ...drawn.restructured.graph, edges } } };
 }
 
 /**
@@ -723,6 +754,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
+  if (intent.type === "modulate") return modulateOutcome(snapshot, intent.to, intent.kind, intent.depth, counters);
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
   if (intent.type === "moveEffect") return moveEffectOutcome(snapshot, intent.node, intent.index);
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);

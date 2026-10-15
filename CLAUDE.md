@@ -1082,7 +1082,7 @@ use for it, the session file keeps it, see "Node positions (`ui`)"), `RenameGrou
 without the spaces round it, at most `MAX_NAME` (64) characters and none of them a control character, and nothing gives the group back the
 name it has by default, "Group" and its number; refused, with nothing changed, for a node that is no group and for a name that is not one;
 told as `GroupRenamed`, which carries the name the group has now; the engine has no use for it, the session file keeps it, and the TUI's `R`
-on a group header asks it); `Save` (the session's own file), `Undo` and `Redo` (the history, below); and ten that change
+on a group header asks it); `Save` (the session's own file), `Undo` and `Redo` (the history, below); and eleven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
 an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
@@ -1096,7 +1096,15 @@ TUI's `m` on a modulator's field and its `t` offer), a lane's modulator reaching
 its rack and a group's its members' modulators and the others of its own, never itself; refused
 for a port that is not one of these, a node or a plugin out of reach, a modulator that has no
 such setting, a parameter or setting it drives already; a cable to a setting has no telemetry
-slot), `AddEffect { parent, plugin }` (a plugin of the catalog, loaded by the controller
+slot), `Modulate { to, kind, depth }` (a modulator of `kind` made for what the port `to` is, and a cable from it to
+the port, as one thing: what the TUI's `m` and `l` do, and what the page's menu on a knob asks. It goes at the end of the rack
+that reaches `to`: the lane's for a lane's instrument or an effect of its chain, the group's for a bus effect, and the rack a
+modulator is in for a setting of it or the depth of one of its cables, where the new one is a sibling that drives it. The cable
+starts at half depth, or at `depth` clamped as `SetEdgeDepth` clamps it, and a MIDI control is armed to learn as for
+`AddModulator`. Refused, with nothing changed (nothing is made and no id is used), for what `AddModEdge` refuses of a cable
+to `to` from a modulator that is not there yet, for a group, which has no parameter, and for a depth that is not a number:
+`Controller::modulate_intent`; the plan of the cable is `param_cable` / `field_cable`, which `AddModEdge` uses too),
+`AddEffect { parent, plugin }` (a plugin of the catalog, loaded by the controller
 and nothing else, at the end of the chain of a lane, `parent` being the lane's node, or of a
 group's bus: see `Controller::add_effect`), `AddInstrument { plugin }` (a lane at the end of
 the session, full range and in no group, with an instrument of the catalog in it: see
@@ -1133,8 +1141,9 @@ makes; the pane is drawn (`modulator_pane`) and the value popup opened
 place in the TUI; the Type row, which turns an LFO into an envelope, is still the TUI's
 own edit). Step 33 moved the TUI's structure edits that have intents onto them: its plugin selector (`AddEffect`,
 `ReplaceInstrument`), `d` (`RemoveNode`), `n` (`AddInstrument`), `g` (`AddGroup`, `SetLaneGroup`), Shift+Up and Shift+Down on an effect
-(`MoveEffect`), `m`, `l` and `t` (`AddModulator`, `AddModEdge`, `SetEdgeDepth`; the target that a popup lists is a positional kind, which
-`SessionModel::endpoint_of` turns into the node and port that `AddModEdge` names) all go through `State::apply`, as the browser's requests
+(`MoveEffect`), `m`, `l` and `t` (`Modulate` for a new modulator and its cable, `AddModEdge` for a modulator that is there, `AddModulator` and
+`SetEdgeDepth`; the target that a popup lists is a positional kind, which `SessionModel::endpoint_of` turns into the node and port that
+`AddModEdge` and `Modulate` name) all go through `State::apply`, as the browser's requests
 go through the controller, so that they are in the history, and `Controller::remove_effect`, `move_effect`, `remove_lane` and the others are
 the intents' own (`SessionModel::remove_effect` / `move_effect` and the bus's keep the modulator targets of the lane and of its group
 pointing at the same plugins, as the audio thread does). What the TUI still edits itself, for want of an intent: the order of the lanes
@@ -1143,7 +1152,7 @@ pointing at the same plugins, as the audio thread does). What the TUI still edit
 **Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
 step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
 `SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
-`AddModulator`, `AddModEdge`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
+`AddModulator`, `AddModEdge`, `Modulate`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
 intents that put it back and the intents that do it again (read from the model before the change, so that it puts back what the change
 overwrote and does again what was asked) and the words of a button for it (`set cutoff`, `add Reverb`, `draw a cable`). **What is added is
 taken out by undo (`RemoveNode`, `RemoveEdge`) and made again by redo under the ids it had**: `NodeIds::reuse` says which ids come next
@@ -1217,11 +1226,11 @@ back by this: `Plugin` has no state to save. Two cables that drive each other's 
 while the other still drives its place, and once it has gone that place cannot be told from the next cable's), and a step is not made of such a
 removal. A journal holds what it took by the places it had, so a structural edit that no intent asks for (the TUI's swap of two lanes, a direct call of a
 method of the controller that takes something out, moves an effect or puts a lane in a group) forgets the history
-(`Controller::forget_the_history_unless_an_intent_asks`: nothing is forgotten while an intent is carried out, which is a step or forgets it itself). One thing a key asks for that takes
-several intents is one step for the TUI: `Controller::history_mark` and `join_steps_since` join the steps recorded since a mark (one from before the
-history was forgotten joins nothing), so that a new
-modulator and the cable to it ("modulate cutoff") or a learned control and its depth ("learn cutoff") are one Ctrl+Z; a browser makes them with
-two clicks and has two steps. Changes of one thing (one parameter, gain, setting or cable) a second or less apart are one step, so that a drag
+(`Controller::forget_the_history_unless_an_intent_asks`: nothing is forgotten while an intent is carried out, which is a step or forgets it itself). A new
+modulator and the cable to it are one intent, `Modulate`, and so one step in the words of the TUI's `m` and `l` (`modulate cutoff`, `learn cutoff`, `modulate rate`
+for a setting of a modulator): it is a `Plan::Added`, whose step takes out the modulator, which takes its cable with it (`takes_out`: one node and one cable were
+made), and redo makes both again under the ids they had. (There is no joining of the steps of several intents: the TUI's `m` and `l` were the one thing that
+did it, until `Modulate`, and nothing asks for it any more.) Changes of one thing (one parameter, gain, setting or cable) a second or less apart are one step, so that a drag
 is one (`SAME_STEP`; 200 steps are kept, `MAX_STEPS`; both are generated into `constants.ts`), a change after an undo ends what could be
 redone, and an intent that is refused leaves no step. `Undo` and `Redo` are intents, answered as any are: each intent of the step is a
 revision of its own (`Controller::undo` / `redo`), neither is a step, and one with nothing to do is refused (`there is nothing to undo`) and
@@ -1622,7 +1631,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
-  `AddModulator`, `AddModEdge`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
+  `AddModulator`, `AddModEdge`, `Modulate`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
   `SetNodeUi`, `SetPinned`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
   or a group), `Save`, `Undo` and `Redo` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
@@ -1881,7 +1890,7 @@ TODO: an all-notes-off for a lane that comes back by undo (and for the members o
 was not sent the note-off.
 TODO: the controller's layout of the telemetry lists a cable by the place of its modulator in the rack, and the mock engine's lists one that is drawn after
 the others: a cable of an earlier modulator is told in another order (no reader depends on it; the fixture's scripts draw from the last modulator of a rack).
-TODO: the TUI's `n` and then a choice from its selector is two steps, an add and a replacement (a step that holds a journal is not joined into another, `History::join_above`): it takes two Ctrl+Z.
+TODO: the TUI's `n` and then a choice from its selector is two steps, an add and a replacement: it takes two Ctrl+Z.
 TODO: keep-alive pings for WebSockets.
 
 ## Platform
