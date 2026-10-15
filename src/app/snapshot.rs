@@ -215,6 +215,7 @@ impl Snapshot {
                 piano.notes.clone_from(notes);
             }
             Event::LockedSet { locked } => self.meta.piano.locked = *locked,
+            Event::BpmSet { bpm } => self.meta.bpm = *bpm,
             Event::Saved { file } => self.meta.file.clone_from(file),
         }
         Ok(())
@@ -539,6 +540,8 @@ type = "envelope"
             Intent::SetLocked { locked: true },
             Intent::SetScale { scale: "Bb Natural Minor".to_string() },
             Intent::SetLocked { locked: false },
+            Intent::SetBpm { bpm: 96.5 },
+            Intent::SetBpm { bpm: 1000.0 },
             Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 120.0 }) },
             Intent::SetNodeUi { node: NodeId::MASTER, ui: Some(NodeUi { x: 1200.0, y: -40.5 }) },
             Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 140.0 }) },
@@ -559,7 +562,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 40);
+        assert_eq!(told.rev, 42);
     }
 
     #[test]

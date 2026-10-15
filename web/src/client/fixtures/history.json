@@ -1072,6 +1072,225 @@
       ]
     },
     {
+      "name": "a tempo is put back, a drag of it is one step, and one that is held to the tempos there can be says what it is",
+      "rows": [
+        {
+          "events": [
+            {
+              "bpm": 90.0,
+              "rev": 1,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "bpm": 90.0,
+            "type": "setBpm"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 16
+        },
+        {
+          "events": [
+            {
+              "bpm": 100.0,
+              "rev": 2,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "bpm": 100.0,
+            "type": "setBpm"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 16
+        },
+        {
+          "events": [
+            {
+              "bpm": 140.0,
+              "rev": 3,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "bpm": 140.0,
+            "type": "setBpm"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "bpm": 20.0,
+              "rev": 4,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "bpm": 5.0,
+            "type": "setBpm"
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "bpm": 300.0,
+              "rev": 5,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "bpm": 1000.0,
+            "type": "setBpm"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "bpm": 20.0,
+              "rev": 6,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": "set the tempo",
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "bpm": 140.0,
+              "rev": 7,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": "set the tempo",
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "bpm": 120.0,
+              "rev": 8,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": "set the tempo",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set the tempo",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "events": [
+            {
+              "bpm": 140.0,
+              "rev": 9,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": "set the tempo",
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "bpm": 20.0,
+              "rev": 10,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": "set the tempo",
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "bpm": 300.0,
+              "rev": 11,
+              "type": "bpmSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set the tempo"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
       "name": "the gains are put back each by its own words",
       "rows": [
         {

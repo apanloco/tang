@@ -38,7 +38,7 @@ use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, Taper};
 use crate::app::model::{
-    DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
+    BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PatternState, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
@@ -1495,6 +1495,8 @@ impl State {
                 intent::Event::RangeSet { .. } => self.rebuild_tree(),
                 // (The Piano tab reads the scale and the lock from the shared filter, on every frame.)
                 intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
+                // (The status bar reads the tempo from the model, on every frame.)
+                intent::Event::BpmSet { .. } => {}
                 // (The TUI does not draw where a node is, nor which of its parameters are its knobs.)
                 intent::Event::NodeUiSet { .. } | intent::Event::PinnedSet { .. } => {}
                 // The group's header and its parameter pane's title are its name.
@@ -2217,10 +2219,9 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.bpm_editing = None,
         KeyCode::Enter => {
-            if let Some(val) = parse_number(&edit.input.value) {
-                let bpm = val.clamp(edit.param_min, edit.param_max);
-                s.ctl.model.bpm = bpm;
-                let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
+            if let Some(bpm) = parse_number(&edit.input.value) {
+                // (The controller holds it to the tempos there can be, which the popup says.)
+                let _ = s.apply(Intent::SetBpm { bpm });
             }
             s.bpm_editing = None;
         }
@@ -2634,8 +2635,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             s.bpm_editing = Some(EditState {
                 input: TextInputState::new(&format!("{:.0}", s.ctl.model.bpm)),
                 param_name: "BPM".to_string(),
-                param_min: 20.0,
-                param_max: 300.0,
+                param_min: BPM_MIN,
+                param_max: BPM_MAX,
             });
         }
 

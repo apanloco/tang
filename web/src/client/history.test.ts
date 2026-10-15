@@ -364,6 +364,33 @@ describe("what turning a macro is to the history", () => {
   });
 });
 
+describe("what a tempo set is to the history", () => {
+  const snapshot: Snapshot = { ...historyFixture.snapshot, meta: { ...historyFixture.snapshot.meta, bpm: 87.5 } };
+  const plan = (intent: Intent): ReturnType<typeof planOf> => planOf(snapshot, intent, 7, builtinCatalog);
+
+  test("is a step in the words of the tempo that puts back the tempo there was and does it again", () => {
+    const planned = plan({ type: "setBpm", bpm: 90 });
+    if (typeof planned !== "object" || !("step" in planned)) throw new Error("a step");
+    expect(planned.step.label).toBe("set the tempo");
+    expect(planned.step.undo).toEqual([{ type: "setBpm", bpm: 87.5 }]);
+    expect(planned.step.redo).toEqual([{ type: "setBpm", bpm: 90 }]);
+  });
+
+  test("is one step for the changes of it that follow one another, where a change of another thing is a step of its own", () => {
+    const history = new History();
+    const record = (intent: Intent, at: number): void => {
+      const planned = planOf(snapshot, intent, at, builtinCatalog);
+      if (typeof planned !== "object" || !("step" in planned)) throw new Error("a step");
+      history.record(planned.step);
+    };
+    record({ type: "setBpm", bpm: 90 }, 0);
+    record({ type: "setBpm", bpm: 100 }, 0.016);
+    record({ type: "setLocked", locked: true }, 0.032);
+    record({ type: "setBpm", bpm: 110 }, 0.048);
+    expect(history.undoable).toBe(3);
+  });
+});
+
 describe("what a removal of an effect is to the history", () => {
   const snapshot = historyFixture.snapshot;
   const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);

@@ -35,6 +35,7 @@ export type { TelemetryLayout } from "./generated/TelemetryLayout";
 export type { Waveform } from "./generated/Waveform";
 export type { WireError } from "./generated/WireError";
 export {
+  BPM_RANGE,
   DEPTH_RANGE,
   FRAME_HEADER_LEN,
   GAIN_RANGES,

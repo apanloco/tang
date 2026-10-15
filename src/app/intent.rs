@@ -108,6 +108,10 @@ pub enum Intent {
     /// a MIDI keyboard or the computer's keys), or let every note through, with the ones outside the scale only
     /// coloured. It is saved with the session.
     SetLocked { locked: bool },
+    /// Set the tempo that patterns are recorded at, in beats a minute (the TUI's `b`, the page's tempo field): the metronome's count-in and the length of the
+    /// next recording are counted in it. It is the session's (`bpm` in the file) and the audio thread's; a pattern that has been recorded keeps the tempo it
+    /// was recorded at. `bpm` is held to `BPM_MIN` to `BPM_MAX`. Refused, with nothing changed, for a value that is not a number.
+    SetBpm { bpm: f32 },
     /// Say where a front-end draws a node, in the pixels of its canvas, or `None` to give the node back to the
     /// front-end's own layout. `node` is any node of the session, the master (`NodeId::MASTER`) included. A place is
     /// kept to a tenth of a pixel and to 100 000 either way, which the controller does for the client; the engine has
@@ -351,6 +355,8 @@ pub enum Event {
     ScaleSet { scale: String, root: u8, kind: String, notes: Vec<u8> },
     /// The piano is locked to its scale, or it is not.
     LockedSet { locked: bool },
+    /// The tempo is now `bpm` (after it was held to the tempos there can be).
+    BpmSet { bpm: f32 },
     /// A node is now drawn at `ui` (after rounding and clamping), or wherever the front-end lays it out if it is `None`.
     NodeUiSet { node: NodeId, ui: Option<NodeUi> },
     /// The parameters now pinned to the node's plugin, in order.
@@ -540,6 +546,7 @@ mod tests {
             (Intent::SetRange { node: NodeId(2), range: None }, json!({"type": "setRange", "node": 2, "range": null})),
             (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
             (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
+            (Intent::SetBpm { bpm: 96.5 }, json!({"type": "setBpm", "bpm": 96.5})),
             (
                 Intent::SetNodeUi { node: NodeId(2), ui: Some(NodeUi { x: 80.0, y: -12.5 }) },
                 json!({"type": "setNodeUi", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),
@@ -598,6 +605,7 @@ mod tests {
                 json!({"type": "scaleSet", "scale": "F# dorian", "root": 6, "kind": "dorian", "notes": [1, 3, 4, 6, 8, 9, 11]}),
             ),
             (Event::LockedSet { locked: false }, json!({"type": "lockedSet", "locked": false})),
+            (Event::BpmSet { bpm: 96.5 }, json!({"type": "bpmSet", "bpm": 96.5})),
             (
                 Event::NodeUiSet { node: NodeId(2), ui: Some(NodeUi { x: 80.0, y: -12.5 }) },
                 json!({"type": "nodeUiSet", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),

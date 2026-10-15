@@ -935,7 +935,7 @@ numeric `params` values (the index into the label list).
 | `/` | Filter parameter list by name |
 | `r` | Record/stop pattern for current instrument |
 | `Ctrl+R` | Clear the pattern of the selected instrument or pattern (chain focus; `d` on the pattern does the same) |
-| `b` | Set global BPM (opens value entry popup) |
+| `b` | Set the tempo patterns are recorded at, in BPM (opens value entry popup; the `SetBpm` intent: held to 20–300, a step of the history, saved as `bpm`) |
 | `o` | Show / hide the scope of the node under the chain cursor, in a strip under the chain and the parameters (see "Scope tab"; a terminal of 24 rows or more) |
 | `O` | Wave or spectrum of that scope |
 | `Ctrl+S` | Save session (to the file it was loaded from) |
@@ -1236,7 +1236,9 @@ ends included, or every note for none; refused for a node that is no lane, a not
 note above the high one; the TUI's `R` popup asks it too), `SetScale { scale }` (the Piano tab's scale, as
 the session file writes it, `F# dorian`, flats, long names and any case taken; refused for text that is
 not a scale; answered with `ScaleSet`, which has the root and the pitch classes a client draws from) and
-`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetPinned { node, params }` (which parameters of a
+`SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetBpm { bpm }` (the tempo that patterns are recorded at, held to 20 to 300;
+refused, with nothing changed, for a value that is not a number; told as `BpmSet` with the tempo it has now; the model's `bpm` and the audio thread's `SetGlobalBpm`,
+saved as the file's `bpm`; the patterns that are recorded keep the tempo they were recorded at; the TUI's `b` asks it), `SetPinned { node, params }` (which parameters of a
 plugin a front-end shows as knobs on its node, by the plugin's own indices in the order they are shown, replacing the list there was;
 none gives the node back to the front-end's own choice; refused, with nothing changed, for a node that has no plugin, a parameter the
 plugin has not, a separator, a parameter twice and more than `MAX_PINNED`; told as `PinnedSet`; the engine and the TUI have no use for
@@ -1318,11 +1320,11 @@ own edit). Step 33 moved the TUI's structure edits that have intents onto them: 
 go through the controller, so that they are in the history, and `Controller::remove_effect`, `move_effect`, `remove_lane` and the others are
 the intents' own (`SessionModel::remove_effect` / `move_effect` and the bus's keep the modulator targets of the lane and of its group
 pointing at the same plugins, as the audio thread does). What the TUI still edits itself, for want of an intent: the order of the lanes
-(`Controller::swap_lanes`, which forgets the history), the pattern, the tempo, the Type row and emptying a lane (`Controller::clear_instrument`, which does too).
+(`Controller::swap_lanes`, which forgets the history), the pattern, the Type row and emptying a lane (`Controller::clear_instrument`, which does too).
 
 **Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
 step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
-`SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
+`SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `SetBpm`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
 `AddModulator`, `AddModEdge`, `Modulate`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
 intents that put it back and the intents that do it again (read from the model before the change, so that it puts back what the change
 overwrote and does again what was asked) and the words of a button for it (`set cutoff`, `add Reverb`, `draw a cable`). **What is added is
@@ -1412,7 +1414,7 @@ of that group to it go), a lane put in a group or out of one that its old group 
 and `Controller::set_instrument` and `clear_instrument`
 for the TUI's `i` and `d`) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
 asks by intents for what has them (the plugin selector, `d`, `n`, `g`, Shift+Up and Shift+Down on an effect, `m`, `l` and `t`), so they are in the
-history; what has none is not (the pattern, the tempo, the Type row; the order of the lanes empties it) and the others do not empty it. What Undo and Redo would do is
+history; what has none is not (the pattern, the Type row; the order of the lanes empties it) and the others do not empty it. What Undo and Redo would do is
 told to every browser as a message of its own, `History { undo, redo }` (the words of a button, or null), after the snapshot and the catalog
 and after every change of it, before the answer to the request that made it (`web::owner`): it is no event, since a second event of one
 revision is taken for a repeat. The page's buttons and keys ask for them (`ClientState.history`, `app/UndoRedo.tsx`) and so do the TUI's
@@ -1829,7 +1831,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `Modulate`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
-  `SetNodeUi`, `SetPinned`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
+  `SetNodeUi`, `SetPinned`, `SetBpm`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
   or a group), `Save`, `SaveAs`, `Undo` and `Redo` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
   catalog only, at the end of a lane's chain or a group's bus; the TUI's selector asks
@@ -2131,7 +2133,7 @@ TODO: the events of one intent share its revision, which a client takes for a re
 if there is more than one (every intent makes one event today).
 TODO: undo of what moves between groups: a group made of a lane that is in another and a lane put in a group or out of one whose modulators drive it (the cables of the group that has it go) empty
 the history until their steps exist (`Plan::Barrier` in `src/app/history.rs`, `planOf` in `web/src/client/history.ts`).
-TODO: the TUI's edits that have no intent (the pattern, the tempo, the Type row) are not in the history, and do not empty it; the order of the lanes with
+TODO: the TUI's edits that have no intent (the pattern, the Type row) are not in the history, and do not empty it; the order of the lanes with
 Shift+Up / Shift+Down on a lane and `Controller::clear_instrument` do (a step that took something out puts it back by the places it had).
 TODO: a cable that a file has to a cable that is not there (`mod_depth = [0, 0]` to a modulator with no cable) is centred on something else after undo of the
 removal of its modulator than the loader gave it; it drives nothing, so it makes no difference to what is heard, and the tests leave it out.

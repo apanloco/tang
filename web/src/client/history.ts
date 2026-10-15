@@ -296,6 +296,8 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       return step("set the scale", { type: "setScale", scale: snapshot.meta.piano.scale }, null);
     case "setLocked":
       return step(intent.locked ? "lock the piano to its scale" : "let every note of the piano through", { type: "setLocked", locked: snapshot.meta.piano.locked }, null);
+    case "setBpm":
+      return step("set the tempo", { type: "setBpm", bpm: snapshot.meta.bpm }, "tempo");
     case "moveEffect": {
       const node = nodeOf(intent.node);
       if (node?.kind !== "effect") return "nothing";

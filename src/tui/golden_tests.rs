@@ -3164,6 +3164,35 @@ fn a_finished_recording_shows_in_the_tree_at_the_tempo_set_with_b() {
 }
 
 #[test]
+fn a_tempo_set_with_b_is_an_intent_that_marks_the_session_changed_and_that_ctrl_z_undoes() {
+    let mut h = Harness::new(scene_split());
+    h.commands();
+    h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars("90").press(KeyCode::Enter);
+    assert_eq!((h.s.ctl.model.bpm, h.s.ctl.rev, h.s.ctl.dirty), (90.0, 1, true));
+    assert_eq!(h.commands(), ["SetGlobalBpm bpm=90.0"]);
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.s.ctl.model.bpm, 120.0);
+    assert_eq!(h.commands(), ["SetGlobalBpm bpm=120.0"]);
+}
+
+#[test]
+fn the_popup_of_b_says_the_tempos_there_can_be() {
+    let mut h = Harness::new(scene_split());
+    h.type_chars("b");
+    let frame = h.dump();
+    assert!(frame.contains("Range: 20.00 — 300.00"), "{frame}");
+}
+
+#[test]
+fn a_tempo_that_there_cannot_be_is_held_to_the_nearest_when_it_is_set_with_b() {
+    for (text, tempo) in [("1000", 300.0), ("5", 20.0), ("0", 20.0), ("-40", 20.0)] {
+        let mut h = Harness::new(scene_split());
+        h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars(text).press(KeyCode::Enter);
+        assert_eq!(h.s.ctl.model.bpm, tempo, "{text}");
+    }
+}
+
+#[test]
 fn a_tempo_set_with_b_leaves_the_tempo_that_a_recorded_pattern_was_recorded_at() {
     // A pattern's length in frames is its beats counted in the tempo it was recorded at, and a load counts them in the pattern's `bpm`:
     // a pattern that was saved at another tempo than that would be another length when it was loaded.
@@ -4284,7 +4313,7 @@ mod with_web {
                 assert_eq!(said(&mut late).await["rev"], 2, "hello");
                 drop(late);
 
-                // The TUI sets the tempo with `b`, which no intent does: the browser is given a snapshot.
+                // The TUI sets the tempo with `b`, an intent: the browser hears it as an event.
                 browser.keys.send(key(KeyCode::Esc)).unwrap();
                 browser.keys.send(key(KeyCode::Char('b'))).unwrap();
                 // (The popup starts with 120, which goes.)
@@ -4296,10 +4325,11 @@ mod with_web {
                 }
                 browser.keys.send(key(KeyCode::Enter)).unwrap();
                 let told = said(&mut client).await;
-                assert_eq!(told["type"], "snapshot", "{told}");
-                assert_eq!((told["snapshot"]["rev"].clone(), told["snapshot"]["meta"]["bpm"].clone()), (json!(3), json!(90.0)));
-                assert_eq!(told["snapshot"]["meta"]["dirty"], true);
-                let seen = told["snapshot"]["graph"]["nodes"].as_array().unwrap().len();
+                assert_eq!(told["type"], "event", "{told}");
+                assert_eq!(told["event"], json!({"rev": 3, "type": "bpmSet", "bpm": 90.0}));
+                // (And what Undo would do now: the tempo is a step of its own, where the cutoff the TUI turned went on the browser's.)
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "set the tempo", "redo": null}));
+                let seen = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().len();
 
                 // And adds a lane with `n` (and leaves the oscillator it comes with): an intent, told as a snapshot at the revision after it.
                 browser.keys.send(key(KeyCode::Char('n'))).unwrap();
@@ -4319,7 +4349,7 @@ mod with_web {
                 assert!(cutoff < 0.9 && cutoff > 0.8, "{cutoff}");
                 assert_eq!(h.s.ctl.model.bpm, 90.0);
                 assert_eq!(h.s.ctl.model.instruments.len(), 2, "the lane");
-                assert_eq!(h.s.ctl.rev, 5, "an intent from the browser, two from the TUI (the lane is told with a snapshot after it), and a snapshot for the tempo");
+                assert_eq!(h.s.ctl.rev, 5, "an intent from the browser, three from the TUI (the cutoff, the tempo and the lane, which is told with a snapshot after it)");
                 let bar = tab_bar(h);
                 assert!(bar.contains(&format!("web {} (1)", web.status().address)), "the browser is counted: {bar}");
             },

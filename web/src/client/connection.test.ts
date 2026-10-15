@@ -344,6 +344,28 @@ describe("a request", () => {
     expect(client.state.snapshot?.rev).toBe(2);
   });
 
+  test("sets the tempo, held to the tempos there can be, and refuses what is not a number in the controller's words", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    for (const [asked, set] of [
+      [96.5, 96.5],
+      [5, 20],
+      [1000, 300],
+      [20, 20],
+      [300, 300],
+    ] as const) {
+      await client.request({ type: "setBpm", bpm: asked });
+      expect(client.state.snapshot?.meta.bpm, String(asked)).toBe(set);
+    }
+    // (A number beyond 32 bits is infinity to the controller.)
+    const failure = (await client.request({ type: "setBpm", bpm: 1e39 }).catch((e: unknown) => e)) as RequestError;
+    expect([failure.code, failure.message]).toEqual(["invalid", "inf is not a tempo"]);
+    expect(() => {
+      server.apply({ type: "setBpm", bpm: Number.NaN });
+    }).toThrow("NaN is not a tempo");
+    expect(client.state.snapshot?.meta.bpm).toBe(300);
+  });
+
   test("for a value that is not a number is refused in the server's own process (JSON has no such number to send)", () => {
     const server = new MockServer();
     expect(() => {

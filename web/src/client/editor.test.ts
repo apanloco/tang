@@ -876,6 +876,32 @@ describe("setting the scale of the piano", () => {
   });
 });
 
+describe("setting the tempo", () => {
+  test("resolves true when the tempo is set, which the session shows, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(client.state.snapshot?.meta.bpm).toBe(120);
+    expect(await editor.setBpm(96.5)).toBe(true);
+    expect(client.state.snapshot?.meta.bpm).toBe(96.5);
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("holds a tempo to the tempos there can be, which the session shows", async () => {
+    const { client, editor } = await open();
+    expect(await editor.setBpm(1000)).toBe(true);
+    expect(client.state.snapshot?.meta.bpm).toBe(300);
+    expect(await editor.setBpm(5)).toBe(true);
+    expect(client.state.snapshot?.meta.bpm).toBe(20);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setBpm(96.5)).toBe(false);
+    expect(said(notices)).toEqual(["Could not set the tempo to 96.5: Not connected to the server."]);
+  });
+});
+
 describe("locking the piano to its scale", () => {
   test("resolves true when the piano is locked and when it is let go, which the session shows, and says nothing", async () => {
     const { client, notices, editor } = await open();

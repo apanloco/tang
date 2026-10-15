@@ -26,6 +26,8 @@ export function applyEvent(snapshot: Snapshot, event: StampedEvent): Applied {
   if (event.type === "scaleSet" || event.type === "lockedSet") {
     return { ok: true, snapshot: { ...snapshot, rev: event.rev, meta: { ...snapshot.meta, dirty: true, piano: pianoAfter(snapshot.meta.piano, event) } } };
   }
+  // So is the tempo: it changes no node either.
+  if (event.type === "bpmSet") return { ok: true, snapshot: { ...snapshot, rev: event.rev, meta: { ...snapshot.meta, dirty: true, bpm: event.bpm } } };
   const graph = changeGraph(snapshot.graph, event);
   if (typeof graph === "string") return { ok: false, reason: graph };
   // An intent, from whichever front-end, is a change the session has not saved (`Controller::apply` marks it so).
@@ -40,7 +42,7 @@ function pianoAfter(piano: PianoMeta, event: Extract<StampedEvent, { type: "scal
 }
 
 /** The graph after the event, with only what it changed replaced; or the reason it cannot be. */
-function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" | "scaleSet" | "lockedSet" }>): Graph | string {
+function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Graph | string {
   if (event.type === "edgeDepthSet") return withDepth(graph, event.edge, event.depth);
   const node = graph.nodes.find((n) => n.id === event.node);
   if (!node) return `there is no node ${event.node}`;
@@ -50,7 +52,7 @@ function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" 
 }
 
 /** The node the event is about, as it is after it; or the reason it cannot be. */
-function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "saved" | "scaleSet" | "lockedSet" }>): Node | string {
+function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Node | string {
   switch (event.type) {
     case "paramSet": {
       const plugin = pluginOf(node);

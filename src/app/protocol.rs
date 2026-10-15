@@ -415,7 +415,7 @@ mod typescript {
     use crate::app::graph::{Graph, Waveform};
     use crate::app::intent::{Event, Gain, Intent, ModulatorField, StampedEvent};
     use crate::app::layout::TelemetryLayout;
-    use crate::app::model::{DEPTH_MAX, DEPTH_MIN};
+    use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN};
     use crate::app::snapshot::Snapshot;
     use super::{ClientMessage, ServerMessage};
 
@@ -551,6 +551,8 @@ mod typescript {
                  export const MODULATOR_FIELD_SCALES: Record<ModulatorField, \"linear\" | \"log\"> = {{\n{}}};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
+                 /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */\n\
+                 export const BPM_RANGE: readonly [number, number] = [{BPM_MIN}, {BPM_MAX}];\n\n\
                  /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */\n\
                  export const WAVEFORMS: readonly Waveform[] = [{}];\n\n\
                  /** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */\n\

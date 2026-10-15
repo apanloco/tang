@@ -9,7 +9,7 @@ use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, env
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -72,6 +72,7 @@ impl Controller {
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
+            Intent::SetBpm { bpm } => Done::Event(self.set_bpm(bpm)?),
             Intent::SetNodeUi { node, ui } => Done::Event(self.set_node_ui(node, ui)?),
             Intent::SetPinned { node, params } => Done::Event(self.set_pinned(node, params)?),
             Intent::RenameGroup { node, name } => Done::Event(self.rename_group(node, &name)?),
@@ -325,6 +326,18 @@ impl Controller {
     fn set_locked(&mut self, locked: bool) -> Event {
         self.piano_filter.set_mode(if locked { PianoMode::Locked } else { PianoMode::Highlight });
         Event::LockedSet { locked }
+    }
+
+    /// The tempo that patterns are recorded at: the model's, and the audio thread's (the next recording is counted in it). The patterns that have been
+    /// recorded say the tempo they were recorded at, and keep it.
+    fn set_bpm(&mut self, bpm: f32) -> Result<Event, IntentError> {
+        if !bpm.is_finite() {
+            return Err(invalid(format!("{bpm} is not a tempo")));
+        }
+        let bpm = bpm.clamp(BPM_MIN, BPM_MAX);
+        self.model.bpm = bpm;
+        let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
+        Ok(Event::BpmSet { bpm })
     }
 
     fn set_modulator_field(&mut self, node: NodeId, field: ModulatorField, value: f32) -> Result<Event, IntentError> {
@@ -1276,6 +1289,72 @@ plugin = "builtin:reverb"
             let applied = ctl.apply(Intent::SetLocked { locked: true }).unwrap();
             assert_eq!(applied, Applied::of(revision, vec![Event::LockedSet { locked: true }]));
         }
+    }
+
+    #[test]
+    fn set_bpm_sets_the_tempo_in_the_model_and_in_the_audio_thread_and_marks_the_session_changed() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetBpm { bpm: 96.5 }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::BpmSet { bpm: 96.5 }]));
+        assert_eq!(ctl.model.bpm, 96.5);
+        assert_eq!(sent(&engine), ["SetGlobalBpm bpm=96.5"]);
+        assert!(ctl.dirty, "the tempo is saved with the session");
+    }
+
+    #[test]
+    fn set_bpm_holds_the_tempo_to_the_tempos_there_can_be_and_tells_what_it_is() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        for (asked, is) in [(5.0, 20.0), (19.9, 20.0), (20.0, 20.0), (133.3, 133.3), (300.0, 300.0), (1000.0, 300.0), (-1.0, 20.0)] {
+            let applied = ctl.apply(Intent::SetBpm { bpm: asked }).unwrap();
+            assert_eq!(applied.events, vec![Event::BpmSet { bpm: is }], "{asked}");
+            assert_eq!(ctl.model.bpm, is, "{asked}");
+            assert_eq!(sent(&engine), [format!("SetGlobalBpm bpm={is:?}")], "{asked}");
+        }
+    }
+
+    #[test]
+    fn set_bpm_refuses_what_is_not_a_number_and_changes_nothing() {
+        let (engine, mut ctl) = controller();
+        sent(&engine);
+        for (bpm, words) in [(f32::NAN, "NaN is not a tempo"), (f32::INFINITY, "inf is not a tempo"), (f32::NEG_INFINITY, "-inf is not a tempo")] {
+            match ctl.apply(Intent::SetBpm { bpm }) {
+                Err(IntentError::Invalid(said)) => assert_eq!(said, words),
+                other => panic!("{bpm} is refused as invalid, and not {other:?}"),
+            }
+        }
+        assert_eq!(ctl.model.bpm, 120.0);
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+    }
+
+    #[test]
+    fn a_tempo_that_is_set_again_is_a_revision_and_tells_what_it_is() {
+        let (_engine, mut ctl) = controller();
+        for revision in 1..=2 {
+            let applied = ctl.apply(Intent::SetBpm { bpm: 90.0 }).unwrap();
+            assert_eq!(applied, Applied::of(revision, vec![Event::BpmSet { bpm: 90.0 }]));
+        }
+    }
+
+    #[test]
+    fn a_tempo_leaves_the_tempo_that_a_pattern_was_recorded_at() {
+        let (handles, _engine) = testutil::stub_engine();
+        let session = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.pattern]\nbpm = 120.0\nlength_beats = 4.0\nenabled = true\n";
+        let mut ctl = Controller::new(load(session).model, handles, None);
+        ctl.apply(Intent::SetBpm { bpm: 60.0 }).unwrap();
+        assert_eq!(ctl.model.instruments[0].pattern.as_ref().unwrap().bpm, 120.0);
+    }
+
+    #[test]
+    fn the_tempo_that_was_set_is_what_a_session_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (_engine, mut ctl) = controller_with_file(&path);
+        ctl.apply(Intent::SetBpm { bpm: 87.5 }).unwrap();
+        ctl.apply(Intent::Save).unwrap();
+        assert_eq!(session::parse(&std::fs::read_to_string(&path).unwrap()).unwrap().bpm, Some(87.5));
     }
 
     #[test]

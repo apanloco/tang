@@ -49,6 +49,7 @@ const DOING: Record<Intent["type"], string> = {
   setRange: "set the keys of a lane",
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
+  setBpm: "set the tempo",
   setNodeUi: "move a node",
   setPinned: "choose the knobs of a node",
   addGroup: "add a group",
@@ -187,6 +188,14 @@ export class Editor {
   /** Lock the piano to its scale, so that a note outside it is not played, or let every note through. True if it was done. */
   setLocked(locked: boolean): Promise<boolean> {
     return this.#attempt(locked ? "lock the piano to its scale" : "let the piano play every note", { type: "setLocked", locked });
+  }
+
+  /**
+   * Set the tempo that patterns are recorded at, in beats a minute. The server holds it to the tempos there can be (`BPM_RANGE`) and saves it with the
+   * session. True if it was set (the page says why if it was not).
+   */
+  setBpm(bpm: number): Promise<boolean> {
+    return this.#attempt(`set the tempo to ${String(bpm)}`, { type: "setBpm", bpm });
   }
 
   /**

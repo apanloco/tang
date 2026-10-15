@@ -207,6 +207,29 @@ describe("a lock set", () => {
   });
 });
 
+describe("a tempo set", () => {
+  const faster = { rev: 1, type: "bpmSet", bpm: 96.5 } as const;
+
+  test("sets the tempo of the session, and leaves it with changes that are not saved", () => {
+    expect(tracerSnapshot.meta.bpm).toBe(120);
+    const after = applied(tracerSnapshot, faster);
+    expect(after.meta.bpm).toBe(96.5);
+    expect(after.meta.dirty).toBe(true);
+    expect(after.rev).toBe(1);
+  });
+
+  test("changes nothing else of the session: the graph and the layout are the objects they were", () => {
+    const after = applied(tracerSnapshot, faster);
+    expect({ ...after.meta, bpm: 0, dirty: false }).toEqual({ ...tracerSnapshot.meta, bpm: 0, dirty: false });
+    expect(after.graph).toBe(tracerSnapshot.graph);
+    expect(after.telemetry).toBe(tracerSnapshot.telemetry);
+  });
+
+  test("is an event like the others: one that skips a revision means events were missed", () => {
+    expect(applyEvent(tracerSnapshot, { ...faster, rev: 2 }).ok).toBe(false);
+  });
+});
+
 describe("a gain set", () => {
   test("sets the volume of an instrument", () => {
     const after = applied(tracerSnapshot, { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 });

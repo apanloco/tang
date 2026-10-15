@@ -53,6 +53,9 @@ export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = 
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 
+/** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */
+export const BPM_RANGE: readonly [number, number] = [20, 300];
+
 /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */
 export const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square", "random", "smooth"];
 

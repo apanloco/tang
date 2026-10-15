@@ -43,6 +43,8 @@ pub enum Key {
     Field(NodeId, ModulatorField),
     /// The depth of a cable.
     Depth(EdgeId),
+    /// The tempo of the session.
+    Tempo,
 }
 
 /// What a step that took something out holds, to put it back.
@@ -367,6 +369,7 @@ impl Controller {
                 let label = if *locked { "lock the piano to its scale" } else { "let every note of the piano through" };
                 step(label.to_string(), Intent::SetLocked { locked: self.piano_filter.mode() == PianoMode::Locked }, None)
             }
+            Intent::SetBpm { .. } => step("set the tempo".to_string(), Intent::SetBpm { bpm: self.model.bpm }, Some(Key::Tempo)),
             Intent::MoveEffect { node, .. } => match self.model.locate(*node) {
                 Some(NodePath::Effect { index, .. } | NodePath::GroupEffect { index, .. }) => {
                     step("move an effect".to_string(), Intent::MoveEffect { node: *node, index: index as u32 }, None)
@@ -1078,6 +1081,29 @@ rate = 3.0
         clock.advance(Duration::from_secs(5));
         ctl.apply(Intent::SetLocked { locked: false }).unwrap();
         assert_eq!(undo_label(&ctl).as_deref(), Some("let every note of the piano through"));
+    }
+
+    #[test]
+    fn a_tempo_is_put_back_to_the_one_it_was_and_a_drag_of_it_is_one_step() {
+        let (engine, mut ctl, clock) = controller();
+        ctl.apply(Intent::SetBpm { bpm: 90.0 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::SetBpm { bpm: 100.0 }).unwrap();
+        clock.advance(Duration::from_millis(100));
+        ctl.apply(Intent::SetBpm { bpm: 110.0 }).unwrap();
+        clock.advance(Duration::from_millis(100));
+        ctl.apply(Intent::SetBpm { bpm: 140.0 }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set the tempo"));
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.bpm, 90.0, "the drag was one step, which put back what it began at");
+        assert_eq!(sent(&engine), ["SetGlobalBpm bpm=90.0"]);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.bpm, 120.0);
+        assert!(ctl.undo().is_err(), "nothing more to undo");
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.bpm, 140.0);
     }
 
     #[test]
@@ -4498,6 +4524,27 @@ size = 0.5
             ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
             ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::AddGroup { members: vec![lane0] }), undo(), redo()]),
             ("making a group of a lane that is in another is one of them", vec![set(detune, 1.0), Op::Do(Intent::AddGroup { members: vec![lane0] }), undo()]),
+            (
+                "a tempo is put back, a drag of it is one step, and one that is held to the tempos there can be says what it is",
+                vec![
+                    Op::Do(Intent::SetBpm { bpm: 90.0 }),
+                    Op::Wait(16),
+                    Op::Do(Intent::SetBpm { bpm: 100.0 }),
+                    Op::Wait(16),
+                    Op::Do(Intent::SetBpm { bpm: 140.0 }),
+                    pause(),
+                    Op::Do(Intent::SetBpm { bpm: 5.0 }),
+                    pause(),
+                    Op::Do(Intent::SetBpm { bpm: 1000.0 }),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
         ];
         let mut gains = vec![gain(lane0, Gain::Volume, 2.5), pause(), gain(reverb, Gain::Mix, 0.125), pause(), gain(bus, Gain::Mix, 0.75), pause(), gain(g0, Gain::GroupVolume, 0.5), pause(), gain(g0, Gain::GroupPan, -0.5)];
         gains.extend(n_of(5, undo));

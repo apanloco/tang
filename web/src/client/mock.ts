@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -801,6 +801,13 @@ function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counter
   return { restructured: members.reduce((session, lane) => lanePutIn(session, lane, id), made) };
 }
 
+/** The tempo that is set (`set_bpm`): a number held to the tempos there can be, or the controller's words for what is not one. */
+function bpmOutcome(bpm: number): Outcome {
+  if (!holds(bpm)) return invalid(`${shown(bpm)} is not a tempo`);
+  const [low, high] = BPM_RANGE;
+  return { event: { type: "bpmSet", bpm: clamp(bpm, low, high) } };
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -826,6 +833,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "undo" || intent.type === "redo") return invalid(`${intent.type} is done by the history`);
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
+  if (intent.type === "setBpm") return bpmOutcome(intent.bpm);
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);
