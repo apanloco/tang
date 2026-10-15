@@ -326,8 +326,8 @@ instrument itself or any of its effects — plus sibling modulators. Each target
 names the chain `slot` it lands on: `0` (default) = the instrument, `1..N` =
 the effects in order. In the TUI, modulators appear as the instrument's "mod
 rack" (magenta), and the target selector lists every parameter in the chain
-labelled by plugin (e.g. `Filter: cutoff`). Three source types are supported
-(LFO, ADSR envelope, MIDI learn):
+labelled by plugin (e.g. `Filter: cutoff`). Four source types are supported
+(LFO, ADSR envelope, MIDI learn, macro):
 
 (Groups can also own modulators — same source types and cross-mod, but their
 targets span the whole group: any member instrument, the group's bus effects,
@@ -424,6 +424,29 @@ MIDI port in `tests/serve.rs` (`a_control_that_learns_…`: `#[ignore]`d, since 
 needs CoreMIDI on a Mac or ALSA's sequencer on Linux: `cargo test --features web
 -- --ignored`).
 
+**Macro modulator** (a knob that a person turns, which nothing else moves):
+
+```toml
+[[instrument.modulator]]
+type = "macro"
+value = 0.5             # 0 … 1 (held to it when the session is loaded; default 0: at rest)
+
+[[instrument.modulator.target]]
+param = "cutoff"
+depth = 0.5             # `value` times this, of the range, above your set value
+```
+
+A macro is one number, `value`, from 0 to 1, that is set from the TUI (the first row of its pane: `Left` / `Right`, or `Enter` and a number), from the page (a knob
+on its node) or in the file, and it drives every target that has a cable from it as a CC does: at rest (0) it adds nothing, at full (1) it adds `depth` of the
+range above the value the user set (a negative depth takes it below). A new one is at rest, so it moves nothing until it is turned. One knob drives many parameters,
+each scaled by the depth of its own cable; a macro can drive the rate, a stage or the depth of a cable of another modulator too (cross-mod). The audio thread has
+nothing of a macro but its value, so a change of it is a macro of the new value given to the engine in place of the old one (`SetModulatorSource` /
+`SetGroupModulatorSource`, `controller::macro_command`). It is made in the TUI from a parameter (`m`: `New macro → cutoff`; in the group's rack for a bus effect's
+parameter), in the page from the menu of a knob (`~`: "New macro") or from the "+" of a lane or a group ("Macro"), by `Modulate` / `AddModulator { kind: macro }`, and
+is `~ Macro 0.50 → Filter: cutoff (50%)` in the tree and `Macro` (its value, the "Targets" separator and the depth of each cable) in the pane.
+TODO: no cable drives a macro's value (`ModulatorField::Value` has no port, and the pane's `m` on its row opens nothing): a MIDI control bound to a macro would turn it
+from a hardware knob, which is what a macro is for on a stage.
+
 Modulators are applied once per audio buffer; the base value tracks the
 user's set value automatically. Target `depth` runs **−1.0 … 1.0**: negative
 depth flips the sign of the offset below, inverting the direction (an LFO in
@@ -450,6 +473,8 @@ envelope that dips below the base). The source types apply differently:
     expressive (MPE) controllers.
   - **CC** (unipolar): `base + output * depth * range` — rest (0) = no change,
     full = +depth·range above the base.
+- **Macro** (unipolar, additive around the base, as a CC): `base + value * depth *
+  range` — rest (0) = no change, full = +depth·range above the base.
 
 Envelope behavior: note-on retriggers from Attack phase (continuing from the
 current level — a quick retrigger does not restart from silence). Release
@@ -877,7 +902,7 @@ numeric `params` values (the index into the label list).
 | `R` | Set the selected instrument's key range (opens range popup, prefilled) — or, on a group header, rename the group (opens rename popup, prefilled) |
 | `v` | Set the output volume of the selected instrument or group (host-side gain, opens value popup) |
 | `a` | Add effect to the selected instrument, or — on a group/group-effect node — to the group's bus chain (opens effect selector popup). New effects default to 0.5 mix (half-wet); `builtin:filter` defaults to 1.0 (fully wet, since a half-wet filter barely filters) |
-| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO/envelope) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod; a new modulator and its cable are one step of the history, and a modulator that drives the parameter already is not attached again) |
+| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO / envelope / macro) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod; a new modulator and its cable are one step of the history, and a modulator that drives the parameter already is not attached again) |
 | `l` | Param focus: MIDI-learn the selected parameter — arms a MIDI modulator and binds the next incoming CC / pitch-bend / aftertouch to it (works on plugin params and modulator fields) |
 | `x` | Set the dry/wet mix of the selected effect or group bus effect (host-side blend, opens value popup) |
 | `g` | Assign the selected instrument to a submix group (new / existing / ungroup, opens popup) |
@@ -1183,8 +1208,8 @@ model and the audio thread together and answers with `Event`s (`app::intent`,
 parameter's range, an enum rounded to a whole value), `SetGain` (instrument
 volume, effect and bus-effect mix, group volume and pan, each with its own
 range), `LoadPreset` (by preset id; the values the preset set are mirrored
-into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
-stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
+into the model), `SetModulatorField` (an LFO's rate and waveform, an envelope's
+stage or a macro's value, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
 waveform rounded to its index: sine, triangle, saw, square, random, smooth), `SetEdgeDepth` (a
 modulation cable's depth, -1 to 1) and `SetRange { node, range }` (the notes a lane takes, both
 ends included, or every note for none; refused for a node that is no lane, a note above 127 and a low
@@ -1211,7 +1236,7 @@ already, a link that leads nowhere included, unless it is the session's own (tha
 `session::save_new`), not by a look at the path first; the TUI's `Ctrl+Shift+S` asks it too, and so does the page's "Save as…"), `Undo` and `Redo` (the history, below); and eleven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
-an envelope or an armed MIDI control at the end of the rack of a lane, `parent` being the
+an envelope, a macro at rest or an armed MIDI control at the end of the rack of a lane, `parent` being the
 lane's node, or of a group), `AddModEdge { modulator, to }` (a cable at depth
 `NEW_CABLE_DEPTH`, 0.5, to a plugin parameter or to a modulator's setting: where a cable to a
 parameter may end is `SessionModel::param_targets`, a lane's modulator reaching its lane's
@@ -1943,7 +1968,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   the cable is drawn round the node it ends at, with its slider on the run under what drives it (`cableRoute`); and a cable that ends at a depth is told by the cable whose depth it is (`ADSR → depth of LFO → Filter: cutoff`:
   `endLabel`, `cableWords` in `client/names.ts`, which the editor uses as well for what it says of a refusal). Step 37 put the TUI's `m` and `l` on the page: every knob (a parameter of a plugin that is
   shown as a knob, and the rate and the stages of a modulator), every row of the ⚙ panel and every row of a modulator's cables has a `~` button (`ModulateMenu`, `app/patch/ModulateMenu.tsx`: quiet until the pointer or the
-  focus is on the control, in the corner of its knob) with a menu of a new LFO, a new envelope and a new MIDI control, under "New", and of the modulators that are there and can still drive it, under "Attach". A new
+  focus is on the control, in the corner of its knob) with a menu of a new LFO, a new envelope, a new macro and a new MIDI control, under "New", and of the modulators that are there and can still drive it, under "Attach". A new
   one is made for the control with its cable in one intent, `Modulate` (`Editor.modulate`: a MIDI control is armed to learn and its cable is at the whole range, as the TUI's `l` has it, the others at half depth; the canvas is
   shown the node it made), and goes in the rack that reaches the control (the lane's for a lane's plugin, the group's for a bus effect, the modulator's own for its rate, a stage or the depth of its cables, where it is a
   sibling that drives it); one that is there gets a cable (`Editor.addCable`, the intent `AddModEdge`). What could drive a control is `driversOf` (`client/reach.ts`: `drivablesOf` read from the other side, tested against it
