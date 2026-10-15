@@ -465,13 +465,13 @@ function CablePort({ node, handle, driven }: { node: NodeId; handle: string; dri
 /**
  * The place on the left edge of a row of a modulator's node where a cable from another modulator ends, to drive how deep the cable of that row
  * goes (`depth` of the cable `edge`, which starts at the modulator `node`): a handle named after the cable (`depthHandle`), quiet until a cable ends
- * at it (`driven`), and, while a cable is dragged, saying whether it takes that one. A cable cannot be dropped on it yet.
+ * at it (`driven`), and, while a cable is dragged, saying whether it takes that one (a cable ends there and is not started there, as at a control's).
  */
 export function DepthPort({ node, edge, driven }: { node: NodeId; edge: EdgeId; driven: boolean }) {
   const handle = depthHandle(edge);
   const takes = useContext(ConnectingContext)?.has(keyOf(node, handle)) ?? false;
   const classes = ["tang-port", "tang-port--cable", ...(driven ? ["tang-port--driven"] : []), ...(takes ? ["tang-port--takes"] : [])];
-  return <Handle isConnectable={false} type="target" position={Position.Left} id={handle} className={classes.join(" ")} />;
+  return <Handle isConnectableStart={false} type="target" position={Position.Left} id={handle} className={classes.join(" ")} />;
 }
 
 /**
@@ -577,9 +577,7 @@ export const DrivePicker = memo(function DrivePicker({ modulator, name, targets 
     const items: MenuItem[] = [];
     const ends = new Map<string, { node: NodeId; port: Port }>();
     const add = (node: NodeId, port: Port, label: string, group: string): void => {
-      const handle = handleOf(port);
-      if (handle === null) return;
-      const id = keyOf(node, handle);
+      const id = keyOf(node, handleOf(port));
       items.push({ id, label, group });
       ends.set(id, { node, port });
     };

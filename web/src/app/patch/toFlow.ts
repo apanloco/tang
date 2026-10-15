@@ -116,8 +116,8 @@ export const paramHandle = (index: number): string => `param-${String(index)}`;
 /** The name of the handle in a modulator's node where a cable can end to drive the depth of the cable `edge`, which starts at that modulator. */
 export const depthHandle = (edge: EdgeId): string => `depth-${String(edge)}`;
 
-/** The name of the handle of a node where a port is, if the canvas draws one. */
-export function handleOf(port: Port): string | null {
+/** The name of the handle of a node where a port is. */
+export function handleOf(port: Port): string {
   switch (port.type) {
     case "audioIn":
     case "audioOut":
@@ -131,8 +131,7 @@ export function handleOf(port: Port): string | null {
     case "param":
       return paramHandle(port.index);
     case "depth":
-      // The depth of a cable is not where anything on the canvas is: it has no handle.
-      return null;
+      return depthHandle(port.edge);
   }
 }
 
@@ -219,8 +218,8 @@ function stripOf(graph: Graph, head: Node): Strip {
 function tiersOf(graph: Graph, modulators: readonly Node[]): Node[][] {
   const drives = new Map<NodeId, NodeId[]>(modulators.map((node) => [node.id, []]));
   for (const edge of graph.edges) {
-    // (Only the cables of the rack, from one of its modulators to another, that the canvas draws.)
-    if (drives.has(edge.to.node) && handleOf(edge.to.port) !== null) drives.get(edge.from.node)?.push(edge.to.node);
+    // (Only the cables of the rack, from one of its modulators to another.)
+    if (drives.has(edge.to.node)) drives.get(edge.from.node)?.push(edge.to.node);
   }
   const heights = new Map<NodeId, number>();
   const visiting = new Set<NodeId>();
@@ -265,7 +264,7 @@ function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly No
     const taken = new Set<number>();
     for (const modulator of tier) {
       const aimed = graph.edges
-        .filter((edge) => edge.from.node === modulator.id && handleOf(edge.to.port) !== null)
+        .filter((edge) => edge.from.node === modulator.id)
         .map((edge) => columnOf.get(edge.to.node))
         .filter((column): column is number => column !== undefined);
       let column = aimed.length > 0 ? Math.min(...aimed) : 0;
@@ -396,10 +395,7 @@ export function toFlow(graph: Graph): Flow {
 
   const edges: PatchEdge[] = [];
   for (const edge of graph.edges) {
-    const sourceHandle = handleOf(edge.from.port);
-    const targetHandle = handleOf(edge.to.port);
-    if (sourceHandle === null || targetHandle === null) continue;
-    const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle, targetHandle, deletable: false };
+    const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle: handleOf(edge.from.port), targetHandle: handleOf(edge.to.port), deletable: false };
     if (edge.kind === "modulation") {
       edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: cableWords(graph, names, edge) }, zIndex: 10 });
     } else {

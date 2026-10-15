@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
-import type { Edge, Graph, Node } from "../protocol";
+import type { Edge, Graph, Node, Port } from "../protocol";
 import { fieldsFixture, reachFixture, tracerSnapshot } from "./fixtures";
-import { displayNames } from "./names";
+import { displayNames, portName } from "./names";
 import { drivablesOf, fieldsOf, reachFrom } from "./reach";
 
 const sorted = (nodes: Iterable<number>): number[] => [...nodes].sort((a, b) => a - b);
@@ -165,37 +165,85 @@ describe("which settings of other modulators a modulator can be drawn to", () =>
 describe("what a modulator can still be drawn to among the settings of the others", () => {
   const { snapshot } = fieldsFixture;
   const names = displayNames(snapshot.graph);
-  /** The modulators of the groups a modulator is offered, with the settings (the cable depths are not offered). */
-  const offered = (id: number) => drivablesOf(snapshot.graph, id, names).filter((group) => group.fields.length > 0).map((group) => [group.node, group.fields.map((f) => f.port.type)]);
+  /** A cable from the modulator `from` to a port of `to`. */
+  const edge = (id: number, from: number, to: number, port: Port): Edge => ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: to, port } });
+  /** The modulators of the groups a modulator is offered, with the settings and the depths of the cables (`depth#1` is the depth of the cable 1). */
+  const offered = (id: number) =>
+    drivablesOf(snapshot.graph, id, names)
+      .filter((group) => group.fields.length > 0)
+      .map((group) => [group.node, group.fields.map((f) => (f.port.type === "depth" ? `depth#${String(f.port.edge)}` : f.port.type))]);
 
-  test("is each setting of each modulator it reaches, under the modulator's name, after the plugins; no cable's depth", () => {
-    // The first member's LFO (4) can drive its envelope's four stages (5) and nothing of the MIDI control (6), which has no setting.
-    expect(offered(4)).toEqual([[5, ["attack", "decay", "sustain", "release"]]]);
-    // The envelope (5): the LFO's rate (4).
-    expect(offered(5)).toEqual([[4, ["rate"]]]);
-    // The group's LFO (13): its members' modulators, then its siblings.
+  test("is each setting of each modulator it reaches and the depth of each of its cables, under the modulator's name, after the plugins", () => {
+    // The first member's LFO (4) can drive its envelope's four stages (5) and the depths of the envelope's two cables (1 and 2), and the depth of the
+    // MIDI control's cable (3: the control has no setting).
+    expect(offered(4)).toEqual([
+      [5, ["attack", "decay", "sustain", "release", "depth#1", "depth#2"]],
+      [6, ["depth#3"]],
+    ]);
+    // The envelope (5): the LFO's rate and the depth of its cable (0), and the depth of the control's.
+    expect(offered(5)).toEqual([
+      [4, ["rate", "depth#0"]],
+      [6, ["depth#3"]],
+    ]);
+    // The group's LFO (13): its members' modulators, then its siblings. (The lone LFO of the second member, 8, has a rate and no cable.)
     expect(offered(13)).toEqual([
-      [4, ["rate"]],
-      [5, ["attack", "decay", "sustain", "release"]],
+      [4, ["rate", "depth#0"]],
+      [5, ["attack", "decay", "sustain", "release", "depth#1", "depth#2"]],
+      [6, ["depth#3"]],
       [8, ["rate"]],
-      [14, ["attack", "decay", "sustain", "release"]],
+      [14, ["attack", "decay", "sustain", "release", "depth#5"]],
+      [15, ["depth#6"]],
     ]);
     // The settings are named by the port: `rate`, `attack`...
     const group = drivablesOf(snapshot.graph, 4, names).find((g) => g.node === 5);
-    expect(group?.fields.map((f) => f.name)).toEqual(["attack", "decay", "sustain", "release"]);
+    expect(group?.fields.slice(0, 4).map((f) => f.name)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(group?.name).toBe(names.get(5));
     expect(group?.params).toEqual([]);
   });
 
+  test("names the depth of a cable by where the cable goes: `depth → Oscillator 1: detune`, the cable's end as the canvas says it", () => {
+    const group = drivablesOf(snapshot.graph, 4, names).find((g) => g.node === 5);
+    const oscillator = snapshot.graph.nodes.find((node) => node.id === 3);
+    const cableTo = (edge: number): string => {
+      const found = snapshot.graph.edges.find((e) => e.kind === "modulation" && e.id === edge);
+      return `depth → Oscillator 1: ${portName(snapshot.graph, found?.to.node ?? -1, found?.to.port ?? { type: "modOut" }) ?? "?"}`;
+    };
+    expect(oscillator?.kind).toBe("instrument");
+    expect(group?.fields.slice(4).map((f) => f.name)).toEqual([cableTo(1), cableTo(2)]);
+    expect(group?.fields.slice(4).map((f) => f.name)).not.toContain("depth → Oscillator 1: ?");
+    // A cable that ends at the depth of another is told by that cable, as the canvas does (`endLabel`).
+    const cabled: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, edge(40, 6, 4, { type: "depth", edge: 0 })] };
+    const seen = drivablesOf(cabled, 5, displayNames(cabled)).find((g) => g.node === 6);
+    expect(seen?.fields.map((f) => f.name)).toEqual([`depth → Oscillator 1: ${portName(snapshot.graph, 3, { type: "param", index: 7 }) ?? "?"}`, `depth → depth of LFO 2 → Oscillator 1: ${portName(snapshot.graph, 3, { type: "param", index: 1 }) ?? "?"}`]);
+  });
+
   test("leaves out what it drives already, and a setting that another modulator drives is still offered", () => {
-    const edge = (id: number, from: number, to: number, port: "rate" | "attack"): Edge => ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: to, port: { type: port } } });
-    const cabled: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, edge(40, 4, 5, "attack"), edge(41, 6, 5, "attack")] };
+    const cabled: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, edge(40, 4, 5, { type: "attack" }), edge(41, 6, 5, { type: "attack" })] };
     const stages = (id: number, of: number): string[] | undefined =>
-      drivablesOf(cabled, id, displayNames(cabled)).find((g) => g.node === of)?.fields.map((f) => f.port.type);
+      drivablesOf(cabled, id, displayNames(cabled))
+        .find((g) => g.node === of)
+        ?.fields.map((f) => f.port.type)
+        .filter((type) => type !== "depth");
     expect(stages(4, 5)).toEqual(["decay", "sustain", "release"]);
     expect(stages(6, 5)).toEqual(["decay", "sustain", "release"]);
     // The group's LFO drives neither: both of the others add up with it.
     expect(stages(13, 5)).toEqual(["attack", "decay", "sustain", "release"]);
+  });
+
+  test("leaves out the depth of a cable that it drives already, and not the depths of the other cables of that modulator, which are other ports", () => {
+    // The lane's LFO (4) drives the depth of the envelope's cable 1; the MIDI control (6), the depth of its cable 2.
+    const cabled: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, edge(40, 4, 5, { type: "depth", edge: 1 }), edge(41, 6, 5, { type: "depth", edge: 2 })] };
+    const depthsOf = (id: number): number[] =>
+      drivablesOf(cabled, id, displayNames(cabled))
+        .find((g) => g.node === 5)
+        ?.fields.flatMap((f) => (f.port.type === "depth" ? [f.port.edge] : [])) ?? [];
+    expect(depthsOf(4)).toEqual([2]);
+    expect(depthsOf(6)).toEqual([1]);
+    // (Another modulator may drive the same depth: the two add up.)
+    expect(depthsOf(13)).toEqual([1, 2]);
+    // The settings are as they were: a cable to a depth is not one to a setting.
+    const settings = drivablesOf(cabled, 4, displayNames(cabled)).find((g) => g.node === 5)?.fields.filter((f) => f.port.type !== "depth");
+    expect(settings?.map((f) => f.port.type)).toEqual(["attack", "decay", "sustain", "release"]);
   });
 
   test("leaves a modulator with nothing left out of the list, and offers nothing for what is not a modulator", () => {
@@ -203,12 +251,10 @@ describe("what a modulator can still be drawn to among the settings of the other
     expect(offered(8)).toEqual([]);
     expect(offered(10)).toEqual([]);
     expect(drivablesOf(snapshot.graph, 999_999, names)).toEqual([]);
-    // A modulator that drives every setting there is leaves the other out.
-    const ports = ["attack", "decay", "sustain", "release"] as const;
-    const all: Graph = {
-      ...snapshot.graph,
-      edges: [...snapshot.graph.edges, ...ports.map((port, i): Edge => ({ kind: "modulation", id: 50 + i, amount: 0.5, from: { node: 4, port: { type: "modOut" } }, to: { node: 5, port: { type: port } } }))],
-    };
+    // A modulator that drives every setting there is, and every depth, leaves the others out.
+    const every = fieldsOf(snapshot.graph, 4);
+    expect(every.length).toBeGreaterThan(4);
+    const all: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, ...every.map((field, i) => edge(50 + i, 4, field.node, field.port))] };
     expect(drivablesOf(all, 4, displayNames(all)).filter((g) => g.fields.length > 0)).toEqual([]);
   });
 });

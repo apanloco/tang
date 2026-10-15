@@ -398,6 +398,41 @@
   opacity: 1;
 }
 
+/*
+ * While a cable is dragged, a row that takes it is where it can be let go, from one edge of the node to the other: the port grows from its dot on the
+ * node's edge to the whole row, as a control's port grows to its cell (the dot is drawn over it).
+ */
+.tang-port--cable.tang-port--takes {
+  top: 0;
+  left: calc(-1 * var(--tang-space-3) - 1px);
+  width: calc(100% + 2 * var(--tang-space-3) + 2px);
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(208 112 208 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(208 112 208 / 0.35);
+  opacity: 1;
+}
+
+.tang-port--cable.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--tang-modulation);
+  box-shadow: 0 0 0 4px rgb(208 112 208 / 0.4);
+}
+
+.tang-port--cable.tang-port--takes.valid {
+  background: rgb(208 112 208 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(208 112 208 / 0.9);
+}
+
 /* The list at the foot of a modulator that draws a cable to a parameter. */
 .tang-node__drives {
   display: flex;

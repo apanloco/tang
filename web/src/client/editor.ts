@@ -4,9 +4,10 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, Plugin, Port } from "../protocol";
+import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, Plugin, Port } from "../protocol";
 import type { Client } from "./connection";
-import { cableLabel, displayNames, portName } from "./names";
+import { cableWords, displayNames } from "./names";
+import type { Names } from "./names";
 import { rangeLabel } from "./notes";
 import type { Notices } from "./notices";
 import { pinnedWith } from "./pinning";
@@ -228,11 +229,12 @@ export class Editor {
 
   /**
    * Draw a cable from the modulator `modulator` to `to`, a port of `node`: a parameter of the plugin in it (by the plugin's own
-   * index), or a setting of the modulator it is (its rate, a stage of its envelope). True if it was drawn.
+   * index), or a setting of the modulator it is (its rate, a stage of its envelope), or the depth of one of its cables (`node` is
+   * the modulator that the cable starts at). True if it was drawn.
    */
   addCable(modulator: NodeId, node: NodeId, to: Port): Promise<boolean> {
-    const words = cableLabel(this.#name(modulator), this.#name(node), this.#portName(node, to));
-    return this.#attempt(`draw a cable from ${words.replace(" → ", " to ")}`, { type: "addModEdge", modulator, to: { node, port: to } });
+    const words = this.#words({ from: { node: modulator, port: { type: "modOut" } }, to: { node, port: to } });
+    return this.#attempt(`draw a cable from ${words.replaceAll(" → ", " to ")}`, { type: "addModEdge", modulator, to: { node, port: to } });
   }
 
   /** Take the modulator or effect `node` out, with the cables that drive it (and, for a modulator, those it drives). True if it went. */
@@ -309,18 +311,22 @@ export class Editor {
     return (graph && displayNames(graph).get(node)) ?? "that node";
   }
 
-  #portName(node: NodeId, port: Port): string | null {
+  /** What the nodes are called in what the page says of a cable: as on the canvas, and "that node" for one the session has not (or while it is not known). */
+  get #names(): Names {
     const graph = this.#graph;
-    return graph ? portName(graph, node, port) : null;
+    const names = graph ? displayNames(graph) : undefined;
+    return { get: (node) => names?.get(node) ?? "that node" };
+  }
+
+  /** A cable, made or not, in words: `LFO → Filter: cutoff` (`cableWords`). */
+  #words(cable: { from: Endpoint; to: Endpoint; id?: EdgeId }): string {
+    return cableWords(this.#graph ?? { nodes: [], edges: [] }, this.#names, cable);
   }
 
   /** A cable in words, as the canvas labels it; "that cable" if it is not in the session. */
   #cable(edge: EdgeId): string {
-    const graph = this.#graph;
-    const found = graph?.edges.find((e) => e.kind === "modulation" && e.id === edge);
-    if (!graph || !found) return "that cable";
-    const names = displayNames(graph);
-    return `the cable ${cableLabel(names.get(found.from.node) ?? "?", names.get(found.to.node) ?? "?", portName(graph, found.to.node, found.to.port))}`;
+    const found = this.#graph?.edges.find((e) => e.kind === "modulation" && e.id === edge);
+    return found ? `the cable ${this.#words(found)}` : "that cable";
   }
 
   /** Do the intent; if it is refused, or the connection fails, say so as a notice and return false. */

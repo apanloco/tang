@@ -78,17 +78,17 @@ describe("the group of a lane", () => {
 
   test("takes the lane out of its group for none, and the cables of the group to it go", async () => {
     const { requests, view } = await rig(<PatchView />, session);
-    // (Four of the five cables are drawn: the one that drives the depth of another has no place on the canvas.)
+    // (All five cables are drawn, the one that drives the depth of another's too.)
     const cables = (): number => view.container.querySelectorAll(".tang-cable--modulation").length;
     await waitFor(() => {
-      expect(cables()).toBe(4);
+      expect(cables()).toBe(5);
     });
     fireEvent.change(await choice(3), { target: { value: "" } });
     await waitFor(() => {
       expect(requests().map((request) => request.intent)).toEqual([{ type: "setLaneGroup", node: 3, group: null }]);
     });
     await waitFor(() => {
-      expect(cables()).toBe(3);
+      expect(cables()).toBe(4);
     });
     expect(chosen(await choice(3))).toBe("none");
   });

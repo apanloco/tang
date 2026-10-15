@@ -30,8 +30,8 @@ export function displayNames(graph: Graph): Map<NodeId, string> {
   );
 }
 
-/** What a cable joins, in words: `LFO → Filter: cutoff` (the parameter is left out when it is not one). */
-export const cableLabel = (from: string, to: string, param?: string | null): string => `${from} → ${to}${param ? `: ${param}` : ""}`;
+/** What each node is called: `displayNames` has it for the nodes of a graph; a caller that has a word for a node that is not there passes what says it. */
+export type Names = Pick<ReadonlyMap<NodeId, string>, "get">;
 
 /**
  * What a cable ends at, in words: the node and the port of it (`Filter: cutoff`, `LFO: rate`), or, for the depth of a cable, that cable's
@@ -40,7 +40,7 @@ export const cableLabel = (from: string, to: string, param?: string | null): str
  * drive each other's depths: its depth is called after the node it is the port of, as the depth of a cable that is not there is. `names` is
  * what each node is called (`displayNames`).
  */
-export function endLabel(graph: Graph, names: ReadonlyMap<NodeId, string>, to: Endpoint, reading: ReadonlySet<EdgeId> = new Set()): string {
+export function endLabel(graph: Graph, names: Names, to: Endpoint, reading: ReadonlySet<EdgeId> = new Set()): string {
   if (to.port.type === "depth") {
     const { edge } = to.port;
     const cable = reading.has(edge) ? undefined : graph.edges.find((found) => found.kind === "modulation" && found.id === edge);
@@ -55,7 +55,7 @@ export function endLabel(graph: Graph, names: ReadonlyMap<NodeId, string>, to: E
  * A cable, in words: `LFO → Filter: cutoff`, `ADSR → depth of LFO → Filter: cutoff` (`endLabel` says how its end is told). A cable
  * that is not made yet has no id, and is the same.
  */
-export function cableWords(graph: Graph, names: ReadonlyMap<NodeId, string>, cable: { from: Endpoint; to: Endpoint; id?: EdgeId }, reading: ReadonlySet<EdgeId> = new Set()): string {
+export function cableWords(graph: Graph, names: Names, cable: { from: Endpoint; to: Endpoint; id?: EdgeId }, reading: ReadonlySet<EdgeId> = new Set()): string {
   const now = cable.id === undefined ? reading : new Set([...reading, cable.id]);
   return `${names.get(cable.from.node) ?? "?"} → ${endLabel(graph, names, cable.to, now)}`;
 }

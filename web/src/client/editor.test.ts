@@ -868,6 +868,48 @@ describe("drawing a cable to a setting of another modulator", () => {
   });
 });
 
+describe("drawing a cable to the depth of a cable", () => {
+  /** The tracer with an envelope added to the oscillator's lane, whose node is 3; the LFO's cable to the filter's cutoff is the cable 0. */
+  async function withEnvelope() {
+    const rig = await open();
+    expect(await rig.editor.addModulator(oscillator.id, "envelope")).toBe(3);
+    return rig;
+  }
+
+  test("joins a modulator to how deep a cable of another goes, and says nothing", async () => {
+    const { client, notices, editor } = await withEnvelope();
+    expect(await editor.addCable(3, lfo.id, { type: "depth", edge: 0 })).toBe(true);
+    const ends = client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation").map((e) => [e.from.node, e.to.node, e.to.port]);
+    expect(ends).toEqual([
+      [lfo.id, filter.id, paramPort(filter, "cutoff")],
+      [3, lfo.id, { type: "depth", edge: 0 }],
+    ]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("that is refused says which cable, with the end told by the cable whose depth it is, and why", async () => {
+    const { notices, editor } = await withEnvelope();
+    expect(await editor.addCable(3, lfo.id, { type: "depth", edge: 0 })).toBe(true);
+    const refused: [string, () => Promise<boolean>][] = [
+      ["Could not draw a cable from ADSR to depth of LFO to Filter: cutoff: that modulator drives that setting already", () => editor.addCable(3, lfo.id, { type: "depth", edge: 0 })],
+      ["Could not draw a cable from LFO to depth of LFO to Filter: cutoff: a modulator cannot drive its own settings", () => editor.addCable(lfo.id, lfo.id, { type: "depth", edge: 0 })],
+      ["Could not draw a cable from ADSR to LFO: depth: there is no cable 99", () => editor.addCable(3, lfo.id, { type: "depth", edge: 99 })],
+    ];
+    for (const [words, draw] of refused) {
+      expect(await draw()).toBe(false);
+      expect(said(notices).at(-1)).toBe(words);
+    }
+  });
+
+  test("is told of, when it cannot be taken out, by the cable whose depth it ends at", async () => {
+    const { client, notices, editor } = await withEnvelope();
+    expect(await editor.addCable(3, lfo.id, { type: "depth", edge: 0 })).toBe(true);
+    client.stop();
+    expect(await editor.removeCable(1)).toBe(false);
+    expect(said(notices)).toEqual(["Could not take out the cable ADSR → depth of LFO → Filter: cutoff: Not connected to the server."]);
+  });
+});
+
 describe("taking a node out", () => {
   test("takes a modulator with its cables, and says nothing", async () => {
     const { client, notices, editor } = await open();

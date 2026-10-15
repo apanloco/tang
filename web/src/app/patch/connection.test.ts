@@ -22,8 +22,14 @@ describe("a connection that is dragged on the canvas", () => {
     }
   });
 
+  test("is a cable when it goes from a modulator's output to the depth of a cable, by the id of the cable, at the node of the modulator whose cable it is", () => {
+    expect(cableOf(connection("13", "modOut", "4", "depth-0"))).toEqual({ modulator: 13, node: 4, port: { type: "depth", edge: 0 } });
+    expect(cableOf(connection("2", "modOut", "7", "depth-123"))).toEqual({ modulator: 2, node: 7, port: { type: "depth", edge: 123 } });
+  });
+
   test("is read with the handles' names as the canvas gives them (`handleOf`)", () => {
     expect(cableOf(connection("2", handleOf({ type: "modOut" }), "1", handleOf(param(17))))).toEqual({ modulator: 2, node: 1, port: param(17) });
+    expect(cableOf(connection("2", handleOf({ type: "modOut" }), "7", handleOf({ type: "depth", edge: 5 })))).toEqual({ modulator: 2, node: 7, port: { type: "depth", edge: 5 } });
     for (const type of ["rate", "attack", "decay", "sustain", "release"] as const) {
       expect(cableOf(connection("2", handleOf({ type: "modOut" }), "7", handleOf({ type }))), type).toEqual({ modulator: 2, node: 7, port: { type } });
     }
@@ -41,7 +47,15 @@ describe("a connection that is dragged on the canvas", () => {
       connection("2", "modOut", "1", "param-1.5"),
       connection("2", "modOut", "1", "xparam-3"),
       connection("2", "modOut", "1", "param_3"), // (what comes after the prefix is a number, and the prefix is not it)
-      connection("2", "modOut", "1", "depth"), // (a cable's depth has no port on the canvas)
+      connection("2", "modOut", "1", "depth"), // (the port of a depth is named after the cable)
+      connection("2", "modOut", "1", "depth-"),
+      connection("2", "modOut", "1", "depth-x"),
+      connection("2", "modOut", "1", "depth--1"),
+      connection("2", "modOut", "1", "depth-1.5"),
+      connection("2", "modOut", "1", "depth-1 "),
+      connection("2", "modOut", "1", "xdepth-3"),
+      connection("2", "modOut", "1", "depth_3"),
+      connection("2", "modOut", "1", "Depth-3"),
       connection("2", "modOut", "1", "waveform"), // (a choice, which no cable ends at)
       connection("2", "modOut", "1", "Rate"),
       connection("2", "modOut", "1", "rate "),
@@ -120,14 +134,33 @@ describe("a cable dragged to a setting of another modulator", () => {
     expect(canDraw(nodes, { modulator: 4, node: 13, port: { type: "rate" } })).toBe(false); // the group's
     expect(canDraw(nodes, { modulator: 13, node: 12, port: { type: "rate" } })).toBe(false); // a lane of another group
     expect(canDraw(nodes, { modulator: 13, node: 10, port: { type: "rate" } })).toBe(false); // a lane in no group
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(false); // (a depth has no port on the canvas)
   });
 
-  test("is what the controller allows, but for the depths of cables, which the canvas has no port for", () => {
+  test("can be drawn to the depth of a cable of a modulator that the modulator reaches, and to no other", () => {
+    // The lane's LFO (4) to the depth of the envelope's cables (1 and 2) and the MIDI control's (3), which it reaches; the envelope (5) to the LFO's (0).
+    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 2 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 4, node: 6, port: { type: "depth", edge: 3 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 5, node: 4, port: { type: "depth", edge: 0 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 13, node: 14, port: { type: "depth", edge: 5 } })).toBe(true); // within a group's rack
+    expect(canDraw(nodes, { modulator: 13, node: 4, port: { type: "depth", edge: 0 } })).toBe(true); // to a member's modulator
+    expect(canDraw(nodes, { modulator: 4, node: 4, port: { type: "depth", edge: 0 } })).toBe(false); // the depth of its own cable
+    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 0 } })).toBe(false); // a cable that is another modulator's
+    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 99 } })).toBe(false); // no such cable
+    expect(canDraw(nodes, { modulator: 4, node: 14, port: { type: "depth", edge: 5 } })).toBe(false); // the group's, which a lane's modulator does not reach
+    expect(canDraw(nodes, { modulator: 4, node: 8, port: { type: "depth", edge: 5 } })).toBe(false); // another lane's, which has no such cable
+    expect(canDraw(nodes, { modulator: 13, node: 12, port: { type: "depth", edge: 0 } })).toBe(false); // a lane of another group
+    expect(canDraw(nodes, { modulator: 0, node: 5, port: { type: "depth", edge: 1 } })).toBe(false); // not a modulator
+  });
+
+  test("is what the controller allows: the settings of the modulators it reaches and the depths of their cables", () => {
     for (const [id, listed] of Object.entries(fieldsFixture.fields)) {
-      const settingsListed = listed.filter((field) => field.port.type !== "depth").map((field) => keyOf(field.node, handleOf(field.port) ?? "?"));
-      expect(settings(Number(id)), `modulator ${id}`).toEqual(settingsListed.sort());
+      const keysListed = listed.map((field) => keyOf(field.node, handleOf(field.port)));
+      expect(settings(Number(id)), `modulator ${id}`).toEqual(keysListed.sort());
     }
+    // (Some of what it allows are depths, so that the agreement says something of them.)
+    const depths = Object.values(fieldsFixture.fields).flatMap((listed) => listed.filter((field) => field.port.type === "depth"));
+    expect(depths.length).toBeGreaterThanOrEqual(5);
   });
 
   test("is not a port of the settings it drives already", () => {
@@ -141,5 +174,19 @@ describe("a cable dragged to a setting of another modulator", () => {
     expect(canDraw(after, { modulator: 5, node: 4, port: { type: "rate" } })).toBe(false);
     // (Another modulator may drive it too: the two add up.)
     expect(canDraw(after, { modulator: 6, node: 4, port: { type: "rate" } })).toBe(true);
+  });
+
+  test("is not a port of the depth it drives already, and the depths of the other cables of that modulator are other ports", () => {
+    const graph = fieldsFixture.snapshot.graph;
+    const driven = {
+      ...graph,
+      edges: [...graph.edges, { kind: "modulation" as const, id: 99, amount: 0.5, from: { node: 4, port: { type: "modOut" as const } }, to: { node: 5, port: { type: "depth" as const, edge: 1 } } }],
+    };
+    const after = toFlow(driven).nodes;
+    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(true);
+    expect(canDraw(after, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(false);
+    expect(canDraw(after, { modulator: 4, node: 5, port: { type: "depth", edge: 2 } })).toBe(true);
+    // (Another modulator may drive it too: the two add up.)
+    expect(canDraw(after, { modulator: 6, node: 5, port: { type: "depth", edge: 1 } })).toBe(true);
   });
 });

@@ -187,9 +187,10 @@ test("a cable to the setting of a modulator is drawn from the keyboard, from the
   await expect(page.getByRole("slider", { name: "Depth of ADSR → LFO: rate" })).toBeVisible();
   await expect(cables(page)).toHaveCount(2);
   await expect(picker).toBeFocused();
-  // The rate is off the list, and the LFO has nothing else to take, so its heading is too.
+  // The rate is off the list, and the depth of the LFO's cable is not.
   await page.keyboard.press("ArrowDown");
-  await expect(menu.locator(".tang-menu__heading")).toHaveText(["Oscillator", "Filter"]);
+  await expect(menu.locator(".tang-menu__heading")).toHaveText(["Oscillator", "Filter", "LFO"]);
+  await expect(menu.getByRole("group", { name: "LFO" }).getByRole("menuitem")).toHaveText(["depth → Filter: cutoff"]);
 });
 
 test("a cable to a setting is taken out by its button, and the focus goes to the list of the modulator that drove it", async ({ page }) => {
@@ -262,6 +263,9 @@ test("a cable is drawn from the keyboard, from the list at the foot of a modulat
   await expect(page.getByRole("menuitem", { name: "detune", exact: true })).toHaveCount(0);
 });
 
+/** The ports of the rows of the LFO's cables. */
+const lfoRowPorts = (page: Page): Locator => node(page, "LFO").locator(".tang-cable-row .react-flow__handle");
+
 /** How tall a modulator's node and each of its rows of cables are, in the pixels of the layout (the canvas is zoomed to fit the window), with where each row's port is. */
 async function listing(modulator: Locator) {
   const box = await modulator.locator(".tang-node").boundingBox();
@@ -302,6 +306,95 @@ test("a modulator lists a row for each cable that starts at it, each as tall as 
   expect(two.rows.map((row) => row.height)).toEqual([expect.closeTo(CABLE_ROW_HEIGHT, 0), expect.closeTo(CABLE_ROW_HEIGHT, 0)]);
   expect(two.rows[1]?.portX).toBeCloseTo(0, 0);
   await expectNodesApart(page);
+});
+
+test("a cable is drawn by dragging it from a modulator's output to the depth of a cable, to the port of its row, and the modulator is laid out above the one whose cable it is", async ({ page }) => {
+  await open(page);
+  const envelope = await addEnvelope(page);
+  const lfo = node(page, "LFO");
+  const rowPort = lfo.locator(".tang-cable-row .react-flow__handle");
+  await expect(rowPort).toHaveCount(1);
+  await expect(rowPort).not.toHaveClass(/tang-port--driven/);
+  await drag(page, output(envelope), rowPort, false);
+  // While it is dragged the port of the row says that it takes the cable, and is the one it is over (with the LFO's rate and the parameters it can drive).
+  await expect(rowPort).toHaveClass(/tang-port--takes/);
+  await expect(rowPort).toHaveClass(/valid/);
+  await expect(page.locator(".tang-port--takes")).toHaveCount(8 + 4 + 1 + 1); // the oscillator's eight, the filter's four, the LFO's rate and the depth of its cable
+  await page.mouse.up();
+  await expect(cables(page)).toHaveCount(2);
+  await expect(page.getByRole("slider", { name: "Depth of ADSR → depth of LFO → Filter: cutoff" })).toHaveValue("0.5");
+  await expect(rowPort).toHaveClass(/tang-port--driven/);
+  await expect(page.locator(".tang-port--takes")).toHaveCount(0);
+  await expect(page.locator(".tang-notice")).toHaveCount(0);
+  // The envelope is above the LFO, in its column and clear of it (the cable runs down), and no node lies over another.
+  const [above, below] = [await envelope.boundingBox(), await lfo.boundingBox()];
+  if (!above || !below) throw new Error("not on the page");
+  expect(above.y + above.height).toBeLessThan(below.y);
+  expect(Math.abs(above.x - below.x)).toBeLessThan(2);
+  await expectNodesApart(page);
+});
+
+test("a cable let go over the row of a cable, anywhere in it, is drawn to the depth of that cable, and one let go where it does not belong is not", async ({ page }) => {
+  await open(page);
+  const envelope = await addEnvelope(page);
+  const lfo = node(page, "LFO");
+  const row = lfo.locator(".tang-cable-row");
+  const box = await row.boundingBox();
+  if (!box) throw new Error("no row");
+  // The right end of the row, far from its port: while the cable is dragged the whole row is where it can be let go.
+  await drag(page, output(envelope), { x: box.x + box.width - 8, y: box.y + box.height / 2 });
+  await expect(cables(page)).toHaveCount(2);
+  await expect(page.getByRole("slider", { name: "Depth of ADSR → depth of LFO → Filter: cutoff" })).toBeVisible();
+  // The cable is let go over the same row again: it is driven already, and the row does not take it.
+  await drag(page, output(envelope), { x: box.x + box.width - 8, y: box.y + box.height / 2 });
+  await expect(cables(page)).toHaveCount(2);
+  await expect(page.locator(".tang-notice")).toHaveCount(0);
+});
+
+test("a cable can be dropped on the depth of a cable of a modulator of its own lane, and not on the depth of a cable of another lane's", async ({ page }) => {
+  await open(page, "lanes");
+  const lfo = (n: number) => node(page, `LFO ${String(n)}`);
+  // An envelope in the first lane drives a parameter of the lane's oscillator: it has a cable, and a row of it.
+  await page.getByRole("button", { name: "Add a modulator to Oscillator 1" }).click();
+  await page.getByRole("menuitem", { name: "Envelope" }).click();
+  const envelope = node(page, "ADSR");
+  await expect(envelope).toBeVisible();
+  await drag(page, output(envelope), port(node(page, "Oscillator 1"), "decay"));
+  await expect(cables(page)).toHaveCount(3);
+  await expect(envelope.locator(".tang-cable-row")).toHaveCount(1);
+  // The first LFO to the depth of the envelope's cable (its own lane's) is drawn, and to the depth of the second LFO's cable (another lane's) is not.
+  await drag(page, output(lfo(1)), envelope.locator(".tang-cable-row .react-flow__handle"));
+  await expect(cables(page)).toHaveCount(4);
+  await drag(page, output(lfo(1)), lfo(2).locator(".tang-cable-row .react-flow__handle"));
+  await expect(cables(page)).toHaveCount(4);
+  // (Dropped out of reach, a cable is not even asked for: there is nothing for the page to say it was refused.)
+  await expect(page.locator(".tang-notice")).toHaveCount(0);
+});
+
+test("a cable to the depth of a cable is drawn from the keyboard, from the list at the foot of a modulator, under the modulator whose cable it is, and is taken out by its button", async ({ page }) => {
+  await open(page);
+  await addEnvelope(page);
+  const picker = page.getByRole("button", { name: "Add a cable from ADSR" });
+  await picker.focus();
+  await page.keyboard.press("ArrowDown");
+  const menu = page.getByRole("menu", { name: "Add a cable from ADSR" });
+  await expect(menu.getByRole("group", { name: "LFO" }).getByRole("menuitem")).toHaveText(["rate", "depth → Filter: cutoff"]);
+  await page.keyboard.type("depth");
+  await expect(menu.getByRole("menuitem", { name: "depth → Filter: cutoff" })).toBeFocused();
+  await expect(cables(page)).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("slider", { name: "Depth of ADSR → depth of LFO → Filter: cutoff" })).toBeVisible();
+  await expect(cables(page)).toHaveCount(2);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(picker).toBeFocused();
+  // That depth is off the list; the cable is taken out by its button, and the focus goes to the list of the modulator that drove it.
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitem", { name: "depth → Filter: cutoff" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Remove cable ADSR → depth of LFO → Filter: cutoff" }).click();
+  await expect(cables(page)).toHaveCount(1);
+  await expect(picker).toBeFocused();
+  await expect(lfoRowPorts(page)).not.toHaveClass(/tang-port--driven/);
 });
 
 test("the list of what a modulator can be drawn to has a heading for each plugin, and stays on the page", async ({ page }) => {

@@ -9,6 +9,7 @@ import {
   CABLES_GAP,
   COLUMN,
   controlCount,
+  depthHandle,
   handleOf,
   MASTER_HEIGHT,
   ENVELOPE_NODE_HEIGHT,
@@ -410,15 +411,43 @@ describe("the nodes on the canvas", () => {
       noOverlap(graph);
     });
 
-    test("is not a row of its own when the cable ends where the canvas draws none: the depth of a cable", () => {
-      // 3 drives the effect; 4, which comes after it, drives the depth of that cable.
+    test("is above the modulator whose cable's depth it drives, as for a setting: in its column, with room for the cable", () => {
+      // 3 drives the effect; 4, which comes after it, drives the depth of that cable (which is a row of the node of 3).
       const depth: Edge = { kind: "modulation", id: 1, amount: 0.5, from: { node: 4, port: { type: "modOut" } }, to: { node: 3, port: { type: "depth", edge: 0 } } };
-      const base: Graph = {
+      const graph: Graph = {
         nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), master],
-        edges: [audio(1, 2), audio(2, MASTER), cable(0, 3, 2, 1)],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 3, 2, 1), depth],
       };
-      const withDepth: Graph = { ...base, edges: [...base.edges, depth] };
-      for (const id of [1, 2, 3, 4, MASTER]) expect(at(toFlow(withDepth), id).position, `node ${String(id)}`).toEqual(at(toFlow(base), id).position);
+      const flow = toFlow(graph);
+      expect(at(flow, 3).position).toEqual({ x: COLUMN, y: room(graph, 4) });
+      expect(at(flow, 4).position).toEqual({ x: COLUMN, y: 0 });
+      expect(at(flow, 1).position.y).toBe(room(graph, 4) + room(graph, 3));
+      noOverlap(graph);
+    });
+
+    test("is a row of the chain that a depth makes of a setting too: the one that drives the depth of a cable of the one that drives a rate", () => {
+      // 3 drives the rate of 4; 4 drives the effect, and 5 drives the depth of 4's cable: 4 is the nearest the strip, and 3 and 5 side by side above it.
+      const depth: Edge = { kind: "modulation", id: 2, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: 4, port: { type: "depth", edge: 0 } } };
+      const graph: Graph = {
+        nodes: [instrument(1), effect(2, 1), modulator(3, 1), modulator(4, 1), modulator(5, 1), master],
+        edges: [audio(1, 2), audio(2, MASTER), cable(0, 4, 2, 1), drives(1, 3, 4), depth],
+      };
+      const flow = toFlow(graph);
+      expect(at(flow, 4).position).toEqual({ x: COLUMN, y: room(graph, 3, 5) });
+      expect([3, 5].map((id) => at(flow, id).position.y)).toEqual([0, 0]);
+      expect(new Set([3, 5].map((id) => at(flow, id).position.x)).size).toBe(2);
+      noOverlap(graph);
+    });
+
+    test("is not a row of its own when it drives the depth of a cable of a modulator of another strip: a group's of a member lane's", () => {
+      // (The group's modulator lists as many cables in both: one to a parameter of the member's plugin, and another to a parameter or a depth.)
+      const base: Graph = {
+        nodes: [group(10), modulator(11, 10), instrument(1, 3, 10), modulator(12, 1), master],
+        edges: [member(1, 10), audio(10, MASTER), cable(0, 12, 1, 1), cable(1, 11, 1, 1), cable(2, 11, 1, 3)],
+      };
+      const across: Graph = { ...base, edges: [...base.edges.slice(0, 4), { kind: "modulation", id: 2, amount: 0.5, from: { node: 11, port: { type: "modOut" } }, to: { node: 12, port: { type: "depth", edge: 0 } } }] };
+      for (const id of [10, 11, 1, 12, MASTER]) expect(at(toFlow(across), id).position, `node ${String(id)}`).toEqual(at(toFlow(base), id).position);
+      expect(at(toFlow(across), 11).data.cables.map((row) => row.label)).toEqual(["Instrument 1: p0", "depth of Mod 12 → Instrument 1: p0"]);
     });
 
     test("lays a rack out as it always was while none of its modulators drives another", () => {
@@ -1066,12 +1095,23 @@ describe("the cables on the canvas", () => {
     expect(flow.edges).toHaveLength(toFlow(twoLanes).edges.length + 2);
   });
 
-  test("are not drawn when they end where the canvas has no handle: the depth of a cable", () => {
-    const depth: Edge = { kind: "modulation", id: 6, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 9, port: { type: "depth", edge: 0 } } };
-    const graph: Graph = { nodes: [...twoLanes.nodes, modulator(9, 1)], edges: [...twoLanes.edges, depth] };
+  test("go to the depth of a cable, from the modulator's output to the port of that cable's row in the node of the modulator whose cable it is, and say so", () => {
+    // The envelope (13) drives how deep the cable 0 goes, which starts at the modulator 4 and ends at the effect 3's first parameter.
+    const depth: Edge = { kind: "modulation", id: 6, amount: 0.3, from: { node: 13, port: { type: "modOut" } }, to: { node: 4, port: { type: "depth", edge: 0 } } };
+    const graph: Graph = { nodes: [...twoLanes.nodes, envelope(13, 1)], edges: [...twoLanes.edges, depth] };
     const flow = toFlow(graph);
-    expect(flow.edges.some((edge) => edge.id === "mod:6")).toBe(false);
-    expect(flow.edges).toHaveLength(toFlow(twoLanes).edges.length);
+    const drawn = flow.edges.find((edge) => edge.id === "mod:6");
+    expect(drawn && [drawn.type, drawn.source, drawn.sourceHandle, drawn.target, drawn.targetHandle, drawn.data]).toEqual([
+      "modulation",
+      "13",
+      "modOut",
+      "4",
+      "depth-0",
+      { cable: 6, modulator: 13, label: "ADSR → depth of Mod 4 → Effect 3: p0" },
+    ]);
+    expect(flow.edges).toHaveLength(toFlow(twoLanes).edges.length + 1);
+    // The row it ends at is in the node it goes to, and is marked as driven.
+    expect(at(flow, 4).data.cables).toEqual([{ edge: 0, label: "Effect 3: p0", driven: true }]);
   });
 
   test("cannot be deleted from the canvas", () => {
@@ -1085,8 +1125,10 @@ describe("the cables on the canvas", () => {
     expect(handleOf({ type: "param", index: 7 })).toBe("param-7");
     // The settings of a modulator are named as what they are.
     for (const type of ["rate", "attack", "decay", "sustain", "release"] as const) expect(handleOf({ type })).toBe(type);
-    // The depth of a cable has none.
-    expect(handleOf({ type: "depth", edge: 3 })).toBeNull();
+    // The depth of a cable is named after the cable.
+    expect(handleOf({ type: "depth", edge: 3 })).toBe("depth-3");
+    expect(handleOf({ type: "depth", edge: 3 })).toBe(depthHandle(3));
+    expect(handleOf({ type: "depth", edge: 30 })).not.toBe(handleOf({ type: "depth", edge: 3 }));
   });
 });
 

@@ -7,6 +7,7 @@
 // and out of them: `fixtures/reach.json`, and for the settings of modulators `fixtures/fields.json`) pin
 // the two together.
 import type { Edge, Graph, Node, NodeId, Port } from "../protocol";
+import { endLabel } from "./names";
 
 /** Whether a node has a plugin, whose parameters a cable can end at. */
 const hasPlugin = (node: Node): boolean => (node.kind === "instrument" && node.plugin !== null) || node.kind === "effect";
@@ -94,22 +95,34 @@ export function fieldsOf(graph: Graph, modulator: NodeId): FieldRef[] {
 
 /**
  * A node a modulator can still draw a cable to, and what it can still drive in it: the parameters of a plugin (`params`, by the
- * plugin's own index), or the settings of a modulator (`fields`, by the port; a cable's depth is not offered).
+ * plugin's own index), or the settings of a modulator and the depths of its cables (`fields`, by the port).
  */
 export interface Drivable {
   node: NodeId;
   /** What the node is called on the canvas. */
   name: string;
   params: readonly { index: number; name: string }[];
+  /** What each is called in a list: a setting by its name (`rate`), the depth of a cable by where the cable goes (`depth → Filter: cutoff`). */
   fields: readonly { port: Port; name: string }[];
 }
+
+/** What a setting of a modulator, or the depth of one of its cables, is called in a list: the depth of a cable is told by where the cable goes. */
+function fieldName(graph: Graph, names: ReadonlyMap<NodeId, string>, port: Port): string {
+  if (port.type !== "depth") return port.type;
+  const { edge } = port;
+  const cable = graph.edges.find((found) => found.kind === "modulation" && found.id === edge);
+  return cable ? `depth → ${endLabel(graph, names, cable.to)}` : "depth";
+}
+
+/** The key of a setting of a modulator, or of the depth of one of its cables (a modulator has as many depths as cables), among those that a modulator drives. */
+const fieldKey = (node: NodeId, port: Port): string => (port.type === "depth" ? `${String(node)}:depth:${String(port.edge)}` : `${String(node)}:${port.type}`);
 
 /**
  * Everything `modulator` can still be drawn to, plugin by plugin in the order of the graph: the parameters of the
  * plugins it reaches (`reachFrom`) that it does not drive already (another modulator may drive the same one: the
- * two add up); then modulator by modulator, in the order of `fieldsOf`: the settings of the modulators it reaches
- * that it does not drive already (and not the depth of a cable: it has no port on the canvas). `names` is what each
- * node is called (`displayNames`). A node with nothing left is not listed.
+ * two add up); then modulator by modulator, in the order of `fieldsOf`: the settings of the modulators it reaches and
+ * the depths of their cables, that it does not drive already. `names` is what each node is called (`displayNames`). A node
+ * with nothing left is not listed.
  */
 export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<NodeId, string>): Drivable[] {
   const reached = reachFrom(graph, modulator);
@@ -123,14 +136,12 @@ export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<
     const params = (plugin?.params ?? []).filter((param) => !driven.has(`${String(node.id)}:${String(param.index)}`)).map(({ index, name }) => ({ index, name }));
     if (params.length > 0) groups.push({ node: node.id, name: names.get(node.id) ?? node.name, params, fields: [] });
   }
-  const drivenFields = new Set(
-    graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type !== "param" ? [`${String(edge.to.node)}:${edge.to.port.type}`] : [])),
-  );
+  const drivenFields = new Set(graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type !== "param" ? [fieldKey(edge.to.node, edge.to.port)] : [])));
   const byModulator = new Map<NodeId, Drivable>();
   for (const { node, port } of fieldsOf(graph, modulator)) {
-    if (port.type === "depth" || drivenFields.has(`${String(node)}:${port.type}`)) continue;
+    if (drivenFields.has(fieldKey(node, port))) continue;
     const group = byModulator.get(node) ?? { node, name: names.get(node) ?? graph.nodes.find((n) => n.id === node)?.name ?? "?", params: [], fields: [] };
-    byModulator.set(node, { ...group, fields: [...group.fields, { port, name: port.type }] });
+    byModulator.set(node, { ...group, fields: [...group.fields, { port, name: fieldName(graph, names, port) }] });
   }
   return [...groups, ...byModulator.values()];
 }

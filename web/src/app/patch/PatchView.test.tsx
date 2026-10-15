@@ -340,13 +340,14 @@ describe("the patch", () => {
     expect(ports.filter((port) => port === "modOut")).toHaveLength(1);
     expect(ports.filter((port) => port.startsWith("param-"))).toHaveLength(12); // the oscillator's eight and the filter's four
     expect(ports.filter((port) => port === "rate")).toHaveLength(1); // the LFO's rate, which another modulator's cable can end at
-    expect(ports).toHaveLength(14); // and no audio port: the audio path is derived, there is nothing to draw
+    expect(ports.filter((port) => port.startsWith("depth-"))).toHaveLength(1); // and the depth of its cable, which another modulator's cable can end at too
+    expect(ports).toHaveLength(15); // and no audio port: the audio path is derived, there is nothing to draw
     // A cable is started at a modulator's output and ends at a parameter, never the other way.
     const output = view.container.querySelector(".react-flow__handle[data-handleid='modOut']");
     expect(output?.classList.contains("connectablestart")).toBe(true);
     const endsCable = (handle: Element): boolean => {
       const id = handle.getAttribute("data-handleid") ?? "";
-      return id.startsWith("param-") || id === "rate";
+      return id.startsWith("param-") || id.startsWith("depth-") || id === "rate";
     };
     for (const handle of connectable.filter(endsCable)) {
       expect(handle.classList.contains("connectablestart")).toBe(false);
@@ -898,6 +899,11 @@ describe("the patch", () => {
     const { snapshot } = fieldsFixture;
     const [groupLfo, laneLfo, laneEnvelope, laneControl] = [13, 4, 5, 6];
     const cables = snapshot.graph.edges.filter((edge) => edge.kind === "modulation").length;
+    /** What the first oscillator's plugin calls its parameter of this index. */
+    const oscillatorParam = (index: number): string => {
+      const found = snapshot.graph.nodes.find((node) => node.id === 3);
+      return (found?.kind === "instrument" ? found.plugin?.params.find((param) => param.index === index)?.name : undefined) ?? "?";
+    };
     /** The session with a cable (the 50th) from a modulator to a setting of another. */
     const withCable = (from: number, to: number, port: Port): Snapshot => ({
       ...snapshot,
@@ -929,37 +935,46 @@ describe("the patch", () => {
       expect(screen.getByRole("button", { name: "Remove cable ADSR 2 → LFO 2: rate" })).toBeTruthy();
     });
 
-    test("is not drawn to the depth of a cable, which the canvas has no port for", async () => {
+    test("is drawn to the depth of a cable, to the port of its row, with a slider for its depth that is named by the whole of what it joins", async () => {
+      // The lane's LFO drives how deep the envelope's cable 1 goes (it ends at the second parameter of the oscillator that the session names).
       const { view } = await rig(<PatchView />, { snapshot: withCable(laneLfo, laneEnvelope, { type: "depth", edge: 1 }) });
       await nodeOf(laneLfo);
-      expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables);
-      expect(screen.queryByRole("slider", { name: /^Depth of LFO 2 → ADSR 2/ })).toBeNull();
+      expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
+      const words = `LFO 2 → depth of ADSR 2 → Oscillator 1: ${oscillatorParam(2)}`;
+      expect(screen.getByRole("slider", { name: `Depth of ${words}` })).toBeTruthy();
+      expect(screen.getByRole("button", { name: `Remove cable ${words}` })).toBeTruthy();
+      // It ends at the row of that cable, in the node of the envelope that it starts at, which says that a cable ends there.
+      const row = (await nodeOf(laneEnvelope)).querySelector(".tang-cable-row--driven");
+      expect(row?.querySelector(".react-flow__handle")?.getAttribute("data-handleid")).toBe("depth-1");
+      expect(row?.textContent).toBe(`Oscillator 1: ${oscillatorParam(2)}`);
     });
 
     test("is on the list of a modulator, after the parameters, modulator by modulator: the settings of the others of its lane, but what it drives already", async () => {
       await rig(<PatchView />, { snapshot: withCable(laneControl, laneEnvelope, { type: "decay" }) });
       fireEvent.click(await pickerOf(laneControl));
       const groups = listed();
-      // (The oscillator's parameters, then the LFO's one setting and the envelope's three, for the control drives its decay.)
+      // (The oscillator's parameters, then the LFO's one setting and the envelope's three, for the control drives its decay; and the depths of the cables
+      // that start at them, each by where the cable goes.)
       expect(groups.map(([name]) => name)).toEqual(["Oscillator 1", "LFO 2", "ADSR 2"]);
       expect(groups.slice(1)).toEqual([
-        ["LFO 2", ["rate"]],
-        ["ADSR 2", ["attack", "sustain", "release"]],
+        ["LFO 2", ["rate", `depth → Oscillator 1: ${oscillatorParam(1)}`]],
+        ["ADSR 2", ["attack", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]],
       ]);
     });
 
-    test("is on the list of an LFO as the envelope's four stages, and not for a MIDI control, which has none", async () => {
+    test("is on the list of an LFO as the envelope's four stages and the depths of the cables of the envelope and of the MIDI control, which has no setting", async () => {
       await rig(<PatchView />, { snapshot });
       fireEvent.click(await pickerOf(laneLfo));
-      expect(listed().map(([name]) => name)).toEqual(["Oscillator 1", "ADSR 2"]);
-      expect(listed()[1]).toEqual(["ADSR 2", ["attack", "decay", "sustain", "release"]]);
+      expect(listed().map(([name]) => name)).toEqual(["Oscillator 1", "ADSR 2", "CC 1"]);
+      expect(listed()[1]).toEqual(["ADSR 2", ["attack", "decay", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]]);
+      expect(listed()[2]).toEqual(["CC 1", [`depth → Oscillator 1: ${oscillatorParam(7)}`]]);
     });
 
-    test("is for a group's modulator the settings of its members' modulators, and of the others of its own rack", async () => {
+    test("is for a group's modulator the settings and the cables' depths of its members' modulators, and of the others of its own rack", async () => {
       await rig(<PatchView />, { snapshot });
       fireEvent.click(await pickerOf(groupLfo));
       // (The group's bus effect and the members' plugins, in the order of the graph; then the members' modulators, member by member, then its own rack's.)
-      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "LFO 2", "ADSR 2", "LFO 3", "ADSR 1"]);
+      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "LFO 2", "ADSR 2", "CC 1", "LFO 3", "ADSR 1", "CC 74"]);
     });
 
     test("asks the server for the cable that was picked, and it is drawn, and the setting is off the list", async () => {
@@ -978,8 +993,30 @@ describe("the patch", () => {
       expect(screen.queryByRole("menu")).toBeNull();
       expect(document.activeElement).toBe(picker);
       fireEvent.click(picker);
-      expect(listed().map(([name]) => name)).not.toContain("LFO 2");
+      // (Its rate is taken, and the depth of its cable is not.)
+      expect(listed().find(([name]) => name === "LFO 2")?.[1]).toEqual([`depth → Oscillator 1: ${oscillatorParam(1)}`]);
       expect((await nodeOf(laneLfo)).querySelector(".tang-port--driven")?.getAttribute("data-handleid")).toBe("rate");
+    });
+
+    test("asks the server for the cable to a depth that was picked, under the modulator whose cable it is, and it is drawn, and that depth is off the list", async () => {
+      const { requests, view } = await rig(<PatchView />, { snapshot });
+      const picker = await pickerOf(laneLfo);
+      fireEvent.click(picker);
+      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "ADSR 2" })).getByRole("menuitem", { name: `depth → Oscillator 1: ${oscillatorParam(2)}` }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModEdge", modulator: laneLfo, to: { node: laneEnvelope, port: { type: "depth", edge: 1 } } }]);
+      });
+      await waitFor(() => {
+        expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
+      });
+      expect(screen.getByRole("slider", { name: `Depth of LFO 2 → depth of ADSR 2 → Oscillator 1: ${oscillatorParam(2)}` })).toBeTruthy();
+      // The menu is closed, with the focus on its button; the depth it drives is off the list and the envelope's other one is not, and the row of the
+      // cable is marked as driven.
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(document.activeElement).toBe(picker);
+      fireEvent.click(picker);
+      expect(listed().find(([name]) => name === "ADSR 2")?.[1].filter((item) => item.startsWith("depth"))).toEqual([`depth → Oscillator 1: ${oscillatorParam(1)}`]);
+      expect((await nodeOf(laneEnvelope)).querySelector(".tang-port--driven")?.getAttribute("data-handleid")).toBe("depth-1");
     });
 
     test("says why when the cable was not drawn, in the names of the modulators and the setting, and the list is as it was", async () => {
@@ -1088,11 +1125,14 @@ describe("the patch", () => {
       expect(await rowsOf(laneEnvelope)).toEqual([`Oscillator 1: ${paramNamed(2)}`, `Oscillator 1: ${paramNamed(1)}`, `depth of LFO 2 → Oscillator 1: ${paramNamed(1)}`]);
     });
 
-    test("has ports that no cable is dropped on yet: a row's port takes no connection until a cable can be drawn to one", async () => {
+    test("has ports that take a cable and start none: a row's port is for another modulator's cable to end at", async () => {
       await rig(<PatchView />, { snapshot });
       const ports = Array.from((await nodeOf(laneEnvelope)).querySelectorAll(".tang-cable-row .react-flow__handle"));
       expect(ports).toHaveLength(2);
-      for (const port of ports) expect(port.classList.contains("connectable"), port.getAttribute("data-handleid") ?? "?").toBe(false);
+      for (const port of ports) {
+        expect(port.classList.contains("connectableend"), port.getAttribute("data-handleid") ?? "?").toBe(true);
+        expect(port.classList.contains("connectablestart"), port.getAttribute("data-handleid") ?? "?").toBe(false);
+      }
     });
   });
 
