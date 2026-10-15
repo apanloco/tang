@@ -154,6 +154,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetPatternLooping { inst, looping } => format!("SetPatternLooping inst={inst} looping={looping}"),
         C::SetPatternRecording { inst, recording } => format!("SetPatternRecording inst={inst} recording={recording}"),
         C::ClearPattern { inst } => format!("ClearPattern inst={inst}"),
+        C::SetProbe { target, ring } => format!("SetProbe ring={ring} {target:?}"),
+        C::ClearProbes => "ClearProbes".to_string(),
         _ => "<other>".to_string(),
     }
 }

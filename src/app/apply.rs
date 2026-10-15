@@ -104,6 +104,8 @@ impl Controller {
         #[cfg(any(test, feature = "web"))]
         if applied.restructured {
             self.resync();
+            // (The nodes that are watched may be somewhere else, or gone, or back.)
+            self.reconcile_probes();
         }
         applied
     }

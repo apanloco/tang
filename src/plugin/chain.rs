@@ -2062,14 +2062,14 @@ pub enum GraphCommand {
     },
     /// Store the signal at the output of a node into ring `ring` of the probe pool (`Telemetry::probes`) on every buffer, from the next, in addition to the rings that already listen
     /// to it. A target that is not there (a lane, a group or a place in a chain that the graph has not) and a ring that the pool has not are ignored; a graph with no telemetry stores nothing.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends the probes it sets (step 46)"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "the controller sends the probes it sets (step 46)"))]
     SetProbe {
         target: ProbeTarget,
         ring: usize,
     },
     /// Stop every probe: no ring is stored into any more (it keeps what it has). The controller sends this and then a `SetProbe` for each probe that stays, when the places in the graph
     /// have changed.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller clears the probes when it sets them again (step 46)"))]
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "the controller clears the probes when it sets them again (step 46)"))]
     ClearProbes,
     /// Add a new empty submix group; the new group's index is `groups.len()`.
     AddGroup,
@@ -2904,7 +2904,7 @@ impl PatternPlayer {
 /// Where a probe listens: the signal at the output of a node, which is stored into a ring of `Telemetry::probes` on every buffer while the probe is set
 /// (`GraphCommand::SetProbe`). The places are the ones `app::model::NodePath` names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the targets of the probes it sets (step 46)"))]
+#[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "the controller makes the targets of the probes it sets (step 46)"))]
 pub enum ProbeTarget {
     /// A lane's instrument, as it goes out of the lane's volume and before its effects.
     Instrument(usize),

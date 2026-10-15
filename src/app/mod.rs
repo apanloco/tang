@@ -14,6 +14,8 @@ pub mod journal;
 pub mod layout;
 pub mod load;
 pub mod model;
+#[cfg(any(test, feature = "web"))]
+pub mod probes;
 pub mod protocol;
 pub mod save;
 pub mod snapshot;

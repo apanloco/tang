@@ -68,11 +68,36 @@ pub struct Telemetry {
     /// The signal at the output of a node as it was a moment ago, a ring for each node that is probed (the engine's taps, `GraphCommand::SetProbe`, store into the ring that
     /// they are given; who has which is the controller's to say, and the readers' to know).
     pub probes: Vec<ScopeRing>,
+    /// The node that each ring of `probes` is for, as its id and one (0 for none): written by the controller, which says who is listened to, and read by whoever sends
+    /// a ring's frames to the clients that watch that node.
+    #[cfg(any(test, feature = "web"))]
+    probe_nodes: [AtomicU32; PROBES],
 }
 
 impl Telemetry {
     pub fn new() -> Self {
-        Telemetry { cells: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect(), scope: ScopeRing::new(), probes: (0..PROBES).map(|_| ScopeRing::new()).collect() }
+        Telemetry {
+            cells: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect(),
+            scope: ScopeRing::new(),
+            probes: (0..PROBES).map(|_| ScopeRing::new()).collect(),
+            #[cfg(any(test, feature = "web"))]
+            probe_nodes: std::array::from_fn(|_| AtomicU32::new(0)),
+        }
+    }
+
+    /// Say which node ring `ring` of the probe pool is for (a ring that the pool has not is ignored). The ring keeps what it has until the audio thread stores over it.
+    #[cfg(any(test, feature = "web"))]
+    pub fn set_probe_node(&self, ring: usize, node: Option<u32>) {
+        if let Some(cell) = self.probe_nodes.get(ring) {
+            cell.store(node.map_or(0, |node| node.wrapping_add(1)), Ordering::Relaxed);
+        }
+    }
+
+    /// The node that ring `ring` of the probe pool is for, if it is for one.
+    #[cfg(any(test, feature = "web"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the web runtime's pusher reads which node each ring is for (step 46)"))]
+    pub fn probe_node(&self, ring: usize) -> Option<u32> {
+        self.probe_nodes.get(ring).and_then(|cell| cell.load(Ordering::Relaxed).checked_sub(1))
     }
 
     /// Publish a float.
