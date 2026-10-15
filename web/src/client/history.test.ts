@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP } from "../protocol";
 import type { Event, Intent, Node, Snapshot } from "../protocol";
-import { builtinCatalog, historyFixture, shapeOf } from "./fixtures";
+import { builtinCatalog, groupsFixture, historyFixture, shapeOf } from "./fixtures";
 import type { HistoryRow } from "./fixtures";
 import { History, planOf, stepOf, takesOut } from "./history";
 import type { Key, Made } from "./history";
@@ -272,9 +272,8 @@ describe("what a removal is to the history", () => {
       expect(plan({ type: "removeNode", node: control.id }, withControl)).toEqual({ removed: { label: "remove a MIDI control", intent: { type: "removeNode", node: control.id }, at: 7 } });
     });
 
-    test("is no step for a node that is not there, which is refused, and what cannot be put back yet for a lane and a group", () => {
+    test("is no step for a node that is not there, which is refused, and what cannot be put back yet for a group", () => {
       expect(plan({ type: "removeNode", node: 9_999 })).toBe("nothing");
-      expect(plan({ type: "removeNode", node: lane0.id })).toBe("barrier");
       expect(plan({ type: "removeNode", node: group.id })).toBe("barrier");
     });
 
@@ -310,6 +309,27 @@ describe("what a removal of an effect is to the history", () => {
     for (const effect of effects) {
       expect(plan({ type: "removeNode", node: effect.id })).toEqual({ removed: { label: `remove ${effect.name}`, intent: { type: "removeNode", node: effect.id }, at: 7 } });
     }
+  });
+});
+
+describe("what a removal of a lane is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const lanes = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
+
+  test("is a step that is made when it is carried out, in the words of its instrument", () => {
+    expect(lanes.length).toBeGreaterThanOrEqual(2);
+    for (const lane of lanes) {
+      expect(plan({ type: "removeNode", node: lane.id })).toEqual({ removed: { label: `remove the lane of ${lane.name}`, intent: { type: "removeNode", node: lane.id }, at: 7 } });
+    }
+  });
+
+  test("is a step in the words of a lane that has no instrument", () => {
+    const [lane] = lanes;
+    if (!lane) throw new Error("the fixture has a lane");
+    const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
+    const empty = { ...snapshot, graph: { ...snapshot.graph, nodes } };
+    expect(plan({ type: "removeNode", node: lane.id }, empty)).toEqual({ removed: { label: "remove an empty lane", intent: { type: "removeNode", node: lane.id }, at: 7 } });
   });
 });
 
@@ -647,6 +667,49 @@ describe("the mock engine's undo of what is taken out", () => {
     expect(pieces(server)).toBe(after);
     server.apply({ type: "undo" });
     expect(pieces(server)).toBe(before);
+  });
+
+  test("puts a lane back with its plugins, modulators and cables, in its place and its group, by undo, and takes it out again by redo", () => {
+    const server = fresh();
+    const [first, second] = lanes;
+    if (first === undefined || second === undefined) throw new Error("the fixture has two lanes");
+    const before = pieces(server);
+    for (const lane of [first, second]) {
+      server.apply({ type: "removeNode", node: lane });
+      const after = pieces(server);
+      expect(after).not.toBe(before);
+      expect(server.snapshot.graph.nodes.some((n) => n.id === lane)).toBe(false);
+      expect(labels(server)[0]).toMatch(/^remove the lane of /);
+      server.apply({ type: "undo" });
+      expect(pieces(server)).toBe(before);
+      expect(labels(server)[1]).toMatch(/^remove the lane of /);
+      server.apply({ type: "redo" });
+      expect(pieces(server)).toBe(after);
+      server.apply({ type: "undo" });
+      expect(pieces(server)).toBe(before);
+    }
+  });
+
+  test("puts back a member lane with the cables of its group to it, and what drives their depths, each where it was", () => {
+    const server = new MockServer({ snapshot: groupsFixture.snapshot });
+    // (Lane 10 is in group 0, whose modulators drive a parameter of it and the rate of its LFO; the envelope drives the depth of the first of those cables.)
+    const before = pieces(server);
+    server.apply({ type: "removeNode", node: 10 });
+    expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation").map((e) => e.id)).toEqual([0, 4]);
+    expect(labels(server)).toEqual(["remove the lane of Oscillator", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    expect(labels(server)).toEqual([null, "remove the lane of Oscillator"]);
+  });
+
+  test("does not put back the last lane of a session, which is refused and leaves the history as it was", () => {
+    const server = fresh();
+    for (const lane of lanes.slice(1)) server.apply({ type: "removeNode", node: lane });
+    const [kept] = lanes;
+    if (kept === undefined) throw new Error("the fixture has a lane");
+    const steps = labels(server);
+    expect(() => server.apply({ type: "removeNode", node: kept })).toThrow();
+    expect(labels(server)).toEqual(steps);
   });
 
   test("puts back the first effect of a chain before the one after it, and an effect of a bus", () => {

@@ -1,16 +1,20 @@
 //! What puts back what was taken out (`docs/web-ui.md` §5, D37).
 //!
 //! A removal is undone by putting back what it took, where it was, under its ids and the telemetry slots it had: a cable, with what it was centred on,
-//! as `SessionModel::remove_edge` hands it back, a modulator with its own cables, as `SessionModel::remove_modulator_at` does, and an effect (a lane's or
-//! a bus's) with the plugin that was in the chain; the model and the audio thread are given them again (`SessionModel::insert_target_at`,
-//! `insert_modulator_at`, `insert_effect_at` and `insert_bus_effect_at`; `GraphCommand::InsertModTarget`, `InsertModulator`, `InsertEffect` and
-//! `InsertGroupEffect`). What an operation of the controller takes out is written down as it goes, in a `Journal`, and a step of the history that holds one
+//! as `SessionModel::remove_edge` hands it back, a modulator with its own cables, as `SessionModel::remove_modulator_at` does, an effect (a lane's or
+//! a bus's) with the plugin that was in the chain, and a lane with everything it has; the model and the audio thread are given them again
+//! (`SessionModel::insert_target_at`, `insert_modulator_at`, `insert_effect_at`, `insert_bus_effect_at` and `insert_lane_at`; `GraphCommand::InsertModTarget`,
+//! `InsertModulator`, `InsertEffect`, `InsertGroupEffect` and `InsertInstrument`). What an operation of the controller takes out is written down as it goes,
+//! in a `Journal`, and a step of the history that holds one
 //! puts everything back in the reverse order (`Controller::rewind`): the last thing taken out is the first put back, so that each goes back into the
 //! session as it was when its turn to go came, and the places that the things taken out after it had are the places they have again.
 //!
 //! The plugin that is taken out of a chain is the audio thread's to hand back: the controller makes a channel for it (`RemoveEffect { keep }`) and the
 //! journal holds the other end (`Kept::Asked`), so that undo puts the very plugin back, with whatever it holds, at once; if it did not come (the audio thread
 //! is not running, or the history let go of it, `History` keeps only the newest few) the plugin is loaded again with its preset and the values the user set.
+//! A lane is handed back whole (`RemoveInstrument { keep }`, `KeptLane`): its plugins, its modulators and what they have in hand, its pattern; the history lets
+//! go of a lane's plugins, and not of the lane, when it keeps too many, and the plugins are loaded again into it. A lane that the audio thread did not hand
+//! back cannot be had again, and the undo is refused.
 
 use std::fmt;
 use std::time::Instant;
@@ -18,10 +22,10 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::apply::Done;
-use crate::app::controller::{ChainAt, Controller};
+use crate::app::controller::{has_audio_output, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, ModTargetSlot, ModulatorSlot, ParamKind, PluginSlot, RemovedCable};
-use crate::plugin::chain::{GraphCommand, ModTarget, ModulatorLocation, CHAIN_CHANNELS};
+use crate::app::model::{mod_source_slot_to_graph, InstrumentNode, ModTargetSlot, ModulatorSlot, ParamKind, PluginSlot, RemovedCable};
+use crate::plugin::chain::{GraphCommand, KeptLane, ModTarget, ModulatorLocation, CHAIN_CHANNELS};
 use crate::plugin::{self, Plugin};
 
 /// One thing that was taken out, and what it takes to put it back.
@@ -34,23 +38,26 @@ pub(super) enum Inverse {
     Modulator { at: ModulatorLocation, index: usize, modulator: ModulatorSlot, bases: Vec<f32> },
     /// An effect of a lane's chain or of a group's bus, which goes back to its place in the chain: `slot` is the model's plugin (its node, its values, its mix),
     /// and `kept` the plugin that was in the chain, or what puts one back.
-    Effect { at: ChainAt, index: usize, slot: PluginSlot, kept: Kept },
+    Effect { at: ChainAt, index: usize, slot: PluginSlot, kept: Kept<Box<dyn Plugin>> },
+    /// A lane, which goes back among the lanes at `index`: `lane` is the model's node with everything the model has of it (its plugins' slots, its modulators and their cables,
+    /// its pattern, its group), and `kept` the lane that the audio thread handed back, with its plugins and whatever they hold, or what puts one back.
+    Lane { index: usize, lane: InstrumentNode, kept: Kept<KeptLane> },
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
 }
 
-/// A plugin that was taken out of a chain, and whether the controller has the very plugin to put back.
-pub(super) enum Kept {
+/// What was taken out of the audio thread's graph (a plugin, `Box<dyn Plugin>`, or a lane, `KeptLane`), and whether the controller has the very one to put back.
+pub(super) enum Kept<T> {
     /// The audio thread was asked to hand it to this channel: it is there, or on its way.
-    Asked(Receiver<Box<dyn Plugin>>),
-    /// The very plugin, in hand.
-    InHand(Box<dyn Plugin>),
-    /// None is kept (nothing asked for one, or the history let go of it): it is loaded again.
+    Asked(Receiver<T>),
+    /// The very one, in hand.
+    InHand(T),
+    /// None is kept (nothing asked for one, or the history let go of it): a plugin is loaded again, and a lane that was not kept cannot be put back.
     Nothing,
 }
 
-impl fmt::Debug for Kept {
+impl<T> fmt::Debug for Kept<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Kept::Asked(_) => "Kept::Asked",
@@ -72,17 +79,37 @@ impl Journal {
         self.inverses.push(inverse);
     }
 
-    /// How many plugins it keeps to put back (asked for, or in hand).
+    /// How many plugins it keeps to put back (asked for, or in hand): an effect's, and those of a lane, its instrument and its effects.
     pub fn plugins_kept(&self) -> usize {
-        self.inverses.iter().filter(|inverse| matches!(inverse, Inverse::Effect { kept: Kept::Asked(_) | Kept::InHand(_), .. })).count()
+        self.inverses
+            .iter()
+            .map(|inverse| match inverse {
+                Inverse::Effect { kept: Kept::Asked(_) | Kept::InHand(_), .. } => 1,
+                Inverse::Lane { lane, kept: Kept::Asked(_), .. } => plugins_of(lane),
+                Inverse::Lane { kept: Kept::InHand(kept), .. } => kept.plugin_count(),
+                _ => 0,
+            })
+            .sum()
     }
 
     /// Let go of the plugins it keeps: they are loaded again if what it took out is put back. (A plugin that is dropped is dropped here, on the thread that
-    /// holds the history, as the main thread drops what the audio thread hands back.)
+    /// holds the history, as the main thread drops what the audio thread hands back.) A lane keeps its place for them: it is not let go of, unless it has not come.
     pub fn let_go_of_plugins(&mut self) {
         for inverse in &mut self.inverses {
-            if let Inverse::Effect { kept, .. } = inverse {
-                *kept = Kept::Nothing;
+            match inverse {
+                Inverse::Effect { kept, .. } => *kept = Kept::Nothing,
+                Inverse::Lane { kept, .. } => {
+                    let lane = match std::mem::replace(kept, Kept::Nothing) {
+                        Kept::Asked(channel) => channel.try_recv().ok(),
+                        Kept::InHand(lane) => Some(lane),
+                        Kept::Nothing => None,
+                    };
+                    if let Some(mut lane) = lane {
+                        drop(lane.take_plugins());
+                        *kept = Kept::InHand(lane);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -91,6 +118,25 @@ impl Journal {
     pub fn can_be_put_back(&self) -> bool {
         !self.inverses.is_empty() && !self.inverses.iter().any(|inverse| matches!(inverse, Inverse::NoWayBack))
     }
+}
+
+/// How many plugins a lane has: its instrument and its effects.
+fn plugins_of(lane: &InstrumentNode) -> usize {
+    usize::from(lane.instrument.is_some()) + lane.effects.len()
+}
+
+/// What a lane is called in the words of a button and of a refusal: "the lane of Oscillator", or "an empty lane" if it has no instrument.
+pub(super) fn lane_words(lane: &InstrumentNode) -> String {
+    lane.instrument.as_ref().map_or_else(|| "an empty lane".to_string(), |instrument| format!("the lane of {}", instrument.name))
+}
+
+/// An effect has as many audio outputs as the chains have channels, or there is no place for it.
+fn outputs_of_an_effect(effect: &dyn Plugin, slot: &PluginSlot) -> Result<(), IntentError> {
+    let outputs = effect.audio_output_count();
+    if outputs != CHAIN_CHANNELS {
+        return Err(IntentError::Invalid(format!("{} has {outputs} audio outputs, and an effect here needs {CHAIN_CHANNELS}", slot.name)));
+    }
+    Ok(())
 }
 
 /// A cable as the audio thread is told of it when it goes in, centred on `base_value`.
@@ -116,9 +162,10 @@ impl Controller {
         }
     }
 
-    /// A channel for the plugin that an effect's removal takes out of the audio thread's chain, when an intent is being carried out: the sender is for the
-    /// command, the `Kept` is what the journal holds. (Nothing, for a call that no intent asks for: nobody puts that back.)
-    pub(super) fn channel_for_a_plugin(&self) -> (Option<Sender<Box<dyn Plugin>>>, Kept) {
+    /// A channel for what a removal takes out of the audio thread's graph (a plugin of a chain, or a lane), when an intent is being carried out: the sender is for the
+    /// command (`RemoveEffect { keep }`, `RemoveInstrument { keep }`), the `Kept` is what the journal holds. (Nothing, for a call that no intent asks for: nobody puts
+    /// that back.)
+    pub(super) fn channel_for<T>(&self) -> (Option<Sender<T>>, Kept<T>) {
         if self.journal.is_none() {
             return (None, Kept::Nothing);
         }
@@ -128,7 +175,7 @@ impl Controller {
 
     /// The plugin to put back: the very one if the audio thread handed it back (it is waited for a moment, `recovery_wait`, if it has not yet), else the plugin
     /// loaded again, with the preset it had and the values the user set. Refused, with the reason, if that does not load or its outputs are not the chain's.
-    fn recover_plugin(&self, slot: &PluginSlot, kept: Kept, deadline: Instant) -> Result<Box<dyn Plugin>, IntentError> {
+    fn recover_plugin(&self, slot: &PluginSlot, kept: Kept<Box<dyn Plugin>>, deadline: Instant) -> Result<Box<dyn Plugin>, IntentError> {
         let handed_back = match kept {
             Kept::InHand(plugin) => Some(plugin),
             Kept::Asked(channel) => channel.recv_deadline(deadline).ok(),
@@ -138,11 +185,43 @@ impl Controller {
             Some(plugin) => plugin,
             None => self.reload_plugin(slot)?,
         };
-        let outputs = loaded.audio_output_count();
-        if outputs != CHAIN_CHANNELS {
-            return Err(IntentError::Invalid(format!("{} has {outputs} audio outputs, and an effect here needs {CHAIN_CHANNELS}", slot.name)));
-        }
+        outputs_of_an_effect(&*loaded, slot)?;
         Ok(loaded)
+    }
+
+    /// The lane to put back: the very lane if the audio thread handed it back (it is waited for a moment, `recovery_wait`, if it has not yet), with its plugins loaded
+    /// again, as `recover_plugin` loads one, if it gave them up (the history lets go of them, to save memory). Refused, with the reason, if the lane did not come or a
+    /// plugin cannot be had.
+    fn recover_lane(&self, lane: &InstrumentNode, kept: Kept<KeptLane>, deadline: Instant) -> Result<KeptLane, IntentError> {
+        let handed_back = match kept {
+            Kept::InHand(kept) => Some(kept),
+            Kept::Asked(channel) => channel.recv_deadline(deadline).ok(),
+            Kept::Nothing => None,
+        };
+        let Some(mut handed_back) = handed_back else {
+            return Err(IntentError::Invalid(format!("{} was not handed back by the audio thread", lane_words(lane))));
+        };
+        if handed_back.plugin_count() < plugins_of(lane) {
+            let instrument = match &lane.instrument {
+                Some(slot) => {
+                    let loaded = self.reload_plugin(slot)?;
+                    has_audio_output(&*loaded)?;
+                    Some(loaded)
+                }
+                None => None,
+            };
+            let effects = lane
+                .effects
+                .iter()
+                .map(|slot| {
+                    let loaded = self.reload_plugin(slot)?;
+                    outputs_of_an_effect(&*loaded, slot)?;
+                    Ok(loaded)
+                })
+                .collect::<Result<Vec<_>, IntentError>>()?;
+            handed_back.put_plugins(instrument, effects);
+        }
+        Ok(handed_back)
     }
 
     /// The plugin of `slot`, loaded again from what it was loaded from, with the preset it had and then the values that the model has, which are the user's.
@@ -177,12 +256,16 @@ impl Controller {
                         return Err(IntentError::Invalid(format!("node {} is there already", slot.node.0)));
                     }
                 }
-                Inverse::Modulator { modulator, .. } => {
-                    if self.model.locate(modulator.node).is_some() {
-                        return Err(IntentError::Invalid(format!("node {} is there already", modulator.node.0)));
+                Inverse::Modulator { modulator, .. } => self.refuse_a_modulator_that_is_there(modulator)?,
+                Inverse::Lane { lane, .. } => {
+                    let plugins = lane.instrument.iter().chain(&lane.effects);
+                    for node in std::iter::once(lane.node).chain(plugins.map(|plugin| plugin.node)) {
+                        if self.model.locate(node).is_some() {
+                            return Err(IntentError::Invalid(format!("node {} is there already", node.0)));
+                        }
                     }
-                    for cable in &modulator.targets {
-                        self.refuse_a_cable_that_is_there(cable)?;
+                    for modulator in &lane.modulators {
+                        self.refuse_a_modulator_that_is_there(modulator)?;
                     }
                 }
                 Inverse::NoWayBack => {}
@@ -192,9 +275,16 @@ impl Controller {
         // step, which is dropped.)
         let deadline = Instant::now() + self.recovery_wait;
         for inverse in &mut journal.inverses {
-            if let Inverse::Effect { slot, kept, .. } = inverse {
-                let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline)?;
-                *kept = Kept::InHand(plugin);
+            match inverse {
+                Inverse::Effect { slot, kept, .. } => {
+                    let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline)?;
+                    *kept = Kept::InHand(plugin);
+                }
+                Inverse::Lane { lane, kept, .. } => {
+                    let recovered = self.recover_lane(lane, std::mem::replace(kept, Kept::Nothing), deadline)?;
+                    *kept = Kept::InHand(recovered);
+                }
+                _ => {}
             }
         }
         for inverse in journal.inverses.into_iter().rev() {
@@ -203,6 +293,17 @@ impl Controller {
         // (Nothing was taken out by this.)
         self.taken_last = Journal::default();
         Ok(self.conclude(Done::Restructured))
+    }
+
+    /// Refused if the modulator's node, or the id of one of its cables, is in use.
+    fn refuse_a_modulator_that_is_there(&self, modulator: &ModulatorSlot) -> Result<(), IntentError> {
+        if self.model.locate(modulator.node).is_some() {
+            return Err(IntentError::Invalid(format!("node {} is there already", modulator.node.0)));
+        }
+        for cable in &modulator.targets {
+            self.refuse_a_cable_that_is_there(cable)?;
+        }
+        Ok(())
     }
 
     fn refuse_a_cable_that_is_there(&self, cable: &ModTargetSlot) -> Result<(), IntentError> {
@@ -261,8 +362,15 @@ impl Controller {
                     }
                 }
             }
-            // (`rewind` has every plugin in hand by now.)
-            Inverse::Effect { .. } | Inverse::NoWayBack => {}
+            Inverse::Lane { index, lane, kept: Kept::InHand(kept) } => {
+                // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
+                let place = self.model.insert_lane_at(index, lane);
+                let _ = self.cmd_tx.send(GraphCommand::InsertInstrument { index: place, lane: kept });
+                // (Its pattern player has the tempo that was there when it went: the lanes are all told the one there is now.)
+                let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: self.global_bpm });
+            }
+            // (`rewind` has every plugin and every lane in hand by now.)
+            Inverse::Effect { .. } | Inverse::Lane { .. } | Inverse::NoWayBack => {}
         }
     }
 }

@@ -317,6 +317,11 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // An effect goes with the cables that drive it, and with those that drive the depth of any of them, and comes back with them (the controller's
       // `Inverse::Effect`). None of them is on a cycle of cables that drive each other's depths: a cable drives one thing, and these are a tree of drivers.
       if (node?.kind === "effect") return { removed: { label: `remove ${node.name}`, intent, at: now } };
+      // A lane goes with its own modulators and their cables, its plugins and its pattern, after the cables of its group to it and those that drive the depth of any of them, and
+      // comes back with them, at its place among the lanes and in its group (the controller's `Inverse::Lane`). None of those cables is on a cycle of cables that drive each other's
+      // depths: a cable drives one thing, and those of its group drive a place in the lane, so the ones that drive their depths are a tree of drivers. (A lane with no instrument
+      // is "an empty lane".)
+      if (node?.kind === "instrument") return { removed: { label: `remove ${node.plugin === null ? "an empty lane" : `the lane of ${node.name}`}`, intent, at: now } };
       if (node?.kind !== "modulator") return node ? "barrier" : "nothing";
       // The cables that go with it: its own, those that drive its settings and those that drive the depth of any of them (`removeNodeOutcome`).
       const { edges } = snapshot.graph;

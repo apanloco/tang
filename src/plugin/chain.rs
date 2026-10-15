@@ -892,15 +892,20 @@ fn hand_back(return_tx: &Sender<Box<dyn Plugin>>, keep: Option<Sender<Box<dyn Pl
 pub struct KeptLane(Box<InstrumentLane>);
 
 impl KeptLane {
+    /// A lane with nothing in it, which is what a test that has no audio thread hands back to the controller for the lane that it took out: a lane that gave up its plugins, so
+    /// that the controller loads them again. (It is not put into a graph.)
+    #[cfg(test)]
+    pub fn empty() -> KeptLane {
+        KeptLane(Box::new(InstrumentLane::new(2)))
+    }
+
     /// How many plugins the lane holds: its instrument and its effects.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a lane for the history, built next"))]
     pub fn plugin_count(&self) -> usize {
         usize::from(self.0.instrument.is_some()) + self.0.effects.len()
     }
 
     /// Take the plugins out of the lane, the instrument first and then the effects: to drop them, since a plugin can be big, when the history lets go of them. A lane
     /// without them is not put back (the audio thread turns it away) until it has been given plugins again, `put_plugins`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a lane for the history, built next"))]
     pub fn take_plugins(&mut self) -> Vec<Box<dyn Plugin>> {
         let mut plugins: Vec<Box<dyn Plugin>> = self.0.instrument.take().into_iter().collect();
         plugins.append(&mut self.0.effects);
@@ -908,7 +913,6 @@ impl KeptLane {
     }
 
     /// Give the lane an instrument and effects, as many effects as it has mixes for (it has kept the mixes). The lane's buffers are the instrument's.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a lane for the history, built next"))]
     pub fn put_plugins(&mut self, instrument: Option<Box<dyn Plugin>>, effects: Vec<Box<dyn Plugin>>) {
         self.0.inst_buf = instrument.as_ref().map_or_else(Vec::new, |plugin| (0..plugin.audio_output_count()).map(|_| Vec::new()).collect());
         self.0.instrument = instrument;
@@ -1858,7 +1862,6 @@ pub enum GraphCommand {
     /// now, and the cables of its group, if it is a member, to the members from its place on are told theirs, before it goes in. What it counted as held, and what its pattern
     /// was playing, is forgotten (the notes were let go while it was out), and a group that is not there is no group. A lane that has fewer effects than it has mixes (it gave up
     /// its plugins, `KeptLane::take_plugins`) is turned away, and its plugins go back by the return channel.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a lane back for the history, built next"))]
     InsertInstrument {
         index: usize,
         lane: KeptLane,

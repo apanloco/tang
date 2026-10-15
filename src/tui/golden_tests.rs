@@ -957,7 +957,7 @@ fn d_on_an_instrument_empties_it_and_leaves_the_lanes_effects_and_modulators() {
     assert!(h.tree().iter().any(|line| line.contains("fx Filter")) && h.tree().iter().any(|line| line.contains("LFO")), "{:#?}", h.tree());
     // A second `d` removes the lane (that has no plugin now), with what it had.
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["RemoveInstrument inst=0"]);
+    assert_eq!(h.commands(), ["RemoveInstrument inst=0 keep"]);
     assert_eq!(h.s.ctl.model.instruments.len(), 1);
 }
 
@@ -1386,7 +1386,7 @@ fn deleting_a_group_member_drops_its_modulator_targets() {
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('d')).press(KeyCode::Char('d'));
     // (The group's cable to the member goes first, then the plugin, then the lane.)
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0", "RemoveInstrument inst=0"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0", "RemoveInstrument inst=0 keep"]);
     let lfo = &h.s.ctl.model.groups[0].modulators[0];
     assert_eq!(lfo.targets.len(), 1);
     assert_eq!(lfo.targets[0].param_name, "damping");
@@ -4824,7 +4824,7 @@ mod undo_and_redo {
     #[test]
     fn d_takes_a_node_out_and_forgets_the_history_as_the_browsers_remove_does() {
         use crate::app::history::HistoryState;
-        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator and an effect are put back: tests of their own.)
+        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator, an effect and a lane are put back: tests of their own.)
         let cases = [
             (scene_bus_pair().to_string(), TreeAddress::Group(0), "a group"),
             (scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied"),
@@ -4836,14 +4836,53 @@ mod undo_and_redo {
             h.goto(address).press(KeyCode::Char('d'));
             assert_eq!(h.s.ctl.history_state(), HistoryState { undo: None, redo: None }, "{what}");
         }
-        // The lane that was emptied is taken out by the next one.
+    }
+
+    #[test]
+    fn d_takes_a_lane_out_as_a_step_that_ctrl_z_puts_back_in_its_place_in_its_group_with_its_cables_and_ctrl_y_takes_out_again() {
         let mut h = Harness::new(scene_group());
+        // Every lane and group, with the ids and slots they have: what a lane put back has to leave as it was.
+        let shape = |h: &Harness| -> String {
+            let lanes = h.s.ctl.model.instruments.iter().map(|lane| format!("{lane:?}"));
+            let groups = h.s.ctl.model.groups.iter().map(|group| format!("{group:?}"));
+            lanes.chain(groups).collect::<Vec<_>>().join("\n")
+        };
+        // The first key empties the lane, which nothing puts back; the second takes the lane out.
         h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('d'));
-        let lanes = h.s.ctl.model.instruments.len();
         h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let (lanes, before) = (h.s.ctl.model.instruments.len(), shape(&h));
+        h.commands();
         h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('d'));
         assert_eq!(h.s.ctl.model.instruments.len(), lanes - 1);
-        assert_eq!(h.s.ctl.history_state(), HistoryState { undo: None, redo: None }, "a lane");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("remove an empty lane"));
+        // (The commands are read: the audio thread, which the test has not, would have handed the lane back.)
+        let removed = h.commands();
+        assert_eq!(removed.last().map(String::as_str), Some("RemoveInstrument inst=0 keep"), "{removed:?}");
+        ctrl_z(&mut h);
+        let commands = h.commands();
+        assert!(commands.iter().any(|command| command.starts_with("InsertInstrument index=0 plugins=")), "{commands:?}");
+        assert_eq!(shape(&h), before, "the lane is back where it was, in its group, with its cables and the ids and slots they had");
+        ctrl_y(&mut h);
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes - 1, "taken out again");
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(shape(&h), before);
+    }
+
+    #[test]
+    fn a_lane_that_a_browser_takes_out_with_its_instrument_is_put_back_by_ctrl_z() {
+        let mut h = Harness::new(scene_group());
+        h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        // The ungrouped bass, the last lane, with its instrument: taken out by an intent, as a browser asks for it.
+        let bass = h.s.ctl.model.instruments[2].node;
+        let before = format!("{:?}", h.s.ctl.model.instruments[2]);
+        h.commands();
+        h.s.ctl.apply(Intent::RemoveNode { node: bass }).unwrap();
+        h.commands();
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("remove the lane of Oscillator"));
+        ctrl_z(&mut h);
+        assert_eq!(format!("{:?}", h.s.ctl.model.instruments[2]), before);
+        assert!(h.commands().iter().any(|command| command == "InsertInstrument index=2 plugins=2"));
     }
 
     #[test]

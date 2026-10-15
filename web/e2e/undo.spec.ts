@@ -313,6 +313,66 @@ test("an effect that is taken out is put back by Undo with the values it had and
   await expect(undo).toBeDisabled();
 });
 
+test("a lane that is taken out is put back by Undo with its instrument, its effect and its place, and taken out again by Redo, and the saved file has what is done", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  const save = async (): Promise<string> => {
+    await page.getByRole("button", { name: /^Save/ }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+
+  // A second lane with an effect and a note range of its own (a session keeps its last lane, so there has to be one to take out).
+  await page.getByRole("button", { name: "Add an instrument" }).click();
+  await page.getByRole("menuitem", { name: "Oscillator" }).click();
+  const second = node(page, "Oscillator 2");
+  await expect(second).toBeVisible();
+  await page.getByRole("button", { name: "Add an effect to Oscillator 2" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  await expect(node(page, "Reverb")).toBeVisible();
+  const detune = second.getByRole("slider", { name: "detune", exact: true });
+  await detune.focus();
+  await page.keyboard.press("End");
+  await expect(detune).toHaveAttribute("aria-valuenow", "24");
+  const before = await save();
+  expect(before.match(/\[\[instrument\]\]/g)).toHaveLength(2);
+
+  // Taken out from its menu, which asks first: the lane goes with its effect, and is one step.
+  await page.getByRole("button", { name: "Remove the lane of Oscillator 2" }).click();
+  await page.getByRole("menuitem", { name: /^Remove the lane of Oscillator 2 for good/ }).click();
+  await expect(second).toHaveCount(0);
+  await expect(node(page, "Reverb")).toHaveCount(0);
+  await expect(undo).toHaveAccessibleName("Undo remove the lane of Oscillator");
+  const taken = await save();
+  expect(taken.match(/\[\[instrument\]\]/g)).toHaveLength(1);
+
+  // Put back by Undo: the lane, its effect and what was set on it, and the file is the one that was saved before it went.
+  await undo.click();
+  await expect(second).toBeVisible();
+  await expect(node(page, "Reverb")).toBeVisible();
+  await expect(detune).toHaveAttribute("aria-valuenow", "24");
+  await expect(undo).toHaveAccessibleName("Undo set detune");
+  await expect(redo).toHaveAccessibleName("Redo remove the lane of Oscillator");
+  expect(await save()).toBe(before);
+
+  // Taken out again by Redo, and put back by the keys; then what was done before it is put back, one step at a time, to the lane that was added.
+  await redo.click();
+  await expect(second).toHaveCount(0);
+  expect(await save()).toBe(taken);
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expect(second).toBeVisible();
+  await undo.click();
+  await expect(detune).toHaveAttribute("aria-valuenow", "0");
+  await undo.click();
+  await expect(node(page, "Reverb")).toHaveCount(0);
+  await undo.click();
+  await expect(second).toHaveCount(0);
+  await expect(undo).toBeDisabled();
+});
+
 test("the mock engine in the page has the same buttons and keys, and they do what the program's do", async ({ page }) => {
   await open(page);
   const undo = page.getByRole("button", { name: /^Undo/ });
@@ -373,4 +433,17 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(depth).toHaveValue("0.4");
   await redo.click();
   await expect(node(page, "Filter")).toHaveCount(0);
+  // And a lane, with what it has.
+  await undo.click();
+  await page.getByRole("button", { name: "Add an instrument" }).click();
+  await page.getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(node(page, "Oscillator 2")).toBeVisible();
+  await page.getByRole("button", { name: "Remove the lane of Oscillator 2" }).click();
+  await page.getByRole("menuitem", { name: /^Remove the lane of Oscillator 2 for good/ }).click();
+  await expect(node(page, "Oscillator 2")).toHaveCount(0);
+  await expect(undo).toHaveAccessibleName("Undo remove the lane of Oscillator");
+  await undo.click();
+  await expect(node(page, "Oscillator 2")).toBeVisible();
+  await redo.click();
+  await expect(node(page, "Oscillator 2")).toHaveCount(0);
 });

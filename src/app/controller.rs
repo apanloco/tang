@@ -179,7 +179,7 @@ pub(super) enum ChainAt {
 }
 
 /// An instrument has to have an audio output, or there is nothing of it to hear (the first two are what is).
-fn has_audio_output(instrument: &dyn Plugin) -> Result<(), IntentError> {
+pub(super) fn has_audio_output(instrument: &dyn Plugin) -> Result<(), IntentError> {
     if instrument.audio_output_count() == 0 {
         return Err(IntentError::Invalid(format!("{} has no audio outputs", instrument.name())));
     }
@@ -593,7 +593,7 @@ impl Controller {
             self.take_out(edge);
         }
         // The very plugin is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
-        let (keep, kept) = self.channel_for_a_plugin();
+        let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep });
         if let Some(slot) = self.model.remove_effect(inst, index) {
             self.took_out(Inverse::Effect { at: ChainAt::Lane(inst), index, slot, kept });
@@ -638,7 +638,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let (keep, kept) = self.channel_for_a_plugin();
+        let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index, keep });
         if let Some(slot) = self.model.remove_bus_effect(group, index) {
             self.took_out(Inverse::Effect { at: ChainAt::Bus(group), index, slot, kept });
@@ -661,8 +661,12 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst, keep: None });
-        self.model.remove_lane(inst);
+        // The whole lane is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
+        let (keep, kept) = self.channel_for();
+        let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst, keep });
+        if let Some(lane) = self.model.remove_lane(inst) {
+            self.took_out(Inverse::Lane { index: inst, lane, kept });
+        }
         true
     }
 

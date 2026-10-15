@@ -3307,7 +3307,7 @@ type = "midi"
                 "RemoveGroupModTarget group=0 mod=1 target=0",
                 "RemoveGroupModTarget group=0 mod=0 target=1",
                 "RemoveGroupModTarget group=0 mod=0 target=1",
-                "RemoveInstrument inst=3",
+                "RemoveInstrument inst=3 keep",
             ]
         );
         assert_eq!(ctl.model.instruments.len(), 3);
@@ -3328,7 +3328,7 @@ type = "midi"
         let empty = ctl.model.instruments[1].node;
         sent(&engine);
         assert_eq!(remove(&mut ctl, empty), Ok(Applied::restructured(1)));
-        assert_eq!(sent(&engine), ["RemoveInstrument inst=1"]);
+        assert_eq!(sent(&engine), ["RemoveInstrument inst=1 keep"]);
         assert_eq!(ctl.model.instruments.len(), 1);
         assert_eq!(ctl.model.locate(empty), None);
         ctl.model.check_ids().unwrap();

@@ -788,7 +788,6 @@ impl SessionModel {
     /// Put a lane back among the lanes at `index` (the last place, for one past the end): what `remove_lane` took out, put back, the way the audio thread's
     /// `InsertInstrument` does it. If it is a member of a group, the cables of the group to the members from its place on are told the ordinals they have now
     /// before it goes in (they were told the others' when it went); a group that is not there is no group. The place it went to.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a lane back for the history, built next"))]
     pub fn insert_lane_at(&mut self, index: usize, mut lane: InstrumentNode) -> usize {
         if lane.group.is_some_and(|group| group >= self.groups.len()) {
             lane.group = None;

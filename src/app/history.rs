@@ -466,6 +466,11 @@ impl Controller {
                 Some(NodePath::Effect { .. } | NodePath::GroupEffect { .. }) => {
                     self.plugin_slot(*node).map_or(Plan::Nothing, |plugin| Plan::Removed { label: format!("remove {}", plugin.name), intent: intent.clone(), at: now })
                 }
+                // A lane goes with its modulators and their cables, its plugins and its pattern, after the cables of its group to it, and comes back with them, at its place among
+                // the lanes and in its group: the whole lane that the audio thread hands back (a step of the words of the button that takes it out).
+                Some(NodePath::Instrument(inst)) => {
+                    Plan::Removed { label: format!("remove {}", crate::app::journal::lane_words(&self.model.instruments[inst])), intent: intent.clone(), at: now }
+                }
                 // Nothing puts these back yet.
                 Some(_) => Plan::Barrier,
                 // (A node that is not there is refused, and the plan is not looked at.)
@@ -1449,7 +1454,7 @@ rate = 3.0
         ctl.undo().unwrap();
         assert_eq!(ctl.model.instruments.len(), lanes);
         assert_eq!(ctl.model.locate(added), None);
-        assert_eq!(sent(&engine), ["RemoveInstrument inst=2"]);
+        assert_eq!(sent(&engine), ["RemoveInstrument inst=2 keep"]);
         assert_eq!(undo_label(&ctl).as_deref(), Some("set detune"), "what was done before the add is still to be undone");
         ctl.redo().unwrap();
         // (The step that moved the lane finds it under the id it had, or it would be refused and dropped.)
@@ -2959,17 +2964,18 @@ plugin = "builtin:reverb"
 "#;
 
     /// What `everything_as_it_is` says: the modulators, and the chains of the audio thread (`AudioGraph::chain_dump`).
-    type Everything = (Modulators, Vec<Vec<(String, usize, f32)>>);
+    type Everything = (Modulators, Vec<Vec<(String, usize, f32)>>, String);
 
     /// What is on the audio thread and in the model, as every place that says so tells it: the modulators (`modulators_as_they_are`) and the chains, which
     /// say where each plugin is in memory, so that a plugin that was taken out and put back is told from one that was loaded again.
     fn everything_as_it_is(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Everything {
-        (modulators_as_they_are(ctl, graph), graph.chain_dump())
+        (modulators_as_they_are(ctl, graph), graph.chain_dump(), format!("{:?}\n{:?}", graph.lanes(), graph.instrument_dump()))
     }
 
     fn assert_same_everything(now: &Everything, then: &Everything, what: &str) {
         assert_same_modulators(&now.0, &then.0, what);
         assert_eq!(now.1, then.1, "{what}: the chains of the audio thread (the very plugins, in their places, at their mixes)");
+        assert_eq!(now.2, then.2, "{what}: the lanes of the audio thread, and where their instruments are");
     }
 
     /// The nodes of the effects of the session, a lane's and a bus's, in the order the model lists them.
@@ -3364,6 +3370,347 @@ plugin = "builtin:reverb"
         let mut plugins = order[1..order.len() - 1].to_vec();
         plugins.sort_unstable();
         assert_eq!(plugins, ["the plugin of a step dropped", "the plugin of the last removal dropped"], "{order:?}");
+    }
+
+    // -- a lane that is taken out is put back --
+
+    /// A group of two lanes (the first and the third) with a reverb on its bus, whose modulator has cables to the first member's detune, to the second member's filter and its
+    /// modulator's rate, and to the bus; the first lane has a filter and a modulator that drives it and its own volume; the second, in no group, a reverb, a filter and an
+    /// envelope that drives the filter; the third a filter and a modulator; and a fourth lane has no instrument, a reverb and a modulator that drives it.
+    const LANES: &str = r#"
+[[group]]
+name = "Pad"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.1
+[[group.modulator.target]]
+member = 1
+slot = 1
+param = "cutoff"
+depth = 0.2
+[[group.modulator.target]]
+bus = 0
+param = "damping"
+depth = 0.3
+[[group.modulator.target]]
+member = 1
+mod_rate = 0
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.5
+range = "C2-C6"
+transpose = 3
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.5
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.25
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.1
+decay = 0.2
+sustain = 0.3
+release = 0.4
+[[instrument.modulator.target]]
+slot = 2
+param = "resonance"
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 3.0
+
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 4.0
+[[instrument.modulator.target]]
+slot = 1
+param = "damping"
+depth = 0.6
+"#;
+
+    /// Every lane of `session`, one at a time (each in a controller of its own, after a step of another kind): taken out by an intent, put back by undo, taken out again by
+    /// redo and put back again. Each time the model, the picture a client is given, the file and the audio thread are as they were, and the plugins that are back are the
+    /// very ones that went (the audio thread is run after each, as it runs on its own: it is what hands the lane back). How many were put back, and how many were not.
+    fn every_lane_is_put_back(name: &str, session: &str) -> (usize, usize) {
+        let count = controller_over_an_audio_thread(session).0.model.instruments.len();
+        let (mut put_back, mut forgotten) = (0, 0);
+        for n in 0..count {
+            let (mut ctl, mut graph) = controller_over_an_audio_thread(session);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let lane = ctl.model.instruments[n].node;
+            let before = everything_as_it_is(&ctl, &graph);
+            if count == 1 {
+                // (A session keeps its last lane.)
+                assert!(ctl.apply(Intent::RemoveNode { node: lane }).is_err());
+                continue;
+            }
+            ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+            graph.drain_commands();
+            let taken = everything_as_it_is(&ctl, &graph);
+            assert_ne!(taken.0 .0 .0, before.0 .0 .0, "lane {n} of {name}: it is gone from the picture");
+            assert_ne!(taken.2, before.2, "lane {n} of {name}: it is gone from the audio thread");
+            if ctl.history_state() == (HistoryState { undo: None, redo: None }) {
+                assert!(ctl.undo().is_err(), "lane {n}: nothing to undo");
+                forgotten += 1;
+                continue;
+            }
+            assert!(undo_label(&ctl).is_some_and(|label| label.starts_with("remove ")), "lane {n}: {:?}", undo_label(&ctl));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("lane {n} of {name} put back"));
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &taken, &format!("lane {n} of {name} taken out again"));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("lane {n} of {name} put back again"));
+            ctl.model.check_ids().unwrap();
+            put_back += 1;
+        }
+        (put_back, forgotten)
+    }
+
+    #[test]
+    fn every_lane_of_every_session_is_put_back_by_undo_as_the_very_lane_in_the_model_the_picture_the_file_and_on_the_audio_thread() {
+        let sessions = [
+            ("LANES", LANES),
+            ("SESSION", SESSION),
+            ("EFFECTS", EFFECTS),
+            ("LONG_CHAINS", testutil::LONG_CHAINS),
+            ("CHAINS", testutil::CHAINS),
+            ("GROUPS", testutil::GROUPS),
+            ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
+            ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
+        ];
+        let mut total = 0;
+        for (name, session) in sessions {
+            let (put_back, forgotten) = every_lane_is_put_back(name, session);
+            assert_eq!(forgotten, 0, "{name}");
+            total += put_back;
+        }
+        assert!(total > 20, "{total} lanes is not enough to say much");
+    }
+
+    #[test]
+    fn a_lane_is_a_step_in_the_words_of_its_instrument_or_of_a_lane_that_has_none() {
+        let (_engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        let (first, empty) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(3)));
+        ctl.apply(Intent::RemoveNode { node: empty }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove an empty lane"));
+        ctl.apply(Intent::RemoveNode { node: first }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove the lane of Oscillator"));
+    }
+
+    #[test]
+    fn a_lane_is_taken_out_after_the_cables_of_its_group_with_a_channel_to_be_handed_to_and_put_back_before_them_and_the_tempo_is_told() {
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        // Lane 0 is member 0 of the group: the cable to its detune goes first (the group's first), then the lane, handed to a channel.
+        let first = node(&ctl, NodePath::Instrument(0));
+        engine.drain();
+        ctl.apply(Intent::RemoveNode { node: first }).unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands, ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveInstrument inst=0 keep"]);
+        // The audio thread (by hand) has handed back a lane that has no plugins of its own; undo loads them again: the lane goes in with its instrument and its effect, and
+        // the cable of its group after it, and the lanes are told the tempo.
+        ctl.global_bpm = 90.0;
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert_eq!(commands[0], "InsertInstrument index=0 plugins=2");
+        assert_eq!(commands[1], "SetGlobalBpm bpm=90.0");
+        assert!(commands[2].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
+    }
+
+    #[test]
+    fn a_lane_that_was_not_handed_back_refuses_the_undo_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        let (_engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let second = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: second }).unwrap();
+        // (Nobody runs the audio thread, and the engine's commands have not been read: the channel the lane was to be handed to has nothing, and nobody to wait for.)
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid("the lane of Oscillator was not handed back by the audio thread".to_string()));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step is gone, the one before it is next");
+    }
+
+    #[test]
+    fn a_lane_whose_node_is_there_already_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let second = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: second }).unwrap();
+        engine.drain();
+        // Something puts a lane there without the history: one with that node.
+        let lane = ctl.add_lane();
+        ctl.model.instruments[lane].node = second;
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("node {} is there already", second.0)));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None));
+    }
+
+    #[test]
+    fn a_lane_with_an_effect_a_modulator_or_a_cable_that_is_there_already_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        for what in ["an effect", "a modulator", "a cable"] {
+            let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let lane = node(&ctl, NodePath::Instrument(0));
+            let (filter, modulator, cable) = {
+                let first = &ctl.model.instruments[0];
+                (first.effects[0].node, first.modulators[0].node, first.modulators[0].targets[0].edge)
+            };
+            ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+            engine.drain();
+            // Something puts one there without the history: the id that the lane had of it is the id of another's.
+            let expected = match what {
+                "an effect" => {
+                    let (_plugin, mut spare) = ctl.load_plugin("builtin:filter").unwrap();
+                    spare.node = filter;
+                    ctl.model.insert_effect_at(0, 0, spare).unwrap();
+                    format!("node {} is there already", filter.0)
+                }
+                "a modulator" => {
+                    ctl.model.instruments[0].modulators[0].node = modulator;
+                    format!("node {} is there already", modulator.0)
+                }
+                _ => {
+                    ctl.model.instruments[0].modulators[0].targets[0].edge = cable;
+                    format!("cable {} is there already", cable.0)
+                }
+            };
+            let before = picture(&ctl);
+            assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(expected), "{what}");
+            assert_eq!(picture(&ctl), before, "{what}");
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_lane_put_back_past_the_end_goes_in_last_and_the_audio_thread_is_told_the_place_it_went_to() {
+        use crate::app::journal::{Inverse, Journal, Kept};
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        // The last lane, which has no instrument and a reverb, goes out by the model alone, and comes back in a journal of the kind that a session which changed without the
+        // history can make: its place is past the end of the lanes.
+        let lane = ctl.model.remove_lane(3).unwrap();
+        let node_of_the_lane = lane.node;
+        let mut journal = Journal::default();
+        journal.push(Inverse::Lane { index: 99, lane, kept: Kept::InHand(crate::plugin::chain::KeptLane::empty()) });
+        engine.drain();
+        ctl.rewind(journal).unwrap();
+        assert_eq!(ctl.model.instruments.last().map(|lane| lane.node), Some(node_of_the_lane));
+        let (commands, _) = engine.drain();
+        assert_eq!(commands[0], "InsertInstrument index=3 plugins=1", "{commands:?}");
+    }
+
+    #[test]
+    fn a_lane_that_a_running_audio_thread_hands_back_across_threads_is_put_back_at_once_with_its_plugins_and_they_are_not_loaded_again() {
+        use crate::audio::{AudioEngine, NULL_DEVICE};
+        use crate::plugin::chain::AudioGraph;
+        // A real audio thread (the null backend renders on a timer), and plugins that cannot be loaded again: undo has the lane, whole, only if the audio thread handed it
+        // over the channel, across threads; if it did not it fails after the wait (five seconds here).
+        let (mut handles, engine) = testutil::stub_engine_of(4096);
+        handles.recovery_wait = Duration::from_secs(5);
+        let model = testutil::load_onto(LANES, &handles.cmd_tx);
+        let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut ctl = Controller::new(model, handles, None);
+        audio.play().unwrap();
+        for plugin in ["builtin:nothing", "builtin:nothing"] {
+            let lane = &mut ctl.model.instruments[1];
+            let (instrument, effect) = (lane.instrument.as_mut().unwrap(), &mut lane.effects[0]);
+            instrument.id = plugin.to_string();
+            effect.id = plugin.to_string();
+        }
+        let second = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: second }).unwrap();
+        let started = Instant::now();
+        let undone = ctl.undo();
+        let waited = started.elapsed();
+        audio.stop();
+        undone.expect("the lane came back from the audio thread");
+        assert!(waited < Duration::from_secs(2), "{waited:?}: it did not wait for what was there");
+        assert!(ctl.model.locate(second).is_some());
+    }
+
+    #[test]
+    fn a_lane_that_was_taken_out_by_the_controller_and_not_by_an_intent_is_handed_to_no_channel() {
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        engine.drain();
+        assert!(ctl.remove_lane(3));
+        assert_eq!(engine.drain().0, ["RemoveInstrument inst=3"]);
+    }
+
+    /// A session of `count` lanes that have two reverbs each (so that each has three plugins) and a lane to keep, which the removals leave.
+    fn lanes_of_three_plugins(count: usize) -> String {
+        let mut session = String::new();
+        for _ in 0..count {
+            session.push_str("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n");
+        }
+        session
+    }
+
+    #[test]
+    fn the_plugins_of_the_newest_lane_removals_are_kept_and_the_ones_of_an_older_lane_are_loaded_again_with_what_the_user_set() {
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(&lanes_of_three_plugins(5));
+        // The plugins have a state that the model does not know: one that comes back with its lane has it, one that is loaded again has not. (The effects' first parameter.)
+        let state = |lane: usize, effect: usize| 0.1 + 0.01 * lane as f32 + 0.1 * effect as f32;
+        for lane in 0..5 {
+            for effect in 0..2 {
+                graph.poke_effect(lane, effect, 0, state(lane, effect));
+            }
+        }
+        // The user set the second effect of the last lane through the controller, so that the model has it.
+        let (damping, _) = param(&ctl, NodePath::Effect { inst: 4, index: 1 }, "damping");
+        let last_effect = node(&ctl, NodePath::Effect { inst: 4, index: 1 });
+        ctl.apply(Intent::SetParam { node: last_effect, param: damping, value: 0.8 }).unwrap();
+        // The last four lanes are taken out, the last first: three plugins each, so that the third removal makes nine, which is more than eight, and the oldest lets go of
+        // its plugins; and the fourth lets go of the second's.
+        for lane in (1..5).rev() {
+            let node = ctl.model.instruments[lane].node;
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            graph.drain_commands();
+        }
+        assert_eq!(graph.lanes().len(), 1);
+        for _ in 0..4 {
+            ctl.undo().unwrap();
+            graph.drain_commands();
+        }
+        assert_eq!(graph.lanes().len(), 5);
+        let kept: Vec<bool> = (0..5).map(|lane| (graph.peek_effect(lane, 0, 0).unwrap() - state(lane, 0)).abs() < 1e-6).collect();
+        // The one that never went, and the newest two removals (lanes 1 and 2), are the plugins they were; lanes 3 and 4 are loaded again.
+        assert_eq!(kept, [true, true, true, false, false]);
+        // A lane that is loaded again has the values the user set.
+        assert_eq!(graph.peek_effect(4, 1, damping), Some(0.8));
     }
 
     /// A step of a script: an intent, or time going by (in milliseconds).
@@ -3765,6 +4112,37 @@ plugin = "builtin:reverb"
             "an effect on the bus of a group, with a cable from the group's modulator, goes and comes back",
             vec![add_modulator(g0, ModulatorKind::Lfo), cable(fresh(0), bus, bus_resonance), remove_node(bus), undo(), redo(), undo(), undo(), undo()],
         ));
+        // A lane goes with its own modulators and cables, its plugins and its pattern, after the cables of its group to it, and comes back with them: at its place among the lanes
+        // and in its group, under its id, and what is done after it is put back first.
+        scripts.push((
+            "a lane that is taken out is put back by undo in its place and taken out again by redo, and what was done before it is still to be undone",
+            vec![gain(reverb, Gain::Mix, 0.125), pause(), remove_node(lane1), undo(), undo(), redo(), redo(), undo(), redo(), undo()],
+        ));
+        scripts.push((
+            "a member of a group goes with the cables of its group to it and comes back with them",
+            vec![add_modulator(g0, ModulatorKind::Lfo), cable(fresh(0), lane0, detune), remove_node(lane0), undo(), redo(), undo(), undo(), undo()],
+        ));
+        scripts.push((
+            "the first of two members goes, and the cables of its group to the one after it are told its place and told it again when the first is back",
+            vec![
+                put_in(lane1, Some(g0)),
+                add_modulator(g0, ModulatorKind::Lfo),
+                cable(fresh(0), lane0, detune),
+                cable(fresh(0), lane1, detune),
+                remove_node(lane0),
+                undo(),
+                redo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "the last lane of a session is not taken out, and the history is as it was",
+            vec![remove_node(lane0), remove_node(lane1), undo(), undo(), redo()],
+        ));
         scripts.push((
             "a MIDI control with a cable is taken out and put back in the words of its own",
             vec![add_modulator(lane1, ModulatorKind::MidiLearn), cable(fresh(0), lane1, detune), remove_node(fresh(0)), undo(), redo(), undo(), undo(), undo()],
@@ -3848,7 +4226,7 @@ plugin = "builtin:reverb"
             .chain(own_sessions.iter().map(|(what, session, ops)| (*what, Some(*session), ops)))
             .collect();
         for (what, own_session, ops) in sessions {
-            let (_engine, mut ctl, clock) = match own_session {
+            let (engine, mut ctl, clock) = match own_session {
                 Some(session) => controller_over(load(session).model),
                 None => controller(),
             };
@@ -3868,6 +4246,8 @@ plugin = "builtin:reverb"
                     }
                     Op::Do(intent) => {
                         let state = ctl.apply(intent.clone());
+                        // (There is no audio thread to hand back the lane that a removal took out; reading the engine's commands answers them, as an audio thread would.)
+                        engine.drain();
                         let history = ctl.history_state();
                         let history = serde_json::json!({ "undo": history.undo, "redo": history.redo });
                         rows.push(match state {

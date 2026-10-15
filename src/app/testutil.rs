@@ -168,7 +168,15 @@ fn is_telemetry(cmd: &GraphCommand) -> bool {
 /// What `describe` says about each of `commands`, except those that only assign
 /// telemetry slots (see `is_telemetry`).
 pub fn described(commands: impl IntoIterator<Item = GraphCommand>) -> Vec<String> {
-    commands.into_iter().filter(|c| !is_telemetry(c)).map(|c| describe(&c)).collect()
+    commands.into_iter().inspect(answer).filter(|c| !is_telemetry(c)).map(|c| describe(&c)).collect()
+}
+
+/// What the audio thread would do for a command that asks something of it, for a test that has none: a lane that is taken out is handed to the channel that asks for it,
+/// with no plugins in it (a lane that gave up its plugins, which the controller loads again to put the lane back).
+fn answer(command: &GraphCommand) {
+    if let GraphCommand::RemoveInstrument { keep: Some(keep), .. } = command {
+        let _ = keep.try_send(crate::plugin::chain::KeptLane::empty());
+    }
 }
 
 /// What a load did: the model it returned, the commands it sent (one line
@@ -237,7 +245,7 @@ impl StubEngine {
     /// Everything the controller has sent since the last call, as text: the
     /// commands, and, separately, the ones that only assign telemetry slots.
     pub fn drain(&self) -> (Vec<String>, Vec<String>) {
-        let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = self.cmd_rx.try_iter().partition(is_telemetry);
+        let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = self.cmd_rx.try_iter().inspect(answer).partition(is_telemetry);
         (others.iter().map(describe).collect(), slot_commands.iter().map(describe).collect())
     }
 }
