@@ -1230,6 +1230,90 @@ fn an_effect_that_cannot_be_added_leaves_the_session_as_it_was() {
     assert!(h.s.ctl.model.instruments[0].effects.is_empty());
 }
 
+// A plugin that is not a built-in can take seconds to load, and the loop is blocked for as long as it takes, so a frame that says what is going on is drawn first.
+// `process_event` is the two halves of what the loop does with a key together (the keys of a test have no frame to draw between them): `handle_event`, and then
+// what it asked that waits for a frame (`run_pending`).
+
+fn enter() -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+}
+
+#[test]
+fn a_plugin_that_is_not_a_built_in_waits_for_a_frame_that_says_it_is_loading() {
+    let mut h = Harness::new(scene_split());
+    catalog_with_a_plugin_that_has_gone(&mut h);
+    h.press(KeyCode::Char('a')).type_chars("vanish");
+    handle_event(&mut h.s, enter());
+    // The popup is closed, nothing has been asked of the audio thread or changed, and what is to be done waits.
+    assert!(h.s.selector.is_none());
+    assert_eq!(h.s.pending_load.as_ref().map(|p| p.name.as_str()), Some("Vanished"));
+    assert!(h.commands().is_empty());
+    assert!(h.s.ctl.model.instruments[0].effects.is_empty());
+    // The frame says what it waits for.
+    let frame = h.dump();
+    assert!(frame.contains("Loading Vanished…"), "{frame}");
+    // Then it is done: here it is refused, the plugin is not there, and the session is as it was.
+    run_pending(&mut h.s);
+    assert!(h.s.pending_load.is_none());
+    assert!(h.commands().is_empty());
+    assert!(!h.s.ctl.dirty);
+    assert!(!h.dump().contains("Loading"));
+}
+
+#[test]
+fn a_built_in_is_added_at_once_and_waits_for_no_frame() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let effects = h.s.ctl.model.instruments[0].effects.len();
+    h.press(KeyCode::Char('a')).type_chars("filter");
+    handle_event(&mut h.s, enter());
+    assert!(h.s.pending_load.is_none());
+    assert_eq!(h.s.ctl.model.instruments[0].effects.len(), effects + 1);
+    assert_eq!(h.commands().len(), 1);
+}
+
+#[test]
+fn what_waits_for_the_frame_is_asked_for_when_the_frame_has_been_drawn() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let parent = h.s.ctl.model.instruments[0].node;
+    h.s.pending_load = Some(PendingLoad { name: "Filter".to_string(), intent: Intent::AddEffect { parent, plugin: "builtin:filter".to_string() } });
+    assert!(h.s.ctl.model.instruments[0].effects.is_empty());
+    run_pending(&mut h.s);
+    assert!(h.s.pending_load.is_none());
+    assert_eq!(h.s.ctl.model.instruments[0].effects.len(), 1);
+    assert_eq!(h.commands().len(), 1);
+}
+
+#[test]
+fn the_box_that_says_a_plugin_is_loading_is_drawn_in_the_middle_of_the_session() {
+    let mut h = Harness::new(scene_split());
+    catalog_with_a_plugin_that_has_gone(&mut h);
+    h.press(KeyCode::Char('a')).type_chars("vanish");
+    handle_event(&mut h.s, enter());
+    assert_golden("loading_a_plugin", &mut h);
+}
+
+#[test]
+fn the_loop_draws_the_frame_before_it_loads_and_draws_nothing_for_a_key_that_loads_nothing() {
+    let mut h = Harness::new(scene_split());
+    catalog_with_a_plugin_that_has_gone(&mut h);
+    let blank = |h: &Harness| h.terminal.backend().buffer().content().iter().all(|cell| cell.symbol() == " ");
+    // A key that loads nothing: no frame (the loop draws its own at the top of the next round).
+    process_event_showing_the_load(&mut h.terminal, &mut h.s, Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))).unwrap();
+    assert!(blank(&h));
+    for c in "vanish".chars() {
+        process_event_showing_the_load(&mut h.terminal, &mut h.s, Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))).unwrap();
+    }
+    assert!(blank(&h));
+    // The key that asks for the plugin: the frame that is on the terminal when it has been tried (and refused, the plugin is not there) is the one drawn before.
+    process_event_showing_the_load(&mut h.terminal, &mut h.s, enter()).unwrap();
+    assert!(h.s.pending_load.is_none());
+    assert!(h.s.ctl.model.instruments[0].effects.is_empty());
+    let shown = dump_buffer(h.terminal.backend().buffer());
+    assert!(shown.contains("Loading Vanished…"), "{shown}");
+}
+
 #[test]
 fn a_bus_effect_that_cannot_be_added_leaves_the_session_as_it_was() {
     let mut h = Harness::new(scene_group());

@@ -333,6 +333,14 @@ struct RangeEditState {
     input: TextInputState,
 }
 
+/// A plugin that is to be loaded once a frame has said so: it can take a while (about a third of a second for Pianoteq 9 here), and the loop is blocked for as long as it takes (`run_pending`).
+struct PendingLoad {
+    /// The plugin's name, for the frame.
+    name: String,
+    /// What asks the controller to load it.
+    intent: Intent,
+}
+
 /// State for the "rename group" popup.
 struct RenameGroupState {
     /// The group whose display name is being edited.
@@ -393,6 +401,8 @@ struct State {
     modulate: Option<ModulateState>,
     group_assign: Option<GroupAssignState>,
     preset_selector: Option<PresetSelectorState>,
+    /// A plugin chosen in the selector, which waits for the frame that says it is loading.
+    pending_load: Option<PendingLoad>,
     areas: Areas,
     quit: bool,
     // Parameter filter (search bar in param pane).
@@ -444,6 +454,7 @@ impl State {
             modulate: None,
             group_assign: None,
             preset_selector: None,
+            pending_load: None,
             areas: Areas::default(),
             quit: false,
             param_filter_input: TextInputState::new(""),
@@ -766,6 +777,8 @@ impl State {
         // added is a step of the history. (An effect that cannot be added, because it will not load or its outputs are not
         // the chain's, leaves the session as it was: the controller says why.)
         let source = entry.id.clone();
+        let name = entry.name.clone();
+        let built_in = source.starts_with("builtin:");
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
         let intent = match sel.mode {
             SelectorMode::Instrument => {
@@ -781,7 +794,12 @@ impl State {
                 Intent::AddEffect { parent: bus.node, plugin: source }
             }
         };
-        self.apply(intent);
+        // A built-in is there at once. Any other plugin can take a while, with the loop blocked: it waits for a frame that says so (`run_pending`).
+        if built_in {
+            self.apply(intent);
+        } else {
+            self.pending_load = Some(PendingLoad { name, intent });
+        }
     }
 
     /// Move an effect to place `to` of its chain (a lane's or a group's bus), by the intent that a browser's buttons ask for: a step of the
@@ -1784,9 +1802,9 @@ where
                 let Ok(event) = event else {
                     return Err(io::Error::other("the terminal reader has stopped"));
                 };
-                process_event(s, event?);
+                process_event_showing_the_load(terminal, s, event?)?;
                 while let Ok(event) = input.try_recv() {
-                    process_event(s, event?);
+                    process_event_showing_the_load(terminal, s, event?)?;
                 }
                 web::resync(&mut s.ctl);
             }
@@ -1826,7 +1844,35 @@ fn popup_is_open(s: &State) -> bool {
         || s.param_filtering
 }
 
+/// Handle one event of the terminal, and what it asked that waits for a frame (`run_pending`): the keys of a test have no frame to draw between the two.
+#[cfg(test)]
 fn process_event(s: &mut State, ev: Event) {
+    handle_event(s, ev);
+    run_pending(s);
+}
+
+/// What the loop does with an event: `process_event`, with a frame drawn between its two halves when the first asked for something that takes a while. A plugin
+/// can take a while to load, and the loop is blocked for as long as it takes, so the frame says what is going on (a box: "Loading Pianoteq 9…") before the load.
+fn process_event_showing_the_load<B: Backend>(terminal: &mut Terminal<B>, s: &mut State, ev: Event) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    handle_event(s, ev);
+    if s.pending_load.is_some() {
+        render(terminal, s)?;
+    }
+    run_pending(s);
+    Ok(())
+}
+
+/// Do what an event asked that waited for a frame: ask for the plugin that was chosen (a refusal is the controller's, and says why).
+fn run_pending(s: &mut State) {
+    if let Some(PendingLoad { intent, .. }) = s.pending_load.take() {
+        s.apply(intent);
+    }
+}
+
+fn handle_event(s: &mut State, ev: Event) {
     match ev {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             // A letter with Control held is no text, and no key of a popup: it is not put in as the letter (Ctrl+Z, which undoes in the chain, typed a z), and
@@ -3118,6 +3164,9 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             if let Some(ms) = &s.modulate {
                 render_modulate_popup(frame, area, ms);
             }
+            if let Some(pending) = &s.pending_load {
+                render_loading_popup(frame, area, &pending.name);
+            }
             if let Some(gs) = &s.group_assign {
                 render_group_assign_popup(frame, area, gs);
             }
@@ -3621,6 +3670,18 @@ fn render_rename_group_popup(frame: &mut ratatui::Frame, area: Rect, rg: &Rename
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
     }
+}
+
+/// The box that says that a plugin is being loaded, for the frame that is drawn before the loop is blocked by it.
+fn render_loading_popup(frame: &mut ratatui::Frame, area: Rect, name: &str) {
+    let text = format!("Loading {name}…");
+    let width = (text.chars().count() as u16 + 4).clamp(20, area.width.max(20));
+    let popup = centered_rect(width, 3, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(text).alignment(ratatui::layout::Alignment::Center), inner);
 }
 
 fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState) {

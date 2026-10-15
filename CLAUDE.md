@@ -884,6 +884,11 @@ filtered by plugin type.
 - `Escape` — cancel and close popup
 - Typing updates the filter immediately
 
+A built-in is added at once. Any other plugin can take a while to load (Pianoteq 9 takes about a third of a second here: `tang enumerate plugins` says), and the loop is blocked for as long as
+it takes, so a frame is drawn first with a box in the middle of the screen that says `Loading <name>…`
+(`State::pending_load`: `handle_event` takes the key, the loop draws, `run_pending` asks the controller for the plugin;
+`process_event` is the two together, for the tests' keys, which have no frame between them).
+
 The plugin catalog is scanned on a background thread started when the TUI
 launches (a full scan instantiates every installed plugin and can take
 seconds, so it must not block the first frame). Results arrive per format
@@ -1935,9 +1940,9 @@ of its name changes name with its place (Filter 3 becomes Filter 4, and the one 
 the node, by its id, would keep it, but would number a loaded session's nodes out of the order they are drawn in.
 TODO: a trace of an LFO faster than 15 Hz aliases: the telemetry is 30 values a second (the engine's blocks are much shorter); a telemetry
 channel of the lowest and highest output of each block, or a faster one, would draw it.
-TODO: the light for a slow request says that the server is slow and not what it is doing (which plugin it loads); and the terminal has no such light: its loop
-is blocked while a plugin loads (an instrument or an effect chosen in the selector, an undo that loads one again), so it draws nothing for seconds. A line
-drawn before the load ("Loading Pianoteq 9…") would say so; moving the loads to a worker (`docs/web-ui.md` §3.1) would end it.
+TODO: the light for a slow request says that the server is slow and not what it is doing (which plugin it loads). The terminal says it for a plugin chosen in its
+selector ("Loading Pianoteq 9…") but not for one that a browser asks for, nor for an undo that loads one again: its loop is blocked then and draws nothing for
+as long as the load takes. Moving the loads to a worker (`docs/web-ui.md` §3.1) would end it.
 TODO: the bar under the slider of a cable whose depth is driven says where the engine has the depth, but not how far the cables that drive it can swing it (a knob's ring); a
 slider has no room for one, and the bar's scale is the slider's whole width while the thumb's travel is inset by half a thumb at each end.
 TODO: replacing an instrument takes out every cable that drove the old one; keep the ones whose
