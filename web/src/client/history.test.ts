@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP } from "../protocol";
-import type { Event, Intent, Node, Snapshot } from "../protocol";
+import type { Edge, Event, Intent, Node, Snapshot } from "../protocol";
 import { builtinCatalog, groupsFixture, historyFixture, shapeOf } from "./fixtures";
 import type { HistoryRow } from "./fixtures";
 import { History, planOf, stepOf, takesOut } from "./history";
@@ -272,9 +272,8 @@ describe("what a removal is to the history", () => {
       expect(plan({ type: "removeNode", node: control.id }, withControl)).toEqual({ removed: { label: "remove a MIDI control", intent: { type: "removeNode", node: control.id }, at: 7 } });
     });
 
-    test("is no step for a node that is not there, which is refused, and what cannot be put back yet for a group", () => {
+    test("is no step for a node that is not there, which is refused", () => {
       expect(plan({ type: "removeNode", node: 9_999 })).toBe("nothing");
-      expect(plan({ type: "removeNode", node: group.id })).toBe("barrier");
     });
 
     test("is what cannot be put back when a cable of it, or one that drives its settings, is one of cables that drive each other's depths", () => {
@@ -330,6 +329,43 @@ describe("what a removal of a lane is to the history", () => {
     const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
     const empty = { ...snapshot, graph: { ...snapshot.graph, nodes } };
     expect(plan({ type: "removeNode", node: lane.id }, empty)).toEqual({ removed: { label: "remove an empty lane", intent: { type: "removeNode", node: lane.id }, at: 7 } });
+  });
+});
+
+describe("what a removal of a group is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const groups = snapshot.graph.nodes.flatMap((n) => (n.kind === "group" ? [n] : []));
+
+  test("is a step that is made when it is carried out, in the words of its name", () => {
+    expect(groups.length).toBeGreaterThanOrEqual(2);
+    for (const group of groups) {
+      expect(plan({ type: "removeNode", node: group.id })).toEqual({ removed: { label: `remove ${group.name}`, intent: { type: "removeNode", node: group.id }, at: 7 } });
+    }
+  });
+
+  test("is what cannot be put back when cables of its modulators, or that drive their depths, drive each other's depths round to themselves", () => {
+    // A group with two modulators whose cables drive each other's depths (the fixture has none: a file can make that, and the controller does not put it back).
+    const [group] = groups;
+    if (!group) throw new Error("the fixture has a group");
+    const modulators: Node[] = [
+      { id: 9_001, parent: group.id, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } },
+      { id: 9_002, parent: group.id, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2 } },
+    ];
+    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument");
+    if (!lane) throw new Error("the fixture has a lane");
+    const cable = (id: number, from: number, to: Edge["to"]): Edge => ({ from: { node: from, port: { type: "modOut" } }, to, kind: "modulation", id, amount: 0.5 });
+    // Cable 9101 drives the depth of 9102 and the other way round; both belong to the group's modulators.
+    const edges = [
+      ...snapshot.graph.edges,
+      cable(9_101, 9_001, { node: 9_002, port: { type: "depth", edge: 9_102 } }),
+      cable(9_102, 9_002, { node: 9_001, port: { type: "depth", edge: 9_101 } }),
+    ];
+    const cycle = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, ...modulators], edges } };
+    expect(plan({ type: "removeNode", node: group.id }, cycle)).toBe("barrier");
+    // (One of the two driving a place that is not a cable's depth is no cycle.)
+    const chain = { ...cycle, graph: { ...cycle.graph, edges: edges.map((e) => (e.kind === "modulation" && e.id === 9_102 ? { ...e, to: { node: lane.id, port: { type: "param" as const, index: 1 } } } : e)) } };
+    expect(plan({ type: "removeNode", node: group.id }, chain)).toEqual({ removed: { label: `remove ${group.name}`, intent: { type: "removeNode", node: group.id }, at: 7 } });
   });
 });
 
@@ -700,6 +736,27 @@ describe("the mock engine's undo of what is taken out", () => {
     server.apply({ type: "undo" });
     expect(pieces(server)).toBe(before);
     expect(labels(server)).toEqual([null, "remove the lane of Oscillator"]);
+  });
+
+  test("puts a group back with its bus effects, its members and its cables, by undo, and takes it out again by redo", () => {
+    const server = new MockServer({ snapshot: groupsFixture.snapshot });
+    const before = pieces(server);
+    // (Group 0 has two lanes, 3 and 10, an LFO and an envelope whose cables drive them; group 1 has the lane 9.)
+    const [first, second] = groupsFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "group" ? [n.id] : []));
+    if (first === undefined || second === undefined) throw new Error("the fixture has two groups");
+    for (const group of [first, second]) {
+      server.apply({ type: "removeNode", node: group });
+      const after = pieces(server);
+      expect(after).not.toBe(before);
+      expect(server.snapshot.graph.nodes.some((n) => n.id === group)).toBe(false);
+      expect(labels(server)[0]).toMatch(/^remove /);
+      server.apply({ type: "undo" });
+      expect(pieces(server)).toBe(before);
+      server.apply({ type: "redo" });
+      expect(pieces(server)).toBe(after);
+      server.apply({ type: "undo" });
+      expect(pieces(server)).toBe(before);
+    }
   });
 
   test("does not put back the last lane of a session, which is refused and leaves the history as it was", () => {

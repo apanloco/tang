@@ -471,8 +471,11 @@ impl Controller {
                 Some(NodePath::Instrument(inst)) => {
                     Plan::Removed { label: format!("remove {}", crate::app::journal::lane_words(&self.model.instruments[inst])), intent: intent.clone(), at: now }
                 }
-                // Nothing puts these back yet.
-                Some(_) => Plan::Barrier,
+                // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them: the whole group that the audio thread hands
+                // back, at its place among the groups, its members put in it again and its cables after it (a step of the words of the button that takes it out: its name).
+                Some(NodePath::Group(group)) => {
+                    Plan::Removed { label: format!("remove {}", self.model.groups[group].display_name(group)), intent: intent.clone(), at: now }
+                }
                 // (A node that is not there is refused, and the plan is not looked at.)
                 None => Plan::Nothing,
             },
@@ -1305,9 +1308,8 @@ rate = 3.0
         set_detune(&mut ctl, 2.0);
         ctl.undo().unwrap();
         assert_eq!((undo_label(&ctl).is_some(), redo_label(&ctl).is_some()), (true, true));
-        // A group is taken out: nothing puts that back yet, and what was before it cannot be undone past it.
-        let group = node(&ctl, NodePath::Group(1));
-        ctl.apply(Intent::RemoveNode { node: group }).unwrap();
+        // A group is made of a lane that is in another: nothing puts that back yet (the cables of the group that has the lane go), and what was before it cannot be undone past it.
+        ctl.apply(Intent::AddGroup { members: vec![lane(&ctl)] }).unwrap();
         assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
         assert!(ctl.undo().is_err() && ctl.redo().is_err());
     }
@@ -1732,9 +1734,7 @@ rate = 3.0
     fn every_intent_that_cannot_be_undone_yet_empties_the_history() {
         let (_engine, mut ctl, clock) = controller();
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
-        let group = node(&ctl, NodePath::Group(1));
         let intents = [
-            ("take a group out", Intent::RemoveNode { node: group }),
             ("replace an instrument", Intent::ReplaceInstrument { node: node(&ctl, NodePath::Instrument(1)), plugin: "builtin:osc".to_string() }),
             // A group made of a lane that is in one: the cables of the group that has it go, and a step would not bring them back.
             ("add a group of a lane that is in another", Intent::AddGroup { members: vec![lane(&ctl)] }),
@@ -2969,7 +2969,7 @@ plugin = "builtin:reverb"
     /// What is on the audio thread and in the model, as every place that says so tells it: the modulators (`modulators_as_they_are`) and the chains, which
     /// say where each plugin is in memory, so that a plugin that was taken out and put back is told from one that was loaded again.
     fn everything_as_it_is(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Everything {
-        (modulators_as_they_are(ctl, graph), graph.chain_dump(), format!("{:?}\n{:?}", graph.lanes(), graph.instrument_dump()))
+        (modulators_as_they_are(ctl, graph), graph.chain_dump(), format!("{:?}\n{:?}\n{:?}", graph.lanes(), graph.instrument_dump(), graph.groups()))
     }
 
     fn assert_same_everything(now: &Everything, then: &Everything, what: &str) {
@@ -3713,6 +3713,353 @@ depth = 0.6
         assert_eq!(graph.peek_effect(4, 1, damping), Some(0.8));
     }
 
+    // -- a group that is taken out is put back --
+
+    /// Three groups and four lanes: "Pad" has a reverb and a filter on its bus, and a modulator with cables to the first bus effect, to the first member's detune and to the second member's
+    /// filter; the second group has a filter and an envelope with a cable to its filter and one to its member's volume; the third has nothing but a modulator. Lanes 0 and 2 are in "Pad", lane 1
+    /// is in the second group (and has a filter), and lane 3 is in none.
+    const GROUPS_AMONG_LANES: &str = r#"
+[[group]]
+name = "Pad"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+bus = 0
+param = "damping"
+depth = 0.1
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.2
+[[group.modulator.target]]
+member = 1
+slot = 1
+param = "cutoff"
+depth = 0.3
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.modulator]]
+type = "envelope"
+attack = 0.1
+decay = 0.2
+sustain = 0.3
+release = 0.4
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.4
+[[group.modulator.target]]
+member = 0
+param = "volume"
+depth = 0.5
+
+[[group]]
+[[group.modulator]]
+rate = 2.0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+[[instrument.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    /// The nodes of the groups of the session, in the order the model lists them.
+    fn group_nodes_of(ctl: &Controller) -> Vec<NodeId> {
+        ctl.model.groups.iter().map(|group| group.node).collect()
+    }
+
+    /// Every group of `session`, one at a time (each in a controller of its own, after a step of another kind): taken out by an intent, put back by undo, taken out again by redo
+    /// and put back again. Each time the model, the picture a client is given, the file and the audio thread are as they were, and the plugins that are back are the very ones that went
+    /// (the audio thread is run after each, as it runs on its own: it is what hands the group back). How many were put back, and how many were not.
+    fn every_group_is_put_back(name: &str, session: &str) -> (usize, usize) {
+        let count = controller_over_an_audio_thread(session).0.model.groups.len();
+        let (mut put_back, mut forgotten) = (0, 0);
+        for n in 0..count {
+            let (mut ctl, mut graph) = controller_over_an_audio_thread(session);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let group = group_nodes_of(&ctl)[n];
+            let before = everything_as_it_is(&ctl, &graph);
+            ctl.apply(Intent::RemoveNode { node: group }).unwrap();
+            graph.drain_commands();
+            let taken = everything_as_it_is(&ctl, &graph);
+            assert_ne!(taken.0 .0 .0, before.0 .0 .0, "group {n} of {name}: it is gone from the picture");
+            assert_ne!(taken.2, before.2, "group {n} of {name}: it is gone from the audio thread");
+            if ctl.history_state() == (HistoryState { undo: None, redo: None }) {
+                assert!(ctl.undo().is_err(), "group {n}: nothing to undo");
+                forgotten += 1;
+                continue;
+            }
+            assert!(undo_label(&ctl).is_some_and(|label| label.starts_with("remove ")), "group {n}: {:?}", undo_label(&ctl));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("group {n} of {name} put back"));
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &taken, &format!("group {n} of {name} taken out again"));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("group {n} of {name} put back again"));
+            ctl.model.check_ids().unwrap();
+            put_back += 1;
+        }
+        (put_back, forgotten)
+    }
+
+    #[test]
+    fn every_group_of_every_session_is_put_back_by_undo_as_the_very_group_in_the_model_the_picture_the_file_and_on_the_audio_thread() {
+        let sessions = [
+            ("GROUPS_AMONG_LANES", GROUPS_AMONG_LANES),
+            ("LANES", LANES),
+            ("SESSION", SESSION),
+            ("EFFECTS", EFFECTS),
+            ("LONG_CHAINS", testutil::LONG_CHAINS),
+            ("CHAINS", testutil::CHAINS),
+            ("GROUPS", testutil::GROUPS),
+            ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
+            ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
+        ];
+        let mut total = 0;
+        for (name, session) in sessions {
+            let (put_back, forgotten) = every_group_is_put_back(name, session);
+            assert_eq!(forgotten, 0, "{name}");
+            total += put_back;
+        }
+        assert!(total > 10, "{total} groups is not enough to say much");
+    }
+
+    #[test]
+    fn a_group_is_a_step_in_the_words_of_its_name_or_of_the_place_it_is_called_by() {
+        let (_engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+        let (pad, second) = (node(&ctl, NodePath::Group(0)), node(&ctl, NodePath::Group(1)));
+        ctl.apply(Intent::RemoveNode { node: second }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove Group 2"));
+        ctl.apply(Intent::RemoveNode { node: pad }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove Pad"));
+    }
+
+    #[test]
+    fn a_group_is_taken_out_after_every_cable_of_it_with_a_channel_to_be_handed_to_and_put_back_before_them_with_its_members() {
+        let (engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+        let pad = node(&ctl, NodePath::Group(0));
+        engine.drain();
+        ctl.apply(Intent::RemoveNode { node: pad }).unwrap();
+        let (commands, _) = engine.drain();
+        // Its three cables go first (the last of its modulator first, as they were taken out), then the group, handed to a channel; and what the cables drove in its members is given back.
+        assert_eq!(&commands[..4], ["RemoveGroupModTarget group=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=0", "RemoveGroup group=0 keep"], "{commands:?}");
+        // The audio thread (by hand) has handed back a group that has no plugins of its own; undo loads them again, and the group goes in with its two bus effects and its two members
+        // (lanes 0 and 2), and then its cables, the last that went first.
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands.len(), 4, "{commands:?}");
+        assert_eq!(commands[0], "InsertGroup index=0 plugins=2 members=[0, 2]");
+        // (Each was taken out at the first place, the rest moving up, so each goes back at the first, the last first.)
+        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 1, slot: 1,"), "{commands:?}");
+        assert!(commands[2].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
+        assert!(commands[3].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 0,"), "{commands:?}");
+    }
+
+    #[test]
+    fn a_group_that_was_not_handed_back_refuses_the_undo_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        // (The first group is called by its name, the second by the place it has, which is the place it is taken out of.)
+        for (index, words) in [(0, "Pad"), (1, "Group 2")] {
+            let (_engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let group = node(&ctl, NodePath::Group(index));
+            ctl.apply(Intent::RemoveNode { node: group }).unwrap();
+            // (Nobody runs the audio thread, and the engine's commands have not been read: the channel the group was to be handed to has nothing, and nobody to wait for.)
+            let before = picture(&ctl);
+            assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("{words} was not handed back by the audio thread")));
+            assert_eq!(picture(&ctl), before);
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step is gone, the one before it is next");
+        }
+    }
+
+    #[test]
+    fn a_group_with_a_node_a_cable_or_a_member_that_is_not_as_it_was_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        for what in ["the group", "an effect", "a modulator", "a cable", "a member that is gone", "a member that is in a group"] {
+            let (engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let pad = node(&ctl, NodePath::Group(0));
+            let (filter, modulator, cable) = {
+                let group = &ctl.model.groups[0];
+                (group.effects[1].node, group.modulators[0].node, group.modulators[0].targets[0].edge)
+            };
+            let member = ctl.model.instruments[2].node;
+            ctl.apply(Intent::RemoveNode { node: pad }).unwrap();
+            engine.drain();
+            // Something changes the session without the history.
+            let expected = match what {
+                "the group" => {
+                    ctl.model.groups[0].node = pad;
+                    format!("node {} is there already", pad.0)
+                }
+                "an effect" => {
+                    let (_plugin, mut spare) = ctl.load_plugin("builtin:filter").unwrap();
+                    spare.node = filter;
+                    ctl.model.groups[0].effects.push(spare);
+                    format!("node {} is there already", filter.0)
+                }
+                "a modulator" => {
+                    ctl.model.groups[0].modulators[0].node = modulator;
+                    format!("node {} is there already", modulator.0)
+                }
+                "a cable" => {
+                    ctl.model.groups[0].modulators[0].targets[0].edge = cable;
+                    format!("cable {} is there already", cable.0)
+                }
+                "a member that is gone" => {
+                    ctl.model.instruments.remove(2);
+                    format!("node {} is not there to be put in the group", member.0)
+                }
+                _ => {
+                    ctl.model.instruments[2].group = Some(0);
+                    format!("node {} is in a group already", member.0)
+                }
+            };
+            let before = picture(&ctl);
+            assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(expected), "{what}");
+            assert_eq!(picture(&ctl), before, "{what}");
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_group_that_was_taken_out_by_the_controller_and_not_by_an_intent_is_handed_to_no_channel() {
+        let (engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+        engine.drain();
+        assert!(ctl.remove_group(2));
+        assert_eq!(engine.drain().0.last().map(String::as_str), Some("RemoveGroup group=2"));
+    }
+
+    #[test]
+    fn a_group_put_back_past_the_end_goes_in_last_with_its_members_and_the_audio_thread_is_told_the_place_it_went_to() {
+        use crate::app::journal::{Inverse, Journal, Kept};
+        let (engine, mut ctl, _clock) = controller_over(load(GROUPS_AMONG_LANES).model);
+        // The last group, which has no members, a modulator and nothing else, goes out by the model alone and comes back in a journal of the kind that a session which changed without the
+        // history can make: its place is past the end of the groups, and the lane that it names is the last.
+        let group = ctl.model.remove_group(2).unwrap();
+        let node_of_the_group = group.node;
+        let member = ctl.model.instruments[3].node;
+        let mut journal = Journal::default();
+        journal.push(Inverse::Group { index: 99, group, members: vec![member], kept: Kept::InHand(crate::plugin::chain::KeptGroup::empty()) });
+        engine.drain();
+        ctl.rewind(journal).unwrap();
+        assert_eq!(ctl.model.groups.last().map(|group| group.node), Some(node_of_the_group));
+        assert_eq!(ctl.model.instruments[3].group, Some(2));
+        let (commands, _) = engine.drain();
+        assert_eq!(commands[0], "InsertGroup index=2 plugins=0 members=[3]", "{commands:?}");
+    }
+
+    #[test]
+    fn a_group_that_a_running_audio_thread_hands_back_across_threads_is_put_back_at_once_with_its_plugins_and_they_are_not_loaded_again() {
+        use crate::audio::{AudioEngine, NULL_DEVICE};
+        use crate::plugin::chain::AudioGraph;
+        // A real audio thread (the null backend renders on a timer), and plugins that cannot be loaded again: undo has the group, whole, only if the audio thread handed it over the
+        // channel, across threads; if it did not it fails after the wait (five seconds here).
+        let (mut handles, engine) = testutil::stub_engine_of(4096);
+        handles.recovery_wait = Duration::from_secs(5);
+        let model = testutil::load_onto(GROUPS_AMONG_LANES, &handles.cmd_tx);
+        let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut ctl = Controller::new(model, handles, None);
+        audio.play().unwrap();
+        for effect in &mut ctl.model.groups[0].effects {
+            effect.id = "builtin:nothing".to_string();
+        }
+        let pad = node(&ctl, NodePath::Group(0));
+        ctl.apply(Intent::RemoveNode { node: pad }).unwrap();
+        let started = Instant::now();
+        let undone = ctl.undo();
+        let waited = started.elapsed();
+        audio.stop();
+        undone.expect("the group came back from the audio thread");
+        assert!(waited < Duration::from_secs(2), "{waited:?}: it did not wait for what was there");
+        assert!(ctl.model.locate(pad).is_some());
+    }
+
+    /// A session of `count` groups that have two reverbs each on their buses and a lane in none, which the removals leave.
+    fn groups_of_two_plugins(count: usize) -> String {
+        let mut session = String::new();
+        for _ in 0..count {
+            session.push_str("[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n[[group.effect]]\nplugin = \"builtin:reverb\"\n");
+        }
+        session.push_str("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        session
+    }
+
+    #[test]
+    fn the_plugins_of_the_newest_group_removals_are_kept_and_the_ones_of_an_older_group_are_loaded_again_with_what_the_user_set() {
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(&groups_of_two_plugins(6));
+        // The plugins have a state that the model does not know: one that comes back with its group has it, one that is loaded again has not. (The bus effects' first parameter.)
+        // A group's bus effects are not reached by the test accessors of the lanes, so the state is the parameter that the model knows, set through the controller and then changed
+        // behind its back: `damping` of the first bus effect, to 0.3 (the model says it is something else).
+        let (damping, _) = param(&ctl, NodePath::GroupEffect { group: 0, index: 0 }, "damping");
+        for group in 0..6 {
+            graph.poke_bus_effect(group, 0, damping, 0.3);
+        }
+        // The user set the first bus effect of the last group through the controller, so that the model has it.
+        let last_effect = node(&ctl, NodePath::GroupEffect { group: 5, index: 0 });
+        ctl.apply(Intent::SetParam { node: last_effect, param: damping, value: 0.8 }).unwrap();
+        // Six groups of two plugins are taken out, the last first, so that the fifth removal makes ten, which is more than eight, and the oldest lets go of its plugins.
+        for group in (0..6).rev() {
+            let node = ctl.model.groups[group].node;
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            graph.drain_commands();
+        }
+        assert_eq!(graph.groups().len(), 0);
+        for _ in 0..6 {
+            ctl.undo().unwrap();
+            graph.drain_commands();
+        }
+        assert_eq!(graph.groups().len(), 6);
+        let kept: Vec<bool> = (0..6).map(|group| graph.peek_bus_effect(group, 0, damping) == Some(0.3)).collect();
+        // The newest four removals (groups 0 to 3) are the plugins they were, and the two oldest (groups 4 and 5) were let go of and are loaded again.
+        assert_eq!(kept, [true, true, true, true, false, false]);
+        // A group that is loaded again has the values the user set.
+        assert_eq!(graph.peek_bus_effect(5, 0, damping), Some(0.8));
+    }
+
+    #[test]
+    fn a_step_counts_the_plugins_of_the_lane_and_of_the_group_it_is_to_be_handed_and_none_once_it_has_let_go_of_them() {
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(GROUPS_AMONG_LANES);
+        // A group (two plugins on its bus), and then a lane (an instrument and a filter: lane 1, which is in the second group, now the first).
+        let group = node(&ctl, NodePath::Group(0));
+        ctl.apply(Intent::RemoveNode { node: group }).unwrap();
+        graph.drain_commands();
+        let lane = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+        graph.drain_commands();
+        let kept = |ctl: &Controller| -> Vec<Option<usize>> {
+            ctl.history.undo.iter().map(|step| if let Taken::Held(journal) = &step.taken { Some(journal.plugins_kept()) } else { None }).collect()
+        };
+        assert_eq!(kept(&ctl), [Some(2), Some(2)]);
+        for step in &mut ctl.history.undo {
+            let Taken::Held(journal) = &mut step.taken else { panic!("a removal holds what it took out") };
+            journal.let_go_of_plugins();
+        }
+        assert_eq!(kept(&ctl), [Some(0), Some(0)], "what was let go of is not kept, and does not count against what is");
+    }
+
     /// A step of a script: an intent, or time going by (in milliseconds).
     enum Op {
         Do(Intent),
@@ -3777,8 +4124,8 @@ depth = 0.6
             ("a change after an undo ends what could be redone", vec![set(detune, 1.0), pause(), undo(), set(volume, 0.5), redo(), undo(), undo()]),
             ("an intent that is refused changes nothing in the history", vec![set(detune, 1.0), set(9_999, 1.0), gain(g0, Gain::Mix, 0.5), field(lane0, ModulatorField::Rate, 1.0), Op::Do(Intent::RemoveNode { node: ghost }), undo()]),
             ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
-            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::RemoveNode { node: g1 }), undo(), redo()]),
-            ("taking a group out is one of them", vec![set(detune, 1.0), Op::Do(Intent::RemoveNode { node: g1 }), undo()]),
+            ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::AddGroup { members: vec![lane0] }), undo(), redo()]),
+            ("making a group of a lane that is in another is one of them", vec![set(detune, 1.0), Op::Do(Intent::AddGroup { members: vec![lane0] }), undo()]),
         ];
         let mut gains = vec![gain(lane0, Gain::Volume, 2.5), pause(), gain(reverb, Gain::Mix, 0.125), pause(), gain(bus, Gain::Mix, 0.75), pause(), gain(g0, Gain::GroupVolume, 0.5), pause(), gain(g0, Gain::GroupPan, -0.5)];
         gains.extend(n_of(5, undo));
@@ -4143,6 +4490,29 @@ depth = 0.6
             "the last lane of a session is not taken out, and the history is as it was",
             vec![remove_node(lane0), remove_node(lane1), undo(), undo(), redo()],
         ));
+        // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them, at its place among the groups, its members put in
+        // it again, under its id, and what was done after it is put back first.
+        scripts.push((
+            "a group that is taken out is put back by undo with its members, its bus effect and its cables, and taken out again by redo",
+            vec![
+                add_modulator(g0, ModulatorKind::Lfo),
+                cable(fresh(0), lane0, detune),
+                cable(fresh(0), bus, bus_resonance),
+                remove_node(g0),
+                undo(),
+                redo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push(("a group that has nothing in it is taken out and put back", vec![remove_node(g1), undo(), redo(), undo()]));
+        scripts.push((
+            "the group before another goes, and the lane of the one after it is told which group it is in, and again when the first is back",
+            vec![put_in(lane1, Some(g1)), remove_node(g0), undo(), redo(), undo(), undo(), undo()],
+        ));
         scripts.push((
             "a MIDI control with a cable is taken out and put back in the words of its own",
             vec![add_modulator(lane1, ModulatorKind::MidiLearn), cable(fresh(0), lane1, detune), remove_node(fresh(0)), undo(), redo(), undo(), undo(), undo()],
@@ -4189,7 +4559,6 @@ depth = 0.6
         let barriers = [
             // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
             Intent::AddGroup { members: vec![lane0] },
-            Intent::RemoveNode { node: g1 },
             Intent::ReplaceInstrument { node: lane1, plugin: "builtin:osc".to_string() },
             Intent::LoadPreset { node: reverb, preset },
         ];

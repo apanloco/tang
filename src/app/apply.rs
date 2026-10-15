@@ -3271,7 +3271,7 @@ type = "midi"
                 "RemoveGroupModTarget group=0 mod=1 target=0",
                 "RemoveGroupModTarget group=0 mod=0 target=0",
                 "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroup group=0",
+                "RemoveGroup group=0 keep",
                 "SetParameter inst=0 slot=0 param=1 value=0.000",
                 "SetParameter inst=3 slot=0 param=7 value=0.000",
                 "SetModulatorRate inst=3 mod=0 rate=6.000",

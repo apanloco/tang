@@ -824,7 +824,6 @@ impl SessionModel {
     /// `InsertGroup` does it. The lanes that are in the groups from that place on are told the group they are in now (one more, which the removal told them the other
     /// way), and the lanes in `members` (places among the lanes: one that is no lane is nobody's) are its members again. The cables of the group are not here: the
     /// controller takes them out before the group goes and puts them back after it. The place it went to.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a group back for the history, built next"))]
     pub fn insert_group_at(&mut self, index: usize, group: GroupNode, members: &[usize]) -> usize {
         let place = index.min(self.groups.len());
         for lane in &mut self.instruments {

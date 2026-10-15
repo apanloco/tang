@@ -24,8 +24,8 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::apply::Done;
 use crate::app::controller::{has_audio_output, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, InstrumentNode, ModTargetSlot, ModulatorSlot, ParamKind, PluginSlot, RemovedCable};
-use crate::plugin::chain::{GraphCommand, KeptLane, ModTarget, ModulatorLocation, CHAIN_CHANNELS};
+use crate::app::model::{mod_source_slot_to_graph, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
+use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, CHAIN_CHANNELS};
 use crate::plugin::{self, Plugin};
 
 /// One thing that was taken out, and what it takes to put it back.
@@ -42,6 +42,10 @@ pub(super) enum Inverse {
     /// A lane, which goes back among the lanes at `index`: `lane` is the model's node with everything the model has of it (its plugins' slots, its modulators and their cables,
     /// its pattern, its group), and `kept` the lane that the audio thread handed back, with its plugins and whatever they hold, or what puts one back.
     Lane { index: usize, lane: InstrumentNode, kept: Kept<KeptLane> },
+    /// A group, which goes back among the groups at `index`: `group` is the model's node (its bus effects' slots, its modulators, its meter), `members` the lanes that were in it
+    /// (by node, in the order of the lanes) and `kept` the group that the audio thread handed back, with its bus effects and whatever they hold, or what puts one back. (The cables
+    /// of its modulators went before it, each written down as a cable, and come back after it.)
+    Group { index: usize, group: GroupNode, members: Vec<NodeId>, kept: Kept<KeptGroup> },
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
@@ -87,6 +91,8 @@ impl Journal {
                 Inverse::Effect { kept: Kept::Asked(_) | Kept::InHand(_), .. } => 1,
                 Inverse::Lane { lane, kept: Kept::Asked(_), .. } => plugins_of(lane),
                 Inverse::Lane { kept: Kept::InHand(kept), .. } => kept.plugin_count(),
+                Inverse::Group { group, kept: Kept::Asked(_), .. } => group.effects.len(),
+                Inverse::Group { kept: Kept::InHand(kept), .. } => kept.plugin_count(),
                 _ => 0,
             })
             .sum()
@@ -107,6 +113,17 @@ impl Journal {
                     if let Some(mut lane) = lane {
                         drop(lane.take_plugins());
                         *kept = Kept::InHand(lane);
+                    }
+                }
+                Inverse::Group { kept, .. } => {
+                    let group = match std::mem::replace(kept, Kept::Nothing) {
+                        Kept::Asked(channel) => channel.try_recv().ok(),
+                        Kept::InHand(group) => Some(group),
+                        Kept::Nothing => None,
+                    };
+                    if let Some(mut group) = group {
+                        drop(group.take_plugins());
+                        *kept = Kept::InHand(group);
                     }
                 }
                 _ => {}
@@ -224,6 +241,32 @@ impl Controller {
         Ok(handed_back)
     }
 
+    /// The group to put back: the very group if the audio thread handed it back (it is waited for a moment, `recovery_wait`, if it has not yet), with its bus effects loaded again,
+    /// as `recover_plugin` loads one, if it gave them up (the history lets go of them, to save memory). Refused, with the reason, if the group did not come or a plugin cannot be had.
+    fn recover_group(&self, index: usize, group: &GroupNode, kept: Kept<KeptGroup>, deadline: Instant) -> Result<KeptGroup, IntentError> {
+        let handed_back = match kept {
+            Kept::InHand(kept) => Some(kept),
+            Kept::Asked(channel) => channel.recv_deadline(deadline).ok(),
+            Kept::Nothing => None,
+        };
+        let Some(mut handed_back) = handed_back else {
+            return Err(IntentError::Invalid(format!("{} was not handed back by the audio thread", group.display_name(index))));
+        };
+        if handed_back.plugin_count() < group.effects.len() {
+            let effects = group
+                .effects
+                .iter()
+                .map(|slot| {
+                    let loaded = self.reload_plugin(slot)?;
+                    outputs_of_an_effect(&*loaded, slot)?;
+                    Ok(loaded)
+                })
+                .collect::<Result<Vec<_>, IntentError>>()?;
+            handed_back.put_plugins(effects);
+        }
+        Ok(handed_back)
+    }
+
     /// The plugin of `slot`, loaded again from what it was loaded from, with the preset it had and then the values that the model has, which are the user's.
     fn reload_plugin(&self, slot: &PluginSlot) -> Result<Box<dyn Plugin>, IntentError> {
         let mut loaded = plugin::load(&slot.id, self.sample_rate, self.max_block_size, &self.runtime).map_err(|e| {
@@ -268,6 +311,24 @@ impl Controller {
                         self.refuse_a_modulator_that_is_there(modulator)?;
                     }
                 }
+                Inverse::Group { group, members, .. } => {
+                    for node in std::iter::once(group.node).chain(group.effects.iter().map(|effect| effect.node)) {
+                        if self.model.locate(node).is_some() {
+                            return Err(IntentError::Invalid(format!("node {} is there already", node.0)));
+                        }
+                    }
+                    for modulator in &group.modulators {
+                        self.refuse_a_modulator_that_is_there(modulator)?;
+                    }
+                    // Its members are lanes that are in no group (what was done after it was undone first, so that they are where they were).
+                    for member in members {
+                        match self.model.locate(*member) {
+                            Some(NodePath::Instrument(inst)) if self.model.instruments[inst].group.is_none() => {}
+                            Some(NodePath::Instrument(_)) => return Err(IntentError::Invalid(format!("node {} is in a group already", member.0))),
+                            _ => return Err(IntentError::Invalid(format!("node {} is not there to be put in the group", member.0))),
+                        }
+                    }
+                }
                 Inverse::NoWayBack => {}
             }
         }
@@ -282,6 +343,10 @@ impl Controller {
                 }
                 Inverse::Lane { lane, kept, .. } => {
                     let recovered = self.recover_lane(lane, std::mem::replace(kept, Kept::Nothing), deadline)?;
+                    *kept = Kept::InHand(recovered);
+                }
+                Inverse::Group { index, group, kept, .. } => {
+                    let recovered = self.recover_group(*index, group, std::mem::replace(kept, Kept::Nothing), deadline)?;
                     *kept = Kept::InHand(recovered);
                 }
                 _ => {}
@@ -369,8 +434,21 @@ impl Controller {
                 // (Its pattern player has the tempo that was there when it went: the lanes are all told the one there is now.)
                 let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: self.global_bpm });
             }
-            // (`rewind` has every plugin and every lane in hand by now.)
-            Inverse::Effect { .. } | Inverse::Lane { .. } | Inverse::NoWayBack => {}
+            Inverse::Group { index, group, members, kept: Kept::InHand(kept) } => {
+                // (The members are lanes, where they were: what was done after the removal was undone first.)
+                let places: Vec<usize> = members
+                    .iter()
+                    .filter_map(|node| match self.model.locate(*node) {
+                        Some(NodePath::Instrument(inst)) => Some(inst),
+                        _ => None,
+                    })
+                    .collect();
+                // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
+                let place = self.model.insert_group_at(index, group, &places);
+                let _ = self.cmd_tx.send(GraphCommand::InsertGroup { index: place, group: kept, members: places });
+            }
+            // (`rewind` has every plugin, every lane and every group in hand by now.)
+            Inverse::Effect { .. } | Inverse::Lane { .. } | Inverse::Group { .. } | Inverse::NoWayBack => {}
         }
     }
 }

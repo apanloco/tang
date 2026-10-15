@@ -322,6 +322,16 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // depths: a cable drives one thing, and those of its group drive a place in the lane, so the ones that drive their depths are a tree of drivers. (A lane with no instrument
       // is "an empty lane".)
       if (node?.kind === "instrument") return { removed: { label: `remove ${node.plugin === null ? "an empty lane" : `the lane of ${node.name}`}`, intent, at: now } };
+      // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them, at its place among the groups and with its members put in
+      // it again (the controller's `Inverse::Group`). The cables of its modulators, and those that drive the depth of any of them, are checked for cables that drive each other's depths,
+      // which are not put back (`RemovedCable::still_driven`), as for a modulator.
+      if (node?.kind === "group") {
+        const { edges, nodes } = snapshot.graph;
+        const parentOf = new Map(nodes.map((n) => [n.id, n.parent]));
+        const own = edges.flatMap((e) => (isModulation(e) && parentOf.get(e.from.node) === node.id ? [e.id] : []));
+        if (drivesRoundToItself(edges, cablesThatGo(edges, own))) return "barrier";
+        return { removed: { label: `remove ${node.name}`, intent, at: now } };
+      }
       if (node?.kind !== "modulator") return node ? "barrier" : "nothing";
       // The cables that go with it: its own, those that drive its settings and those that drive the depth of any of them (`removeNodeOutcome`).
       const { edges } = snapshot.graph;

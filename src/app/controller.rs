@@ -681,13 +681,19 @@ impl Controller {
         let Some(bus) = self.model.groups.get(group) else { return false };
         let edges: Vec<EdgeId> = bus.modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge)).collect();
         self.forget_the_history_unless_an_intent_asks();
+        // The lanes that are in it, by node: they are in none once it has gone, and are put in it again when it comes back.
+        let members: Vec<NodeId> = self.model.instruments.iter().filter(|lane| lane.group == Some(group)).map(|lane| lane.node).collect();
         let mut driven: Vec<Driven> = Vec::new();
         for edge in edges {
             // (One that an earlier one took with it is not there any more.)
             driven.extend(self.take_out(edge).into_iter().flatten());
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveGroup { group, keep: None });
-        self.model.remove_group(group);
+        // The whole group is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
+        let (keep, kept) = self.channel_for();
+        let _ = self.cmd_tx.send(GraphCommand::RemoveGroup { group, keep });
+        if let Some(node) = self.model.remove_group(group) {
+            self.took_out(Inverse::Group { index: group, group: node, members, kept });
+        }
         self.give_back(driven);
         true
     }

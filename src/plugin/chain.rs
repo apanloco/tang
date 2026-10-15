@@ -957,20 +957,17 @@ impl KeptGroup {
     }
 
     /// How many plugins the group holds: its bus effects.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a group for the history, built next"))]
     pub fn plugin_count(&self) -> usize {
         self.0.effects.len()
     }
 
     /// Take the bus effects out of the group, in order: to drop them, since a plugin can be big, when the history lets go of them. A group without them is not put back (the audio
     /// thread turns it away) until it has been given effects again, `put_plugins`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a group for the history, built next"))]
     pub fn take_plugins(&mut self) -> Vec<Box<dyn Plugin>> {
         std::mem::take(&mut self.0.effects)
     }
 
     /// Give the group bus effects, as many as it has mixes for (it has kept the mixes).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller keeps a group for the history, built next"))]
     pub fn put_plugins(&mut self, effects: Vec<Box<dyn Plugin>>) {
         self.0.effects = effects;
     }
@@ -1937,7 +1934,6 @@ pub enum GraphCommand {
     /// Put a group that `RemoveGroup { keep }` handed back into the graph at place `index` (the last place, for one past the end), as it was: the lanes that are in the groups from
     /// that place on are told the group they are in now (one more), and the lanes in `members` (places among the lanes: one that is no lane is nobody's) are its members. A group
     /// that has fewer bus effects than it has mixes (it gave up its plugins, `KeptGroup::take_plugins`) is turned away, and its plugins go back by the return channel.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a group back for the history, built next"))]
     InsertGroup {
         index: usize,
         group: KeptGroup,
@@ -3465,6 +3461,18 @@ impl AudioGraph {
     #[cfg(test)]
     pub fn peek_effect(&mut self, inst: usize, index: usize, param: u32) -> Option<f32> {
         self.instruments.get_mut(inst)?.effects.get_mut(index)?.get_parameter(param)
+    }
+
+    /// Set a parameter of an effect of a group's bus on the plugin itself, for a test: what the model does not know, as a plugin has state apart from its parameters.
+    #[cfg(test)]
+    pub fn poke_bus_effect(&mut self, group: usize, index: usize, param: u32, value: f32) {
+        self.groups[group].effects[index].set_parameter(param, value).unwrap();
+    }
+
+    /// A parameter of an effect of a group's bus, as the plugin itself says it, for a test.
+    #[cfg(test)]
+    pub fn peek_bus_effect(&mut self, group: usize, index: usize, param: u32) -> Option<f32> {
+        self.groups.get_mut(group)?.effects.get_mut(index)?.get_parameter(param)
     }
 
     /// Every chain as it is, for a test: for each lane and then each group, its effects (the name, where the plugin is in memory, and the mix as the model has it,

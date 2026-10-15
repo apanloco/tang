@@ -1492,7 +1492,7 @@ fn deleting_a_group_ungroups_its_members() {
             "RemoveGroupModTarget group=0 mod=0 target=0",
             "RemoveGroupModTarget group=0 mod=0 target=0",
             "RemoveGroupModTarget group=0 mod=1 target=0",
-            "RemoveGroup group=0",
+            "RemoveGroup group=0 keep",
             "SetParameter inst=0 slot=0 param=1 value=0.000",
         ]
     );
@@ -4824,11 +4824,8 @@ mod undo_and_redo {
     #[test]
     fn d_takes_a_node_out_and_forgets_the_history_as_the_browsers_remove_does() {
         use crate::app::history::HistoryState;
-        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator, an effect and a lane are put back: tests of their own.)
-        let cases = [
-            (scene_bus_pair().to_string(), TreeAddress::Group(0), "a group"),
-            (scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied"),
-        ];
+        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator, an effect, a lane and a group are put back: tests of their own.)
+        let cases = [(scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied")];
         for (scene, address, what) in cases {
             let mut h = Harness::new(scene);
             h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
@@ -4864,6 +4861,37 @@ mod undo_and_redo {
         assert_eq!(shape(&h), before, "the lane is back where it was, in its group, with its cables and the ids and slots they had");
         ctrl_y(&mut h);
         assert_eq!(h.s.ctl.model.instruments.len(), lanes - 1, "taken out again");
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(shape(&h), before);
+    }
+
+    #[test]
+    fn d_takes_a_group_out_as_a_step_that_ctrl_z_puts_back_with_its_members_and_cables_and_ctrl_y_takes_out_again() {
+        let mut h = Harness::new(scene_group());
+        // Every lane and group, with the ids and slots they have: what a group put back has to leave as it was.
+        let shape = |h: &Harness| -> String {
+            let lanes = h.s.ctl.model.instruments.iter().map(|lane| format!("{lane:?}"));
+            let groups = h.s.ctl.model.groups.iter().map(|group| format!("{group:?}"));
+            lanes.chain(groups).collect::<Vec<_>>().join("\n")
+        };
+        h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let before = shape(&h);
+        h.commands();
+        h.goto(TreeAddress::Group(0)).press(KeyCode::Char('d'));
+        assert!(h.s.ctl.model.groups.is_empty(), "the group is gone");
+        assert!(h.s.ctl.model.instruments.iter().all(|lane| lane.group.is_none()), "and its members are in none");
+        let name = h.s.ctl.history_state().undo;
+        assert!(name.as_deref().is_some_and(|name| name.starts_with("remove ")), "{name:?}");
+        // (The commands are read: the audio thread, which the test has not, would have handed the group back.)
+        let removed = h.commands();
+        assert!(removed.iter().any(|command| command == "RemoveGroup group=0 keep"), "{removed:?}");
+        ctrl_z(&mut h);
+        let commands = h.commands();
+        assert!(commands.iter().any(|command| command.starts_with("InsertGroup index=0 plugins=")), "{commands:?}");
+        assert_eq!(shape(&h), before, "the group is back where it was, with its members, its cables and the ids and slots they had");
+        ctrl_y(&mut h);
+        assert!(h.s.ctl.model.groups.is_empty(), "taken out again");
         h.commands();
         ctrl_z(&mut h);
         assert_eq!(shape(&h), before);
