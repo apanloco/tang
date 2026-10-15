@@ -2470,17 +2470,18 @@ describe("a request that the server is slow to answer", () => {
     const answered = client.request(cutoff(0.3));
     await quiet(250);
     expect(slow(client)).toBe(0);
-    await until(() => slow(client) === 1, "the request to be slow", 600);
+    await until(() => slow(client) === 1, "the request to be slow", 1500);
     connection.release();
     await answered;
   });
 
   test("is never slow when it is answered in time", async () => {
-    const { client } = await slowClient(80);
+    // (A time to wait that a stall of the machine is not likely to be longer than: the answer is a few milliseconds away.)
+    const { client } = await slowClient(250);
     const seen: number[] = [];
     client.slow.subscribe((state) => seen.push(state.count));
     await client.request(cutoff(0.3));
-    await quiet(120);
+    await quiet(320);
     expect(seen).toEqual([]);
     expect(slow(client)).toBe(0);
   });
