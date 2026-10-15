@@ -9,6 +9,7 @@ import type { EdgeId, NodeId } from "../../protocol";
 import { useClientState, useEditor } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { useCableLight } from "./cableLight";
+import { cableRoute } from "./cableRoute";
 import { CableDepthControl, drivesId } from "./controls";
 import { cableWidth } from "./describe";
 import type { PatchEdge } from "./toFlow";
@@ -40,7 +41,7 @@ function RemoveCableButton({ edge, modulator, label }: { edge: EdgeId; modulator
 }
 
 export function ModulationEdge(props: EdgeProps<PatchEdge>) {
-  const [path, labelX, labelY] = getBezierPath(props);
+  const [path, labelX, labelY] = cableRoute(props);
   // How deep it goes is a value, read here so that turning it renders this cable and nothing else.
   const cable = props.data?.cable;
   const depth = useClientState((state) => (cable === undefined ? undefined : cableDepthOf(state, cable)));

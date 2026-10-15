@@ -72,3 +72,22 @@ export async function expectNodesApart(page: Page): Promise<void> {
     }
   }
 }
+
+/** Points along the last modulation cable of the canvas (the newest, in the order of the graph), in the page's pixels, from its start to its end. */
+export async function cablePoints(page: Page, count = 240): Promise<{ x: number; y: number }[]> {
+  return page.evaluate((n) => {
+    const paths = [...document.querySelectorAll<SVGPathElement>('path[id^="mod:"]')];
+    const path = paths.at(-1);
+    const matrix = path?.getScreenCTM();
+    if (!path || !matrix) throw new Error("no cable on the canvas");
+    const length = path.getTotalLength();
+    return Array.from({ length: n + 1 }, (_, i) => {
+      const at = path.getPointAtLength((length * i) / n);
+      return { x: matrix.a * at.x + matrix.c * at.y + matrix.e, y: matrix.b * at.x + matrix.d * at.y + matrix.f };
+    });
+  }, count);
+}
+
+/** Whether a point is inside a box, by more than `margin` pixels from its edge. */
+export const within = (point: { x: number; y: number }, box: { left: number; top: number; width: number; height: number }, margin = 3): boolean =>
+  point.x > box.left + margin && point.x < box.left + box.width - margin && point.y > box.top + margin && point.y < box.top + box.height - margin;

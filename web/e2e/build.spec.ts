@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { CABLE_ROW_HEIGHT, CABLES_GAP, MODULATOR_SETTINGS_HEIGHT, NODE_WIDTH } from "../src/app/patch/toFlow";
-import { addEnvelope, cables, centre, drag, expectNodesApart, node, open, output, port, setting } from "./canvas";
+import { addEnvelope, cablePoints, cables, centre, drag, expectNodesApart, node, nodeBoxes, open, output, port, setting, within } from "./canvas";
 
 // What a person does to build modulation on the page, against the mock engine in the page (so that a test
 // can have a session of its own: the tracer, or two lanes): add a modulator from the menu, draw a cable by
@@ -332,6 +332,32 @@ test("a cable is drawn by dragging it from a modulator's output to the depth of 
   expect(above.y + above.height).toBeLessThan(below.y);
   expect(Math.abs(above.x - below.x)).toBeLessThan(2);
   await expectNodesApart(page);
+});
+
+test("a cable to the depth of a cable goes round the node it ends at, and has its slider in the room under the modulator that drives it, over no node", async ({ page }) => {
+  await open(page);
+  const envelope = await addEnvelope(page);
+  await drag(page, output(envelope), node(page, "LFO").locator(".tang-cable-row .react-flow__handle"));
+  await expect(cables(page)).toHaveCount(2);
+  const depth = page.getByRole("slider", { name: "Depth of ADSR → depth of LFO → Filter: cutoff" });
+  await expect(depth).toBeVisible();
+  // No point of the cable is inside a node: it leaves the foot of the envelope, runs along under it and down beside the LFO, and comes in at its left edge.
+  const [points, boxes] = [await cablePoints(page), await nodeBoxes(page)];
+  const lfo = boxes.find((box) => box.name === "LFO");
+  const adsr = boxes.find((box) => box.name === "ADSR");
+  if (!lfo || !adsr) throw new Error("the nodes are not on the page");
+  for (const box of boxes) expect(points.filter((point) => within(point, box)), `the cable is in ${box.name}`).toEqual([]);
+  expect(Math.min(...points.map((point) => point.x))).toBeLessThan(lfo.left - 10);
+  // (It ends at the port, which is at the node's edge: within its own size of it, and in the lower half of the node, where the row is.)
+  const end = points.at(-1);
+  expect(end && Math.abs(end.x - lfo.left)).toBeLessThan(8);
+  expect(end?.y).toBeGreaterThan(lfo.top + lfo.height / 2);
+  // The slider and the button that takes the cable out are between the two nodes, not over either.
+  const anchor = depth.locator("xpath=ancestor::div[contains(@class, 'tang-depth-anchor')]");
+  const pill = await anchor.boundingBox();
+  if (!pill) throw new Error("the slider is not on the page");
+  expect(pill.y).toBeGreaterThanOrEqual(adsr.top + adsr.height);
+  expect(pill.y + pill.height).toBeLessThanOrEqual(lfo.top);
 });
 
 test("a cable let go over the row of a cable, anywhere in it, is drawn to the depth of that cable, and one let go where it does not belong is not", async ({ page }) => {
