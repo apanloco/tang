@@ -85,6 +85,8 @@ test("the scope of an instrument is of what it puts out and the scope of an effe
   await lane.getByRole("slider", { name: "Volume", exact: true }).dblclick();
   await page.getByRole("button", { name: "Remove LFO" }).click();
   await expect(page.getByRole("button", { name: "Remove LFO" })).toHaveCount(0);
+  // (The focus goes to the button that adds a modulator when the server's answer is in, a moment after the node has gone: a key that is pressed before that goes to the button.)
+  await expect(lane.getByRole("button", { name: "Add a modulator to Oscillator" })).toBeFocused();
   const cutoff = filter.getByRole("slider", { name: "cutoff" });
   await cutoff.focus();
   await page.keyboard.press("Home");
