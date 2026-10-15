@@ -2517,6 +2517,16 @@ impl PatternPlayer {
         }
     }
 
+    /// The length of the pattern in beats: what the next recording is counted in, and what the pattern that is there loops at. Its length in frames follows (the
+    /// frames a beat of it has, as it was recorded, times the beats it has now): its notes stay where they are, and those that the loop no longer reaches wait for
+    /// it to be long again. A pattern that is not there yet has no length in frames to change, and is only given the beats, which the pattern that is sent after it is counted in.
+    fn set_length_beats(&mut self, beats: f32) {
+        if self.length_beats > 0.0 {
+            self.pattern.length_samples = (self.pattern.length_samples as f64 * f64::from(beats) / f64::from(self.length_beats)) as u64;
+        }
+        self.length_beats = beats;
+    }
+
     /// Calculate pattern length in samples from BPM and length_beats.
     fn length_samples(&self) -> u64 {
         let beats_per_sec = self.bpm / 60.0;
@@ -4740,7 +4750,7 @@ impl AudioGraph {
                 }
                 GraphCommand::SetPatternLength { inst, beats } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
-                        lane.pattern.length_beats = beats;
+                        lane.pattern.set_length_beats(beats);
                     }
                 }
                 GraphCommand::SetPatternLooping { inst, looping } => {
@@ -7656,6 +7666,64 @@ mod tests {
         let mut offs = note_offs(&events);
         offs.sort_unstable();
         assert_eq!(offs, vec![62, 65, 69]);
+    }
+
+    #[test]
+    fn a_pattern_that_is_given_another_length_in_beats_loops_at_it_and_a_session_loads_the_same_loop() {
+        // (The loop of make_pattern_player is 4 beats of 250 frames: 1000 frames.)
+        let scale = ScaleSetting::default();
+        let ons_in_a_loop_of_a_thousand_frames = |p: &mut PatternPlayer| {
+            let mut ons = 0;
+            let mut midi = vec![note_on(60)];
+            for _ in 0..4 {
+                ons += note_ons(p.process(&midi, 250, scale)).len();
+                midi.clear();
+            }
+            ons
+        };
+        let mut as_recorded = make_pattern_player(false);
+        assert_eq!(ons_in_a_loop_of_a_thousand_frames(&mut as_recorded), 3, "the triad once");
+        let mut halved = make_pattern_player(false);
+        halved.set_length_beats(2.0);
+        assert_eq!(halved.pattern.length_samples, 500);
+        assert_eq!(ons_in_a_loop_of_a_thousand_frames(&mut halved), 6, "the triad twice: the pattern is 2 beats long");
+        let mut doubled = make_pattern_player(false);
+        doubled.set_length_beats(8.0);
+        assert_eq!(doubled.pattern.length_samples, 2000);
+        assert_eq!(doubled.length_beats, 8.0, "the next recording is counted in it too");
+    }
+
+    #[test]
+    fn a_length_in_beats_is_given_to_a_pattern_that_is_not_there_yet_as_it_is() {
+        let mut p = PatternPlayer::new(48000.0);
+        p.set_length_beats(2.0);
+        assert_eq!((p.length_beats, p.pattern.length_samples), (2.0, 0));
+    }
+
+    #[test]
+    fn the_command_that_sets_the_length_of_a_pattern_does_it_to_the_pattern_of_the_lane() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let on = PatternEvent { frame: 0, status: 0x90, note: 60, velocity: 100 };
+        cmd_tx.send(GraphCommand::SetPatternLength { inst: 0, beats: 4.0 }).unwrap();
+        cmd_tx.send(GraphCommand::SetPattern { inst: 0, pattern: Pattern { events: vec![on], length_samples: 96_000 }, base_note: Some(60), in_key: false }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.instruments[0].pattern.pattern.length_samples, 96_000);
+        cmd_tx.send(GraphCommand::SetPatternLength { inst: 0, beats: 2.0 }).unwrap();
+        graph.drain_commands();
+        assert_eq!((graph.instruments[0].pattern.length_beats, graph.instruments[0].pattern.pattern.length_samples), (2.0, 48_000));
+    }
+
+    #[test]
+    fn a_session_with_a_pattern_is_loaded_with_the_loop_it_says_in_frames_and_in_beats() {
+        // (SETTINGS has a pattern of 2 beats that was recorded at 90 a minute: at 48 kHz that is 64000 frames, which the loader works out and the audio thread must
+        // keep whatever order the commands are in: a length in beats that is set changes the length of a pattern that is there.)
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(256);
+        let (return_tx, _return_rx) = crossbeam_channel::bounded(16);
+        let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
+        crate::app::testutil::load_onto(crate::app::testutil::SETTINGS, &cmd_tx);
+        graph.drain_commands();
+        let player = &graph.instruments[0].pattern;
+        assert_eq!((player.length_beats, player.pattern.length_samples, player.pattern.events.len()), (2.0, 64_000, 2));
     }
 
     #[test]

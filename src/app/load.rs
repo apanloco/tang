@@ -509,15 +509,16 @@ pub fn load_session(
                 .collect();
             let beats_per_sec = p.bpm / 60.0;
             let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
+            // (The length in beats first: a length that is set changes the length of a pattern that is there, in proportion, and there is none yet.)
+            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLength {
+                inst: inst_idx,
+                beats: p.length_beats,
+            });
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPattern {
                 inst: inst_idx,
                 pattern: plugin::chain::Pattern { events: pattern_events, length_samples },
                 base_note: p.base_note,
                 in_key: p.in_key,
-            });
-            let _ = cmd_tx.send(plugin::chain::GraphCommand::SetPatternLength {
-                inst: inst_idx,
-                beats: p.length_beats,
             });
             // The engine enables a pattern that has events as soon as it receives it, so
             // say what the session wants, including "off".
@@ -1957,8 +1958,8 @@ mod_rate = 7
                 "SetParameter inst=0 slot=2 param=0 value=0.250",
                 // Then transpose and the pattern (120000 / 90 bpm * 2 beats at 48 kHz = 64000 frames).
                 "SetTranspose inst=0 semitones=-12",
-                "SetPattern inst=0 events=2 length_samples=64000 base_note=Some(60) in_key=true",
                 "SetPatternLength inst=0 beats=2.0",
+                "SetPattern inst=0 events=2 length_samples=64000 base_note=Some(60) in_key=true",
                 "SetPatternEnabled inst=0 enabled=true",
                 "SetPatternLooping inst=0 looping=false",
                 // A lane with no plugin is still a lane.
@@ -2009,8 +2010,8 @@ mod_rate = 7
             [
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
-                "SetPattern inst=0 events=2 length_samples=115200 base_note=Some(60) in_key=false",
                 "SetPatternLength inst=0 beats=4.0",
+                "SetPattern inst=0 events=2 length_samples=115200 base_note=Some(60) in_key=false",
                 "SetPatternEnabled inst=0 enabled=false",
                 "SetGlobalBpm bpm=100.0",
             ]

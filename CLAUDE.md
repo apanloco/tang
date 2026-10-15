@@ -707,7 +707,8 @@ velocity = 0
 
 - `bpm` — the tempo the pattern was recorded at: its length in frames is `length_beats` counted in it (default: 120). It is not the
   session's tempo (see "Tempo"): setting that, with `b`, does not change a pattern that has been recorded
-- `length_beats` — pattern length in beats (default: 4 = 1 bar in 4/4)
+- `length_beats` — pattern length in beats (default: 4 = 1 bar in 4/4). The Length row of the pane sets it: the pattern that is there loops at the new
+  length from then on (its notes stay where they are, and those that the loop no longer reaches wait for it to be long again), and the next recording is that long
 - `base_note` — reference note for transposition (set to the lowest recorded
   note)
 - `events` — recorded MIDI events with `frame` (sample offset), `status`
