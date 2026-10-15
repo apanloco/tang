@@ -3249,7 +3249,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
   - **Found on the way (34.9).** The matrix found a test helper whose type was too complex for clippy and two fields of a test's structs that were only there to be dropped. The test of the order of the drops at shutdown could not tell whether
     the history had been let go of (it said the order of the devices and the plugin, which holds either way): it has a subscriber now, which is dropped after the plugin runtime, to be told from. The controller's layout of the
     telemetry lists a cable by its modulator's place in the rack and the mock engine's lists one that is drawn after the others (f114): a cable of an earlier modulator is told in another order, which no reader depends on, and the
-    fixture's scripts draw from the last modulator of the rack. TODO: the mock could keep the layout in the rack's order.
+    fixture's scripts draw from the last modulator of the rack. TODO: the mock could keep the layout in the rack's order. (Done in step 39, which closed f114: `withEntry`.)
   - **34.10 as built (ecd8116).** The audio thread hands a lane back whole and puts it back: `RemoveInstrument { keep: Option<Sender<KeptLane>> }` (`hand_back_lane`: a `try_send`, and the plugins by the return channel,
     as always, if there is none, nobody listens or it is full) and `InsertInstrument { index, lane }` (the pattern players are told their places, a member tells its group's cables to the members from its place on their
     ordinals, what the lane counted as held and what its pattern was playing is forgotten, a group that is not there is no group); `KeptLane::take_plugins` and `put_plugins` (a lane that gave up its plugins is turned away
@@ -3287,7 +3287,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     held while a lane or a group's member is taken out is not released in its instrument when it comes back (TODO: an all-notes-off). Cables that drive each other's depths (only a file can make them) are not put back, and the removal forgets
     the history. What the TUI does to the structure with no intent (`clear_instrument`, `set_instrument`, the order of the lanes) forgets the history too, and its own edits that have no intent (the pattern, the tempo, the Type row) are not in it. The TUI has no key that takes a
     single cable out. The undo of a removal gives back the slots of the telemetry the nodes had, and the redo of an add makes new ones (4,096 of them, never reused). The controller's layout of the telemetry and the mock engine's list a
-    cable drawn later in another order (f114), which no reader depends on. Only Chromium was tried, and what the audio thread did was checked through the master's meter on the null backend and by the tests' own graphs, never on a sound card.
+    cable drawn later in another order (f114; the mock lists it where the controller does since step 39), which no reader depends on. Only Chromium was tried, and what the audio thread did was checked through the master's meter on the null backend and by the tests' own graphs, never on a sound card.
   - **Tests.** Rust: 145 more than at the end of step 33 in the default configuration (1267 against 1122), and the same 145 in each of the others (1425 with `web`, 1262 and 1418 without the default plugin formats); the real program's
     22 and the shell's 3 as before. Web: 1523 in 74 files (1491 in 73); 73 in browsers (68). The mutations of each part are in its entry above.
   - **Numbers at the end of the step.** Rust 1267 tests, 1425 with the `web` feature and 22 on the real program, 1262 without the default plugin formats and 1418 with `web`, and 3 of the shell's in each; web 1523 in 74 files; 73 in
@@ -3450,6 +3450,45 @@ Each step is a reviewable change; the TUI must not regress at any point.
     checked); 3 of the CSS, one caught and two `nowrap` rules that made no difference and are not there.
   - **Numbers at the end of the step.** Rust 1299 tests, 1457 with the `web` feature and 22 on the real program, 1294 without the default plugin formats and 1450 with `web`, and 3 of the shell's in each; web 1658 tests in 80 files;
     106 in browsers; 338 commits on the branch before this entry.
+
+- [x] **39. A cable to a modulator's own setting is seen on the setting (phase 1).** An envelope drawn to the rate of an LFO moves the rate, and the knob of the rate showed nothing of it, where a parameter's knob has a ring (how far the
+  cables that end at it can take it) and a dot (where the engine has it); the user reported it ("if I connect an ADSR cable to for example Rate on LFO, I dont see the same visuals on that Rate-knob", f132). The slider of a cable whose
+  depth another cable drives showed the depth that was set, for the same reason (f118, from step 36). The cause was one fact: a cable to a modulator's own field had no slot of telemetry (`ModTargetKind::has_effective_value` was false for it),
+  so the engine published nothing for it, the layout named nothing and the mock engine had nothing to draw. *Done when:* the engine publishes what a setting was set to, into the slot of each cable that drives it; every cable has a slot, and
+  the layout names the value at the port the cable ends at; the mock engine does as the controller does; the knob of a rate and of the stages of an envelope has the ring and the dot, and the slider of a driven depth a bar; and on the real
+  program the dot of the Rate knob follows the real envelope while a note is held. In parts, each its own commit: **39.1** the engine, **39.2** the model and the mock engine, **39.3** the page. *Not done (later steps):* a ring for the depth
+  slider (the bar says where the depth is, not how far the cables that drive it can take it), and the mock engine's slot for a value that two cables drive when the first is taken out (f109, which now holds for a setting too).
+  - **39.1 as built (c5ce0f5).** `apply_cross_mod` takes the telemetry and, once every write is applied, `publish_cross_mod_effective` stores the value each driven setting has into the slot of each cable that drives it: the last write
+    when several cables drive one setting (the writes are last-wins, as `apply_cross_mod` has always had them), nothing for a cable to a setting its modulator has not (an envelope has no rate) or to its own. The cables of a group's modulators to
+    the modulators of its members are published after the lanes have run (`publish_group_member_mod_effective`), since a member's own cross-mod is applied inside the lane, after the group's, and wins: what is published is what the setting
+    ends up as. `sibling_field` is the one mapping from a cable to the setting it drives (the application had it inline) and `cross_mod_field_value` reads a setting. Dormant until the model gave these cables a slot (39.2). 8 tests added
+    and the one that said a cross-mod target publishes nothing replaced; the audio thread still does not allocate with cables of each kind; 14 mutations, all caught (the first run had a survivor, a test whose slot held 0.0 already).
+  - **39.2 as built (5be3a9c).** `has_effective_value` is gone, with no other reader: `Controller::add_target` and the loader's two sites (a lane's modulators and a group's) allocate a slot for every target, and `check_ids` claims it for
+    each (a cable without one, or sharing one, is noticed). The layout names the value at the port the cable ends at (`rate`, `attack`, ..., or the `depth` of the cable that is driven), which `aim` already mapped: its code needed no change,
+    its test names three more entries. The fixtures that hold the layout (`groups.json`, `history.json`) are regenerated: entries added and slots shifted. The mock engine does it as the controller does: a cable to a setting takes a slot
+    and its value an entry unless another cable drives it already, where the controller lists it (the lanes' targets before the groups', by the place of the modulator: `withEntry`, which the cables to parameters use too, with one tail,
+    `withDrawnCable`, for both); the value is what the engine's last write is (`#settingEffective`: each cable from the value the user set, an envelope rising to it, anything else offsetting it, clamped to the range, the last one standing);
+    and `paramKey` became `aimKey`, which keys every port, so that taking out the last cable that drives a setting takes its entry out. Rust: 1 test added and 6 changed to say that a cable to a setting has a slot. Vitest: 10 added.
+    Mutations: 17 of the mock's code and 5 of the controller's, the loader's and `check_ids`, all caught after a first run of the mock's that had 5 survivors (tests for an LFO as the source, for each stage and for the depths of two
+    cables took them down to 3: two were dead code, an `aimed ?` that the next line made redundant and the place of a cable among its modulator's, which a cable that is drawn last and a modulator that cannot drive a value twice make
+    irrelevant, and are gone; the third was a missing test for the order of lanes and groups).
+  - **39.3 as built (9d74698).** `modulationsAt(graph, node, port)` is `modulationsOn` for any place; `settingExtent` is the extent of the last cable alone (D41). `ModulatorFieldControl` gives its knob the ring (`modulation`) and the dot
+    (`readEffective`, the slot named at the setting's own port), as `ParamControl` does, and does not render again for the telemetry. `CableDepthControl` finds the modulator its cable starts at (`cableSourceOf`: the layout names the value of
+    a depth there) and, when another cable ends at the depth, puts a centred `LiveBar` (-100 % to 100 %, "Depth of X, as modulated") under its slider, in a column (`.tang-depth__body`; the pill is 6 px taller then). Vitest: 23 added. Browser:
+    2 on the real program (`e2e/settingmod.spec.ts`): an envelope drawn to the LFO's rate gives the knob a ring, a dot at 0.255 Hz at rest, at 0.4265 Hz with a note held (the sustain, 0.7) and back on the release, while the knob stays at
+    0.5 Hz; the same for the depth of the LFO's cable (-0.3, 0.19, -0.3, the slider at 40 % all the while). 17 mutations of the helpers, the controls and the selector, all caught at the first run; 3 of the page on the real program (no
+    dot, no ring, a depth that is never driven), all caught. Looked at in Chromium on the real program, at rest and with a note held (the ring a short arc over the track, the dot at the end of it and then near the pointer; the bar a small
+    block on either side of the middle).
+  - **Found on the way.** f114 (the mock lists a cable drawn from an earlier modulator after the others, where the controller lists it by its modulator's place in the rack) is closed: `withEntry` is the rack's order, and the history fixture
+    pins it (its replay alone catches the three mutations of that order: the entry put after, the place of the modulator ignored, groups before lanes); the note in the
+    fixture's script that said the mock lists it after the others is gone. The mock's `without` knew only the entries of parameters, which could not matter until a setting had one.
+  - **Limits, as built.** The ring of a setting is that of the last cable by the order of the graph's edges, which is the engine's order (a group's cables, then a lane's, each modulator's in its rack's order): a client that was told the cables
+    in another order would draw another ring. A MIDI control that is not bound, last of the cables, leaves no ring (it writes the set value over the others, D41). The depth slider has a bar and no ring (a TODO in CLAUDE.md), and the bar's scale is
+    the whole width of the slider while the thumb's travel is inset by half a thumb at each end: a depth near either end puts the bar's end a few pixels past the thumb's centre, as the panel's rows have it. The telemetry is 30 values
+    a second: a setting driven by a modulator faster than 15 Hz aliases in the dot, as the trace of an LFO does. The mock engine keeps the slot of the first cable when two drive one value and the first goes (f109). Only Chromium was tried.
+  - **Tests.** Rust: the engine's 8 and the model's 1 more in each configuration, and 7 changed. Web: 1698 in 80 files (1665 at the end of 39.1); 110 in browsers (108). The mutations of each part are in its entry above.
+  - **Numbers at the end of the step.** Rust 1336 tests, 1495 with the `web` feature and 22 on the real program, 1331 without the default plugin formats and 1482 with `web`, and 3 of the shell's in each; web 1698 tests in 80 files;
+    110 in browsers; 359 commits on the branch before this entry.
 
 ## 13. Later: track B (`builtin:patch`)
 

@@ -4759,8 +4759,6 @@ size = 0.5
         scripts.push((
             "the cables that drive an effect, and the one that drives the depth of one of them, go with it and come back with it",
             vec![
-                // (From the last modulator of the rack: the layout of the telemetry lists a cable by its modulator's place in the rack, where the mock engine lists
-                // it after the others, so a cable of an earlier modulator is told in another order.)
                 cable(envelope, filter_fx, resonance),
                 cable(envelope, filter_fx, cutoff),
                 drive_depth(lfo, envelope, fresh_edge(0)),
