@@ -65,7 +65,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
         }
 
         C::AddInstrument { range } => format!("AddInstrument range={range:?}"),
-        C::RemoveInstrument { inst } => format!("RemoveInstrument inst={inst}"),
+        C::RemoveInstrument { inst, keep } => format!("RemoveInstrument inst={inst}{}", if keep.is_some() { " keep" } else { "" }),
+        C::InsertInstrument { index, lane } => format!("InsertInstrument index={index} plugins={}", lane.plugin_count()),
         C::ClearInstrument { inst } => format!("ClearInstrument inst={inst}"),
         C::SwapInstruments { inst_a, inst_b } => format!("SwapInstruments a={inst_a} b={inst_b}"),
         C::SetLaneGroup { inst, group } => format!("SetLaneGroup inst={inst} group={group:?}"),

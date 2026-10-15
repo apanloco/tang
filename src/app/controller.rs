@@ -661,7 +661,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
+        let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst, keep: None });
         self.model.remove_lane(inst);
         true
     }
