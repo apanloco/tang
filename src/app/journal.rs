@@ -18,6 +18,9 @@
 //!
 //! An instrument that another one replaces is taken out of its lane as an effect is taken out of a chain (`SwapInstrument { keep }`), and put back by another swap,
 //! with the lane's note remap, which goes with the instrument it was for; the cables that drove the old instrument's parameters went before it.
+//!
+//! A preset that is loaded overwrites what the plugin has (the preset it had and its parameters' values and baselines), and stays in the plugin: what it overwrote is written
+//! down as it goes (`Inverse::Preset`), and undo has the audio thread load the preset it had again and gives each of the rows it overwrote its value.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -25,7 +28,7 @@ use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::app::apply::Done;
+use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
 use crate::app::model::{mod_source_slot_to_graph, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
@@ -54,6 +57,9 @@ pub(super) enum Inverse {
     /// The instrument of a lane (by its node) that another one replaced, or none, for a lane that had no instrument and has been filled: undo gives the lane what it had, and
     /// empties it if it had nothing. (The cables that drove the old instrument's parameters went before it, each written down as a cable, and come back after it.)
     Instrument { lane: NodeId, before: Option<Replaced> },
+    /// The preset that a plugin (by its node: a lane's instrument or one of its effects) had before another was loaded, and the rows that the load overwrote (`rows_a_preset_changes`):
+    /// undo has the audio thread load the preset again, if it has one by that name, and gives the rows back what they had.
+    Preset { node: NodeId, preset: Option<String>, rows: Vec<RowBefore> },
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
@@ -77,6 +83,14 @@ impl<T> fmt::Debug for Kept<T> {
             Kept::Nothing => "Kept::Nothing",
         })
     }
+}
+
+/// A row of a plugin's parameters as the model had it before a preset was loaded: the value, and what it is compared with when the file is saved.
+#[derive(Debug)]
+pub(super) struct RowBefore {
+    pub(super) index: u32,
+    pub(super) value: f32,
+    pub(super) default: f32,
 }
 
 /// An instrument that was taken out of its lane by a replacement: the model's plugin (its values, its preset, its pins), the lane's note remap, which goes with the
@@ -362,6 +376,11 @@ impl Controller {
                         return Err(IntentError::Invalid(format!("node {} is not there to have its instrument put back", lane.0)));
                     }
                 }
+                Inverse::Preset { node, .. } => {
+                    if self.lane_plugin_of(*node).is_none() {
+                        return Err(IntentError::Invalid(format!("node {} is not there to have its preset put back", node.0)));
+                    }
+                }
                 Inverse::NoWayBack => {}
             }
         }
@@ -395,6 +414,17 @@ impl Controller {
         // (Nothing was taken out by this.)
         self.taken_last = Journal::default();
         Ok(self.conclude(Done::Restructured))
+    }
+
+    /// Where the plugin of `node` is, if the node is a lane's instrument or one of its effects and the plugin is there (a lane that has no instrument is a node, and a bus effect has
+    /// no presets to load).
+    fn lane_plugin_of(&self, node: NodeId) -> Option<PluginAt> {
+        let at = self.locate_plugin(node).ok()?;
+        match at {
+            PluginAt::Lane { inst, slot: 0 } => self.model.instruments.get(inst)?.instrument.is_some().then_some(at),
+            PluginAt::Lane { .. } => Some(at),
+            PluginAt::Bus { .. } => None,
+        }
     }
 
     /// Refused if the modulator's node, or the id of one of its cables, is in use.
@@ -509,6 +539,27 @@ impl Controller {
                         let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
                     }
                     Some(_) => {}
+                }
+            }
+            Inverse::Preset { node, preset, rows } => {
+                let Some(at) = self.lane_plugin_of(node) else { return };
+                let PluginAt::Lane { inst, slot } = at else { return };
+                let Some(plugin) = self.plugin_at(&at) else { return };
+                // The model has the preset it had and the rows as they were; the preset is loaded again on the audio thread if the plugin still has one by that name (a name that a
+                // session file gave and the plugin has not is kept as the name), and then each row is given its value, whatever the preset made of it.
+                let preset_id = preset.as_ref().and_then(|name| plugin.presets.iter().find(|candidate| candidate.name == *name)).map(|found| found.id.clone());
+                plugin.current_preset = preset;
+                for before in &rows {
+                    if let Some(row) = plugin.params.iter_mut().find(|row| row.index == before.index) {
+                        row.value = before.value;
+                        row.default = before.default;
+                    }
+                }
+                if let Some(preset_id) = preset_id {
+                    let _ = self.cmd_tx.send(GraphCommand::LoadPreset { inst, slot, preset_id });
+                }
+                for before in rows {
+                    let _ = self.cmd_tx.send(GraphCommand::SetParameter { inst, slot, param_index: before.index, value: before.value });
                 }
             }
             // (`rewind` has every plugin, every lane and every group in hand by now.)

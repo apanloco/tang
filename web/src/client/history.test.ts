@@ -332,6 +332,34 @@ describe("what a removal of a lane is to the history", () => {
   });
 });
 
+describe("what loading a preset is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const reverb = snapshot.graph.nodes.find((n) => n.kind === "effect" && n.name === "Reverb");
+  const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument");
+  const bus = snapshot.graph.nodes.find((n) => n.kind === "effect" && snapshot.graph.nodes.find((m) => m.id === n.parent)?.kind === "group");
+  const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+  if (!reverb || !lane || !bus || !group) throw new Error("the fixture has a reverb, a lane, a bus effect and a group");
+  const load = (node: number, preset = "plate"): Intent => ({ type: "loadPreset", node, preset });
+
+  test("is a step that is made when it is carried out, in the words of the preset by the name the plugin has for it", () => {
+    expect(plan(load(reverb.id))).toEqual({ removed: { label: "load preset Vintage Plate", intent: load(reverb.id), at: 7 } });
+    expect(plan(load(reverb.id, "room"))).toEqual({ removed: { label: "load preset Small Room", intent: load(reverb.id, "room"), at: 7 } });
+  });
+
+  test("is no step for a plugin that has no such preset, an instrument that has no presets, a bus effect, a node that has no plugin or one that is not there, which are refused", () => {
+    expect(plan(load(reverb.id, "no-such"))).toBe("nothing");
+    expect(plan(load(reverb.id, "Vintage Plate")), "a name, and not an id").toBe("nothing");
+    expect(plan(load(lane.id))).toBe("nothing");
+    expect(plan(load(bus.id))).toBe("nothing");
+    expect(plan(load(group.id))).toBe("nothing");
+    expect(plan(load(9_999))).toBe("nothing");
+    // (A bus effect that has presets: the plugin could load one, and the controller does not let it.)
+    const nodes = snapshot.graph.nodes.map((n) => (n.id === bus.id && n.kind === "effect" && reverb.kind === "effect" ? { ...n, name: "Reverb", plugin: reverb.plugin } : n));
+    expect(plan(load(bus.id), { ...snapshot, graph: { ...snapshot.graph, nodes } })).toBe("nothing");
+  });
+});
+
 describe("what putting an instrument in a lane is to the history", () => {
   const snapshot = historyFixture.snapshot;
   const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
@@ -636,6 +664,36 @@ describe("the mock engine's undo of what is taken out", () => {
     server.apply({ type: "redo" });
     server.apply({ type: "undo" });
     expect(pieces(server), "as it was before the removal, which is how the add made it the second time").toBe(added);
+  });
+
+  test("puts the values of a plugin back, with the preset it had, by undo, and loads the preset again by redo", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    const reverb = historyFixture.snapshot.graph.nodes.find((n) => n.kind === "effect" && n.name === "Reverb");
+    if (!reverb) throw new Error("the fixture has a reverb");
+    const before = pieces(server);
+    server.apply({ type: "loadPreset", node: reverb.id, preset: "plate" });
+    const after = pieces(server);
+    expect(after).not.toBe(before);
+    expect(labels(server)).toEqual(["load preset Vintage Plate", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    expect(labels(server)).toEqual(["lock the piano to its scale", "load preset Vintage Plate"]);
+    server.apply({ type: "redo" });
+    expect(pieces(server)).toBe(after);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+  });
+
+  test("leaves the history as it was for a preset that is refused", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    const reverb = historyFixture.snapshot.graph.nodes.find((n) => n.kind === "effect" && n.name === "Reverb");
+    if (!reverb) throw new Error("the fixture has a reverb");
+    const before = labels(server);
+    expect(() => server.apply({ type: "loadPreset", node: reverb.id, preset: "no-such" })).toThrow();
+    expect(() => server.apply({ type: "loadPreset", node: lane0, preset: "plate" })).toThrow();
+    expect(labels(server)).toEqual(before);
   });
 
   test("puts an instrument back, with the cables that drove it and the layout of the telemetry it had, by undo, and puts another in again by redo", () => {
@@ -943,8 +1001,9 @@ describe("the mock engine's history", () => {
       "addGroup",
       "setLaneGroup",
       "replaceInstrument",
+      "loadPreset",
     ];
-    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeNode"];
+    const barriers: Intent["type"][] = ["addGroup", "setLaneGroup", "removeNode"];
     const kinds: Intent["type"][] = [...undoable, ...barriers, "undo", "redo"];
     for (const type of kinds) expect(intents.has(type), type).toBe(true);
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));

@@ -3622,6 +3622,8 @@ mod with_web {
                 tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "loadPreset", "node": reverb, "preset": "cathedral"}})).await;
                 let event = said(&mut client).await;
                 assert_eq!(event["event"]["type"], "presetLoaded");
+                // A step of its own, in the words of the preset.
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "load preset Cathedral", "redo": null}));
                 assert_eq!(said(&mut client).await["type"], "ack");
                 browser.quit().await;
             },
@@ -4893,6 +4895,33 @@ mod undo_and_redo {
         ctrl_y(&mut h);
         assert!(h.s.ctl.model.groups.is_empty(), "taken out again");
         h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(shape(&h), before);
+    }
+
+    #[test]
+    fn choosing_a_preset_is_a_step_that_ctrl_z_puts_back_with_the_preset_and_the_values_the_reverb_had_and_ctrl_y_loads_again() {
+        let mut h = Harness::new(PRESET_SCENE);
+        // The reverb, with the preset it has and a value set over it, as they are: what a preset that is put back has to leave as it was.
+        let reverb = h.s.ctl.model.instruments[0].effects[0].node;
+        h.s.ctl.apply(Intent::SetParam { node: reverb, param: 2, value: 0.9 }).unwrap();
+        let shape = |h: &Harness| format!("{:?}", h.s.ctl.model.instruments[0].effects[0]);
+        let before = shape(&h);
+        h.commands();
+        h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+        h.press(KeyCode::Char('p')).type_chars("cathed").press(KeyCode::Enter);
+        assert_eq!(h.commands(), ["LoadPreset inst=0 slot=1 id=cathedral"]);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("load preset Cathedral"));
+        let loaded = shape(&h);
+        assert_ne!(loaded, before);
+        ctrl_z(&mut h);
+        let commands = h.commands();
+        // The preset it had is loaded again, and then the values: the ten of the reverb, the one that was set among them.
+        assert_eq!(commands.first().map(String::as_str), Some("LoadPreset inst=0 slot=1 id=plate"), "{commands:?}");
+        assert!(commands.contains(&"SetParameter inst=0 slot=1 param=2 value=0.900".to_string()), "{commands:?}");
+        assert_eq!(shape(&h), before, "the preset and the values the reverb had, and what they are compared with");
+        ctrl_y(&mut h);
+        assert_eq!(shape(&h), loaded, "loaded again");
         ctrl_z(&mut h);
         assert_eq!(shape(&h), before);
     }

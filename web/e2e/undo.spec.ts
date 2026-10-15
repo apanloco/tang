@@ -90,15 +90,18 @@ test("a key typed in a field that takes text is the field's own undo and not the
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
   await expect(undo).toBeEnabled();
 
-  // An effect that is added is a step of its own; a preset that is loaded is a change that nothing puts back yet, and it empties the history: there is nothing
-  // to undo, and the keys leave Control+Z alone.
+  // An effect that is added is a step of its own, and so is a lane that is put in a group; a group made of a lane that is in one is a change that nothing puts back yet (the
+  // lane leaves its group), and it empties the history: there is nothing to undo, and the keys leave Control+Z alone.
   await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Reverb" }).click();
   await expect(node(page, "Reverb")).toBeVisible();
   await expect(undo).toHaveAccessibleName("Undo add Reverb");
-  await page.getByRole("button", { name: "Load a preset into Reverb" }).click();
-  await page.getByRole("menuitem", { name: "Small Room" }).click();
-  await expect(node(page, "Reverb").getByRole("slider", { name: "decay" })).toHaveAttribute("aria-valuenow", "0.55");
+  await page.getByRole("button", { name: "Add a group" }).click();
+  await expect(node(page, "Group 1")).toBeVisible();
+  const inGroup = page.getByRole("combobox", { name: "Group of Oscillator" });
+  await inGroup.selectOption({ label: "Group 1" });
+  await expect(undo).toHaveAccessibleName("Undo put a lane in a group");
+  await inGroup.selectOption({ label: "new group" });
   await expect(undo).toBeDisabled();
   await detune.focus();
   await page.keyboard.press("ControlOrMeta+Z");
@@ -431,6 +434,63 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   await expect(undo).toBeDisabled();
 });
 
+test("a preset that is loaded is put back by Undo with the preset and the values the plugin had, and loaded again by Redo, and the saved file has what is done", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  const save = async (): Promise<string> => {
+    await page.getByRole("button", { name: /^Save/ }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+
+  // A reverb (the tracer has none) with a preset loaded and a value set over it: what comes back is the plugin as it was, and not as a preset leaves it.
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  const decay = node(page, "Reverb").getByRole("slider", { name: "decay" });
+  await page.getByRole("button", { name: "Load a preset into Reverb" }).click();
+  await page.getByRole("menuitem", { name: "Vintage Plate" }).click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.8");
+  await expect(undo).toHaveAccessibleName("Undo load preset Vintage Plate");
+  await decay.focus();
+  await page.keyboard.press("End");
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.99");
+  const before = await save();
+  expect(before).toContain('preset = "Vintage Plate"');
+
+  // Another preset is a step of its own: it has its values, and the one that was set over the first is gone.
+  await page.getByRole("button", { name: "Load a preset into Reverb" }).click();
+  await page.getByRole("menuitem", { name: "Small Room" }).click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.55");
+  await expect(undo).toHaveAccessibleName("Undo load preset Small Room");
+  const loaded = await save();
+  expect(loaded).toContain('preset = "Small Room"');
+  expect(loaded).not.toContain("Vintage Plate");
+
+  // Put back by Undo: the preset it had, and the decay set over it, and the file is the one that was saved before it was loaded.
+  await undo.click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.99");
+  await expect(undo).toHaveAccessibleName("Undo set decay");
+  await expect(redo).toHaveAccessibleName("Redo load preset Small Room");
+  expect(await save()).toBe(before);
+
+  // Loaded again by Redo, and put back by the keys; then what was done before it is put back, one step at a time.
+  await redo.click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.55");
+  expect(await save()).toBe(loaded);
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.99");
+  await undo.click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.8");
+  await undo.click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.88");
+  await undo.click();
+  await expect(node(page, "Reverb")).toHaveCount(0);
+  await expect(undo).toBeDisabled();
+});
+
 test("an instrument that is replaced is put back by Undo with the values it had and the cable that drove it, and replaced again by Redo, and the saved file has what is done", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
@@ -560,9 +620,26 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(depth).toHaveValue("0.4");
   await redo.click();
   await expect(node(page, "Filter")).toHaveCount(0);
-  // And an instrument that is replaced, with the cables that drove it.
+  // And a preset that is loaded, with the values the plugin had.
   await undo.click();
   await expect(node(page, "Filter")).toBeVisible();
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  const decay = node(page, "Reverb 2").getByRole("slider", { name: "decay" });
+  const first = (await decay.getAttribute("aria-valuenow")) ?? "";
+  await page.getByRole("button", { name: "Load a preset into Reverb 2" }).click();
+  await page.getByRole("menuitem", { name: "Small Room" }).click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.55");
+  await expect(undo).toHaveAccessibleName("Undo load preset Small Room");
+  await undo.click();
+  await expect(decay).toHaveAttribute("aria-valuenow", first);
+  await redo.click();
+  await expect(decay).toHaveAttribute("aria-valuenow", "0.55");
+  // And an instrument that is replaced, with the cables that drove it. (The canvas went to the reverb that was added: the whole of it is in the view again.)
+  await undo.click();
+  await undo.click();
+  await expect(node(page, "Reverb 2")).toHaveCount(0);
+  await page.locator(".react-flow__controls-fitview").click();
   const waveform = node(page, "Oscillator").getByRole("combobox", { name: "waveform" });
   await expect(waveform).toHaveValue("3");
   await page.getByRole("button", { name: "Change the instrument of Oscillator" }).click();

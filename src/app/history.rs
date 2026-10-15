@@ -489,8 +489,15 @@ impl Controller {
                 // (A node that is no lane, or a plugin that the catalog does not name, is refused, and the plan is not looked at.)
                 _ => Plan::Nothing,
             },
-            // Nothing puts this back yet.
-            Intent::LoadPreset { .. } => Plan::Barrier,
+            // A preset that is loaded overwrites the values of the plugin and the preset it had: undo has the preset loaded again and gives the values back (a step in the words of the
+            // preset, by the name the plugin has for the id). A node that has no such plugin, a bus effect (which has no presets to load) and an id the plugin lacks are refused.
+            Intent::LoadPreset { node, preset } => match self.model.locate(*node) {
+                Some(NodePath::Instrument(_) | NodePath::Effect { .. }) => self
+                    .plugin_slot(*node)
+                    .and_then(|plugin| plugin.presets.iter().find(|candidate| candidate.id == *preset))
+                    .map_or(Plan::Nothing, |found| Plan::Removed { label: format!("load preset {}", found.name), intent: intent.clone(), at: now }),
+                _ => Plan::Nothing,
+            },
         }
     }
 
@@ -1755,16 +1762,6 @@ rate = 3.0
             assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "{what}");
             clock.advance(Duration::from_secs(5));
         }
-    }
-
-    #[test]
-    fn a_preset_that_is_loaded_empties_the_history_too() {
-        let (_engine, mut ctl, _clock) = controller();
-        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
-        let preset = ctl.model.instruments[0].effects[0].presets[0].id.clone();
-        set_detune(&mut ctl, 1.0);
-        ctl.apply(Intent::LoadPreset { node: reverb, preset }).unwrap();
-        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
     }
 
     #[test]
@@ -4248,6 +4245,186 @@ plugin = "builtin:reverb"
         assert!(engine.drain().0.is_empty(), "nothing was sent");
     }
 
+    // -- a preset that is loaded is put back --
+
+    /// Two lanes with a reverb each, and a reverb on the bus of the group that the first is in. The first has a preset loaded and a value set over it, and three cables drive it: two of its
+    /// lane's modulator and one of its group's; the second has no preset, a value set, and nothing drives it.
+    const PRESETS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+slot = 1
+param = "decay"
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+preset = "Cathedral"
+[instrument.effect.params]
+damping = 0.3
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "damping"
+depth = 0.2
+[[instrument.modulator.target]]
+slot = 1
+param = "width"
+depth = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[instrument.effect.params]
+size = 0.5
+"#;
+
+    /// The values of the ten parameters of the reverb in the first place of lane `inst`'s chain, as the plugin on the audio thread says them.
+    fn live_reverb(graph: &mut crate::plugin::chain::AudioGraph, inst: usize) -> Vec<Option<f32>> {
+        (0..10).map(|param| graph.plugin_parameter(inst, 1, param)).collect()
+    }
+
+    #[test]
+    fn every_preset_loaded_into_every_reverb_is_put_back_by_undo_with_the_preset_the_values_and_the_centres_of_the_cables_it_had() {
+        let presets = controller_over_an_audio_thread(PRESETS).0.model.instruments[0].effects[0].presets.clone();
+        assert_eq!(presets.len(), 5);
+        for lane in 0..2 {
+            for preset in &presets {
+                // (Each in a controller of its own, after a step of another kind, which the load leaves in the history.)
+                let (mut ctl, mut graph) = controller_over_an_audio_thread(PRESETS);
+                ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+                let reverb = node(&ctl, NodePath::Effect { inst: lane, index: 0 });
+                let (slot_of, name) = (|ctl: &Controller| format!("{:?}", ctl.model.instruments[lane].effects[0]), format!("lane {lane}, {}", preset.name));
+                let before = (everything_as_it_is(&ctl, &graph), slot_of(&ctl), written(&ctl), live_reverb(&mut graph, lane));
+                ctl.apply(Intent::LoadPreset { node: reverb, preset: preset.id.clone() }).unwrap();
+                graph.drain_commands();
+                let taken = (everything_as_it_is(&ctl, &graph), slot_of(&ctl), written(&ctl), live_reverb(&mut graph, lane));
+                assert_ne!(taken.1, before.1, "{name}: the model has the preset");
+                assert_ne!(taken.3, before.3, "{name}: the plugin has the preset");
+                let words = format!("load preset {}", preset.name);
+                assert_eq!(undo_label(&ctl), Some(words.clone()), "{name}");
+                ctl.undo().unwrap();
+                graph.drain_commands();
+                assert_same_everything(&everything_as_it_is(&ctl, &graph), &before.0, &format!("{name} put back"));
+                assert_eq!(slot_of(&ctl), before.1, "{name}: the plugin's slot in the model, its values and what they are compared with, and its preset");
+                assert_eq!(written(&ctl), before.2, "{name}: the file");
+                assert_eq!(live_reverb(&mut graph, lane), before.3, "{name}: the values on the audio thread");
+                assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), Some(words.clone())), "{name}");
+                ctl.redo().unwrap();
+                graph.drain_commands();
+                assert_same_everything(&everything_as_it_is(&ctl, &graph), &taken.0, &format!("{name} loaded again"));
+                assert_eq!((slot_of(&ctl), written(&ctl), live_reverb(&mut graph, lane)), (taken.1.clone(), taken.2.clone(), taken.3.clone()), "{name}: loaded again");
+                ctl.undo().unwrap();
+                graph.drain_commands();
+                assert_same_everything(&everything_as_it_is(&ctl, &graph), &before.0, &format!("{name} put back again"));
+                assert_eq!((slot_of(&ctl), live_reverb(&mut graph, lane)), (before.1.clone(), before.3.clone()), "{name}: put back again");
+            }
+        }
+    }
+
+    #[test]
+    fn undoing_a_preset_loads_the_preset_the_plugin_had_again_and_gives_back_each_value_that_the_preset_changed_or_the_user_had_set() {
+        let (engine, mut ctl, _clock) = controller_over(load(PRESETS).model);
+        let (first, second) = (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), node(&ctl, NodePath::Effect { inst: 1, index: 0 }));
+        engine.drain();
+        // The first reverb has Cathedral, and a damping of 0.3 that the user set over it. Another preset is loaded over both: the audio thread loads it.
+        ctl.apply(Intent::LoadPreset { node: first, preset: "plate".to_string() }).unwrap();
+        assert_eq!(engine.drain().0, ["LoadPreset inst=0 slot=1 id=plate"]);
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        // Undo has the audio thread load Cathedral again, and then gives each of the ten values back that Plate changed (all of them), the user's damping among them, the first parameters first.
+        assert_eq!(commands.len(), 11, "{commands:?}");
+        assert_eq!(commands[0], "LoadPreset inst=0 slot=1 id=cathedral");
+        assert_eq!(commands[3], "SetParameter inst=0 slot=1 param=2 value=0.300", "the damping the user set, and not the 0.55 that Cathedral has");
+        assert_eq!(commands[1], "SetParameter inst=0 slot=1 param=0 value=0.960");
+        assert_eq!(commands[10], "SetParameter inst=0 slot=1 param=9 value=0.800");
+        // The second has no preset: none is loaded again, and the values go back one by one: the level, which the preset has as the plugin does, is not among them.
+        ctl.apply(Intent::LoadPreset { node: second, preset: "room".to_string() }).unwrap();
+        assert_eq!(engine.drain().0, ["LoadPreset inst=1 slot=1 id=room"]);
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands.len(), 9, "{commands:?}");
+        assert!(commands.iter().all(|command| command.starts_with("SetParameter inst=1 slot=1 param=")), "{commands:?}");
+        assert!(commands.contains(&"SetParameter inst=1 slot=1 param=1 value=0.500".to_string()), "the size the user set: {commands:?}");
+        assert!(!commands.iter().any(|command| command.contains("param=9")), "{commands:?}");
+    }
+
+    #[test]
+    fn a_preset_that_the_plugin_had_by_a_name_it_has_no_preset_of_is_not_loaded_again_and_the_values_go_back() {
+        let (engine, mut ctl, _clock) = controller_over(load(PRESETS).model);
+        let reverb = node(&ctl, NodePath::Effect { inst: 1, index: 0 });
+        // (A session file can say a preset that the plugin does not have, and it is the name the model keeps.)
+        ctl.model.instruments[1].effects[0].current_preset = Some("Gone".to_string());
+        let before = format!("{:?}", ctl.model.instruments[1].effects[0]);
+        engine.drain();
+        ctl.apply(Intent::LoadPreset { node: reverb, preset: "room".to_string() }).unwrap();
+        assert_eq!(ctl.model.instruments[1].effects[0].current_preset.as_deref(), Some("Small Room"));
+        engine.drain();
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert!(commands.iter().all(|command| command.starts_with("SetParameter")), "no preset is loaded again: {commands:?}");
+        assert_eq!(format!("{:?}", ctl.model.instruments[1].effects[0]), before);
+    }
+
+    #[test]
+    fn a_preset_whose_plugin_is_gone_or_is_no_plugin_any_more_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        for what in ["the effect is gone", "its node is a group's", "its node is a bus effect's", "its node is a lane that has no instrument"] {
+            let (engine, mut ctl, _clock) = controller_over(load(PRESETS).model);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let reverb = node(&ctl, NodePath::Effect { inst: 1, index: 0 });
+            ctl.apply(Intent::LoadPreset { node: reverb, preset: "room".to_string() }).unwrap();
+            engine.drain();
+            // Something takes the effect out without the history, and then something else has its id: the group of the first lane, or the reverb of its bus, or the second lane, which has
+            // no instrument any more.
+            ctl.model.instruments[1].effects.remove(0);
+            match what {
+                "its node is a group's" => ctl.model.groups[0].node = reverb,
+                "its node is a bus effect's" => ctl.model.groups[0].effects[0].node = reverb,
+                "its node is a lane that has no instrument" => {
+                    ctl.model.instruments[1].node = reverb;
+                    ctl.model.instruments[1].instrument = None;
+                }
+                _ => {}
+            }
+            let before = picture(&ctl);
+            assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("node {} is not there to have its preset put back", reverb.0)), "{what}");
+            assert_eq!(picture(&ctl), before, "{what}");
+            assert!(engine.drain().0.is_empty(), "{what}: nothing was sent");
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "{what}: the step is gone, the one before it is next");
+        }
+    }
+
+    #[test]
+    fn a_preset_that_is_refused_leaves_no_step_and_the_history_as_it_was() {
+        let (_engine, mut ctl, _clock) = controller_over(load(PRESETS).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let (reverb, oscillator, group) = (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Group(0)));
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let before = ctl.history_state();
+        for (what, intent) in [
+            ("an id the plugin lacks", Intent::LoadPreset { node: reverb, preset: "no-such".to_string() }),
+            ("a name, not an id", Intent::LoadPreset { node: reverb, preset: "Cathedral".to_string() }),
+            ("an instrument without presets", Intent::LoadPreset { node: oscillator, preset: "room".to_string() }),
+            ("a bus effect, which has presets and does not load them", Intent::LoadPreset { node: bus, preset: "room".to_string() }),
+            ("a group", Intent::LoadPreset { node: group, preset: "room".to_string() }),
+            ("a node that is not there", Intent::LoadPreset { node: NodeId(424242), preset: "room".to_string() }),
+        ] {
+            // (The plan is no step either: what is refused is not looked at, but the plan says what it would be.)
+            assert!(matches!(ctl.plan_history(&intent), Plan::Nothing), "{what}");
+            assert!(ctl.apply(intent).is_err(), "{what}");
+            assert_eq!(ctl.history_state(), before, "{what}");
+        }
+    }
+
     /// A session of `count` lanes that have an oscillator each.
     fn lanes_of_oscillators(count: usize) -> String {
         "[[instrument]]\nplugin = \"builtin:osc\"\n".repeat(count)
@@ -4823,11 +5000,43 @@ plugin = "builtin:reverb"
             "an instrument that is refused changes nothing in the history",
             vec![set(detune, 1.0), replace(lane0, "builtin:reverb"), replace(reverb, "builtin:osc"), replace(ghost, "builtin:osc"), replace(lane0, "builtin:nothing"), undo()],
         ));
-        let preset = base.model.instruments[0].effects[0].presets[0].id.clone();
+        // A preset that is loaded overwrites the values of the plugin and the preset it had: undo gives them back.
+        let (damping, _) = param(&base, NodePath::Effect { inst: 0, index: 0 }, "damping");
+        let load_preset = |node: NodeId, preset: &str| Op::Do(Intent::LoadPreset { node, preset: preset.to_string() });
+        scripts.push((
+            "a preset that is loaded is put back by undo with the values the plugin had and loaded again by redo, and what was done before it is still to be undone",
+            vec![gain(reverb, Gain::Mix, 0.125), pause(), load_preset(reverb, "plate"), undo(), undo(), redo(), redo(), undo(), redo(), undo()],
+        ));
+        scripts.push((
+            "a preset over another goes back to the first, and a value that was set over it is put back with it",
+            vec![
+                load_preset(reverb, "room"),
+                Op::Do(Intent::SetParam { node: reverb, param: damping, value: 0.9 }),
+                load_preset(reverb, "cathedral"),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a preset that is refused leaves the history as it was: an id the plugin lacks, an instrument that has none, a bus effect, a group and a node that is not there",
+            vec![
+                set(detune, 1.0),
+                load_preset(reverb, "no-such"),
+                load_preset(reverb, "Cathedral"),
+                load_preset(lane0, "plate"),
+                load_preset(bus, "plate"),
+                load_preset(g0, "plate"),
+                load_preset(ghost, "plate"),
+                undo(),
+            ],
+        ));
         let barriers = [
             // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
             Intent::AddGroup { members: vec![lane0] },
-            Intent::LoadPreset { node: reverb, preset },
         ];
         let mut forgotten = Vec::new();
         for barrier in barriers {

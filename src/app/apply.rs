@@ -8,7 +8,7 @@
 use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
-use crate::app::journal::Journal;
+use crate::app::journal::{Inverse, Journal, RowBefore};
 use crate::app::model::{DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
@@ -25,7 +25,7 @@ pub(super) enum Done {
 }
 
 /// Where the audio thread finds the plugin an intent concerns.
-enum PluginAt {
+pub(super) enum PluginAt {
     /// A lane's instrument (slot 0) or one of its effects (slot 1..).
     Lane { inst: usize, slot: usize },
     /// One of a group's bus effects.
@@ -537,6 +537,14 @@ impl Controller {
         let _ = self.cmd_tx.send(GraphCommand::LoadPreset { inst, slot, preset_id: preset.id.clone() });
 
         let values = self.values_after_preset(&source, &preset.name);
+        // What the plugin has now, for undo to give back when an intent is carried out: the preset it has, and the values that the preset changes or that the user set over
+        // the ones it had (a preset that is loaded again would put its own over them), each with what it is compared with when the file is saved.
+        if self.journal.is_some() {
+            let before = self.plugin_at(&at).map(|plugin| Inverse::Preset { node, preset: plugin.current_preset.clone(), rows: rows_a_preset_changes(&plugin.params, values.as_deref()) });
+            if let Some(before) = before {
+                self.took_out(before);
+            }
+        }
         let mut mirrored = Vec::new();
         if let Some(plugin) = self.plugin_at(&at) {
             plugin.current_preset = Some(preset.name.clone());
@@ -566,7 +574,7 @@ impl Controller {
     }
 
     /// Where the plugin in node `node` is, if it is a node with a plugin.
-    fn locate_plugin(&self, node: NodeId) -> Result<PluginAt, IntentError> {
+    pub(super) fn locate_plugin(&self, node: NodeId) -> Result<PluginAt, IntentError> {
         match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
             NodePath::Instrument(inst) => Ok(PluginAt::Lane { inst, slot: 0 }),
             NodePath::Effect { inst, index } => Ok(PluginAt::Lane { inst, slot: index + 1 }),
@@ -576,13 +584,26 @@ impl Controller {
     }
 
     /// The model's slot for the plugin at `at`.
-    fn plugin_at(&mut self, at: &PluginAt) -> Option<&mut PluginSlot> {
+    pub(super) fn plugin_at(&mut self, at: &PluginAt) -> Option<&mut PluginSlot> {
         match *at {
             PluginAt::Lane { inst, slot: 0 } => self.model.instruments[inst].instrument.as_mut(),
             PluginAt::Lane { inst, slot } => self.model.instruments[inst].effects.get_mut(slot - 1),
             PluginAt::Bus { group, index } => self.model.groups[group].effects.get_mut(index),
         }
     }
+}
+
+/// The rows that a preset that is loaded changes, or that the user has set over what they had: the ones that undo gives back. `values` is what the plugin has for its parameters
+/// once the preset is loaded (none if it could not be read, and then it is the user's values only). A row that has the value that the preset gives it changes only if it is the user's
+/// (its baseline is another), and the user's rows are written down whatever the preset says of them, since the preset that is loaded again would put its own over them.
+fn rows_a_preset_changes(rows: &[ParamSlot], values: Option<&[(u32, f32)]>) -> Vec<RowBefore> {
+    rows.iter()
+        .filter(|row| {
+            let changed = values.and_then(|values| values.iter().find(|(index, _)| *index == row.index)).is_some_and(|&(_, value)| row.value != value);
+            changed || row.value != row.default
+        })
+        .map(|row| RowBefore { index: row.index, value: row.value, default: row.default })
+        .collect()
 }
 
 /// Give each parameter row the value its plugin reports for it, as the value and as
@@ -3573,6 +3594,28 @@ type = "midi"
         assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
         assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    // -- the rows that a preset overwrites --
+
+    #[test]
+    fn the_rows_a_preset_changes_are_those_it_gives_another_value_or_baseline_and_those_the_user_set_over_what_they_had() {
+        // (index, value, default) as the model has the rows before the preset is loaded.
+        let row = |index: u32, value: f32, default: f32| ParamSlot { index, value, default, ..Default::default() };
+        let rows = [
+            row(0, 0.5, 0.5),  // the preset gives it 0.5 too: as it will be
+            row(1, 0.5, 0.5),  // the preset gives it 0.7: changed
+            row(2, 0.3, 0.7),  // set by the user over 0.7, and the preset gives it 0.3: the baseline is what changes
+            row(3, 0.9, 0.5),  // set by the user, and the preset gives it 0.9: the baseline is what changes too
+            row(4, 0.2, 0.5),  // set by the user, and the preset has nothing for it: it would be loaded over
+            row(5, 0.4, 0.4),  // nothing set, and the preset has nothing for it: as it will be
+            row(6, 0.1, 0.1),  // the preset gives it 0.8: changed (the preset's values are not in the order of the rows)
+        ];
+        let values = [(6, 0.8), (3, 0.9), (2, 0.3), (1, 0.7), (0, 0.5)];
+        let indexes = |changed: Vec<RowBefore>| changed.iter().map(|before| (before.index, before.value, before.default)).collect::<Vec<_>>();
+        assert_eq!(indexes(rows_a_preset_changes(&rows, Some(&values))), [(1, 0.5, 0.5), (2, 0.3, 0.7), (3, 0.9, 0.5), (4, 0.2, 0.5), (6, 0.1, 0.1)]);
+        // A preset whose values could not be read leaves the user's.
+        assert_eq!(indexes(rows_a_preset_changes(&rows, None)), [(2, 0.3, 0.7), (3, 0.9, 0.5), (4, 0.2, 0.5)]);
     }
 
     // -- AddInstrument and ReplaceInstrument --

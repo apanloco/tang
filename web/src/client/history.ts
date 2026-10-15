@@ -349,8 +349,14 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       if (lane?.kind !== "instrument" || name === undefined) return "nothing";
       return { removed: { label: lane.plugin === null ? `put ${name} in a lane` : `change the instrument to ${name}`, intent, at: now } };
     }
-    // Nothing puts this back yet.
-    case "loadPreset":
-      return "barrier";
+    case "loadPreset": {
+      // A preset that is loaded overwrites the values of the plugin and the preset it had: undo gives them back (the controller's `Inverse::Preset`). A step in the words of the
+      // preset, by the name the plugin has for the id. A node that has no such plugin, a bus effect (which has no presets to load) and an id the plugin lacks are refused.
+      const node = nodeOf(intent.node);
+      if (node?.kind !== "instrument" && node?.kind !== "effect") return "nothing";
+      if (node.kind === "effect" && node.parent !== null && nodeOf(node.parent)?.kind === "group") return "nothing";
+      const preset = node.plugin?.presets.find((p) => p.id === intent.preset);
+      return preset ? { removed: { label: `load preset ${preset.name}`, intent, at: now } } : "nothing";
+    }
   }
 }
