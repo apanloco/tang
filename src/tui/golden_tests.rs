@@ -3291,6 +3291,74 @@ fn r_without_control_records_the_pattern_of_the_lane_it_is_on_as_it_did() {
 }
 
 #[test]
+fn r_is_an_intent_that_starts_and_stops_a_recording_and_marks_the_session_changed() {
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.goto(TreeAddress::Instrument(0));
+    h.commands();
+    h.s.ctl.dirty = false;
+    h.press(KeyCode::Char('r'));
+    assert_eq!((h.s.ctl.rev, h.s.ctl.dirty), (1, true));
+    assert!(h.tree().iter().any(|line| line.contains("Pattern  recording...")), "{:#?}", h.tree());
+    h.commands();
+    h.press(KeyCode::Char('r'));
+    assert_eq!(h.commands(), ["SetPatternRecording inst=0 recording=false"]);
+    assert_eq!(h.s.ctl.rev, 2);
+    assert!(!h.s.ctl.model.instruments[0].pattern.as_ref().unwrap().recording);
+}
+
+#[test]
+fn a_pattern_that_is_cleared_is_no_step_of_the_history_and_ctrl_z_undoes_the_step_before_it() {
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars("90").press(KeyCode::Enter);
+    h.goto(TreeAddress::Pattern(1));
+    h.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(h.s.ctl.model.instruments[1].pattern.is_none());
+    assert_eq!(h.s.ctl.rev, 2, "the tempo and the clearing are intents");
+    h.commands();
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.s.ctl.model.bpm, 120.0, "the step that is undone is the tempo's");
+    assert!(h.s.ctl.model.instruments[1].pattern.is_none(), "the pattern is not put back");
+}
+
+#[test]
+fn the_rows_of_a_patterns_pane_turn_its_settings_by_intents_and_the_tree_shows_them_at_once() {
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.goto(TreeAddress::Pattern(1));
+    h.press(KeyCode::Enter);
+    h.commands();
+    // Row 0 is the length in beats: Right turns it up a step (a tenth of a beat), and ten of them make a beat, which the tree says.
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetPatternLength inst=1 beats=4.1"]);
+    assert!(h.tree().iter().any(|line| line.contains("4 beats, 1 notes")), "{:#?}", h.tree());
+    h.press_n(KeyCode::Right, 9);
+    h.commands();
+    assert!(h.tree().iter().any(|line| line.contains("5 beats, 1 notes")), "{:#?}", h.tree());
+    // Row 3 is the transpose: in key is in the tree too.
+    h.press_n(KeyCode::Down, 3).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetPatternInKey inst=1 in_key=true"]);
+    assert!(h.tree().iter().any(|line| line.contains("5 beats, 1 notes, in-key")), "{:#?}", h.tree());
+    // Row 1 is whether a held key plays it, row 2 whether it loops: each turns its own, which the one before it has already turned the other way (both were on).
+    h.press_n(KeyCode::Up, 2).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetPatternEnabled inst=1 enabled=false"]);
+    h.press(KeyCode::Down).press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetPatternLooping inst=1 looping=false"]);
+    assert_eq!(h.s.ctl.rev, 13, "each turn is an intent: ten of the length (a tenth of a beat each), and the three switches");
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn a_length_that_is_typed_into_a_patterns_pane_is_held_to_the_lengths_there_can_be() {
+    for (text, beats) in [("8", "8.0"), ("100", "32.0"), ("0", "1.0")] {
+        let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+        h.goto(TreeAddress::Pattern(1));
+        h.press(KeyCode::Enter);
+        h.commands();
+        h.press(KeyCode::Enter).press_n(KeyCode::Backspace, 8).type_chars(text).press(KeyCode::Enter);
+        assert_eq!(h.commands(), [format!("SetPatternLength inst=1 beats={beats}")], "{text}");
+    }
+}
+
+#[test]
 fn a_finished_recording_marks_the_session_changed() {
     // `r` marks the session when the recording starts, but the events only
     // arrive when it ends, and a save in between (during the count-in, say)

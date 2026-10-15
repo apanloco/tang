@@ -4,7 +4,7 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, Plugin, Port } from "../protocol";
+import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
 import { cableWords, displayNames, endLabel } from "./names";
@@ -50,6 +50,9 @@ const DOING: Record<Intent["type"], string> = {
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
   setBpm: "set the tempo",
+  setRecording: "record a pattern",
+  clearPattern: "clear a pattern",
+  setPatternField: "change a pattern's setting",
   setNodeUi: "move a node",
   setPinned: "choose the knobs of a node",
   addGroup: "add a group",
@@ -196,6 +199,37 @@ export class Editor {
    */
   setBpm(bpm: number): Promise<boolean> {
     return this.#attempt(`set the tempo to ${String(bpm)}`, { type: "setBpm", bpm });
+  }
+
+  /**
+   * Start recording a pattern on the lane `node`, or stop the recording that is going on there. A recording is counted in (four beats of the metronome) and then taken for the
+   * length of the pattern, at the tempo of the session, from the notes that are played; the pattern it makes is the lane's, and the session tells it when it is done. A lane that has
+   * no pattern is given an empty one at once, with the settings a new pattern has. True if it was done (the page says why if it was not).
+   */
+  setRecording(node: NodeId, recording: boolean): Promise<boolean> {
+    const what = recording ? `start recording a pattern on ${this.#name(node)}` : `stop recording the pattern of ${this.#name(node)}`;
+    return this.#attempt(what, { type: "setRecording", node, recording });
+  }
+
+  /** Take the pattern of the lane `node` out, and end a recording that is going on there. True if it was done (the page says why if it was not: a lane that has none). */
+  clearPattern(node: NodeId): Promise<boolean> {
+    return this.#attempt(`clear the pattern of ${this.#name(node)}`, { type: "clearPattern", node });
+  }
+
+  /**
+   * Set a setting of the pattern of the lane `node`: its length in beats (`PATTERN_FIELD_RANGES`: held to the lengths there can be), and, as 0 or 1, whether a held key plays it
+   * (`enabled`), whether it goes round while the key is held (`looping`) and whether it is transposed by the degrees of the piano's scale and not by semitones (`transpose`). A lane
+   * that has no pattern is given an empty one with it, so that the length of its first recording can be chosen. True if it was done (the page says why if it was not).
+   */
+  setPatternField(node: NodeId, field: PatternField, value: number): Promise<boolean> {
+    const pattern = `the pattern of ${this.#name(node)}`;
+    const what: Record<PatternField, string> = {
+      length: `set the length of ${pattern} to ${String(value)} beats`,
+      enabled: `turn ${pattern} ${value === 0 ? "off" : "on"}`,
+      looping: value === 0 ? `make ${pattern} play once` : `make ${pattern} loop`,
+      transpose: `transpose ${pattern} ${value === 0 ? "by semitones" : "by the degrees of the scale"}`,
+    };
+    return this.#attempt(what[field], { type: "setPatternField", node, field, value });
   }
 
   /**

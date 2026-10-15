@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PluginSlot, SessionModel};
+use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::NodeUi;
 
@@ -62,8 +62,8 @@ pub struct Node {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum NodeKind {
     /// An instrument lane: the instrument plugin (null while the lane is empty),
-    /// the key range it answers to, and its host-side output volume.
-    Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32 },
+    /// the key range it answers to, its host-side output volume and its pattern (null while it has none).
+    Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, pattern: Option<PatternInfo> },
     /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix.
     Effect { plugin: Plugin, mix: f32 },
     /// A modulator, lane-scoped or group-scoped. What it drives are its modulation
@@ -73,6 +73,27 @@ pub enum NodeKind {
     Group { volume: f32, pan: f32 },
     /// The master mix.
     Master,
+}
+
+/// The pattern of a lane as a front-end sees it: its settings, how long it is and how many notes it has (not the notes: a front-end that draws them asks for them).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PatternInfo {
+    /// A recording is going on: the metronome counts in first, and nothing is recorded before it has.
+    pub recording: bool,
+    /// Whether a held key plays it.
+    pub enabled: bool,
+    /// Whether it goes round again while the key is held, or plays once.
+    pub looping: bool,
+    /// Whether it is transposed by the degrees of the piano's scale, and not by semitones.
+    pub in_key: bool,
+    /// How long it is, and what the next recording is counted in.
+    pub length_beats: f32,
+    /// The tempo it was recorded at, which its length in frames is counted in.
+    pub bpm: f32,
+    /// How many notes it has.
+    pub notes: u32,
 }
 
 /// A range of MIDI notes, both ends included.
@@ -297,6 +318,7 @@ impl SessionModel {
                     range: lane.range.map(|(low, high)| NoteRange { low, high }),
                     transpose: lane.transpose,
                     volume: lane.volume,
+                    pattern: lane.pattern.as_ref().map(PatternState::info),
                 },
             });
             nodes.extend(lane.effects.iter().map(|fx| effect_node(fx, lane.node)));
@@ -561,7 +583,7 @@ mod tests {
 
         let osc = &graph.nodes[0];
         assert_eq!((osc.parent, osc.name.as_str()), (None, "Oscillator"));
-        let NodeKind::Instrument { plugin: Some(plugin), range, transpose, volume } = &osc.kind else {
+        let NodeKind::Instrument { plugin: Some(plugin), range, transpose, volume, .. } = &osc.kind else {
             panic!("{:?}", osc.kind)
         };
         assert_eq!((*range, *transpose, *volume), (None, 0, 1.0));
@@ -603,10 +625,29 @@ mod tests {
     }
 
     #[test]
+    fn a_lanes_pattern_is_on_its_node_with_its_settings_and_how_many_notes_it_has() {
+        // (SETTINGS has a pattern of 2 beats recorded at 90, in key, which does not loop: one note on and one off.)
+        let model = load(SETTINGS).model;
+        let graph = model.graph();
+        let NodeKind::Instrument { pattern, .. } = &graph.nodes[0].kind else { panic!("{:?}", graph.nodes[0].kind) };
+        assert_eq!(*pattern, Some(PatternInfo { recording: false, enabled: true, looping: false, in_key: true, length_beats: 2.0, bpm: 90.0, notes: 1 }));
+        // A lane that has none says so, and a pattern that is being recorded says that.
+        let mut model = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let none = |model: &SessionModel| match &model.graph().nodes[0].kind {
+            NodeKind::Instrument { pattern, .. } => pattern.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(none(&model), None);
+        model.instruments[0].pattern = Some(PatternState::empty(100.0));
+        model.instruments[0].pattern.as_mut().unwrap().recording = true;
+        assert_eq!(none(&model), Some(PatternInfo { recording: true, enabled: false, looping: true, in_key: false, length_beats: 4.0, bpm: 100.0, notes: 0 }));
+    }
+
+    #[test]
     fn an_instruments_settings_are_on_its_node() {
         let model = load(SETTINGS).model;
         let graph = model.graph();
-        let NodeKind::Instrument { plugin: Some(plugin), range, transpose, volume } = &graph.nodes[0].kind else {
+        let NodeKind::Instrument { plugin: Some(plugin), range, transpose, volume, .. } = &graph.nodes[0].kind else {
             panic!("{:?}", graph.nodes[0].kind)
         };
         assert_eq!((*range, *transpose, *volume), (Some(NoteRange { low: 36, high: 83 }), -12, 0.5));
@@ -1527,9 +1568,9 @@ depth = 0.2
         assert_eq!(serde_json::to_value(ModulatorSource::Macro { value: 0.25 }).unwrap(), json!({"type": "macro", "value": 0.25}));
         assert_eq!(serde_json::to_value(MidiControl::PitchBend).unwrap(), json!({"type": "pitchBend"}));
         assert_eq!(
-            serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5 })
+            serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5, pattern: None })
                 .unwrap(),
-            json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5})
+            json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5, "pattern": null})
         );
         assert_eq!(serde_json::to_value(NodeKind::Master).unwrap(), json!({"kind": "master"}));
         assert_eq!(serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0 }).unwrap(), json!({"kind": "group", "volume": 1.0, "pan": 0.0}));

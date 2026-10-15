@@ -4,7 +4,7 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
+import type { CatalogEntry, Event, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
@@ -15,6 +15,7 @@ import history from "./fixtures/history.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
+import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
@@ -57,6 +58,18 @@ export const movesFixture = moves as unknown as {
 export const pinsFixture = pins as unknown as {
   snapshot: Snapshot;
   pins: ({ node: NodeId; params: number[] } & ({ error: string } | { pinned: number[] }))[];
+};
+
+/**
+ * A session with a group (a bus effect and an LFO in it), a member of it with a reverb and an LFO of its own, a lane with a pattern that was recorded at 90 beats a minute and a
+ * lane with no instrument, at 100, and what the controller makes of intents about patterns: scripts, each a list of intents asked of one session in turn, with the event each is
+ * answered with or the words it is refused with. They are every kind of intent asked of every node (the master and one that is not there too), with values that are held to their
+ * range, rounded and taken as they are, and runs on each lane that go on from one intent to the next. Written by the controller
+ * (`the_web_clients_fixture_of_what_a_pattern_comes_to_is_current`).
+ */
+export const patternsFixture = patterns as unknown as {
+  snapshot: Snapshot;
+  scripts: ({ intent: Intent } & ({ error: string } | { event: Event }))[][];
 };
 
 /**

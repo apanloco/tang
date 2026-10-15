@@ -1234,6 +1234,107 @@ async fn a_browser_pins_parameters_to_a_node_and_a_second_one_sees_it_and_the_sa
     assert!(!std::fs::read_to_string(&file).unwrap().contains("pinned"));
 }
 
+/// The pattern a snapshot says a lane has (null while it has none), by the lane's id.
+fn pattern_of(snapshot: &Value, node: u64) -> Value {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    nodes.iter().find(|n| n["id"] == node).unwrap_or_else(|| panic!("no node {node}"))["pattern"].clone()
+}
+
+/// The next snapshot a client is told that has the lane's pattern recorded (not recording, with notes): what the controller gives the browsers when the audio thread
+/// reports a recording that is done, which is no event. Fails, with what the server logged, when it does not come within `within`.
+async fn recorded_pattern(client: &mut Client, tang: &Tang, lane: u64, within: Duration) -> Value {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        let snapshot = tokio::time::timeout(Duration::from_secs(2), next_snapshot(client)).await;
+        if let Ok(snapshot) = snapshot {
+            let pattern = pattern_of(&snapshot, lane);
+            if pattern["recording"] == false && pattern["notes"].as_u64().is_some_and(|notes| notes > 0) {
+                return snapshot;
+            }
+        }
+    }
+    panic!("no recorded pattern was told in {within:?}\n{}", tang.log());
+}
+
+#[tokio::test]
+async fn a_browser_records_a_pattern_on_a_lane_and_every_browser_and_the_saved_file_and_a_program_started_on_it_have_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("loop.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut first, _, snapshot) = listening(&tang).await;
+    let (mut second, _, _) = listening(&tang).await;
+    let (lane, _) = param_of(&snapshot, "Oscillator", "volume");
+    assert_eq!(pattern_of(&snapshot, lane), Value::Null, "the tracer has no pattern");
+
+    // A short one: a beat at 300 beats a minute, which is counted in with four (a second all in all). The length is asked of a lane that has no pattern, which is given an empty one.
+    tell(&mut first, json!({"type": "request", "reqId": 1, "intent": {"type": "setBpm", "bpm": 300.0}})).await;
+    assert_eq!(answer(&mut first, 1).await["rev"], 1);
+    tell(&mut first, json!({"type": "request", "reqId": 2, "intent": {"type": "setPatternField", "node": lane, "field": "length", "value": 1.0}})).await;
+    assert_eq!(answer(&mut first, 2).await["rev"], 2);
+    tell(&mut first, json!({"type": "request", "reqId": 3, "intent": {"type": "setRecording", "node": lane, "recording": true}})).await;
+    assert_eq!(answer(&mut first, 3).await["rev"], 3);
+    // (A note that is played during the count-in is recorded at the start of the pattern, with its end.)
+    tell(&mut first, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    tell(&mut first, json!({"type": "noteOff", "note": 64})).await;
+
+    // The second browser was told each of them as an event: the tempo, the empty pattern with its length, and the recording that has begun.
+    let mut told = Vec::new();
+    while told.len() < 3 {
+        let message = next_json(&mut second).await;
+        if message["type"] == "event" {
+            told.push(message);
+        }
+    }
+    let empty = json!({"recording": false, "enabled": false, "looping": true, "inKey": false, "lengthBeats": 1.0, "bpm": 300.0, "notes": 0});
+    assert_eq!((told[0]["event"]["type"].clone(), told[0]["event"]["bpm"].clone()), (json!("bpmSet"), json!(300.0)), "{}", told[0]);
+    assert_eq!((told[1]["event"]["type"].clone(), told[1]["event"]["node"].clone(), told[1]["event"]["pattern"].clone()), (json!("patternSet"), json!(lane), empty), "{}", told[1]);
+    assert_eq!(told[2]["event"]["pattern"], json!({"recording": true, "enabled": false, "looping": true, "inKey": false, "lengthBeats": 1.0, "bpm": 300.0, "notes": 0}), "{}", told[2]);
+
+    // When the audio thread is done the lane has the pattern that was recorded, in every browser: it plays when a key is held, goes round, and has the one note.
+    let done = json!({"recording": false, "enabled": true, "looping": true, "inKey": false, "lengthBeats": 1.0, "bpm": 300.0, "notes": 1});
+    let told_first = recorded_pattern(&mut first, &tang, lane, Duration::from_secs(20)).await;
+    assert_eq!(pattern_of(&told_first, lane), done, "{told_first}");
+    let told_second = recorded_pattern(&mut second, &tang, lane, Duration::from_secs(20)).await;
+    assert_eq!(pattern_of(&told_second, lane), done, "{told_second}");
+    assert_eq!(told_second["snapshot"]["meta"]["dirty"], true, "a pattern is a change the session has not saved");
+
+    // What is saved has it, with the tempo, and a program started on the file has the pattern in the same lane.
+    tell(&mut first, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut first, 4).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("[instrument.pattern]\nbpm = 300.0\nlength_beats = 1.0\nbase_note = \"E4\"\nenabled = true\n"), "{saved}");
+    // (The tempo of the session is the pattern's, which a load comes to anyway: the file has no tempo of its own.)
+    assert!(!saved.starts_with("bpm"), "{saved}");
+    drop((first, second));
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, _, snapshot) = listening(&again).await;
+    assert_eq!(pattern_of(&snapshot, lane), done, "the lane has the same node id: it is the same lane");
+    assert_eq!((snapshot["snapshot"]["meta"]["dirty"].clone(), snapshot["snapshot"]["meta"]["bpm"].clone()), (json!(false), json!(300.0)));
+
+    // A setting of it is the lane's in the file the next time it is saved, and a pattern that is cleared is gone from it: asked twice, the second is refused in the controller's words.
+    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "setPatternField", "node": lane, "field": "looping", "value": 0.0}})).await;
+    assert_eq!(answer(&mut browser, 1).await["type"], "ack");
+    tell(&mut browser, json!({"type": "request", "reqId": 2, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut browser, 2).await["type"], "ack");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("looping = false"));
+    tell(&mut browser, json!({"type": "request", "reqId": 3, "intent": {"type": "clearPattern", "node": lane}})).await;
+    assert_eq!(answer(&mut browser, 3).await["type"], "ack");
+    tell(&mut browser, json!({"type": "request", "reqId": 4, "intent": {"type": "clearPattern", "node": lane}})).await;
+    let refused = answer(&mut browser, 4).await;
+    assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!("that lane has no pattern")), "{refused}");
+    tell(&mut browser, json!({"type": "request", "reqId": 5, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut browser, 5).await["type"], "ack");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("[instrument.pattern]"));
+
+    // A node that is no lane is refused too.
+    let (filter, _) = param_of(&snapshot, "Filter", "cutoff");
+    tell(&mut browser, json!({"type": "request", "reqId": 6, "intent": {"type": "setRecording", "node": filter, "recording": true}})).await;
+    let refused = answer(&mut browser, 6).await;
+    assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!("a pattern belongs to a lane")), "{refused}");
+}
+
 /// The latest probe frame (channel 4: the node's id where the layout's revision is, then the left side and the right, 2048 frames of each) that has arrived for each node:
 /// read until `done` is satisfied by what has arrived so far, and return it. Fails, with what the server logged, when it is not within `within`.
 async fn probes_until(

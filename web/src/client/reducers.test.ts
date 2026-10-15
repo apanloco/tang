@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import type { Edge, Node, Snapshot, StampedEvent } from "../protocol";
+import type { Edge, Node, PatternInfo, Snapshot, StampedEvent } from "../protocol";
 import { MASTER, nodeNamed, tracerSnapshot } from "./fixtures";
 import { applyEvent } from "./reducers";
 
@@ -9,6 +9,8 @@ const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
 const lfo = nodeNamed(tracerSnapshot, "LFO");
 /** The id of the cable from the LFO to the filter's cutoff, in the tracer. */
 const CABLE = 0;
+/** A pattern of two beats and one note, in key, that plays when a key is held and goes round while it is. */
+const A_PATTERN: PatternInfo = { recording: false, enabled: true, looping: true, inKey: true, lengthBeats: 2, bpm: 90, notes: 1 };
 
 function paramOf(snapshot: Snapshot, node: Node, index: number) {
   const found = snapshot.graph.nodes.find((n) => n.id === node.id);
@@ -112,6 +114,7 @@ describe("any event", () => {
     ["a gain set", { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 }],
     ["a preset loaded", { rev: 1, type: "presetLoaded", node: filter.id, preset: "Dark", values: [{ param: 0, value: 0.2 }] }],
     ["a range set", { rev: 1, type: "rangeSet", node: oscillator.id, range: { low: 36, high: 84 } }],
+    ["a pattern set", { rev: 1, type: "patternSet", node: oscillator.id, pattern: A_PATTERN }],
     ["a node's place set", { rev: 1, type: "nodeUiSet", node: oscillator.id, ui: { x: 80, y: 120 } }],
     ["pinned parameters set", { rev: 1, type: "pinnedSet", node: filter.id, params: [1] }],
     ["a modulator field set", { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "rate", value: 4 }],
@@ -300,6 +303,42 @@ describe("a range set", () => {
     }
     const result = applyEvent(tracerSnapshot, { rev: 1, type: "rangeSet", node: 4242, range: null });
     expect(result).toEqual({ ok: false, reason: "there is no node 4242" });
+  });
+});
+
+describe("a pattern set", () => {
+  const patternOf = (snapshot: Snapshot) => {
+    const found = snapshot.graph.nodes.find((n) => n.id === oscillator.id);
+    if (found?.kind !== "instrument") throw new Error("no lane");
+    return found.pattern;
+  };
+  const set = (node: number, pattern: PatternInfo | null, rev = 1): StampedEvent => ({ rev, type: "patternSet", node, pattern });
+
+  test("gives the lane the pattern the event tells, and none takes it away", () => {
+    expect(patternOf(tracerSnapshot)).toBeNull();
+    const after = applied(tracerSnapshot, set(oscillator.id, A_PATTERN));
+    expect(patternOf(after)).toEqual(A_PATTERN);
+    const replaced = applied(after, set(oscillator.id, { ...A_PATTERN, recording: true, lengthBeats: 8 }, 2));
+    expect(patternOf(replaced)).toEqual({ ...A_PATTERN, recording: true, lengthBeats: 8 });
+    expect(patternOf(applied(replaced, set(oscillator.id, null, 3)))).toBeNull();
+  });
+
+  test("changes that lane and nothing else: every other node is the object it was, and the lane keeps its plugin, its keys and its volume", () => {
+    const after = applied(tracerSnapshot, set(oscillator.id, A_PATTERN));
+    for (const node of tracerSnapshot.graph.nodes) {
+      const now = after.graph.nodes.find((n) => n.id === node.id);
+      if (node.id === oscillator.id) expect(now).toEqual({ ...node, pattern: A_PATTERN });
+      else expect(now).toBe(node);
+    }
+    expect(after.graph.edges).toBe(tracerSnapshot.graph.edges);
+  });
+
+  test("is refused by a node that is not a lane, and by one that is not there", () => {
+    for (const node of [filter.id, lfo.id, MASTER]) {
+      expect(applyEvent(tracerSnapshot, set(node, A_PATTERN)).ok, `node ${node}`).toBe(false);
+    }
+    expect(applyEvent(tracerSnapshot, set(filter.id, A_PATTERN))).toEqual({ ok: false, reason: `node ${filter.id} is not a lane` });
+    expect(applyEvent(tracerSnapshot, set(4242, null))).toEqual({ ok: false, reason: "there is no node 4242" });
   });
 });
 

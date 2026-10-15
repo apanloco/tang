@@ -259,7 +259,8 @@ describe("adding an instrument", () => {
     const id = await editor.addInstrument("builtin:osc");
     expect(id).toBe(3);
     const node = client.state.snapshot?.graph.nodes.find((n) => n.id === id);
-    expect(node).toMatchObject({ kind: "instrument", parent: null, name: "Oscillator" });
+    // (A lane that is new has no pattern, as the controller makes it.)
+    expect(node).toMatchObject({ kind: "instrument", parent: null, name: "Oscillator", pattern: null });
     expect(said(notices)).toEqual([]);
     // The next is the next.
     expect(await editor.addInstrument("builtin:osc")).toBe(4);
@@ -899,6 +900,109 @@ describe("setting the tempo", () => {
     client.stop();
     expect(await editor.setBpm(96.5)).toBe(false);
     expect(said(notices)).toEqual(["Could not set the tempo to 96.5: Not connected to the server."]);
+  });
+});
+
+describe("the pattern of a lane", () => {
+  const patternOf = (client: Client, node: number = oscillator.id) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" ? found.pattern : "not a lane";
+  };
+  /** The pattern a lane is given when it has none and something is asked of it: four beats, looping, not in key, not heard, at the tempo of the session. */
+  const empty = { recording: false, enabled: false, looping: true, inKey: false, lengthBeats: 4, bpm: 120, notes: 0 };
+
+  test("a recording is started and stopped: the session shows the pattern of the lane, recording and then not, and nothing is said", async () => {
+    const { client, notices, editor } = await open();
+    expect(patternOf(client)).toBeNull();
+    expect(await editor.setRecording(oscillator.id, true)).toBe(true);
+    expect(patternOf(client)).toEqual({ ...empty, recording: true });
+    expect(await editor.setRecording(oscillator.id, false)).toBe(true);
+    expect(patternOf(client)).toEqual(empty);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("a setting is set, held to its range and a switch rounded, and a lane that has no pattern is given an empty one with it", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setPatternField(oscillator.id, "length", 8)).toBe(true);
+    expect(patternOf(client)).toEqual({ ...empty, lengthBeats: 8 });
+    expect(await editor.setPatternField(oscillator.id, "length", 100)).toBe(true);
+    expect(patternOf(client)).toEqual({ ...empty, lengthBeats: 32 });
+    expect(await editor.setPatternField(oscillator.id, "enabled", 1)).toBe(true);
+    expect(await editor.setPatternField(oscillator.id, "looping", 0.4)).toBe(true);
+    expect(await editor.setPatternField(oscillator.id, "transpose", 0.6)).toBe(true);
+    expect(patternOf(client)).toEqual({ ...empty, lengthBeats: 32, enabled: true, looping: false, inKey: true });
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("a pattern is cleared, and what has none cannot be cleared: it resolves false, and the page says so", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.clearPattern(oscillator.id)).toBe(false);
+    expect(await editor.setPatternField(oscillator.id, "enabled", 1)).toBe(true);
+    expect(await editor.clearPattern(oscillator.id)).toBe(true);
+    expect(patternOf(client)).toBeNull();
+    expect(said(notices)).toEqual(["Could not clear the pattern of Oscillator: that lane has no pattern"]);
+  });
+
+  /** What the page says of each thing that is asked and refused, in turn (it keeps three notices at a time, so each is read as it comes). */
+  const refusals = async (notices: Notices, asks: readonly (() => Promise<boolean>)[]): Promise<string[]> => {
+    const words: string[] = [];
+    const stop = notices.subscribe(() => {
+      words.push(said(notices).at(-1) ?? "nothing was said");
+    });
+    for (const ask of asks) expect(await ask()).toBe(false);
+    stop();
+    return words;
+  };
+
+  test("is refused for a node that is not a lane, in the words of what it was to do, and the session is as it was", async () => {
+    const { client, notices, editor } = await open();
+    expect(
+      await refusals(notices, [
+        () => editor.setRecording(filter.id, true),
+        () => editor.setRecording(lfo.id, false),
+        () => editor.clearPattern(filter.id),
+        () => editor.setPatternField(lfo.id, "length", 2),
+        () => editor.setPatternField(MASTER, "enabled", 1),
+      ]),
+    ).toEqual([
+      "Could not start recording a pattern on Filter: a pattern belongs to a lane",
+      "Could not stop recording the pattern of LFO: a pattern belongs to a lane",
+      "Could not clear the pattern of Filter: a pattern belongs to a lane",
+      "Could not set the length of the pattern of LFO to 2 beats: a pattern belongs to a lane",
+      `Could not turn the pattern of Master on: there is no node ${String(MASTER)}`,
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so, in the words of each setting it was to change", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    const why = "Not connected to the server.";
+    expect(
+      await refusals(notices, [
+        () => editor.setRecording(oscillator.id, true),
+        () => editor.setRecording(oscillator.id, false),
+        () => editor.clearPattern(oscillator.id),
+        () => editor.setPatternField(oscillator.id, "length", 2.5),
+        () => editor.setPatternField(oscillator.id, "enabled", 1),
+        () => editor.setPatternField(oscillator.id, "enabled", 0),
+        () => editor.setPatternField(oscillator.id, "looping", 1),
+        () => editor.setPatternField(oscillator.id, "looping", 0),
+        () => editor.setPatternField(oscillator.id, "transpose", 1),
+        () => editor.setPatternField(oscillator.id, "transpose", 0),
+      ]),
+    ).toEqual([
+      `Could not start recording a pattern on Oscillator: ${why}`,
+      `Could not stop recording the pattern of Oscillator: ${why}`,
+      `Could not clear the pattern of Oscillator: ${why}`,
+      `Could not set the length of the pattern of Oscillator to 2.5 beats: ${why}`,
+      `Could not turn the pattern of Oscillator on: ${why}`,
+      `Could not turn the pattern of Oscillator off: ${why}`,
+      `Could not make the pattern of Oscillator loop: ${why}`,
+      `Could not make the pattern of Oscillator play once: ${why}`,
+      `Could not transpose the pattern of Oscillator by the degrees of the scale: ${why}`,
+      `Could not transpose the pattern of Oscillator by semitones: ${why}`,
+    ]);
   });
 });
 

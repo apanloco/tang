@@ -56,6 +56,7 @@
         "kind": "instrument",
         "name": "Oscillator",
         "parent": null,
+        "pattern": null,
         "plugin": {
           "currentPreset": null,
           "format": "Built-in",

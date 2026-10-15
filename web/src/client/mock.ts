@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -21,6 +21,7 @@ import type {
   NodeId,
   NodeUi,
   NoteRange,
+  PatternInfo,
   Plugin,
   Port,
   ServerMessage,
@@ -585,7 +586,7 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   const master = nodes.find((n) => n.kind === "master");
   if (!master) return invalid("the session has no master to hear a lane");
 
-  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume };
+  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, pattern: null };
   const atNode = nodes.indexOf(master);
   const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
   const firstCable = edges.findIndex(isModulation);
@@ -808,6 +809,48 @@ function bpmOutcome(bpm: number): Outcome {
   return { event: { type: "bpmSet", bpm: clamp(bpm, low, high) } };
 }
 
+/** The pattern a lane is given when it has none and something is asked of it (`PatternState::empty`): four beats, looping, not in key, not heard, at the tempo of the session. */
+const emptyPattern = (bpm: number): PatternInfo => ({ recording: false, enabled: false, looping: true, inKey: false, lengthBeats: 4, bpm, notes: 0 });
+
+/**
+ * What an intent about the pattern of a lane comes to (`set_recording`, `clear_pattern`, `set_pattern_field`): the pattern the lane has afterwards, as one event. A recording
+ * that is started gives a lane with no pattern an empty one; one that is started while it is going on, or stopped while it is not, is told as it is. A setting is held to its
+ * range and a switch rounded, and gives a lane with no pattern an empty one, so that the length of its first recording can be chosen. A recording that comes to an end by itself
+ * is the engine's, which the mock has no notes for.
+ */
+function patternOutcome(snapshot: Snapshot, intent: Extract<Intent, { type: "setRecording" | "clearPattern" | "setPatternField" }>): Outcome {
+  // (A number is judged before the node it is for.)
+  if (intent.type === "setPatternField" && !holds(intent.value)) return invalid(`${shown(intent.value)} is not a value for ${variant(intent.field)}`);
+  // (The master is a node of the graph and not of the model: the controller does not find it.)
+  const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
+  if (!node) return noNode(intent.node);
+  if (node.kind !== "instrument") return invalid("a pattern belongs to a lane");
+  const told = (pattern: PatternInfo | null): Outcome => ({ event: { type: "patternSet", node: node.id, pattern } });
+  const bpm = snapshot.meta.bpm;
+  switch (intent.type) {
+    case "setRecording":
+      if (intent.recording === (node.pattern?.recording === true)) return told(node.pattern);
+      return told({ ...(node.pattern ?? emptyPattern(bpm)), recording: intent.recording });
+    case "clearPattern":
+      return node.pattern === null ? invalid("that lane has no pattern") : told(null);
+    case "setPatternField": {
+      const [low, high] = PATTERN_FIELD_RANGES[intent.field];
+      const held = clamp(intent.value, low, high);
+      const pattern = node.pattern ?? emptyPattern(bpm);
+      switch (intent.field) {
+        case "length":
+          return told({ ...pattern, lengthBeats: held });
+        case "enabled":
+          return told({ ...pattern, enabled: roundIn32Bits(held) !== 0 });
+        case "looping":
+          return told({ ...pattern, looping: roundIn32Bits(held) !== 0 });
+        case "transpose":
+          return told({ ...pattern, inKey: roundIn32Bits(held) !== 0 });
+      }
+    }
+  }
+}
+
 /** The session saved to its own file, or why it cannot be (the controller's words for a session with no file). */
 function saveOutcome(snapshot: Snapshot): Outcome {
   if (snapshot.meta.file === null) return { error: { code: "io", message: "No session path — cannot save" } };
@@ -834,6 +877,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setBpm") return bpmOutcome(intent.bpm);
+  if (intent.type === "setRecording" || intent.type === "clearPattern" || intent.type === "setPatternField") return patternOutcome(snapshot, intent);
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);

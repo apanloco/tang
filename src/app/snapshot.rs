@@ -216,6 +216,12 @@ impl Snapshot {
             }
             Event::LockedSet { locked } => self.meta.piano.locked = *locked,
             Event::BpmSet { bpm } => self.meta.bpm = *bpm,
+            Event::PatternSet { node, pattern } => {
+                let NodeKind::Instrument { pattern: shown, .. } = &mut self.node_mut(*node)?.kind else {
+                    return Err(DoesNotFit(format!("node {} is not a lane", node.0)));
+                };
+                shown.clone_from(pattern);
+            }
             Event::Saved { file } => self.meta.file.clone_from(file),
         }
         Ok(())
@@ -260,7 +266,7 @@ mod tests {
 
     use super::*;
     use crate::app::graph::{EdgeKind, ModulatorSource, Node, NodeKind, NoteRange, Plugin};
-    use crate::app::intent::{Applied, Event, Gain, Intent, ModulatorField, ParamValue};
+    use crate::app::intent::{Applied, Event, Gain, Intent, ModulatorField, ParamValue, PatternField};
     use crate::app::model::{EdgeId, NodeId};
     use crate::app::testutil::{GROUPS, load, stub_engine};
     use crate::scale::ScaleSetting;
@@ -542,6 +548,12 @@ type = "envelope"
             Intent::SetLocked { locked: false },
             Intent::SetBpm { bpm: 96.5 },
             Intent::SetBpm { bpm: 1000.0 },
+            Intent::SetPatternField { node: n.osc, field: PatternField::Length, value: 8.0 },
+            Intent::SetRecording { node: n.osc, recording: true },
+            Intent::SetPatternField { node: n.osc, field: PatternField::Transpose, value: 1.0 },
+            Intent::SetRecording { node: n.osc, recording: false },
+            Intent::SetPatternField { node: n.empty, field: PatternField::Enabled, value: 1.0 },
+            Intent::ClearPattern { node: n.osc },
             Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 120.0 }) },
             Intent::SetNodeUi { node: NodeId::MASTER, ui: Some(NodeUi { x: 1200.0, y: -40.5 }) },
             Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 140.0 }) },
@@ -562,7 +574,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 42);
+        assert_eq!(told.rev, 48);
     }
 
     #[test]

@@ -6,8 +6,9 @@ import type { NodeId } from "./NodeId";
 import type { NodeUi } from "./NodeUi";
 import type { NoteRange } from "./NoteRange";
 import type { ParamValue } from "./ParamValue";
+import type { PatternInfo } from "./PatternInfo";
 
 /**
  * What happened, in terms a front-end can apply to its own copy of the session.
  */
-export type Event = { "type": "paramSet", node: NodeId, param: number, value: number, } | { "type": "gainSet", node: NodeId, gain: Gain, value: number, } | { "type": "presetLoaded", node: NodeId, preset: string, values: Array<ParamValue>, } | { "type": "rangeSet", node: NodeId, range: NoteRange | null, } | { "type": "scaleSet", scale: string, root: number, kind: string, notes: Array<number>, } | { "type": "lockedSet", locked: boolean, } | { "type": "bpmSet", bpm: number, } | { "type": "nodeUiSet", node: NodeId, ui: NodeUi | null, } | { "type": "pinnedSet", node: NodeId, params: Array<number>, } | { "type": "groupRenamed", node: NodeId, name: string, } | { "type": "modulatorFieldSet", node: NodeId, field: ModulatorField, value: number, } | { "type": "edgeDepthSet", edge: EdgeId, depth: number, } | { "type": "saved", file: string | null, };
+export type Event = { "type": "paramSet", node: NodeId, param: number, value: number, } | { "type": "gainSet", node: NodeId, gain: Gain, value: number, } | { "type": "presetLoaded", node: NodeId, preset: string, values: Array<ParamValue>, } | { "type": "rangeSet", node: NodeId, range: NoteRange | null, } | { "type": "scaleSet", scale: string, root: number, kind: string, notes: Array<number>, } | { "type": "lockedSet", locked: boolean, } | { "type": "bpmSet", bpm: number, } | { "type": "patternSet", node: NodeId, pattern: PatternInfo | null, } | { "type": "nodeUiSet", node: NodeId, ui: NodeUi | null, } | { "type": "pinnedSet", node: NodeId, params: Array<number>, } | { "type": "groupRenamed", node: NodeId, name: string, } | { "type": "modulatorFieldSet", node: NodeId, field: ModulatorField, value: number, } | { "type": "edgeDepthSet", edge: EdgeId, depth: number, } | { "type": "saved", file: string | null, };

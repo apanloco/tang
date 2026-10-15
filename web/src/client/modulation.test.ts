@@ -201,7 +201,7 @@ describe("the modulators that drive a parameter of a lane that is in a group", (
   // A group with an LFO of its own, a lane in it with an effect and an envelope of its own (and one more LFO, and a control that is not bound yet).
   const plugin: Plugin = { id: "builtin:filter", format: "Built-in", isInstrument: false, params: [], presets: [], currentPreset: null, pinned: [] };
   const group: Node = { id: 1, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0 };
-  const lane: Node = { id: 2, parent: 1, name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1 };
+  const lane: Node = { id: 2, parent: 1, name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, pattern: null };
   const filter: Node = { id: 3, parent: 2, name: "Filter", kind: "effect", plugin, mix: 1 };
   const groupLfo: Node = { id: 4, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
   const laneEnvelope: Node = { id: 5, parent: 2, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } };

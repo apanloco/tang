@@ -3,6 +3,7 @@ import type { ModulatorSource } from "./ModulatorSource";
 import type { NodeId } from "./NodeId";
 import type { NodeUi } from "./NodeUi";
 import type { NoteRange } from "./NoteRange";
+import type { PatternInfo } from "./PatternInfo";
 import type { Plugin } from "./Plugin";
 
 /**
@@ -23,4 +24,4 @@ name: string,
  * Where a front-end draws the node, in the pixels of its canvas, if the session says (it is in the file as the
  * node's `ui`); a node that has no place is laid out by the front-end, and has no `ui` on the wire.
  */
-ui?: NodeUi, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, } | { "kind": "effect", plugin: Plugin, mix: number, } | { "kind": "modulator", source: ModulatorSource, } | { "kind": "group", volume: number, pan: number, } | { "kind": "master" });
+ui?: NodeUi, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, pattern: PatternInfo | null, } | { "kind": "effect", plugin: Plugin, mix: number, } | { "kind": "modulator", source: ModulatorSource, } | { "kind": "group", volume: number, pan: number, } | { "kind": "master" });

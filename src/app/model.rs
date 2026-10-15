@@ -1061,6 +1061,26 @@ pub struct PatternState {
     pub in_key: bool,
 }
 
+impl PatternState {
+    /// A pattern that has nothing recorded: what a lane that has none is given when its recording starts or one of its settings is set, at the tempo `bpm`.
+    pub fn empty(bpm: f32) -> Self {
+        PatternState { bpm, length_beats: 4.0, looping: true, base_note: None, events: Vec::new(), enabled: false, recording: false, in_key: false }
+    }
+
+    /// What a front-end is told of it: its settings and how many notes it has (the notes themselves are not sent).
+    pub fn info(&self) -> crate::app::graph::PatternInfo {
+        crate::app::graph::PatternInfo {
+            recording: self.recording,
+            enabled: self.enabled,
+            looping: self.looping,
+            in_key: self.in_key,
+            length_beats: self.length_beats,
+            bpm: self.bpm,
+            notes: self.events.iter().filter(|event| event.1 == 0x90).count() as u32,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct InstrumentNode {
     pub node: NodeId,

@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::graph::{Endpoint, NoteRange};
+use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
 use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
 use crate::session::NodeUi;
 
@@ -112,6 +112,21 @@ pub enum Intent {
     /// next recording are counted in it. It is the session's (`bpm` in the file) and the audio thread's; a pattern that has been recorded keeps the tempo it
     /// was recorded at. `bpm` is held to `BPM_MIN` to `BPM_MAX`. Refused, with nothing changed, for a value that is not a number.
     SetBpm { bpm: f32 },
+    /// Start recording a pattern on the lane `node`, or stop the recording that is going on. A recording is counted in by the metronome, four beats of
+    /// the session's tempo, and then records the notes that are played for the pattern's length in beats; it ends by itself when that has gone by, and
+    /// `recording: false` ends it at once (a pattern that was being recorded is what has been played so far, as long as it was to be). The audio thread
+    /// reports the pattern when it is made, and the controller puts it in the lane. A lane that has none is given an empty pattern (4 beats, looping, not
+    /// in key); one that has keeps its settings and its notes until the new ones are made. Starting one that is going on, and stopping one that is not, is
+    /// told as it is and changes nothing. Refused, with nothing changed, for a node that is not a lane.
+    SetRecording { node: NodeId, recording: bool },
+    /// Take the pattern of the lane `node` out: the audio thread forgets it, and a recording that was going on ends. Refused, with nothing changed, for a node
+    /// that is not a lane and for a lane that has no pattern.
+    ClearPattern { node: NodeId },
+    /// Set a setting of the pattern of the lane `node` (`PatternField`: its length in beats, whether a held key plays it, whether it loops and how it is
+    /// transposed): the value is held to the setting's range and a switch is rounded to 0 or 1. A lane that has no pattern is given an empty one with the
+    /// setting, so that the length of its first recording can be chosen. Refused, with nothing changed, for a node that is not a lane and for a value that is
+    /// not a number.
+    SetPatternField { node: NodeId, field: PatternField, value: f32 },
     /// Say where a front-end draws a node, in the pixels of its canvas, or `None` to give the node back to the
     /// front-end's own layout. `node` is any node of the session, the master (`NodeId::MASTER`) included. A place is
     /// kept to a tenth of a pixel and to 100 000 either way, which the controller does for the client; the engine has
@@ -231,6 +246,36 @@ impl ModulatorKind {
             ModulatorKind::MidiLearn => "a MIDI control",
             ModulatorKind::Macro => "a macro",
         }
+    }
+}
+
+/// A setting of the pattern of a lane, by name (the rows of the terminal's pattern pane).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum PatternField {
+    /// How long the pattern is, and what the next recording is counted in, in beats: 1 to 32.
+    Length,
+    /// Whether a held key plays the pattern: 0 or 1.
+    Enabled,
+    /// Whether it goes round again while the key is held: 0 or 1.
+    Looping,
+    /// How it is transposed to the key that is held: 0 by semitones, 1 by the degrees of the piano's scale.
+    Transpose,
+}
+
+impl PatternField {
+    /// The lowest and the highest value.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            PatternField::Length => (1.0, 32.0),
+            PatternField::Enabled | PatternField::Looping | PatternField::Transpose => (0.0, 1.0),
+        }
+    }
+
+    /// Whether it is a switch: its value is 0 or 1, and is rounded to one of them.
+    pub fn is_switch(self) -> bool {
+        !matches!(self, PatternField::Length)
     }
 }
 
@@ -357,6 +402,8 @@ pub enum Event {
     LockedSet { locked: bool },
     /// The tempo is now `bpm` (after it was held to the tempos there can be).
     BpmSet { bpm: f32 },
+    /// The pattern of a lane is now this, or the lane has none (after a recording began or ended, a setting of it was set, or it was taken out).
+    PatternSet { node: NodeId, pattern: Option<PatternInfo> },
     /// A node is now drawn at `ui` (after rounding and clamping), or wherever the front-end lays it out if it is `None`.
     NodeUiSet { node: NodeId, ui: Option<NodeUi> },
     /// The parameters now pinned to the node's plugin, in order.
@@ -547,6 +594,12 @@ mod tests {
             (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
             (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
             (Intent::SetBpm { bpm: 96.5 }, json!({"type": "setBpm", "bpm": 96.5})),
+            (Intent::SetRecording { node: NodeId(2), recording: true }, json!({"type": "setRecording", "node": 2, "recording": true})),
+            (Intent::ClearPattern { node: NodeId(2) }, json!({"type": "clearPattern", "node": 2})),
+            (
+                Intent::SetPatternField { node: NodeId(2), field: PatternField::Transpose, value: 1.0 },
+                json!({"type": "setPatternField", "node": 2, "field": "transpose", "value": 1.0}),
+            ),
             (
                 Intent::SetNodeUi { node: NodeId(2), ui: Some(NodeUi { x: 80.0, y: -12.5 }) },
                 json!({"type": "setNodeUi", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),
@@ -606,6 +659,14 @@ mod tests {
             ),
             (Event::LockedSet { locked: false }, json!({"type": "lockedSet", "locked": false})),
             (Event::BpmSet { bpm: 96.5 }, json!({"type": "bpmSet", "bpm": 96.5})),
+            (
+                Event::PatternSet {
+                    node: NodeId(2),
+                    pattern: Some(PatternInfo { recording: false, enabled: true, looping: true, in_key: false, length_beats: 4.0, bpm: 120.0, notes: 3 }),
+                },
+                json!({"type": "patternSet", "node": 2, "pattern": {"recording": false, "enabled": true, "looping": true, "inKey": false, "lengthBeats": 4.0, "bpm": 120.0, "notes": 3}}),
+            ),
+            (Event::PatternSet { node: NodeId(2), pattern: None }, json!({"type": "patternSet", "node": 2, "pattern": null})),
             (
                 Event::NodeUiSet { node: NodeId(2), ui: Some(NodeUi { x: 80.0, y: -12.5 }) },
                 json!({"type": "nodeUiSet", "node": 2, "ui": {"x": 80.0, "y": -12.5}}),

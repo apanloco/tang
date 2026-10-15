@@ -2,6 +2,7 @@
   "builtin:osc": {
     "kind": "instrument",
     "name": "Oscillator",
+    "pattern": null,
     "plugin": {
       "currentPreset": null,
       "format": "Built-in",

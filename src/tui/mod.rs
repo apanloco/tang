@@ -36,10 +36,10 @@ use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
-use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, Taper};
+use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
     BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
-    ParamKind, ParamSlot, PatternState, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
+    ParamKind, ParamSlot, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
 use crate::piano_filter::PianoMode;
@@ -1388,14 +1388,11 @@ impl State {
         self.apply(intent);
     }
 
-    /// Take the pattern of lane `inst` out: the audio thread forgets it and the model has none. (What `d` on a pattern does, and Ctrl+R.)
+    /// Take the pattern of lane `inst` out: the audio thread forgets it and the model has none (`ClearPattern`). (What `d` on a pattern does, and Ctrl+R.)
     fn clear_pattern(&mut self, inst: usize) {
-        let _ = self.ctl.cmd_tx.send(GraphCommand::ClearPattern { inst });
-        if let Some(lane) = self.ctl.model.instruments.get_mut(inst) {
-            lane.pattern = None;
+        if let Some(node) = self.ctl.model.instruments.get(inst).map(|lane| lane.node) {
+            self.apply(Intent::ClearPattern { node });
         }
-        self.ctl.dirty = true;
-        self.rebuild_tree();
     }
 
     /// Step the selected row up (`direction` 1) or down (-1) by what `modifiers` say: a plugin's parameter by that fraction of its range, a modulator's
@@ -1497,6 +1494,8 @@ impl State {
                 intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
                 // (The status bar reads the tempo from the model, on every frame.)
                 intent::Event::BpmSet { .. } => {}
+                // The tree has the pattern of a lane, as a line of its own while it is recorded or has notes.
+                intent::Event::PatternSet { .. } => self.rebuild_tree(),
                 // (The TUI does not draw where a node is, nor which of its parameters are its knobs.)
                 intent::Event::NodeUiSet { .. } | intent::Event::PinnedSet { .. } => {}
                 // The group's header and its parameter pane's title are its name.
@@ -1580,50 +1579,20 @@ impl State {
         self.rebuild_tree();
     }
 
+    /// Turn row `pa` of the pattern pane of lane `inst`: its length by `delta` beats, and a switch over (`SetPatternField`).
     fn adjust_pattern_param(&mut self, inst: usize, pa: usize, delta: f32) {
-        let pat = match self.ctl.model.instruments.get_mut(inst)
-            .and_then(|n| n.pattern.as_mut())
-        {
-            Some(p) => p,
-            None => return,
+        let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
+        let Some(pattern) = lane.pattern.as_ref() else { return };
+        let node = lane.node;
+        let switched = |on: bool| f32::from(u8::from(!on));
+        let (field, value) = match pa {
+            0 => (PatternField::Length, pattern.length_beats + delta),
+            1 => (PatternField::Enabled, switched(pattern.enabled)),
+            2 => (PatternField::Looping, switched(pattern.looping)),
+            3 => (PatternField::Transpose, switched(pattern.in_key)),
+            _ => return, // Notes row is informational
         };
-        match pa {
-            0 => {
-                // Length (beats)
-                pat.length_beats = (pat.length_beats + delta).clamp(1.0, 32.0);
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
-                    inst, beats: pat.length_beats,
-                });
-                self.ctl.dirty = true;
-                self.rebuild_tree();
-            }
-            1 => {
-                // Enabled (enum toggle)
-                pat.enabled = !pat.enabled;
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternEnabled {
-                    inst, enabled: pat.enabled,
-                });
-                self.ctl.dirty = true;
-                self.rebuild_tree();
-            }
-            2 => {
-                // Loop (enum toggle)
-                pat.looping = !pat.looping;
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternLooping {
-                    inst, looping: pat.looping,
-                });
-                self.ctl.dirty = true;
-            }
-            3 => {
-                // Transpose (enum toggle: chromatic / in-key)
-                pat.in_key = !pat.in_key;
-                let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternInKey {
-                    inst, in_key: pat.in_key,
-                });
-                self.ctl.dirty = true;
-            }
-            _ => {} // Notes row is informational
-        }
+        self.apply(Intent::SetPatternField { node, field, value });
     }
 
     fn set_param_value(&mut self, value: f32) {
@@ -1663,19 +1632,11 @@ impl State {
 
         // Handle pattern params.
         if let TreeAddress::Pattern(_) = addr {
-            let pa = self.param_state.selected;
-            if pa == 0 {
-                // Length (beats) — set directly.
-                let clamped = value.clamp(1.0, 32.0);
-                if let Some(pat) = self.ctl.model.instruments.get_mut(inst)
-                    .and_then(|n| n.pattern.as_mut())
-                {
-                    pat.length_beats = clamped;
-                    let _ = self.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
-                        inst, beats: clamped,
-                    });
-                    self.ctl.dirty = true;
-                    self.rebuild_tree();
+            // (Only the length is a number: the other rows are switches, and the notes are not a setting.)
+            if self.param_state.selected == 0 {
+                if let Some(lane) = self.ctl.model.instruments.get(inst).filter(|lane| lane.pattern.is_some()) {
+                    let node = lane.node;
+                    self.apply(Intent::SetPatternField { node, field: PatternField::Length, value });
                 }
             }
             return;
@@ -2592,41 +2553,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 Some(TreeAddress::Instrument(inst)) => Some(inst),
                 _ => None,
             };
-            if let Some(inst) = target {
-                if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
-                    let currently_recording = inst_node.pattern.as_ref().is_some_and(|p| p.recording);
-                    if currently_recording {
-                        // Stop recording
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: false });
-                        if let Some(ref mut p) = inst_node.pattern {
-                            p.recording = false;
-                        }
-                    } else {
-                        // Start recording: create pattern state if needed
-                        if inst_node.pattern.is_none() {
-                            inst_node.pattern = Some(PatternState {
-                                bpm: s.ctl.model.bpm,
-                                length_beats: 4.0,
-                                looping: true,
-                                base_note: None,
-                                events: vec![],
-                                enabled: false,
-                                recording: false,
-                                in_key: false,
-                            });
-                        }
-                        // Send BPM and length first
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.ctl.model.bpm });
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternLength {
-                            inst,
-                            beats: inst_node.pattern.as_ref().unwrap().length_beats,
-                        });
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: true });
-                        inst_node.pattern.as_mut().unwrap().recording = true;
-                    }
-                    s.ctl.dirty = true;
-                    s.rebuild_tree();
-                }
+            if let Some(lane) = target.and_then(|inst| s.ctl.model.instruments.get(inst)) {
+                let (node, going) = (lane.node, lane.pattern.as_ref().is_some_and(|pattern| pattern.recording));
+                // (A recording is stopped by a second `r`; the tempo and the length are sent first when it starts.)
+                s.apply(Intent::SetRecording { node, recording: !going });
             }
         }
 

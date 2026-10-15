@@ -7,9 +7,9 @@
 
 use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, macro_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
-use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
+use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PluginSlot};
+use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PatternState, PluginSlot};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -73,6 +73,9 @@ impl Controller {
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::SetBpm { bpm } => Done::Event(self.set_bpm(bpm)?),
+            Intent::SetRecording { node, recording } => Done::Event(self.set_recording(node, recording)?),
+            Intent::ClearPattern { node } => Done::Event(self.clear_pattern(node)?),
+            Intent::SetPatternField { node, field, value } => Done::Event(self.set_pattern_field(node, field, value)?),
             Intent::SetNodeUi { node, ui } => Done::Event(self.set_node_ui(node, ui)?),
             Intent::SetPinned { node, params } => Done::Event(self.set_pinned(node, params)?),
             Intent::RenameGroup { node, name } => Done::Event(self.rename_group(node, &name)?),
@@ -338,6 +341,86 @@ impl Controller {
         self.model.bpm = bpm;
         let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
         Ok(Event::BpmSet { bpm })
+    }
+
+    /// The position of the lane `node`, whose pattern an intent is about.
+    fn lane_of_a_pattern(&self, node: NodeId) -> Result<usize, IntentError> {
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            NodePath::Instrument(inst) => Ok(inst),
+            _ => Err(invalid("a pattern belongs to a lane")),
+        }
+    }
+
+    /// Start a recording on a lane, or stop the one that is going on (`Intent::SetRecording`). Starting is what the terminal's `r` does: a lane that has no pattern is
+    /// given an empty one, the audio thread is told the tempo and the length first, since the count-in and the recording are counted in them, and then to record; a
+    /// pattern that is there keeps its notes and settings until the audio thread reports the new one (`Controller::poll`). What is started while it is going on, or stopped
+    /// while it is not, is told as it is, and nothing is sent: a second start would begin the count-in again.
+    fn set_recording(&mut self, node: NodeId, recording: bool) -> Result<Event, IntentError> {
+        let inst = self.lane_of_a_pattern(node)?;
+        let bpm = self.model.bpm;
+        let lane = &mut self.model.instruments[inst];
+        let going = lane.pattern.as_ref().is_some_and(|pattern| pattern.recording);
+        if recording && !going {
+            let pattern = lane.pattern.get_or_insert_with(|| PatternState::empty(bpm));
+            pattern.recording = true;
+            let beats = pattern.length_beats;
+            let _ = self.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
+            let _ = self.cmd_tx.send(GraphCommand::SetPatternLength { inst, beats });
+            let _ = self.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: true });
+        } else if !recording && going {
+            if let Some(pattern) = lane.pattern.as_mut() {
+                pattern.recording = false;
+            }
+            let _ = self.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: false });
+        }
+        Ok(Event::PatternSet { node, pattern: lane.pattern.as_ref().map(PatternState::info) })
+    }
+
+    /// Take the pattern of a lane out (`Intent::ClearPattern`): the audio thread forgets it, and a recording that was going on ends.
+    fn clear_pattern(&mut self, node: NodeId) -> Result<Event, IntentError> {
+        let inst = self.lane_of_a_pattern(node)?;
+        if self.model.instruments[inst].pattern.take().is_none() {
+            return Err(invalid("that lane has no pattern"));
+        }
+        let _ = self.cmd_tx.send(GraphCommand::ClearPattern { inst });
+        Ok(Event::PatternSet { node, pattern: None })
+    }
+
+    /// A setting of the pattern of a lane (`Intent::SetPatternField`), held to its range, a switch rounded; a lane that has no pattern is given an empty one with it, so
+    /// that the length of its first recording can be chosen. Each setting is told to the audio thread by its own command.
+    fn set_pattern_field(&mut self, node: NodeId, field: PatternField, value: f32) -> Result<Event, IntentError> {
+        if !value.is_finite() {
+            return Err(invalid(format!("{value} is not a value for {field:?}")));
+        }
+        let inst = self.lane_of_a_pattern(node)?;
+        let (min, max) = field.range();
+        let mut value = value.clamp(min, max);
+        if field.is_switch() {
+            value = value.round();
+        }
+        let bpm = self.model.bpm;
+        let pattern = self.model.instruments[inst].pattern.get_or_insert_with(|| PatternState::empty(bpm));
+        let command = match field {
+            PatternField::Length => {
+                pattern.length_beats = value;
+                GraphCommand::SetPatternLength { inst, beats: value }
+            }
+            PatternField::Enabled => {
+                pattern.enabled = value != 0.0;
+                GraphCommand::SetPatternEnabled { inst, enabled: pattern.enabled }
+            }
+            PatternField::Looping => {
+                pattern.looping = value != 0.0;
+                GraphCommand::SetPatternLooping { inst, looping: pattern.looping }
+            }
+            PatternField::Transpose => {
+                pattern.in_key = value != 0.0;
+                GraphCommand::SetPatternInKey { inst, in_key: pattern.in_key }
+            }
+        };
+        let told = pattern.info();
+        let _ = self.cmd_tx.send(command);
+        Ok(Event::PatternSet { node, pattern: Some(told) })
     }
 
     fn set_modulator_field(&mut self, node: NodeId, field: ModulatorField, value: f32) -> Result<Event, IntentError> {
@@ -1355,6 +1438,427 @@ plugin = "builtin:reverb"
         ctl.apply(Intent::SetBpm { bpm: 87.5 }).unwrap();
         ctl.apply(Intent::Save).unwrap();
         assert_eq!(session::parse(&std::fs::read_to_string(&path).unwrap()).unwrap().bpm, Some(87.5));
+    }
+
+    /// A lane with no pattern, and a lane with one that was recorded at 90: two beats, one note, in key, looping and enabled.
+    const WITH_A_PATTERN: &str = r#"
+bpm = 120.0
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 90.0
+length_beats = 2.0
+base_note = "C4"
+enabled = true
+transpose = "in_key"
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 24000
+status = "off"
+note = "C4"
+velocity = 0
+"#;
+
+    fn with_patterns() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(WITH_A_PATTERN).model, handles, None))
+    }
+
+    fn lane_at(ctl: &Controller, inst: usize) -> NodeId {
+        node(ctl, NodePath::Instrument(inst))
+    }
+
+    /// What a pattern is told as: the settings and the notes it has.
+    fn info(recording: bool, enabled: bool, looping: bool, in_key: bool, length_beats: f32, bpm: f32, notes: u32) -> crate::app::graph::PatternInfo {
+        crate::app::graph::PatternInfo { recording, enabled, looping, in_key, length_beats, bpm, notes }
+    }
+
+    fn pattern_set(node: NodeId, pattern: Option<crate::app::graph::PatternInfo>) -> Event {
+        Event::PatternSet { node, pattern }
+    }
+
+    #[test]
+    fn a_recording_that_starts_on_a_lane_with_no_pattern_gives_it_an_empty_one_and_is_counted_in_the_tempo_as_the_terminal_does() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 0);
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![pattern_set(lane, Some(info(true, false, true, false, 4.0, 120.0, 0)))]));
+        assert_eq!(sent(&engine), ["SetGlobalBpm bpm=120.0", "SetPatternLength inst=0 beats=4.0", "SetPatternRecording inst=0 recording=true"]);
+        assert!(ctl.model.instruments[0].pattern.as_ref().unwrap().recording);
+        assert!(ctl.dirty, "the pattern is saved with the session");
+    }
+
+    #[test]
+    fn a_recording_that_starts_on_a_lane_that_has_a_pattern_keeps_its_notes_and_its_settings_until_the_new_ones_come() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        // (Recorded at 90, which it says still; the tempo of the next one is the session's, 120.)
+        assert_eq!(applied.events, vec![pattern_set(lane, Some(info(true, true, true, true, 2.0, 90.0, 1)))]);
+        assert_eq!(sent(&engine), ["SetGlobalBpm bpm=120.0", "SetPatternLength inst=1 beats=2.0", "SetPatternRecording inst=1 recording=true"]);
+        assert_eq!(ctl.model.instruments[1].pattern.as_ref().unwrap().events.len(), 2);
+    }
+
+    #[test]
+    fn a_recording_that_is_started_again_or_stopped_when_there_is_none_is_told_as_it_is_and_changes_nothing() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 0);
+        ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        sent(&engine);
+        let again = ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        assert_eq!(again, Applied::of(2, vec![pattern_set(lane, Some(info(true, false, true, false, 4.0, 120.0, 0)))]));
+        assert_eq!(sent(&engine), Vec::<String>::new(), "the count-in is not begun again");
+        ctl.apply(Intent::SetRecording { node: lane, recording: false }).unwrap();
+        sent(&engine);
+        let again = ctl.apply(Intent::SetRecording { node: lane, recording: false }).unwrap();
+        assert_eq!(again.events, vec![pattern_set(lane, Some(info(false, false, true, false, 4.0, 120.0, 0)))]);
+        assert_eq!(sent(&engine), Vec::<String>::new(), "there is nothing to stop");
+        let other = lane_at(&ctl, 1);
+        let stopped = ctl.apply(Intent::SetRecording { node: other, recording: false }).unwrap();
+        assert_eq!(stopped.events, vec![pattern_set(other, Some(info(false, true, true, true, 2.0, 90.0, 1)))]);
+        assert_eq!(sent(&engine), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_recording_is_stopped_at_once_and_the_pattern_that_is_made_comes_from_the_audio_thread() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 0);
+        ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetRecording { node: lane, recording: false }).unwrap();
+        assert_eq!(applied.events, vec![pattern_set(lane, Some(info(false, false, true, false, 4.0, 120.0, 0)))]);
+        assert_eq!(sent(&engine), ["SetPatternRecording inst=0 recording=false"]);
+        assert!(!ctl.model.instruments[0].pattern.as_ref().unwrap().recording);
+        // The audio thread reports what it recorded: the controller puts it in the lane.
+        engine.pattern_tx.send(testutil::recording(0)).unwrap();
+        ctl.poll();
+        let pattern = ctl.model.instruments[0].pattern.as_ref().unwrap();
+        assert_eq!((pattern.events.len(), pattern.recording, pattern.enabled), (2, false, true));
+        let snapshot = ctl.snapshot();
+        let kind = &snapshot.graph.nodes.iter().find(|n| n.id == lane).unwrap().kind;
+        assert!(matches!(kind, NodeKind::Instrument { pattern: Some(p), .. } if p.notes == 1 && !p.recording), "{kind:?}");
+    }
+
+    #[test]
+    fn a_recording_is_refused_for_what_is_not_a_lane_and_changes_nothing() {
+        let (engine, mut ctl) = with_patterns();
+        sent(&engine);
+        // A node that is not there.
+        assert!(matches!(ctl.apply(Intent::SetRecording { node: NodeId(9_999), recording: true }), Err(IntentError::NotFound(_))));
+        // The master, which is a node of the graph and not of the model.
+        let master = ctl.apply(Intent::SetRecording { node: NodeId::MASTER, recording: true });
+        assert!(matches!(master, Err(IntentError::NotFound(_))), "{master:?}");
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert!(ctl.model.instruments[0].pattern.is_none());
+    }
+
+    #[test]
+    fn a_pattern_is_not_asked_of_a_node_that_is_there_and_is_no_lane_an_effect_a_group_a_modulator() {
+        let (handles, engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(THE_PATTERNS_SCENE).model, handles, None);
+        let (group, bus, reverb, lane_lfo) = (
+            node(&ctl, NodePath::Group(0)),
+            node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }),
+            node(&ctl, NodePath::Effect { inst: 0, index: 0 }),
+            ctl.model.instruments[0].modulators[0].node,
+        );
+        let group_lfo = ctl.model.groups[0].modulators[0].node;
+        sent(&engine);
+        for node in [group, bus, reverb, lane_lfo, group_lfo] {
+            for intent in [
+                Intent::SetRecording { node, recording: true },
+                Intent::ClearPattern { node },
+                Intent::SetPatternField { node, field: PatternField::Length, value: 2.0 },
+            ] {
+                let refused = ctl.apply(intent.clone());
+                assert_eq!(refused, Err(invalid("a pattern belongs to a lane")), "{intent:?}");
+            }
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+        assert!(ctl.model.instruments.iter().all(|lane| lane.pattern.as_ref().is_none_or(|pattern| pattern.length_beats == 2.0 && !pattern.recording)));
+    }
+
+    #[test]
+    fn a_pattern_is_taken_out_with_the_audio_threads_and_the_lane_has_none() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        sent(&engine);
+        let applied = ctl.apply(Intent::ClearPattern { node: lane }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![pattern_set(lane, None)]));
+        assert!(ctl.model.instruments[1].pattern.is_none());
+        assert_eq!(sent(&engine), ["ClearPattern inst=1"]);
+        assert!(ctl.dirty);
+        // (There is none now to take out.)
+        assert!(matches!(ctl.apply(Intent::ClearPattern { node: lane }), Err(IntentError::Invalid(_))));
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!(ctl.rev, 1, "a refusal is no revision");
+    }
+
+    #[test]
+    fn a_pattern_that_is_being_recorded_is_taken_out_too_and_the_recording_ends() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        sent(&engine);
+        ctl.apply(Intent::ClearPattern { node: lane }).unwrap();
+        assert!(ctl.model.instruments[1].pattern.is_none());
+        assert_eq!(sent(&engine), ["ClearPattern inst=1"]);
+    }
+
+    #[test]
+    fn a_pattern_is_not_taken_out_of_what_is_not_a_lane() {
+        let (_engine, mut ctl) = with_patterns();
+        assert!(matches!(ctl.apply(Intent::ClearPattern { node: NodeId(9_999) }), Err(IntentError::NotFound(_))));
+        let master = ctl.apply(Intent::ClearPattern { node: NodeId::MASTER });
+        assert!(matches!(master, Err(IntentError::NotFound(_)) | Err(IntentError::Invalid(_))), "{master:?}");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+    }
+
+    #[test]
+    fn the_settings_of_a_pattern_are_set_in_the_model_and_the_audio_thread_each_by_its_own_command() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        sent(&engine);
+        let set = |ctl: &mut Controller, field: PatternField, value: f32| ctl.apply(Intent::SetPatternField { node: lane, field, value }).unwrap();
+        assert_eq!(set(&mut ctl, PatternField::Length, 8.0), Applied::of(1, vec![pattern_set(lane, Some(info(false, true, true, true, 8.0, 90.0, 1)))]));
+        assert_eq!(sent(&engine), ["SetPatternLength inst=1 beats=8.0"]);
+        assert_eq!(set(&mut ctl, PatternField::Enabled, 0.0).events, vec![pattern_set(lane, Some(info(false, false, true, true, 8.0, 90.0, 1)))]);
+        assert_eq!(sent(&engine), ["SetPatternEnabled inst=1 enabled=false"]);
+        assert_eq!(set(&mut ctl, PatternField::Looping, 0.0).events, vec![pattern_set(lane, Some(info(false, false, false, true, 8.0, 90.0, 1)))]);
+        assert_eq!(sent(&engine), ["SetPatternLooping inst=1 looping=false"]);
+        assert_eq!(set(&mut ctl, PatternField::Transpose, 0.0).events, vec![pattern_set(lane, Some(info(false, false, false, false, 8.0, 90.0, 1)))]);
+        assert_eq!(sent(&engine), ["SetPatternInKey inst=1 in_key=false"]);
+        let pattern = ctl.model.instruments[1].pattern.as_ref().unwrap();
+        assert_eq!((pattern.length_beats, pattern.enabled, pattern.looping, pattern.in_key), (8.0, false, false, false));
+        assert_eq!(pattern.events.len(), 2, "the notes are as they were");
+        assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn a_setting_of_a_pattern_is_held_to_its_range_and_a_switch_is_rounded() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        sent(&engine);
+        for (field, asked, is) in [
+            (PatternField::Length, 0.0, 1.0),
+            (PatternField::Length, 1.0, 1.0),
+            (PatternField::Length, 2.5, 2.5),
+            (PatternField::Length, 32.0, 32.0),
+            (PatternField::Length, 100.0, 32.0),
+            (PatternField::Enabled, 0.4, 0.0),
+            (PatternField::Enabled, 0.6, 1.0),
+            (PatternField::Looping, -3.0, 0.0),
+            (PatternField::Looping, 7.0, 1.0),
+            (PatternField::Transpose, 0.5, 1.0),
+        ] {
+            let applied = ctl.apply(Intent::SetPatternField { node: lane, field, value: asked }).unwrap();
+            let Some(Event::PatternSet { pattern: Some(told), .. }) = applied.events.first() else { panic!("{applied:?}") };
+            let now = match field {
+                PatternField::Length => told.length_beats,
+                PatternField::Enabled => f32::from(u8::from(told.enabled)),
+                PatternField::Looping => f32::from(u8::from(told.looping)),
+                PatternField::Transpose => f32::from(u8::from(told.in_key)),
+            };
+            assert_eq!(now, is, "{field:?} {asked}");
+        }
+        sent(&engine);
+    }
+
+    #[test]
+    fn a_setting_of_a_pattern_that_is_not_a_number_is_refused_and_changes_nothing() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        sent(&engine);
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let refused = ctl.apply(Intent::SetPatternField { node: lane, field: PatternField::Length, value });
+            assert_eq!(refused, Err(invalid(format!("{value} is not a value for Length"))));
+            // (The number is judged before the node it is for: a node that is not a lane, and one that is not there, are refused for the number.)
+            for field in [PatternField::Enabled, PatternField::Looping, PatternField::Transpose] {
+                for node in [NodeId(9_999), NodeId::MASTER] {
+                    let refused = ctl.apply(Intent::SetPatternField { node, field, value });
+                    assert_eq!(refused, Err(invalid(format!("{value} is not a value for {field:?}"))), "{node:?}");
+                }
+            }
+        }
+        assert_eq!(ctl.model.instruments[1].pattern.as_ref().unwrap().length_beats, 2.0);
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+    }
+
+    #[test]
+    fn a_setting_given_to_a_lane_that_has_no_pattern_makes_an_empty_one_so_that_the_length_of_its_first_recording_can_be_chosen() {
+        let (engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 0);
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetPatternField { node: lane, field: PatternField::Length, value: 8.0 }).unwrap();
+        assert_eq!(applied.events, vec![pattern_set(lane, Some(info(false, false, true, false, 8.0, 120.0, 0)))]);
+        assert_eq!(sent(&engine), ["SetPatternLength inst=0 beats=8.0"]);
+        // The recording that follows is counted in it.
+        sent(&engine);
+        ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        assert_eq!(sent(&engine), ["SetGlobalBpm bpm=120.0", "SetPatternLength inst=0 beats=8.0", "SetPatternRecording inst=0 recording=true"]);
+    }
+
+    #[test]
+    fn a_setting_is_not_given_to_what_is_not_a_lane() {
+        let (_engine, mut ctl) = with_patterns();
+        let refused = ctl.apply(Intent::SetPatternField { node: NodeId(9_999), field: PatternField::Length, value: 2.0 });
+        assert!(matches!(refused, Err(IntentError::NotFound(_))), "{refused:?}");
+        let master = ctl.apply(Intent::SetPatternField { node: NodeId::MASTER, field: PatternField::Length, value: 2.0 });
+        assert!(matches!(master, Err(IntentError::NotFound(_)) | Err(IntentError::Invalid(_))), "{master:?}");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+    }
+
+    #[test]
+    fn what_is_done_to_a_pattern_is_no_step_of_the_history_and_does_not_forget_it() {
+        let (_engine, mut ctl) = with_patterns();
+        let lane = lane_at(&ctl, 1);
+        let osc = lane_at(&ctl, 0);
+        gain(&mut ctl, osc, Gain::Volume, 0.5).unwrap();
+        ctl.apply(Intent::SetPatternField { node: lane, field: PatternField::Length, value: 8.0 }).unwrap();
+        ctl.apply(Intent::SetRecording { node: lane, recording: true }).unwrap();
+        ctl.apply(Intent::ClearPattern { node: lane }).unwrap();
+        // The step that was there is the one that is undone, and the pattern is what it was.
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].volume, 1.0);
+        assert!(ctl.model.instruments[1].pattern.is_none(), "(a pattern is not put back by undo)");
+    }
+
+    /// A group with a bus filter and an LFO, a member of it with a reverb and an LFO of its own, a lane with a pattern that was recorded at 90 (two beats, one note, in key,
+    /// looping and enabled) and a lane with no instrument, at a tempo of 100: every kind of node that a pattern can be asked of, and is refused for.
+    const THE_PATTERNS_SCENE: &str = r#"
+bpm = 100.0
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.modulator]]
+type = "lfo"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+type = "lfo"
+
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 90.0
+length_beats = 2.0
+base_note = "C4"
+enabled = true
+transpose = "in_key"
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 24000
+status = "off"
+note = "C4"
+velocity = 0
+
+[[instrument]]
+"#;
+
+    /// `THE_PATTERNS_SCENE`, and what the controller makes of intents about patterns, as the web client's tests read it (`web/src/client/fixtures/patterns.json`): they pin the
+    /// mock engine's patterns to the controller's. Each script is a list of intents asked of one controller in turn, with the event each is answered with or the words it is
+    /// refused with: every kind of intent asked of every node of the session (the master and one that is not there too), with the values that are held to the range, rounded and
+    /// taken as they are, and then runs on each lane that go on from one intent to the next (a recording that is started twice, a pattern that is taken out twice, a setting that
+    /// makes the pattern a lane had not). `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_pattern_comes_to_is_current() {
+        let scene = || {
+            let (handles, engine) = testutil::stub_engine();
+            (engine, Controller::new(load(THE_PATTERNS_SCENE).model, handles, None))
+        };
+        let (_engine, ctl) = scene();
+        let before = ctl.snapshot();
+        let mut nodes: Vec<NodeId> = ctl.model.nodes().map(|(id, _)| id).collect();
+        let lanes: Vec<NodeId> = (0..ctl.model.instruments.len()).map(|inst| lane_at(&ctl, inst)).collect();
+        nodes.extend([NodeId::MASTER, NodeId(9_999)]);
+        let length = [0.0, 0.4, 1.0, 2.5, 8.0, 32.0, 100.0, -3.0];
+        let switch = [0.0, 0.4, 0.6, 1.0, 7.0, -3.0];
+
+        let mut scripts: Vec<Vec<Intent>> = Vec::new();
+        for &node in &nodes {
+            scripts.push(vec![Intent::SetRecording { node, recording: true }]);
+            scripts.push(vec![Intent::SetRecording { node, recording: false }]);
+            scripts.push(vec![Intent::ClearPattern { node }]);
+            for (field, values) in [(PatternField::Length, &length[..]), (PatternField::Enabled, &switch[..]), (PatternField::Looping, &switch[..]), (PatternField::Transpose, &switch[..])] {
+                scripts.extend(values.iter().map(|&value| vec![Intent::SetPatternField { node, field, value }]));
+            }
+        }
+        for &node in &lanes {
+            let record = |recording| Intent::SetRecording { node, recording };
+            let field = |field, value| Intent::SetPatternField { node, field, value };
+            let clear = Intent::ClearPattern { node };
+            scripts.push(vec![record(true), record(true), record(false), record(false)]);
+            scripts.push(vec![field(PatternField::Length, 8.0), record(true), record(false), clear.clone(), clear.clone()]);
+            scripts.push(vec![
+                field(PatternField::Enabled, 1.0),
+                field(PatternField::Looping, 0.0),
+                field(PatternField::Transpose, 1.0),
+                field(PatternField::Length, 3.5),
+                clear.clone(),
+                field(PatternField::Length, 2.0),
+            ]);
+            scripts.push(vec![clear.clone(), record(false), record(true), clear.clone(), record(true)]);
+        }
+
+        let scripts: Vec<serde_json::Value> = scripts
+            .into_iter()
+            .map(|script| {
+                let (_engine, mut ctl) = scene();
+                let steps: Vec<serde_json::Value> = script
+                    .into_iter()
+                    .map(|intent| match ctl.apply(intent.clone()) {
+                        Err(error) => serde_json::json!({ "intent": testutil::wire(&intent), "error": error.to_string() }),
+                        Ok(applied) => {
+                            assert_eq!(applied.events.len(), 1, "a pattern's intent is told as one event: {intent:?}");
+                            serde_json::json!({ "intent": testutil::wire(&intent), "event": testutil::wire(&applied.events[0]) })
+                        }
+                    })
+                    .collect();
+                serde_json::json!(steps)
+            })
+            .collect();
+        assert!(scripts.len() > 200, "the fixture is not empty");
+
+        let wire = serde_json::to_string(&before).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "scripts": scripts });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/patterns.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a pattern comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 
     #[test]
@@ -4265,7 +4769,7 @@ type = "midi"
         let node = graph.nodes.iter().find(|n| n.id == added).unwrap();
         assert_eq!((node.parent, node.name.as_str()), (None, "Oscillator"));
         assert!(
-            matches!(&node.kind, NodeKind::Instrument { plugin: Some(p), range: None, transpose: 0, volume } if p.id == "builtin:osc" && *volume == 1.0),
+            matches!(&node.kind, NodeKind::Instrument { plugin: Some(p), range: None, transpose: 0, volume, .. } if p.id == "builtin:osc" && *volume == 1.0),
             "{node:?}"
         );
         // Its audio goes to the master, after the links the others have.

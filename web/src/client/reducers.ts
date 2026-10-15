@@ -71,6 +71,8 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
     }
     case "rangeSet":
       return node.kind === "instrument" ? { ...node, range: event.range } : `node ${node.id} is not a lane`;
+    case "patternSet":
+      return node.kind === "instrument" ? { ...node, pattern: event.pattern } : `node ${node.id} is not a lane`;
     case "nodeUiSet":
       return withPlace(node, event.ui);
     case "pinnedSet": {

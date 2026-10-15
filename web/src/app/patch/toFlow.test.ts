@@ -52,6 +52,7 @@ const instrumentOf = (id: NodeId, withPlugin: Plugin | null, parent: NodeId | nu
   range: null,
   transpose: 0,
   volume: 1,
+  pattern: null,
 });
 
 const instrument = (id: NodeId, count = 3, parent: NodeId | null = null): Node => instrumentOf(id, plugin(count), parent);

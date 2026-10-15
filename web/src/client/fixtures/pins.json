@@ -1738,6 +1738,7 @@
           "kind": "instrument",
           "name": "Oscillator",
           "parent": 0,
+          "pattern": null,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
@@ -2028,6 +2029,7 @@
           "kind": "instrument",
           "name": "(empty)",
           "parent": null,
+          "pattern": null,
           "plugin": null,
           "range": null,
           "transpose": 0,

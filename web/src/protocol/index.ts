@@ -22,6 +22,8 @@ export type { NodeUi } from "./generated/NodeUi";
 export type { NoteRange } from "./generated/NoteRange";
 export type { Param } from "./generated/Param";
 export type { ParamValue } from "./generated/ParamValue";
+export type { PatternField } from "./generated/PatternField";
+export type { PatternInfo } from "./generated/PatternInfo";
 export type { PianoMeta } from "./generated/PianoMeta";
 export type { Plugin } from "./generated/Plugin";
 export type { Port } from "./generated/Port";
@@ -47,6 +49,7 @@ export {
   NAME_LIMIT,
   NODE_UI_LIMIT,
   NODE_UI_PARTS,
+  PATTERN_FIELD_RANGES,
   PINNED_LIMIT,
   PROTOCOL,
   SCALE_KINDS,

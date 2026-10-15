@@ -325,6 +325,8 @@ impl Controller {
         match intent {
             // (Done before `plan_history` is asked, by `apply`: they are no steps of the history.)
             Intent::Save | Intent::SaveAs { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
+            // A pattern is not put back by undo (what a recording took and what a clear took are not kept): these are no steps, and take nothing from the ones there are.
+            Intent::SetRecording { .. } | Intent::ClearPattern { .. } | Intent::SetPatternField { .. } => Plan::Nothing,
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
                 Some((name, old)) => step(format!("set {name}"), Intent::SetParam { node: *node, param: *param, value: old }, Some(Key::Param(*node, *param))),
                 None => Plan::Nothing,
@@ -569,7 +571,7 @@ mod tests {
 
     use crate::app::controller::Controller;
     use crate::app::graph::{Endpoint, NoteRange, Port};
-    use crate::app::intent::{Applied, Event, IntentError, ModulatorKind};
+    use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
     use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel};
     use crate::app::testutil::{self, StubEngine, described, load, wire};
     use crate::session::NodeUi;
@@ -4542,6 +4544,23 @@ size = 0.5
                     undo(),
                     redo(),
                     redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "what is done to a pattern is no step: undo goes back past it, and it forgets nothing",
+                vec![
+                    set(detune, 1.0),
+                    pause(),
+                    Op::Do(Intent::SetPatternField { node: lane0, field: PatternField::Length, value: 8.0 }),
+                    Op::Do(Intent::SetRecording { node: lane0, recording: true }),
+                    Op::Do(Intent::SetRecording { node: lane0, recording: false }),
+                    Op::Do(Intent::SetPatternField { node: lane0, field: PatternField::Enabled, value: 1.0 }),
+                    Op::Do(Intent::ClearPattern { node: lane0 }),
+                    Op::Do(Intent::ClearPattern { node: lane0 }),
+                    Op::Do(Intent::SetRecording { node: g0, recording: true }),
+                    undo(),
+                    undo(),
                     redo(),
                 ],
             ),

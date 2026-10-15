@@ -1291,6 +1291,240 @@
       ]
     },
     {
+      "name": "what is done to a pattern is no step: undo goes back past it, and it forgets nothing",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "pattern": {
+                "bpm": 120.0,
+                "enabled": false,
+                "inKey": false,
+                "lengthBeats": 8.0,
+                "looping": true,
+                "notes": 0,
+                "recording": false
+              },
+              "rev": 2,
+              "type": "patternSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "field": "length",
+            "node": 3,
+            "type": "setPatternField",
+            "value": 8.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "pattern": {
+                "bpm": 120.0,
+                "enabled": false,
+                "inKey": false,
+                "lengthBeats": 8.0,
+                "looping": true,
+                "notes": 0,
+                "recording": true
+              },
+              "rev": 3,
+              "type": "patternSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "recording": true,
+            "type": "setRecording"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "pattern": {
+                "bpm": 120.0,
+                "enabled": false,
+                "inKey": false,
+                "lengthBeats": 8.0,
+                "looping": true,
+                "notes": 0,
+                "recording": false
+              },
+              "rev": 4,
+              "type": "patternSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "recording": false,
+            "type": "setRecording"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "pattern": {
+                "bpm": 120.0,
+                "enabled": true,
+                "inKey": false,
+                "lengthBeats": 8.0,
+                "looping": true,
+                "notes": 0,
+                "recording": false
+              },
+              "rev": 5,
+              "type": "patternSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "field": "enabled",
+            "node": 3,
+            "type": "setPatternField",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "pattern": null,
+              "rev": 6,
+              "type": "patternSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "type": "clearPattern"
+          },
+          "restructured": false
+        },
+        {
+          "error": "that lane has no pattern",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "type": "clearPattern"
+          }
+        },
+        {
+          "error": "a pattern belongs to a lane",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 0,
+            "recording": true,
+            "type": "setRecording"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 7,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 8,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
       "name": "the gains are put back each by its own words",
       "rows": [
         {
@@ -25976,6 +26210,7 @@
               "kind": "instrument",
               "name": "Oscillator",
               "parent": null,
+              "pattern": null,
               "plugin": {
                 "currentPreset": null,
                 "format": "Built-in",
@@ -26395,6 +26630,7 @@
               "kind": "instrument",
               "name": "Oscillator",
               "parent": null,
+              "pattern": null,
               "plugin": {
                 "currentPreset": null,
                 "format": "Built-in",
@@ -27239,6 +27475,7 @@
               "kind": "instrument",
               "name": "Oscillator",
               "parent": 0,
+              "pattern": null,
               "plugin": {
                 "currentPreset": null,
                 "format": "Built-in",
@@ -27454,6 +27691,7 @@
               "kind": "instrument",
               "name": "Oscillator",
               "parent": null,
+              "pattern": null,
               "plugin": {
                 "currentPreset": null,
                 "format": "Built-in",
@@ -27582,6 +27820,7 @@
               "kind": "instrument",
               "name": "(empty)",
               "parent": null,
+              "pattern": null,
               "plugin": null,
               "range": null,
               "transpose": 0,
@@ -28143,6 +28382,7 @@
           "kind": "instrument",
           "name": "Oscillator",
           "parent": 0,
+          "pattern": null,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
@@ -28530,6 +28770,7 @@
           "kind": "instrument",
           "name": "Oscillator",
           "parent": null,
+          "pattern": null,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
