@@ -7791,6 +7791,24 @@ mod tests {
     }
 
     #[test]
+    fn a_lane_modulator_and_a_group_modulator_on_one_parameter_leave_what_the_lane_makes_of_it() {
+        // (A group's modulator is applied before the lanes render and the lane's own later, inside the lane, which writes the parameter from the value the user set: the
+        // group's offset is not added to it. The page's ring of such a parameter is the lane's cables alone.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        rig.gain_target(0, 0.1); // the lane's: 0.5 + 0.1
+        rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) }).unwrap();
+        let target = ModTarget { kind: ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }, depth: 0.2, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
+        rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        let mut out = make_output();
+        rig.graph.process(&[note_on(60)], &mut out).unwrap(); // (the instrument puts out its value while a note is held)
+        // The instrument puts out 0.5, and the effect scales it by the parameter: 0.6 of it is the lane's, 0.8 would be the two added.
+        assert!(close(out[0][0], 0.5 * 0.6), "{}", out[0][0]);
+    }
+
+    #[test]
     fn two_cables_to_one_setting_publish_the_value_the_last_of_them_wrote_to_both() {
         // (Writers to one setting are last-wins, as `apply_cross_mod` says: the value is what the later cable made of it.)
         let mut rig = Rig::new();
