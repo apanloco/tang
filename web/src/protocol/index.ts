@@ -5,6 +5,7 @@ export type { CatalogEntry } from "./generated/CatalogEntry";
 export type { ClientMessage } from "./generated/ClientMessage";
 export type { Edge } from "./generated/Edge";
 export type { EdgeId } from "./generated/EdgeId";
+export type { Endpoint } from "./generated/Endpoint";
 export type { ErrorCode } from "./generated/ErrorCode";
 export type { Event } from "./generated/Event";
 export type { Gain } from "./generated/Gain";

@@ -8,7 +8,7 @@
 // session file, §4.4), and is drawn there; the layout of the others does not leave room for it.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
-import { cableLabel, displayNames, portName } from "../../client/names";
+import { cableWords, displayNames, endLabel } from "../../client/names";
 import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
@@ -40,6 +40,10 @@ export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NO
 /** ...and an envelope's, which draws its shape, is taller by that. */
 export const ENVELOPE_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + ENVELOPE_EXTRA;
 export const MASTER_HEIGHT = 164;
+/** A cable that a modulator's node lists is a row this tall (the style says so: `.tang-cable-row`)... */
+export const CABLE_ROW_HEIGHT = 20;
+/** ...and the list has this much room before it, as much as the rest of what is in the body of the node (`.tang-node__body`'s gap). */
+export const CABLES_GAP = 8;
 
 export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master";
 
@@ -58,6 +62,21 @@ export interface PatchNodeData extends Record<string, unknown> {
   targets: readonly Drivable[];
   /** For a modulator: the settings of it that a cable ends at, as the names of their handles, in the order a modulator has them; nothing for the other nodes. */
   drivenSettings: readonly SettingHandle[];
+  /** For a modulator: the cables that start at it, in the order of the graph, as its node lists them (`CableRow`); nothing for the other nodes. */
+  cables: readonly CableRow[];
+}
+
+/**
+ * A cable that starts at a modulator, as the modulator's node lists it: a row that says what the cable goes to, with a place on its
+ * edge where another modulator's cable can end, to drive how deep this one goes.
+ */
+export interface CableRow {
+  /** The cable. */
+  edge: EdgeId;
+  /** What the cable ends at, in words (`Filter: cutoff`, `depth of LFO → Filter: cutoff`: `endLabel`). */
+  label: string;
+  /** Whether a cable ends at its depth: another modulator drives how deep it goes. */
+  driven: boolean;
 }
 
 export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
@@ -93,6 +112,9 @@ export type SettingHandle = (typeof SETTING_HANDLES)[number];
 
 /** The name of the handle of a parameter of a plugin, by the plugin's own index. */
 export const paramHandle = (index: number): string => `param-${String(index)}`;
+
+/** The name of the handle in a modulator's node where a cable can end to drive the depth of the cable `edge`, which starts at that modulator. */
+export const depthHandle = (edge: EdgeId): string => `depth-${String(edge)}`;
 
 /** The name of the handle of a node where a port is, if the canvas draws one. */
 export function handleOf(port: Port): string | null {
@@ -151,12 +173,14 @@ export function controlCount(node: Node, knobs: number): number {
   }
 }
 
-/** How tall a node is, as the layout assumes it (the components' styles keep to it). */
-export function nodeHeight(node: Node, knobs: number): number {
+/** How tall a node is, as the layout assumes it (the components' styles keep to it). `cables` is how many a modulator lists (`CableRow`); it is nothing to the other nodes. */
+export function nodeHeight(node: Node, knobs: number, cables = 0): number {
   switch (node.kind) {
-    case "modulator":
-      if (node.source.type === "midiLearn") return MODULATOR_HEIGHT;
-      return node.source.type === "envelope" ? ENVELOPE_NODE_HEIGHT : MODULATOR_SETTINGS_HEIGHT;
+    case "modulator": {
+      const listed = cables > 0 ? CABLES_GAP + cables * CABLE_ROW_HEIGHT : 0;
+      if (node.source.type === "midiLearn") return MODULATOR_HEIGHT + listed;
+      return (node.source.type === "envelope" ? ENVELOPE_NODE_HEIGHT : MODULATOR_SETTINGS_HEIGHT) + listed;
+    }
     case "master":
       return MASTER_HEIGHT;
     default: {
@@ -255,9 +279,9 @@ function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly No
 }
 
 /** Where each node of the graph goes on the canvas. */
-function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>): Map<NodeId, { x: number; y: number }> {
+function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>, cableCounts: ReadonlyMap<NodeId, number>): Map<NodeId, { x: number; y: number }> {
   const placed = new Map<NodeId, { x: number; y: number }>();
-  const heightOfNode = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0);
+  const heightOfNode = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0);
   const place = (node: Node, column: number, y: number): void => {
     placed.set(node.id, { x: column * COLUMN, y });
   };
@@ -321,17 +345,33 @@ function layout(graph: Graph, knobCounts: ReadonlyMap<NodeId, number>): Map<Node
   return placed;
 }
 
+/** The cables that start at each modulator, as its node lists them, in the order of the graph. */
+function cableRows(graph: Graph, names: ReadonlyMap<NodeId, string>): Map<NodeId, CableRow[]> {
+  const drivenDepths = new Set<EdgeId>(graph.edges.flatMap((edge) => (edge.to.port.type === "depth" ? [edge.to.port.edge] : [])));
+  const rows = new Map<NodeId, CableRow[]>();
+  for (const edge of graph.edges) {
+    if (edge.kind !== "modulation") continue;
+    rows.set(edge.from.node, [...(rows.get(edge.from.node) ?? []), { edge: edge.id, label: endLabel(graph, names, edge.to), driven: drivenDepths.has(edge.id) }]);
+  }
+  return rows;
+}
+
 /** The nodes of the session on the canvas, and the cables between them. */
 export function toFlow(graph: Graph): Flow {
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);
+  const listed = cableRows(graph, names);
   const knobs = new Map<NodeId, number[]>();
   for (const node of graph.nodes) {
     const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
     knobs.set(node.id, knobsOf(plugin, modulated.get(node.id) ?? new Set()));
   }
-  const positions = layout(graph, new Map([...knobs].map(([id, params]) => [id, params.length])));
+  const positions = layout(
+    graph,
+    new Map([...knobs].map(([id, params]) => [id, params.length])),
+    new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0])),
+  );
 
   const nodes: PatchNode[] = graph.nodes.map((node) => ({
     id: String(node.id),
@@ -348,6 +388,7 @@ export function toFlow(graph: Graph): Flow {
       modulated: [...(modulated.get(node.id) ?? [])].sort((a, b) => a - b),
       targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
       drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
+      cables: node.kind === "modulator" ? (listed.get(node.id) ?? []) : [],
     },
     draggable: true,
     deletable: false,
@@ -360,17 +401,12 @@ export function toFlow(graph: Graph): Flow {
     if (sourceHandle === null || targetHandle === null) continue;
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle, targetHandle, deletable: false };
     if (edge.kind === "modulation") {
-      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: describeCable(graph, names, edge) }, zIndex: 10 });
+      edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: cableWords(graph, names, edge) }, zIndex: 10 });
     } else {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
   }
   return { nodes, edges };
-}
-
-/** What a modulation cable joins, in words: the modulator, then the node it drives and the parameter or setting of it. */
-function describeCable(graph: Graph, names: ReadonlyMap<NodeId, string>, edge: Edge): string {
-  return cableLabel(names.get(edge.from.node) ?? "?", names.get(edge.to.node) ?? "?", portName(graph, edge.to.node, edge.to.port));
 }
 
 /** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */

@@ -1,6 +1,6 @@
 // What the nodes of a session are called, wherever a person reads it: on the canvas, in what a screen
 // reader says of a control, in what the page says of a cable or of what it could not do.
-import type { Graph, NodeId, Port } from "../protocol";
+import type { EdgeId, Endpoint, Graph, NodeId, Port } from "../protocol";
 
 /**
  * What each node is called on the canvas. The server names a node by what it is (a plugin's name, a
@@ -32,6 +32,33 @@ export function displayNames(graph: Graph): Map<NodeId, string> {
 
 /** What a cable joins, in words: `LFO → Filter: cutoff` (the parameter is left out when it is not one). */
 export const cableLabel = (from: string, to: string, param?: string | null): string => `${from} → ${to}${param ? `: ${param}` : ""}`;
+
+/**
+ * What a cable ends at, in words: the node and the port of it (`Filter: cutoff`, `LFO: rate`), or, for the depth of a cable, that cable's
+ * words (`depth of LFO → Filter: cutoff`: a modulator can have many cables, and the depth of one is told from the depth of another by where
+ * the cable goes). A cable that is being read (`reading`: the ids of the cables whose words are being told) is not read again, since cables can
+ * drive each other's depths: its depth is called after the node it is the port of, as the depth of a cable that is not there is. `names` is
+ * what each node is called (`displayNames`).
+ */
+export function endLabel(graph: Graph, names: ReadonlyMap<NodeId, string>, to: Endpoint, reading: ReadonlySet<EdgeId> = new Set()): string {
+  if (to.port.type === "depth") {
+    const { edge } = to.port;
+    const cable = reading.has(edge) ? undefined : graph.edges.find((found) => found.kind === "modulation" && found.id === edge);
+    if (cable) return `depth of ${cableWords(graph, names, cable, reading)}`;
+  }
+  const name = names.get(to.node) ?? "?";
+  const port = portName(graph, to.node, to.port);
+  return port ? `${name}: ${port}` : name;
+}
+
+/**
+ * A cable, in words: `LFO → Filter: cutoff`, `ADSR → depth of LFO → Filter: cutoff` (`endLabel` says how its end is told). A cable
+ * that is not made yet has no id, and is the same.
+ */
+export function cableWords(graph: Graph, names: ReadonlyMap<NodeId, string>, cable: { from: Endpoint; to: Endpoint; id?: EdgeId }, reading: ReadonlySet<EdgeId> = new Set()): string {
+  const now = cable.id === undefined ? reading : new Set([...reading, cable.id]);
+  return `${names.get(cable.from.node) ?? "?"} → ${endLabel(graph, names, cable.to, now)}`;
+}
 
 /**
  * What the port of a node that a cable ends at is called, for the cable's words: a parameter is what its plugin calls it (by the

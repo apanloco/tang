@@ -50,3 +50,25 @@ export async function addEnvelope(page: Page): Promise<Locator> {
   await expect(envelope).toBeVisible();
   return envelope;
 }
+
+/** Where each node of the canvas is, as the browser draws it (`name` is the node's own, as it is in its header). */
+export async function nodeBoxes(page: Page): Promise<{ name: string; left: number; top: number; width: number; height: number }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll(".react-flow__node")].map((element) => {
+      const box = element.getBoundingClientRect();
+      return { name: element.querySelector(".tang-node__name")?.textContent ?? "?", left: box.left, top: box.top, width: box.width, height: box.height };
+    }),
+  );
+}
+
+/** No node of the canvas lies over another (a pixel of slack: the browser rounds). */
+export async function expectNodesApart(page: Page): Promise<void> {
+  const nodes = await nodeBoxes(page);
+  for (const a of nodes) {
+    for (const b of nodes) {
+      if (a === b) continue;
+      const apart = a.left + a.width <= b.left + 1 || b.left + b.width <= a.left + 1 || a.top + a.height <= b.top + 1 || b.top + b.height <= a.top + 1;
+      expect(apart, `${a.name} and ${b.name}`).toBe(true);
+    }
+  }
+}

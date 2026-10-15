@@ -23,7 +23,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
-import { handleOf, paramHandle } from "./toFlow";
+import { depthHandle, handleOf, paramHandle } from "./toFlow";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
 export function sameParamFacts(a: Param | undefined, b: Param | undefined): boolean {
@@ -460,6 +460,18 @@ function CablePort({ node, handle, driven }: { node: NodeId; handle: string; dri
   const takes = useContext(ConnectingContext)?.has(keyOf(node, handle)) ?? false;
   const classes = ["tang-port", "tang-port--param", ...(driven ? ["tang-port--driven"] : []), ...(takes ? ["tang-port--takes"] : [])];
   return <Handle isConnectableStart={false} type="target" position={Position.Top} id={handle} className={classes.join(" ")} />;
+}
+
+/**
+ * The place on the left edge of a row of a modulator's node where a cable from another modulator ends, to drive how deep the cable of that row
+ * goes (`depth` of the cable `edge`, which starts at the modulator `node`): a handle named after the cable (`depthHandle`), quiet until a cable ends
+ * at it (`driven`), and, while a cable is dragged, saying whether it takes that one. A cable cannot be dropped on it yet.
+ */
+export function DepthPort({ node, edge, driven }: { node: NodeId; edge: EdgeId; driven: boolean }) {
+  const handle = depthHandle(edge);
+  const takes = useContext(ConnectingContext)?.has(keyOf(node, handle)) ?? false;
+  const classes = ["tang-port", "tang-port--cable", ...(driven ? ["tang-port--driven"] : []), ...(takes ? ["tang-port--takes"] : [])];
+  return <Handle isConnectable={false} type="target" position={Position.Left} id={handle} className={classes.join(" ")} />;
 }
 
 /**

@@ -351,6 +351,53 @@
   cursor: pointer;
 }
 
+/* The cables that start at a modulator, a row each, at the foot of its node: `CABLE_ROW_HEIGHT` and `CABLES_GAP` (toFlow) are these. The gap before
+   the list is the body's own. */
+.tang-node__cables {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tang-cable-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 20px;
+  color: var(--tang-text-muted);
+  font: var(--tang-text-small) / 20px var(--tang-mono);
+}
+
+.tang-cable-row--driven {
+  color: var(--tang-text);
+}
+
+.tang-cable-row__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tang-cable-row__label::before {
+  content: "→ ";
+}
+
+/* The port of a row is on the node's left edge (the body's padding is between it and the row), quiet until a cable ends at it. */
+.tang-port--cable {
+  left: calc(-1 * var(--tang-space-3) - 1px);
+  width: 6px;
+  height: 6px;
+  background: var(--tang-modulation);
+  opacity: 0.4;
+}
+
+.tang-port--cable.tang-port--driven {
+  width: 10px;
+  height: 10px;
+  opacity: 1;
+}
+
 /* The list at the foot of a modulator that draws a cable to a parameter. */
 .tang-node__drives {
   display: flex;

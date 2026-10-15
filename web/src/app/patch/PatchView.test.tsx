@@ -320,7 +320,8 @@ describe("the patch", () => {
     // (Audio goes in on the left and out on the right; a modulator's output is at its bottom, over what it drives.)
     expect(await handles(oscillator.id)).toEqual(["audioOut:source:right"]);
     expect(await handles(filter.id)).toEqual(["audioIn:target:left", "audioOut:source:right"]);
-    expect(await handles(lfo.id)).toEqual(["modOut:source:bottom"]);
+    // (The tracer's LFO has a cable, and its row has a port at its left edge, for a cable to end at and drive how deep this one goes.)
+    expect(await handles(lfo.id)).toEqual(["depth-0:target:left", "modOut:source:bottom"]);
     expect(await handles(MASTER)).toEqual(["audioIn:target:left"]);
     // And the ports of the controls are on their top edges.
     const ports = Array.from((await nodeOf(filter.id)).querySelectorAll(".tang-port--param")).map((handle) => handle.getAttribute("data-handlepos"));
@@ -1019,6 +1020,79 @@ describe("the patch", () => {
       await waitFor(() => {
         expect(document.activeElement?.id).toBe(drivesId(laneEnvelope));
       });
+    });
+  });
+
+  describe("the cables a modulator's node lists", () => {
+    // The fixture of the settings: the lane's envelope (node 5, "ADSR 2") has two cables, to the second and the first parameters of the oscillator
+    // (node 3, "Oscillator 1") that are named in the session; its LFO (4, "LFO 2") has one, to the first; the MIDI control (6) one; the LFO of the
+    // lane that is in no group (10) has none.
+    const { snapshot } = fieldsFixture;
+    const [laneLfo, laneEnvelope, laneControl, loneLfo] = [4, 5, 6, 10];
+    const oscillatorNode = snapshot.graph.nodes.find((node) => node.id === 3);
+    const paramNamed = (index: number): string => (oscillatorNode?.kind === "instrument" ? oscillatorNode.plugin?.params.find((param) => param.index === index)?.name : undefined) ?? "?";
+    const rowsOf = async (id: number): Promise<string[]> => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row")).map((row) => row.textContent);
+    /** The session with a cable (the 50th) from a modulator to a port of a node. */
+    const withCable = (from: number, to: number, port: Port): Snapshot => ({
+      ...snapshot,
+      graph: { ...snapshot.graph, edges: [...snapshot.graph.edges, { kind: "modulation", id: 50, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: to, port } }] },
+    });
+
+    test("has a row for each cable that starts at the modulator, in the order of the graph, saying what it goes to", async () => {
+      await rig(<PatchView />, { snapshot });
+      expect(await rowsOf(laneEnvelope)).toEqual([`Oscillator 1: ${paramNamed(2)}`, `Oscillator 1: ${paramNamed(1)}`]);
+      expect(await rowsOf(laneLfo)).toEqual([`Oscillator 1: ${paramNamed(1)}`]);
+      expect(await rowsOf(laneControl)).toEqual([`Oscillator 1: ${paramNamed(7)}`]);
+    });
+
+    test("is a list that is named after the modulator, and has none for a modulator that drives nothing", async () => {
+      await rig(<PatchView />, { snapshot });
+      const list = within(await nodeOf(laneEnvelope)).getByRole("list", { name: "Cables of ADSR 2" });
+      expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+      expect((await nodeOf(loneLfo)).querySelector(".tang-node__cables")).toBeNull();
+      expect(within(await nodeOf(loneLfo)).queryByRole("list")).toBeNull();
+    });
+
+    test("tells the whole of a row that the node has no room for, by its title", async () => {
+      await rig(<PatchView />, { snapshot });
+      const rows = Array.from((await nodeOf(laneEnvelope)).querySelectorAll(".tang-cable-row__label"));
+      expect(rows.map((row) => row.getAttribute("title"))).toEqual([`Oscillator 1: ${paramNamed(2)}`, `Oscillator 1: ${paramNamed(1)}`]);
+    });
+
+    test("has a port at the left edge of each row, named after the cable, in the node of the modulator that the cable starts at", async () => {
+      await rig(<PatchView />, { snapshot });
+      const ports = async (id: number) =>
+        Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row .react-flow__handle")).map(
+          (handle) => `${handle.getAttribute("data-handleid") ?? "?"}:${handle.classList.contains("target") ? "target" : "source"}:${handle.getAttribute("data-handlepos") ?? "?"}`,
+        );
+      expect(await ports(laneEnvelope)).toEqual(["depth-1:target:left", "depth-2:target:left"]);
+      expect(await ports(laneLfo)).toEqual(["depth-0:target:left"]);
+      expect(await ports(loneLfo)).toEqual([]);
+      // Each is in its row, which is the row of that cable.
+      const rows = Array.from((await nodeOf(laneEnvelope)).querySelectorAll(".tang-cable-row"));
+      expect(rows.map((row) => row.querySelector(".react-flow__handle")?.getAttribute("data-handleid"))).toEqual(["depth-1", "depth-2"]);
+    });
+
+    test("marks the row of a cable that another cable ends at the depth of, and no other", async () => {
+      await rig(<PatchView />, { snapshot: withCable(laneEnvelope, laneLfo, { type: "depth", edge: 0 }) });
+      const driven = async (id: number) => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row--driven .react-flow__handle")).map((port) => port.getAttribute("data-handleid"));
+      expect(await driven(laneLfo)).toEqual(["depth-0"]);
+      expect(await driven(laneEnvelope)).toEqual([]);
+      // (The port is the one that says it: the same mark as the ports of the controls have.)
+      const marked = Array.from((await nodeOf(laneLfo)).querySelectorAll(".tang-port--driven")).map((port) => port.getAttribute("data-handleid"));
+      expect(marked).toEqual(["depth-0"]);
+    });
+
+    test("says what a cable that ends at the depth of another is, in the row of the one that drives it", async () => {
+      await rig(<PatchView />, { snapshot: withCable(laneEnvelope, laneLfo, { type: "depth", edge: 0 }) });
+      expect(await rowsOf(laneEnvelope)).toEqual([`Oscillator 1: ${paramNamed(2)}`, `Oscillator 1: ${paramNamed(1)}`, `depth of LFO 2 → Oscillator 1: ${paramNamed(1)}`]);
+    });
+
+    test("has ports that no cable is dropped on yet: a row's port takes no connection until a cable can be drawn to one", async () => {
+      await rig(<PatchView />, { snapshot });
+      const ports = Array.from((await nodeOf(laneEnvelope)).querySelectorAll(".tang-cable-row .react-flow__handle"));
+      expect(ports).toHaveLength(2);
+      for (const port of ports) expect(port.classList.contains("connectable"), port.getAttribute("data-handleid") ?? "?").toBe(false);
     });
   });
 

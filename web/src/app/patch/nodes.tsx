@@ -20,10 +20,10 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { DrivePicker, GainCell, GroupCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
+import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
-import type { PatchNode } from "./toFlow";
+import type { CableRow, PatchNode } from "./toFlow";
 
 /** The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. */
 function Header({ name, badge, children, field }: { name: string; badge?: string | null; children?: ReactNode; field?: ReactNode }) {
@@ -411,6 +411,26 @@ function EnvelopeShape({ node, name, read }: { node: NodeId; name: string; read:
   return <LiveEnvelope label={`${name} shape: ${words}`} stages={stages} read={read} frames={frames} />;
 }
 
+/**
+ * The cables that start at a modulator, as a list at the foot of its node: a row for each, saying where it goes, with a port at the left edge of the
+ * row where a cable from another modulator can end, to drive how deep this one goes. Nothing for a modulator that drives nothing.
+ */
+function CableRows({ node, name, cables }: { node: NodeId; name: string; cables: readonly CableRow[] }) {
+  if (cables.length === 0) return null;
+  return (
+    <ul className="tang-node__cables" aria-label={`Cables of ${name}`}>
+      {cables.map((row) => (
+        <li key={row.edge} className={`tang-cable-row${row.driven ? " tang-cable-row--driven" : ""}`}>
+          <DepthPort node={node} edge={row.edge} driven={row.driven} />
+          <span className="tang-cable-row__label" title={row.label}>
+            {row.label}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** A modulator: what it is, its settings as controls, and what it puts out, as a line that scrolls (an envelope has its shape too). */
 export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
@@ -441,6 +461,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
         <div className="tang-node__drives nodrag nopan nowheel">
           <DrivePicker modulator={data.node} name={data.name} targets={data.targets} />
         </div>
+        <CableRows node={data.node} name={data.name} cables={data.cables} />
       </div>
       <Handle type="source" position={Position.Bottom} id="modOut" className="tang-port tang-port--mod" />
     </div>

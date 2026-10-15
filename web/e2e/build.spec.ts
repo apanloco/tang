@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
-import { addEnvelope, cables, centre, drag, node, open, output, port, setting } from "./canvas";
+import { CABLE_ROW_HEIGHT, CABLES_GAP, MODULATOR_SETTINGS_HEIGHT, NODE_WIDTH } from "../src/app/patch/toFlow";
+import { addEnvelope, cables, centre, drag, expectNodesApart, node, open, output, port, setting } from "./canvas";
 
 // What a person does to build modulation on the page, against the mock engine in the page (so that a test
 // can have a session of its own: the tracer, or two lanes): add a modulator from the menu, draw a cable by
@@ -259,6 +260,48 @@ test("a cable is drawn from the keyboard, from the list at the foot of a modulat
   await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menuitem", { name: "volume", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "detune", exact: true })).toHaveCount(0);
+});
+
+/** How tall a modulator's node and each of its rows of cables are, in the pixels of the layout (the canvas is zoomed to fit the window), with where each row's port is. */
+async function listing(modulator: Locator) {
+  const box = await modulator.locator(".tang-node").boundingBox();
+  if (!box) throw new Error("not on the page");
+  const scale = box.width / NODE_WIDTH;
+  const rows = await Promise.all(
+    (await modulator.locator(".tang-cable-row").all()).map(async (row) => {
+      const [at, dot] = [await row.boundingBox(), await row.locator(".react-flow__handle").boundingBox()];
+      if (!at || !dot) throw new Error("a row with no port");
+      return { height: at.height / scale, portX: (dot.x + dot.width / 2 - box.x) / scale, portY: (dot.y + dot.height / 2 - at.y) / scale };
+    }),
+  );
+  return { height: box.height / scale, rows };
+}
+
+test("a modulator lists a row for each cable that starts at it, each as tall as the layout assumes, with its port on the node's left edge", async ({ page }) => {
+  await open(page);
+  const lfo = node(page, "LFO");
+  await expect(lfo.locator(".tang-cable-row")).toHaveText(["Filter: cutoff"]);
+  const one = await listing(lfo);
+  // The node is as tall as the layout assumes for a row (and not much less), and the row is as high as it assumes.
+  const assumedOne = MODULATOR_SETTINGS_HEIGHT + CABLES_GAP + CABLE_ROW_HEIGHT;
+  expect(one.height).toBeLessThanOrEqual(assumedOne);
+  expect(one.height).toBeGreaterThan(assumedOne - 12);
+  expect(one.rows.map((row) => row.height)).toEqual([expect.closeTo(CABLE_ROW_HEIGHT, 0)]);
+  // The port is where the node's left edge is, level with the middle of its row.
+  expect(one.rows[0]?.portX).toBeCloseTo(0, 0);
+  expect(one.rows[0]?.portY).toBeCloseTo(CABLE_ROW_HEIGHT / 2, 0);
+  // A second cable, from the list: a row more, and the node as much taller, with the others where they were.
+  const picker = page.getByRole("button", { name: "Add a cable from LFO" });
+  await picker.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.type("det");
+  await page.keyboard.press("Enter");
+  await expect(lfo.locator(".tang-cable-row")).toHaveText(["Filter: cutoff", "Oscillator: detune"]);
+  const two = await listing(lfo);
+  expect(two.height - one.height).toBeCloseTo(CABLE_ROW_HEIGHT, 0);
+  expect(two.rows.map((row) => row.height)).toEqual([expect.closeTo(CABLE_ROW_HEIGHT, 0), expect.closeTo(CABLE_ROW_HEIGHT, 0)]);
+  expect(two.rows[1]?.portX).toBeCloseTo(0, 0);
+  await expectNodesApart(page);
 });
 
 test("the list of what a modulator can be drawn to has a heading for each plugin, and stays on the page", async ({ page }) => {

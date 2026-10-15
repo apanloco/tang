@@ -5,6 +5,8 @@ import { MASTER, tracerSnapshot } from "../../client/fixtures";
 import { DEFAULT_KNOBS } from "../../client/pinning";
 import {
   CABLE_GAP,
+  CABLE_ROW_HEIGHT,
+  CABLES_GAP,
   COLUMN,
   controlCount,
   handleOf,
@@ -133,8 +135,14 @@ function rectangles(graph: Graph) {
   return flow.nodes.map((placed) => {
     const node = graph.nodes.find((candidate) => String(candidate.id) === placed.id);
     if (!node) throw new Error("a node of the canvas that the graph does not have");
-    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length) };
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length) };
   });
+}
+
+/** How tall a modulator's node is in `graph`, as the layout assumes: it has a row for each cable that starts at it. */
+function tall(graph: Graph, id: NodeId): number {
+  const cables = graph.edges.filter((edge) => edge.kind === "modulation" && edge.from.node === id).length;
+  return nodeHeight(nodeOf(graph, id), 0, cables);
 }
 
 describe("the nodes on the canvas", () => {
@@ -185,7 +193,7 @@ describe("the nodes on the canvas", () => {
     const second = at(flow, 5).position.y;
     // Room for the modulators above the first, then the tallest of its row, then the gap.
     const tallest = Math.max(...[1, 2, 3].map((id) => nodeHeight(nodeOf(twoLanes, id), at(flow, id).data.knobs.length)));
-    expect(first).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
+    expect(first).toBe(tall(twoLanes, 4) + CABLE_GAP);
     expect(second).toBe(first + tallest + ROW_GAP);
   });
 
@@ -234,8 +242,10 @@ describe("the nodes on the canvas", () => {
     const filter = at(flow, 1);
     expect(lfo.position.x).toBe(filter.position.x);
     expect(lfo.position.y).toBe(0);
-    expect(filter.position.y).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
-    expect(lfo.position.y + MODULATOR_SETTINGS_HEIGHT + CABLE_GAP).toBe(filter.position.y);
+    // (The LFO lists its one cable: it is a row taller than one that has none.)
+    expect(filter.position.y).toBe(tall(tracerSnapshot.graph, 2) + CABLE_GAP);
+    expect(tall(tracerSnapshot.graph, 2)).toBeGreaterThan(MODULATOR_SETTINGS_HEIGHT);
+    expect(lfo.position.y + tall(tracerSnapshot.graph, 2) + CABLE_GAP).toBe(filter.position.y);
   });
 
   test("have a modulator that drives nothing in the first column, and give several of them a column each", () => {
@@ -270,7 +280,8 @@ describe("the nodes on the canvas", () => {
   });
 
   describe("when a modulator drives the settings of another", () => {
-    const H = MODULATOR_SETTINGS_HEIGHT + CABLE_GAP;
+    /** The room a row of modulators of this graph takes above the strip: the tallest of them (each lists its cables) and the room for a cable to arrive. */
+    const room = (graph: Graph, ...ids: NodeId[]): number => Math.max(...ids.map((id) => tall(graph, id))) + CABLE_GAP;
     /** A cable from the modulator `from` to a setting of the modulator `to`. */
     const drives = (id: number, from: NodeId, to: NodeId, setting: "rate" | "attack" = "rate"): Edge => ({
       kind: "modulation",
@@ -301,8 +312,8 @@ describe("the nodes on the canvas", () => {
       expect(at(flow, 4).position.x).toBe(COLUMN);
       expect(at(flow, 3).position.x).toBe(COLUMN);
       expect(at(flow, 3).position.y).toBe(0);
-      expect(at(flow, 4).position.y).toBe(H);
-      expect(at(flow, 1).position.y).toBe(2 * H);
+      expect(at(flow, 4).position.y).toBe(room(graph, 3));
+      expect(at(flow, 1).position.y).toBe(room(graph, 3) + room(graph, 4));
       noOverlap(graph);
     });
 
@@ -313,9 +324,9 @@ describe("the nodes on the canvas", () => {
       };
       const flow = toFlow(graph);
       // (The envelope, in the middle row, is taller than the LFOs above and below it: it draws its shape.)
-      const E = ENVELOPE_NODE_HEIGHT + CABLE_GAP;
-      expect([3, 4, 5].map((id) => at(flow, id).position.y)).toEqual([0, H, H + E]);
-      expect(at(flow, 1).position.y).toBe(2 * H + E);
+      expect(tall(graph, 4)).toBeGreaterThan(tall(graph, 3));
+      expect([3, 4, 5].map((id) => at(flow, id).position.y)).toEqual([0, room(graph, 3), room(graph, 3) + room(graph, 4)]);
+      expect(at(flow, 1).position.y).toBe(room(graph, 3) + room(graph, 4) + room(graph, 5));
       expect(new Set([3, 4, 5].map((id) => at(flow, id).position.x))).toEqual(new Set([COLUMN]));
       noOverlap(graph);
     });
@@ -326,7 +337,7 @@ describe("the nodes on the canvas", () => {
         edges: [audio(1, 2), audio(2, MASTER), cable(0, 5, 2, 1), drives(1, 3, 5), drives(2, 4, 5)],
       };
       const flow = toFlow(graph);
-      expect(at(flow, 5).position).toEqual({ x: COLUMN, y: H });
+      expect(at(flow, 5).position).toEqual({ x: COLUMN, y: room(graph, 3, 4) });
       // Both would be over the column of the one they drive: the first has it, the second the next that is free.
       expect(at(flow, 3).position).toEqual({ x: COLUMN, y: 0 });
       expect(at(flow, 4).position).toEqual({ x: 2 * COLUMN, y: 0 });
@@ -340,9 +351,9 @@ describe("the nodes on the canvas", () => {
         edges: [audio(1, MASTER), drives(0, 3, 4), drives(1, 3, 5), drives(2, 4, 5)],
       };
       const flow = toFlow(graph);
-      expect([3, 4, 5].map((id) => at(flow, id).position.y)).toEqual([0, H, 2 * H]);
+      expect([3, 4, 5].map((id) => at(flow, id).position.y)).toEqual([0, room(graph, 3), room(graph, 3) + room(graph, 4)]);
       const reversed: Graph = { ...graph, edges: [audio(1, MASTER), drives(1, 3, 5), drives(0, 3, 4), drives(2, 4, 5)] };
-      expect([3, 4, 5].map((id) => at(toFlow(reversed), id).position.y)).toEqual([0, H, 2 * H]);
+      expect([3, 4, 5].map((id) => at(toFlow(reversed), id).position.y)).toEqual([0, room(reversed, 3), room(reversed, 3) + room(reversed, 4)]);
       noOverlap(graph);
     });
 
@@ -352,7 +363,7 @@ describe("the nodes on the canvas", () => {
         edges: [audio(1, 2), audio(2, MASTER), cable(0, 3, 1, 1), cable(1, 4, 2, 1), drives(2, 3, 4)],
       };
       const flow = toFlow(graph);
-      expect(at(flow, 4).position).toEqual({ x: COLUMN, y: H });
+      expect(at(flow, 4).position).toEqual({ x: COLUMN, y: room(graph, 3) });
       // (3 drives the instrument, in column 0, and the modulator 4, in column 1: it is over the first.)
       expect(at(flow, 3).position).toEqual({ x: 0, y: 0 });
       noOverlap(graph);
@@ -375,14 +386,14 @@ describe("the nodes on the canvas", () => {
       };
       const flow = toFlow(graph);
       expect(at(flow, 3).position.y).toBeLessThan(at(flow, 4).position.y);
-      expect(at(flow, 4).position.y + H).toBe(at(flow, 1).position.y);
+      expect(at(flow, 4).position.y + room(graph, 4)).toBe(at(flow, 1).position.y);
       noOverlap(graph);
     });
 
     test("is laid out when it drives itself, by a cable that the controller does not allow", () => {
       const graph: Graph = { nodes: [instrument(1), modulator(3, 1), master], edges: [audio(1, MASTER), drives(0, 3, 3)] };
       expect(at(toFlow(graph), 3).position.y).toBe(0);
-      expect(at(toFlow(graph), 1).position.y).toBe(H);
+      expect(at(toFlow(graph), 1).position.y).toBe(room(graph, 3));
     });
 
     test("is as tall as the tallest in its row: a MIDI control above an envelope takes the room it needs", () => {
@@ -391,9 +402,11 @@ describe("the nodes on the canvas", () => {
         edges: [audio(1, MASTER), drives(0, 3, 4, "attack")],
       };
       const flow = toFlow(graph);
-      expect(at(flow, 4).position.y).toBe(MODULATOR_HEIGHT + CABLE_GAP);
+      // (The control lists its cable to the envelope: it is a row taller than a control that drives nothing.)
+      expect(tall(graph, 3)).toBe(MODULATOR_HEIGHT + CABLES_GAP + CABLE_ROW_HEIGHT);
+      expect(at(flow, 4).position.y).toBe(tall(graph, 3) + CABLE_GAP);
       expect(at(flow, 3).position.y).toBe(0);
-      expect(at(flow, 1).position.y).toBe(MODULATOR_HEIGHT + CABLE_GAP + ENVELOPE_NODE_HEIGHT + CABLE_GAP);
+      expect(at(flow, 1).position.y).toBe(tall(graph, 3) + CABLE_GAP + ENVELOPE_NODE_HEIGHT + CABLE_GAP);
       noOverlap(graph);
     });
 
@@ -419,7 +432,7 @@ describe("the nodes on the canvas", () => {
         { x: COLUMN, y: 0 },
         { x: 2 * COLUMN, y: 0 },
       ]);
-      expect(at(flow, 1).position.y).toBe(H);
+      expect(at(flow, 1).position.y).toBe(room(graph, 3, 4, 5));
     });
 
     test("is above the one it drives in a group's rack, over the group's row", () => {
@@ -428,19 +441,20 @@ describe("the nodes on the canvas", () => {
         edges: [member(1, 10), audio(10, MASTER), drives(0, 11, 12)],
       };
       const flow = toFlow(graph);
-      expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - H);
-      expect(at(flow, 11).position.y).toBe(at(flow, 12).position.y - H);
+      expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - room(graph, 12));
+      expect(at(flow, 11).position.y).toBe(at(flow, 12).position.y - room(graph, 11));
       expect(at(flow, 11).position.y).toBeGreaterThanOrEqual(0);
       expect(at(flow, 11).position.x).toBe(at(flow, 12).position.x);
       noOverlap(graph);
     });
 
     test("is not a row of its own when it drives a modulator of another strip: a group's of a member lane's", () => {
+      // (The group's modulator lists a cable more in `across`: `base` has one to a parameter of the member's plugin, which is no row of modulators either.)
       const base: Graph = {
         nodes: [group(10), modulator(11, 10), instrument(1, 3, 10), modulator(12, 1), master],
-        edges: [member(1, 10), audio(10, MASTER)],
+        edges: [member(1, 10), audio(10, MASTER), cable(0, 11, 1, 1)],
       };
-      const across: Graph = { ...base, edges: [...base.edges, drives(0, 11, 12)] };
+      const across: Graph = { ...base, edges: [...base.edges.slice(0, 2), drives(0, 11, 12)] };
       for (const id of [10, 11, 1, 12, MASTER]) expect(at(toFlow(across), id).position, `node ${String(id)}`).toEqual(at(toFlow(base), id).position);
     });
 
@@ -451,7 +465,7 @@ describe("the nodes on the canvas", () => {
       };
       const flow = toFlow(graph);
       // The second lane's row is below the first's, which has two rows of modulators above it; its own modulator is above it.
-      expect(at(flow, 1).position.y).toBe(2 * H);
+      expect(at(flow, 1).position.y).toBe(room(graph, 3) + room(graph, 4));
       expect(at(flow, 6).position.y).toBeGreaterThan(at(flow, 1).position.y);
       noOverlap(graph);
     });
@@ -493,7 +507,7 @@ describe("the nodes on the canvas", () => {
     expect(at(flow, 4).position.y).toBeLessThan(Math.min(...members));
     expect(at(flow, 10).position.y).toBe((members[0] ?? 0) / 2 + (members[1] ?? 0) / 2);
     // The group's modulator is over it, and the master after its strip.
-    expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - (MODULATOR_SETTINGS_HEIGHT + CABLE_GAP));
+    expect(at(flow, 12).position.y).toBe(at(flow, 10).position.y - (tall(grouped, 12) + CABLE_GAP));
     expect(at(flow, MASTER).position.x).toBe(groupColumn + 2 * COLUMN);
   });
 
@@ -912,6 +926,84 @@ describe("the settings of a modulator that a cable ends at", () => {
     expect(at(flow, 9).data.drivenSettings).toEqual(["rate"]);
     // (The cable of the tracer's cutoff ends at a parameter, which is a plugin node's to show as driven.)
     for (const node of toFlow(tracerSnapshot.graph).nodes) expect(node.data.drivenSettings, node.data.name).toEqual([]);
+  });
+});
+
+describe("the cables a modulator's node lists", () => {
+  // The cable of `twoLanes` (0) goes from the modulator 4 to the filter 3's first parameter; an envelope (13) of the same lane
+  // drives how deep that cable goes (8), and the modulator 4 drives the envelope's release (5) and a parameter of the effect 2 (6).
+  const toDepth: Edge = { kind: "modulation", id: 8, amount: 0.3, from: { node: 13, port: { type: "modOut" } }, to: { node: 4, port: { type: "depth", edge: 0 } } };
+  const toRelease: Edge = { kind: "modulation", id: 5, amount: 0.3, from: { node: 4, port: { type: "modOut" } }, to: { node: 13, port: { type: "release" } } };
+  const toEffect: Edge = cable(6, 4, 2, 1);
+  const nodes = [...twoLanes.nodes, envelope(13, 1)];
+  const rows = (edges: Edge[], id: NodeId, graphNodes: Node[] = nodes) => at(toFlow({ nodes: graphNodes, edges: [...twoLanes.edges, ...edges] }), id).data.cables;
+
+  test("are, for a modulator, the cables that start at it, in the order of the graph, each with what it ends at in words", () => {
+    expect(rows([toRelease, toEffect], 4)).toEqual([
+      { edge: 0, label: "Effect 3: p0", driven: false },
+      { edge: 5, label: "ADSR: release", driven: false },
+      { edge: 6, label: "Effect 2: p0", driven: false },
+    ]);
+    // (The order of the graph, whichever way the cables were made.)
+    expect(rows([toEffect, toRelease], 4).map((row) => row.edge)).toEqual([0, 6, 5]);
+  });
+
+  test("say what a cable that ends at the depth of another is: the words of that cable, which are told by where it goes", () => {
+    expect(rows([toDepth], 13)).toEqual([{ edge: 8, label: "depth of Mod 4 → Effect 3: p0", driven: false }]);
+  });
+
+  test("say which of them a cable ends at the depth of, and no other", () => {
+    expect(rows([toDepth, toRelease, toEffect], 4).map((row) => [row.edge, row.driven])).toEqual([
+      [0, true],
+      [5, false],
+      [6, false],
+    ]);
+    // A cable that ends at a setting, or at a parameter, is not one that drives a depth.
+    expect(rows([toRelease, toEffect], 4).some((row) => row.driven)).toBe(false);
+  });
+
+  test("are none for a modulator that drives nothing, and for a node that is no modulator", () => {
+    const flow = toFlow({ nodes, edges: [...twoLanes.edges, toDepth] });
+    expect(at(flow, 13).data.cables).toHaveLength(1);
+    expect(rows([], 13)).toEqual([]);
+    for (const node of flow.nodes.filter((n) => n.data.node !== 4 && n.data.node !== 13)) expect(node.data.cables, node.data.name).toEqual([]);
+    expect(toFlow(grouped).nodes.find((node) => node.data.node === 12)?.data.cables).toEqual([{ edge: 0, label: "Effect 11: p0", driven: false }]);
+  });
+
+  test("make a node taller by a row for each, and by a little room before them if it has any", () => {
+    const lfo = modulator(4, 1);
+    expect(CABLE_ROW_HEIGHT).toBeGreaterThan(0);
+    expect(nodeHeight(lfo, 0, 0)).toBe(MODULATOR_SETTINGS_HEIGHT);
+    expect(nodeHeight(lfo, 0, 1)).toBe(MODULATOR_SETTINGS_HEIGHT + CABLES_GAP + CABLE_ROW_HEIGHT);
+    expect(nodeHeight(lfo, 0, 3)).toBe(MODULATOR_SETTINGS_HEIGHT + CABLES_GAP + 3 * CABLE_ROW_HEIGHT);
+    expect(nodeHeight(envelope(13, 1), 0, 2)).toBe(ENVELOPE_NODE_HEIGHT + CABLES_GAP + 2 * CABLE_ROW_HEIGHT);
+    const control: Node = { id: 3, parent: 0, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
+    expect(nodeHeight(control, 0, 2)).toBe(MODULATOR_HEIGHT + CABLES_GAP + 2 * CABLE_ROW_HEIGHT);
+    // A node that is no modulator lists none: what is passed for it is not a part of its height.
+    expect(nodeHeight(instrument(1), 3, 5)).toBe(nodeHeight(instrument(1), 3, 0));
+    expect(nodeHeight(master, 0, 5)).toBe(MASTER_HEIGHT);
+  });
+
+  test("leave room above a strip for them: the modulator that lists them is as tall as the layout says", () => {
+    // The lane's one modulator drives two plugins of it: its node is two rows taller, and the strip is lower by that.
+    const lane: Graph = { nodes: [instrument(1), effect(2, 1), modulator(4, 1), master], edges: [audio(1, 2), audio(2, MASTER), cable(0, 4, 1, 1), cable(1, 4, 2, 1)] };
+    expect(at(toFlow(lane), 4).data.cables).toHaveLength(2);
+    expect(at(toFlow(lane), 1).position.y).toBe(MODULATOR_SETTINGS_HEIGHT + CABLES_GAP + 2 * CABLE_ROW_HEIGHT + CABLE_GAP);
+    const none: Graph = { ...lane, edges: lane.edges.slice(0, 2) };
+    expect(at(toFlow(none), 1).position.y).toBe(MODULATOR_SETTINGS_HEIGHT + CABLE_GAP);
+  });
+
+  test("keep the nodes of a canvas from overlapping, with as many cables as a node has", () => {
+    const many: Edge[] = [0, 1, 2, 3, 4, 5].map((id) => cable(30 + id, 4, 3, id % 2 === 0 ? 1 : 3));
+    const g: Graph = { nodes: twoLanes.nodes, edges: [...twoLanes.edges.slice(0, 5), ...many] };
+    const boxes = rectangles(g);
+    for (const a of boxes) {
+      for (const b of boxes) {
+        if (a.id >= b.id) continue;
+        const apart = a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+        expect(apart, `${String(a.id)} and ${String(b.id)}`).toBe(true);
+      }
+    }
   });
 });
 

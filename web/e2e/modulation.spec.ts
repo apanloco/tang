@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-import { MODULATOR_SETTINGS_HEIGHT, NODE_WIDTH } from "../src/app/patch/toFlow";
+import { CABLE_ROW_HEIGHT, CABLES_GAP, MODULATOR_SETTINGS_HEIGHT, NODE_WIDTH } from "../src/app/patch/toFlow";
 import { dragged } from "../src/ui/knob-geometry";
 import { lfoAccordingToTheServer, resetTracer, sampleCutoff, spyOnTheWire } from "./support";
 
@@ -105,8 +105,10 @@ test("the nodes keep to the sizes the layout assumes, and none lies over another
   // (The canvas is zoomed to fit the window: the scale is how much a node of the layout's width is drawn.)
   const scale = (nodes[0]?.width ?? NODE_WIDTH) / NODE_WIDTH;
   const lfo = nodes.find((node) => node.name === "LFO");
-  expect((lfo?.height ?? 0) / scale).toBeLessThanOrEqual(MODULATOR_SETTINGS_HEIGHT);
-  expect((lfo?.height ?? 0) / scale).toBeGreaterThan(MODULATOR_SETTINGS_HEIGHT - 12); // and the allowance is not much more than it needs
+  // (The LFO lists its one cable: a row, and the room before it.)
+  const assumed = MODULATOR_SETTINGS_HEIGHT + CABLES_GAP + CABLE_ROW_HEIGHT;
+  expect((lfo?.height ?? 0) / scale).toBeLessThanOrEqual(assumed);
+  expect((lfo?.height ?? 0) / scale).toBeGreaterThan(assumed - 12); // and the allowance is not much more than it needs
   for (const a of nodes) {
     for (const b of nodes) {
       if (a === b) continue;
