@@ -754,6 +754,13 @@ TODO: `?` shortcut to jump to the Help tab.
 On the Piano tab, alphanumeric keys are captured for note input. Tab switching
 uses `Tab`/`Shift+Tab` only.
 
+A popup has the keys while it is open (so has the filter of the parameters, `/`).
+What it takes as text is text, and a letter with Control held is none of it: a
+popup ignores such a chord and does not put the letter in (`Ctrl+Z`, which undoes in
+the chain, would type a z), except `Ctrl+C` and `Ctrl+Q`, which leave the program
+from a popup as from the chain. Control with Alt is how Windows reports AltGr (`@`
+and `\` on some keyboards), and is text; so is a capital letter (Shift).
+
 ### Session tab
 
 The session tab has two panes: the chain (left) and parameters (right).

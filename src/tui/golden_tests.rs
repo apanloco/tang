@@ -5005,3 +5005,148 @@ mod undo_and_redo {
         assert_eq!(cutoff_of_the_bus_filter(&h), 0.95);
     }
 }
+
+mod control_keys_in_popups {
+    //! A letter with Control held is no text (f104): a popup that takes text does not put it in as the letter (Ctrl+Z, which undoes in the chain, typed a z), and
+    //! Ctrl+C and Ctrl+Q leave the program from a popup as from everywhere else.
+
+    use super::*;
+
+    /// A group with a lane in it, then a lane that is in none, which has a reverb (it has presets and parameters) and an LFO.
+    const SCENE: &str = r#"
+[[group]]
+name = "Pad"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+rate = 2.0
+"#;
+
+    type Keys = &'static [(KeyCode, KeyModifiers)];
+    type Text = fn(&State) -> Option<String>;
+    type IsOpen = fn(&State) -> bool;
+
+    const NONE: KeyModifiers = KeyModifiers::NONE;
+    const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+    const CTRL_SHIFT: KeyModifiers = KeyModifiers::CONTROL.union(KeyModifiers::SHIFT);
+    /// How Windows reports AltGr.
+    const ALT_GR: KeyModifiers = KeyModifiers::CONTROL.union(KeyModifiers::ALT);
+
+    /// Every popup that takes text: what it is, where the cursor is when it is opened, the keys that open it, and the text it holds (none if it is not open).
+    fn popups_that_take_text() -> [(&'static str, TreeAddress, Keys, Text); 11] {
+        let lane = TreeAddress::Instrument(1);
+        let reverb = TreeAddress::Effect { inst: 1, index: 0 };
+        [
+            ("the range of a lane", lane, &[(KeyCode::Char('R'), NONE)], |s| s.range_edit.as_ref().map(|p| p.input.value.clone())),
+            ("the name of a group", TreeAddress::Group(0), &[(KeyCode::Char('R'), NONE)], |s| s.rename_group.as_ref().map(|p| p.input.value.clone())),
+            ("the selector of a plugin", lane, &[(KeyCode::Char('a'), NONE)], |s| s.selector.as_ref().map(|p| p.filter.input.value.clone())),
+            ("the selector of targets", TreeAddress::Modulator { inst: 1, index: 0 }, &[(KeyCode::Char('t'), NONE)], |s| {
+                s.target_selector.as_ref().map(|p| p.filter.input.value.clone())
+            }),
+            ("the selector of presets", reverb, &[(KeyCode::Char('p'), NONE)], |s| s.preset_selector.as_ref().map(|p| p.filter.input.value.clone())),
+            ("the selector of scales", lane, &[(KeyCode::Char('2'), NONE), (KeyCode::Char('k'), NONE)], |s| {
+                s.scale_selector.as_ref().map(|p| p.filter.input.value.clone())
+            }),
+            ("the tempo", lane, &[(KeyCode::Char('b'), NONE)], |s| s.bpm_editing.as_ref().map(|p| p.input.value.clone())),
+            ("a volume", lane, &[(KeyCode::Char('v'), NONE)], |s| s.gain_editing.as_ref().map(|p| p.edit.input.value.clone())),
+            ("the name of a file", lane, &[(KeyCode::Char('s'), CTRL_SHIFT)], |s| {
+                s.save_as.as_ref().map(|p| p.input.value.clone())
+            }),
+            ("the value of a parameter", reverb, &[(KeyCode::Enter, NONE), (KeyCode::Enter, NONE)], |s| s.editing.as_ref().map(|p| p.input.value.clone())),
+            ("the filter of parameters", reverb, &[(KeyCode::Enter, NONE), (KeyCode::Char('/'), NONE)], |s| {
+                s.param_filtering.then(|| s.param_filter_input.value.clone())
+            }),
+        ]
+    }
+
+    /// The popups that take no text: the keys that open them and how to tell that they are open.
+    fn popups_that_take_none() -> [(&'static str, TreeAddress, Keys, IsOpen); 2] {
+        [
+            ("the choice of a modulator", TreeAddress::Effect { inst: 1, index: 0 }, &[(KeyCode::Enter, NONE), (KeyCode::Char('m'), NONE)], |s| s.modulate.is_some()),
+            ("the group of a lane", TreeAddress::Instrument(1), &[(KeyCode::Char('g'), NONE)], |s| s.group_assign.is_some()),
+        ]
+    }
+
+    fn opened(at: TreeAddress, keys: Keys) -> Harness {
+        let mut h = Harness::new(SCENE);
+        h.goto(at);
+        for (code, modifiers) in keys {
+            h.press_with(*code, *modifiers);
+        }
+        h
+    }
+
+    #[test]
+    fn a_letter_with_control_held_is_not_put_into_a_popup_that_takes_text_nor_does_it_reach_what_is_under_it() {
+        for (what, at, keys, text) in popups_that_take_text() {
+            let mut h = opened(at, keys);
+            h.type_chars("ab");
+            let typed = text(&h.s).unwrap_or_else(|| panic!("{what} is open"));
+            assert!(typed.ends_with("ab"), "{what}: {typed:?}");
+            h.commands();
+            let dirty = h.s.ctl.dirty;
+            // The keys of the chain under the popup (undo, redo, save) and some of a text field's own in other programs; Shift with them is a capital letter of the same key.
+            for letter in ['z', 'y', 's', 'x', 'a', 'u', 'k', 'w'] {
+                h.press_with(KeyCode::Char(letter), CTRL);
+            }
+            h.press_with(KeyCode::Char('Z'), CTRL_SHIFT);
+            assert_eq!(text(&h.s).as_deref(), Some(typed.as_str()), "{what}: no chord is a letter");
+            assert!(h.commands().is_empty(), "{what}: nor does a chord reach what is under it");
+            assert_eq!(h.s.ctl.dirty, dirty, "{what}");
+            assert!(!h.s.quit, "{what}");
+        }
+    }
+
+    #[test]
+    fn what_is_typed_with_shift_or_with_alt_gr_is_still_text_in_a_popup_that_takes_text() {
+        // (A capital letter has Shift. Windows reports AltGr, which makes `@` and `\` on a Swedish keyboard, as Control and Alt together.)
+        for (what, at, keys, text) in popups_that_take_text() {
+            let mut h = opened(at, keys);
+            let before = text(&h.s).unwrap_or_else(|| panic!("{what} is open"));
+            h.press_with(KeyCode::Char('Q'), KeyModifiers::SHIFT);
+            h.press_with(KeyCode::Char('@'), ALT_GR);
+            h.press_with(KeyCode::Char('\\'), ALT_GR);
+            h.press(KeyCode::Char('x'));
+            assert_eq!(text(&h.s), Some(format!("{before}Q@\\x")), "{what}");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_q_leave_the_program_from_every_popup_as_they_do_from_the_chain() {
+        for key in ['c', 'q'] {
+            let mut h = Harness::new(SCENE);
+            h.press_with(KeyCode::Char(key), CTRL);
+            assert!(h.s.quit, "Ctrl+{key} from the chain");
+            for (what, at, keys, _) in popups_that_take_text() {
+                let mut h = opened(at, keys);
+                assert!(!h.s.quit);
+                h.press_with(KeyCode::Char(key), CTRL);
+                assert!(h.s.quit, "Ctrl+{key} from {what}");
+            }
+            for (what, at, keys, is_open) in popups_that_take_none() {
+                let mut h = opened(at, keys);
+                assert!(is_open(&h.s), "{what} is open");
+                h.press_with(KeyCode::Char(key), CTRL);
+                assert!(h.s.quit, "Ctrl+{key} from {what}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_keys_of_a_text_field_that_have_control_held_but_are_not_letters_still_move_the_cursor() {
+        // (Ctrl+Left and Ctrl+Backspace do what Left and Backspace do, as they did.)
+        let mut h = opened(TreeAddress::Instrument(1), &[(KeyCode::Char('R'), NONE)]);
+        h.press_n(KeyCode::Backspace, 20).type_chars("C2-C6");
+        h.press_with(KeyCode::Left, CTRL).press_with(KeyCode::Backspace, CTRL);
+        assert_eq!(h.s.range_edit.as_ref().map(|p| p.input.value.as_str()), Some("C2-6"));
+    }
+}

@@ -1790,9 +1790,34 @@ where
 // Event processing
 // ---------------------------------------------------------------------------
 
+/// Whether a popup, or the filter of the parameters, has the keys: they go to it and not to the chain.
+fn popup_is_open(s: &State) -> bool {
+    s.selector.is_some()
+        || s.target_selector.is_some()
+        || s.modulate.is_some()
+        || s.group_assign.is_some()
+        || s.preset_selector.is_some()
+        || s.scale_selector.is_some()
+        || s.bpm_editing.is_some()
+        || s.gain_editing.is_some()
+        || s.save_as.is_some()
+        || s.editing.is_some()
+        || s.range_edit.is_some()
+        || s.rename_group.is_some()
+        || s.param_filtering
+}
+
 fn process_event(s: &mut State, ev: Event) {
     match ev {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // A letter with Control held is no text, and no key of a popup: it is not put in as the letter (Ctrl+Z, which undoes in the chain, typed a z), and
+            // Ctrl+C and Ctrl+Q leave from here as from the chain. (Windows reports AltGr, which makes `@` and `\` on some keyboards, as Control with Alt: that is text.)
+            if popup_is_open(s) && matches!(key.code, KeyCode::Char(_)) && key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) {
+                if matches!(key.code, KeyCode::Char('q' | 'c')) {
+                    s.quit = true;
+                }
+                return;
+            }
             if s.selector.is_some() {
                 handle_selector_key(s, key.code);
             } else if s.target_selector.is_some() {
