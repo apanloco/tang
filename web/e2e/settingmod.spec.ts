@@ -24,6 +24,22 @@ async function dotAt(dot: Locator): Promise<{ x: number; y: number }> {
   return { x: Number(await dot.getAttribute("cx")), y: Number(await dot.getAttribute("cy")) };
 }
 
+/** Wait until a node has stopped moving: the canvas pans to a node that was added (it takes a quarter of a second), and a cable dragged to a port that is on its way is missed. */
+async function still(target: Locator): Promise<void> {
+  let last = "";
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await target.boundingBox());
+        const same = now === last;
+        last = now;
+        return same;
+      },
+      { intervals: [150] },
+    )
+    .toBe(true);
+}
+
 /** Where a knob over `min` to `max`, on decades, draws a dot for `value`. */
 const placeOnDecades = (value: number, min: number, max: number): { x: number; y: number } => pointAt(24, 18, angleOf(fractionOf(value, min, max, "log")));
 
@@ -103,4 +119,36 @@ test("the depth that the user sets for a cable whose depth another cable drives 
   await expect.poll(said, { timeout: 8000 }).toBeCloseTo(0.53, 2);
   await page.keyboard.up("z");
   await expect.poll(said, { timeout: 8000 }).toBeCloseTo(-0.1, 2);
+});
+
+test("a group's envelope drawn to the rate of a member's LFO gives the Rate knob its ring and its dot, which follow the real engine: the member's modulator is told by the group", async ({ page, own }) => {
+  await open(page, own.url);
+  // A group with the lane in it, and an envelope in the group (a group's modulator reaches the modulators of its members).
+  await page.getByRole("button", { name: "Add a group", exact: true }).click();
+  await expect(node(page, "Group 1")).toBeVisible();
+  await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "Group 1" });
+  await expect(page.getByRole("combobox", { name: "Group of Oscillator" }).locator("option:checked")).toHaveText("Group 1");
+  await page.getByRole("button", { name: "Add a modulator to Group 1" }).click();
+  await page.getByRole("menuitem", { name: "Envelope" }).click();
+  const envelope = node(page, "ADSR");
+  await expect(envelope).toBeVisible();
+
+  const lfo = node(page, "LFO");
+  const rate = knobOf(lfo, "Rate");
+  await still(envelope);
+  await still(lfo);
+  await drag(page, output(envelope), setting(lfo, "rate"));
+  await expect(rate.locator(".tang-knob__ring")).toHaveCount(1);
+  const dot = rate.locator(".tang-knob__dot");
+  await expect(dot).toHaveAttribute("visibility", "visible");
+  // At rest, as for a lane's own envelope: the cable, at half depth, pulls the 0.5 Hz half the way down to 0.01 Hz.
+  const rest = placeOnDecades(0.255, 0.01, 50);
+  await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(rest.x, 1);
+  expect((await dotAt(dot)).y).toBeCloseTo(rest.y, 1);
+  // With a note held the group's envelope (which a note of its member opens) rises to its sustain, and the dot goes up with it.
+  await page.keyboard.down("z");
+  const held = placeOnDecades(0.4265, 0.01, 50);
+  await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(held.x, 1);
+  await page.keyboard.up("z");
+  await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(rest.x, 1);
 });
