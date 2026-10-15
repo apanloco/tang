@@ -42,19 +42,19 @@ describe("the button that modulates a control", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  test("offers a new LFO, a new envelope and a new MIDI control under a heading, and a modulator that is there under another", async () => {
+  test("offers a new LFO, a new envelope, a new macro and a new MIDI control under a heading, and a modulator that is there under another", async () => {
     await rig(<ModulateMenu node={filter.id} port={resonance} name="resonance" />);
     open("Modulate resonance");
     const menu = screen.getByRole("menu", { name: "Modulate resonance" });
     expect(within(menu).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["New", "Attach"]);
     // (The tracer's LFO drives the cutoff and not the resonance.)
-    expect(menuItems()).toEqual(["New LFO", "New envelope", "New MIDI control", "LFO"]);
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "LFO"]);
   });
 
   test("offers only the new ones when no modulator that is there can drive it: the tracer's LFO drives the cutoff already", async () => {
     await rig(<ModulateMenu node={filter.id} port={cutoff} name="cutoff" />);
     open("Modulate cutoff");
-    expect(menuItems()).toEqual(["New LFO", "New envelope", "New MIDI control"]);
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control"]);
     expect(within(screen.getByRole("menu")).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["New"]);
   });
 
@@ -69,6 +69,17 @@ describe("the button that modulates a control", () => {
     const [cable] = cablesFrom(server.snapshot.graph.edges, added[0]?.id ?? -1);
     expect(cable).toMatchObject({ kind: "modulation", to: { node: filter.id, port: resonance }, amount: 0.5 });
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  test("makes a macro at rest, with a cable at half depth, when that is chosen", async () => {
+    const { server, requests } = await rig(<ModulateMenu node={filter.id} port={resonance} name="resonance" />);
+    open("Modulate resonance");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New macro" }));
+    await settle();
+    expect(requests().map((r) => r.intent)).toEqual([{ type: "modulate", to: { node: filter.id, port: resonance }, kind: "macro", depth: null }]);
+    const knob = server.snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "macro");
+    expect(knob?.kind === "modulator" ? [knob.name, knob.source] : null).toEqual(["Macro", { type: "macro", value: 0 }]);
+    expect(cablesFrom(server.snapshot.graph.edges, knob?.id ?? -1)).toMatchObject([{ kind: "modulation", to: { node: filter.id, port: resonance }, amount: 0.5 }]);
   });
 
   test("makes a MIDI control that is armed to learn, with a cable at the whole range, when that is chosen", async () => {
@@ -100,7 +111,7 @@ describe("the button that modulates a control", () => {
       await settle();
     });
     open("Modulate resonance");
-    expect(menuItems()).toEqual(["New LFO", "New envelope", "New MIDI control", "LFO", "ADSR"]);
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "LFO", "ADSR"]);
     // And opened again, after another is made, the list is as it is then.
     fireEvent.click(button("Modulate resonance"));
     await act(async () => {
@@ -108,7 +119,7 @@ describe("the button that modulates a control", () => {
       await settle();
     });
     open("Modulate resonance");
-    expect(menuItems()).toEqual(["New LFO", "New envelope", "New MIDI control", "LFO", "ADSR", "MIDI (learning…)"]);
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "LFO", "ADSR", "MIDI (learning…)"]);
   });
 
   test("names the modulators that are there as the canvas names them: two LFOs are numbered", async () => {
@@ -118,7 +129,7 @@ describe("the button that modulates a control", () => {
       await settle();
     });
     open("Modulate resonance");
-    expect(menuItems().slice(3)).toEqual(["LFO 1", "LFO 2"]);
+    expect(menuItems().slice(4)).toEqual(["LFO 1", "LFO 2"]);
   });
 
   test("modulates a setting of a modulator with a sibling: the rate of the LFO has the others of its lane to attach, and the new ones", async () => {
@@ -128,7 +139,7 @@ describe("the button that modulates a control", () => {
       await settle();
     });
     open("Modulate rate");
-    expect(menuItems()).toEqual(["New LFO", "New envelope", "New MIDI control", "ADSR"]);
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "ADSR"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
     await settle();
     expect(requests().at(-1)?.intent).toEqual({ type: "modulate", to: { node: lfo.id, port: { type: "rate" } }, kind: "lfo", depth: null });
@@ -147,7 +158,7 @@ describe("the button that modulates a control", () => {
     const names = displayNames(snapshot.graph);
     await rig(<ModulateMenu node={lane.id} port={{ type: "param", index: first.index }} name={first.name} />, { snapshot });
     open(`Modulate ${first.name}`);
-    const attach = menuItems().slice(3);
+    const attach = menuItems().slice(4);
     const named = (...ids: number[]): (string | undefined)[] => ids.map((id) => names.get(id));
     expect(attach).toEqual(expect.arrayContaining(named(4, 5, 6, 13, 14, 15)));
     expect(attach).toHaveLength(6);

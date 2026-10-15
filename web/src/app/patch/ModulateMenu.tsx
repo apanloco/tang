@@ -1,5 +1,5 @@
-// The button on a control that modulates what the control sets (the TUI's `m` and `l`): a menu of a new LFO, a new envelope and a new MIDI control that
-// learns, made for the parameter or setting with a cable to it in one change (`Modulate`), and of the modulators that are there and could drive it, which
+// The button on a control that modulates what the control sets (the TUI's `m` and `l`): a menu of a new LFO, a new envelope, a new macro and a new MIDI control
+// that learns, made for the parameter or setting with a cable to it in one change (`Modulate`), and of the modulators that are there and could drive it, which
 // get a cable (`AddModEdge`). What could drive it is looked up when the menu is opened, not when anything changes: there is a button on every knob.
 import { useMemo, useState } from "react";
 
@@ -14,6 +14,7 @@ import { useClient, useEditor } from "../ClientProvider";
 const NEW: readonly { kind: ModulatorKind; label: string }[] = [
   { kind: "lfo", label: "New LFO" },
   { kind: "envelope", label: "New envelope" },
+  { kind: "macro", label: "New macro" },
   { kind: "midiLearn", label: "New MIDI control" },
 ];
 

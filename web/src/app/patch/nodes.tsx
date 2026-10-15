@@ -57,6 +57,7 @@ function Header({ name, badge, children, field }: { name: string; badge?: string
 const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
   { id: "lfo", label: "LFO" },
   { id: "envelope", label: "Envelope" },
+  { id: "macro", label: "Macro" },
   { id: "midiLearn", label: "MIDI control" },
 ];
 

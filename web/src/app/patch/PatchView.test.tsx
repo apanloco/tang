@@ -425,7 +425,7 @@ describe("the patch", () => {
       await rig(<PatchView />);
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       const menu = screen.getByRole("menu", { name: "Add a modulator to Oscillator" });
-      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "MIDI control"]);
+      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "Macro", "MIDI control"]);
     });
 
     test("asks the server to add the kind that was chosen to that lane, and the node is on the canvas with its controls when it has", async () => {
@@ -447,7 +447,7 @@ describe("the patch", () => {
 
     test("to a group asks for one in the group, whichever kind", async () => {
       const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      for (const [item, kind] of [["LFO", "lfo"], ["MIDI control", "midiLearn"]] as const) {
+      for (const [item, kind] of [["LFO", "lfo"], ["Macro", "macro"], ["MIDI control", "midiLearn"]] as const) {
         fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Group 2" }));
         fireEvent.click(screen.getByRole("menuitem", { name: item }));
         await waitFor(() => {
@@ -455,7 +455,7 @@ describe("the patch", () => {
         });
       }
       await waitFor(() => {
-        expect(requests()).toHaveLength(2);
+        expect(requests()).toHaveLength(3);
       });
     });
 
