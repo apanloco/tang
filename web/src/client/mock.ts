@@ -1008,6 +1008,7 @@ export class MockServer {
     }
     // What they make is made under the ids it was made under the first time (what is not made of them is not kept for what is made next).
     this.#counters.reuse(which === "undo" ? step.undoMade : step.redoMade);
+    const was = this.#snapshot;
     try {
       // (A step whose intent cannot be done, a node that is not there any more, is dropped, and what was done of it stays.)
       for (const intent of which === "undo" ? step.undo : step.redo) {
@@ -1021,6 +1022,9 @@ export class MockServer {
     } finally {
       this.#counters.dropReused();
     }
+    // What a removal that is done again takes is what the next undo puts back (the step's way back is replaced each time, as the controller's is): the session as it was just before,
+    // which is not what it was the first time when what was added has been added again, with slots of the telemetry of its own.
+    if (which === "redo" && step.taken) step.taken = { graph: was.graph, telemetry: was.telemetry };
     if (which === "undo") this.#history.keptUndone(step);
     else this.#history.keptRedone(step);
     return { rev, told };

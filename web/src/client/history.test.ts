@@ -588,6 +588,24 @@ describe("the mock engine's undo of what is taken out", () => {
     expect(pieces(server)).toBe(before);
   });
 
+  test("puts back, after what an add made has been undone and redone, the session as it was before the redo of the removal, with the slots that the redo of the add made", () => {
+    const server = fresh();
+    server.apply({ type: "addInstrument", plugin: "builtin:osc" });
+    const lane = server.snapshot.graph.nodes.filter((n) => n.kind === "instrument").at(-1);
+    if (!lane) throw new Error("the lane that was added");
+    server.apply({ type: "removeNode", node: lane.id });
+    server.apply({ type: "undo" });
+    server.apply({ type: "undo" });
+    // The lane is made again, and its meters are slots of the telemetry that it did not have the first time.
+    const first = pieces(server);
+    server.apply({ type: "redo" });
+    const added = pieces(server);
+    expect(added).not.toBe(first);
+    server.apply({ type: "redo" });
+    server.apply({ type: "undo" });
+    expect(pieces(server), "as it was before the removal, which is how the add made it the second time").toBe(added);
+  });
+
   test("puts back the cables that went with it, each where it was", () => {
     const server = fresh();
     const driven = cableOf(server, lfo.id);

@@ -4493,6 +4493,12 @@ plugin = "builtin:osc"
             "the last lane of a session is not taken out, and the history is as it was",
             vec![remove_node(lane0), remove_node(lane1), undo(), undo(), redo()],
         ));
+        // What an add makes when it is redone has slots of the telemetry that are new: a removal that is redone after it puts back the session as it was before that redo, and not as it
+        // was before the removal the first time.
+        scripts.push((
+            "a lane that an add made is taken out, and when the add has been undone and redone it is put back as the redo made it",
+            vec![add_instrument("builtin:osc"), remove_node(fresh(0)), undo(), undo(), redo(), redo(), undo(), undo()],
+        ));
         // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them, at its place among the groups, its members put in
         // it again, under its id, and what was done after it is put back first.
         scripts.push((
