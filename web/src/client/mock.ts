@@ -194,6 +194,21 @@ function withEntry(nodes: readonly Node[], cables: readonly Edge[], modulation: 
   return at < 0 ? [...modulation, entry] : [...modulation.slice(0, at), entry, ...modulation.slice(at)];
 }
 
+/**
+ * What a modulator that puts out `output` adds, at depth `amount`, to a value that the user set to `base` in the range `min`…`max`: the engine's law (`Modulator::target_offset`). An LFO swings the
+ * value around where the user set it, by depth times the range; an envelope's peak is that value, and it is taken from below it; a control that is not bound adds nothing, a CC and key pressure
+ * start from nothing, and the pitch bend wheel goes both ways from its middle.
+ */
+function offsetOf(source: Node | undefined, output: number, amount: number, base: number, min: number, max: number): number {
+  const modulator = source?.kind === "modulator" ? source.source : undefined;
+  if (modulator?.type === "envelope") return -(1 - output) * amount * (base - min);
+  if (modulator?.type === "midiLearn") {
+    if (modulator.control === null) return 0;
+    if (modulator.control.type === "pitchBend") return (output - 0.5) * 2 * amount * (max - min);
+  }
+  return output * amount * (max - min);
+}
+
 /** What a modulator of a lane or of a group is told of what it cannot reach: whose it is. */
 const ownerOf = (nodes: readonly Node[], modulator: Node): "group" | "lane" => (nodes.find((n) => n.id === modulator.parent)?.kind === "group" ? "group" : "lane");
 
@@ -1186,8 +1201,9 @@ export class MockServer {
         return shape(source.waveform, source.rate * seconds);
       case "envelope":
         return this.heldNotes.size > 0 ? source.sustain : 0;
+      // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, and the pitch bend wheel in the middle.)
       case "midiLearn":
-        return 0.5;
+        return source.control?.type === "pitchBend" ? 0.5 : 0;
     }
   }
 
@@ -1251,10 +1267,8 @@ export class MockServer {
     let value = base;
     for (const edge of edges) {
       if (!isModulation(edge) || edge.to.node !== entry.node || !samePort(edge.to.port, port)) continue;
-      const output = outputOf(edge.from.node);
       const source = nodes.find((n) => n.id === edge.from.node);
-      const isEnvelope = source?.kind === "modulator" && source.source.type === "envelope";
-      value = isEnvelope ? base - edge.amount * (1 - output) * (base - min) : base + output * edge.amount * (max - min);
+      value = base + offsetOf(source, outputOf(edge.from.node), edge.amount, base, min, max);
     }
     return clamp(value, min, max);
   }
@@ -1278,9 +1292,7 @@ export class MockServer {
     const lanes = drivers.filter(({ source }) => source !== undefined && ownerOf(nodes, source) === "lane");
     let offset = 0;
     for (const { edge, source } of lanes.length > 0 ? lanes : drivers) {
-      const output = outputOf(edge.from.node);
-      const isEnvelope = source?.kind === "modulator" && source.source.type === "envelope";
-      offset += isEnvelope ? -(1 - output) * edge.amount * (param.value - param.min) : output * edge.amount * (param.max - param.min);
+      offset += offsetOf(source, outputOf(edge.from.node), edge.amount, param.value, param.min, param.max);
     }
     return clamp(param.value + offset, param.min, param.max);
   }

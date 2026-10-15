@@ -2449,6 +2449,55 @@ describe("the value of a parameter that several cables drive", () => {
   });
 });
 
+describe("what a MIDI control puts out and does in the mock engine, which has no MIDI: it rests where the engine's does (f137)", () => {
+  const withControl = (control: { type: "cc"; number: number } | { type: "pitchBend" } | { type: "aftertouch" } | null): Snapshot => {
+    const nodes = tracerSnapshot.graph.nodes.map((node) =>
+      node.kind === "modulator" ? { ...node, source: { type: "midiLearn" as const, control, learning: control === null } } : node,
+    );
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  };
+  const cutoffOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 0 }, "effective");
+  const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+
+  test.each([
+    ["not bound yet", null, 0],
+    ["a CC", { type: "cc", number: 74 }, 0],
+    ["key pressure", { type: "aftertouch" }, 0],
+    ["the pitch bend wheel", { type: "pitchBend" }, 0.5],
+  ] as const)("puts out what it rests at when it is %s: nothing, and the middle for the pitch bend wheel", async (_name, control, rest) => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) }), { telemetry: ["modulation"] });
+    // (The buffers hold 0 until a frame comes: a rest of 0 is looked at after two.)
+    await until(() => client.telemetry.frames > 1, "frames");
+    expect(outputOf(client)).toBe(rest);
+  });
+
+  test.each([
+    ["not bound yet", null],
+    ["a CC", { type: "cc", number: 74 }],
+    ["key pressure", { type: "aftertouch" }],
+    ["the pitch bend wheel", { type: "pitchBend" }],
+  ] as const)("leaves a parameter where the user set it when it is %s and at rest", async (_name, control) => {
+    // The cutoff, which the user set to 0.5, has the cable of the tracer's LFO at depth 0.4, from this control now.
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) }), { telemetry: ["modulation"] });
+    await until(() => cutoffOf(client) === 0.5, "the cutoff where the user set it");
+  });
+
+  test("leaves the setting of a modulator where the user set it too, for the pitch bend wheel at rest and for a control that is not bound", async () => {
+    for (const control of [null, { type: "pitchBend" } as const]) {
+      const server = new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) });
+      const client = await open(server, { telemetry: ["modulation"] });
+      const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+      await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+      const second = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.id !== lfo.id).at(-1);
+      // The control drives the rate of the LFO that is new (a rate of 1 Hz, which the user set): the rate is 1.
+      await client.request({ type: "addModEdge", modulator: lfo.id, to: { node: second?.id ?? -1, port: { type: "rate" } } });
+      const rate = (): number | undefined => client.telemetry.value("modulation", second?.id ?? -1, { type: "rate" }, "effective");
+      await until(() => rate() === MODULATOR_FIELD_DEFAULTS.rate, `the rate where the user set it, for ${JSON.stringify(control)}`);
+      client.stop();
+    }
+  });
+});
+
 /** A transport to a mock server whose words to the client can be held back, and let through all at once. */
 function gated(server: MockServer): { transport: TransportFactory; hold: () => void; release: () => void } {
   let holding = false;
