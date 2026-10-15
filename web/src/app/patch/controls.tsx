@@ -11,12 +11,11 @@ import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { cableDepthOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameGroupChoices } from "../../client/selectors";
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, WAVEFORMS } from "../../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
 import { afterKey } from "../../ui/knob-geometry";
-import type { Scale } from "../../ui/knob-geometry";
 import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
@@ -393,16 +392,16 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
 });
 
 /**
- * What a number of a modulator is called and written like, and how its knob is spread: a rate
- * and the times of an envelope run over decades, a level does not. How far each goes, and what a
- * double click puts it back to, are the controller's (`MODULATOR_FIELD_RANGES`, `_DEFAULTS`).
+ * What a number of a modulator is called and written like. How far each goes, what a double
+ * click puts it back to and how its knob is spread (a rate and the times of an envelope run over
+ * decades, a level does not) are the controller's (`MODULATOR_FIELD_RANGES`, `_DEFAULTS`, `_SCALES`).
  */
-const NUMBERS: Record<Exclude<ModulatorField, "waveform">, { label: string; scale: Scale; format: (value: number) => string }> = {
-  rate: { label: "Rate", scale: "log", format: (value) => `${formatValue(value)} Hz` },
-  attack: { label: "Attack", scale: "log", format: seconds },
-  decay: { label: "Decay", scale: "log", format: seconds },
-  sustain: { label: "Sustain", scale: "linear", format: formatValue },
-  release: { label: "Release", scale: "log", format: seconds },
+const NUMBERS: Record<Exclude<ModulatorField, "waveform">, { label: string; format: (value: number) => string }> = {
+  rate: { label: "Rate", format: (value) => `${formatValue(value)} Hz` },
+  attack: { label: "Attack", format: seconds },
+  decay: { label: "Decay", format: seconds },
+  sustain: { label: "Sustain", format: formatValue },
+  release: { label: "Release", format: seconds },
 };
 
 /** A number of a modulator: an LFO's rate, a stage of an envelope. */
@@ -413,7 +412,7 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
   const shown = pending ?? stored;
   if (shown === undefined) return null;
-  const { label, scale, format } = NUMBERS[field];
+  const { label, format } = NUMBERS[field];
   const [min, max] = MODULATOR_FIELD_RANGES[field];
   return (
     <Knob
@@ -421,7 +420,7 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
       value={shown}
       min={min}
       max={max}
-      scale={scale}
+      scale={MODULATOR_FIELD_SCALES[field]}
       defaultValue={MODULATOR_FIELD_DEFAULTS[field]}
       format={format}
       onChange={(value) => {

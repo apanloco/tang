@@ -266,6 +266,26 @@ impl ModulatorField {
             ModulatorField::Sustain => (0.0, 1.0),
         }
     }
+
+    /// How its values are spread over its range when it is turned: a rate and a time run over thousands, which a linear control would crowd into its first
+    /// corner, so they are turned by ratios; a level is turned by distances.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the generated constants of the page say it so far"))]
+    pub fn taper(self) -> Taper {
+        match self {
+            ModulatorField::Rate | ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => Taper::Log,
+            ModulatorField::Waveform | ModulatorField::Sustain => Taper::Linear,
+        }
+    }
+}
+
+/// How the values of a setting are spread over its range when it is turned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "only the generated constants of the page say it so far"))]
+pub enum Taper {
+    /// Equal steps are equal distances: a level.
+    Linear,
+    /// Equal steps are equal ratios: what runs over decades. It has no zero, so its range starts above it.
+    Log,
 }
 
 /// A host-side gain, outside the plugin's own parameter list.
@@ -427,6 +447,19 @@ mod tests {
 
     fn wire<T: serde::Serialize>(value: &T) -> Value {
         serde_json::to_value(value).unwrap()
+    }
+
+    #[test]
+    fn the_settings_that_run_over_decades_are_turned_on_a_log_scale_and_the_others_on_a_linear_one() {
+        use ModulatorField::{Attack, Decay, Rate, Release, Sustain, Waveform};
+        use Taper::{Linear, Log};
+        for (field, taper) in [(Rate, Log), (Waveform, Linear), (Attack, Log), (Decay, Log), (Sustain, Linear), (Release, Log)] {
+            assert_eq!(field.taper(), taper, "{field:?}");
+            // A log scale has no zero: what runs over decades has a lowest value above it.
+            if taper == Log {
+                assert!(field.range().0 > 0.0, "{field:?}");
+            }
+        }
     }
 
     /// Every intent, and what it looks like as JSON. The values are exact in a

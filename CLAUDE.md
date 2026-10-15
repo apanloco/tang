@@ -1847,7 +1847,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   controller's name by name by `fixtures/filenames.json`, 67 names); a refusal is said among the notices (the name in quotes, cut after 24 characters) and the field stays, Escape and Cancel leave, and
   `Control+Shift+S` and `Command+Shift+S` open it (Control+S is still the save). The bar takes a second row in a window too narrow for all of it (`flex-wrap`).
   What the controller
-  clamps to (the ranges, what a new modulator starts as, the order of the waveforms) is
+  clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
   engine and the controls, not copied. The page is the connection state, the canvas and the session as JSON
   (closed). `cd web && npm ci`, then `npm run dev` (Vite on 5173, forwarding `/ws`

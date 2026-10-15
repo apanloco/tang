@@ -37,6 +37,16 @@ export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {
   release: 0.5,
 };
 
+/** How a setting of a modulator is turned: a rate and a time run over decades, which a knob turns by ratios (`ModulatorField::taper`). */
+export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = {
+  rate: "log",
+  waveform: "linear",
+  attack: "log",
+  decay: "log",
+  sustain: "linear",
+  release: "log",
+};
+
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 
