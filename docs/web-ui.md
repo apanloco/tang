@@ -3482,7 +3482,10 @@ Each step is a reviewable change; the TUI must not regress at any point.
     block on either side of the middle).
   - **Found on the way.** f114 (the mock lists a cable drawn from an earlier modulator after the others, where the controller lists it by its modulator's place in the rack) is closed: `withEntry` is the rack's order, and the history fixture
     pins it (its replay alone catches the three mutations of that order: the entry put after, the place of the modulator ignored, groups before lanes); the note in the
-    fixture's script that said the mock lists it after the others is gone. The mock's `without` knew only the entries of parameters, which could not matter until a setting had one.
+    fixture's script that said the mock lists it after the others is gone. The mock's `without` knew only the entries of parameters, which could not matter until a setting had one. And a look at the bar on the real engine, after the step, found a bug that had been there since cables to depths (step 36)
+    and in a file's `mod_depth`: **f133**, fixed in 36aebac. The engine moves what the cables that drive a rate or a stage work from when the user sets that rate or stage (`update_cross_mod_base`), and for a depth it had an arm and no caller,
+    so that the user's setting of the depth of a driven cable was written back at every buffer to the old value and the cable's offset: the slider did nothing to what was heard, and the bar said the old depth. A test of a lane's and a group's,
+    and one on the real program, which fails on the engine without the fix and passes with it.
   - **Limits, as built.** The ring of a setting is that of the last cable by the order of the graph's edges, which is the engine's order (a group's cables, then a lane's, each modulator's in its rack's order): a client that was told the cables
     in another order would draw another ring. A MIDI control that is not bound, last of the cables, leaves no ring (it writes the set value over the others, D41). The depth slider has a bar and no ring (a TODO in CLAUDE.md), and the bar's scale is
     the whole width of the slider while the thumb's travel is inset by half a thumb at each end: a depth near either end puts the bar's end a few pixels past the thumb's centre, as the panel's rows have it. The telemetry is 30 values
