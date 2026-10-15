@@ -1810,7 +1810,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   when it closes. Tests: `web::` (in-process, with a real WebSocket client) and
   `tests/serve.rs` (the real binary on the null backend). See `docs/web-ui.md`
   §3.2, §7 and §8 for the as-built notes.
-- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 42): TypeScript (strictest settings) +
+- **Frontend** (`web/`, built; steps 11 to 16 and 18 to 44): TypeScript (strictest settings) +
   React + Vite, a framework-agnostic client layer (`web/src/client/`: reducers,
   telemetry buffers and slot readers, the connection with its reconnection and token, a
   vanilla zustand store, the frame loop, `Drive` (what a control shows while the server
@@ -1856,13 +1856,13 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   (`app/piano/`: `Piano`, `PianoBar`, `PianoKeys`; `client/pianoLayout.ts`; the intents `SetScale` and
   `SetLocked`). Step 25 made the nodes movable: a node is dragged by its header (the controls are
   `nodrag`), the page sends `SetNodeUi` once, when it is put down, every browser draws the node there,
-  the session saves it, and a control on the canvas arranges the nodes again (`Editor.moveNode`,
+  the session saves it, and a button on the canvas, Arrange, arranges the nodes again (`Editor.moveNode`,
   `resetLayout`; `useMovableNodes` and `app/patch/moving.ts` keep a node in hand while the session is laid out again; a node that the layout would put
   on one that was placed by hand, or within 16 pixels of it, is moved clear of it, below it and above it for a modulator: `clearOfPlaced` in `toFlow.ts`). Step 26 drew
   the cables between modulators: an LFO's rate and the stages of an envelope have a port on the top edge of their knob as a plugin's
   parameters have, a cable is dragged to one from another modulator's output (or chosen from the list at the foot of the
   modulator, which lists those settings after the parameters, under a heading for each modulator), and a modulator that
-  drives the setting of another is drawn a row above it, so that a cable runs down (`app/patch/toFlow.ts`: `tiersOf`;
+  drives the setting of another is drawn a row above it in a layout from nothing, so that a cable runs down (`app/patch/toFlow.ts`: `tiersOf`; a cable that is drawn leaves the nodes where they are, step 44;
   `client/reach.ts`: `fieldsOf`, pinned to the controller's rule by `fixtures/fields.json`; `Editor.addCable` takes a port). Step 27 made
   the modulation visible: a modulator's node draws what it has put out for the last four seconds as a line that scrolls (`ui/LiveTrace.tsx`,
   from the page's own samples of the telemetry, `client/trace.ts`: a rate that another modulator drives is seen to wander), and a cable is as
@@ -1933,6 +1933,12 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   Scope tab draws the same (see "Scope tab").
   Step 43 made the ring and the dot of a rate, an attack, a decay and a release follow the engine's law for such a setting, a fraction of the knob's travel (see "Cross-modulation"):
   `settingExtent` takes the scale of the setting, the mock engine does as the engine does, and how a range is spread over a knob is in `client/travel.ts`, which `ui/knob-geometry.ts` exports too.
+  Step 44 stopped the canvas from being rearranged under a person's hand: `toFlow(graph, remembered)` is given where it put the nodes last (`Flow.places`) and leaves a node where it was while its slot is the same
+  (`slotsOf`: an effect is in the place of its chain that it is at, a modulator in its rack, a lane in the session, a group and the master in the column that the layout gives them, and what is in a group's strip in the slot of the group),
+  so that a cable that is drawn or taken out, and a node that is added or taken out, moves nothing but what needs room: a node that has grown, or a modulator that is added to a strip that has no room above it, moves the rows below it down,
+  strips whole (`makeRoom`), and a group's strip and the master go along with a lane that grows past them (a lane that is new goes below the ones that stayed, `clearOfKept`; a node on one that a person placed goes clear of it, last, `clearOfPlaced`).
+  `useLayout` keeps the places and lays the nodes out from nothing when "Arrange" is pressed (a button in the corner of the canvas, "Arrange the nodes again" to a screen reader; lit while a node has a place or one is not where the layout has it, `Flow.arranged`),
+  which gives the places back (`resetLayout`) and then fits the view to every node (`FitWhenArranged`). The view moves to show a node that is added where it cannot be seen.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
@@ -2047,6 +2053,9 @@ TODO: the controller's layout of the telemetry lists a cable by the place of its
 the others: a cable of an earlier modulator is told in another order (no reader depends on it; the fixture's scripts draw from the last modulator of a rack).
 TODO: the TUI's `n` and then a choice from its selector is two steps, an add and a replacement: it takes two Ctrl+Z.
 TODO: keep-alive pings for WebSockets.
+TODO: the places that the layout remembers are the page's: a page that is opened again, and a second browser, lay the nodes that no person has placed out from nothing, so that the canvas is not what it was when it was left (docs/web-ui.md D45, Open question 6).
+TODO: until the nodes are arranged a cable between two modulators that are in one row runs across what is between them, and its slider can be over a node (the cables' routes are made for the layout from nothing).
+TODO: the view moves to show a node that is added where it cannot be seen, and may leave the others out of it.
 
 ## Platform
 
