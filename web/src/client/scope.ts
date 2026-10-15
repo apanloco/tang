@@ -83,3 +83,15 @@ export function plotSpectrum(levels: Float32Array, sampleRate: number, size: Plo
   }
   return count;
 }
+
+/** The columns, across a picture of `width` pixels, where the frequencies `hzs` are on the decades of `range`: for the lines of a spectrum's graticule and the labels under them. */
+export function frequencyColumns(hzs: readonly number[], range: SpectrumRange, width: number): number[] {
+  const decades = Math.log(range.maxHz / range.minHz);
+  return hzs.map((hz) => (width * Math.log(hz / range.minHz)) / decades);
+}
+
+/** The rows, down a picture, where the levels `dbs` are between the floor and the top level of `range`, with the padding that the line keeps clear of the edges. */
+export function levelRows(dbs: readonly number[], range: SpectrumRange, size: PlotSize): number[] {
+  const room = size.height - 2 * size.pad;
+  return dbs.map((db) => size.pad + (1 - (db - range.floorDb) / (range.topDb - range.floorDb)) * room);
+}

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { plotSpectrum, plotWave, triggerStart } from "./scope";
+import { frequencyColumns, levelRows, plotSpectrum, plotWave, triggerStart } from "./scope";
 
 /** `length` samples of a cosine that goes round once in `period` samples, from sample `from` on (half a sample later than that, so that none is exactly on the middle). */
 function cosine(length: number, period: number, from = 0, amplitude = 1): Float32Array {
@@ -172,5 +172,36 @@ describe("the points of a spectrum", () => {
 
   test("are no more than the room for them", () => {
     expect(plotSpectrum(floorWith({}), sampleRate, size, range, new Float32Array(2 * 10))).toBe(10);
+  });
+});
+
+describe("the lines of a spectrum's graticule", () => {
+  const range = { minHz: 20, maxHz: 20_000, floorDb: -90, topDb: 0 };
+
+  test("are at the places of the frequencies that the points of the spectrum put them, a decade as far as the next", () => {
+    const [low, hundred, thousand, ten, high] = frequencyColumns([20, 100, 1000, 10_000, 20_000], range, 300);
+    expect(low).toBeCloseTo(0, 6);
+    expect(high).toBeCloseTo(300, 6);
+    expect(thousand).toBeCloseTo((300 * Math.log(50)) / Math.log(1000), 6);
+    // Equal ratios are equally far apart: 100 to 1000 and 1000 to 10000.
+    expect((thousand ?? 0) - (hundred ?? 0)).toBeCloseTo((ten ?? 0) - (thousand ?? 0), 6);
+  });
+
+  test("agree with where a spectrum puts a level in a column", () => {
+    // The column of 1 kHz, as the spectrum puts a level of one bin there (a bin of 2048 is 23.4 Hz: the 43rd is 1008 Hz), is the one that the line is at.
+    const levels = new Float32Array(1025).fill(-120);
+    levels[43] = 0;
+    const out = new Float32Array(2 * 301);
+    const width = 300;
+    plotSpectrum(levels, 48_000, { width, height: 50, pad: 0 }, range, out);
+    const [line] = frequencyColumns([43 * 23.4375], range, width);
+    let peak = 0;
+    for (let column = 0; column <= width; column += 1) if ((out[2 * column + 1] ?? 99) < (out[2 * peak + 1] ?? 99)) peak = column;
+    expect(Math.abs((line ?? 0) - peak)).toBeLessThan(3);
+  });
+
+  test("are at the rows of the levels, the top level at the top of the room that the padding leaves and the floor at the bottom of it", () => {
+    const rows = levelRows([0, -45, -90], range, { width: 100, height: 100, pad: 4 });
+    expect(rows).toEqual([4, 50, 96]);
   });
 });
