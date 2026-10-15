@@ -141,6 +141,8 @@ export class Client {
 
   readonly #options: ClientOptions;
   #channels: TelemetryChannel[];
+  /** The channels that something watches, and how many things do (`watchTelemetry`). */
+  readonly #watched = new Map<TelemetryChannel, number>();
   #transport: Transport | null = null;
   readonly #pending = new Map<number, Pending>();
   #nextRequest = 1;
@@ -201,10 +203,38 @@ export class Client {
     });
   }
 
-  /** Ask for these telemetry channels (and no others), now and on every connection after. */
+  /** Ask for these telemetry channels (and no others but those that something watches), now and on every connection after. */
   setTelemetry(channels: readonly TelemetryChannel[]): void {
     this.#channels = [...channels];
-    if (this.#live) this.#send({ type: "telemetry", channels: this.#channels });
+    this.#sendChannels();
+  }
+
+  /**
+   * Ask for `channel` as well, until the function that is returned is called: for a channel that costs something to send and that only a
+   * picture on the screen uses (the scope). Several can watch one channel, and it is asked for until the last of them lets go; letting go twice
+   * is letting go once. A new list of channels (`setTelemetry`) does not say what is watched.
+   */
+  watchTelemetry(channel: TelemetryChannel): () => void {
+    this.#watched.set(channel, (this.#watched.get(channel) ?? 0) + 1);
+    this.#sendChannels();
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      const left = (this.#watched.get(channel) ?? 1) - 1;
+      if (left > 0) this.#watched.set(channel, left);
+      else this.#watched.delete(channel);
+      this.#sendChannels();
+    };
+  }
+
+  /** The channels that are asked for: those of the client and those that something watches. */
+  get #wanted(): TelemetryChannel[] {
+    return [...new Set([...this.#channels, ...this.#watched.keys()])];
+  }
+
+  #sendChannels(): void {
+    if (this.#live) this.#send({ type: "telemetry", channels: this.#wanted });
   }
 
   noteOn(note: number, velocity = 100): void {
@@ -330,7 +360,7 @@ export class Client {
       this.#send({ type: "auth", token });
     }
     this.#send({ type: "subscribe" });
-    if (this.#channels.length > 0) this.#send({ type: "telemetry", channels: this.#channels });
+    if (this.#wanted.length > 0) this.#send({ type: "telemetry", channels: this.#wanted });
     this.#set({ status: "syncing" });
   }
 

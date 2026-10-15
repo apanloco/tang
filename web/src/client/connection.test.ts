@@ -2100,6 +2100,72 @@ describe("the scope", () => {
   });
 });
 
+describe("a channel that is asked for for as long as something shows it", () => {
+  test("comes in addition to the channels the client was started with, and stops when the one that asked lets go, the others going on", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: ["meters"] });
+    await until(() => client.telemetry.framesOf("meters") > 0, "meters");
+    expect(client.telemetry.framesOf("scope")).toBe(0);
+    const release = client.watchTelemetry("scope");
+    await until(() => client.telemetry.framesOf("scope") > 2, "scope frames");
+    release();
+    await quiet(30); // (frames that were on their way)
+    const frames = client.telemetry.framesOf("scope");
+    const meters = client.telemetry.framesOf("meters");
+    await quiet(80);
+    expect(client.telemetry.framesOf("scope"), "no more of the scope").toBe(frames);
+    expect(client.telemetry.framesOf("meters"), "the meters go on").toBeGreaterThan(meters);
+  });
+
+  test("is asked for until the last of those that asked lets go, and letting go twice is letting go once", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [] });
+    const first = client.watchTelemetry("scope");
+    const second = client.watchTelemetry("scope");
+    await until(() => client.telemetry.framesOf("scope") > 1, "scope frames");
+    first();
+    first();
+    await quiet(30);
+    const frames = client.telemetry.framesOf("scope");
+    await until(() => client.telemetry.framesOf("scope") > frames + 2, "the scope going on for the one that is left");
+    second();
+    await quiet(30);
+    const last = client.telemetry.framesOf("scope");
+    await quiet(80);
+    expect(client.telemetry.framesOf("scope")).toBe(last);
+  });
+
+  test("is kept by a new list of channels, which does not say what is watched", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: ["meters"] });
+    client.watchTelemetry("scope");
+    client.setTelemetry(["modulation"]);
+    await until(() => client.telemetry.framesOf("scope") > 1, "scope frames");
+    await until(() => client.telemetry.framesOf("modulation") > 0, "modulation frames");
+    const meters = client.telemetry.framesOf("meters");
+    await quiet(80);
+    expect(client.telemetry.framesOf("meters"), "the list was replaced").toBe(meters);
+  });
+
+  test("is asked for on every connection, the one that was lost and the one that follows", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = await open(server, { telemetry: [], reconnectDelay: () => 5 });
+    client.watchTelemetry("scope");
+    await until(() => client.telemetry.framesOf("scope") > 1, "scope frames");
+    server.drop();
+    await until(() => client.state.reconnects === 1 && client.state.status === "open", "the reconnection");
+    const frames = client.telemetry.framesOf("scope");
+    await until(() => client.telemetry.framesOf("scope") > frames + 2, "scope frames after it");
+  });
+
+  test("is asked for when the connection is made, if something asked before", async () => {
+    const server = new MockServer({ telemetryPeriod: 5 });
+    const client = connect(server, { telemetry: [] });
+    client.watchTelemetry("scope");
+    await until(() => client.telemetry.framesOf("scope") > 1, "scope frames");
+  });
+});
+
 describe("what other front-ends do", () => {
   test("reaches the client as it happens", async () => {
     const server = new MockServer();
