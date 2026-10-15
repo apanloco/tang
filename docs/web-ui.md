@@ -1281,7 +1281,8 @@ scope, the gap, the choices and the foot (157, as a browser draws them: a test o
 a knob that is pinned, so that the rows below move down by what is needed, strips and all, and nothing lies over anything (a test goes through every set of nodes of a session
 with a group that show one). What was moved stays when the scope is taken away, until the nodes are arranged; "Arrange" lays them out with the scopes that are shown, and a
 node that is taken out and put back by undo shows its scope again, since the set is of ids (a scope that is asked for a node that has no signal is not shown). The
-header of a lane that has a number in its name and a "×" is crowded: in the scene of two lanes the name "Oscillator 1" has 37 of the 75 pixels that it needs, and is cut (f148).
+badge of a node, what kind of plugin it is, is under its name in the header, in small type, since f148: beside the name it left 37 of the 75 pixels that "Oscillator 1" needs in a lane that has a number
+in its name and a "×" (the scene of two lanes, the split example) and 30 of the 92 that "Pianoteq 9" needs; the title has what the buttons leave and the header is as tall as it was.
 
 ### 9.4 Performance rules
 
@@ -3730,11 +3731,12 @@ Each step is a reviewable change; the TUI must not regress at any point.
     a second node 257.9 became 406.8: 148.9 px both, 157 in the layout's pixels: the scope's 96, the gap, the 41 of the choices and the foot). A canvas that remembers moves the row that a scope is in the way of, and a lane that is level with
     the group below moves with it, where a layout from nothing leaves the lane and moves the group alone (the test of two groups says both). Two lanes of one name are numbered ("Oscillator 1"), so that the first test
     of the room asked for a button that was not there. The browser test of the real program first said that every scope was not silent when the note ended: the filter's and the master's were at 1.07e-42, the tail of the filter shut at 20 Hz, a
-    number that is not zero and no sound (f149: the engine does not flush denormals; its cost was not measured), and the test says a millionth.
+    number that is not zero and no sound (f149: the engine does not flush denormals; its cost was not measured), and the test says a millionth. The scope button took 30 pixels of a header that had 40 for the name of a lane that has a number in it ("Os…") and 30 for Pianoteq 9 ("Pian…"): found by looking at the page on the user's own
+    examples (the split example, the Pianoteq session) once the step was done, and fixed in 7a9bf35 (f148: the badge is under the name). The browser test of the real program failed once in a whole run, on a key pressed before the focus that the removal of the LFO gives to the button that adds a modulator had come (ee69778).
   - **Limits, as built.** There are eight rings for every browser together: a ninth scope shows a flat line, and says nothing (f151; `ClientState.probed` has what the server says is watched, but a node that was asked
     for and left out cannot be told from one whose answer has not come). A ring that goes to another node keeps the last frames of the one it was for until the audio thread stores over them, so that a scope
-    can show up to 43 ms of another node's signal at first (f150). The scopes are the page's: a reload, and anything that takes the canvas off the page, closes them (Open question 8). The terminal has no scope for a node. The
-    header of a lane with a number and a "×" is crowded (f148). Only Chromium; the sound only on the null backend.
+    can show up to 43 ms of another node's signal at first (f150). The scopes are the page's: a reload, and anything that takes the canvas off the page, closes them (Open question 8). The terminal has no scope for a node. Only Chromium;
+    the sound only on the null backend.
   - **Tests.** Rust: 41 new (12 of the engine's taps, 12 of the controller's registry and 17 of the server's: the messages and the frame, the hub, the connection, the owner and the pusher, two of them on the real program), 1423 to 1448 (1586 to 1625 with the `web` feature;
     1418 to 1443 without the default plugin formats; 1573 to 1612 with `web`); on the real program 22 to 24. Web: 19 of the client (`watchProbe`, the frames, the mock's rings) and 24 of the page (nine
     of the layout, 15 of the nodes: the button where it is and where it is not, the scope and its choices, what is asked of the server and let go of, the frames drawn, undo, the room and arranging): 1873 to 1916; browsers 120 to 123. Mutants: 22 of the engine's taps, 22 of 23 of the controller's
