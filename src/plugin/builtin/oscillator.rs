@@ -94,6 +94,9 @@ struct Voice {
 
 pub const PARAM_COUNT: usize = 8; // waveform, detune, volume, attack, decay, sustain, release, pan
 
+/// The keys of a keyboard: one voice for each is the most there can be.
+const KEYS: usize = 128;
+
 const PAN_MIN: f32 = -1.0;
 const PAN_MAX: f32 = 1.0;
 
@@ -122,7 +125,8 @@ impl Oscillator {
     pub fn new(sample_rate: f32, waveform: Waveform) -> Self {
         Self {
             sample_rate,
-            voices: HashMap::new(),
+            // (Room for every key, the most that can sound: a note-on on the audio thread must not allocate.)
+            voices: HashMap::with_capacity(KEYS),
             detune: 0.0,
             volume: 1.0,
             volume_smoothed: 1.0,
@@ -448,6 +452,35 @@ mod tests {
         samples[samples.len() * 3 / 4..]
             .iter()
             .fold(0.0f32, |m, &s| m.max(s.abs()))
+    }
+
+    /// `process` runs on the audio thread, where a trip to the allocator can stall the callback: once the oscillator is made, notes
+    /// that start, sound and end make none, however many of them there are at once. (Every key of the keyboard at once is the most
+    /// there can be, and played twice, so that notes start again where the first ones were.)
+    #[test]
+    fn notes_that_start_sound_and_end_do_not_allocate() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        let mut left = vec![0.0f32; 256];
+        let mut right = vec![0.0f32; 256];
+        let on: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x90, note, 100])).collect();
+        let off: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x80, note, 0])).collect();
+        let mut block = |osc: &mut Oscillator, events: &[(u64, [u8; 3])]| {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            osc.process(events, &[], &mut out).unwrap();
+        };
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..2 {
+                block(&mut osc, &on);
+                block(&mut osc, &[]);
+                block(&mut osc, &off);
+                // The release ends within a few blocks and the voices go.
+                for _ in 0..8 {
+                    block(&mut osc, &[]);
+                }
+            }
+        });
+        assert!(osc.voices.is_empty(), "the notes have ended");
+        assert_eq!(allocations, 0);
     }
 
     #[test]
