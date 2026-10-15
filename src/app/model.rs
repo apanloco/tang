@@ -785,6 +785,24 @@ impl SessionModel {
         Some(lane)
     }
 
+    /// Put a lane back among the lanes at `index` (the last place, for one past the end): what `remove_lane` took out, put back, the way the audio thread's
+    /// `InsertInstrument` does it. If it is a member of a group, the cables of the group to the members from its place on are told the ordinals they have now
+    /// before it goes in (they were told the others' when it went); a group that is not there is no group. The place it went to.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller puts a lane back for the history, built next"))]
+    pub fn insert_lane_at(&mut self, index: usize, mut lane: InstrumentNode) -> usize {
+        if lane.group.is_some_and(|group| group >= self.groups.len()) {
+            lane.group = None;
+        }
+        let place = index.min(self.instruments.len());
+        self.instruments.insert(place, lane);
+        if let Some((group, ordinal)) = lane_member_ordinal(&self.instruments, place) {
+            if let Some(bus) = self.groups.get_mut(group) {
+                shift_group_member_after_insert(&mut bus.modulators, ordinal);
+            }
+        }
+        place
+    }
+
     /// Take group `group` out, with its bus effects and its modulators, the way the audio thread's `RemoveGroup`
     /// does: its member lanes are in no group, and the lanes of the groups after it have the index that is one
     /// less. `None` (and no change) if there is no such group.
@@ -3050,6 +3068,107 @@ param = "pan"
         assert_eq!(bus(&model), [1, 2], "one that goes in at the end moves nothing");
         let spare = model.remove_bus_effect(0, 3).unwrap();
         assert_eq!(model.insert_bus_effect_at(4, 0, spare), None);
+    }
+
+    // -- Putting a lane back --
+
+    /// Take lane `inst` out as the controller does (the cables of its group to it first, each with those that drive their depths, and then the lane) and put everything back in the
+    /// reverse order, the lane at `index`. False, and not put back, if cables that drive each other's depths went.
+    fn lane_out_and_back(model: &mut SessionModel, inst: usize, index: usize) -> bool {
+        let mut cables = Vec::new();
+        for edge in model.group_cables_into_lane(inst) {
+            // (One that an earlier cascade took with it is not there any more.)
+            cables.extend(model.remove_edge(edge).into_iter().flatten());
+        }
+        let lane = model.remove_lane(inst).unwrap();
+        if cables.iter().any(|cable| cable.still_driven) {
+            return false;
+        }
+        assert_eq!(model.insert_lane_at(index, lane), index);
+        for cable in cables.into_iter().rev() {
+            assert!(model.insert_target_at(cable.at, cable.mod_index, cable.target_index, cable.slot).is_some());
+        }
+        true
+    }
+
+    #[test]
+    fn every_lane_of_every_session_is_put_back_where_it_was_with_the_cables_of_its_group_and_the_ones_that_were_told_their_ordinals() {
+        use crate::app::testutil::{assert_same_model, CHAINS, CROSS_MOD_RACKS, GROUPS, LANES_IN_GROUPS};
+        let (mut tried, mut cycles) = (0, 0);
+        for (name, session) in [("LONG_CHAINS", LONG_CHAINS), ("CHAINS", CHAINS), ("GROUPS", GROUPS), ("LANES_IN_GROUPS", LANES_IN_GROUPS), ("CROSS_MOD_RACKS", CROSS_MOD_RACKS)] {
+            let before = load(session).model;
+            for inst in 0..before.instruments.len() {
+                // (A session of its own for each: what goes and is not put back would leave the next without it.)
+                let mut model = load(session).model;
+                if !lane_out_and_back(&mut model, inst, inst) {
+                    cycles += 1;
+                    continue;
+                }
+                assert_same_model(&format!("lane {inst} of {name} taken out and put back"), &load(session).model, &model);
+                model.check_ids().unwrap();
+                tried += 1;
+            }
+        }
+        assert!(tried > 10, "{tried} lanes is not enough to say much");
+        assert_eq!(cycles, 0);
+    }
+
+    /// The member each of group 0's first modulator's cables addresses (to a plugin of the member or to a modulator of it), in order.
+    fn members_driven(model: &SessionModel) -> Vec<usize> {
+        model.groups[0].modulators[0].targets.iter().filter_map(|t| match t.kind { K::GroupMember { member, .. } | K::GroupMemberMod { member, .. } => Some(member), _ => None }).collect()
+    }
+
+    #[test]
+    fn a_member_that_is_put_back_tells_the_cables_of_its_group_to_the_members_from_its_place_on_the_ordinals_they_have_then() {
+        use crate::app::testutil::LANES_IN_GROUPS;
+        // Group 0 has lanes 0 and 3 (members 0 and 1), and its cables are to member 0 (one) and member 1 (two).
+        let mut model = load(LANES_IN_GROUPS).model;
+        assert_eq!(members_driven(&model), [0, 1, 1]);
+        let mut cables = Vec::new();
+        for edge in model.group_cables_into_lane(0) {
+            cables.extend(model.remove_edge(edge).into_iter().flatten());
+        }
+        let lane = model.remove_lane(0).unwrap();
+        assert_eq!(members_driven(&model), [0, 0], "the member after it is the first now");
+        assert_eq!(model.insert_lane_at(0, lane), 0);
+        assert_eq!(members_driven(&model), [1, 1], "and the second again, before the cables of the first member come back");
+        for cable in cables.into_iter().rev() {
+            model.insert_target_at(cable.at, cable.mod_index, cable.target_index, cable.slot).unwrap();
+        }
+        assert_eq!(members_driven(&model), [0, 1, 1]);
+        // The second member (lane 3) goes with its two cables, and the first member's is not moved, going or coming.
+        let mut cables = Vec::new();
+        for edge in model.group_cables_into_lane(3) {
+            cables.extend(model.remove_edge(edge).into_iter().flatten());
+        }
+        let lane = model.remove_lane(3).unwrap();
+        assert_eq!(members_driven(&model), [0]);
+        assert_eq!(model.insert_lane_at(3, lane), 3);
+        assert_eq!(members_driven(&model), [0]);
+    }
+
+    #[test]
+    fn a_lane_that_is_put_back_past_the_end_is_the_last_and_one_for_a_group_that_is_not_there_is_in_no_group() {
+        use crate::app::testutil::LANES_IN_GROUPS;
+        let mut model = load(LANES_IN_GROUPS).model;
+        let nodes = |model: &SessionModel| model.instruments.iter().map(|lane| lane.node).collect::<Vec<_>>();
+        let before = nodes(&model);
+        let mut cables = Vec::new();
+        for edge in model.group_cables_into_lane(0) {
+            cables.extend(model.remove_edge(edge).into_iter().flatten());
+        }
+        let lane = model.remove_lane(0).unwrap();
+        // (Past the end is the last: it is the last member of group 0 then, and the cables of the member before it are not moved.)
+        assert_eq!(model.insert_lane_at(99, lane), 3);
+        assert_eq!(nodes(&model), [before[1], before[2], before[3], before[0]]);
+        assert_eq!(members_driven(&model), [0, 0]);
+        assert_eq!(model.instruments[3].group, Some(0));
+        // A group that is not there: the lane that was in it is in none (here the session's two groups are both gone).
+        let lane = model.remove_lane(3).unwrap();
+        model.remove_group(1).unwrap();
+        model.remove_group(0).unwrap();
+        assert_eq!(model.insert_lane_at(0, lane), 0);
+        assert_eq!(model.instruments[0].group, None);
     }
 
     // -- Putting a modulator back --
