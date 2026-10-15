@@ -338,7 +338,7 @@ or sibling group modulators. See "Group modulators" above.)
 ```toml
 [[instrument.modulator]]
 type = "lfo"            # optional, "lfo" is the default
-waveform = "sine"       # sine, triangle, saw, square (default: sine)
+waveform = "sine"       # sine, triangle, saw, square, random, smooth (default: sine)
 rate = 0.5              # Hz (default: 1.0)
 
 [[instrument.modulator.target]]
@@ -348,6 +348,22 @@ depth = 0.5             # fraction of param range, −1.0–1.0 (default: 0.5).
                         # Negative depth inverts the direction (LFO in
                         # anti-phase; a control that lowers instead of raises).
 ```
+
+The shapes are `sine`, `triangle`, `saw` (rising), `square` and two that have a number of their own for every
+cycle of the LFO: **`random`** (also `s&h` or `sh`: sample and hold) puts out the number of the cycle it is in, from
+−1 up to but not including 1, and holds it until the next cycle begins; **`smooth`** glides from the number of
+each cycle to the number of the next (a smoothstep, so that it eases at both ends and the cycles join without a
+corner). Like the others they are bipolar, so the law of an LFO below is the same for them. The numbers are
+not drawn from a generator that has state: a number is the top 24 bits of a hash of the modulator's *seed* and of how
+many times it has gone round (`plugin::chain::noise`), so the same cycle of the same seed always has the same number, and
+a session that is loaded again plays the same numbers. The seed is the order in which modulators came into the audio graph
+(one counter for the lane modulators and the group modulators alike, `AudioGraph::next_modulator_seed`): a session loads
+its modulators in the order of its file, so each has the seed it had the last time, and one that is added later, or put
+back by undo, has the next one and so draws other numbers than it did before (the seed is not in the session file). The
+cycles are counted as the phase wraps (`Modulator::tick`), so that turning the rate does not start the numbers again, and a rate
+that goes round more than once in a buffer counts every cycle. The page's mock engine draws the same numbers from the same hash
+(`web/src/client/noise.ts`, pinned to the engine's by a table that the engine writes, `fixtures/noise.json`), with the node's
+id for the seed.
 
 Modulators always serialize under `[[instrument.modulator]]` (the instrument
 level), never under an effect. Older sessions that nested `[[...effect.
@@ -1155,7 +1171,7 @@ volume, effect and bus-effect mix, group volume and pan, each with its own
 range), `LoadPreset` (by preset id; the values the preset set are mirrored
 into the model), `SetModulatorField` (an LFO's rate and waveform or an envelope's
 stage, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
-waveform rounded to its index: sine, triangle, saw, square), `SetEdgeDepth` (a
+waveform rounded to its index: sine, triangle, saw, square, random, smooth), `SetEdgeDepth` (a
 modulation cable's depth, -1 to 1) and `SetRange { node, range }` (the notes a lane takes, both
 ends included, or every note for none; refused for a node that is no lane, a note above 127 and a low
 note above the high one; the TUI's `R` popup asks it too), `SetScale { scale }` (the Piano tab's scale, as
