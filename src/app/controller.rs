@@ -171,6 +171,14 @@ impl NewTarget {
     }
 }
 
+/// How the session is written to a file: over what is there (a save), or only where nothing is, so that the write itself refuses a path that is taken
+/// (a save as another name: `session::save_new`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FileMode {
+    Replace,
+    CreateNew,
+}
+
 /// A chain of effects: a lane's, or a group's bus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ChainAt {
@@ -966,7 +974,7 @@ impl Controller {
         let Some(path) = self.session_path.clone() else {
             anyhow::bail!("No session path — cannot save");
         };
-        self.save_to(&path)
+        self.save_to(&path, FileMode::Replace)
     }
 
     /// Where `name` is written when the session is saved as it (`Intent::SaveAs`): the file that `session::plain_file_name` makes of it, beside the session's
@@ -977,15 +985,18 @@ impl Controller {
         Ok(dir.join(file))
     }
 
-    /// Write the session, with the Piano tab's scale and mode, to `path`. Does
+    /// Write the session, with the Piano tab's scale and mode, to `path`, as `mode` says. Does
     /// not touch `session_path`: callers decide what a failed save means for it.
-    pub(super) fn save_to(&mut self, path: &Path) -> anyhow::Result<()> {
+    pub(super) fn save_to(&mut self, path: &Path, mode: FileMode) -> anyhow::Result<()> {
         let (instruments, groups) = to_save(&self.model);
         let piano = PianoConfig {
             scale: Some(self.piano_filter.scale().short()),
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
-        session::save(path, &instruments, &groups, Some(&piano), self.model.master_ui())?;
+        match mode {
+            FileMode::Replace => session::save(path, &instruments, &groups, Some(&piano), self.model.master_ui())?,
+            FileMode::CreateNew => session::save_new(path, &instruments, &groups, Some(&piano), self.model.master_ui())?,
+        }
         self.dirty = false;
         log::info!("Session saved to {}", path.display());
         Ok(())

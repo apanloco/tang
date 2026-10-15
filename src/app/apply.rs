@@ -5,7 +5,7 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, NewTarget, depth_command, envelope_command, rate_command};
+use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, rate_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue};
 use crate::app::journal::{Inverse, Journal, RowBefore};
@@ -118,16 +118,21 @@ impl Controller {
         Ok(applied)
     }
 
-    /// Write the session as `name` beside its file, and have that file be its own from then on (`Intent::SaveAs`). Everything that can be refused is
-    /// looked at before anything is written, so that a refusal changes nothing.
+    /// Write the session as `name` beside its file, and have that file be its own from then on (`Intent::SaveAs`). A refusal changes nothing: the name is
+    /// looked at first, and a file that is there is refused by the write that would make it (f128).
     fn save_as_intent(&mut self, name: &str) -> Result<Applied, IntentError> {
         let path = self.save_as_path(name)?;
-        // A file that is there is not written over (a link that leads nowhere is there too: the write would follow it), unless it is the session's own.
-        if self.session_path.as_deref() != Some(path.as_path()) && std::fs::symlink_metadata(&path).is_ok() {
-            let file = path.file_name().map(|file| file.to_string_lossy().into_owned()).unwrap_or_default();
-            return Err(invalid(format!("a file called {file} is there already")));
-        }
-        self.save_to(&path).map_err(|e| IntentError::Io(e.to_string()))?;
+        // The session's own file is written over (that is a save). Any other is only created, so that it is the write that finds a file there, a link that
+        // leads nowhere included, and nothing that a look at the path had found can be out of date by the time of the write.
+        let mode = if self.session_path.as_deref() == Some(path.as_path()) { FileMode::Replace } else { FileMode::CreateNew };
+        self.save_to(&path, mode).map_err(|error| {
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists) {
+                let file = path.file_name().map(|file| file.to_string_lossy().into_owned()).unwrap_or_default();
+                invalid(format!("a file called {file} is there already"))
+            } else {
+                IntentError::Io(error.to_string())
+            }
+        })?;
         self.session_path = Some(path);
         self.rev += 1;
         let applied = Applied::of(self.rev, vec![Event::Saved { file: self.session_file_name() }]);

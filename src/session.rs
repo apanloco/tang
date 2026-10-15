@@ -1365,13 +1365,37 @@ pub fn plain_file_name(given: &str) -> Result<String, String> {
 }
 
 /// Write the session to `path`, creating its directory first (a new session's
-/// default home is `~/.config/tang/sessions/`).
+/// default home is `~/.config/tang/sessions/`). A file that is there is written over.
 pub fn save(
     path: &Path,
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
+) -> anyhow::Result<()> {
+    write_session(path, instruments, groups, piano, master_ui, false)
+}
+
+/// As `save`, for a file that is not there yet: the write itself fails, with an `io::Error` of kind `AlreadyExists` in the error, if the path is taken
+/// (by a file, a folder or a link, one that leads nowhere included, which it does not follow). Nothing looked at before the write can be out of date by the
+/// time of it (finding f128).
+pub fn save_new(
+    path: &Path,
+    instruments: &[SaveInstrumentSlot],
+    groups: &[SaveGroup],
+    piano: Option<&PianoConfig>,
+    master_ui: Option<NodeUi>,
+) -> anyhow::Result<()> {
+    write_session(path, instruments, groups, piano, master_ui, true)
+}
+
+fn write_session(
+    path: &Path,
+    instruments: &[SaveInstrumentSlot],
+    groups: &[SaveGroup],
+    piano: Option<&PianoConfig>,
+    master_ui: Option<NodeUi>,
+    create_new: bool,
 ) -> anyhow::Result<()> {
     let content = to_toml(instruments, groups, piano, master_ui)?;
     if let Some(parent) = path.parent() {
@@ -1380,7 +1404,12 @@ pub fn save(
                 .map_err(|e| anyhow::anyhow!("failed to create directory {}: {e}", parent.display()))?;
         }
     }
-    std::fs::write(path, content)?;
+    if create_new {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        std::io::Write::write_all(&mut file, content.as_bytes())?;
+    } else {
+        std::fs::write(path, content)?;
+    }
     Ok(())
 }
 
@@ -2476,6 +2505,80 @@ plugin = "builtin:osc"
         };
         save(&path, &[lane], &[], None, None).unwrap();
         assert_eq!(load(path.to_str().unwrap()).unwrap().instruments.len(), 1);
+    }
+
+    /// A session of one lane, for the tests of what a write does to the file system.
+    fn one_lane() -> Vec<SaveInstrumentSlot> {
+        vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: None,
+            modulators: vec![],
+            instrument: Some(SaveInstrument {
+                pinned: vec![],
+                plugin: "builtin:sine".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: None,
+            ui: None,
+        }]
+    }
+
+    /// Whether an error that a write gave is the file system saying that the path is taken.
+    fn path_is_taken(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<std::io::Error>().is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
+    }
+
+    #[test]
+    fn a_session_saved_as_a_new_file_is_what_a_save_writes_and_is_made_where_the_directory_is_not_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        save_new(&dir.path().join("new.toml"), &one_lane(), &[], None, None).unwrap();
+        save(&dir.path().join("same.toml"), &one_lane(), &[], None, None).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("new.toml")).unwrap(), std::fs::read_to_string(dir.path().join("same.toml")).unwrap());
+        // (A new session's home is a directory that may not be there yet.)
+        let nested = dir.path().join("sessions").join("new.toml");
+        save_new(&nested, &one_lane(), &[], None, None).unwrap();
+        assert_eq!(load(nested.to_str().unwrap()).unwrap().instruments.len(), 1);
+    }
+
+    #[test]
+    fn a_session_saved_as_a_new_file_does_not_write_over_a_file_that_is_there_and_the_write_is_what_finds_it() {
+        // (Finding f128: a look at the path and then a write could be out of date by the time of the write; the write itself refuses a path that is taken.)
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("taken.toml");
+        std::fs::write(&taken, "another session").unwrap();
+        let error = save_new(&taken, &one_lane(), &[], None, None).expect_err("the file is there");
+        assert!(path_is_taken(&error), "{error:#}");
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "another session", "what was there is as it was");
+
+        // A folder is a path that is taken.
+        std::fs::create_dir(dir.path().join("folder.toml")).unwrap();
+        assert!(path_is_taken(&save_new(&dir.path().join("folder.toml"), &one_lane(), &[], None, None).expect_err("a folder is there")));
+
+        // A save, which is for the session's own file, writes over it.
+        save(&taken, &one_lane(), &[], None, None).unwrap();
+        assert!(std::fs::read_to_string(&taken).unwrap().contains("builtin:sine"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_saved_as_a_new_file_does_not_follow_a_link_that_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        // A link to nowhere, and one to a file that is there: the write would follow either (and make the first one's file, or write over the second's).
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("dangling.toml")).unwrap();
+        std::fs::write(dir.path().join("precious.toml"), "keep me").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("precious.toml"), dir.path().join("link.toml")).unwrap();
+        for link in ["dangling.toml", "link.toml"] {
+            let error = save_new(&dir.path().join(link), &one_lane(), &[], None, None).expect_err("a link is a path that is taken");
+            assert!(path_is_taken(&error), "{link}: {error:#}");
+        }
+        assert!(!dir.path().join("nowhere").exists(), "what the link leads to was not made");
+        assert_eq!(std::fs::read_to_string(dir.path().join("precious.toml")).unwrap(), "keep me");
     }
 
     #[test]
