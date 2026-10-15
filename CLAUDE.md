@@ -669,6 +669,9 @@ that is out of 20 to 300 is held to it when the session is loaded, and a value t
 refuses the session, as every number does. The audio thread is told the tempo once when the session is loaded, if the file says
 one or has a pattern (`SessionModel::bpm`, set by the loader). A save writes `bpm` only when a load would not come to that tempo
 anyway (`SessionModel::bpm_to_save`), so that the files of sessions that never set one are as they were.
+A lane that is added after the tempo was set starts at 120 in the audio thread (`PatternPlayer::new`) and is told the tempo when a recording starts, which the
+TUI's `r` does first; a pattern that has been recorded keeps its own `bpm` whatever the tempo is set to afterwards.
+TODO: a pattern does not follow the tempo (its events are frames, and its length is its beats counted at its own `bpm`); `docs/web-ui.md` Open question 10.
 
 ### Pattern recorder/player
 
