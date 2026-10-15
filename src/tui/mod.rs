@@ -1332,6 +1332,16 @@ impl State {
         self.apply(intent);
     }
 
+    /// Take the pattern of lane `inst` out: the audio thread forgets it and the model has none. (What `d` on a pattern does, and Ctrl+R.)
+    fn clear_pattern(&mut self, inst: usize) {
+        let _ = self.ctl.cmd_tx.send(GraphCommand::ClearPattern { inst });
+        if let Some(lane) = self.ctl.model.instruments.get_mut(inst) {
+            lane.pattern = None;
+        }
+        self.ctl.dirty = true;
+        self.rebuild_tree();
+    }
+
     /// Step the selected row up (`direction` 1) or down (-1) by what `modifiers` say: a plugin's parameter by that fraction of its range, a modulator's
     /// setting by the law of its scale (`stepped`).
     fn adjust_param(&mut self, direction: f32, modifiers: KeyModifiers) {
@@ -2474,6 +2484,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
+        // Ctrl+R — clear the pattern of the lane (on its Pattern or Instrument node), as `d` on the pattern does. (Before `r`, which records, whatever
+        // the modifiers: the help said Ctrl+R clears, and it recorded.)
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) && s.active_tab == 0 && !s.focus_params => {
+            if let Some(TreeAddress::Pattern(inst) | TreeAddress::Instrument(inst)) = s.selected_address().copied() {
+                if s.ctl.model.instruments.get(inst).is_some_and(|lane| lane.pattern.is_some()) {
+                    s.clear_pattern(inst);
+                }
+            }
+        }
+
         // 'r' — toggle pattern recording (on Pattern or Instrument node).
         KeyCode::Char('r') if s.active_tab == 0 && !s.focus_params => {
             let target = match s.selected_address().copied() {
@@ -2585,14 +2605,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             s.remove_node(node);
                         }
                     }
-                    TreeAddress::Pattern(inst) => {
-                        let _ = s.ctl.cmd_tx.send(GraphCommand::ClearPattern { inst });
-                        if let Some(inst_node) = s.ctl.model.instruments.get_mut(inst) {
-                            inst_node.pattern = None;
-                        }
-                        s.ctl.dirty = true;
-                        s.rebuild_tree();
-                    }
+                    TreeAddress::Pattern(inst) => s.clear_pattern(inst),
                     TreeAddress::Modulator { inst, index } => {
                         let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.modulators.get(index)).map(|m| m.node);
                         s.remove_node(node);

@@ -846,6 +846,7 @@ numeric `params` values (the index into the label list).
 | `Ctrl+Left` / `Ctrl+Right` | Coarse decrease / increase selected parameter |
 | `/` | Filter parameter list by name |
 | `r` | Record/stop pattern for current instrument |
+| `Ctrl+R` | Clear the pattern of the selected instrument or pattern (chain focus; `d` on the pattern does the same) |
 | `b` | Set global BPM (opens value entry popup) |
 | `Ctrl+S` | Save session (to the file it was loaded from) |
 | `Ctrl+Shift+S` | Save session as (prompts for filename, saves in the current session's directory) |
@@ -870,8 +871,6 @@ bus effect (`a bus effect has no presets to load`), since the audio thread's `Lo
 lane's slot; a command for a group's chain would do it.
 TODO: `e` shortcut to open the value entry popup directly (currently use
 `Enter` from chain focus or land on a param and press `Enter`).
-TODO: `Ctrl+R` shortcut to clear a pattern (currently select the pattern
-node and press `d`).
 
 ### Plugin selector popup
 

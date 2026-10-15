@@ -2698,6 +2698,92 @@ fn a_finished_recording_shows_in_the_tree_at_the_tempo_set_with_b() {
     assert_eq!(h.s.ctl.model.instruments[1].pattern.as_ref().unwrap().bpm, 95.0);
 }
 
+/// A lane with no pattern, and a lane with one.
+const LANES_WITH_AND_WITHOUT_A_PATTERN: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.pattern]
+bpm = 120.0
+length_beats = 4.0
+base_note = "C4"
+enabled = true
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C4"
+velocity = 100
+[[instrument.pattern.events]]
+frame = 24000
+status = "off"
+note = "C4"
+velocity = 0
+"#;
+
+#[test]
+fn ctrl_r_clears_the_pattern_of_a_lane_from_its_pattern_or_from_its_instrument_and_does_not_record() {
+    // (The help says Ctrl+R clears; the key was `r`, which records, whatever the modifiers.)
+    for at in [TreeAddress::Pattern(1), TreeAddress::Instrument(1)] {
+        let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+        assert!(h.tree().iter().any(|l| l.contains("Pattern")), "{:#?}", h.tree());
+        h.goto(at);
+        h.commands();
+        h.s.ctl.dirty = false;
+        h.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(h.commands(), ["ClearPattern inst=1"], "{at:?}");
+        assert!(h.s.ctl.model.instruments[1].pattern.is_none(), "{at:?}");
+        assert!(h.s.ctl.dirty, "{at:?}");
+        assert!(!h.tree().iter().any(|l| l.contains("Pattern")), "{at:?}: {:#?}", h.tree());
+    }
+}
+
+#[test]
+fn ctrl_r_on_a_lane_that_has_no_pattern_sends_nothing_and_does_not_record() {
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.goto(TreeAddress::Instrument(0));
+    h.commands();
+    h.s.ctl.dirty = false;
+    h.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert!(h.s.ctl.model.instruments[0].pattern.is_none());
+    assert!(!h.s.ctl.dirty);
+}
+
+#[test]
+fn ctrl_r_is_for_the_chain_and_d_on_a_pattern_clears_it_the_same_way() {
+    // With the parameter pane focused, Ctrl+R is nothing; `d` on the pattern is what it was (the same command, the same model).
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.goto(TreeAddress::Instrument(1));
+    h.press(KeyCode::Enter);
+    h.commands();
+    h.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert!(h.s.ctl.model.instruments[1].pattern.is_some());
+    h.press(KeyCode::Esc);
+    h.goto(TreeAddress::Pattern(1));
+    h.s.ctl.dirty = false;
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.commands(), ["ClearPattern inst=1"]);
+    assert!(h.s.ctl.model.instruments[1].pattern.is_none());
+    assert!(h.s.ctl.dirty);
+    assert!(!h.tree().iter().any(|l| l.contains("Pattern")), "{:#?}", h.tree());
+}
+
+#[test]
+fn r_without_control_records_the_pattern_of_the_lane_it_is_on_as_it_did() {
+    let mut h = Harness::new(LANES_WITH_AND_WITHOUT_A_PATTERN);
+    h.goto(TreeAddress::Instrument(0));
+    h.commands();
+    h.press(KeyCode::Char('r'));
+    assert_eq!(
+        h.commands(),
+        ["SetGlobalBpm bpm=120.0", "SetPatternLength inst=0 beats=4.0", "SetPatternRecording inst=0 recording=true"]
+    );
+    assert!(h.s.ctl.model.instruments[0].pattern.as_ref().unwrap().recording);
+}
+
 #[test]
 fn a_finished_recording_marks_the_session_changed() {
     // `r` marks the session when the recording starts, but the events only

@@ -152,6 +152,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetPatternLength { inst, beats } => format!("SetPatternLength inst={inst} beats={beats:.1}"),
         C::SetPatternEnabled { inst, enabled } => format!("SetPatternEnabled inst={inst} enabled={enabled}"),
         C::SetPatternLooping { inst, looping } => format!("SetPatternLooping inst={inst} looping={looping}"),
+        C::SetPatternRecording { inst, recording } => format!("SetPatternRecording inst={inst} recording={recording}"),
+        C::ClearPattern { inst } => format!("ClearPattern inst={inst}"),
         _ => "<other>".to_string(),
     }
 }
