@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { angleOf, fractionOf, pointAt } from "../src/ui/knob-geometry";
-import { addEnvelope, drag, node, output, setting } from "./canvas";
+import { addEnvelope, drag, node, output, setting, still } from "./canvas";
 import { test } from "./own";
 
 // What a cable to a modulator's own setting looks like, on the real program (a program of its own, on the null audio backend): the rate of the
@@ -22,22 +22,6 @@ const knobOf = (modulator: Locator, name: string): Locator => modulator.locator(
 /** Where the dot of a knob is, in the knob's own pixels. */
 async function dotAt(dot: Locator): Promise<{ x: number; y: number }> {
   return { x: Number(await dot.getAttribute("cx")), y: Number(await dot.getAttribute("cy")) };
-}
-
-/** Wait until a node has stopped moving: the canvas pans to a node that was added (it takes a quarter of a second), and a cable dragged to a port that is on its way is missed. */
-async function still(target: Locator): Promise<void> {
-  let last = "";
-  await expect
-    .poll(
-      async () => {
-        const now = JSON.stringify(await target.boundingBox());
-        const same = now === last;
-        last = now;
-        return same;
-      },
-      { intervals: [150] },
-    )
-    .toBe(true);
 }
 
 /** Where a knob over `min` to `max`, on decades, draws a dot for `value`. */

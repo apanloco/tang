@@ -3,6 +3,9 @@
 // between which values they can swing it. The laws are the engine's, read from
 // `Modulator::target_offset` in `src/plugin/chain.rs`: every modulator adds an offset to the
 // parameter's base value, the offsets add up, and the sum is clamped to the parameter's range.
+// A lane in a group can have cables to one parameter from its own modulators and from its group's: the
+// group's are applied before the lane renders and the lane's later, each from the value the user set, so
+// those of the lane stand alone (`modulationsOn`).
 // A setting of a modulator (an LFO's rate, a stage of an envelope, the depth of a cable) is
 // different: its cables each write it from the value the user set, and the last stands
 // (`apply_cross_mod`), so `settingExtent` is the extent of the last cable alone.
@@ -15,24 +18,45 @@ export interface Modulation {
   amount: number;
 }
 
-/**
- * The modulators that drive the place `port` of `node`: a parameter of its plugin, a setting of a modulator, the depth of one of its
- * cables. In the order of the graph's edges, which is the order the engine writes them in (a group's cables, then a lane's, each
- * modulator's in the order of the rack).
- */
-export function modulationsAt(graph: Graph, node: NodeId, port: Port): Modulation[] {
-  const found: Modulation[] = [];
+/** A modulator that drives a place, with whose it is: a group's or a lane's. */
+interface Driver {
+  modulation: Modulation;
+  ofGroup: boolean;
+}
+
+/** The modulators that drive the place `port` of `node`, in the order of the graph's edges, each with whose it is. */
+function driversAt(graph: Graph, node: NodeId, port: Port): Driver[] {
+  const found: Driver[] = [];
   for (const edge of graph.edges) {
     if (edge.kind !== "modulation" || edge.to.node !== node || !samePort(edge.to.port, port)) continue;
     const modulator = graph.nodes.find((candidate) => candidate.id === edge.from.node);
-    if (modulator?.kind === "modulator") found.push({ source: modulator.source, amount: edge.amount });
+    if (modulator?.kind !== "modulator") continue;
+    const owner = graph.nodes.find((candidate) => candidate.id === modulator.parent);
+    found.push({ modulation: { source: modulator.source, amount: edge.amount }, ofGroup: owner?.kind === "group" });
   }
   return found;
 }
 
-/** The modulators that drive parameter `index` of the plugin in `node`, in the order of the graph's edges. */
+/**
+ * The modulators that drive the place `port` of `node`: a parameter of its plugin, a setting of a modulator, the depth of one of its
+ * cables. In the order of the graph's edges, which is the order the engine writes them in (a group's cables, then a lane's, each
+ * modulator's in the order of the rack). All of them, as the graph has them: for a parameter, `modulationsOn` says which of them count.
+ */
+export function modulationsAt(graph: Graph, node: NodeId, port: Port): Modulation[] {
+  return driversAt(graph, node, port).map((driver) => driver.modulation);
+}
+
+/**
+ * The modulators that drive parameter `index` of the plugin in `node`, in the order of the graph's edges, and whose offsets add up. A lane
+ * that is in a group can be driven by its own modulators and by its group's. The engine applies the group's before the lane renders and the
+ * lane's later, each from the value the user set (`apply_group_mod_writes`, then `apply_modulators_to_chain`), so that a parameter that any
+ * modulator of the lane drives, one whose control is not bound yet too, is the lane's alone: the group's offsets are not added to its. A bus
+ * effect has the group's only.
+ */
 export function modulationsOn(graph: Graph, node: NodeId, index: number): Modulation[] {
-  return modulationsAt(graph, node, { type: "param", index });
+  const drivers = driversAt(graph, node, { type: "param", index });
+  const lanes = drivers.filter((driver) => !driver.ofGroup);
+  return (lanes.length > 0 ? lanes : drivers).map((driver) => driver.modulation);
 }
 
 /** The lowest and highest offset one modulator can add to `base` on a parameter of range `min`…`max`; null if it adds none. */

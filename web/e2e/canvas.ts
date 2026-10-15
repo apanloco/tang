@@ -42,6 +42,22 @@ export const cables = (page: Page): Locator => page.locator(".tang-cable--modula
 /** The port of a setting of a modulator (an LFO's rate, a stage of an envelope), where a cable from another modulator ends. */
 export const setting = (modulator: Locator, name: string): Locator => modulator.locator(`.react-flow__handle[data-handleid="${name}"]`);
 
+/** Wait until a node has stopped moving: the canvas pans to a node that was added (it takes a quarter of a second), and a cable dragged to a port that is on its way is missed. */
+export async function still(target: Locator): Promise<void> {
+  let last = "";
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await target.boundingBox());
+        const same = now === last;
+        last = now;
+        return same;
+      },
+      { intervals: [150] },
+    )
+    .toBe(true);
+}
+
 /** An envelope put in the oscillator's lane from its menu (the tracer's LFO is in it already). */
 export async function addEnvelope(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Add a modulator to Oscillator" }).click();
