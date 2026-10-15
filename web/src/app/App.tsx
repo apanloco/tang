@@ -4,6 +4,7 @@ import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { NoticeBoard } from "../ui/NoticeBoard";
 import { AddGroupButton } from "./AddGroup";
 import { AddInstrumentMenu } from "./AddInstrument";
+import { BusyLight } from "./BusyLight";
 import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -60,6 +61,7 @@ export function App({ engine }: { engine: EngineKind }) {
         <span className="tang-app__engine">{engine === "mock" ? "mock engine" : "server"}</span>
       </header>
       <main className="tang-app__main">
+        <BusyLight />
         {problem ? (
           <p className="tang-app__problem" role="alert">
             {problem}

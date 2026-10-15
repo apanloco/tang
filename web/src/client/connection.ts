@@ -98,10 +98,15 @@ export interface ClientOptions {
   telemetry?: readonly TelemetryChannel[];
   /** Milliseconds to wait before the `attempt`th try to connect again (1 for the first). */
   reconnectDelay?: (attempt: number) => number;
+  /** Milliseconds a request may wait for its answer before the client says it is slow (`Client.slow`); `SLOW_AFTER` if not given. */
+  slowAfter?: number;
 }
 
 /** A quarter of a second, doubling up to five seconds. */
 const defaultDelay = (attempt: number): number => Math.min(250 * 2 ** (attempt - 1), 5000);
+
+/** A request that has waited this long (milliseconds) for its answer is slow: a plugin that takes seconds to load, a file that is slow to write. */
+export const SLOW_AFTER = 400;
 
 /** What the server says before it closes a connection, when it is not worth trying again. */
 const FINAL: readonly ErrorCode[] = ["unauthorized", "badRequest"];
@@ -109,6 +114,10 @@ const FINAL: readonly ErrorCode[] = ["unauthorized", "badRequest"];
 interface Pending {
   resolve: (rev: number) => void;
   reject: (error: RequestError) => void;
+  /** Says that it is slow, if it has not been answered by then. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+  /** Whether it has been told to be slow (and is in the count). */
+  slow: boolean;
 }
 
 export class Client {
@@ -123,6 +132,12 @@ export class Client {
   }));
   /** The latest telemetry, for a loop that draws it. */
   readonly telemetry = new TelemetryBuffers();
+  /**
+   * How many requests have waited longer than `slowAfter` for their answer, for a view that tells the person that the server is busy. It is a store of its
+   * own and not part of the state: that is told to every control at every change, and a request goes at every frame of a drag, where this changes only
+   * for the few that are slow.
+   */
+  readonly slow: StoreApi<{ count: number }> = createStore<{ count: number }>(() => ({ count: 0 }));
 
   readonly #options: ClientOptions;
   #channels: TelemetryChannel[];
@@ -176,7 +191,12 @@ export class Client {
     const reqId = this.#nextRequest;
     this.#nextRequest = (this.#nextRequest + 1) >>> 0 || 1;
     return new Promise<number>((resolve, reject) => {
-      this.#pending.set(reqId, { resolve, reject });
+      const pending: Pending = { resolve, reject, timer: undefined, slow: false };
+      pending.timer = setTimeout(() => {
+        pending.slow = true;
+        this.#slowBy(1);
+      }, this.#options.slowAfter ?? SLOW_AFTER);
+      this.#pending.set(reqId, pending);
       this.#send({ type: "request", reqId, intent });
     });
   }
@@ -355,12 +375,26 @@ export class Client {
     const pending = this.#pending.get(reqId);
     if (!pending) return;
     this.#pending.delete(reqId);
+    this.#forget(pending);
     how(pending);
   }
 
   #rejectPending(why: string): void {
     const pending = [...this.#pending.values()];
     this.#pending.clear();
-    for (const p of pending) p.reject(new RequestError(why, null));
+    for (const p of pending) {
+      this.#forget(p);
+      p.reject(new RequestError(why, null));
+    }
+  }
+
+  /** A request is over, answered or not: it is not going to be slow, or it is not slow any more. */
+  #forget(pending: Pending): void {
+    clearTimeout(pending.timer);
+    if (pending.slow) this.#slowBy(-1);
+  }
+
+  #slowBy(change: number): void {
+    this.slow.setState({ count: this.slow.getState().count + change });
   }
 }

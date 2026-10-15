@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT } from "../protocol";
 import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
-import { Client, RequestError } from "./connection";
-import type { ClientOptions, Transport } from "./connection";
+import { Client, RequestError, SLOW_AFTER } from "./connection";
+import type { ClientOptions, Transport, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
@@ -2393,6 +2393,161 @@ describe("the value of a setting that two cables drive", () => {
     expect(named, "the layout names the value once").toHaveLength(1);
     const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
     await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.2 * 1 * (0.5 - 0.01))) < 1e-5, "the rate the last cable makes of it");
+  });
+});
+
+/** A transport to a mock server whose words to the client can be held back, and let through all at once. */
+function gated(server: MockServer): { transport: TransportFactory; hold: () => void; release: () => void } {
+  let holding = false;
+  const held: (() => void)[] = [];
+  const transport: TransportFactory = () => {
+    const inner = server.transport();
+    return {
+      connect: (events) => {
+        inner.connect({
+          ...events,
+          text: (text) => {
+            if (holding) {
+              held.push(() => {
+                events.text(text);
+              });
+            } else {
+              events.text(text);
+            }
+          },
+        });
+      },
+      send: (text) => {
+        inner.send(text);
+      },
+      close: () => {
+        inner.close();
+      },
+    };
+  };
+  return {
+    transport,
+    hold: () => {
+      holding = true;
+    },
+    release: () => {
+      holding = false;
+      for (const tell of held.splice(0)) tell();
+    },
+  };
+}
+
+describe("a request that the server is slow to answer", () => {
+  const slow = (client: Client): number => client.slow.getState().count;
+  const slowClient = async (slowAfter = 30) => {
+    const server = new MockServer();
+    const connection = gated(server);
+    const client = await open(server, { transport: connection.transport, slowAfter });
+    return { client, connection, server };
+  };
+
+  test("is counted as slow once it has waited as long as the client was told to, and not before", async () => {
+    const { client, connection } = await slowClient(60);
+    expect(slow(client)).toBe(0);
+    connection.hold();
+    const answered = client.request(cutoff(0.3));
+    expect(slow(client)).toBe(0);
+    await quiet(20);
+    expect(slow(client)).toBe(0);
+    // (Within a quarter of a second, which is not the time that a client that is not told waits: it was told.)
+    await until(() => slow(client) === 1, "the request to be slow", 250);
+    connection.release();
+    await answered;
+    expect(slow(client)).toBe(0);
+  });
+
+  test("waits 400 milliseconds when it is not told how long", async () => {
+    const server = new MockServer();
+    const connection = gated(server);
+    const client = await open(server, { transport: connection.transport });
+    expect(SLOW_AFTER).toBe(400);
+    connection.hold();
+    const answered = client.request(cutoff(0.3));
+    await quiet(250);
+    expect(slow(client)).toBe(0);
+    await until(() => slow(client) === 1, "the request to be slow", 600);
+    connection.release();
+    await answered;
+  });
+
+  test("is never slow when it is answered in time", async () => {
+    const { client } = await slowClient(80);
+    const seen: number[] = [];
+    client.slow.subscribe((state) => seen.push(state.count));
+    await client.request(cutoff(0.3));
+    await quiet(120);
+    expect(seen).toEqual([]);
+    expect(slow(client)).toBe(0);
+  });
+
+  test("is not slow any more when it is refused, and the refusal is told as it always was", async () => {
+    const { client, connection } = await slowClient();
+    connection.hold();
+    const refused = client.request({ type: "setParam", node: 99_999, param: 0, value: 1 }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await until(() => slow(client) === 1, "the request to be slow");
+    connection.release();
+    expect(await refused).toBeInstanceOf(RequestError);
+    expect(slow(client)).toBe(0);
+  });
+
+  test("is counted once each, and the stopping of the client takes them all out, rejected as they always were", async () => {
+    const { client, connection } = await slowClient();
+    connection.hold();
+    const results = [client.request(cutoff(0.1)), client.request(cutoff(0.2)), client.request(cutoff(0.3))].map((request) => request.then(() => "answered", () => "rejected"));
+    await until(() => slow(client) === 3, "three slow requests");
+    client.stop();
+    expect(await Promise.all(results)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(slow(client)).toBe(0);
+  });
+
+  test("is not slow any more when the connection is lost before the answer: it is rejected as it was, and is not counted again by the one that is made good", async () => {
+    const { client, connection, server } = await slowClient();
+    connection.hold();
+    const lost = client.request(cutoff(0.3)).then(
+      () => "answered",
+      (error: unknown) => (error instanceof RequestError ? "rejected" : "something else"),
+    );
+    await until(() => slow(client) === 1, "the request to be slow");
+    server.drop();
+    expect(await lost).toBe("rejected");
+    expect(slow(client)).toBe(0);
+    connection.release(); // (what the old connection was holding, and the words of the new one)
+    await until(() => client.state.status === "open", "the reconnection");
+    await quiet(80);
+    expect(slow(client)).toBe(0);
+  });
+
+  test("is counted when it is the second that is slow: the first, answered, is not", async () => {
+    const { client, connection } = await slowClient(40);
+    await client.request(cutoff(0.1));
+    connection.hold();
+    const second = client.request(cutoff(0.2));
+    await until(() => slow(client) === 1, "the second to be slow");
+    connection.release();
+    await second;
+    expect(slow(client)).toBe(0);
+  });
+
+  test("does not touch the state of the session, which every control is listening to", async () => {
+    const { client, connection } = await slowClient();
+    connection.hold();
+    let told = 0;
+    client.store.subscribe(() => {
+      told += 1;
+    });
+    const answered = client.request(cutoff(0.3));
+    await until(() => slow(client) === 1, "the request to be slow");
+    expect(told).toBe(0);
+    connection.release();
+    await answered;
   });
 });
 

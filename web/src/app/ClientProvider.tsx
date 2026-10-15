@@ -91,6 +91,11 @@ export function useFrames(): FrameLoop {
   return useServices().frames;
 }
 
+/** How many requests have waited longer than the client was told to wait for their answer: the server is busy with them. */
+export function useSlowRequests(): number {
+  return useStore(useClient().slow, (state) => state.count);
+}
+
 /** A part of the client's state; the view renders again when that part changes. */
 export function useClientState<T>(select: (state: ClientState) => T): T {
   return useStore(useClient().store, select);
