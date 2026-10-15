@@ -348,7 +348,7 @@ pub fn load_session(
                 .collect();
             send(
                 cmd_tx,
-                GraphCommand::SwapInstrument { inst: inst_idx, instrument, inst_buf, remapper },
+                GraphCommand::SwapInstrument { inst: inst_idx, instrument, inst_buf, remapper, keep: None },
             )?;
 
             // Set volume if not default

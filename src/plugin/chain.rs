@@ -1827,12 +1827,14 @@ fn update_group_member_mod_base(
 
 /// Commands sent from the main thread to mutate the audio graph on the audio thread.
 pub enum GraphCommand {
-    /// Swap the instrument plugin in a specific instrument lane.
+    /// Swap the instrument plugin in a specific instrument lane. The plugin that goes out is handed to `keep` when there is one that has room and is listened to (the
+    /// controller keeps it for the history, to put it back by another swap), and goes back by the return channel otherwise (`hand_back`); a lane that had none hands nothing back.
     SwapInstrument {
         inst: usize,
         instrument: Box<dyn Plugin>,
         inst_buf: Vec<Vec<f32>>,
         remapper: Option<NoteRemapper>,
+        keep: Option<Sender<Box<dyn Plugin>>>,
     },
     /// Insert an effect into a specific instrument lane's chain.
     InsertEffect {
@@ -3514,12 +3516,13 @@ impl AudioGraph {
                     instrument: new_inst,
                     inst_buf,
                     remapper,
+                    keep,
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.inst_buf = inst_buf;
                         lane.remapper = remapper;
                         if let Some(old) = lane.instrument.replace(new_inst) {
-                            let _ = self.return_tx.try_send(old);
+                            hand_back(&self.return_tx, keep, old);
                         }
                     }
                 }
@@ -4885,6 +4888,7 @@ mod tests {
                 instrument: inst,
                 inst_buf,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
     }
@@ -5322,6 +5326,7 @@ mod tests {
                 instrument: inst,
                 inst_buf,
                 remapper: Some(remapper),
+                keep: None,
             })
             .unwrap();
 
@@ -5353,6 +5358,7 @@ mod tests {
                 instrument: inst_a,
                 inst_buf: inst_buf_a,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -5364,6 +5370,7 @@ mod tests {
                 instrument: inst_b,
                 inst_buf: inst_buf_b,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -5470,6 +5477,7 @@ mod tests {
                 instrument: inst_low,
                 inst_buf: inst_buf_low,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -5484,6 +5492,7 @@ mod tests {
                 instrument: inst_high,
                 inst_buf: inst_buf_high,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -5525,6 +5534,7 @@ mod tests {
                     instrument: inst,
                     inst_buf,
                     remapper: None,
+                    keep: None,
                 })
                 .unwrap();
         }
@@ -5785,7 +5795,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
 
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
@@ -6273,7 +6283,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
 
         // Armed MidiLearn modulator targeting cutoff (param 0), full-range.
@@ -6338,7 +6348,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
         cmd_tx
             .send(GraphCommand::InsertModulator {
@@ -6407,7 +6417,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
         cmd_tx
             .send(GraphCommand::InsertModulator {
@@ -6457,7 +6467,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
 
         cmd_tx
@@ -6517,7 +6527,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
 
         // Armed MidiLearn targeting cutoff (param 0), full-range, depth 1.0.
@@ -6614,7 +6624,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
 
         cmd_tx
@@ -6668,6 +6678,7 @@ mod tests {
                 instrument: inst,
                 inst_buf,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -6740,6 +6751,7 @@ mod tests {
                 instrument: inst,
                 inst_buf,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -6845,6 +6857,7 @@ mod tests {
                 instrument: inst,
                 inst_buf,
                 remapper: None,
+                keep: None,
             })
             .unwrap();
 
@@ -7271,7 +7284,7 @@ mod tests {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         let remapper = NoteRemapper::from_config(&make_remap(&[("G#4", "G4", 1.0)]), 2.0).unwrap();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: Some(remapper) })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: Some(remapper), keep: None })
             .unwrap();
         cmd_tx.send(GraphCommand::SetTranspose { inst: 0, semitones: 2 }).unwrap();
         cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((40, 90)) }).unwrap();
@@ -7287,7 +7300,7 @@ mod tests {
         let osc = load("builtin:osc");
         let inst_buf = (0..osc.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx
-            .send(GraphCommand::SwapInstrument { inst: 0, instrument: osc, inst_buf, remapper: None })
+            .send(GraphCommand::SwapInstrument { inst: 0, instrument: osc, inst_buf, remapper: None, keep: None })
             .unwrap();
         insert_effect(&cmd_tx, 0, load("builtin:filter"), 1.0);
         insert_effect(&cmd_tx, 1, load("builtin:reverb"), 0.5);
@@ -9100,6 +9113,103 @@ mod tests {
         graph.drain_commands();
         assert!(kept.try_recv().is_err() && kept_of_bus.try_recv().is_err() && return_rx.try_recv().is_err());
         assert_eq!(gains_of(&mut graph.instruments[0].effects), [0.25, 0.5, 0.75]);
+    }
+
+    // -- An instrument that is swapped out is handed back --
+    //
+    // As an effect that is taken out, the instrument that a swap replaces is handed to the channel that the controller made for it (`keep`), so that the very plugin,
+    // with whatever it holds, can be put back by another swap; and it goes the usual way, by the return channel, when nothing asks for it, when nobody listens or
+    // when the channel is full.
+
+    /// A swap that puts in a `ParamTrackingInstrument` whose parameter 0 is `value` (which tells instruments apart), and asks for the old one to go to `keep`.
+    fn swap_in(value: f32, keep: Option<crossbeam_channel::Sender<Box<dyn Plugin>>>) -> GraphCommand {
+        let instrument: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: value });
+        let inst_buf = (0..instrument.audio_output_count()).map(|_| Vec::new()).collect();
+        GraphCommand::SwapInstrument { inst: 0, instrument, inst_buf, remapper: None, keep }
+    }
+
+    /// A graph whose one lane has a `ParamTrackingInstrument` whose parameter 0 is 0.25.
+    fn lane_with_instrument() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        cmd_tx.send(swap_in(0.25, None)).unwrap();
+        graph.drain_commands();
+        (graph, cmd_tx, return_rx)
+    }
+
+    #[test]
+    fn an_instrument_that_is_swapped_out_with_a_channel_is_handed_to_it_and_not_to_the_return_channel() {
+        let (mut graph, cmd_tx, return_rx) = lane_with_instrument();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(swap_in(0.75, Some(keep))).unwrap();
+        graph.drain_commands();
+        assert!(return_rx.try_recv().is_err(), "it did not go the usual way");
+        let mut old = kept.try_recv().expect("it went to the channel that asked for it");
+        assert_eq!(old.get_parameter(0), Some(0.25), "the instrument that was in the lane");
+        assert_eq!(graph.instruments[0].instrument.as_mut().unwrap().get_parameter(0), Some(0.75), "and the new one is in");
+    }
+
+    #[test]
+    fn an_instrument_goes_the_usual_way_when_nothing_asks_for_it_or_nobody_listens_or_the_channel_is_full() {
+        for what in ["no channel", "nobody listens", "a full channel"] {
+            let (mut graph, cmd_tx, return_rx) = lane_with_instrument();
+            // (Held to the end of the round: the channel is open, and full, for as long as it is.)
+            let mut holders = Vec::new();
+            let keep = match what {
+                "no channel" => None,
+                "nobody listens" => {
+                    let (keep, kept) = crossbeam_channel::bounded(1);
+                    drop(kept);
+                    Some(keep)
+                }
+                _ => {
+                    let (keep, kept) = crossbeam_channel::bounded(1);
+                    keep.send(Box::new(ParamTrackingInstrument { param_value: 0.9 }) as Box<dyn Plugin>).unwrap();
+                    holders.push(kept);
+                    Some(keep)
+                }
+            };
+            cmd_tx.send(swap_in(0.75, keep)).unwrap();
+            graph.drain_commands();
+            let mut old = return_rx.try_recv().unwrap_or_else(|_| panic!("{what}: it goes to the return channel"));
+            assert_eq!(old.get_parameter(0), Some(0.25), "{what}");
+            assert_eq!(graph.instruments[0].instrument.as_mut().unwrap().get_parameter(0), Some(0.75), "{what}");
+            if what == "a full channel" {
+                assert_eq!(holders[0].try_recv().unwrap().get_parameter(0), Some(0.9), "what was in the channel is still the only thing in it");
+                assert!(holders[0].try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn a_lane_that_had_no_instrument_hands_nothing_back_and_leaves_the_channel_empty() {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(swap_in(0.75, Some(keep))).unwrap();
+        graph.drain_commands();
+        assert!(kept.try_recv().is_err() && return_rx.try_recv().is_err());
+        assert_eq!(graph.instruments[0].instrument.as_mut().unwrap().get_parameter(0), Some(0.75));
+    }
+
+    #[test]
+    fn an_instrument_that_was_handed_back_goes_back_in_as_the_very_plugin_with_what_it_holds_and_with_the_remapper_it_is_given() {
+        let (mut graph, cmd_tx, return_rx) = lane_with_instrument();
+        // What the instrument holds that nothing else does: its parameter, set after it was put in.
+        cmd_tx.send(GraphCommand::SetParameter { inst: 0, slot: 0, param_index: 0, value: 0.4 }).unwrap();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(swap_in(0.75, Some(keep))).unwrap();
+        graph.drain_commands();
+        assert!(graph.instruments[0].remapper.is_none());
+        // It goes back in, with a remapper (the lane's own note remap, made again from the model).
+        let old = kept.try_recv().unwrap();
+        let remap = std::collections::HashMap::from([("C4".to_string(), RemapTarget { note: "D4".to_string(), detune: 1.0 })]);
+        let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+        let inst_buf = (0..old.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx.send(GraphCommand::SwapInstrument { inst: 0, instrument: old, inst_buf, remapper: Some(remapper), keep: None }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.instruments[0].instrument.as_mut().unwrap().get_parameter(0), Some(0.4), "the very instrument, with the value it had");
+        assert!(graph.instruments[0].remapper.is_some());
+        // (The one that went out of the lane goes the usual way.)
+        assert_eq!(return_rx.try_recv().unwrap().get_parameter(0), Some(0.75));
     }
 
     /// Group 0's first modulator's cables to its bus effects, as (effect, parameter).

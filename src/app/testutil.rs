@@ -72,11 +72,12 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SwapInstruments { inst_a, inst_b } => format!("SwapInstruments a={inst_a} b={inst_b}"),
         C::SetLaneGroup { inst, group } => format!("SetLaneGroup inst={inst} group={group:?}"),
         C::SetInstrumentRange { inst, range } => format!("SetInstrumentRange inst={inst} range={range:?}"),
-        C::SwapInstrument { inst, instrument, inst_buf, remapper } => format!(
-            "SwapInstrument inst={inst} plugin={} bufs={} remap={}",
+        C::SwapInstrument { inst, instrument, inst_buf, remapper, keep } => format!(
+            "SwapInstrument inst={inst} plugin={} bufs={} remap={}{}",
             instrument.name(),
             inst_buf.len(),
-            remapper.is_some()
+            remapper.is_some(),
+            if keep.is_some() { " keep" } else { "" }
         ),
         C::SetVolume { inst, value } => format!("SetVolume inst={inst} value={value:.3}"),
         C::SetTranspose { inst, semitones } => format!("SetTranspose inst={inst} semitones={semitones}"),

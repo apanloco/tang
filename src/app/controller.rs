@@ -344,6 +344,7 @@ impl Controller {
             instrument: loaded,
             inst_buf,
             remapper: None,
+            keep: None,
         });
         if let Some(lane) = self.model.instruments.get_mut(inst) {
             slot.node = lane.node;
@@ -1134,6 +1135,7 @@ mod tests {
             instrument: plugin,
             inst_buf: vec![Vec::new(), Vec::new()],
             remapper: None,
+            keep: None,
         };
         ctl.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
         let osc = |n: usize| (0..n).map(|_| crate::plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap());

@@ -532,6 +532,7 @@ mod tests {
                 instrument: Box::new(Failing),
                 inst_buf: vec![Vec::new(), Vec::new()],
                 remapper: None,
+                keep: None,
             })
             .unwrap();
         midi_tx.send(NOTE_ON_A4).unwrap();
@@ -683,6 +684,7 @@ mod tests {
                 instrument: Box::new(Probe { blocks: blocks.clone(), frames: frames.clone(), dropped_on }),
                 inst_buf: vec![Vec::new(), Vec::new()],
                 remapper: None,
+                keep: None,
             })
             .unwrap();
         (rig, blocks, frames, dropped)
