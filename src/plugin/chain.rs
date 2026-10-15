@@ -7809,6 +7809,24 @@ mod tests {
     }
 
     #[test]
+    fn a_lane_control_that_is_not_bound_yet_and_a_group_modulator_on_one_parameter_leave_the_value_the_user_set() {
+        // (An armed control that has captured nothing adds no offset, but it is a cable of the lane all the same: the lane writes the parameter from the value the user set, over
+        // what the group wrote.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, ModSource::MidiLearn { source: None, value: 0.0, learning: true });
+        rig.gain_target(0, 0.1);
+        rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) }).unwrap();
+        let target = ModTarget { kind: ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }, depth: 0.2, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
+        rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        let mut out = make_output();
+        rig.graph.process(&[note_on(60)], &mut out).unwrap();
+        // The instrument puts out 0.5, and the effect scales it by the value the user set, 0.5: 0.7 would be the group's.
+        assert!(close(out[0][0], 0.5 * 0.5), "{}", out[0][0]);
+    }
+
+    #[test]
     fn two_cables_to_one_setting_publish_the_value_the_last_of_them_wrote_to_both() {
         // (Writers to one setting are last-wins, as `apply_cross_mod` says: the value is what the later cable made of it.)
         let mut rig = Rig::new();
