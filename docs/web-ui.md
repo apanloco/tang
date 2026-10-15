@@ -3422,6 +3422,9 @@ edits its inner graph, reusing the node / edge shapes from §4.2. Scope it after
 the phase 0 tracer shows what the canvas wants; richer builtins (noise, VCA,
 mixer, delay, …) are the natural first increment.
 
+A proposal that grounds this in the engine as it is (what can be reused and what cannot, the one idea that keeps the controller and the page
+almost as they are, the order of work, and the ten decisions that are the user's) is `docs/track-b.md`. Nothing of it is started.
+
 ### Sources as nodes (ideas)
 
 Two ideas for after the canvas can build what the engine has now; neither is started.
@@ -3495,3 +3498,5 @@ Open questions
    what the TUI shows while a load is pending.
 4. Session browser and runtime session switching (phase 4): tearing down and
    rebuilding the graph while the stream runs.
+5. Track B (§13): the decisions of `docs/track-b.md` §8: the direction (more built-ins first, the patch, or the kernels and then both),
+   one signal type or typed cables, voices from the start, where the patch is drawn, our own DSP or FunDSP, the terminal's part.

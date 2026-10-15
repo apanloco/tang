@@ -1539,7 +1539,8 @@ Plugin loading is behind a trait. Three formats supported:
   (0–1), `pan` (−1 left … 0 center … +1 right, balance-style so center leaves
   both channels at full; smoothed ~5 ms). Envelope defaults (A=4 ms, S=1.0, R=12 ms) reproduce the original
   click-guard ramps; envelope times are floored to 2 ms so extreme settings
-  stay click-free. Voices ring until their release completes. The old
+  stay click-free. Voices ring until their release completes. The voices are in a map with room for every key, made with the oscillator, so a note-on
+  does not allocate on the audio thread (`notes_that_start_sound_and_end_do_not_allocate` counts). The old
   `builtin:sine`/`builtin:triangle`/`builtin:square` IDs still load (as
   aliases that start on that waveform) so older sessions keep working, but
   enumeration and the selector show only the unified `builtin:osc`.
@@ -1963,6 +1964,8 @@ generated TypeScript is current.
 
 ## Future ideas
 
+- A patchable voice (track B, `builtin:patch`): a proposal, with what the engine has and lacks, the order of work and the ten decisions that
+  are the user's, is `docs/track-b.md`; nothing of it is started
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
