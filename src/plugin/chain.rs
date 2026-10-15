@@ -3465,6 +3465,18 @@ impl AudioGraph {
         self.instruments.get_mut(inst)?.effects.get_mut(index)?.get_parameter(param)
     }
 
+    /// Set a parameter of lane `inst`'s instrument on the plugin itself, for a test: what the model does not know, as a plugin has state apart from its parameters.
+    #[cfg(test)]
+    pub fn poke_instrument(&mut self, inst: usize, param: u32, value: f32) {
+        self.instruments[inst].instrument.as_mut().unwrap().set_parameter(param, value).unwrap();
+    }
+
+    /// Whether each lane has a note remapper, for a test to compare with the model's note remap.
+    #[cfg(test)]
+    pub fn remappers(&self) -> Vec<bool> {
+        self.instruments.iter().map(|lane| lane.remapper.is_some()).collect()
+    }
+
     /// Set a parameter of an effect of a group's bus on the plugin itself, for a test: what the model does not know, as a plugin has state apart from its parameters.
     #[cfg(test)]
     pub fn poke_bus_effect(&mut self, group: usize, index: usize, param: u32, value: f32) {

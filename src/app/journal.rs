@@ -15,7 +15,11 @@
 //! A lane is handed back whole (`RemoveInstrument { keep }`, `KeptLane`): its plugins, its modulators and what they have in hand, its pattern; the history lets
 //! go of a lane's plugins, and not of the lane, when it keeps too many, and the plugins are loaded again into it. A lane that the audio thread did not hand
 //! back cannot be had again, and the undo is refused.
+//!
+//! An instrument that another one replaces is taken out of its lane as an effect is taken out of a chain (`SwapInstrument { keep }`), and put back by another swap,
+//! with the lane's note remap, which goes with the instrument it was for; the cables that drove the old instrument's parameters went before it.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Instant;
 
@@ -25,8 +29,9 @@ use crate::app::apply::Done;
 use crate::app::controller::{has_audio_output, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
 use crate::app::model::{mod_source_slot_to_graph, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
-use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, CHAIN_CHANNELS};
+use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper, CHAIN_CHANNELS};
 use crate::plugin::{self, Plugin};
+use crate::session::RemapTarget;
 
 /// One thing that was taken out, and what it takes to put it back.
 #[derive(Debug)]
@@ -46,6 +51,9 @@ pub(super) enum Inverse {
     /// (by node, in the order of the lanes) and `kept` the group that the audio thread handed back, with its bus effects and whatever they hold, or what puts one back. (The cables
     /// of its modulators went before it, each written down as a cable, and come back after it.)
     Group { index: usize, group: GroupNode, members: Vec<NodeId>, kept: Kept<KeptGroup> },
+    /// The instrument of a lane (by its node) that another one replaced, or none, for a lane that had no instrument and has been filled: undo gives the lane what it had, and
+    /// empties it if it had nothing. (The cables that drove the old instrument's parameters went before it, each written down as a cable, and come back after it.)
+    Instrument { lane: NodeId, before: Option<Replaced> },
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
@@ -71,6 +79,17 @@ impl<T> fmt::Debug for Kept<T> {
     }
 }
 
+/// An instrument that was taken out of its lane by a replacement: the model's plugin (its values, its preset, its pins), the lane's note remap, which goes with the
+/// instrument it was for (the audio thread drops the remapper when the instrument goes) and the pitch bend range that belongs to it, and the plugin that was in the
+/// lane, or what puts one back.
+#[derive(Debug)]
+pub(super) struct Replaced {
+    pub(super) slot: PluginSlot,
+    pub(super) remap: HashMap<String, RemapTarget>,
+    pub(super) pitch_bend_range: f64,
+    pub(super) kept: Kept<Box<dyn Plugin>>,
+}
+
 /// What an operation took out, in the order it did.
 #[derive(Debug, Default)]
 pub struct Journal {
@@ -83,12 +102,13 @@ impl Journal {
         self.inverses.push(inverse);
     }
 
-    /// How many plugins it keeps to put back (asked for, or in hand): an effect's, and those of a lane, its instrument and its effects.
+    /// How many plugins it keeps to put back (asked for, or in hand): an effect's, an instrument that was replaced, and those of a lane, its instrument and its effects.
     pub fn plugins_kept(&self) -> usize {
         self.inverses
             .iter()
             .map(|inverse| match inverse {
                 Inverse::Effect { kept: Kept::Asked(_) | Kept::InHand(_), .. } => 1,
+                Inverse::Instrument { before: Some(Replaced { kept: Kept::Asked(_) | Kept::InHand(_), .. }), .. } => 1,
                 Inverse::Lane { lane, kept: Kept::Asked(_), .. } => plugins_of(lane),
                 Inverse::Lane { kept: Kept::InHand(kept), .. } => kept.plugin_count(),
                 Inverse::Group { group, kept: Kept::Asked(_), .. } => group.effects.len(),
@@ -104,6 +124,7 @@ impl Journal {
         for inverse in &mut self.inverses {
             match inverse {
                 Inverse::Effect { kept, .. } => *kept = Kept::Nothing,
+                Inverse::Instrument { before: Some(Replaced { kept, .. }), .. } => *kept = Kept::Nothing,
                 Inverse::Lane { kept, .. } => {
                     let lane = match std::mem::replace(kept, Kept::Nothing) {
                         Kept::Asked(channel) => channel.try_recv().ok(),
@@ -191,8 +212,15 @@ impl Controller {
     }
 
     /// The plugin to put back: the very one if the audio thread handed it back (it is waited for a moment, `recovery_wait`, if it has not yet), else the plugin
-    /// loaded again, with the preset it had and the values the user set. Refused, with the reason, if that does not load or its outputs are not the chain's.
-    fn recover_plugin(&self, slot: &PluginSlot, kept: Kept<Box<dyn Plugin>>, deadline: Instant) -> Result<Box<dyn Plugin>, IntentError> {
+    /// loaded again, with the preset it had and the values the user set. Refused, with the reason, if that does not load or `fits` (what the place it goes to asks
+    /// of a plugin: an effect's outputs are the chain's, an instrument has some) says it does not.
+    fn recover_plugin(
+        &self,
+        slot: &PluginSlot,
+        kept: Kept<Box<dyn Plugin>>,
+        deadline: Instant,
+        fits: fn(&dyn Plugin, &PluginSlot) -> Result<(), IntentError>,
+    ) -> Result<Box<dyn Plugin>, IntentError> {
         let handed_back = match kept {
             Kept::InHand(plugin) => Some(plugin),
             Kept::Asked(channel) => channel.recv_deadline(deadline).ok(),
@@ -202,7 +230,7 @@ impl Controller {
             Some(plugin) => plugin,
             None => self.reload_plugin(slot)?,
         };
-        outputs_of_an_effect(&*loaded, slot)?;
+        fits(&*loaded, slot)?;
         Ok(loaded)
     }
 
@@ -329,6 +357,11 @@ impl Controller {
                         }
                     }
                 }
+                Inverse::Instrument { lane, .. } => {
+                    if !matches!(self.model.locate(*lane), Some(NodePath::Instrument(_))) {
+                        return Err(IntentError::Invalid(format!("node {} is not there to have its instrument put back", lane.0)));
+                    }
+                }
                 Inverse::NoWayBack => {}
             }
         }
@@ -338,7 +371,11 @@ impl Controller {
         for inverse in &mut journal.inverses {
             match inverse {
                 Inverse::Effect { slot, kept, .. } => {
-                    let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline)?;
+                    let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline, outputs_of_an_effect)?;
+                    *kept = Kept::InHand(plugin);
+                }
+                Inverse::Instrument { before: Some(Replaced { slot, kept, .. }), .. } => {
+                    let plugin = self.recover_plugin(slot, std::mem::replace(kept, Kept::Nothing), deadline, |plugin, _| has_audio_output(plugin))?;
                     *kept = Kept::InHand(plugin);
                 }
                 Inverse::Lane { lane, kept, .. } => {
@@ -446,6 +483,33 @@ impl Controller {
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
                 let place = self.model.insert_group_at(index, group, &places);
                 let _ = self.cmd_tx.send(GraphCommand::InsertGroup { index: place, group: kept, members: places });
+            }
+            Inverse::Instrument { lane, before } => {
+                let Some(NodePath::Instrument(inst)) = self.model.locate(lane) else { return };
+                match before {
+                    Some(Replaced { slot, remap, pitch_bend_range, kept: Kept::InHand(instrument) }) => {
+                        // (The lane's note remapper is made again from what the model has, as the loader makes it.)
+                        let remapper = if remap.is_empty() {
+                            None
+                        } else {
+                            NoteRemapper::from_config(&remap, pitch_bend_range).map_err(|e| log::warn!("The note remap of a lane did not come back: {e}")).ok()
+                        };
+                        let inst_buf = (0..instrument.audio_output_count()).map(|_| Vec::new()).collect();
+                        let node = &mut self.model.instruments[inst];
+                        node.instrument = Some(slot);
+                        node.remap = remap;
+                        node.pitch_bend_range = pitch_bend_range;
+                        let _ = self.cmd_tx.send(GraphCommand::SwapInstrument { inst, instrument, inst_buf, remapper, keep: None });
+                    }
+                    // (A lane that had none is empty again: the audio thread hands the instrument that was put in to the return channel.)
+                    None => {
+                        let node = &mut self.model.instruments[inst];
+                        node.instrument = None;
+                        node.forget_remap();
+                        let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
+                    }
+                    Some(_) => {}
+                }
             }
             // (`rewind` has every plugin, every lane and every group in hand by now.)
             Inverse::Effect { .. } | Inverse::Lane { .. } | Inverse::Group { .. } | Inverse::NoWayBack => {}

@@ -1288,7 +1288,7 @@ fn choosing_a_plugin_after_n_swaps_it_into_the_new_lane() {
     h.press(KeyCode::Char('n'));
     h.commands();
     h.type_chars("oscillator").press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false"]);
+    assert_eq!(h.commands(), ["SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false keep"]);
     assert!(h.s.selector.is_none());
 }
 
@@ -1301,7 +1301,7 @@ fn replacing_the_instrument_loads_a_fresh_plugin() {
     // (The lane's vibrato cable into the old plugin goes first: see the next test.)
     assert_eq!(
         h.commands(),
-        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]
+        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]
     );
     let volume = &h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().params[2];
     assert_eq!((volume.name.as_str(), volume.value), ("volume", 1.0), "edits don't survive a swap");
@@ -1317,7 +1317,7 @@ fn replacing_the_instrument_takes_out_the_cables_into_the_old_one() {
     h.press(KeyCode::Char('i')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]
+        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]
     );
     let lfo = &h.s.ctl.model.instruments[0].modulators[0];
     assert!(lfo.targets.is_empty(), "the cable into the old plugin is gone from the model too");
@@ -2945,7 +2945,7 @@ fn replacing_the_instrument_keeps_the_lanes_id() {
     h.press(KeyCode::Char('i')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]
+        ["RemoveModTarget inst=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]
     );
     assert_eq!(node_at(&h, NodePath::Instrument(0)), lane);
     assert_eq!(h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().node, lane);
@@ -3715,11 +3715,11 @@ mod with_web {
                 assert_eq!(meters(&told), meters(&snapshot) + 2, "{told}");
                 assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "add Oscillator as an instrument", "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 1, "rev": 1}));
-                // The lane there was gets another instrument: nothing puts that back yet, and the history is forgotten.
+                // The lane there was gets another instrument: a step of its own, in the words of the button that puts one in.
                 tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "replaceInstrument", "node": oscillator, "plugin": "builtin:osc"}})).await;
                 let told = said(&mut client).await;
                 assert_eq!((told["type"].clone(), told["snapshot"]["rev"].clone()), (json!("snapshot"), json!(4)), "{told}");
-                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": null, "redo": null}));
+                assert_eq!(said(&mut client).await, json!({"type": "history", "undo": "change the instrument to Oscillator", "redo": null}));
                 assert_eq!(said(&mut client).await, json!({"type": "ack", "reqId": 2, "rev": 3}));
                 // An effect is not an instrument, and the controller's words say so.
                 tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "replaceInstrument", "node": oscillator, "plugin": "builtin:reverb"}})).await;
@@ -4892,6 +4892,34 @@ mod undo_and_redo {
         assert_eq!(shape(&h), before, "the group is back where it was, with its members, its cables and the ids and slots they had");
         ctrl_y(&mut h);
         assert!(h.s.ctl.model.groups.is_empty(), "taken out again");
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(shape(&h), before);
+    }
+
+    #[test]
+    fn i_replaces_the_instrument_as_a_step_that_ctrl_z_puts_back_with_its_cable_and_ctrl_y_replaces_again() {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        // The first lane, with its instrument (its values among them) and the cable of its LFO to it, as they are: what a replacement that is put back has to leave as it was.
+        let shape = |h: &Harness| format!("{:?}", h.s.ctl.model.instruments[0]);
+        h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
+        let before = shape(&h);
+        h.commands();
+        h.goto(TreeAddress::Instrument(0));
+        h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+        assert_ne!(shape(&h), before, "another instrument is in the lane, and the cable is gone");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("change the instrument to Oscillator"));
+        // (The commands are read: the audio thread, which the test has not, would have handed the old instrument back, so that it is loaded again from the model.)
+        h.commands();
+        ctrl_z(&mut h);
+        let commands = h.commands();
+        assert_eq!(commands[0], "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false", "{commands:?}");
+        assert!(commands[1].starts_with("InsertModTarget inst=0 mod=0 target=0"), "the cable comes back after the instrument: {commands:?}");
+        assert_eq!(shape(&h), before, "the instrument is back, with the value that was set and the cable that drove it");
+        ctrl_y(&mut h);
+        assert_ne!(shape(&h), before, "replaced again");
         h.commands();
         ctrl_z(&mut h);
         assert_eq!(shape(&h), before);

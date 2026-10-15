@@ -1295,9 +1295,16 @@ describe("what Undo and Redo would do", () => {
     await quiet();
     send({ type: "request", reqId: 1, intent: cutoff(0.3) });
     await quiet();
+    // A lane in a group, which a group made of it would take out of: nothing puts that back yet.
+    const lane = nodeNamed(tracerSnapshot, "Oscillator").id;
+    send({ type: "request", reqId: 2, intent: { type: "addGroup", members: [] } });
+    await quiet();
+    const group = server.snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!group) throw new Error("the group that was added");
+    send({ type: "request", reqId: 3, intent: { type: "setLaneGroup", node: lane, group: group.id } });
+    await quiet();
     const seen = heard.length;
-    // (Another instrument in a lane: nothing puts that back yet.)
-    send({ type: "request", reqId: 2, intent: { type: "replaceInstrument", node: nodeNamed(tracerSnapshot, "Oscillator").id, plugin: "builtin:osc" } });
+    send({ type: "request", reqId: 4, intent: { type: "addGroup", members: [lane] } });
     await quiet();
     expect(heard.slice(seen)).toEqual(["snapshot", "history null/null", "ack"]);
     close();

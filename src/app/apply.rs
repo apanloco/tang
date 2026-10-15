@@ -3662,7 +3662,7 @@ type = "midi"
         assert_eq!(applied, Applied::restructured(rev + 1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
         // The group's cable to the old plugin goes first: it names the parameter by an index, and the new plugin has its own.
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]);
         assert!(ctl.model.groups[0].modulators[0].targets.is_empty());
         assert_eq!(lane(&ctl), lane0, "the lane keeps its node");
         let lane = &ctl.model.instruments[0];

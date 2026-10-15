@@ -332,6 +332,38 @@ describe("what a removal of a lane is to the history", () => {
   });
 });
 
+describe("what putting an instrument in a lane is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const lanes = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
+  const put = (node: number, plugin = "builtin:osc"): Intent => ({ type: "replaceInstrument", node, plugin });
+
+  test("is a step that is made when it is carried out, in the words of the instrument that goes in", () => {
+    expect(lanes.length).toBeGreaterThanOrEqual(2);
+    for (const lane of lanes) {
+      expect(lane.plugin).not.toBeNull();
+      expect(plan(put(lane.id))).toEqual({ removed: { label: "change the instrument to Oscillator", intent: put(lane.id), at: 7 } });
+    }
+  });
+
+  test("is a step in the words of a lane that has none, which is filled", () => {
+    const [lane] = lanes;
+    if (!lane) throw new Error("the fixture has a lane");
+    const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
+    const empty = { ...snapshot, graph: { ...snapshot.graph, nodes } };
+    expect(plan(put(lane.id), empty)).toEqual({ removed: { label: "put Oscillator in a lane", intent: put(lane.id), at: 7 } });
+  });
+
+  test("is no step for a node that is no lane, a node that is not there or a plugin that the catalog does not name, which are refused", () => {
+    const [lane] = lanes;
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+    if (!lane || !effect) throw new Error("the fixture has a lane and an effect");
+    expect(plan(put(effect.id))).toBe("nothing");
+    expect(plan(put(9_999))).toBe("nothing");
+    expect(plan(put(lane.id, "builtin:nothing"))).toBe("nothing");
+  });
+});
+
 describe("what a removal of a group is to the history", () => {
   const snapshot = historyFixture.snapshot;
   const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
@@ -604,6 +636,35 @@ describe("the mock engine's undo of what is taken out", () => {
     server.apply({ type: "redo" });
     server.apply({ type: "undo" });
     expect(pieces(server), "as it was before the removal, which is how the add made it the second time").toBe(added);
+  });
+
+  test("puts an instrument back, with the cables that drove it and the layout of the telemetry it had, by undo, and puts another in again by redo", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    const before = pieces(server);
+    const cablesBefore = server.snapshot.graph.edges.filter((e) => e.kind === "modulation").length;
+    server.apply({ type: "replaceInstrument", node: lane0, plugin: "builtin:osc" });
+    const after = pieces(server);
+    expect(after).not.toBe(before);
+    expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation").length, "the cables that drove the old instrument are gone").toBeLessThan(cablesBefore);
+    expect(labels(server)).toEqual(["change the instrument to Oscillator", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+    expect(labels(server)).toEqual(["lock the piano to its scale", "change the instrument to Oscillator"]);
+    server.apply({ type: "redo" });
+    expect(pieces(server)).toBe(after);
+    expect(labels(server)).toEqual(["change the instrument to Oscillator", null]);
+    server.apply({ type: "undo" });
+    expect(pieces(server)).toBe(before);
+  });
+
+  test("leaves the history as it was for an instrument that is refused", () => {
+    const server = fresh();
+    server.apply({ type: "setLocked", locked: true });
+    const before = labels(server);
+    expect(() => server.apply({ type: "replaceInstrument", node: lane0, plugin: "builtin:reverb" })).toThrow();
+    expect(() => server.apply({ type: "replaceInstrument", node: 9_999, plugin: "builtin:osc" })).toThrow();
+    expect(labels(server)).toEqual(before);
   });
 
   test("puts back the cables that went with it, each where it was", () => {
@@ -881,8 +942,9 @@ describe("the mock engine's history", () => {
       "addModEdge",
       "addGroup",
       "setLaneGroup",
+      "replaceInstrument",
     ];
-    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeNode", "replaceInstrument"];
+    const barriers: Intent["type"][] = ["loadPreset", "addGroup", "setLaneGroup", "removeNode"];
     const kinds: Intent["type"][] = [...undoable, ...barriers, "undo", "redo"];
     for (const type of kinds) expect(intents.has(type), type).toBe(true);
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));

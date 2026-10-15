@@ -340,9 +340,17 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       if (drivesRoundToItself(edges, cablesThatGo(edges, touching))) return "barrier";
       return { removed: { label: `remove ${MODULATOR_LABELS[node.source.type]}`, intent, at: now } };
     }
-    // Nothing puts these back yet.
+    case "replaceInstrument": {
+      // The instrument of a lane goes with the cables that drive it, and those that drive the depth of any of them (a tree of drivers: none is on a cycle, as for an effect), and comes
+      // back with them (the controller's `Inverse::Instrument`). A step in the words of the button that puts one in, by the name the catalog has for it: a lane that has none is filled.
+      // (A node that is no lane, or a plugin that the catalog does not name, is refused.)
+      const lane = nodeOf(intent.node);
+      const name = catalogName(intent.plugin);
+      if (lane?.kind !== "instrument" || name === undefined) return "nothing";
+      return { removed: { label: lane.plugin === null ? `put ${name} in a lane` : `change the instrument to ${name}`, intent, at: now } };
+    }
+    // Nothing puts this back yet.
     case "loadPreset":
-    case "replaceInstrument":
       return "barrier";
   }
 }

@@ -37,7 +37,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::catalog::Catalog;
 use crate::app::history::History;
-use crate::app::journal::{Inverse, Journal};
+use crate::app::journal::{Inverse, Journal, Kept, Replaced};
 use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
@@ -330,26 +330,33 @@ impl Controller {
     /// Make `loaded`/`slot` the instrument plugin of lane `inst`, on the audio
     /// thread and in the model. The plugin sits in the lane's node.
     pub fn set_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, slot: PluginSlot) {
-        // (What was set on the plugin that goes is addressed by its parameters' places, which are the new plugin's now:
-        // what could be undone cannot be, and no intent can tell the history, since the TUI calls this.)
-        self.history.clear();
+        // (A call that no intent asks for is no step, and what was set on the plugin that goes is addressed by its parameters' places, which are the new plugin's
+        // now: what could be undone cannot be. When an intent is carried out, the instrument that goes is written down for the history, `install_instrument`.)
+        self.forget_the_history_unless_an_intent_asks();
         self.install_instrument(inst, loaded, slot);
     }
 
-    /// `set_instrument`, leaving the history as it is: for a lane that has just been made, which nothing in the history names.
+    /// `set_instrument`, leaving the history as it is: for a lane that has just been made, which nothing in the history names, and for the intent that replaces
+    /// an instrument, which has its step. When an intent is carried out, the instrument that goes is handed by the audio thread to a channel of its own, and written
+    /// down with the model's plugin and the lane's note remap (`Inverse::Instrument`), which go with it: undo swaps it back in. A lane that had none is written down
+    /// as that, for undo to empty it again.
     fn install_instrument(&mut self, inst: usize, loaded: Box<dyn Plugin>, mut slot: PluginSlot) {
         let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
+        let had_one = self.model.instruments.get(inst).is_some_and(|lane| lane.instrument.is_some());
+        let (keep, kept) = if had_one { self.channel_for() } else { (None, Kept::Nothing) };
         let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
             inst,
             instrument: loaded,
             inst_buf,
             remapper: None,
-            keep: None,
+            keep,
         });
         if let Some(lane) = self.model.instruments.get_mut(inst) {
             slot.node = lane.node;
-            lane.instrument = Some(slot);
+            let node = lane.node;
+            let before = lane.instrument.replace(slot).map(|old| Replaced { slot: old, remap: std::mem::take(&mut lane.remap), pitch_bend_range: lane.pitch_bend_range, kept });
             lane.forget_remap();
+            self.took_out(Inverse::Instrument { lane: node, before });
         }
     }
 

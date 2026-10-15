@@ -19813,6 +19813,1263 @@
       ]
     },
     {
+      "name": "an instrument that is replaced is put back by undo with the cables that drove it and replaced again by redo, and what was done before it is still to be undone",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set volume"
+          },
+          "intent": {
+            "node": 3,
+            "param": 2,
+            "type": "setParam",
+            "value": 0.5
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "node": 3,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 7,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": "set volume",
+            "undo": "set detune"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 2,
+              "rev": 8,
+              "type": "paramSet",
+              "value": 0.5
+            }
+          ],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "set volume"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "the instrument of a lane that nothing drives is put back too",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "node": 8,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "the instrument of a lane that an add made is changed, and both are put back",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "add Oscillator as an instrument"
+          },
+          "intent": {
+            "plugin": "builtin:osc",
+            "type": "addInstrument"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "15 10 audioOut peak",
+              "16 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - Oscillator",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "node": 10,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "15 10 audioOut peak",
+              "16 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - Oscillator",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "add Oscillator as an instrument"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "15 10 audioOut peak",
+              "16 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - Oscillator",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add Oscillator as an instrument",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "add Oscillator as an instrument"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "17 10 audioOut peak",
+              "18 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - Oscillator",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "17 10 audioOut peak",
+              "18 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - Oscillator",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": "add Oscillator as an instrument"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "17 10 audioOut peak",
+              "18 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - Oscillator",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add Oscillator as an instrument",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "an instrument that is refused changes nothing in the history",
+      "rows": [
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 1,
+              "type": "paramSet",
+              "value": 1.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "param": 1,
+            "type": "setParam",
+            "value": 1.0
+          },
+          "restructured": false
+        },
+        {
+          "error": "Reverb is an effect, not an instrument",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "plugin": "builtin:reverb",
+            "type": "replaceInstrument"
+          }
+        },
+        {
+          "error": "an instrument goes in a lane",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 4,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          }
+        },
+        {
+          "error": "there is no node 9999",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 9999,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          }
+        },
+        {
+          "error": "builtin:nothing is not a plugin that is installed",
+          "history": {
+            "redo": null,
+            "undo": "set detune"
+          },
+          "intent": {
+            "node": 3,
+            "plugin": "builtin:nothing",
+            "type": "replaceInstrument"
+          }
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "param": 1,
+              "rev": 2,
+              "type": "paramSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set detune",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
       "name": "each of what cannot be undone yet empties the history, and what could be redone",
       "rows": [
         {
@@ -20033,161 +21290,11 @@
           "restructured": false
         },
         {
-          "events": [],
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "node": 8,
-            "plugin": "builtin:osc",
-            "type": "replaceInstrument"
-          },
-          "restructured": true,
-          "shape": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>4294967295 audio",
-              "10>4294967295 audio",
-              "3>4 audio",
-              "4>5 audio",
-              "5>10 member",
-              "8>4294967295 audio"
-            ],
-            "cables": [
-              "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
-            ],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "15 10 audioOut peak",
-              "16 10 audioOut clips",
-              "6 3 audioOut peak",
-              "7 3 audioOut clips",
-              "12 8 audioOut peak",
-              "13 8 audioOut clips"
-            ],
-            "modulation": [
-              "8 6 modOut modOutput",
-              "10 7 modOut modOutput",
-              "14 9 modOut modOutput",
-              "9 3 param1 effective",
-              "11 3 param2 effective"
-            ],
-            "nodes": [
-              "0 - Pad",
-              "1 0 Filter",
-              "2 - Group 2",
-              "10 - Group 3",
-              "3 10 Oscillator",
-              "4 3 Reverb",
-              "5 3 Filter",
-              "6 3 LFO",
-              "7 3 ADSR",
-              "8 - Oscillator",
-              "9 8 LFO",
-              "4294967295 - Master"
-            ]
-          }
-        },
-        {
-          "error": "there is nothing to undo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "undo"
-          }
-        },
-        {
-          "error": "there is nothing to redo",
-          "history": {
-            "redo": null,
-            "undo": null
-          },
-          "intent": {
-            "type": "redo"
-          }
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 11,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 1.0
-          },
-          "restructured": false
-        },
-        {
-          "wait": 5000
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 12,
-              "type": "paramSet",
-              "value": 2.0
-            }
-          ],
-          "history": {
-            "redo": null,
-            "undo": "set detune"
-          },
-          "intent": {
-            "node": 3,
-            "param": 1,
-            "type": "setParam",
-            "value": 2.0
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "node": 3,
-              "param": 1,
-              "rev": 13,
-              "type": "paramSet",
-              "value": 1.0
-            }
-          ],
-          "history": {
-            "redo": "set detune",
-            "undo": "set detune"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": false
-        },
-        {
           "events": [
             {
               "node": 4,
               "preset": "Arcadia Dream Hall",
-              "rev": 14,
+              "rev": 9,
               "type": "presetLoaded",
               "values": [
                 {
@@ -21065,6 +22172,1253 @@
                 "type": "param"
               },
               "slot": 5
+            }
+          ],
+          "rev": 1
+        }
+      }
+    },
+    {
+      "name": "an instrument that the cables of its group and of its lane drive is put back with them, and a lane that had none is emptied again",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "node": 1,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>1 param1 @0.2",
+              "#0 3>1 param2 @0.3"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput",
+              "7 1 param2 effective",
+              "13 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "change the instrument to Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "change the instrument to Oscillator",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>1 param1 @0.2",
+              "#0 3>1 param2 @0.3"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput",
+              "7 1 param2 effective",
+              "13 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "put Oscillator in a lane"
+          },
+          "intent": {
+            "node": 5,
+            "plugin": "builtin:osc",
+            "type": "replaceInstrument"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>1 param1 @0.2",
+              "#0 3>1 param2 @0.3"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput",
+              "7 1 param2 effective",
+              "13 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - Oscillator",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "put Oscillator in a lane",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>1 param1 @0.2",
+              "#0 3>1 param2 @0.3"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput",
+              "7 1 param2 effective",
+              "13 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "put Oscillator in a lane"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>1 param1 @0.2",
+              "#0 3>1 param2 @0.3"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput",
+              "7 1 param2 effective",
+              "13 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - Oscillator",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "put Oscillator in a lane",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>4294967295 audio",
+              "1>2 audio",
+              "2>0 member",
+              "4>4294967295 audio",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [
+              "#1 7>1 param1 @0.2",
+              "#0 3>1 param2 @0.3"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 1 audioOut peak",
+              "5 1 audioOut clips",
+              "8 4 audioOut peak",
+              "9 4 audioOut clips",
+              "10 5 audioOut peak",
+              "11 5 audioOut clips"
+            ],
+            "modulation": [
+              "12 7 modOut modOutput",
+              "6 3 modOut modOutput",
+              "7 1 param2 effective",
+              "13 1 param1 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "7 0 LFO",
+              "1 0 Oscillator",
+              "2 1 Filter",
+              "3 1 LFO",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 5 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ],
+      "snapshot": {
+        "graph": {
+          "edges": [
+            {
+              "from": {
+                "node": 0,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4294967295,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 1,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 2,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 2,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "member",
+              "to": {
+                "node": 0,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 4,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4294967295,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 5,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 6,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 6,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4294967295,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "amount": 0.2,
+              "from": {
+                "node": 7,
+                "port": {
+                  "type": "modOut"
+                }
+              },
+              "id": 1,
+              "kind": "modulation",
+              "to": {
+                "node": 1,
+                "port": {
+                  "index": 1,
+                  "type": "param"
+                }
+              }
+            },
+            {
+              "amount": 0.3,
+              "from": {
+                "node": 3,
+                "port": {
+                  "type": "modOut"
+                }
+              },
+              "id": 0,
+              "kind": "modulation",
+              "to": {
+                "node": 1,
+                "port": {
+                  "index": 2,
+                  "type": "param"
+                }
+              }
+            }
+          ],
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "group",
+              "name": "Pad",
+              "pan": 0.0,
+              "parent": null,
+              "volume": 1.0
+            },
+            {
+              "id": 7,
+              "kind": "modulator",
+              "name": "LFO",
+              "parent": 0,
+              "source": {
+                "rate": 1.0,
+                "type": "lfo",
+                "waveform": "sine"
+              }
+            },
+            {
+              "id": 1,
+              "kind": "instrument",
+              "name": "Oscillator",
+              "parent": 0,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:osc",
+                "isInstrument": true,
+                "params": [
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": [
+                      "sine",
+                      "triangle",
+                      "square",
+                      "saw"
+                    ],
+                    "max": 3.0,
+                    "min": 0.0,
+                    "name": "waveform",
+                    "stepCount": 3,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 24.0,
+                    "min": -24.0,
+                    "name": "detune",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 3.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "volume",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.004,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "attack",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.004
+                  },
+                  {
+                    "default": 0.1,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 4,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.1
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sustain",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 0.012,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "release",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.012
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": -1.0,
+                    "name": "pan",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              },
+              "range": {
+                "high": 84,
+                "low": 36
+              },
+              "transpose": 3,
+              "volume": 0.5
+            },
+            {
+              "id": 2,
+              "kind": "effect",
+              "mix": 1.0,
+              "name": "Filter",
+              "parent": 1,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:filter",
+                "isInstrument": false,
+                "params": [
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "cutoff",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.707,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.5,
+                    "name": "resonance",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.707
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": [
+                      "lowpass",
+                      "highpass",
+                      "bandpass",
+                      "notch",
+                      "ladder",
+                      "acid",
+                      "ms20"
+                    ],
+                    "max": 6.0,
+                    "min": 0.0,
+                    "name": "type",
+                    "stepCount": 6,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 1.0,
+                    "name": "drive",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              }
+            },
+            {
+              "id": 3,
+              "kind": "modulator",
+              "name": "LFO",
+              "parent": 1,
+              "source": {
+                "rate": 2.0,
+                "type": "lfo",
+                "waveform": "sine"
+              }
+            },
+            {
+              "id": 4,
+              "kind": "instrument",
+              "name": "Oscillator",
+              "parent": null,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:osc",
+                "isInstrument": true,
+                "params": [
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": [
+                      "sine",
+                      "triangle",
+                      "square",
+                      "saw"
+                    ],
+                    "max": 3.0,
+                    "min": 0.0,
+                    "name": "waveform",
+                    "stepCount": 3,
+                    "unit": null,
+                    "value": 2.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 24.0,
+                    "min": -24.0,
+                    "name": "detune",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "volume",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.004,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "attack",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.004
+                  },
+                  {
+                    "default": 0.1,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 4,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.1
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sustain",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.012,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "release",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.012
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": -1.0,
+                    "name": "pan",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              },
+              "range": null,
+              "transpose": 0,
+              "volume": 1.0
+            },
+            {
+              "id": 5,
+              "kind": "instrument",
+              "name": "(empty)",
+              "parent": null,
+              "plugin": null,
+              "range": null,
+              "transpose": 0,
+              "volume": 1.0
+            },
+            {
+              "id": 6,
+              "kind": "effect",
+              "mix": 1.0,
+              "name": "Reverb",
+              "parent": 5,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:reverb",
+                "isInstrument": false,
+                "params": [
+                  {
+                    "default": 0.88,
+                    "group": [],
+                    "index": 0,
+                    "labels": null,
+                    "max": 0.99,
+                    "min": 0.1,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.88
+                  },
+                  {
+                    "default": 0.85,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.3,
+                    "name": "size",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.85
+                  },
+                  {
+                    "default": 0.35,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "damping",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.35
+                  },
+                  {
+                    "default": 0.04,
+                    "group": [],
+                    "index": 3,
+                    "labels": null,
+                    "max": 0.25,
+                    "min": 0.0,
+                    "name": "predelay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.04
+                  },
+                  {
+                    "default": 0.7,
+                    "group": [],
+                    "index": 4,
+                    "labels": null,
+                    "max": 0.85,
+                    "min": 0.0,
+                    "name": "diffusion",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.7
+                  },
+                  {
+                    "default": 0.3,
+                    "group": [
+                      "Modulation"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "name": "mod_rate",
+                    "stepCount": 0,
+                    "unit": "Hz",
+                    "value": 0.3
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [
+                      "Modulation"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "mod_depth",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "width",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 80.0,
+                    "group": [],
+                    "index": 8,
+                    "labels": null,
+                    "max": 500.0,
+                    "min": 20.0,
+                    "name": "lowcut",
+                    "stepCount": 0,
+                    "unit": "Hz",
+                    "value": 80.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 9,
+                    "labels": null,
+                    "max": 2.0,
+                    "min": 0.0,
+                    "name": "level",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  }
+                ],
+                "pinned": [],
+                "presets": [
+                  {
+                    "id": "arcadia",
+                    "name": "Arcadia Dream Hall"
+                  },
+                  {
+                    "id": "cathedral",
+                    "name": "Cathedral"
+                  },
+                  {
+                    "id": "plate",
+                    "name": "Vintage Plate"
+                  },
+                  {
+                    "id": "room",
+                    "name": "Small Room"
+                  },
+                  {
+                    "id": "ambient",
+                    "name": "Ambient Wash"
+                  }
+                ]
+              }
+            },
+            {
+              "id": 4294967295,
+              "kind": "master",
+              "name": "Master",
+              "parent": null
+            }
+          ]
+        },
+        "meta": {
+          "bpm": 120.0,
+          "dirty": false,
+          "file": null,
+          "piano": {
+            "kind": "major",
+            "locked": false,
+            "notes": [
+              0,
+              2,
+              4,
+              5,
+              7,
+              9,
+              11
+            ],
+            "root": 0,
+            "scale": "C major"
+          }
+        },
+        "rev": 0,
+        "telemetry": {
+          "meters": [
+            {
+              "kind": "peak",
+              "node": 4294967295,
+              "port": {
+                "type": "audioIn"
+              },
+              "slot": 0
+            },
+            {
+              "kind": "clips",
+              "node": 4294967295,
+              "port": {
+                "type": "audioIn"
+              },
+              "slot": 1
+            },
+            {
+              "kind": "peak",
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 2
+            },
+            {
+              "kind": "clips",
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 3
+            },
+            {
+              "kind": "peak",
+              "node": 1,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 4
+            },
+            {
+              "kind": "clips",
+              "node": 1,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 5
+            },
+            {
+              "kind": "peak",
+              "node": 4,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 8
+            },
+            {
+              "kind": "clips",
+              "node": 4,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 9
+            },
+            {
+              "kind": "peak",
+              "node": 5,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 10
+            },
+            {
+              "kind": "clips",
+              "node": 5,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 11
+            }
+          ],
+          "modulation": [
+            {
+              "kind": "modOutput",
+              "node": 7,
+              "port": {
+                "type": "modOut"
+              },
+              "slot": 12
+            },
+            {
+              "kind": "modOutput",
+              "node": 3,
+              "port": {
+                "type": "modOut"
+              },
+              "slot": 6
+            },
+            {
+              "kind": "effective",
+              "node": 1,
+              "port": {
+                "index": 2,
+                "type": "param"
+              },
+              "slot": 7
+            },
+            {
+              "kind": "effective",
+              "node": 1,
+              "port": {
+                "index": 1,
+                "type": "param"
+              },
+              "slot": 13
             }
           ],
           "rev": 1

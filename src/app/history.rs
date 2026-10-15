@@ -479,8 +479,18 @@ impl Controller {
                 // (A node that is not there is refused, and the plan is not looked at.)
                 None => Plan::Nothing,
             },
-            // Nothing puts these back yet.
-            Intent::LoadPreset { .. } | Intent::ReplaceInstrument { .. } => Plan::Barrier,
+            // The instrument of a lane goes with the cables that drove it, and comes back with them: the very plugin if the audio thread handed it back, and the lane's note remap (a
+            // step of the words of the button that puts one in, by the name the catalog has for the new one; an empty lane is filled, and emptied again).
+            Intent::ReplaceInstrument { node, plugin } => match (self.model.locate(*node), self.catalog_name(plugin)) {
+                (Some(NodePath::Instrument(inst)), Some(name)) => {
+                    let label = if self.model.instruments[inst].instrument.is_some() { format!("change the instrument to {name}") } else { format!("put {name} in a lane") };
+                    Plan::Removed { label, intent: intent.clone(), at: now }
+                }
+                // (A node that is no lane, or a plugin that the catalog does not name, is refused, and the plan is not looked at.)
+                _ => Plan::Nothing,
+            },
+            // Nothing puts this back yet.
+            Intent::LoadPreset { .. } => Plan::Barrier,
         }
     }
 
@@ -1735,7 +1745,6 @@ rate = 3.0
         let (_engine, mut ctl, clock) = controller();
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
         let intents = [
-            ("replace an instrument", Intent::ReplaceInstrument { node: node(&ctl, NodePath::Instrument(1)), plugin: "builtin:osc".to_string() }),
             // A group made of a lane that is in one: the cables of the group that has it go, and a step would not bring them back.
             ("add a group of a lane that is in another", Intent::AddGroup { members: vec![lane(&ctl)] }),
         ];
@@ -2969,7 +2978,7 @@ plugin = "builtin:reverb"
     /// What is on the audio thread and in the model, as every place that says so tells it: the modulators (`modulators_as_they_are`) and the chains, which
     /// say where each plugin is in memory, so that a plugin that was taken out and put back is told from one that was loaded again.
     fn everything_as_it_is(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Everything {
-        (modulators_as_they_are(ctl, graph), graph.chain_dump(), format!("{:?}\n{:?}\n{:?}", graph.lanes(), graph.instrument_dump(), graph.groups()))
+        (modulators_as_they_are(ctl, graph), graph.chain_dump(), format!("{:?}\n{:?}\n{:?}\n{:?}", graph.lanes(), graph.instrument_dump(), graph.remappers(), graph.groups()))
     }
 
     fn assert_same_everything(now: &Everything, then: &Everything, what: &str) {
@@ -4040,9 +4049,14 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn a_step_counts_the_plugins_of_the_effect_the_lane_and_the_group_it_is_to_be_handed_and_none_once_it_has_let_go_of_them() {
+    fn a_step_counts_the_plugins_of_the_instrument_the_effect_the_lane_and_the_group_it_is_to_be_handed_and_none_once_it_has_let_go_of_them() {
         let (mut ctl, mut graph) = controller_over_an_audio_thread(GROUPS_AMONG_LANES);
-        // An effect (the filter of lane 2, one plugin), a group (two plugins on its bus) and a lane (an instrument and a filter: lane 1, which is in the second group, now the first).
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        // An instrument (lane 3's, one plugin), an effect (the filter of lane 2, one plugin), a group (two plugins on its bus) and a lane (an instrument and a filter: lane 1, which is in the
+        // second group, now the first).
+        let lane3 = node(&ctl, NodePath::Instrument(3));
+        ctl.apply(Intent::ReplaceInstrument { node: lane3, plugin: "builtin:osc".to_string() }).unwrap();
+        graph.drain_commands();
         let effect = node(&ctl, NodePath::Effect { inst: 2, index: 0 });
         ctl.apply(Intent::RemoveNode { node: effect }).unwrap();
         graph.drain_commands();
@@ -4055,12 +4069,242 @@ plugin = "builtin:osc"
         let kept = |ctl: &Controller| -> Vec<Option<usize>> {
             ctl.history.undo.iter().map(|step| if let Taken::Held(journal) = &step.taken { Some(journal.plugins_kept()) } else { None }).collect()
         };
-        assert_eq!(kept(&ctl), [Some(1), Some(2), Some(2)]);
+        assert_eq!(kept(&ctl), [Some(1), Some(1), Some(2), Some(2)]);
         for step in &mut ctl.history.undo {
             let Taken::Held(journal) = &mut step.taken else { panic!("a removal holds what it took out") };
             journal.let_go_of_plugins();
         }
-        assert_eq!(kept(&ctl), [Some(0), Some(0), Some(0)], "what was let go of is not kept, and does not count against what is");
+        assert_eq!(kept(&ctl), [Some(0), Some(0), Some(0), Some(0)], "what was let go of is not kept, and does not count against what is");
+    }
+
+    // -- an instrument that is replaced is put back --
+
+    /// Three lanes and a group: the first lane, in the group "Pad", has an oscillator with parameters set, a note remap with its pitch bend range, a range, a transposition, a volume, a
+    /// filter and a modulator whose cable drives its volume, while the group's modulator drives its detune; the second has an oscillator with a waveform set; the third has no instrument,
+    /// and a reverb.
+    const INSTRUMENTS: &str = r#"
+[[group]]
+name = "Pad"
+[[group.modulator]]
+rate = 1.0
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+range = "C2-C6"
+transpose = 3
+volume = 0.5
+pitch_bend_range = 4
+[instrument.params]
+detune = 3.0
+sustain = 0.5
+[instrument.remap]
+"G#4" = { note = "G4", detune = 1.0 }
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.params]
+waveform = 2.0
+
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#;
+
+    /// What the audio thread has of its lanes and groups, with nothing that tells one plugin from another: the facts of each, and which lanes have a note remapper.
+    fn lane_facts(graph: &crate::plugin::chain::AudioGraph) -> String {
+        format!("{:?}\n{:?}\n{:?}", graph.lanes(), graph.remappers(), graph.groups())
+    }
+
+    #[test]
+    fn every_instrument_that_is_replaced_by_an_intent_is_put_back_by_undo_as_the_very_instrument_with_its_cables_and_its_note_remap() {
+        let lanes = controller_over_an_audio_thread(INSTRUMENTS).0.model.instruments.len();
+        assert_eq!(lanes, 3);
+        for n in 0..lanes {
+            // (Each in a controller of its own, after a step of another kind, which the replacement leaves in the history.)
+            let (mut ctl, mut graph) = controller_over_an_audio_thread(INSTRUMENTS);
+            ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let lane = node(&ctl, NodePath::Instrument(n));
+            let before = everything_as_it_is(&ctl, &graph);
+            ctl.apply(Intent::ReplaceInstrument { node: lane, plugin: "builtin:osc".to_string() }).unwrap();
+            graph.drain_commands();
+            let taken = everything_as_it_is(&ctl, &graph);
+            let taken_facts = lane_facts(&graph);
+            assert_ne!(taken.0 .1, before.0 .1, "lane {n}: the file has another instrument");
+            assert_ne!(taken.2, before.2, "lane {n}: the audio thread has another instrument");
+            let words = if n == 2 { "put Oscillator in a lane" } else { "change the instrument to Oscillator" };
+            assert_eq!(undo_label(&ctl).as_deref(), Some(words), "lane {n}");
+            // The instrument that was in the lane is back, as it was: the very plugin, the lane's note remap, the cables that drove it and what they were centred on.
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("lane {n} put back"));
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("lock the piano to its scale"), Some(words)), "lane {n}");
+            ctl.model.check_ids().unwrap();
+            // Redone, it is another instrument that goes in (loaded from the catalog again): everything else is as it was after the replacement.
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            let redone = everything_as_it_is(&ctl, &graph);
+            assert_same_modulators(&redone.0, &taken.0, &format!("lane {n} replaced again"));
+            assert_eq!(redone.1, taken.1, "lane {n} replaced again: the chains");
+            assert_eq!(lane_facts(&graph), taken_facts, "lane {n} replaced again: the lanes");
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("lane {n} put back again"));
+        }
+    }
+
+    #[test]
+    fn an_instrument_is_replaced_after_the_cables_that_drove_it_have_gone_and_put_back_before_them_and_when_it_was_not_handed_back_it_is_loaded_again() {
+        let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        let lane0 = node(&ctl, NodePath::Instrument(0));
+        let before = (written(&ctl), picture(&ctl));
+        engine.drain();
+        ctl.apply(Intent::ReplaceInstrument { node: lane0, plugin: "builtin:osc".to_string() }).unwrap();
+        let (commands, _) = engine.drain();
+        // The cables that drove the old instrument go first (the lane's own, then its group's), and then the swap, which asks for the old instrument to be handed to a channel, and has
+        // no note remap for the new one.
+        assert_eq!(commands, ["RemoveModTarget inst=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]);
+        assert_ne!(written(&ctl), before.0);
+        // (Nobody runs the audio thread, and nobody answers the channel: undo loads the oscillator again, with the values that the model has.) The swap is the first to be put back, the cables after it,
+        // the last that went first.
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert_eq!(commands[0], "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=true");
+        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
+        assert!(commands[2].starts_with("InsertModTarget inst=0 mod=0 target=0 kind=PluginParam { slot: 0,"), "{commands:?}");
+        assert_eq!((written(&ctl), picture(&ctl)), before, "the model has what it had, the values the user set among it");
+    }
+
+    #[test]
+    fn a_lane_that_had_no_instrument_is_emptied_again_by_undo_and_filled_by_redo() {
+        let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        let empty = node(&ctl, NodePath::Instrument(2));
+        engine.drain();
+        ctl.apply(Intent::ReplaceInstrument { node: empty, plugin: "builtin:osc".to_string() }).unwrap();
+        // (Nothing is handed back from an empty lane: no channel is asked for.)
+        assert_eq!(engine.drain().0, ["SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false"]);
+        assert!(ctl.model.instruments[2].instrument.is_some());
+        ctl.undo().unwrap();
+        assert_eq!(engine.drain().0, ["ClearInstrument inst=2"]);
+        assert!(ctl.model.instruments[2].instrument.is_none());
+        ctl.redo().unwrap();
+        assert_eq!(engine.drain().0, ["SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false"]);
+        assert!(ctl.model.instruments[2].instrument.is_some());
+    }
+
+    #[test]
+    fn an_instrument_whose_lane_is_gone_or_is_no_lane_any_more_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        for what in ["the lane is gone", "its node is another kind of node"] {
+            let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+            ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let lane = node(&ctl, NodePath::Instrument(1));
+            ctl.apply(Intent::ReplaceInstrument { node: lane, plugin: "builtin:osc".to_string() }).unwrap();
+            engine.drain();
+            // Something takes the lane out without the history, and, the second time, something else has its id (the reverb of the lane that was after it).
+            ctl.model.instruments.remove(1);
+            if what != "the lane is gone" {
+                ctl.model.instruments[1].effects[0].node = lane;
+            }
+            let before = picture(&ctl);
+            assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("node {} is not there to have its instrument put back", lane.0)), "{what}");
+            assert_eq!(picture(&ctl), before, "{what}");
+            assert!(engine.drain().0.is_empty(), "{what}: nothing was sent");
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "{what}: the step is gone, the one before it is next");
+        }
+    }
+
+    #[test]
+    fn an_instrument_that_was_handed_back_and_has_no_audio_output_is_refused_with_the_reason_and_nothing_changes() {
+        use crate::app::journal::{Inverse, Journal, Kept, Replaced};
+        let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+        let lane = node(&ctl, NodePath::Instrument(1));
+        // (A journal that a session which changed without the history can make: what is in hand is not what the lane had, and a lane takes none that has nothing to hear.)
+        let (_plugin, slot) = ctl.load_plugin("builtin:osc").unwrap();
+        let mut journal = Journal::default();
+        journal.push(Inverse::Instrument {
+            lane,
+            before: Some(Replaced { slot, remap: Default::default(), pitch_bend_range: 2.0, kept: Kept::InHand(Box::new(testutil::FakeInstrument(0))) }),
+        });
+        engine.drain();
+        let before = picture(&ctl);
+        assert_eq!(ctl.rewind(journal).unwrap_err(), IntentError::Invalid("FakeInstrument has no audio outputs".to_string()));
+        assert_eq!(picture(&ctl), before);
+        assert!(engine.drain().0.is_empty(), "nothing was sent");
+    }
+
+    /// A session of `count` lanes that have an oscillator each.
+    fn lanes_of_oscillators(count: usize) -> String {
+        "[[instrument]]\nplugin = \"builtin:osc\"\n".repeat(count)
+    }
+
+    #[test]
+    fn the_instruments_of_the_newest_replacements_are_kept_and_the_ones_of_an_older_replacement_are_loaded_again_with_what_the_user_set() {
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(&lanes_of_oscillators(10));
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        // The instruments have a state that the model does not know: one that comes back has it, one that is loaded again has not. (The detune, set on the plugin itself.)
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        for lane in 0..10 {
+            graph.poke_instrument(lane, detune, 0.3);
+        }
+        // Ten instruments are replaced, one plugin each: the history keeps eight, so the first two let go of theirs.
+        for lane in 0..10 {
+            let node = ctl.model.instruments[lane].node;
+            ctl.apply(Intent::ReplaceInstrument { node, plugin: "builtin:osc".to_string() }).unwrap();
+            graph.drain_commands();
+        }
+        for lane in 0..10 {
+            assert_ne!(graph.plugin_parameter(lane, 0, detune), Some(0.3), "lane {lane}: another oscillator is in it");
+        }
+        for _ in 0..10 {
+            ctl.undo().unwrap();
+            graph.drain_commands();
+        }
+        let kept: Vec<bool> = (0..10).map(|lane| graph.plugin_parameter(lane, 0, detune) == Some(0.3)).collect();
+        // The newest eight are the very instruments they were, and the two oldest (lanes 0 and 1) were loaded again, with the values of the model.
+        assert_eq!(kept, [false, false, true, true, true, true, true, true, true, true]);
+        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0));
+    }
+
+    #[test]
+    fn an_instrument_that_a_running_audio_thread_hands_back_across_threads_is_put_back_at_once_and_is_not_loaded_again() {
+        use crate::audio::{AudioEngine, NULL_DEVICE};
+        use crate::plugin::chain::AudioGraph;
+        // A real audio thread (the null backend renders on a timer), and an instrument that cannot be loaded again: undo has it only if the audio thread handed it over the channel,
+        // across threads; if it did not it fails after the wait (five seconds here).
+        let (mut handles, engine) = testutil::stub_engine_of(4096);
+        handles.recovery_wait = Duration::from_secs(5);
+        let model = testutil::load_onto(INSTRUMENTS, &handles.cmd_tx);
+        let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut ctl = Controller::new(model, handles, None);
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        audio.play().unwrap();
+        ctl.model.instruments[1].instrument.as_mut().unwrap().id = "builtin:nothing".to_string();
+        let lane = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::ReplaceInstrument { node: lane, plugin: "builtin:osc".to_string() }).unwrap();
+        let started = Instant::now();
+        let undone = ctl.undo();
+        let waited = started.elapsed();
+        audio.stop();
+        undone.expect("the instrument came back from the audio thread");
+        assert!(waited < Duration::from_secs(2), "{waited:?}: it did not wait for what was there");
+        assert_eq!(ctl.model.instruments[1].instrument.as_ref().unwrap().id, "builtin:nothing");
     }
 
     /// A step of a script: an intent, or time going by (in milliseconds).
@@ -4564,11 +4808,25 @@ plugin = "builtin:osc"
             "what is added after an undo is a new node, and what could have been redone is gone",
             vec![add_effect(lane0, "builtin:reverb"), undo(), add_effect(lane0, "builtin:filter"), gain(fresh(1), Gain::Mix, 0.5), redo(), undo(), undo(), undo()],
         ));
+        // The instrument of a lane goes with the cables that drove it, and comes back with them; a lane that had none is emptied again.
+        let replace = |node: NodeId, plugin: &str| Op::Do(Intent::ReplaceInstrument { node, plugin: plugin.to_string() });
+        scripts.push((
+            "an instrument that is replaced is put back by undo with the cables that drove it and replaced again by redo, and what was done before it is still to be undone",
+            vec![set(detune, 1.0), pause(), set(volume, 0.5), pause(), replace(lane0, "builtin:osc"), undo(), undo(), redo(), redo(), undo(), redo(), undo()],
+        ));
+        scripts.push(("the instrument of a lane that nothing drives is put back too", vec![replace(lane1, "builtin:osc"), undo(), redo(), undo()]));
+        scripts.push((
+            "the instrument of a lane that an add made is changed, and both are put back",
+            vec![add_instrument("builtin:osc"), replace(fresh(0), "builtin:osc"), undo(), undo(), redo(), redo(), undo(), undo()],
+        ));
+        scripts.push((
+            "an instrument that is refused changes nothing in the history",
+            vec![set(detune, 1.0), replace(lane0, "builtin:reverb"), replace(reverb, "builtin:osc"), replace(ghost, "builtin:osc"), replace(lane0, "builtin:nothing"), undo()],
+        ));
         let preset = base.model.instruments[0].effects[0].presets[0].id.clone();
         let barriers = [
             // A group made of a lane that is in another: the lane leaves it, and the cables of the group to the lane would go.
             Intent::AddGroup { members: vec![lane0] },
-            Intent::ReplaceInstrument { node: lane1, plugin: "builtin:osc".to_string() },
             Intent::LoadPreset { node: reverb, preset },
         ];
         let mut forgotten = Vec::new();
@@ -4584,6 +4842,9 @@ plugin = "builtin:osc"
         let (cycle_detune, _) = param(&cycle, NodePath::Instrument(0), "detune");
         let cycle_set = |value: f32| Op::Do(Intent::SetParam { node: cycle_lane, param: cycle_detune, value });
         let cycle_modulator = cycle.model.instruments[0].modulators[0].node;
+        // And one for the instruments: a lane with a note remap, and the cables of its group and its own to its instrument, and a lane that has none.
+        let (_engine, instruments, _clock) = controller_over(load(INSTRUMENTS).model);
+        let (member_lane, empty_lane) = (node(&instruments, NodePath::Instrument(0)), node(&instruments, NodePath::Instrument(2)));
         let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![
             (
                 "cables that drive each other's depths are not put back, and what came before them is forgotten",
@@ -4594,6 +4855,11 @@ plugin = "builtin:osc"
                 "a modulator whose cables drive the depth of another's cable and are driven by it is not put back either",
                 testutil::CABLES_THAT_DRIVE_EACH_OTHER,
                 vec![cycle_set(1.0), pause(), Op::Do(Intent::RemoveNode { node: cycle_modulator }), undo(), redo()],
+            ),
+            (
+                "an instrument that the cables of its group and of its lane drive is put back with them, and a lane that had none is emptied again",
+                INSTRUMENTS,
+                vec![replace(member_lane, "builtin:osc"), undo(), redo(), undo(), replace(empty_lane, "builtin:osc"), undo(), redo(), undo()],
             ),
         ];
 

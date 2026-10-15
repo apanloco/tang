@@ -137,8 +137,12 @@ describe("the buttons of Undo and Redo", () => {
     await waitFor(() => {
       expect(undoButton().disabled).toBe(false);
     });
-    // Something that cannot be undone (another instrument in a lane), which empties the history without telling this page.
-    made.server.applyQuietly({ type: "replaceInstrument", node: oscillator.id, plugin: "builtin:osc" });
+    // Something that cannot be undone (a group made of a lane that is in another), which empties the history without telling this page.
+    made.server.applyQuietly({ type: "addGroup", members: [] });
+    const group = made.server.snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!group) throw new Error("the group that was added");
+    made.server.applyQuietly({ type: "setLaneGroup", node: oscillator.id, group: group.id });
+    made.server.applyQuietly({ type: "addGroup", members: [oscillator.id] });
     fireEvent.click(undoButton());
     expect(await screen.findByText("Could not undo: there is nothing to undo")).toBeTruthy();
     expect(undoButton().disabled).toBe(false);

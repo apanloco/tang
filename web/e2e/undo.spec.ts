@@ -431,6 +431,75 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   await expect(undo).toBeDisabled();
 });
 
+test("an instrument that is replaced is put back by Undo with the values it had and the cable that drove it, and replaced again by Redo, and the saved file has what is done", async ({ page, own }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  const save = async (): Promise<string> => {
+    await page.getByRole("button", { name: /^Save/ }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+  const oscillator = node(page, "Oscillator");
+  const waveform = oscillator.getByRole("combobox", { name: "waveform" });
+  const detune = oscillator.getByRole("slider", { name: "detune", exact: true });
+  const depth = page.getByRole("slider", { name: "Depth of LFO → Oscillator: detune" });
+
+  // The instrument has a value of its own set and a cable from the LFO to its detune, at a depth that is turned: what comes back is what was, and not what a new one is.
+  await expect(waveform).toHaveValue("3");
+  await detune.focus();
+  await page.keyboard.press("End");
+  await expect(detune).toHaveAttribute("aria-valuenow", "24");
+  const picker = page.getByRole("button", { name: "Add a cable from LFO" });
+  await picker.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.type("det");
+  await page.keyboard.press("Enter");
+  await expect(depth).toBeVisible();
+  await depth.focus();
+  await page.keyboard.press("End");
+  await expect(depth).toHaveValue("1");
+  const before = await save();
+  expect(before).toContain("builtin:osc");
+
+  // Another instrument put in the lane from its menu is a step of its own: it starts as a sine at its defaults, the cable that drove the old one is gone, and the filter stays.
+  await page.getByRole("button", { name: "Change the instrument of Oscillator" }).click();
+  await page.getByRole("menu", { name: "Change the instrument of Oscillator" }).getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(waveform).toHaveValue("0");
+  await expect(detune).toHaveAttribute("aria-valuenow", "0");
+  await expect(depth).toHaveCount(0);
+  await expect(node(page, "Filter")).toBeVisible();
+  await expect(undo).toHaveAccessibleName("Undo change the instrument to Oscillator");
+  const replaced = await save();
+  expect(replaced).not.toBe(before);
+
+  // Put back by Undo: the instrument has its saw, its detune and its cable at the depth it had, and the file is the one that was saved before it went.
+  await undo.click();
+  await expect(waveform).toHaveValue("3");
+  await expect(detune).toHaveAttribute("aria-valuenow", "24");
+  await expect(depth).toHaveValue("1");
+  await expect(undo).toHaveAccessibleName("Undo set the depth of a cable");
+  await expect(redo).toHaveAccessibleName("Redo change the instrument to Oscillator");
+  expect(await save()).toBe(before);
+
+  // Replaced again by Redo, and put back by the keys; then what was done before it is put back, one step at a time.
+  await redo.click();
+  await expect(waveform).toHaveValue("0");
+  expect(await save()).toBe(replaced);
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expect(waveform).toHaveValue("3");
+  await expect(depth).toHaveValue("1");
+  await undo.click();
+  await expect(depth).toHaveValue("0.5");
+  await undo.click();
+  await expect(depth).toHaveCount(0);
+  await undo.click();
+  await expect(detune).toHaveAttribute("aria-valuenow", "0");
+  await expect(undo).toBeDisabled();
+});
+
 test("the mock engine in the page has the same buttons and keys, and they do what the program's do", async ({ page }) => {
   await open(page);
   const undo = page.getByRole("button", { name: /^Undo/ });
@@ -491,6 +560,19 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(depth).toHaveValue("0.4");
   await redo.click();
   await expect(node(page, "Filter")).toHaveCount(0);
+  // And an instrument that is replaced, with the cables that drove it.
+  await undo.click();
+  await expect(node(page, "Filter")).toBeVisible();
+  const waveform = node(page, "Oscillator").getByRole("combobox", { name: "waveform" });
+  await expect(waveform).toHaveValue("3");
+  await page.getByRole("button", { name: "Change the instrument of Oscillator" }).click();
+  await page.getByRole("menu", { name: "Change the instrument of Oscillator" }).getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(waveform).toHaveValue("0");
+  await expect(undo).toHaveAccessibleName("Undo change the instrument to Oscillator");
+  await undo.click();
+  await expect(waveform).toHaveValue("3");
+  await redo.click();
+  await expect(waveform).toHaveValue("0");
   // And a lane, with what it has.
   await undo.click();
   await page.getByRole("button", { name: "Add an instrument" }).click();
