@@ -23,6 +23,11 @@ export interface MenuButtonProps<Id extends string = string> {
   items: readonly MenuItem<Id>[];
   /** The id of the item that was chosen. */
   onChoose: (id: Id) => void;
+  /**
+   * Told each time the menu is opened (by the button, or by an arrow on it), as it is drawn: for a page whose items are looked up when a person asks
+   * for them and not each time anything changes, as a button on every knob of a patch would have to.
+   */
+  onOpen?: () => void;
   /** What the button shows. */
   children: ReactNode;
 }
@@ -68,7 +73,7 @@ function sectionsOf<Id extends string>(items: readonly MenuItem<Id>[]): Section<
  * comes after the button (or before it, with Shift). Items can be in groups, under headings, and the list scrolls
  * when it is long; what is on it can change while it is open (the focus stays on its item, or goes to the first).
  */
-export function MenuButton<Id extends string>({ label, id, className, items, onChoose, children }: MenuButtonProps<Id>) {
+export function MenuButton<Id extends string>({ label, id, className, items, onChoose, onOpen, children }: MenuButtonProps<Id>) {
   const [place, setPlace] = useState<Place | null>(null);
   // The item that has the focus is kept by its id, not by its place, which moves when what comes before it goes.
   const [focusedId, setFocusedId] = useState<Id | null>(null);
@@ -88,6 +93,7 @@ export function MenuButton<Id extends string>({ label, id, className, items, onC
   const openAt = (index: number): void => {
     const box = trigger.current?.getBoundingClientRect();
     if (!box) return;
+    onOpen?.();
     const headings = sections.filter((section) => section.group !== undefined).length;
     const needed = Math.min(items.length * ITEM_HEIGHT + headings * HEADING_HEIGHT + 8, MAX_HEIGHT);
     const above = box.bottom + needed > window.innerHeight && box.top - needed > 0;

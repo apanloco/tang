@@ -946,7 +946,7 @@ describe("the patch", () => {
       // It ends at the row of that cable, in the node of the envelope that it starts at, which says that a cable ends there.
       const row = (await nodeOf(laneEnvelope)).querySelector(".tang-cable-row--driven");
       expect(row?.querySelector(".react-flow__handle")?.getAttribute("data-handleid")).toBe("depth-1");
-      expect(row?.textContent).toBe(`Oscillator 1: ${oscillatorParam(2)}`);
+      expect(row?.querySelector(".tang-cable-row__label")?.textContent).toBe(`Oscillator 1: ${oscillatorParam(2)}`);
     });
 
     test("is on the list of a modulator, after the parameters, modulator by modulator: the settings of the others of its lane, but what it drives already", async () => {
@@ -1068,7 +1068,7 @@ describe("the patch", () => {
     const [laneLfo, laneEnvelope, laneControl, loneLfo] = [4, 5, 6, 10];
     const oscillatorNode = snapshot.graph.nodes.find((node) => node.id === 3);
     const paramNamed = (index: number): string => (oscillatorNode?.kind === "instrument" ? oscillatorNode.plugin?.params.find((param) => param.index === index)?.name : undefined) ?? "?";
-    const rowsOf = async (id: number): Promise<string[]> => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row")).map((row) => row.textContent);
+    const rowsOf = async (id: number): Promise<string[]> => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row__label")).map((label) => label.textContent);
     /** The session with a cable (the 50th) from a modulator to a port of a node. */
     const withCable = (from: number, to: number, port: Port): Snapshot => ({
       ...snapshot,
@@ -1088,6 +1088,30 @@ describe("the patch", () => {
       expect(within(list).getAllByRole("listitem")).toHaveLength(2);
       expect((await nodeOf(loneLfo)).querySelector(".tang-node__cables")).toBeNull();
       expect(within(await nodeOf(loneLfo)).queryByRole("list")).toBeNull();
+    });
+
+    test("has a button on each row that modulates the depth of that cable, named after the cable and the modulator it starts at", async () => {
+      await rig(<PatchView />, { snapshot });
+      const names = async (id: number) => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row .tang-modulate")).map((button) => button.getAttribute("aria-label"));
+      expect(await names(laneEnvelope)).toEqual([`Modulate depth of ADSR 2 → Oscillator 1: ${paramNamed(2)}`, `Modulate depth of ADSR 2 → Oscillator 1: ${paramNamed(1)}`]);
+      expect(await names(laneLfo)).toEqual([`Modulate depth of LFO 2 → Oscillator 1: ${paramNamed(1)}`]);
+      expect(await names(loneLfo)).toEqual([]);
+    });
+
+    test("makes a modulator for the depth of the cable of a row with that button, in the rack of the modulator the cable starts at", async () => {
+      const { requests, server } = await rig(<PatchView />, { snapshot });
+      await nodeOf(laneEnvelope);
+      fireEvent.click(screen.getByRole("button", { name: `Modulate depth of ADSR 2 → Oscillator 1: ${paramNamed(1)}` }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "modulate", to: { node: laneEnvelope, port: { type: "depth", edge: 2 } }, kind: "lfo", depth: null }]);
+      });
+      await waitFor(() => {
+        const made = server.snapshot.graph.edges.filter((e) => e.kind === "modulation" && e.to.port.type === "depth");
+        expect(made).toHaveLength(1);
+      });
+      const lane = snapshot.graph.nodes.find((node) => node.id === laneEnvelope)?.parent;
+      expect(server.snapshot.graph.nodes.filter((node) => node.kind === "modulator" && node.parent === lane)).toHaveLength(4);
     });
 
     test("tells the whole of a row that the node has no room for, by its title", async () => {

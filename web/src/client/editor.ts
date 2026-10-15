@@ -6,17 +6,25 @@
 // says what could not be done and why, in the names the canvas shows.
 import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, Plugin, Port } from "../protocol";
 import type { Client } from "./connection";
-import { cableWords, displayNames } from "./names";
+import { isModulation } from "./cables";
+import { cableWords, displayNames, endLabel } from "./names";
 import type { Names } from "./names";
 import { rangeLabel } from "./notes";
 import type { Notices } from "./notices";
 import { pinnedWith } from "./pinning";
+import { samePort } from "./reach";
 import type { Reveals } from "./reveals";
 
 /** How many characters of a name a notice quotes: a name can be long, and a notice is read at a glance. */
 const NOTICE_NAME = 24;
 
 const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
+
+/**
+ * How deep the cable of a control that learns starts, as the TUI's `l` gives it: the whole range, since a controller that is moved offsets the
+ * parameter by as much as its knob goes. A new LFO or envelope has the controller's own depth, half (`NEW_CABLE_DEPTH`), as the TUI's `m` gives it.
+ */
+const LEARN_DEPTH = 1;
 
 /** What a person was doing when an intent of each kind was made, for a notice that says it could not be done. */
 const DOING: Record<Intent["type"], string> = {
@@ -236,6 +244,24 @@ export class Editor {
   addCable(modulator: NodeId, node: NodeId, to: Port): Promise<boolean> {
     const words = this.#words({ from: { node: modulator, port: { type: "modOut" } }, to: { node, port: to } });
     return this.#attempt(`draw a cable from ${words.replaceAll(" → ", " to ")}`, { type: "addModEdge", modulator, to: { node, port: to } });
+  }
+
+  /**
+   * Make a modulator of `kind` for what the port `to` of the node `node` is, and draw a cable from it to the port, as one change that is one step
+   * of the history (`Modulate`): a parameter of the plugin in it (by the plugin's own index), or a setting of a modulator (its rate, a stage of its
+   * envelope), or the depth of one of its cables. The modulator goes in the rack that reaches the port: the lane's for a lane's instrument or an
+   * effect of its chain, the group's for a bus effect, and the rack of the modulator for a setting of it, where it is a sibling that drives it. A
+   * control that learns is armed, and its cable starts at the whole range (`LEARN_DEPTH`). Resolves with the id of the modulator it made, which the
+   * canvas is asked to show, or with null if it was refused (the page says why). The node is the one new to the session that has the cable to the
+   * port: two clients that modulate one parameter at once may be given each other's, which is as good.
+   */
+  async modulate(node: NodeId, to: Port, kind: ModulatorKind): Promise<NodeId | null> {
+    const before = new Set(this.#graph?.nodes.map((n) => n.id));
+    const what = `modulate ${endLabel(this.#graph ?? { nodes: [], edges: [] }, this.#names, { node, port: to })} with ${KINDS[kind]}`;
+    const intent: Intent = { type: "modulate", to: { node, port: to }, kind, depth: kind === "midiLearn" ? LEARN_DEPTH : null };
+    if (!(await this.#attempt(what, intent))) return null;
+    const made = this.#graph?.edges.findLast((e) => isModulation(e) && !before.has(e.from.node) && e.to.node === node && samePort(e.to.port, to));
+    return this.#shown(made?.kind === "modulation" ? made.from.node : undefined);
   }
 
   /** Take the modulator or effect `node` out, with the cables that drive it (and, for a modulator, those it drives). True if it went. */

@@ -23,6 +23,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
+import { ModulateMenu } from "./ModulateMenu";
 import { depthHandle, handleOf, paramHandle } from "./toFlow";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
@@ -167,7 +168,10 @@ export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; 
       <label className="tang-row__name" htmlFor={id} title={facts.name}>
         {facts.name}
       </label>
-      <PinButton node={node} index={index} name={facts.name} />
+      <span className="tang-row__tools">
+        {facts.labels ? null : <ModulateMenu node={node} port={{ type: "param", index }} name={facts.name} className="tang-modulate--row" />}
+        <PinButton node={node} index={index} name={facts.name} />
+      </span>
     </>
   );
   if (facts.labels) {
@@ -483,9 +487,20 @@ export const ParamCell = memo(function ParamCell({ node, index, driven }: { node
     <div className="tang-cell">
       <CablePort node={node} handle={paramHandle(index)} driven={driven} />
       <ParamControl node={node} index={index} />
+      <ParamModulateButton node={node} index={index} />
     </div>
   );
 });
+
+/**
+ * The button on the knob of a parameter that modulates it (`ModulateMenu`). A parameter whose values have names is a choice and has none: a cable can be dragged to
+ * its port, and a modulator that steps through names is not what the button is for (as the TUI's `m`, which leaves such a row out).
+ */
+function ParamModulateButton({ node, index }: { node: NodeId; index: number }) {
+  const facts = useClientSelection((state) => paramOf(state, node, index), sameParamFacts);
+  if (!facts || facts.labels) return null;
+  return <ModulateMenu node={node} port={{ type: "param", index }} name={facts.name} className="tang-modulate--cell" />;
+}
 
 export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; gain: Gain }) {
   return (
@@ -511,6 +526,7 @@ export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, f
     <div className="tang-cell">
       <CablePort node={node} handle={field} driven={driven} />
       <ModulatorFieldControl node={node} field={field} />
+      <ModulateMenu node={node} port={{ type: field }} name={field} className="tang-modulate--cell" />
     </div>
   );
 });

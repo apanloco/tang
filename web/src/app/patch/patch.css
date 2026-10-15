@@ -455,6 +455,61 @@
   opacity: 0.7;
 }
 
+/*
+ * The button that modulates a control (`ModulateMenu`): a small tilde, quiet until the pointer or the focus is on what it modulates. On a knob it is in the
+ * corner of the cell, over nothing the knob draws; on the row of a cable it is at the end of the row; in the panel it is beside the pin.
+ */
+.tang-menu-button.tang-modulate {
+  min-width: 16px;
+  height: 16px;
+  padding: 0;
+  border-color: transparent;
+  background: none;
+  color: var(--tang-modulation);
+  font-size: 12px;
+}
+
+/* (Over the top right corner of the knob, which is 10px down the cell, and over nothing the control beside draws: it is in front of it.) */
+.tang-menu-button.tang-modulate--cell {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  z-index: 1;
+  opacity: 0;
+}
+
+.tang-cell:hover .tang-modulate--cell,
+.tang-cell:focus-within .tang-modulate--cell,
+.tang-modulate--cell[aria-expanded="true"],
+.tang-modulate--cell:focus-visible {
+  opacity: 1;
+}
+
+/* (A screen with no pointer to hover has no other way to find it.) */
+@media (hover: none) {
+  .tang-menu-button.tang-modulate--cell {
+    opacity: 0.6;
+  }
+}
+
+.tang-menu-button.tang-modulate--cable {
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.tang-cable-row:hover .tang-modulate--cable,
+.tang-modulate--cable:hover,
+.tang-modulate--cable:focus-visible,
+.tang-modulate--cable[aria-expanded="true"] {
+  opacity: 1;
+}
+
+/* While a cable is dragged the buttons are not there to be let go on: the port under one takes the cable (a port grows to its cell, and a button in front of it would be what the pointer is over). */
+.tang-patch[data-connecting] .tang-menu-button.tang-modulate {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* While a cable is dragged: the ports that take it, and the one it is over. */
 .tang-port--takes {
   width: 12px;

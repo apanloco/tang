@@ -107,6 +107,26 @@
   color: var(--tang-text-muted);
 }
 
+/* What a row has beside its name: the button that modulates it, and the pin. */
+.tang-row__tools {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.tang-row__tools .tang-modulate--row {
+  opacity: 0.6;
+}
+
+.tang-row:hover .tang-modulate--row,
+.tang-modulate--row:hover,
+.tang-modulate--row:focus-visible,
+.tang-modulate--row[aria-expanded="true"] {
+  opacity: 1;
+}
+
 /* The pin: whether the node shows the parameter as a knob. */
 .tang-row__pin {
   grid-column: 2;

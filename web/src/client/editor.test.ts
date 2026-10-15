@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import type { Port } from "../protocol";
+import type { Edge, Port } from "../protocol";
 import { Client } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
 import { Editor } from "./editor";
 import { Notices } from "./notices";
+import { samePort } from "./reach";
 import { Reveals } from "./reveals";
 
 const clients: Client[] = [];
@@ -101,6 +102,94 @@ describe("adding a modulator", () => {
     client.stop();
     expect(await editor.addModulator(oscillator.id, "lfo")).toBeNull();
     expect(said(notices)).toEqual(["Could not add an LFO to Oscillator: Not connected to the server."]);
+  });
+});
+
+describe("modulating a parameter", () => {
+  /** The cables of the session that end at the port `to` of `node`. */
+  const cablesTo = (cables: readonly Edge[], node: number, to: Port): Edge[] => cables.filter((e) => e.kind === "modulation" && e.to.node === node && samePort(e.to.port, to));
+  const requests = (server: MockServer) => server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []));
+
+  test("resolves with the node of the modulator it made, which is in the lane then, with a cable from it to the parameter at half depth, and says nothing; the canvas is asked to show it", async () => {
+    const { client, notices, shown, editor } = await open();
+    const cutoff = paramPort(filter, "cutoff");
+    const id = await editor.modulate(filter.id, cutoff, "envelope");
+    expect(id).toBe(3);
+    const graph = client.state.snapshot?.graph;
+    expect(graph?.nodes.find((n) => n.id === id)).toMatchObject({ kind: "modulator", parent: oscillator.id, name: "ADSR" });
+    const [cable] = cablesTo(graph?.edges ?? [], filter.id, cutoff).filter((e) => e.kind === "modulation" && e.from.node === id);
+    expect(cable).toMatchObject({ kind: "modulation", from: { node: id, port: { type: "modOut" } }, amount: 0.5 });
+    expect(said(notices)).toEqual([]);
+    expect(shown).toEqual([id]);
+  });
+
+  test("asks for one intent, at the depth the TUI's m gives a cable (none given: the controller's), and the depth the TUI's l gives a control that learns, which is armed", async () => {
+    const { server, client, editor } = await open();
+    const cutoff = paramPort(filter, "cutoff");
+    const first = await editor.modulate(filter.id, cutoff, "lfo");
+    const learner = await editor.modulate(filter.id, cutoff, "midiLearn");
+    expect(requests(server)).toEqual([
+      { type: "modulate", to: { node: filter.id, port: cutoff }, kind: "lfo", depth: null },
+      { type: "modulate", to: { node: filter.id, port: cutoff }, kind: "midiLearn", depth: 1 },
+    ]);
+    const graph = client.state.snapshot?.graph;
+    expect(graph?.nodes.find((n) => n.id === learner)).toMatchObject({ kind: "modulator", source: { type: "midiLearn", control: null, learning: true } });
+    // (The cutoff has a cable of the tracer's own, at 0.4.)
+    const made = cablesTo(graph?.edges ?? [], filter.id, cutoff).filter((e) => e.kind === "modulation" && (e.from.node === first || e.from.node === learner));
+    expect(made.map((e) => (e.kind === "modulation" ? e.amount : null))).toEqual([0.5, 1]);
+  });
+
+  test("makes a sibling that drives a setting of a modulator, and shows it", async () => {
+    const { client, shown, editor } = await open();
+    const id = await editor.modulate(lfo.id, { type: "rate" }, "lfo");
+    const graph = client.state.snapshot?.graph;
+    expect(graph?.nodes.find((n) => n.id === id)).toMatchObject({ kind: "modulator", parent: lfo.parent });
+    expect(cablesTo(graph?.edges ?? [], lfo.id, { type: "rate" }).some((e) => e.kind === "modulation" && e.from.node === id)).toBe(true);
+    expect(shown).toEqual([id]);
+  });
+
+  test("finds its own node, the one that has the cable to the port, when another front-end made one for the same parameter just before", async () => {
+    const { server, editor } = await open();
+    const cutoff = paramPort(filter, "cutoff");
+    server.apply({ type: "modulate", to: { node: filter.id, port: cutoff }, kind: "envelope", depth: null });
+    const id = await editor.modulate(filter.id, cutoff, "lfo");
+    const mine = server.snapshot.graph.nodes.find((n) => n.id === id);
+    expect(mine).toMatchObject({ kind: "modulator", name: "LFO" });
+    expect(id).toBe(4);
+  });
+
+  test("is refused as the controller refuses it: it resolves with null, nothing is made, and the page says what it could not do and why, in the names the canvas shows", async () => {
+    const { client, notices, shown, editor } = await open({ snapshot: reachFixture.snapshot });
+    const before = client.state.snapshot;
+    const group = reachFixture.snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!group) throw new Error("the fixture has a group");
+    expect(await editor.modulate(group.id, { type: "param", index: 1 }, "lfo")).toBeNull();
+    expect(await editor.modulate(MASTER, { type: "param", index: 1 }, "envelope")).toBeNull();
+    expect(await editor.modulate(group.id, { type: "modOut" }, "midiLearn")).toBeNull();
+    expect(said(notices)).toEqual([
+      `Could not modulate ${group.name} with an LFO: a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither`,
+      "Could not modulate Master with an envelope: there is no node 4294967295",
+      `Could not modulate ${group.name} with a MIDI control: a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither`,
+    ]);
+    expect(client.state.snapshot).toEqual(before);
+    expect(shown).toEqual([]);
+  });
+
+  test("names what it could not modulate by the port: a setting of a modulator by its name, a parameter that the plugin has not by the node alone", async () => {
+    const { notices, editor } = await open();
+    expect(await editor.modulate(filter.id, { type: "param", index: 9_999 }, "lfo")).toBeNull();
+    expect(await editor.modulate(lfo.id, { type: "attack" }, "envelope")).toBeNull();
+    expect(said(notices)).toEqual([
+      "Could not modulate Filter with an LFO: the plugin has no parameter 9999",
+      "Could not modulate LFO: attack with an envelope: that modulator has no attack",
+    ]);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.modulate(filter.id, paramPort(filter, "cutoff"), "lfo")).toBeNull();
+    expect(said(notices)).toEqual(["Could not modulate Filter: cutoff with an LFO: Not connected to the server."]);
   });
 });
 

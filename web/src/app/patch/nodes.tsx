@@ -23,6 +23,7 @@ import { focusWhenPossible, keepFocus } from "../focus";
 import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
+import { ModulateMenu } from "./ModulateMenu";
 import type { CableRow, PatchNode } from "./toFlow";
 
 /** The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. */
@@ -413,7 +414,8 @@ function EnvelopeShape({ node, name, read }: { node: NodeId; name: string; read:
 
 /**
  * The cables that start at a modulator, as a list at the foot of its node: a row for each, saying where it goes, with a port at the left edge of the
- * row where a cable from another modulator can end, to drive how deep this one goes. Nothing for a modulator that drives nothing.
+ * row where a cable from another modulator can end, to drive how deep this one goes, and the button that modulates the depth (`ModulateMenu`: a new modulator
+ * for it, or one that is there). Nothing for a modulator that drives nothing.
  */
 function CableRows({ node, name, cables }: { node: NodeId; name: string; cables: readonly CableRow[] }) {
   if (cables.length === 0) return null;
@@ -425,6 +427,7 @@ function CableRows({ node, name, cables }: { node: NodeId; name: string; cables:
           <span className="tang-cable-row__label" title={row.label}>
             {row.label}
           </span>
+          <ModulateMenu node={node} port={{ type: "depth", edge: row.edge }} name={`depth of ${name} → ${row.label}`} className="tang-modulate--cable" />
         </li>
       ))}
     </ul>

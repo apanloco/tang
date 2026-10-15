@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, Port } from "../protocol";
-import { fieldsFixture, reachFixture, tracerSnapshot } from "./fixtures";
+import { MASTER, fieldsFixture, reachFixture, tracerSnapshot } from "./fixtures";
 import { displayNames, portName } from "./names";
-import { drivablesOf, fieldsOf, reachFrom } from "./reach";
+import { drivablesOf, driversOf, fieldsOf, reachFrom } from "./reach";
 
 const sorted = (nodes: Iterable<number>): number[] => [...nodes].sort((a, b) => a - b);
 
@@ -256,5 +256,93 @@ describe("what a modulator can still be drawn to among the settings of the other
     expect(every.length).toBeGreaterThan(4);
     const all: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, ...every.map((field, i) => edge(50 + i, 4, field.node, field.port))] };
     expect(drivablesOf(all, 4, displayNames(all)).filter((g) => g.fields.length > 0)).toEqual([]);
+  });
+});
+
+describe("which modulators can still drive a port", () => {
+  const tracer = tracerSnapshot.graph;
+  const ids = (nodes: readonly Node[]): number[] => nodes.map((n) => n.id);
+  const param = (node: number, name: string): Port => {
+    const found = tracer.nodes.find((n) => n.id === node);
+    const index = (found?.kind === "instrument" || found?.kind === "effect" ? found.plugin?.params : undefined)?.find((p) => p.name === name)?.index;
+    if (index === undefined) throw new Error(`no ${name}`);
+    return { type: "param", index };
+  };
+  /** The tracer with a second LFO in its lane. */
+  const second: Node = { id: 7, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+  const withSecond: Graph = { ...tracer, nodes: [...tracer.nodes, second] };
+
+  test("is the modulators that reach a parameter, in the order of the graph, and none that drives it already", () => {
+    // The tracer's LFO (2) drives the cutoff of the filter (1) and nothing else.
+    expect(ids(driversOf(tracer, 1, param(1, "resonance")))).toEqual([2]);
+    expect(ids(driversOf(tracer, 1, param(1, "cutoff")))).toEqual([]);
+    expect(ids(driversOf(tracer, 0, param(0, "detune")))).toEqual([2]);
+  });
+
+  test("keeps a modulator that drives another port of the node, and one that does not drive this port when another does: two can drive one", () => {
+    expect(ids(driversOf(withSecond, 1, param(1, "resonance")))).toEqual([2, 7]);
+    expect(ids(driversOf(withSecond, 1, param(1, "cutoff")))).toEqual([7]);
+  });
+
+  test("is the modulators of the rack for a setting of a modulator, never the modulator itself, and a group's that reach it too", () => {
+    const { graph } = fieldsFixture.snapshot;
+    // The lane's LFO (4): the group's modulators (13, 14, 15), whose rack reaches its members' modulators, and its lane-mates (5, 6), in the order of the graph, which lists
+    // the groups' modulators first; not itself, and not the LFO of the other lane (8).
+    expect(ids(driversOf(graph, 4, { type: "rate" }))).toEqual([13, 14, 15, 5, 6]);
+    // (An LFO has no attack.)
+    expect(ids(driversOf(graph, 4, { type: "attack" }))).toEqual([]);
+  });
+
+  test("is the depth of a cable for the modulators that reach the modulator whose cable it is, the one that drives it already left out", () => {
+    const { graph } = fieldsFixture.snapshot;
+    const cable = graph.edges.find((e) => e.kind === "modulation" && e.from.node === 4);
+    if (cable?.kind !== "modulation") throw new Error("the lane's LFO has a cable");
+    const port: Port = { type: "depth", edge: cable.id };
+    expect(ids(driversOf(graph, 4, port))).toEqual([13, 14, 15, 5, 6]);
+    // The envelope (5) drives the depth of that cable: it is left out, and the others are not.
+    const driven: Graph = { ...graph, edges: [...graph.edges, { kind: "modulation", id: 90, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: 4, port } }] };
+    expect(ids(driversOf(driven, 4, port))).toEqual([13, 14, 15, 6]);
+  });
+
+  test("is nothing for a port that no cable ends at, a parameter the plugin has not, and a node that is not there, the master, or has no such port", () => {
+    for (const port of [{ type: "modOut" }, { type: "audioIn" }, { type: "audioOut" }] as const) expect(driversOf(tracer, 1, port), port.type).toEqual([]);
+    expect(driversOf(tracer, 1, { type: "param", index: 9_999 })).toEqual([]);
+    expect(driversOf(tracer, 999_999, param(1, "resonance"))).toEqual([]);
+    expect(driversOf(tracer, MASTER, param(1, "resonance"))).toEqual([]);
+    // A modulator has no parameter, and an effect no rate.
+    expect(driversOf(tracer, 2, { type: "param", index: 0 })).toEqual([]);
+    expect(driversOf(tracer, 1, { type: "rate" })).toEqual([]);
+    expect(driversOf(tracer, 2, { type: "depth", edge: 9_999 })).toEqual([]);
+  });
+
+  test("is what `drivablesOf` offers from the other side: a modulator is listed for a port exactly when the port is offered to the modulator", () => {
+    for (const { snapshot } of [reachFixture, fieldsFixture]) {
+      const { graph } = snapshot;
+      const names = displayNames(graph);
+      const modulators = graph.nodes.filter((n) => n.kind === "modulator");
+      const key = (node: number, port: Port): string => `${String(node)}:${port.type}${port.type === "param" ? String(port.index) : port.type === "depth" ? String(port.edge) : ""}`;
+      const offers = new Map<string, number[]>();
+      for (const modulator of modulators) {
+        for (const group of drivablesOf(graph, modulator.id, names)) {
+          for (const p of group.params) offers.set(key(group.node, { type: "param", index: p.index }), [...(offers.get(key(group.node, { type: "param", index: p.index })) ?? []), modulator.id]);
+          for (const f of group.fields) offers.set(key(group.node, f.port), [...(offers.get(key(group.node, f.port)) ?? []), modulator.id]);
+        }
+      }
+      // Every port there is: the parameters of every plugin, the settings of every modulator and the depth of every cable.
+      const ports: [number, Port][] = [
+        ...graph.nodes.flatMap((n): [number, Port][] => ((n.kind === "instrument" || n.kind === "effect") && n.plugin ? n.plugin.params.map((p): [number, Port] => [n.id, { type: "param", index: p.index }]) : [])),
+        ...modulators.flatMap((m): [number, Port][] => (["rate", "attack", "decay", "sustain", "release"] as const).map((type): [number, Port] => [m.id, { type }])),
+        ...graph.edges.flatMap((e): [number, Port][] => (e.kind === "modulation" ? [[e.from.node, { type: "depth", edge: e.id }]] : [])),
+      ];
+      expect(ports.length).toBeGreaterThan(40);
+      let listed = 0;
+      for (const [node, port] of ports) {
+        const expected = offers.get(key(node, port)) ?? [];
+        listed += expected.length;
+        expect(ids(driversOf(graph, node, port)), key(node, port)).toEqual(expected);
+      }
+      // (So that the agreement says something.)
+      expect(listed).toBeGreaterThan(40);
+    }
   });
 });

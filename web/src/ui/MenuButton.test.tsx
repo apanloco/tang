@@ -567,3 +567,45 @@ describe("a menu whose items change while it is open", () => {
     expect(focusedLabel()).toBe("volume");
   });
 });
+
+describe("a menu that is told when it opens", () => {
+  /** A menu whose page is told each time it is opened, with what the items were. */
+  function mountTold() {
+    const opened = vi.fn();
+    render(
+      <MenuButton label="Modulate cutoff" items={ITEMS} onChoose={vi.fn()} onOpen={opened}>
+        ~
+      </MenuButton>,
+    );
+    return { opened, trigger: screen.getByRole("button", { name: "Modulate cutoff" }) };
+  }
+
+  test("tells the page when the button is pressed, once for each time it opens, and not when it closes or is chosen from", () => {
+    const { opened, trigger } = mountTold();
+    expect(opened).not.toHaveBeenCalled();
+    fireEvent.click(trigger);
+    expect(opened).toHaveBeenCalledTimes(1);
+    fireEvent.click(trigger); // (closes)
+    expect(opened).toHaveBeenCalledTimes(1);
+    fireEvent.click(trigger);
+    expect(opened).toHaveBeenCalledTimes(2);
+    fireEvent.click(item(1)); // (chooses, and closes)
+    expect(opened).toHaveBeenCalledTimes(2);
+  });
+
+  test("tells the page when an arrow opens it from the keyboard, the down arrow and the up arrow alike", () => {
+    const { opened, trigger } = mountTold();
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(opened).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(item(0), { key: "Escape" });
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    expect(opened).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not need the page to say anything: a menu with nobody to tell opens as it did", () => {
+    const { trigger } = mount();
+    fireEvent.click(trigger);
+    expect(items()).toHaveLength(3);
+  });
+});

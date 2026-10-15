@@ -7,6 +7,7 @@
 // and out of them: `fixtures/reach.json`, and for the settings of modulators `fixtures/fields.json`) pin
 // the two together.
 import type { Edge, Graph, Node, NodeId, Port } from "../protocol";
+import { isModulation } from "./cables";
 import { endLabel } from "./names";
 
 /** Whether a node has a plugin, whose parameters a cable can end at. */
@@ -144,4 +145,23 @@ export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<
     byModulator.set(node, { ...group, fields: [...group.fields, { port, name: fieldName(graph, names, port) }] });
   }
   return [...groups, ...byModulator.values()];
+}
+
+/**
+ * The modulators that can still be given a cable to the port `port` of `node`, in the order of the graph: the ones that reach it (the parameters of
+ * the plugins a modulator reaches, `reachFrom`; the settings of the other modulators in reach, and the depths of their cables, `fieldsOf`) and do not
+ * drive it already (another modulator may: two can drive one). It is `drivablesOf` read from the other side, for a knob that asks what could drive it.
+ * A port that no cable ends at, one the node has not, and a node that is not there have none.
+ */
+export function driversOf(graph: Graph, node: NodeId, port: Port): Node[] {
+  const target = graph.nodes.find((n) => n.id === node);
+  const plugin = target?.kind === "instrument" || target?.kind === "effect" ? target.plugin : null;
+  if (port.type === "param" && !plugin?.params.some((param) => param.index === port.index)) return [];
+  return graph.nodes.filter((modulator) => {
+    if (modulator.kind !== "modulator") return false;
+    const reaches =
+      port.type === "param" ? reachFrom(graph, modulator.id).has(node) : fieldsOf(graph, modulator.id).some((field) => field.node === node && samePort(field.port, port));
+    const drivesIt = graph.edges.some((edge) => isModulation(edge) && edge.from.node === modulator.id && edge.to.node === node && samePort(edge.to.port, port));
+    return reaches && !drivesIt;
+  });
 }

@@ -284,7 +284,7 @@ async function listing(modulator: Locator) {
 test("a modulator lists a row for each cable that starts at it, each as tall as the layout assumes, with its port on the node's left edge", async ({ page }) => {
   await open(page);
   const lfo = node(page, "LFO");
-  await expect(lfo.locator(".tang-cable-row")).toHaveText(["Filter: cutoff"]);
+  await expect(lfo.locator(".tang-cable-row__label")).toHaveText(["Filter: cutoff"]);
   const one = await listing(lfo);
   // The node is as tall as the layout assumes for a row (and not much less), and the row is as high as it assumes.
   const assumedOne = MODULATOR_SETTINGS_HEIGHT + CABLES_GAP + CABLE_ROW_HEIGHT;
@@ -300,7 +300,7 @@ test("a modulator lists a row for each cable that starts at it, each as tall as 
   await page.keyboard.press("ArrowDown");
   await page.keyboard.type("det");
   await page.keyboard.press("Enter");
-  await expect(lfo.locator(".tang-cable-row")).toHaveText(["Filter: cutoff", "Oscillator: detune"]);
+  await expect(lfo.locator(".tang-cable-row__label")).toHaveText(["Filter: cutoff", "Oscillator: detune"]);
   const two = await listing(lfo);
   expect(two.height - one.height).toBeCloseTo(CABLE_ROW_HEIGHT, 0);
   expect(two.rows.map((row) => row.height)).toEqual([expect.closeTo(CABLE_ROW_HEIGHT, 0), expect.closeTo(CABLE_ROW_HEIGHT, 0)]);
