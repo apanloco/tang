@@ -491,6 +491,13 @@ Cross-mod target fields (`mod_rate`, `mod_depth`, `mod_attack`, `mod_decay`,
 `mod_sustain`, `mod_release`) are mutually exclusive with `param`. Self-
 modulation (targeting own index) is prevented.
 
+A cross-mod cable works from the value the user set the field to (an LFO's rate,
+a stage of an envelope, the depth of a cable) and writes it every buffer, the
+last cable to write it standing: when the user sets the field the engine moves
+what the cables that drive it work from (`update_cross_mod_base`: for a depth,
+since f133, which had been left out, so that the cross-mod wrote the depth back
+to what it was around the old value every buffer, and the slider did nothing).
+
 ### Node positions (`ui`)
 
 A front-end that draws the session as a canvas (the browser, see "Web UI") keeps where each node is in the session

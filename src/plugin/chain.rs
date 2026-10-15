@@ -4257,6 +4257,9 @@ impl AudioGraph {
                                 t.depth = depth;
                             }
                         }
+                        // Update cross-mod base values for targets pointing at this depth: the cables that drive it work from where the user has set it, and
+                        // do not write it back to what it was (as for a rate or a stage).
+                        update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Depth(target_index), depth);
                     }
                     // Keep any group cross-mod of this member modulator's depth centered.
                     if let Some((group, ordinal)) = lane_member_ordinal(&self.instruments, inst) {
@@ -4415,6 +4418,8 @@ impl AudioGraph {
                                 t.depth = depth;
                             }
                         }
+                        // The cables of the group that drive this depth work from where the user has set it.
+                        update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Depth(target_index), depth);
                     }
                 }
                 GraphCommand::SetPatternEnabled { inst, enabled } => {
@@ -7732,6 +7737,59 @@ mod tests {
         let depth = rig.field_target(0, ModTargetKind::ModulatorDepth { mod_index: 1, target_index: 1 }, 0.2, 0.3, -1.0, 1.0);
         rig.process(&[]);
         assert!(close(rig.read(depth), 0.3 + 0.2 * 2.0), "{}", rig.read(depth));
+    }
+
+    #[test]
+    fn setting_the_depth_of_a_cable_that_another_cable_drives_moves_what_the_driver_works_from() {
+        // (Found by looking at the bar under the slider of such a cable: the engine moves what the cables that drive a rate or a stage work from when the user sets it,
+        // `update_cross_mod_base`, and did not for a depth, so the next buffer wrote the depth back to what it was around the old value.)
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 1.0));
+        rig.gain_target(1, 0.5);
+        rig.gain_target(1, 0.5); // the cable whose depth is driven: modulator 1's second (of two, so that the place of a cable counts)
+        let depth = rig.field_target(0, ModTargetKind::ModulatorDepth { mod_index: 1, target_index: 1 }, 0.2, 0.5, -1.0, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(depth), 0.5 + 0.2 * 2.0), "{}", rig.read(depth));
+        // The user sets the first cable's depth, which nothing drives: what drives the second works from where it was.
+        rig.cmd_tx.send(GraphCommand::SetModTargetDepth { inst: 0, mod_index: 1, target_index: 0, depth: 0.9 }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(depth), 0.5 + 0.2 * 2.0), "{}", rig.read(depth));
+        // The user sets the second's to -0.3: the cable that drives it works from there, and the depth is not written back.
+        rig.cmd_tx.send(GraphCommand::SetModTargetDepth { inst: 0, mod_index: 1, target_index: 1, depth: -0.3 }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(depth), -0.3 + 0.2 * 2.0), "{}", rig.read(depth));
+        rig.process(&[]);
+        assert!(close(rig.read(depth), -0.3 + 0.2 * 2.0), "and the next buffer: {}", rig.read(depth));
+    }
+
+    #[test]
+    fn setting_the_depth_of_a_group_cable_that_another_cable_of_the_group_drives_moves_what_the_driver_works_from() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 1.0 }), mix: 1.0 }).unwrap();
+        for (index, source) in [lfo(LfoWaveform::Square, 0.0), lfo(LfoWaveform::Sine, 1.0)].into_iter().enumerate() {
+            cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source }).unwrap();
+        }
+        let target = |kind: ModTargetKind, depth: f32, base: f32, min: f32| ModTarget { kind, depth, base_value: base, param_min: min, param_max: 1.0, effective: None };
+        // The cable whose depth is driven: modulator 1's second, to the bus effect (of two, so that the place of a cable counts); and modulator 0's, to its depth.
+        let bus = || target(ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }, 0.5, 0.5, 0.0);
+        add_group_cable(&cmd_tx, 0, 1, bus());
+        add_group_cable(&cmd_tx, 0, 1, bus());
+        add_group_cable(&cmd_tx, 0, 0, target(depth_of(1, 1), 0.2, 0.5, -1.0));
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        let driven = |graph: &AudioGraph| graph.groups[0].modulators[1].targets[1].depth;
+        assert!(close(driven(&graph), 0.5 + 0.2 * 2.0), "{}", driven(&graph));
+        // The first cable's depth, which nothing drives, moves nothing of what drives the second.
+        cmd_tx.send(GraphCommand::SetGroupModTargetDepth { group: 0, mod_index: 1, target_index: 0, depth: 0.9 }).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert!(close(driven(&graph), 0.5 + 0.2 * 2.0), "{}", driven(&graph));
+        cmd_tx.send(GraphCommand::SetGroupModTargetDepth { group: 0, mod_index: 1, target_index: 1, depth: -0.3 }).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert!(close(driven(&graph), -0.3 + 0.2 * 2.0), "{}", driven(&graph));
     }
 
     #[test]

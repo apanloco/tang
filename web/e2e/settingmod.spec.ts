@@ -81,3 +81,26 @@ test("an envelope drawn to the depth of the LFO's cable gives its slider a bar f
   // The slider is the user's all the while.
   await expect(depth).toHaveValue("0.4");
 });
+
+test("the depth that the user sets for a cable whose depth another cable drives is what that cable works from: the bar follows it, and the engine does not write the old one back", async ({ page, own }) => {
+  await open(page, own.url);
+  const depth = page.getByRole("slider", { name: "Depth of LFO → Filter: cutoff", exact: true });
+  const bar = page.getByRole("meter", { name: "Depth of LFO → Filter: cutoff, as modulated", exact: true });
+  const envelope = await addEnvelope(page);
+  await drag(page, output(envelope), node(page, "LFO").locator(".tang-cable-row .react-flow__handle"));
+  await expect(bar).toBeVisible();
+  const said = async (): Promise<number> => Number(await bar.getAttribute("aria-valuenow"));
+  await expect.poll(said).toBeCloseTo(-0.3, 2);
+
+  // The slider is turned to 0.8 with the keyboard (forty steps of a hundredth). At rest the envelope pulls the depth half the way from there to the lowest, -1: to -0.1.
+  // (Not to -0.3, which is what the cable works from if the engine keeps the 0.4 that it began with.)
+  await depth.focus();
+  for (let i = 0; i < 40; i += 1) await page.keyboard.press("ArrowRight");
+  await expect(depth).toHaveValue("0.8");
+  await expect.poll(said, { timeout: 8000 }).toBeCloseTo(-0.1, 2);
+  // And with a note held, from 0.8 too: 0.3 of the way down, which is 0.8 - 0.5 x 0.3 x 1.8 = 0.53.
+  await page.keyboard.down("z");
+  await expect.poll(said, { timeout: 8000 }).toBeCloseTo(0.53, 2);
+  await page.keyboard.up("z");
+  await expect.poll(said, { timeout: 8000 }).toBeCloseTo(-0.1, 2);
+});
