@@ -18,6 +18,12 @@ import type { Reveals } from "./reveals";
 /** How many characters of a name a notice quotes: a name can be long, and a notice is read at a glance. */
 const NOTICE_NAME = 24;
 
+/** `text` as a notice quotes it: in quotes, and cut after `NOTICE_NAME` characters (counted as the server counts them: a character is not always one unit of a string). */
+function quoted(text: string): string {
+  const characters = Array.from(text);
+  return JSON.stringify(characters.length > NOTICE_NAME ? `${characters.slice(0, NOTICE_NAME).join("")}…` : text);
+}
+
 const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control" };
 
 /**
@@ -142,10 +148,7 @@ export class Editor {
    * its number). True if it was done (the page says why if it was not).
    */
   renameGroup(node: NodeId, name: string): Promise<boolean> {
-    // (Counted as the characters they are, as the server counts: a character is not always one unit of a string.)
-    const characters = Array.from(name);
-    const shown = characters.length > NOTICE_NAME ? `${characters.slice(0, NOTICE_NAME).join("")}…` : name;
-    return this.#attempt(`give ${this.#name(node)} the name ${JSON.stringify(shown)}`, { type: "renameGroup", node, name });
+    return this.#attempt(`give ${this.#name(node)} the name ${quoted(name)}`, { type: "renameGroup", node, name });
   }
 
   /**
@@ -296,7 +299,7 @@ export class Editor {
    * folder in it, a file that is there already, a file that cannot be written).
    */
   saveAs(name: string): Promise<boolean> {
-    return this.#attempt(`save the session as ${name.trim()}`, { type: "saveAs", name });
+    return this.#attempt(`save the session as ${quoted(name.trim())}`, { type: "saveAs", name });
   }
 
   /** Put back what the last change that can be undone changed (what the server says it is: `ClientState.history`). True if it was done (the page says why if it was not). */

@@ -800,7 +800,24 @@ describe("saving the session under another name", () => {
     const { server, editor, notices } = await open();
     expect(await editor.saveAs("  ../x ")).toBe(false);
     expect(server.received.at(-1)).toMatchObject({ type: "request", intent: { type: "saveAs", name: "  ../x " } });
-    expect(said(notices)).toEqual(["Could not save the session as ../x: a file name has no folder in it: `/` and `\\` are not allowed"]);
+    expect(said(notices)).toEqual(['Could not save the session as "../x": a file name has no folder in it: `/` and `\\` are not allowed']);
+  });
+
+  test("says the name it was refused for in quotes and cut after 24 characters, as a group's name is, whatever else the name has", async () => {
+    const { notices, editor } = await open();
+    const folder = "a file name has no folder in it: `/` and `\\` are not allowed";
+    const control = "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character";
+    // (The notices keep the last few: each is read as it is said. Exactly as many characters as it quotes is not cut, and one more is.)
+    const cases: [string, string][] = [
+      ["😀".repeat(200), `Could not save the session as "${"😀".repeat(24)}…": a file name is at most 255 bytes long`],
+      ["two\nlines", `Could not save the session as "two\\nlines": ${control}`],
+      ["a/".repeat(12), `Could not save the session as "${"a/".repeat(12)}": ${folder}`],
+      [`${"a/".repeat(12)}a`, `Could not save the session as "${"a/".repeat(12)}…": ${folder}`],
+    ];
+    for (const [name, words] of cases) {
+      expect(await editor.saveAs(name), words).toBe(false);
+      expect(said(notices).at(-1)).toBe(words);
+    }
   });
 
   test("is refused as the controller refuses it: false, the page says what it could not do and why, and nothing changes", async () => {
@@ -809,9 +826,9 @@ describe("saving the session under another name", () => {
     expect(await editor.saveAs("")).toBe(false);
     expect(await editor.saveAs("con")).toBe(false);
     expect(said(notices)).toEqual([
-      "Could not save the session as other: a file called other.toml is there already",
-      "Could not save the session as : a file name is needed",
-      "Could not save the session as con: con is a name that Windows keeps for itself",
+      'Could not save the session as "other": a file called other.toml is there already',
+      'Could not save the session as "": a file name is needed',
+      'Could not save the session as "con": con is a name that Windows keeps for itself',
     ]);
     expect(client.state.snapshot).toEqual(tracerSnapshot);
   });
@@ -820,7 +837,7 @@ describe("saving the session under another name", () => {
     const { client, notices, editor } = await open();
     client.stop();
     expect(await editor.saveAs("copy")).toBe(false);
-    expect(said(notices)).toEqual(["Could not save the session as copy: Not connected to the server."]);
+    expect(said(notices)).toEqual(['Could not save the session as "copy": Not connected to the server.']);
   });
 });
 
