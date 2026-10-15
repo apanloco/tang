@@ -77,6 +77,23 @@
   font-weight: 600;
 }
 
+/* The name, and under it, in small type, what kind of plugin it is (the badge): the buttons at the other end leave the name what is left of the header, which a badge beside it took 50 px of. */
+.tang-node__title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+.tang-node__title .tang-node__badge {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
 /* The buttons that add to a lane or a group, side by side at the end of its header. */
 .tang-node__actions {
   display: flex;

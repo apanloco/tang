@@ -27,16 +27,27 @@ import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
 import type { CableRow, PatchNode } from "./toFlow";
 
-/** The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. */
+/**
+ * The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. The badge, what kind of plugin it is, is under the name, in small type: beside it,
+ * it left the name 40 pixels in a lane that has a number in its name and a "×" ("Os…"), and 30 in a lane of Pianoteq 9 ("Pian…").
+ */
 function Header({ name, badge, children, field }: { name: string; badge?: string | null; children?: ReactNode; field?: ReactNode }) {
+  const badged = badge ? <span className="tang-node__badge">{badge}</span> : null;
   return (
     <header className="tang-node__header">
-      {field ?? (
-        <span className="tang-node__name" title={name}>
-          {name}
+      {field ? (
+        <>
+          {field}
+          {badged}
+        </>
+      ) : (
+        <span className="tang-node__title">
+          <span className="tang-node__name" title={name}>
+            {name}
+          </span>
+          {badged}
         </span>
       )}
-      {badge ? <span className="tang-node__badge">{badge}</span> : null}
       {children}
     </header>
   );

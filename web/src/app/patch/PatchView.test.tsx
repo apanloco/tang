@@ -71,6 +71,25 @@ describe("the patch", () => {
     expect(within(await nodeOf(4294967295)).getByText("Master")).toBeTruthy();
   });
 
+  test("puts what kind of plugin a node has under its name in the header, in a title of its own that the buttons leave what room is left", async () => {
+    await rig(<PatchView />);
+    for (const [id, name, badge] of [
+      [oscillator.id, "Oscillator", "Built-in"],
+      [filter.id, "Filter", "Built-in"],
+    ] as const) {
+      const header = (await nodeOf(id)).querySelector(".tang-node__header");
+      const title = header?.querySelector(".tang-node__title");
+      expect(title?.querySelector(".tang-node__name")?.textContent, name).toBe(name);
+      // (The badge is the second thing in the title, under the name, and the title is the first in the header, before the buttons.)
+      expect(Array.from(title?.children ?? [], (child) => child.className), name).toEqual(["tang-node__name", "tang-node__badge"]);
+      expect(title?.querySelector(".tang-node__badge")?.textContent, name).toBe(badge);
+      expect(header?.firstElementChild, name).toBe(title);
+    }
+    // A node that has no badge has a title that is the name only.
+    const lfoTitle = (await nodeOf(lfo.id)).querySelector(".tang-node__title");
+    expect(Array.from(lfoTitle?.children ?? [], (child) => child.className)).toEqual(["tang-node__name"]);
+  });
+
   test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys and its group after that)", async () => {
     await rig(<PatchView />);
     expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator", "Highest key of Oscillator", "Group of Oscillator"]);
@@ -1442,6 +1461,18 @@ describe("a patch with a group", () => {
     });
     return snapshot;
   }
+
+  test("has the badge of a group under its name, in the title of the header, and the name in a field when it is renamed, with the badge beside it", async () => {
+    await rig(<PatchView />, { snapshot: grouped() });
+    const group = await nodeOf(77);
+    const title = group.querySelector(".tang-node__header > .tang-node__title");
+    expect(Array.from(title?.children ?? [], (child) => child.className)).toEqual(["tang-node__name", "tang-node__badge"]);
+    fireEvent.click(within(group).getByRole("button", { name: "Rename Pad" }));
+    // (A name that is edited is a field in place of the title, and the badge goes beside it as it did.)
+    const header = group.querySelector(".tang-node__header");
+    expect(header?.querySelector(".tang-node__title")).toBeNull();
+    expect(Array.from(header?.children ?? [], (child) => child.className.split(" ")[0])).toEqual(["tang-node__name-field", "tang-node__badge", "tang-node__actions"]);
+  });
 
   test("has the group's volume and pan on its node, with ports for the lanes that feed it and the master", async () => {
     const { view } = await rig(<PatchView />, { snapshot: grouped() });
