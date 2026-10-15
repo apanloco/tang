@@ -179,6 +179,12 @@
   padding: 0 var(--tang-space-3) var(--tang-space-3);
 }
 
+/* What the master's scope shows and for how long: two choices side by side under it. */
+.tang-scope-choices {
+  display: flex;
+  gap: var(--tang-space-3);
+}
+
 .tang-node__detail {
   min-height: 18px;
   margin: 0;

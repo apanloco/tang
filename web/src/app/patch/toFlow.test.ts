@@ -221,6 +221,9 @@ describe("the nodes on the canvas", () => {
     expect(ENVELOPE_NODE_HEIGHT).toBeGreaterThanOrEqual(315);
     expect(ENVELOPE_NODE_HEIGHT).toBeLessThanOrEqual(325);
     expect(nodeHeight(master, 0)).toBe(MASTER_HEIGHT);
+    // (Measured in a browser: 223 for the master's, with its scope and the choices of the view under its meter.)
+    expect(MASTER_HEIGHT).toBeGreaterThanOrEqual(223);
+    expect(MASTER_HEIGHT).toBeLessThanOrEqual(235);
   });
 
   test("leave room above a strip for the tallest of its modulators, and no more", () => {

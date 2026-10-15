@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { builtinCatalog, builtinEffects, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
@@ -1341,6 +1342,87 @@ describe("the patch", () => {
     expect(within(master).getByRole("meter", { name: "Master level" }).getAttribute("aria-valuemin")).toBe("-60");
     expect(within(master).getByText("CLIP")).toBeTruthy();
   });
+
+  describe("the scope of the master", () => {
+    const optionsOf = (select: HTMLElement): string[] => Array.from(select.querySelectorAll("option"), (option) => option.textContent);
+
+    test("is a scope of the output, a wave to begin with, with a choice of the view and of the time", async () => {
+      await rig(<PatchView />);
+      const master = await nodeOf(4294967295);
+      expect(within(master).getByRole("meter", { name: "Output scope" }).getAttribute("data-view")).toBe("wave");
+      expect(controlsIn(master)).toEqual(["View", "Time"]);
+      expect(optionsOf(within(master).getByRole("combobox", { name: "View" }))).toEqual(["Wave", "Spectrum"]);
+      expect(optionsOf(within(master).getByRole("combobox", { name: "Time" }))).toEqual(["5 ms", "11 ms", "21 ms", "43 ms"]);
+      expect(within(master).getByRole<HTMLSelectElement>("combobox", { name: "Time" }).value).toBe("2");
+      // (The choices are not where the node is dragged from, nor panned or scrolled.)
+      const choices = master.querySelector(".tang-scope-choices");
+      expect(["nodrag", "nopan", "nowheel"].every((name) => choices?.classList.contains(name))).toBe(true);
+    });
+
+    test("says how long the times are at the sample rate of the engine", async () => {
+      const snapshot: Snapshot = structuredClone(tracerSnapshot);
+      snapshot.meta.sampleRate = 44_100;
+      await rig(<PatchView />, { snapshot });
+      const master = await nodeOf(4294967295);
+      expect(optionsOf(within(master).getByRole("combobox", { name: "Time" }))).toEqual(["6 ms", "12 ms", "23 ms", "46 ms"]);
+    });
+
+    test("is the spectrum when that is chosen, which has no time base, and the wave again when that is", async () => {
+      await rig(<PatchView />);
+      const master = await nodeOf(4294967295);
+      const scope = () => within(master).getByRole("meter", { name: "Output scope" });
+      fireEvent.change(within(master).getByRole("combobox", { name: "View" }), { target: { value: "1" } });
+      expect(scope().getAttribute("data-view")).toBe("spectrum");
+      expect(controlsIn(master)).toEqual(["View"]);
+      fireEvent.change(within(master).getByRole("combobox", { name: "View" }), { target: { value: "0" } });
+      expect(scope().getAttribute("data-view")).toBe("wave");
+      expect(controlsIn(master)).toEqual(["View", "Time"]);
+    });
+
+    test("keeps the time that was chosen when the view goes to the spectrum and back", async () => {
+      await rig(<PatchView />);
+      const master = await nodeOf(4294967295);
+      fireEvent.change(within(master).getByRole("combobox", { name: "Time" }), { target: { value: "0" } });
+      fireEvent.change(within(master).getByRole("combobox", { name: "View" }), { target: { value: "1" } });
+      fireEvent.change(within(master).getByRole("combobox", { name: "View" }), { target: { value: "0" } });
+      expect(within(master).getByRole<HTMLSelectElement>("combobox", { name: "Time" }).value).toBe("0");
+    });
+
+    test("is asked of the server for as long as the master is on the page, and no longer", async () => {
+      // (The patch is taken off the page, and not the client: the client goes on, and so does what it asks for if nothing lets go.)
+      let take: () => void = () => undefined;
+      const Switch = () => {
+        const [there, setThere] = useState(true);
+        take = () => {
+          setThere(false);
+        };
+        return there ? <PatchView /> : null;
+      };
+      const { client } = await rig(<Switch />);
+      await waitFor(() => {
+        expect(client.telemetry.framesOf("scope")).toBeGreaterThan(2);
+      });
+      act(() => {
+        take();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30)); // (frames that were on their way)
+      const frames = client.telemetry.framesOf("scope");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(client.telemetry.framesOf("scope")).toBe(frames);
+    });
+
+    test("shows what the engine puts out: a note that is held is a value on the scope's meter", async () => {
+      const { client, clock } = await rig(<PatchView />);
+      const master = await nodeOf(4294967295);
+      client.noteOn(69);
+      let time = 0;
+      await waitFor(() => {
+        time += 16;
+        clock.tick(time);
+        expect(Number(within(master).getByRole("meter", { name: "Output scope" }).getAttribute("aria-valuenow"))).toBeGreaterThan(0.1);
+      });
+    });
+  });
 });
 
 describe("a patch with a group", () => {
@@ -1414,7 +1496,7 @@ describe("the master's meter", () => {
     });
     expect(light?.hasAttribute("data-lit")).toBe(false);
     // And the level meter shows the 0.25 of full scale the frames carried: about -12 dB.
-    expect(Number(within(await nodeOf(MASTER)).getByRole("meter").getAttribute("aria-valuenow"))).toBeCloseTo(-12.04, 1);
+    expect(Number(within(await nodeOf(MASTER)).getByRole("meter", { name: "Master level" }).getAttribute("aria-valuenow"))).toBeCloseTo(-12.04, 1);
   });
 });
 
@@ -1438,7 +1520,7 @@ describe("the patch while it plays", () => {
     const { client, clock, time } = await rig(<PatchView />);
     const cutoff = within(await nodeOf(filter.id)).getByRole("slider", { name: "cutoff" }).closest(".tang-knob");
     const bar = within(await nodeOf(lfo.id)).getByRole("meter");
-    const level = within(await nodeOf(4294967295)).getByRole("meter");
+    const level = within(await nodeOf(4294967295)).getByRole("meter", { name: "Master level" });
     expect(cutoff?.querySelector(".tang-knob__ring")?.getAttribute("d")).toBe(arcPath(24, 21.5, 0.1, 0.9));
     time.seconds = 0.5; // the LFO is at its peak
     client.noteOn(60); // and a note is held

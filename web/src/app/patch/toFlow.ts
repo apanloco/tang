@@ -40,7 +40,8 @@ export const MODULATOR_HEIGHT = 128 + TRACE_EXTRA;
 export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20 + DRIVES_HEIGHT + TRACE_EXTRA;
 /** ...and an envelope's, which draws its shape, is taller by that. */
 export const ENVELOPE_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + ENVELOPE_EXTRA;
-export const MASTER_HEIGHT = 164;
+/** The master: its name and its meter, the scope under them and the choices of the scope's view (measured in a browser: 223). */
+export const MASTER_HEIGHT = 228;
 /** A cable that a modulator's node lists is a row this tall (the style says so: `.tang-cable-row`)... */
 export const CABLE_ROW_HEIGHT = 20;
 /** ...and the list has this much room before it, as much as the rest of what is in the body of the node (`.tang-node__body`'s gap). */

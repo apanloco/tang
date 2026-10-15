@@ -3,7 +3,7 @@
 // values, so that a value that changes renders its control and nothing else.
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { useContext, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
@@ -12,8 +12,11 @@ import { chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, remo
 import type { Removal } from "../../client/selectors";
 import { NAME_LIMIT } from "../../protocol";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
+import { Choice } from "../../ui/Choice";
 import { formatValue } from "../../ui/Knob";
 import { LiveEnvelope } from "../../ui/LiveEnvelope";
+import { LiveScope } from "../../ui/LiveScope";
+import type { ScopeView } from "../../ui/LiveScope";
 import { LiveTrace } from "../../ui/LiveTrace";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
@@ -515,18 +518,40 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
   );
 }
 
-/** The master: where the audio of the session ends, with its level. */
+/** What the master's scope can show, in the order of its choice. */
+const SCOPE_VIEWS: readonly { view: ScopeView; label: string }[] = [
+  { view: "wave", label: "Wave" },
+  { view: "spectrum", label: "Spectrum" },
+];
+
+/** How many samples the scope's wave can show across its width, a time base each (the third is the one it begins with). */
+const SCOPE_TIMES: readonly number[] = [256, 512, 1024, 2048];
+const SCOPE_TIME_AT_FIRST = 2;
+
+/** The master: where the audio of the session ends, with its level and a scope of what comes out (a wave, or a spectrum), which the server is asked for while the master is here. */
 export function MasterNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
   const frames = useFrames();
+  const sampleRate = useClientState((state) => state.snapshot?.meta.sampleRate ?? 48_000);
+  const [view, setView] = useState(0);
+  const [time, setTime] = useState(SCOPE_TIME_AT_FIRST);
+  useEffect(() => client.watchTelemetry("scope"), [client]);
   const readPeak = useMemo(() => slotReader(client.telemetry, "meters", data.node, { type: "audioIn" }, "peak"), [client, data.node]);
   const readClips = useMemo(() => slotReader(client.telemetry, "meters", data.node, { type: "audioIn" }, "clips"), [client, data.node]);
+  const readScope = useCallback(() => client.telemetry.values("scope"), [client]);
+  const readScopeFrames = useCallback(() => client.telemetry.framesOf("scope"), [client]);
+  const shown = SCOPE_VIEWS[view]?.view ?? "wave";
   return (
     <div className="tang-node tang-node--master">
       <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
       <Header name={data.name} />
       <div className="tang-node__body">
         <Meter label="Master level" readPeak={readPeak} readClips={readClips} frames={frames} />
+        <LiveScope label="Output scope" read={readScope} readFrames={readScopeFrames} view={shown} samples={SCOPE_TIMES[time] ?? 1024} sampleRate={sampleRate} frames={frames} />
+        <div className="tang-scope-choices nodrag nopan nowheel">
+          <Choice label="View" labels={SCOPE_VIEWS.map((choice) => choice.label)} value={view} onChange={setView} />
+          {shown === "wave" ? <Choice label="Time" labels={SCOPE_TIMES.map((samples) => `${String(Math.round((samples / sampleRate) * 1000))} ms`)} value={time} onChange={setTime} /> : null}
+        </div>
       </div>
     </div>
   );
