@@ -727,7 +727,7 @@ fn load_lane_modulators(
                     continue;
                 };
 
-            let effective = if kind.has_effective_value() { alloc.slots.alloc() } else { None };
+            let effective = alloc.slots.alloc();
             let target = plugin::chain::ModTarget {
                 kind: kind.clone(),
                 depth: target_config.depth as f32,
@@ -1033,7 +1033,7 @@ fn load_group_modulators(
                     continue;
                 };
 
-            let effective = if kind.has_effective_value() { alloc.slots.alloc() } else { None };
+            let effective = alloc.slots.alloc();
             let target = plugin::chain::ModTarget {
                 kind: kind.clone(),
                 depth: target_config.depth as f32,
@@ -1259,11 +1259,11 @@ mod tests {
         let lane_lfo = &model.instruments[1].modulators[0];
         assert!(lane_lfo.output.is_some() && group.modulators.iter().all(|m| m.output.is_some()));
         // The group LFO's three parameter targets publish what their parameters are
-        // set to; its cross-mod target and the envelope's two (a modulator's own
-        // fields) have no such value.
+        // set to, and so do its cross-mod target and the envelope's two, which drive
+        // a modulator's own settings (f132).
         let effective: Vec<Vec<bool>> =
             group.modulators.iter().map(|m| m.targets.iter().map(|t| t.effective.is_some()).collect()).collect();
-        assert_eq!(effective, [vec![true, true, true, false], vec![false, false]]);
+        assert_eq!(effective, [vec![true, true, true, true], vec![true, true]]);
 
         // Slots 0 and 1 are the master meter's. Then, in the order the loader sends
         // things: the group's meter (2, 3), lane 0's (4, 5), lane 1's (6, 7) and the
@@ -1274,9 +1274,11 @@ mod tests {
         assert_eq!(output(lane_lfo), 8);
         assert_eq!(output(&group.modulators[0]), 11);
         let driven: Vec<u32> = group.modulators[0].targets.iter().filter_map(|t| t.effective).map(|s| s.index()).collect();
-        assert_eq!(driven, [12, 13, 14]);
-        assert_eq!(output(&group.modulators[1]), 15);
-        assert_eq!(model.slots.high_water(), 16);
+        assert_eq!(driven, [12, 13, 14, 15]);
+        assert_eq!(output(&group.modulators[1]), 16);
+        let driven: Vec<u32> = group.modulators[1].targets.iter().filter_map(|t| t.effective).map(|s| s.index()).collect();
+        assert_eq!(driven, [17, 18]);
+        assert_eq!(model.slots.high_water(), 19);
 
         // The audio thread was told, right after each node was added.
         assert_eq!(
@@ -1288,9 +1290,24 @@ mod tests {
                 "SetModulatorOutput Lane(1) index=0 slot=8",
                 "SetLaneMeter inst=2 peak=9 clips=10",
                 "SetModulatorOutput Group(0) index=0 slot=11",
-                "SetModulatorOutput Group(0) index=1 slot=15",
+                "SetModulatorOutput Group(0) index=1 slot=16",
             ]
         );
+    }
+
+    #[test]
+    fn a_lane_modulators_cable_to_a_setting_of_another_gets_a_slot_named_at_the_port_it_ends_at() {
+        // (f132: only a cable to a parameter did; the engine publishes what a modulator's own setting was set to now.)
+        let model = load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 1.0\n[[instrument.modulator.target]]\nmod_attack = 1\ndepth = 0.2\n\
+             [[instrument.modulator]]\ntype = \"envelope\"\n",
+        )
+        .model;
+        let (lfo, envelope) = (&model.instruments[0].modulators[0], &model.instruments[0].modulators[1]);
+        let slot = lfo.targets[0].effective.expect("a cable to a setting has a slot");
+        let layout = model.telemetry_layout();
+        let named: Vec<_> = layout.modulation.iter().filter(|e| e.kind == crate::app::layout::SlotKind::Effective).map(|e| (e.slot, e.node, e.port)).collect();
+        assert_eq!(named, [(slot.index(), envelope.node, crate::app::graph::Port::Attack)]);
     }
 
     /// The `AddModTarget` / `AddGroupModTarget` lines of a load.

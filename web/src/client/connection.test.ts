@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import { NODE_UI_LIMIT } from "../protocol";
+import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT } from "../protocol";
 import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
 import { Client, RequestError } from "./connection";
 import type { ClientOptions, Transport } from "./connection";
@@ -876,6 +876,23 @@ describe("drawing a cable", () => {
       expect(edges.slice(0, edges.length - 3)).toEqual(snapshot.graph.edges);
     });
 
+    test("names the value a lane's modulator drives before the value a group's drives, whichever cable was drawn first (the controller's layout lists the lanes' targets first)", async () => {
+      const server = new MockServer({ snapshot });
+      const client = await open(server);
+      const named = (): string[] =>
+        (client.state.snapshot?.telemetry.modulation ?? []).filter((e) => e.kind === "effective").map((e) => `${String(e.node)}:${e.port.type === "param" ? String(e.port.index) : e.port.type}`);
+      const before = named();
+      const [laneValue, groupValue] = [`${String(osc0)}:${String(detune0)}`, `${String(osc1)}:0`];
+      expect(before).not.toContain(laneValue);
+      expect(before).not.toContain(groupValue);
+      // The group's modulator draws first, to a parameter of lane 1's oscillator; then lane 0's, to one of lane 0's.
+      await client.request(draw(groupLfo, osc1, 0));
+      await client.request(draw(lane0Lfo, osc0, detune0));
+      const after = named();
+      expect(after).toHaveLength(before.length + 2);
+      expect(after.indexOf(laneValue)).toBeLessThan(after.indexOf(groupValue));
+    });
+
     test("is for a parameter of a plugin the modulator reaches, which a client can tell from the graph", async () => {
       const server = new MockServer({ snapshot });
       const client = await open(server);
@@ -1001,16 +1018,41 @@ describe("drawing a cable to a setting of another modulator", () => {
     expect(client.state.snapshot?.graph).toEqual(snapshot.graph);
   });
 
-  test("joins the modulator to the setting at half depth, among the cables of the modulator, and the layout of the telemetry is as it was", async () => {
+  /** Every slot a layout has, meters and values. */
+  const slotsOf = (layout: TelemetryLayout): number[] => [...layout.meters, ...layout.modulation].map((entry) => entry.slot);
+  /** The values of the layout that are of a setting of a modulator, or of the depth of a cable. */
+  const ofSettings = (layout: TelemetryLayout | undefined) => (layout?.modulation ?? []).filter((entry) => entry.kind === "effective" && entry.port.type !== "param");
+
+  test("joins the modulator to the setting at half depth, among the cables of the modulator, and the value the setting is set to gets a slot in the layout of the telemetry", async () => {
     const client = await open(new MockServer({ snapshot }));
     await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
     const added = modulations(client.state.snapshot).find((e) => e.id === 7);
     expect(added).toEqual({ kind: "modulation", id: 7, amount: 0.5, from: { node: laneEnvelope, port: { type: "modOut" } }, to: { node: laneLfo, port: { type: "rate" } } });
     // The groups' cables first, then the lanes': the envelope's cables are 1 and 2, and the new one comes after them and before the control's.
     expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 1, 2, 7, 3]);
-    // No slot: a setting of a modulator is not a value that is told of (the controller's layout names none).
-    expect(client.state.snapshot?.telemetry).toEqual(snapshot.telemetry);
+    // The setting's value is a slot of the layout (f132), named at the port the cable ends at and with the next slot, and the fingerprint is another; the rest is as it was.
+    // The controller lists the values that cables drive lane by lane and by the places of the modulators and of their cables: the envelope's come before the control's
+    // (the value of the cable 3, slot 14), which this one comes before.
+    const layout = client.state.snapshot?.telemetry;
+    const entry = { kind: "effective", node: laneLfo, port: { type: "rate" }, slot: Math.max(...slotsOf(snapshot.telemetry)) + 1 } as const;
+    const controls = snapshot.telemetry.modulation.findIndex((e) => e.slot === 14);
+    expect(controls).toBeGreaterThan(0);
+    expect(layout?.modulation).toEqual([...snapshot.telemetry.modulation.slice(0, controls), entry, ...snapshot.telemetry.modulation.slice(controls)]);
+    expect(layout?.rev).not.toBe(snapshot.telemetry.rev);
+    expect(layout?.meters).toEqual(snapshot.telemetry.meters);
     expect(client.state.snapshot?.meta.dirty).toBe(true);
+  });
+
+  test("names the value of the depth of each cable of a modulator that is driven, and takes out that of the cable that goes and no other", async () => {
+    // The envelope (5) has two cables, 1 and 2; the LFO (4) drives the depth of both.
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneLfo, laneEnvelope, { type: "depth", edge: 1 })); // 7
+    await done(client, drawTo(laneLfo, laneEnvelope, { type: "depth", edge: 2 })); // 8
+    const depths = () => ofSettings(client.state.snapshot?.telemetry).map((entry) => (entry.port.type === "depth" ? entry.port.edge : -1));
+    expect(depths()).toEqual([1, 2]);
+    // Taking out the cable 7 takes the value of the depth of cable 1 out of the layout, and not the other's.
+    await done(client, { type: "removeEdge", edge: 7 });
+    expect(depths()).toEqual([2]);
   });
 
   test("is allowed to more than one setting, and to the same one from another modulator", async () => {
@@ -1019,6 +1061,27 @@ describe("drawing a cable to a setting of another modulator", () => {
     await done(client, drawTo(laneControl, laneLfo, { type: "rate" })); // 8: the same rate, from the control
     await done(client, drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 0 })); // 9: and the depth of the LFO's cable, from the envelope
     expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 1, 2, 7, 9, 3, 8]);
+    // A value has one entry in the layout, whichever cables drive it: the rate is named once (by the first cable, 7) and the depth once; each cable took a slot (9 is the third).
+    const layout = client.state.snapshot?.telemetry;
+    const first = Math.max(...slotsOf(snapshot.telemetry)) + 1;
+    expect(ofSettings(layout).map((entry) => [entry.node, entry.port, entry.slot])).toEqual([
+      ...ofSettings(snapshot.telemetry).map((entry): [number, Port, number] => [entry.node, entry.port, entry.slot]),
+      [laneLfo, { type: "rate" }, first],
+      [laneLfo, { type: "depth", edge: 0 }, first + 2],
+    ]);
+  });
+
+  test("takes the value a cable drove out of the layout when the cable goes, unless another cable drives it still", async () => {
+    const client = await open(new MockServer({ snapshot }));
+    await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" })); // 7
+    await done(client, drawTo(laneControl, laneLfo, { type: "rate" })); // 8: the same rate
+    const named = () => ofSettings(client.state.snapshot?.telemetry).filter((entry) => entry.node === laneLfo && entry.port.type === "rate");
+    expect(named()).toHaveLength(1);
+    await done(client, { type: "removeEdge", edge: 7 });
+    expect(named(), "the control still drives the rate").toHaveLength(1);
+    await done(client, { type: "removeEdge", edge: 8 });
+    expect(named(), "nothing does").toEqual([]);
+    expect(client.state.snapshot?.telemetry.modulation).toEqual(snapshot.telemetry.modulation);
   });
 
   test("is refused as the controller refuses it, and nothing changes", async () => {
@@ -1073,7 +1136,9 @@ describe("drawing a cable to a setting of another modulator", () => {
     await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
     await done(client, { type: "removeEdge", edge: 7 });
     expect(client.state.snapshot?.graph).toEqual(snapshot.graph);
-    expect(client.state.snapshot?.telemetry).toEqual(snapshot.telemetry);
+    // (The layout is as it was: the value the cable drove has left it. The mock's fingerprint is a count of changes, which the controller's, of the entries, is not: not compared.)
+    expect(client.state.snapshot?.telemetry.modulation).toEqual(snapshot.telemetry.modulation);
+    expect(client.state.snapshot?.telemetry.meters).toEqual(snapshot.telemetry.meters);
   });
 
   test("goes with the modulator whose setting it drives, and with the one that drives it", async () => {
@@ -2254,6 +2319,80 @@ describe("telemetry", () => {
     // A note holds the envelope at its sustain of 0.7.
     client.noteOn(60);
     await until(() => Math.abs((effective() ?? 0) - (0.5 - 0.4 * 0.3 * 0.5)) < 1e-6, "the cutoff with the envelope open");
+  });
+
+  test("tells what an envelope makes of the rate of an LFO and of the depth of its cable, as the engine does", async () => {
+    // (Finding f132: the knob of a setting that another modulator drives showed nothing.) An envelope drawn to the LFO's rate, which is 0.5 Hz (0.01 to 50), and to the
+    // depth of the LFO's cable, which is 0.4 (-1 to 1): at rest the value is the user's less depth of the way down to the lowest, and an open envelope holds the sustain.
+    const server = new MockServer(fast);
+    const client = await open(server, { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    const envelope = client.state.snapshot?.graph.nodes.find((n) => n.name === "ADSR");
+    const edge = tracerSnapshot.graph.edges.find((e) => e.kind === "modulation");
+    expect(edge?.kind === "modulation" ? edge.amount : undefined).toBe(0.4);
+    await client.request({ type: "addModEdge", modulator: envelope?.id ?? -1, to: { node: lfo.id, port: { type: "rate" } } });
+    await client.request({ type: "addModEdge", modulator: envelope?.id ?? -1, to: { node: lfo.id, port: { type: "depth", edge: edge?.kind === "modulation" ? edge.id : -1 } } });
+    const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
+    const depth = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "depth", edge: edge?.kind === "modulation" ? edge.id : -1 }, "effective");
+    await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.5 * 1 * (0.5 - 0.01))) < 1e-5, "the rate at rest");
+    await until(() => Math.abs((depth() ?? 9) - (0.4 - 0.5 * 1 * (0.4 + 1))) < 1e-5, "the depth at rest");
+    client.noteOn(60);
+    await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.5 * 0.3 * (0.5 - 0.01))) < 1e-5, "the rate with the envelope open");
+    await until(() => Math.abs((depth() ?? 9) - (0.4 - 0.5 * 0.3 * (0.4 + 1))) < 1e-5, "the depth with the envelope open");
+  });
+});
+
+describe("the value of a setting that an LFO drives, and of each stage of an envelope", () => {
+  test("is the user's value and what the LFO adds to it, by the range of the setting", async () => {
+    // A second LFO (a sine, at its default rate) drives the rate of the first at the cable's default depth, 0.5; a quarter of a period in it is at its top.
+    const time = { seconds: 0.25 / MODULATOR_FIELD_DEFAULTS.rate };
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
+    const client = await open(server, { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+    const second = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.id !== lfo.id).at(-1);
+    await client.request({ type: "addModEdge", modulator: second?.id ?? -1, to: { node: lfo.id, port: { type: "rate" } } });
+    const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
+    const [low, high] = MODULATOR_FIELD_RANGES.rate;
+    const set = lfo.kind === "modulator" && lfo.source.type === "lfo" ? lfo.source.rate : Number.NaN;
+    await until(() => Math.abs((rate() ?? 0) - (set + 1 * 0.5 * (high - low))) < 1e-4, "the rate with the second LFO at its top");
+  });
+
+  test.each(["attack", "decay", "sustain", "release"] as const)("is, for the %s of an envelope that another envelope drives, the user's value less what is taken at rest", async (stage) => {
+    const server = new MockServer({ telemetryPeriod: 2 });
+    const client = await open(server, { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    const [driver, driven] = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.name === "ADSR");
+    await client.request({ type: "addModEdge", modulator: driver?.id ?? -1, to: { node: driven?.id ?? -1, port: { type: stage } } });
+    const value = (): number | undefined => client.telemetry.value("modulation", driven?.id ?? -1, { type: stage }, "effective");
+    // The driver is at rest (no note): the value is the user's less half the way down to the lowest, the cable being at half depth. (Each stage has a value of its own.)
+    const base = MODULATOR_FIELD_DEFAULTS[stage];
+    const [min] = MODULATOR_FIELD_RANGES[stage];
+    await until(() => Math.abs((value() ?? 99) - (base - 0.5 * (base - min))) < 1e-5, `the ${stage} at rest`);
+  });
+});
+
+describe("the value of a setting that two cables drive", () => {
+  test("is what the last of them makes of it, as the engine's writes are last-wins, and one entry of the layout names it", async () => {
+    // Two envelopes at rest drive the rate of the LFO (0.5 Hz, 0.01 to 50), the first at depth 0.5 and the second at 0.2: each pulls it down by its depth of the
+    // way to the lowest, and the later one writes last.
+    const client = await open(new MockServer({ telemetryPeriod: 2 }), { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    const [first, second] = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.name === "ADSR");
+    for (const modulator of [first, second]) await client.request({ type: "addModEdge", modulator: modulator?.id ?? -1, to: { node: lfo.id, port: { type: "rate" } } });
+    const cables = (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation" && e.to.port.type === "rate");
+    const [one, two] = cables.map((e) => (e.kind === "modulation" ? e.id : -1));
+    await client.request({ type: "setEdgeDepth", edge: one ?? -1, depth: 0.5 });
+    await client.request({ type: "setEdgeDepth", edge: two ?? -1, depth: 0.2 });
+    const named = (client.state.snapshot?.telemetry.modulation ?? []).filter((e) => e.kind === "effective" && e.node === lfo.id && e.port.type === "rate");
+    expect(named, "the layout names the value once").toHaveLength(1);
+    const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
+    await until(() => Math.abs((rate() ?? 0) - (0.5 - 0.2 * 1 * (0.5 - 0.01))) < 1e-5, "the rate the last cable makes of it");
   });
 });
 

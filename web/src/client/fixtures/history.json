@@ -4960,7 +4960,8 @@
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "16 5 param1 effective"
+              "16 5 param1 effective",
+              "18 10 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -5280,7 +5281,7 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
+              "19 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
@@ -5341,11 +5342,11 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
+              "19 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "19 5 param1 effective"
+              "20 5 param1 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -5421,12 +5422,12 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
-              "20 11 modOut modOutput",
+              "19 10 modOut modOutput",
+              "21 11 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "19 5 param1 effective"
+              "20 5 param1 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -5486,12 +5487,13 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
-              "20 11 modOut modOutput",
+              "19 10 modOut modOutput",
+              "21 11 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "19 5 param1 effective"
+              "20 5 param1 effective",
+              "22 10 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -9318,7 +9320,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "15 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -9434,7 +9437,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "15 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -9549,7 +9553,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "15 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -9666,7 +9671,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -10013,7 +10019,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -10077,7 +10084,8 @@
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "16 1 param1 effective"
+              "16 1 param1 effective",
+              "18 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -10142,7 +10150,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -10270,7 +10279,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -10397,7 +10407,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11000,7 +11011,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "15 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11114,7 +11126,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "15 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11227,7 +11240,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "15 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11344,7 +11358,8 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11532,7 +11547,8 @@
               "15 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11591,7 +11607,8 @@
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
               "14 9 modOut modOutput",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11651,7 +11668,8 @@
               "15 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -11769,7 +11787,8 @@
               "15 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -12178,7 +12197,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -12304,7 +12324,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -12428,7 +12449,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -12551,7 +12573,8 @@
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective",
-              "17 3 param7 effective"
+              "17 3 param7 effective",
+              "18 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -13419,6 +13442,7 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
+              "17 7 depth#2 effective",
               "11 3 param2 effective",
               "15 5 param1 effective",
               "16 5 param0 effective"
@@ -13539,6 +13563,7 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
+              "17 7 depth#2 effective",
               "11 3 param2 effective",
               "15 5 param1 effective",
               "16 5 param0 effective"
@@ -13658,6 +13683,7 @@
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
+              "17 7 depth#2 effective",
               "11 3 param2 effective",
               "15 5 param1 effective",
               "16 5 param0 effective"
@@ -21230,7 +21256,8 @@
               "15 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21298,10 +21325,12 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
-              "16 11 modOut modOutput",
+              "17 11 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 rate effective",
+              "18 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21372,11 +21401,14 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
-              "16 11 modOut modOutput",
-              "17 12 modOut modOutput",
+              "17 11 modOut modOutput",
+              "19 12 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 rate effective",
+              "18 7 attack effective",
+              "20 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21438,10 +21470,12 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
-              "16 11 modOut modOutput",
+              "17 11 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 rate effective",
+              "18 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21503,7 +21537,8 @@
               "15 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "16 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21619,10 +21654,11 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
+              "21 10 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "22 6 rate effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21681,11 +21717,13 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
-              "19 11 modOut modOutput",
+              "21 10 modOut modOutput",
+              "23 11 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "22 6 rate effective",
+              "24 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21746,12 +21784,15 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
-              "19 11 modOut modOutput",
-              "20 12 modOut modOutput",
+              "21 10 modOut modOutput",
+              "23 11 modOut modOutput",
+              "25 12 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "22 6 rate effective",
+              "24 7 attack effective",
+              "26 6 depth#0 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -21812,11 +21853,13 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "18 10 modOut modOutput",
-              "19 11 modOut modOutput",
+              "21 10 modOut modOutput",
+              "23 11 modOut modOutput",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
-              "11 3 param2 effective"
+              "11 3 param2 effective",
+              "22 6 rate effective",
+              "24 7 attack effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -24968,8 +25011,8 @@
             ],
             "modulation": [
               "4 1 modOut modOutput",
-              "6 2 modOut modOutput",
-              "5 0 param1 effective"
+              "7 2 modOut modOutput",
+              "6 0 param1 effective"
             ],
             "nodes": [
               "0 - Oscillator",
@@ -25303,7 +25346,16 @@
               "port": {
                 "type": "modOut"
               },
-              "slot": 6
+              "slot": 7
+            },
+            {
+              "kind": "effective",
+              "node": 2,
+              "port": {
+                "edge": 2,
+                "type": "depth"
+              },
+              "slot": 5
             },
             {
               "kind": "effective",
@@ -25312,7 +25364,16 @@
                 "index": 1,
                 "type": "param"
               },
-              "slot": 5
+              "slot": 6
+            },
+            {
+              "kind": "effective",
+              "node": 1,
+              "port": {
+                "edge": 0,
+                "type": "depth"
+              },
+              "slot": 8
             }
           ],
           "rev": 1
@@ -25370,7 +25431,7 @@
               "3 0 audioOut clips"
             ],
             "modulation": [
-              "6 2 modOut modOutput"
+              "7 2 modOut modOutput"
             ],
             "nodes": [
               "0 - Oscillator",
@@ -25703,7 +25764,16 @@
               "port": {
                 "type": "modOut"
               },
-              "slot": 6
+              "slot": 7
+            },
+            {
+              "kind": "effective",
+              "node": 2,
+              "port": {
+                "edge": 2,
+                "type": "depth"
+              },
+              "slot": 5
             },
             {
               "kind": "effective",
@@ -25712,7 +25782,16 @@
                 "index": 1,
                 "type": "param"
               },
-              "slot": 5
+              "slot": 6
+            },
+            {
+              "kind": "effective",
+              "node": 1,
+              "port": {
+                "edge": 0,
+                "type": "depth"
+              },
+              "slot": 8
             }
           ],
           "rev": 1

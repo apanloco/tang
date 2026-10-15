@@ -384,16 +384,6 @@ impl ModTargetKind {
             | ModTargetKind::GroupMemberMod { .. } => None,
         }
     }
-
-    /// Whether the target sets a parameter of a plugin, which has an effective
-    /// value to publish (`ModTarget::effective`); the targets that drive a
-    /// modulator's own fields have none.
-    pub fn has_effective_value(&self) -> bool {
-        matches!(
-            self,
-            ModTargetKind::PluginParam { .. } | ModTargetKind::GroupMember { .. } | ModTargetKind::GroupBus { .. }
-        )
-    }
 }
 
 /// A modulation target: one parameter on the parent plugin or a sibling modulator.
@@ -406,10 +396,12 @@ pub struct ModTarget {
     pub base_value: f32,
     pub param_min: f32,
     pub param_max: f32,
-    /// Where each buffer's *effective* value of the parameter is published
-    /// (telemetry): what it was set to, the base value plus what every modulator
-    /// on it adds, clamped to its range. The slot stays with the target as the
-    /// chain around it changes; `None` publishes nothing.
+    /// Where each buffer's *effective* value of what the target drives, a
+    /// parameter or a setting of a modulator, is published (telemetry): what it
+    /// was set to, the base value plus what every modulator on it adds, clamped
+    /// to its range (for a setting, the last write: see `apply_cross_mod`). The
+    /// slot stays with the target as the chain around it changes; `None`
+    /// publishes nothing.
     pub effective: Option<Slot>,
 }
 

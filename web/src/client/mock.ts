@@ -121,8 +121,8 @@ function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome 
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
 }
 
-/** A parameter of a node as one key, if the port is one. */
-const paramKey = (node: NodeId, port: Port): string | null => (port.type === "param" ? `${String(node)}:${String(port.index)}` : null);
+/** A place on a node, as one key: a parameter, a setting of a modulator, the depth of one of its cables (the layout names a value once for each). */
+const aimKey = (node: NodeId, port: Port): string => `${String(node)}:${port.type}${port.type === "param" ? String(port.index) : port.type === "depth" ? String(port.edge) : ""}`;
 
 /** How deep a cable pulls when it is first drawn (`NEW_CABLE_DEPTH`). */
 const NEW_CABLE_DEPTH = 0.5;
@@ -165,8 +165,58 @@ function withCable(nodes: readonly Node[], edges: readonly Edge[], modulator: No
   return [...edges.slice(0, at), added, ...edges.slice(at)];
 }
 
+/**
+ * `modulation` with `entry`, the value that the cable `added` is the first to drive, put where the controller lists it: its list of what cables drive goes
+ * lane by lane and then group by group, and by the place of the modulator in it, the first cable to aim at a value naming it. So a cable drawn from a modulator
+ * that is not the last has its value listed before those of the modulators after it (f114: it was put at the end). (The place of a cable among its modulator's
+ * decides nothing here: a cable is drawn after the others of its modulator, and a modulator cannot drive a value twice.) `cables` are those of the session
+ * with `added` among them.
+ */
+function withEntry(nodes: readonly Node[], cables: readonly Edge[], modulation: readonly LayoutEntry[], entry: LayoutEntry, added: Edge & { kind: "modulation" }): LayoutEntry[] {
+  const position = new Map(nodes.map((n, i) => [n.id, i]));
+  const driving = cables.filter(isModulation);
+  const rank = (cable: (typeof driving)[number]): [number, number] => {
+    const source = nodes.find((n) => n.id === cable.from.node);
+    return [source && ownerOf(nodes, source) === "lane" ? 0 : 1, position.get(cable.from.node) ?? 0];
+  };
+  const earlier = (a: readonly number[], b: readonly number[]): boolean => (a[0] !== b[0] ? (a[0] ?? 0) < (b[0] ?? 0) : (a[1] ?? 0) < (b[1] ?? 0));
+  const mine = rank(added);
+  /** Whose value this is: the first of the cables to aim at it, in the controller's order. */
+  const firstToAim = (e: LayoutEntry): [number, number] | undefined =>
+    driving
+      .filter((c) => aimKey(c.to.node, c.to.port) === aimKey(e.node, e.port))
+      .map(rank)
+      .reduce<[number, number] | undefined>((first, r) => (first === undefined || earlier(r, first) ? r : first), undefined);
+  const at = modulation.findIndex((e) => {
+    const owner = e.kind === "effective" ? firstToAim(e) : undefined;
+    return owner !== undefined && earlier(mine, owner);
+  });
+  return at < 0 ? [...modulation, entry] : [...modulation.slice(0, at), entry, ...modulation.slice(at)];
+}
+
 /** What a modulator of a lane or of a group is told of what it cannot reach: whose it is. */
 const ownerOf = (nodes: readonly Node[], modulator: Node): "group" | "lane" => (nodes.find((n) => n.id === modulator.parent)?.kind === "group" ? "group" : "lane");
+
+/**
+ * The session with the cable `added`, drawn from the modulator `from`, among its cables. The value it drives gets a slot in the layout of the telemetry unless
+ * another cable drives it already (the layout names one slot for a value, a parameter or a setting of a modulator); the cable takes a slot either way, as the
+ * controller's `add_target` has it: the one that is not named is never read.
+ */
+function withDrawnCable(snapshot: Snapshot, from: Node, added: Edge & { kind: "modulation" }, counters: Counters): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  const key = aimKey(added.to.node, added.to.port);
+  const aimed = edges.some((e) => isModulation(e) && aimKey(e.to.node, e.to.port) === key);
+  const slot = counters.slot();
+  const cables = withCable(nodes, edges, from.id, added);
+  const telemetry = aimed
+    ? snapshot.telemetry
+    : {
+        ...snapshot.telemetry,
+        rev: snapshot.telemetry.rev + 1,
+        modulation: withEntry(nodes, cables, snapshot.telemetry.modulation, { slot, node: added.to.node, port: added.to.port, kind: "effective" }, added),
+      };
+  return { restructured: { ...snapshot, graph: { nodes, edges: cables }, telemetry } };
+}
 
 /**
  * A cable to parameter `index` of the plugin in `node`. The value it drives gets a slot in the layout of the telemetry unless
@@ -184,20 +234,14 @@ function addParamCable(snapshot: Snapshot, from: Node, node: NodeId, index: numb
   const drivesIt = (e: Edge): boolean => isModulation(e) && e.from.node === from.id && e.to.node === node && samePort(e.to.port, port);
   if (edges.some(drivesIt)) return invalid("that modulator drives that parameter already");
 
-  const added: Edge = { from: { node: from.id, port: { type: "modOut" } }, to: { node, port }, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
-  const key = paramKey(node, port);
-  const aimed = edges.some((e) => isModulation(e) && paramKey(e.to.node, e.to.port) === key);
-  // (Every cable takes a slot, as the controller's `add_target` has it, though the layout names a parameter once: the one that is not named is never read.)
-  const slot = counters.slot();
-  const modulation = aimed ? snapshot.telemetry.modulation : [...snapshot.telemetry.modulation, { slot, node, port, kind: "effective" as const }];
-  const telemetry = aimed ? snapshot.telemetry : { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, modulation };
-  return { restructured: { ...snapshot, graph: { nodes, edges: withCable(nodes, edges, from.id, added) }, telemetry } };
+  return withDrawnCable(snapshot, from, { from: { node: from.id, port: { type: "modOut" } }, to: { node, port }, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH }, counters);
 }
 
 /**
  * A cable to a setting of another modulator (an LFO's rate, a stage of an envelope) or to the depth of one of its cables, as the
  * controller lets it (`add_field_cable`): the modulator is in reach of the one that is drawn from (`modulatorsInReach`), has the
- * setting (`fieldsOf`), and is not driven there already. A value of that kind has no slot in the layout of the telemetry.
+ * setting (`fieldsOf`), and is not driven there already. The value that setting is set to gets a slot in the layout of the telemetry unless another
+ * cable drives it already (f132, as for a parameter: `addParamCable`); the cable takes a slot either way.
  */
 function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters: Counters): Outcome {
   const { nodes, edges } = snapshot.graph;
@@ -212,8 +256,7 @@ function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters:
   }
   if (edges.some((e) => isModulation(e) && e.from.node === from.id && e.to.node === to.node && samePort(e.to.port, to.port))) return invalid("that modulator drives that setting already");
 
-  const added: Edge = { from: { node: from.id, port: { type: "modOut" } }, to, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH };
-  return { restructured: { ...snapshot, graph: { nodes, edges: withCable(nodes, edges, from.id, added) } } };
+  return withDrawnCable(snapshot, from, { from: { node: from.id, port: { type: "modOut" } }, to, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH }, counters);
 }
 
 /**
@@ -225,11 +268,11 @@ function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters:
 function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: ReadonlySet<NodeId>): Snapshot {
   const cables = snapshot.graph.edges;
   const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)));
-  const aimedBefore = new Set(cables.map((e) => paramKey(e.to.node, e.to.port)));
-  const aimedAfter = new Set(edges.map((e) => paramKey(e.to.node, e.to.port)));
+  const aimedBefore = new Set(cables.map((e) => aimKey(e.to.node, e.to.port)));
+  const aimedAfter = new Set(edges.map((e) => aimKey(e.to.node, e.to.port)));
   const leaves = (entry: LayoutEntry): boolean => {
     if (entry.kind === "modOutput") return nodesGone.has(entry.node);
-    const key = paramKey(entry.node, entry.port);
+    const key = aimKey(entry.node, entry.port);
     return entry.kind === "effective" && aimedBefore.has(key) && !aimedAfter.has(key);
   };
   const modulation = snapshot.telemetry.modulation.filter((entry) => !leaves(entry));
@@ -1181,10 +1224,45 @@ export class MockServer {
     return frameBytes(channel, telemetry.rev, telemetry[channel].map(value));
   }
 
+  /**
+   * The value a setting of a modulator, or the depth of one of its cables, is set to: what the user set, and what the last cable aimed at it makes of it (the
+   * engine's writes to a setting are last-wins, `apply_cross_mod`), by the law of the modulator that drives it (a rise to the user's value for an envelope, an
+   * offset around it for the others) and clamped to the range of the setting.
+   */
+  #settingEffective(entry: LayoutEntry, outputOf: (id: NodeId) => number): number {
+    const { nodes, edges } = this.#snapshot.graph;
+    const node = nodes.find((n) => n.id === entry.node);
+    if (node?.kind !== "modulator") return 0;
+    const port = entry.port;
+    let base: number;
+    let range: readonly [number, number];
+    if (port.type === "depth") {
+      const cable = edges.find((e) => isModulation(e) && e.id === port.edge);
+      if (!cable || !isModulation(cable)) return 0;
+      [base, range] = [cable.amount, DEPTH_RANGE];
+    } else if (port.type === "rate" && node.source.type === "lfo") {
+      [base, range] = [node.source.rate, MODULATOR_FIELD_RANGES.rate];
+    } else if ((port.type === "attack" || port.type === "decay" || port.type === "sustain" || port.type === "release") && node.source.type === "envelope") {
+      [base, range] = [node.source[port.type], MODULATOR_FIELD_RANGES[port.type]];
+    } else {
+      return 0;
+    }
+    const [min, max] = range;
+    let value = base;
+    for (const edge of edges) {
+      if (!isModulation(edge) || edge.to.node !== entry.node || !samePort(edge.to.port, port)) continue;
+      const output = outputOf(edge.from.node);
+      const source = nodes.find((n) => n.id === edge.from.node);
+      const isEnvelope = source?.kind === "modulator" && source.source.type === "envelope";
+      value = isEnvelope ? base - edge.amount * (1 - output) * (base - min) : base + output * edge.amount * (max - min);
+    }
+    return clamp(value, min, max);
+  }
+
   /** The value a parameter is set to: what the user set, plus what the modulators aimed at it add. */
   #effective(entry: LayoutEntry, outputOf: (id: NodeId) => number): number {
     const node = this.#snapshot.graph.nodes.find((n) => n.id === entry.node);
-    if (entry.port.type !== "param") return 0;
+    if (entry.port.type !== "param") return this.#settingEffective(entry, outputOf);
     const index = entry.port.index;
     const param = node ? pluginOf(node)?.params.find((p) => p.index === index) : undefined;
     if (!param) return 0;

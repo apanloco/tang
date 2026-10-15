@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn each_modulator_has_its_output_and_each_modulated_parameter_its_value() {
+    fn each_modulator_has_its_output_and_each_modulated_parameter_and_setting_its_value() {
         let model = load(GROUPS).model;
         let layout = model.telemetry_layout();
         let group = &model.groups[0];
@@ -202,10 +202,15 @@ mod tests {
                 (slot(env.output), env.node, Port::ModOut, SlotKind::ModOutput),
                 (slot(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
                 // The values of the parameters the group's LFO drives: member 0's detune, member 1's
-                // filter cutoff, the bus effect's damping. Its other targets drive modulators.
+                // filter cutoff, the bus effect's damping.
                 (slot(lfo.targets[0].effective), lane0, Port::Param { index: 1 }, SlotKind::Effective),
                 (slot(lfo.targets[1].effective), filter, Port::Param { index: 0 }, SlotKind::Effective),
                 (slot(lfo.targets[2].effective), bus, Port::Param { index: 2 }, SlotKind::Effective),
+                // And of the settings of modulators that it and the envelope drive (f132): the rate of the
+                // member's LFO, the rate of the group's own LFO, and the depth of the third cable of that LFO.
+                (slot(lfo.targets[3].effective), lane_lfo.node, Port::Rate, SlotKind::Effective),
+                (slot(env.targets[0].effective), lfo.node, Port::Rate, SlotKind::Effective),
+                (slot(env.targets[1].effective), lfo.node, Port::Depth { edge: lfo.targets[2].edge }, SlotKind::Effective),
             ]
         );
         assert_ne!(lane0, lane1);

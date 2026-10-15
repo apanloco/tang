@@ -1135,8 +1135,8 @@ modulator's cables, is as `SessionModel::modulators_in_reach` and `field_targets
 TUI's `m` on a modulator's field and its `t` offer), a lane's modulator reaching the others of
 its rack and a group's its members' modulators and the others of its own, never itself; refused
 for a port that is not one of these, a node or a plugin out of reach, a modulator that has no
-such setting, a parameter or setting it drives already; a cable to a setting has no telemetry
-slot), `Modulate { to, kind, depth }` (a modulator of `kind` made for what the port `to` is, and a cable from it to
+such setting, a parameter or setting it drives already; a cable to a setting has a telemetry
+slot like any other, for the value that setting is set to), `Modulate { to, kind, depth }` (a modulator of `kind` made for what the port `to` is, and a cable from it to
 the port, as one thing: what the TUI's `m` and `l` do, and what the page's menu on a knob asks. It goes at the end of the rack
 that reaches `to`: the lane's for a lane's instrument or an effect of its chain, the group's for a bus effect, and the rack a
 modulator is in for a setting of it or the depth of one of its cables, where the new one is a sibling that drives it. The cable
@@ -1304,8 +1304,8 @@ The audio thread publishes what it is doing through `telemetry::Telemetry`
 (`src/telemetry.rs`, `docs/web-ui.md` §6): a fixed array of atomic cells, one
 *slot* each, that any thread can read. The model owns the `SlotAllocator` and
 gives a slot to each modulator (its output this buffer), to each modulator target
-on a plugin parameter (the value that parameter was set to this buffer, after
-modulation; a target that drives a modulator's own field has none) and two to each
+(the value that what it drives was set to this buffer, after modulation: a plugin
+parameter, or a setting of a modulator, which the engine publishes as the last write to it) and two to each
 lane and group (a peak and a clip count; the master's are slots 0 and 1,
 `telemetry::MASTER`). They sit on the model's nodes (`ModulatorSlot.output`,
 `ModTargetSlot.effective`, `InstrumentNode.meter`, `GroupNode.meter`) and reach

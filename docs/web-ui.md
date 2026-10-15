@@ -517,8 +517,7 @@ resolves cursor → ids and then calls `apply`.
   and in this order, a node that is not there, the modulator itself (`a modulator cannot drive its
   own settings`), a node that is no modulator, one out of reach, a setting its kind lacks (`that
   modulator has no rate`; a depth that is not one of that node's cables is `EdgeNotFound`) and one
-  the modulator drives already; a cable to a setting has no telemetry slot of its own, since a
-  target that drives a modulator's own field has none) and `RemoveNode { node }` (a modulator, with its cables and the cables
+  the modulator drives already; a cable to a setting takes a telemetry slot, for the value that setting is set to (f132; it had none until step 39)) and `RemoveNode { node }` (a modulator, with its cables and the cables
   of the others that drove its settings; since step 19 also an effect or a bus effect, with the
   cables that drive its parameters, a lane's and a group's, and what drove their depths, the audio
   path closing up round it; since step 31 also a lane, with its instrument, its effects, its modulators and the cables of its
@@ -671,7 +670,13 @@ master peak and clip. A scope ring can follow later.
   - *Effective value* (`ModTargetSlot.effective`): what the target's parameter was
     set to this buffer, i.e. its base value plus every modulator's offset on it,
     clamped. It is a slot per target but the same number for every target on one
-    parameter. A target that drives a modulator's own field (cross-mod) has none.
+    parameter. A target that drives a modulator's own field (cross-mod) has one too (f132, step 39): what that
+    setting (an LFO's rate, a stage of an envelope, the depth of a cable) was set to this buffer, which is the
+    last write to it when several cables drive it (the engine's cross-mod is last-wins, `apply_cross_mod`), read
+    back from the setting once all are applied (`publish_cross_mod_effective`), and for a group's cable to a
+    member's modulator after the lanes have run (`publish_group_member_mod_effective`, since the member's own
+    cross-mod, inside the lane, wins). The layout names it at the port the cable ends at (`rate`, `attack`, …,
+    `depth`).
   - *Meters* (`MeterSlots { peak, clips }`): master, every lane
     (`InstrumentNode.meter`, measured after the lane's volume and effects and
     before it joins its group) and every group (`GroupNode.meter`, after its
@@ -1615,7 +1620,7 @@ Each step is a reviewable change; the TUI must not regress at any point.
     (`SetLaneMeter`, `SetGroupMeter`, `SetModulatorOutput`) carries them, so
     those commands are unchanged; a target's slot is a field of the `ModTarget`
     that `AddModTarget` / `AddGroupModTarget` already carried. A cross-mod target
-    (one that drives a modulator's own field) has no effective-value slot.
+    (one that drives a modulator's own field) had none here (step 9); it has one since step 39 (f132).
     `Telemetry::load` and `Slot::index` have no reader outside the tests yet; the
     layout and the wire of steps 8 and 10 are theirs.
   *Done:* `cargo test` and clippy green on both feature sets. `chain.rs` tests

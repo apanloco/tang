@@ -34,8 +34,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -47,15 +47,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -112,8 +114,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -125,14 +127,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -192,8 +196,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -205,15 +209,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -270,8 +276,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -283,14 +289,14 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "25 9 param2 effective"
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -346,8 +352,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -359,13 +365,13 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
-          "25 9 param2 effective"
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -425,8 +431,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -438,14 +444,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective"
+          "22 10 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -505,8 +513,8 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "26 16 audioOut peak",
-          "27 16 audioOut clips",
+          "28 16 audioOut peak",
+          "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
           "11 5 audioOut peak",
@@ -518,14 +526,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective"
+          "22 10 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -651,14 +661,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -726,15 +738,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -801,14 +815,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -876,15 +892,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -952,15 +970,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1028,15 +1048,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1103,14 +1125,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective"
+          "22 10 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1177,14 +1201,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective"
+          "22 10 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1252,15 +1278,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1325,14 +1353,14 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "25 9 param2 effective"
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1400,15 +1428,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1473,14 +1503,14 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "25 9 param2 effective"
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1548,15 +1578,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -1623,14 +1655,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -2038,13 +2072,15 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -2105,13 +2141,15 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -2170,14 +2208,16 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective"
+          "22 10 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -2236,13 +2276,13 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "21 3 param1 effective",
-          "25 9 param2 effective"
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -2298,12 +2338,12 @@
           "18 10 audioOut clips"
         ],
         "modulation": [
-          "24 15 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
-          "25 9 param2 effective"
+          "27 9 param2 effective"
         ],
         "nodes": [
           "1 - Group 1",
@@ -2363,13 +2403,15 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
+          "24 14 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective"
+          "22 10 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -2431,15 +2473,17 @@
         ],
         "modulation": [
           "20 13 modOut modOutput",
-          "23 14 modOut modOutput",
-          "24 15 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
           "10 4 modOut modOutput",
           "13 7 modOut modOutput",
           "14 8 modOut modOutput",
           "19 12 modOut modOutput",
           "21 3 param1 effective",
           "22 10 param7 effective",
-          "25 9 param2 effective"
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 9 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
@@ -3737,7 +3781,7 @@
           "port": {
             "type": "modOut"
           },
-          "slot": 23
+          "slot": 24
         },
         {
           "kind": "modOutput",
@@ -3745,7 +3789,7 @@
           "port": {
             "type": "modOut"
           },
-          "slot": 24
+          "slot": 26
         },
         {
           "kind": "modOutput",
@@ -3799,12 +3843,29 @@
         },
         {
           "kind": "effective",
+          "node": 12,
+          "port": {
+            "type": "rate"
+          },
+          "slot": 23
+        },
+        {
+          "kind": "effective",
+          "node": 13,
+          "port": {
+            "edge": 1,
+            "type": "depth"
+          },
+          "slot": 25
+        },
+        {
+          "kind": "effective",
           "node": 9,
           "port": {
             "index": 2,
             "type": "param"
           },
-          "slot": 25
+          "slot": 27
         }
       ],
       "rev": 1

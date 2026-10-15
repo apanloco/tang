@@ -233,9 +233,9 @@ impl SessionModel {
     /// Check that every node has an id of its own, that ids were allocated here,
     /// that a lane's instrument plugin carries the lane's id, and that the
     /// telemetry slots are in order: every lane and group has a meter (two slots),
-    /// every modulator an output slot and every target on a plugin parameter an
-    /// effective-value slot (the others none), all different, allocated here, and
-    /// none the engine's own.
+    /// every modulator an output slot and every target an effective-value slot
+    /// (what it drives is a parameter or a setting of a modulator), all different,
+    /// allocated here, and none the engine's own.
     #[cfg(test)]
     pub fn check_ids(&self) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
@@ -297,11 +297,7 @@ impl SessionModel {
                     if !edges.insert(target.edge) {
                         return Err(format!("{whose} has {:?}, which another edge has too", target.edge));
                     }
-                    if target.kind.has_effective_value() {
-                        claim(target.effective, whose)?;
-                    } else if target.effective.is_some() {
-                        return Err(format!("{whose} drives a modulator's field and has an effective-value slot"));
-                    }
+                    claim(target.effective, whose)?;
                 }
             }
         }
@@ -1187,9 +1183,9 @@ pub struct ModTargetSlot {
     pub param_min: f32,
     #[allow(dead_code)]
     pub param_max: f32,
-    /// Where the audio thread publishes the effective value of the parameter the
-    /// target drives (telemetry); `None` for a target that drives a modulator's
-    /// own field, or if the slots had run out.
+    /// Where the audio thread publishes the effective value of what the target
+    /// drives (telemetry): a plugin's parameter, or a setting of a modulator or the
+    /// depth of one of its cables; `None` only if the slots had run out.
     pub effective: Option<Slot>,
 }
 
@@ -2196,12 +2192,13 @@ param = "detune"
         model.slots = SlotAllocator::default(); // as if nothing had been allocated: every slot is a stranger
         assert!(model.check_ids().unwrap_err().contains("never allocated"));
 
+        // A cable to a modulator's own setting has a slot like any other (f132): one without is noticed, and one it shares is.
         let mut model = fresh();
-        model.groups[0].modulators[0].targets[3].effective = model.slots.alloc();
-        assert!(
-            model.check_ids().unwrap_err().contains("drives a modulator's field"),
-            "a cross-mod target with an effective-value slot"
-        );
+        model.groups[0].modulators[0].targets[3].effective = None;
+        assert!(model.check_ids().unwrap_err().contains("has no telemetry slot"), "a cross-mod target without one");
+        let mut model = fresh();
+        model.groups[0].modulators[1].targets[0].effective = model.groups[0].modulators[0].targets[3].effective;
+        assert!(model.check_ids().unwrap_err().contains("another node has too"), "two cross-mod targets with one");
     }
 
     #[test]

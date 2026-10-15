@@ -2420,7 +2420,10 @@ type = "midi"
             targets.iter().skip(1).map(|t| (t.param_min, t.param_max)).collect::<Vec<_>>(),
             [(0.001, 10.0), (0.001, 10.0), (0.0, 1.0), (0.001, 10.0), (-1.0, 1.0)]
         );
-        assert!(targets.iter().skip(1).all(|t| t.effective.is_none()), "a cable that drives a modulator's own field has no effective-value slot");
+        // (Each takes a slot for the value that its setting is set to, which the engine publishes: f132.)
+        let slots: Vec<_> = targets.iter().map(|t| t.effective).collect();
+        assert!(slots.iter().all(Option::is_some), "every cable has an effective-value slot: {slots:?}");
+        assert_eq!(slots.iter().collect::<std::collections::HashSet<_>>().len(), slots.len(), "and each its own");
         // The graph draws each as a cable from the modulator's output to the port of the setting.
         let graph = ctl.model.graph();
         let cable = |from: NodeId, to: NodeId, port: Port| {

@@ -883,8 +883,8 @@ impl Controller {
         if self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_none() {
             return false;
         }
-        // A target on a plugin's parameter publishes the value that parameter is set to.
-        let effective = if new.kind.has_effective_value() { self.model.slots.alloc() } else { None };
+        // A target publishes the value that what it drives is set to: a plugin's parameter, or a setting of a modulator.
+        let effective = self.model.slots.alloc();
         let edge = self.model.alloc_edge();
         let target = ModTarget {
             kind: new.kind.clone(),
@@ -1720,11 +1720,9 @@ plugin = "builtin:reverb"
         assert_eq!(cables.len(), 1);
         assert_eq!((cables[0].from, cables[0].to), (Endpoint { node: group_lfo, port: Port::ModOut }, to));
         assert!(matches!(cables[0].kind, crate::app::graph::EdgeKind::Modulation { amount, .. } if amount == 0.5));
-        // What it drives is a setting of a modulator, not a parameter: no value of it is published.
-        assert!(
-            !told.telemetry.modulation.iter().any(|e| e.kind == crate::app::layout::SlotKind::Effective && e.node == lane_lfo),
-            "a cable to a modulator's own field has no effective-value slot"
-        );
+        // What it drives is a setting of a modulator: the value that setting has is published at its port (f132).
+        let value = told.telemetry.modulation.iter().find(|e| e.kind == crate::app::layout::SlotKind::Effective && e.node == lane_lfo);
+        assert_eq!(value.map(|e| e.port), Some(Port::Rate), "a cable to a modulator's own field has an effective-value slot, named at the port it ends at");
         assert!(mirror.copy().meta.dirty);
     }
 
@@ -3923,7 +3921,7 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn a_parameter_target_gets_an_effective_value_slot_and_a_modulator_field_target_none() {
+    fn a_target_gets_an_effective_value_slot_whether_it_drives_a_parameter_or_a_setting_of_a_modulator() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         engine.drain();
         assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(0.5)));
@@ -3942,7 +3940,9 @@ plugin = "builtin:osc"
         let group = &ctl.model.groups[0].modulators[0].targets;
         assert!(lane[0].effective.is_some() && group[0].effective.is_some());
         assert_ne!(lane[0].effective, group[0].effective);
-        assert!(lane[1].effective.is_none(), "a modulator's own field has no effective value");
+        // (A modulator's own setting has an effective value too: the engine publishes what it was set to, f132.)
+        assert!(lane[1].effective.is_some(), "a cable to a setting has a slot");
+        assert!(lane[1].effective != lane[0].effective && lane[1].effective != group[0].effective);
         ctl.model.check_ids().unwrap();
         let (_, telemetry) = engine.drain();
         assert!(telemetry.is_empty(), "targets carry their slot, they are not assigned one");
