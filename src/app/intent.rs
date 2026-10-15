@@ -160,6 +160,15 @@ pub enum Intent {
     /// session's own. Refused (`IntentError::Io`) if the session has no file or it cannot be written,
     /// and then nothing changes.
     Save,
+    /// Write the session to a file called `name`, beside the one it has (where the program was started, if it has none), and
+    /// have that file be the session's from then on: what `Save` writes, and what the clients are told it is called (`Saved`). The
+    /// client gives a name and not a path: `session::plain_file_name` makes the file of it (`.toml` added, the spaces round it gone) and
+    /// refuses what is not one, in its own words (`Invalid`): a folder in it, a character that a file cannot have on every system, a name
+    /// that Windows keeps, one that is too long, none. A file that is there already is refused too (`Invalid`), unless it is the session's own
+    /// (that is a `Save`): a client cannot see the directory, and a name that is typed twice must not be a file that is lost. One that cannot
+    /// be written is `Io`. Refused, nothing changes: the session keeps its file and its mark, and no revision is used. It is no step of the
+    /// history, and does not forget it.
+    SaveAs { name: String },
     /// Put back what the last step that can be undone did: a parameter, a gain, a modulator's setting, a cable's depth, the keys
     /// of a lane, the place of a node, the knobs a node shows, a group's name, the scale or the lock of the piano, the place of
     /// an effect. A change that goes on (a knob that is dragged) is one step. What it does is told as the intents it is made of
@@ -456,6 +465,7 @@ mod tests {
                 json!({"type": "replaceInstrument", "node": 2, "plugin": "builtin:osc"}),
             ),
             (Intent::Save, json!({"type": "save"})),
+            (Intent::SaveAs { name: "copy".to_string() }, json!({"type": "saveAs", "name": "copy"})),
             (Intent::Undo, json!({"type": "undo"})),
             (Intent::Redo, json!({"type": "redo"})),
             (

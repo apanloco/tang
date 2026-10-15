@@ -965,30 +965,17 @@ impl Controller {
         self.save_to(&path)
     }
 
-    /// Save the session as `name` in the directory of its file (the working
-    /// directory if it has none), with `.toml` appended unless `name` already
-    /// ends in it, and from then on save to that file. Returns the path written.
-    /// When it fails nothing changes: the session keeps its file and its mark.
-    pub fn save_as(&mut self, name: &str) -> anyhow::Result<PathBuf> {
-        let path = self.save_as_path(name)?;
-        self.save_to(&path)?;
-        self.session_path = Some(path.clone());
-        Ok(path)
-    }
-
-    fn save_as_path(&self, name: &str) -> anyhow::Result<PathBuf> {
-        let mut name = name.trim().to_string();
-        anyhow::ensure!(!name.is_empty(), "A file name is needed");
-        if !name.ends_with(".toml") {
-            name.push_str(".toml");
-        }
+    /// Where `name` is written when the session is saved as it (`Intent::SaveAs`): the file that `session::plain_file_name` makes of it, beside the session's
+    /// file (where the program was started, if it has none). Refused, in the rule's words, if `name` is not a plain file name.
+    pub(super) fn save_as_path(&self, name: &str) -> Result<PathBuf, IntentError> {
+        let file = crate::session::plain_file_name(name).map_err(IntentError::Invalid)?;
         let dir = self.session_path.as_deref().and_then(Path::parent).unwrap_or(Path::new("."));
-        Ok(dir.join(name))
+        Ok(dir.join(file))
     }
 
     /// Write the session, with the Piano tab's scale and mode, to `path`. Does
     /// not touch `session_path`: callers decide what a failed save means for it.
-    fn save_to(&mut self, path: &Path) -> anyhow::Result<()> {
+    pub(super) fn save_to(&mut self, path: &Path) -> anyhow::Result<()> {
         let (instruments, groups) = to_save(&self.model);
         let piano = PianoConfig {
             scale: Some(self.piano_filter.scale().short()),
@@ -1286,6 +1273,21 @@ mod tests {
         ctl.session_path = None;
         assert!(ctl.apply(Intent::Save).is_err());
         assert_eq!(heard.lock().unwrap().len(), 2, "a save that failed is told to nobody");
+    }
+
+    #[test]
+    fn a_save_as_is_published_with_the_name_the_session_has_after_it_and_one_that_is_refused_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_for(TWO_LANES);
+        ctl.session_path = Some(dir.path().join("song.toml"));
+        let (sink, heard) = recorder();
+        ctl.subscribe(sink);
+        ctl.apply(volume(&ctl, 0.5)).unwrap();
+        let saved = ctl.apply(Intent::SaveAs { name: "copy".to_string() }).unwrap();
+        assert_eq!(saved.events, [Event::Saved { file: Some("copy.toml".to_string()) }]);
+        assert_eq!(heard.lock().unwrap().last(), Some(&saved), "a subscriber is told");
+        assert!(ctl.apply(Intent::SaveAs { name: "../copy".to_string() }).is_err());
+        assert_eq!(heard.lock().unwrap().len(), 2, "a refused save as is told to nobody");
     }
 
     #[test]
@@ -2064,69 +2066,6 @@ type = "lfo"
         ctl.dirty = true;
         assert!(ctl.save().is_err());
         assert!(ctl.dirty, "a failed save has not saved anything");
-    }
-
-    #[test]
-    fn save_as_writes_beside_the_current_file_and_switches_to_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("song.toml");
-        let mut ctl = controller_with_file(&old);
-        ctl.dirty = true;
-        let new = ctl.save_as("copy").unwrap();
-
-        assert_eq!(new, dir.path().join("copy.toml"));
-        assert!(new.exists());
-        assert!(!old.exists(), "the old file is not written");
-        assert_eq!(ctl.session_path, Some(new));
-        assert!(!ctl.dirty);
-    }
-
-    #[test]
-    fn save_as_appends_toml_once_and_trims_the_name() {
-        let ctl = controller_with_file(Path::new("/songs/old.toml"));
-        for (name, expected) in [
-            ("mix", "/songs/mix.toml"),
-            ("mix.toml", "/songs/mix.toml"),
-            ("  mix.toml  ", "/songs/mix.toml"),
-            ("a.b", "/songs/a.b.toml"),
-        ] {
-            assert_eq!(ctl.save_as_path(name).unwrap(), PathBuf::from(expected), "{name:?}");
-        }
-    }
-
-    #[test]
-    fn save_as_without_a_current_file_means_the_working_directory() {
-        let (handles, _engine) = testutil::stub_engine();
-        let ctl = Controller::new(SessionModel::default(), handles, None);
-        assert_eq!(ctl.save_as_path("mix").unwrap(), Path::new(".").join("mix.toml"));
-        let ctl = controller_with_file(Path::new("old.toml"));
-        assert_eq!(ctl.save_as_path("mix").unwrap(), Path::new("").join("mix.toml"), "a bare file name has no directory");
-    }
-
-    #[test]
-    fn save_as_needs_a_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("song.toml");
-        let mut ctl = controller_with_file(&old);
-        ctl.dirty = true;
-        for name in ["", "   "] {
-            assert!(ctl.save_as(name).is_err(), "{name:?}");
-        }
-        assert_eq!(ctl.session_path, Some(old));
-        assert!(ctl.dirty);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn a_failed_save_as_changes_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("blocker"), "").unwrap();
-        let old = dir.path().join("song.toml");
-        let mut ctl = controller_with_file(&old);
-        ctl.dirty = true;
-        assert!(ctl.save_as("blocker/x").is_err());
-        assert_eq!(ctl.session_path, Some(old), "the session keeps its file");
-        assert!(ctl.dirty);
     }
 
     #[test]

@@ -239,6 +239,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
   const catalogName = (plugin: string): string | undefined => catalog.find((entry) => entry.id === plugin)?.name;
   switch (intent.type) {
     case "save":
+    case "saveAs":
     case "undo":
     case "redo":
       return "nothing";

@@ -470,6 +470,16 @@ describe("what a removal of a group is to the history", () => {
   });
 });
 
+describe("what saving is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+
+  test("is no step and no barrier, for a save and for a save as, whatever the name: what was done is still to be undone, and the file it is saved to is no part of it", () => {
+    for (const intent of [{ type: "save" }, { type: "saveAs", name: "copy" }, { type: "saveAs", name: "../not a name" }, { type: "saveAs", name: "" }] as const) {
+      expect(planOf(snapshot, intent, 7, builtinCatalog), JSON.stringify(intent)).toBe("nothing");
+    }
+  });
+});
+
 describe("what takes out what an add made", () => {
   const snapshot = historyFixture.snapshot;
   const [lane0] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n.id] : []));

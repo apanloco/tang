@@ -2141,7 +2141,8 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
             if name.is_empty() {
                 return; // keep popup open until a name is given
             }
-            match s.ctl.save_as(&name) {
+            // (The controller's intent: the name is checked as the page's is, and the browsers are told what the session is called now.)
+            match s.ctl.apply(Intent::SaveAs { name }) {
                 // Subsequent Ctrl+S now targets the new file.
                 Ok(_) => s.save_as = None,
                 // Keep the popup (and the original session path) and show the

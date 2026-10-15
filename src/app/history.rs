@@ -322,7 +322,7 @@ impl Controller {
         let added = |label: String| Plan::Added { label, intent: intent.clone(), at: now };
         match intent {
             // (Done before `plan_history` is asked, by `apply`: they are no steps of the history.)
-            Intent::Save | Intent::Undo | Intent::Redo => Plan::Nothing,
+            Intent::Save | Intent::SaveAs { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
                 Some((name, old)) => step(format!("set {name}"), Intent::SetParam { node: *node, param: *param, value: old }, Some(Key::Param(*node, *param))),
                 None => Plan::Nothing,

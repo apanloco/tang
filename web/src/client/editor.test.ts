@@ -787,6 +787,43 @@ describe("arranging the nodes again", () => {
   });
 });
 
+describe("saving the session under another name", () => {
+  test("resolves true when the session has that file, which the session shows with nothing unsaved, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(client.state.snapshot?.meta.file).toBe("tracer.toml");
+    expect(await editor.saveAs("copy")).toBe(true);
+    expect(client.state.snapshot?.meta).toMatchObject({ file: "copy.toml", dirty: false });
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("asks for the name as it was typed, and says the name without the spaces round it", async () => {
+    const { server, editor, notices } = await open();
+    expect(await editor.saveAs("  ../x ")).toBe(false);
+    expect(server.received.at(-1)).toMatchObject({ type: "request", intent: { type: "saveAs", name: "  ../x " } });
+    expect(said(notices)).toEqual(["Could not save the session as ../x: a file name has no folder in it: `/` and `\\` are not allowed"]);
+  });
+
+  test("is refused as the controller refuses it: false, the page says what it could not do and why, and nothing changes", async () => {
+    const { client, notices, editor } = await open({ files: ["other.toml"] });
+    expect(await editor.saveAs("other")).toBe(false);
+    expect(await editor.saveAs("")).toBe(false);
+    expect(await editor.saveAs("con")).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not save the session as other: a file called other.toml is there already",
+      "Could not save the session as : a file name is needed",
+      "Could not save the session as con: con is a name that Windows keeps for itself",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.saveAs("copy")).toBe(false);
+    expect(said(notices)).toEqual(["Could not save the session as copy: Not connected to the server."]);
+  });
+});
+
 describe("setting the scale of the piano", () => {
   const piano = (client: Client) => client.state.snapshot?.meta.piano;
 

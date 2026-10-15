@@ -1327,6 +1327,43 @@ pub fn absolute_path(given: &str) -> PathBuf {
     std::path::absolute(given).unwrap_or_else(|_| PathBuf::from(given))
 }
 
+/// The names that Windows keeps for devices: a file cannot be called one of them there, with any extension after it.
+const WINDOWS_DEVICE_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// The most bytes a file name has on the file systems that matter (ext4, APFS, NTFS count 255 of one thing or another).
+const MAX_FILE_NAME_BYTES: usize = 255;
+
+/// The file that a session is saved as when it is given the name `given`, if that is a plain file name; or the words for what is wrong with it. The
+/// spaces round it go, `.toml` is added unless it ends in it, and what is left is a name and not a place: no `/` or `\` (whichever system it is
+/// written for, so a folder cannot be got into a name), none of the characters that a file cannot have on one system or another (`:*?"<>|`, and the
+/// controls), nothing before the extension that is not a name, none of the names that Windows keeps for itself, and at most 255 bytes. It is the one
+/// rule for every front-end that lets a person name a file: a name that a page sends is a name and not a path (the design, §8), and `dir.join(name)` would
+/// let an absolute one replace the directory.
+pub fn plain_file_name(given: &str) -> Result<String, String> {
+    let name = given.trim();
+    if name.contains(['/', '\\']) {
+        return Err("a file name has no folder in it: `/` and `\\` are not allowed".to_string());
+    }
+    if name.chars().any(|c| c.is_control() || ":*?\"<>|".contains(c)) {
+        return Err("a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character".to_string());
+    }
+    let file = if name.ends_with(".toml") { name.to_string() } else { format!("{name}.toml") };
+    // (Nothing before the extension, which is what no name at all comes to as well.)
+    if file == ".toml" {
+        return Err("a file name is needed".to_string());
+    }
+    let stem = file.split('.').next().unwrap_or_default();
+    if WINDOWS_DEVICE_NAMES.contains(&stem.to_ascii_lowercase().as_str()) {
+        return Err(format!("{stem} is a name that Windows keeps for itself"));
+    }
+    if file.len() > MAX_FILE_NAME_BYTES {
+        return Err("a file name is at most 255 bytes long".to_string());
+    }
+    Ok(file)
+}
+
 /// Write the session to `path`, creating its directory first (a new session's
 /// default home is `~/.config/tang/sessions/`).
 pub fn save(
@@ -1401,6 +1438,124 @@ mod tests {
         // One that is absolute already is left as it is.
         let given = here.join("jam.toml");
         assert_eq!(absolute_path(given.to_str().unwrap()), given);
+    }
+
+    /// The words of the refusals of a file name (what `plain_file_name` says), as the page's tests have them.
+    const NEEDED: &str = "a file name is needed";
+    const FOLDER: &str = "a file name has no folder in it: `/` and `\\` are not allowed";
+    const CHARACTERS: &str = "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character";
+    const TOO_LONG: &str = "a file name is at most 255 bytes long";
+
+    #[test]
+    fn a_plain_file_name_gets_toml_once_and_loses_the_spaces_round_it() {
+        for (given, file) in [
+            ("mix", "mix.toml"),
+            ("mix.toml", "mix.toml"),
+            ("  mix.toml  ", "mix.toml"),
+            ("a.b", "a.b.toml"),
+            ("my sound", "my sound.toml"),
+            (".hidden", ".hidden.toml"),
+            ("Ünïcode ♪", "Ünïcode ♪.toml"),
+            ("MIX.TOML", "MIX.TOML.toml"),
+            ("a..b", "a..b.toml"),
+            ("..", "...toml"),
+            ("console", "console.toml"),
+            ("com0", "com0.toml"),
+            ("nul2", "nul2.toml"),
+        ] {
+            assert_eq!(plain_file_name(given).as_deref(), Ok(file), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_has_nothing_before_the_extension_is_a_name_that_is_needed() {
+        for given in ["", "   ", "\t\n", ".toml", "  .toml ", " \u{a0} "] {
+            assert_eq!(plain_file_name(given), Err(NEEDED.to_string()), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_with_a_folder_in_it_is_refused_whatever_system_it_is_written_for() {
+        for given in ["a/b", "/etc/passwd", "../x", "..\\x", "C:\\x", "sub/", "/", "a\\b", "./x", "x/../y"] {
+            assert_eq!(plain_file_name(given), Err(FOLDER.to_string()), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_with_a_character_that_a_file_cannot_have_on_every_system_is_refused() {
+        for given in ["c:x", "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b", "a\0b", "a\nb", "a\tb", "a\u{7f}b", "a\u{85}b", "\u{1b}[31m"] {
+            assert_eq!(plain_file_name(given), Err(CHARACTERS.to_string()), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_windows_keeps_for_itself_is_refused_whatever_follows_its_first_dot_and_in_any_case() {
+        for (given, stem) in [("con", "con"), ("CON", "CON"), ("Nul.txt", "Nul"), ("prn", "prn"), ("aux.toml", "aux"), ("com1", "com1"), ("COM9", "COM9"), ("lpt1", "lpt1"), ("Lpt9.x.y", "Lpt9")] {
+            assert_eq!(plain_file_name(given), Err(format!("{stem} is a name that Windows keeps for itself")), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_is_at_most_as_long_as_a_file_system_takes_with_its_extension_counted() {
+        let longest = "a".repeat(250);
+        assert_eq!(plain_file_name(&longest), Ok(format!("{longest}.toml")));
+        assert_eq!(plain_file_name(&format!("{longest}a")), Err(TOO_LONG.to_string()));
+        // (Bytes, not characters: 'é' is two.)
+        assert!(plain_file_name(&"é".repeat(125)).is_ok());
+        assert_eq!(plain_file_name(&"é".repeat(126)), Err(TOO_LONG.to_string()));
+        // The extension is not added twice, so a name that has it is counted with it.
+        assert_eq!(plain_file_name(&format!("{longest}.toml")).map(|name| name.len()), Ok(255));
+    }
+
+    #[test]
+    fn a_plain_file_name_is_one_part_of_a_path_that_is_not_a_prefix_or_a_way_up() {
+        use std::path::{Component, Path};
+        // What is let through is what `Path` says is one ordinary component: it joins to a directory and stays in it.
+        for given in ["mix", "a.b", ".hidden", "..", "a..b", "my sound", "x.toml"] {
+            let file = plain_file_name(given).unwrap();
+            let parts: Vec<Component> = Path::new(&file).components().collect();
+            assert!(matches!(parts.as_slice(), [Component::Normal(_)]), "{given:?} -> {file:?}: {parts:?}");
+            assert_eq!(Path::new("/songs").join(&file).parent(), Some(Path::new("/songs")), "{given:?}");
+        }
+    }
+
+    /// What each of some names comes to, as the web client's mock engine reads it (`web/src/client/fixtures/filenames.json`): the file it is saved as, or
+    /// the words for what is wrong with it. They pin the mock's rule to this one. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_file_names_is_current() {
+        let mut given: Vec<String> = [
+            "mix", "mix.toml", "  mix.toml  ", "a.b", "my sound", ".hidden", "Ünïcode ♪", "MIX.TOML", "a..b", "..", "console", "com0", "nul2", "", "   ", "\t\n", ".toml", "  .toml ", "a/b", "/etc/passwd", "../x",
+            "..\\x", "C:\\x", "sub/", "/", "a\\b", "./x", "x/../y", "c:x", "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b", "a\0b", "a\nb", "a\tb", "a\u{7f}b", "a\u{85}b", "con", "CON", "Nul.txt", "prn", "aux.toml", "com1",
+            "COM9", "lpt1", "Lpt9.x.y", "\u{85}x", "\u{feff}x", " \u{3000}x\u{2003} ", "x\u{a0}", "toml", "atoml",
+            // (The ends of the controls, which the page's rule has to write out: the last of the first block and the ends of the second, and what is next to each.)
+            "a\u{1f}b", "a\u{20}b", "a\u{7e}b", "a\u{80}b", "a\u{9e}b", "a\u{9f}b", "a\u{a0}b",
+        ]
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+        given.extend([250, 251].map(|count| "a".repeat(count)));
+        given.extend([125, 126].map(|count| "é".repeat(count)));
+        given.push(format!("{}.toml", "a".repeat(250)));
+        let names: Vec<serde_json::Value> = given
+            .iter()
+            .map(|given| match plain_file_name(given) {
+                Ok(file) => serde_json::json!({ "given": given, "file": file }),
+                Err(error) => serde_json::json!({ "given": given, "error": error }),
+            })
+            .collect();
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "names": names })).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/filenames.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a file name comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
     }
 
     #[test]

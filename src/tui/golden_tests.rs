@@ -2854,25 +2854,46 @@ fn save_as_waits_for_a_name() {
 }
 
 #[test]
-fn a_failed_save_as_shows_the_error_and_changes_nothing() {
+fn a_save_as_that_is_refused_shows_why_in_the_popup_and_changes_nothing() {
     let (dir, old, mut h) = harness_with_a_file();
-    std::fs::write(dir.path().join("blocker"), "a file, not a directory").unwrap();
+    std::fs::write(dir.path().join("taken.toml"), "another session").unwrap();
     h.s.ctl.dirty = true;
     h.press_with(KeyCode::Char('S'), ctrl_shift());
-    h.press_n(KeyCode::Backspace, 20).type_chars("blocker/x").press(KeyCode::Enter);
-
+    // A name that goes up a folder is not a file name, which the popup says in the words of the rule (the page's are the same).
+    h.press_n(KeyCode::Backspace, 20).type_chars("../taken").press(KeyCode::Enter);
     let popup = h.s.save_as.as_ref().expect("the popup stays open");
-    assert!(popup.error.is_some(), "the error is shown in the popup");
+    assert_eq!(popup.error.as_deref(), Some("a file name has no folder in it: `/` and `\\` are not allowed"));
     assert_eq!(h.s.ctl.session_path.as_deref(), Some(old.as_path()), "the old file stays the session's");
     assert!(h.s.ctl.dirty);
 
-    // Editing the name clears the error, so that it can be fixed.
-    h.press(KeyCode::Char('y'));
-    assert_eq!(h.s.save_as.as_ref().unwrap().error, None, "typing");
-    h.press(KeyCode::Enter);
-    assert!(h.s.save_as.as_ref().unwrap().error.is_some(), "still a file in the way");
+    // Editing the name clears the error, so that it can be fixed; a name that is another file's is refused in its own words, and that file is as it was.
     h.press(KeyCode::Backspace);
     assert_eq!(h.s.save_as.as_ref().unwrap().error, None, "Backspace");
+    h.press_n(KeyCode::Backspace, 20).type_chars("taken").press(KeyCode::Enter);
+    assert_eq!(h.s.save_as.as_ref().unwrap().error.as_deref(), Some("a file called taken.toml is there already"));
+    assert_eq!(std::fs::read_to_string(dir.path().join("taken.toml")).unwrap(), "another session");
+    assert_eq!(h.s.ctl.session_path.as_deref(), Some(old.as_path()));
+    h.press(KeyCode::Char('y'));
+    assert_eq!(h.s.save_as.as_ref().unwrap().error, None, "typing");
+
+    // A name that is free is written, and the popup is gone.
+    h.press(KeyCode::Enter);
+    assert!(h.s.save_as.is_none());
+    assert!(dir.path().join("takeny.toml").exists());
+    assert!(!h.s.ctl.dirty);
+}
+
+#[test]
+fn a_save_as_in_the_terminal_is_told_to_the_browsers_as_a_save_is() {
+    let (dir, _old, mut h) = harness_with_a_file();
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = told.clone();
+    h.s.ctl.subscribe(Box::new(move |applied: &crate::app::intent::Applied| sink.lock().unwrap().push(applied.clone())));
+    h.press_with(KeyCode::Char('S'), ctrl_shift());
+    h.press_n(KeyCode::Backspace, 20).type_chars("copy").press(KeyCode::Enter);
+    assert!(dir.path().join("copy.toml").exists());
+    let events: Vec<_> = told.lock().unwrap().iter().flat_map(|applied| applied.events.clone()).collect();
+    assert_eq!(events, [crate::app::intent::Event::Saved { file: Some("copy.toml".to_string()) }]);
 }
 
 #[test]

@@ -51,6 +51,7 @@ const DOING: Record<Intent["type"], string> = {
   removeNode: "remove a node",
   moveEffect: "move an effect along its chain",
   save: "save the session",
+  saveAs: "save the session under another name",
   undo: "undo",
   redo: "redo",
 };
@@ -287,6 +288,15 @@ export class Editor {
   /** Write the session to its own file. True if it was written (the page says why if it was not). */
   save(): Promise<boolean> {
     return this.#attempt(DOING.save, { type: "save" });
+  }
+
+  /**
+   * Write the session to a file called `name`, beside the one it has, and have that file be its own from then on (what the bar shows, and what Save writes):
+   * a file name and not a path, to which `.toml` is added, as the program checks it. True if it was written (the page says why if it was not: a name that has a
+   * folder in it, a file that is there already, a file that cannot be written).
+   */
+  saveAs(name: string): Promise<boolean> {
+    return this.#attempt(`save the session as ${name.trim()}`, { type: "saveAs", name });
   }
 
   /** Put back what the last change that can be undone changed (what the server says it is: `ClientState.history`). True if it was done (the page says why if it was not). */

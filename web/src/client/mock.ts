@@ -32,6 +32,7 @@ import type {
 } from "../protocol";
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
+import { sessionFileName } from "./filenames";
 import { cablesThatGo, isModulation } from "./cables";
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
@@ -55,6 +56,8 @@ export interface MockOptions {
   telemetryPeriod?: number;
   /** The time the made-up telemetry follows, in seconds; the clock of the page by default. */
   clock?: () => number;
+  /** The files that are in the directory of the session's file besides its own, which a save as does not write over (none by default). */
+  files?: readonly string[];
 }
 
 /**
@@ -736,9 +739,21 @@ function saveOutcome(snapshot: Snapshot): Outcome {
   return { event: { type: "saved", file: snapshot.meta.file } };
 }
 
-/** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names. */
-function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
+/**
+ * The session saved as another file (`save_as_intent`): the file that the name makes (`sessionFileName`), beside the session's own, which is not written over
+ * if another file of that name is there already (the session's own is: that is a save). `files` is what the directory has.
+ */
+function saveAsOutcome(snapshot: Snapshot, name: string, files: ReadonlySet<string>): Outcome {
+  const made = sessionFileName(name);
+  if ("error" in made) return invalid(made.error);
+  if (made.file !== snapshot.meta.file && files.has(made.file)) return invalid(`a file called ${made.file} is there already`);
+  return { event: { type: "saved", file: made.file } };
+}
+
+/** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names and the files its directory has. */
+function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[], files: ReadonlySet<string>): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
+  if (intent.type === "saveAs") return saveAsOutcome(snapshot, intent.name, files);
   // (Undo and Redo are not the outcome of an intent on a snapshot: the history is the server's, `MockServer#carry`.)
   if (intent.type === "undo" || intent.type === "redo") return invalid(`${intent.type} is done by the history`);
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
@@ -845,6 +860,8 @@ export class MockServer {
   /** How many times the catalog has been told (it is the `rev` of the message). */
   #catalogRev = 0;
   readonly #counters: Counters;
+  /** The files of the directory of the session's file: what the options say, and the file the session has (it is there, or it is written when it is saved). */
+  readonly #files: Set<string>;
   readonly #connections = new Set<MockConnection>();
   /** What can be undone and redone, as the controller keeps it (`src/app/history.rs`). */
   readonly #history = new History();
@@ -856,6 +873,7 @@ export class MockServer {
     this.#snapshot = options.snapshot ?? tracerSnapshot;
     this.#catalog = options.catalog ?? { entries: builtinCatalog, scanning: false };
     this.#counters = new Counters(this.#snapshot);
+    this.#files = new Set([...(options.files ?? []), ...(this.#snapshot.meta.file === null ? [] : [this.#snapshot.meta.file])]);
   }
 
   /** The session as the server has it now. */
@@ -1016,10 +1034,12 @@ export class MockServer {
     const plan = planOf(this.#snapshot, intent, this.now(), this.#catalog.entries);
     const before = this.#snapshot;
     this.#counters.begin();
-    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
+    const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries, this.#files);
     const made = this.#counters.take();
     if ("error" in outcome) return outcome;
     const done = this.#commit(outcome, tell);
+    // (A save as writes a file, which a save as after it does not write over.)
+    if ("event" in outcome && outcome.event.type === "saved" && outcome.event.file !== null) this.#files.add(outcome.event.file);
     this.#keep(plan, made, before);
     return done;
   }
@@ -1044,7 +1064,7 @@ export class MockServer {
     try {
       // (A step whose intent cannot be done, a node that is not there any more, is dropped, and what was done of it stays.)
       for (const intent of which === "undo" ? step.undo : step.redo) {
-        const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries);
+        const outcome = outcomeOf(this.#snapshot, intent, this.#counters, this.#catalog.entries, this.#files);
         if ("error" in outcome) return outcome;
         const done = this.#commit(outcome, tell);
         rev = done.rev;

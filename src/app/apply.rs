@@ -38,6 +38,7 @@ impl Controller {
         // (Saving is the one intent that leaves the session with nothing unsaved.)
         match intent {
             Intent::Save => return self.save_intent(),
+            Intent::SaveAs { name } => return self.save_as_intent(&name),
             // (What they do is carried out as any intent is, and is no step of the history.)
             Intent::Undo => return self.undo(),
             Intent::Redo => return self.redo(),
@@ -85,7 +86,7 @@ impl Controller {
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
-            Intent::Save | Intent::Undo | Intent::Redo => unreachable!("done above"),
+            Intent::Save | Intent::SaveAs { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
         Ok(self.conclude(done))
     }
@@ -111,6 +112,23 @@ impl Controller {
     /// it cannot be written.
     fn save_intent(&mut self) -> Result<Applied, IntentError> {
         self.save().map_err(|e| IntentError::Io(e.to_string()))?;
+        self.rev += 1;
+        let applied = Applied::of(self.rev, vec![Event::Saved { file: self.session_file_name() }]);
+        self.publish(&applied);
+        Ok(applied)
+    }
+
+    /// Write the session as `name` beside its file, and have that file be its own from then on (`Intent::SaveAs`). Everything that can be refused is
+    /// looked at before anything is written, so that a refusal changes nothing.
+    fn save_as_intent(&mut self, name: &str) -> Result<Applied, IntentError> {
+        let path = self.save_as_path(name)?;
+        // A file that is there is not written over (a link that leads nowhere is there too: the write would follow it), unless it is the session's own.
+        if self.session_path.as_deref() != Some(path.as_path()) && std::fs::symlink_metadata(&path).is_ok() {
+            let file = path.file_name().map(|file| file.to_string_lossy().into_owned()).unwrap_or_default();
+            return Err(invalid(format!("a file called {file} is there already")));
+        }
+        self.save_to(&path).map_err(|e| IntentError::Io(e.to_string()))?;
+        self.session_path = Some(path);
         self.rev += 1;
         let applied = Applied::of(self.rev, vec![Event::Saved { file: self.session_file_name() }]);
         self.publish(&applied);
@@ -3045,6 +3063,149 @@ type = "midi"
         sent(&engine);
         assert!(matches!(ctl.apply(Intent::Save), Err(IntentError::Io(_))));
         assert_eq!((ctl.rev, ctl.dirty), (1, true));
+    }
+
+    /// The files that a directory has, by name.
+    fn files_in(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    fn save_as(name: &str) -> Intent {
+        Intent::SaveAs { name: name.to_string() }
+    }
+
+    #[test]
+    fn save_as_writes_beside_the_sessions_file_and_the_session_is_that_file_from_then_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("song.toml");
+        let (engine, mut ctl) = controller_with_file(&old);
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        sent(&engine);
+        let applied = ctl.apply(save_as("copy")).unwrap();
+        // It is told as a save is, with the name the session has now, and is a revision.
+        assert_eq!(applied, Applied::of(2, vec![Event::Saved { file: Some("copy.toml".to_string()) }]));
+        assert_eq!(ctl.rev, 2);
+        assert!(!ctl.dirty, "nothing is unsaved now");
+        assert_eq!(ctl.session_path.as_deref(), Some(dir.path().join("copy.toml").as_path()));
+        assert_eq!(files_in(dir.path()), ["copy.toml"], "the file it had is not written");
+        assert!(sent(&engine).is_empty(), "the audio thread has nothing to do with it");
+        let text = std::fs::read_to_string(dir.path().join("copy.toml")).unwrap();
+        testutil::assert_same_model("the copy", &ctl.model, &load(&text).model);
+
+        // A save after it is to the new file.
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.5 }).unwrap();
+        ctl.apply(Intent::Save).unwrap();
+        assert!(std::fs::read_to_string(dir.path().join("copy.toml")).unwrap().contains("volume = 0.5"));
+        assert_eq!(files_in(dir.path()), ["copy.toml"]);
+    }
+
+    #[test]
+    fn save_as_the_name_the_session_has_is_a_save_though_the_file_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (_engine, mut ctl) = controller_with_file(&path);
+        ctl.apply(Intent::Save).unwrap();
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        // (With the extension, without it, and with spaces round it: it is the same name.)
+        for given in ["song", "song.toml", "  song  "] {
+            ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+            let applied = ctl.apply(save_as(given)).unwrap_or_else(|why| panic!("{given:?}: {why}"));
+            assert_eq!(applied.events, [Event::Saved { file: Some("song.toml".to_string()) }]);
+            assert!(!ctl.dirty);
+        }
+        assert_eq!(files_in(dir.path()), ["song.toml"]);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("volume = 0.25"));
+    }
+
+    #[test]
+    fn save_as_refuses_another_file_that_is_there_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.toml");
+        let (_engine, mut ctl) = controller_with_file(&path);
+        std::fs::write(dir.path().join("other.toml"), "another session").unwrap();
+        std::fs::create_dir(dir.path().join("folder.toml")).unwrap();
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        let before = (ctl.rev, ctl.dirty);
+        for (given, file) in [("other", "other.toml"), ("other.toml", "other.toml"), ("folder", "folder.toml")] {
+            assert_eq!(ctl.apply(save_as(given)), Err(IntentError::Invalid(format!("a file called {file} is there already"))), "{given:?}");
+        }
+        // (A link that leads nowhere is a file that is there, as far as a name goes: the write would follow it.)
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("link.toml")).unwrap();
+            assert_eq!(ctl.apply(save_as("link")), Err(IntentError::Invalid("a file called link.toml is there already".to_string())));
+            assert!(!dir.path().join("nowhere").exists(), "what the link leads to was not written");
+        }
+        assert_eq!((ctl.rev, ctl.dirty), before, "a refusal is not a revision, and it saved nothing");
+        assert_eq!(ctl.session_path.as_deref(), Some(path.as_path()));
+        assert_eq!(std::fs::read_to_string(dir.path().join("other.toml")).unwrap(), "another session", "what was there is as it was");
+        assert!(!path.exists(), "and the session's own file was not written either");
+    }
+
+    #[test]
+    fn save_as_refuses_what_is_no_plain_file_name_in_the_words_of_the_rule_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_with_file(&dir.path().join("song.toml"));
+        let before = (ctl.rev, ctl.dirty);
+        for given in ["", "   ", ".toml", "../escape", "/etc/passwd", "a/b", "..\\escape", "C:\\x", "c:x", "a*b", "a\0b", "con", "Nul.txt", &"a".repeat(251)] {
+            let why = crate::session::plain_file_name(given).unwrap_err();
+            assert_eq!(ctl.apply(save_as(given)), Err(IntentError::Invalid(why)), "{given:?}");
+        }
+        assert_eq!((ctl.rev, ctl.dirty), before);
+        assert!(files_in(dir.path()).is_empty(), "nothing was written, here or beside it");
+        assert!(!dir.path().parent().unwrap().join("escape.toml").exists());
+    }
+
+    #[test]
+    fn save_as_that_cannot_be_written_is_an_io_error_and_the_session_keeps_its_file_and_its_mark() {
+        // A file where the directory should be: the write fails.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blocker"), "").unwrap();
+        let path = dir.path().join("blocker").join("song.toml");
+        let (engine, mut ctl) = controller_with_file(&path);
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        sent(&engine);
+        assert!(matches!(ctl.apply(save_as("copy")), Err(IntentError::Io(_))));
+        assert_eq!((ctl.rev, ctl.dirty), (1, true));
+        assert_eq!(ctl.session_path.as_deref(), Some(path.as_path()), "it is the session's file still");
+    }
+
+    #[test]
+    fn save_as_is_no_step_of_the_history_and_does_not_forget_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_with_file(&dir.path().join("song.toml"));
+        let osc = lane(&ctl);
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 0.25 }).unwrap();
+        let history = ctl.history_state();
+        assert!(history.undo.is_some());
+        // (It is no step and no barrier, by what the history would make of it as well as by what `apply` does.)
+        assert!(matches!(ctl.plan_history(&save_as("copy")), crate::app::history::Plan::Nothing));
+        ctl.apply(save_as("copy")).unwrap();
+        assert_eq!(ctl.history_state(), history);
+        // What was done before it is put back, and is not saved: the file keeps what it had.
+        ctl.apply(Intent::Undo).unwrap();
+        assert!(ctl.dirty);
+        assert!(std::fs::read_to_string(dir.path().join("copy.toml")).unwrap().contains("volume = 0.25"));
+    }
+
+    #[test]
+    fn the_file_a_session_is_saved_as_is_beside_its_own_or_where_the_program_was_started() {
+        let (_engine, mut ctl) = controller_with_file(std::path::Path::new("/songs/old.toml"));
+        for (given, written) in [("mix", "/songs/mix.toml"), ("mix.toml", "/songs/mix.toml"), ("  mix.toml  ", "/songs/mix.toml"), ("a.b", "/songs/a.b.toml")] {
+            assert_eq!(ctl.save_as_path(given), Ok(std::path::PathBuf::from(written)), "{given:?}");
+        }
+        assert_eq!(ctl.save_as_path("../mix"), Err(IntentError::Invalid(crate::session::plain_file_name("../mix").unwrap_err())));
+        // A session that has no file is saved where the program was started, and one whose file is a bare name where that name is.
+        ctl.session_path = None;
+        assert_eq!(ctl.save_as_path("mix"), Ok(std::path::Path::new(".").join("mix.toml")));
+        ctl.session_path = Some(std::path::PathBuf::from("old.toml"));
+        assert_eq!(ctl.save_as_path("mix"), Ok(std::path::Path::new("").join("mix.toml")), "a bare file name has no directory");
     }
 
     #[test]

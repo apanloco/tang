@@ -9,6 +9,7 @@ import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
 import fields from "./fixtures/fields.json";
+import filenames from "./fixtures/filenames.json";
 import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
@@ -93,6 +94,12 @@ export type HistoryRow =
  * what that session has not has a session of its own (`snapshot`).
  */
 export const historyFixture = history as unknown as { snapshot: Snapshot; scripts: { name: string; snapshot?: Snapshot; rows: HistoryRow[] }[] };
+
+/**
+ * What each of some names comes to when the session is saved as it: the file it is saved as, or the controller's words for what is wrong with it. Written by
+ * the controller (`the_web_clients_fixture_of_file_names_is_current`, `session::plain_file_name`).
+ */
+export const filenamesFixture = filenames;
 
 /** What a session comes to, for the fixture of the group intents: a line of text for each entry of each list. */
 export interface Shape {
