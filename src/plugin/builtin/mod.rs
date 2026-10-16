@@ -152,6 +152,8 @@ mod tests {
                 row("spread", Some("st"), &[], 0),
                 row("width", None, &[], 0),
                 row("pulse", None, &[], 0),
+                row("fm", None, &["FM"], 0),
+                row("fm_ratio", None, &["FM"], 15),
             ]
         );
     }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 
 use crate::plugin::{ParameterInfo, Plugin, Preset};
 
@@ -90,6 +90,11 @@ pub struct Oscillator {
     width: f32,
     /// How much of the cycle a square is high.
     pulse: f32,
+    /// The FM: how far the phase of the wave is swung, 0 to 1 of `FM_MAX_CYCLES` (and the value that it is smoothed to, as the volume is, so that a modulator that
+    /// moves it a block at a time does not click), and the place in `FM_RATIOS` of how fast the sine that swings it goes.
+    fm: f32,
+    fm_smoothed: f32,
+    fm_ratio: usize,
     /// Per-voice envelope: attack/decay/release in seconds, sustain 0.0–1.0.
     attack: f32,
     decay: f32,
@@ -110,6 +115,8 @@ enum VoiceState {
 struct Voice {
     /// The place in its cycle of each of the oscillators of the note (the first `Oscillator::unison` of them are in use).
     phases: [f32; MAX_UNISON],
+    /// The place in its cycle of the sine that swings the phase of each of them (the FM): it begins at 0 with the note, and goes round whether or not the FM is on.
+    fm_phases: [f32; MAX_UNISON],
     /// Where the random numbers of each oscillator of the note are (xorshift32, never 0): they are the voice's, so that what it sounds like does not depend on which of the
     /// voices of a chord is summed first. Only the noise uses them.
     noise: [u32; MAX_UNISON],
@@ -124,6 +131,7 @@ impl Voice {
     fn new(begun: u32) -> Self {
         Self {
             phases: std::array::from_fn(|u| (u as f32 * 0.618_034).fract()),
+            fm_phases: [0.0; MAX_UNISON],
             noise: std::array::from_fn(|u| noise_seed(begun, u)),
             amp: 0.0,
             state: VoiceState::Attack,
@@ -153,8 +161,16 @@ fn noise_seed(begun: u32, u: usize) -> u32 {
     if x == 0 { 0x2545_F491 } else { x }
 }
 
-// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse
-pub const PARAM_COUNT: usize = 12;
+// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio
+pub const PARAM_COUNT: usize = 14;
+
+/// What the frequency of the sine that swings the phase of a wave (the FM) is, as a multiple of the wave's own, for each place in the `fm_ratio` list: the whole numbers, which make
+/// harmonic sounds, and the family of 1.4 (1.4, 2.8, 5.6, and 3.5 between), whose partials are not harmonics: bells and metal. The labels are the numbers.
+pub const FM_RATIOS: [f32; 16] = [0.5, 1.0, 1.4, 1.5, 2.0, 2.5, 2.8, 3.0, 3.5, 4.0, 5.0, 5.6, 6.0, 7.0, 8.0, 12.0];
+/// The place in the list of the ratio of one, which is where `fm_ratio` starts.
+const FM_DEFAULT_RATIO: usize = 1;
+/// How far the phase of the wave is swung at the top of `fm`, in cycles each way: an index of 10 radians, where the partials of a sine run to twenty on a side.
+const FM_MAX_CYCLES: f32 = 10.0 / TAU;
 
 /// The most oscillators that sound for a note.
 const MAX_UNISON: usize = 7;
@@ -211,6 +227,9 @@ impl Oscillator {
             spread: DEFAULT_SPREAD,
             width: DEFAULT_WIDTH,
             pulse: 0.5,
+            fm: 0.0,
+            fm_smoothed: 0.0,
+            fm_ratio: FM_DEFAULT_RATIO,
             attack: DEFAULT_ATTACK_SEC,
             decay: DEFAULT_DECAY_SEC,
             sustain: DEFAULT_SUSTAIN,
@@ -292,8 +311,16 @@ impl Plugin for Oscillator {
             };
         }
         let pulse = self.pulse;
+        let fm_ratio = FM_RATIOS[self.fm_ratio.min(FM_RATIOS.len() - 1)];
 
         for frame in 0..block_size {
+            // The index is gone to as the volume is, and a swing that has gone to nothing is nothing, so that a sound with no FM is the sound that there always was.
+            self.fm_smoothed += (self.fm - self.fm_smoothed) * volume_alpha;
+            if self.fm == 0.0 && self.fm_smoothed < 1e-5 {
+                self.fm_smoothed = 0.0;
+            }
+            let swing = self.fm_smoothed * FM_MAX_CYCLES;
+
             // Process MIDI events at this frame
             while event_idx < midi_events.len() && midi_events[event_idx].0 as usize <= frame {
                 let [status, note, velocity] = midi_events[event_idx].1;
@@ -359,15 +386,23 @@ impl Plugin for Oscillator {
                 for u in 0..voices {
                     let raw = match self.waveform {
                         Waveform::Noise => voice.noise(u),
+                        waveform if swing > 0.0 => {
+                            // The FM: the wave is read where its phase is swung to by a sine of its own pitch's ratio.
+                            let phase = voice.phases[u] + swing * (TAU * voice.fm_phases[u]).sin();
+                            waveform.sample(phase - phase.floor(), pulse)
+                        }
                         waveform => waveform.sample(voice.phases[u], pulse),
                     };
                     let heard = raw * voice.amp * VOICE_GAIN;
                     sample_l += heard * gains[u].0;
                     sample_r += heard * gains[u].1;
-                    voice.phases[u] += freq * ratios[u] / self.sample_rate;
+                    let step = freq * ratios[u] / self.sample_rate;
+                    voice.phases[u] += step;
                     if voice.phases[u] >= 1.0 {
                         voice.phases[u] -= 1.0;
                     }
+                    voice.fm_phases[u] += step * fm_ratio;
+                    voice.fm_phases[u] -= voice.fm_phases[u].floor();
                 }
             }
 
@@ -511,6 +546,27 @@ impl Plugin for Oscillator {
                 default: 0.5,
                 ..Default::default()
             },
+            ParameterInfo {
+                index: 12,
+                name: "fm".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                group: vec!["FM".into()],
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 13,
+                name: "fm_ratio".into(),
+                min: 0.0,
+                max: (FM_RATIOS.len() - 1) as f32,
+                default: FM_DEFAULT_RATIO as f32,
+                // (Named by the number, and the value is the place in the list.)
+                labels: Some(FM_RATIOS.iter().map(|ratio| format!("×{ratio}")).collect()),
+                step_count: (FM_RATIOS.len() - 1) as u32,
+                group: vec!["FM".into()],
+                ..Default::default()
+            },
         ]
     }
 
@@ -528,6 +584,8 @@ impl Plugin for Oscillator {
             9 => Some(self.spread),
             10 => Some(self.width),
             11 => Some(self.pulse),
+            12 => Some(self.fm),
+            13 => Some(self.fm_ratio as f32),
             _ => None,
         }
     }
@@ -580,6 +638,15 @@ impl Plugin for Oscillator {
             }
             11 => {
                 self.pulse = value.clamp(PULSE_MIN, PULSE_MAX);
+                Ok(())
+            }
+            12 => {
+                self.fm = value.clamp(0.0, 1.0);
+                Ok(())
+            }
+            13 => {
+                // (A place in the list: the nearest whole one, held to it.)
+                self.fm_ratio = (value.round() as i64).clamp(0, FM_RATIOS.len() as i64 - 1) as usize;
                 Ok(())
             }
             _ => anyhow::bail!("no parameter with index {index}"),
@@ -665,7 +732,7 @@ mod tests {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse"]
+            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio"]
         );
         // The waveform parameter is an enum, and so is the unison (a choice of how many).
         assert!(params[0].labels.is_some() && params[8].labels.is_some());
@@ -1344,6 +1411,255 @@ mod tests {
         assert_eq!(allocations, 0);
     }
 
+    // ---------------------------------------------------------------------------------------------------------------------------------
+    // FM: the phase of a wave swung by a sine
+    // ---------------------------------------------------------------------------------------------------------------------------------
+
+    /// The parameters of the FM: how far the phase is swung (`fm`) and how fast the sine that swings it goes (a choice, `fm_ratio`).
+    const FM: u32 = 12;
+    const FM_RATIO: u32 = 13;
+
+    /// The Bessel function of the first kind and order `n` at `x`, by its series. The partials of a sine that another sine swings are sines whose amplitudes are these, at the index `x`.
+    fn bessel(n: i32, x: f64) -> f64 {
+        let n = n.unsigned_abs() as usize;
+        let factorial = |k: usize| (1..=k).map(|i| i as f64).product::<f64>();
+        (0..30)
+            .map(|m| (if m % 2 == 0 { 1.0 } else { -1.0 }) / (factorial(m) * factorial(m + n)) * (x / 2.0).powi(2 * m as i32 + n as i32))
+            .sum()
+    }
+
+    /// The place in the list of the `fm_ratio` choices of the one called `label`.
+    fn fm_ratio_named(osc: &Oscillator, label: &str) -> f32 {
+        let labels = osc.parameters()[FM_RATIO as usize].labels.clone().expect("the ratio is a choice");
+        labels.iter().position(|l| l == label).unwrap_or_else(|| panic!("no ratio called {label} in {labels:?}")) as f32
+    }
+
+    /// A sine of 480 Hz that a sine of the ratio called `label` times its own frequency swings with the index `index` (radians): 4800 frames of it, a whole number of its cycles, past the
+    /// attack and the smoothing of the volume and of the index.
+    fn fm_sine(index: f32, label: &str) -> Vec<f32> {
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(FM, index / 10.0).unwrap();
+        let ratio = fm_ratio_named(&osc, label);
+        osc.set_parameter(FM_RATIO, ratio).unwrap();
+        render(&mut osc, &[(0, [0x90, 69, 100])], 7200)[2400..].to_vec()
+    }
+
+    /// The ratios whose partials fall on no other partial's frequency up to the third on either side (`1 + k * ratio` is a different number of carriers for every `k`, and never 1 but for `k` of 0).
+    const SEPARATE_RATIOS: [&str; 13] = ["×1.4", "×1.5", "×2.5", "×2.8", "×3", "×3.5", "×4", "×5", "×5.6", "×6", "×7", "×8", "×12"];
+
+    #[test]
+    fn a_sine_that_is_swung_by_another_has_the_partials_of_the_bessel_functions_at_the_index() {
+        // Each partial of sin(w t + b sin(r w t)) is a sine of (1 + k r) w, the negative frequencies folded over, with the amplitude J_k(b) (and the voice's 0.25).
+        for label in SEPARATE_RATIOS {
+            let ratio: f32 = label.trim_start_matches('×').parse().unwrap();
+            for index in [0.5f32, 1.0, 2.0, 3.0] {
+                let out = fm_sine(index, label);
+                for k in -2..=2 {
+                    let hz = (480.0 * (1.0 + k as f32 * ratio)).abs();
+                    let expected = 0.25 * bessel(k, f64::from(index)).abs() as f32;
+                    let heard = magnitude(&out, hz);
+                    assert!((heard - expected).abs() < 0.004 + 0.03 * expected, "{label}, index {index}, partial {k} ({hz} Hz): {heard} for {expected}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_sine_that_is_swung_is_as_loud_as_one_that_is_not_whatever_the_index() {
+        for label in ["×1.5", "×3"] {
+            for index in [1.0f32, 3.0, 8.0] {
+                let out: Vec<f64> = fm_sine(index, label).iter().map(|&x| f64::from(x)).collect();
+                assert!((rms(&out) / (0.25 / 2.0f64.sqrt()) - 1.0).abs() < 0.03, "{label}, index {index}: {}", rms(&out));
+            }
+        }
+    }
+
+    #[test]
+    fn the_fm_parameters_say_what_they_are_and_the_ratios_are_where_they_are() {
+        let osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        let parameters = osc.parameters();
+        let (fm, ratio) = (&parameters[FM as usize], &parameters[FM_RATIO as usize]);
+        assert_eq!((fm.name.as_str(), fm.min, fm.max, fm.default, fm.step_count, fm.group.clone()), ("fm", 0.0, 1.0, 0.0, 0, vec!["FM".to_string()]));
+        assert_eq!((ratio.name.as_str(), ratio.min, ratio.max, ratio.default, ratio.step_count, ratio.group.clone()), ("fm_ratio", 0.0, 15.0, 1.0, 15, vec!["FM".to_string()]));
+        assert_eq!(
+            ratio.labels.as_ref().map(|labels| labels.join(" ")).as_deref(),
+            Some("×0.5 ×1 ×1.4 ×1.5 ×2 ×2.5 ×2.8 ×3 ×3.5 ×4 ×5 ×5.6 ×6 ×7 ×8 ×12"),
+            "the harmonic ratios, and the family of 1.4 that bells and metal are made of"
+        );
+        assert_eq!(fm_ratio_named(&osc, "×1"), 1.0, "the default is a ratio of one");
+    }
+
+    #[test]
+    fn the_fm_ratio_is_a_whole_place_in_its_list_that_is_held_to_it() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        for (set, got) in [(2.4, 2.0), (2.6, 3.0), (-3.0, 0.0), (99.0, 15.0), (15.0, 15.0)] {
+            osc.set_parameter(FM_RATIO, set).unwrap();
+            assert_eq!(osc.get_parameter(FM_RATIO), Some(got), "{set}");
+        }
+        osc.set_parameter(FM, 7.0).unwrap();
+        assert_eq!(osc.get_parameter(FM), Some(1.0), "held to its top");
+        osc.set_parameter(FM, -1.0).unwrap();
+        assert_eq!(osc.get_parameter(FM), Some(0.0), "and to its bottom");
+        assert!(osc.set_parameter(14, 0.0).is_err() && osc.get_parameter(14).is_none(), "no parameter after them");
+    }
+
+    #[test]
+    fn with_no_fm_whatever_the_ratio_the_oscillator_renders_what_it_did_before_it_had_one() {
+        for (waveform, ..) in BEFORE {
+            let (plain_left, plain_right) = chord(&mut Oscillator::new(SAMPLE_RATE, waveform));
+            for ratio in 0..16 {
+                let mut osc = Oscillator::new(SAMPLE_RATE, waveform);
+                osc.set_parameter(FM_RATIO, ratio as f32).unwrap();
+                let (left, right) = chord(&mut osc);
+                // (A chord is summed in the order of a hash map, so the numbers are compared to a millionth.)
+                let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+                assert!(same(&left, &plain_left) && same(&right, &plain_right), "waveform {}, ratio {ratio}", waveform.to_param());
+            }
+        }
+    }
+
+    #[test]
+    fn fm_changes_a_waveform_that_has_a_phase_and_keeps_it_in_its_range() {
+        for waveform in [Waveform::Triangle, Waveform::Square, Waveform::Saw] {
+            let name = waveform.to_param();
+            let plain = render(&mut hundred_frame_cycle(waveform), &[(0, [0x90, 69, 100])], 4800);
+            let mut swung = hundred_frame_cycle(waveform);
+            swung.set_parameter(FM, 0.5).unwrap();
+            swung.set_parameter(FM_RATIO, fm_ratio_named(&swung, "×2.5")).unwrap();
+            let swung = render(&mut swung, &[(0, [0x90, 69, 100])], 4800);
+            let furthest = plain[2400..].iter().zip(&swung[2400..]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            assert!(furthest > 0.05, "waveform {name}: swung by {furthest} at the most");
+            assert!(swung.iter().all(|x| x.abs() <= 0.25 + 1e-6), "waveform {name} stays in the range of a voice");
+        }
+    }
+
+    #[test]
+    fn the_noise_has_no_phase_to_swing() {
+        let (plain, _) = chord(&mut noise());
+        let mut swung = noise();
+        swung.set_parameter(FM, 1.0).unwrap();
+        let (left, _) = chord(&mut swung);
+        assert!(left.iter().zip(&plain).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+
+    #[test]
+    fn the_index_is_gone_to_and_not_jumped_to() {
+        // A steady sine, and fm turned all the way up between two blocks: the next block begins where the sine is, and the swing grows over some milliseconds (the volume's 5 ms).
+        let note = [(0, [0x90, 69, 100])];
+        let blocks = |fm: f32| {
+            let mut osc = hundred_frame_cycle(Waveform::Sine);
+            osc.set_parameter(FM_RATIO, fm_ratio_named(&osc, "×3")).unwrap();
+            render(&mut osc, &note, 1024);
+            osc.set_parameter(FM, fm).unwrap();
+            render(&mut osc, &[], 1024)
+        };
+        let (steady, turned) = (blocks(0.0), blocks(1.0));
+        let first = steady[..4].iter().zip(&turned[..4]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(first < 0.05, "four frames in, the sound is {first} from the steady one (a jump to the whole index is a click)");
+        let later = steady[1000..].iter().zip(&turned[1000..]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(later > 0.1, "and it is swung by the end of the block: {later}");
+    }
+
+    #[test]
+    fn each_oscillator_of_a_unison_is_swung_at_its_own_pitch() {
+        // Two voices a semitone each way from the A of 440 Hz, none across: each is a sine whose sine goes three times as fast as itself, so its first partial is four of its own frequencies.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(8, 1.0).unwrap();
+        osc.set_parameter(9, 1.0).unwrap();
+        osc.set_parameter(10, 0.0).unwrap();
+        osc.set_parameter(FM, 0.1).unwrap();
+        osc.set_parameter(FM_RATIO, fm_ratio_named(&osc, "×3")).unwrap();
+        let out = render(&mut osc, &[(0, [0x90, 69, 100])], 24_000);
+        let settled = &out[4000..];
+        let each = 0.25 / 2.0f32.sqrt();
+        let carriers = [440.0 * 2.0f32.powf(-1.0 / 12.0), 440.0 * 2.0f32.powf(1.0 / 12.0)];
+        for carrier in carriers {
+            assert!((magnitude(settled, carrier) - each * bessel(0, 1.0) as f32).abs() < 0.1 * each, "the carrier of {carrier} Hz");
+            assert!((magnitude(settled, 4.0 * carrier) - each * bessel(1, 1.0) as f32).abs() < 0.1 * each, "its first partial, at {} Hz", 4.0 * carrier);
+        }
+    }
+
+    #[test]
+    fn a_note_begins_with_the_sine_that_swings_it_at_its_beginning_and_it_stays_in_one_cycle() {
+        // The first note sounds and ends, with fm all the way up, and a second one begins: its first frame is the wave's, whatever the index is (the swing is the sine's 0 at that frame).
+        let mut osc = hundred_frame_cycle(Waveform::Saw);
+        osc.set_parameter(FM, 1.0).unwrap();
+        render(&mut osc, &[(0, [0x90, 69, 100]), (1000, [0x80, 69, 0])], 4096);
+        assert!(osc.voices.is_empty());
+        let mut plain = hundred_frame_cycle(Waveform::Saw);
+        let first = render(&mut osc, &[(0, [0x90, 69, 100])], 8);
+        let reference = render(&mut plain, &[(0, [0x90, 69, 100])], 8);
+        assert!((first[0] - reference[0]).abs() < 1e-6, "{} and {}", first[0], reference[0]);
+        // And what goes round is kept to one cycle: after a long note the sines' places are all in 0 to 1.
+        render(&mut osc, &[], 48_000);
+        assert!(osc.voices.values().all(|voice| voice.fm_phases.iter().all(|place| (0.0..1.0).contains(place))));
+    }
+
+    #[test]
+    fn a_swing_that_has_gone_back_to_nothing_is_nothing_and_not_a_number_that_never_gets_there() {
+        let note = [(0, [0x90, 69, 100])];
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        render(&mut osc, &note, 1024);
+        osc.set_parameter(FM, 1.0).unwrap();
+        render(&mut osc, &[], 4096);
+        assert!(osc.fm_smoothed > 0.9, "gone to: {}", osc.fm_smoothed);
+        osc.set_parameter(FM, 0.0).unwrap();
+        // (A second of it is two hundred time constants: a number that only approached 0 would be 1e-87 by now, and denormal on the way.)
+        render(&mut osc, &[], 48_000);
+        assert_eq!(osc.fm_smoothed, 0.0);
+        let mut plain = hundred_frame_cycle(Waveform::Sine);
+        render(&mut plain, &note, 1024 + 4096 + 48_000);
+        let (swung, steady) = (render(&mut osc, &[], 512), render(&mut plain, &[], 512));
+        assert!(swung.iter().zip(&steady).all(|(a, b)| (a - b).abs() < 1e-4), "the sound is the sine's again");
+    }
+
+    #[test]
+    fn the_index_is_gone_down_from_and_not_dropped_from() {
+        // fm all the way up and steady, and turned to nothing between two blocks: the next block begins in the swung sound, and it is the sine's by the end.
+        let note = [(0, [0x90, 69, 100])];
+        let blocks = |fm: f32| {
+            let mut osc = hundred_frame_cycle(Waveform::Sine);
+            osc.set_parameter(FM_RATIO, fm_ratio_named(&osc, "×3")).unwrap();
+            osc.set_parameter(FM, 1.0).unwrap();
+            render(&mut osc, &note, 4096);
+            osc.set_parameter(FM, fm).unwrap();
+            render(&mut osc, &[], 1024)
+        };
+        let (kept, turned) = (blocks(1.0), blocks(0.0));
+        let first = kept[..4].iter().zip(&turned[..4]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(first < 0.05, "four frames in, the sound is {first} from the one that is still swung (a drop to no index is a click)");
+        let later = kept[1000..].iter().zip(&turned[1000..]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(later > 0.1, "and it is not swung by the end of the block: {later}");
+    }
+
+    /// The numbers of a swung sound are made on the audio thread, which must not make a trip to the allocator.
+    #[test]
+    fn notes_that_are_swung_do_not_allocate() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(FM, 0.5).unwrap();
+        osc.set_parameter(8, 6.0).unwrap();
+        let mut left = vec![0.0f32; 256];
+        let mut right = vec![0.0f32; 256];
+        let on: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x90, note, 100])).collect();
+        let off: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x80, note, 0])).collect();
+        let mut block = |osc: &mut Oscillator, events: &[(u64, [u8; 3])]| {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            osc.process(events, &[], &mut out).unwrap();
+        };
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..2 {
+                block(&mut osc, &on);
+                block(&mut osc, &[]);
+                block(&mut osc, &off);
+                for _ in 0..8 {
+                    block(&mut osc, &[]);
+                }
+            }
+        });
+        assert!(osc.voices.is_empty(), "the notes have ended");
+        assert_eq!(allocations, 0);
+    }
+
     /// What a parameter says of itself: name, unit, lowest, highest, default and steps.
     type Described<'a> = (&'a str, Option<&'a str>, f32, f32, f32, u32);
 
@@ -1352,7 +1668,10 @@ mod tests {
         let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
         let parameters = osc.parameters();
         let described: Vec<Described> = parameters[8..].iter().map(|p| (p.name.as_str(), p.unit.as_deref(), p.min, p.max, p.default, p.step_count)).collect();
-        assert_eq!(described, [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0)]);
+        assert_eq!(
+            described,
+            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15)]
+        );
         // (A unison is a choice of one to seven voices, named by how many.)
         assert_eq!(parameters[8].labels.as_deref().map(|l| l.join(" ")), Some("1 2 3 4 5 6 7".to_string()));
         for (index, p) in parameters.iter().enumerate().skip(8) {
@@ -1362,7 +1681,7 @@ mod tests {
             osc.set_parameter(index as u32, p.min - 100.0).unwrap();
             assert_eq!(osc.get_parameter(index as u32), Some(p.min), "{} held to its bottom", p.name);
         }
-        assert!(osc.set_parameter(12, 0.0).is_err() && osc.get_parameter(12).is_none());
+        assert!(osc.set_parameter(14, 0.0).is_err() && osc.get_parameter(14).is_none());
         // A unison is a whole number of voices: a value between two is the nearer.
         for (set, got) in [(2.4, 2.0), (2.6, 3.0), (0.4, 0.0), (5.6, 6.0)] {
             osc.set_parameter(8, set).unwrap();

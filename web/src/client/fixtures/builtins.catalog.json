@@ -20,7 +20,7 @@
     "name": "Oscillator",
     "format": "Built-in",
     "isInstrument": true,
-    "params": 12,
+    "params": 14,
     "presets": 0
   },
   {

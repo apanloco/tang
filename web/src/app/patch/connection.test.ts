@@ -102,7 +102,7 @@ describe("a connection that is dragged on the canvas", () => {
     expect(keys.has("0:param-1")).toBe(true);
     expect(keys.has("1:param-1")).toBe(true);
     expect(keys.has("1:param-0")).toBe(false);
-    expect(keys.size).toBe(12 + 3);
+    expect(keys.size).toBe(14 + 3);
     expect(drawableFrom(nodes, 0).size).toBe(0);
     expect(drawableFrom(nodes, 99).size).toBe(0);
   });

@@ -15,7 +15,7 @@ afterEach(cleanup);
 const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
 const filter = nodeNamed(tracerSnapshot, "Filter");
 
-const OSCILLATOR_PARAMS = ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse"];
+const OSCILLATOR_PARAMS = ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio"];
 
 const buttonOf = (name: string) => screen.findByRole<HTMLButtonElement>("button", { name: `Parameters of ${name}` });
 const panelOf = (name: string) => screen.findByRole("complementary", { name: `Parameters of ${name}` });
@@ -70,7 +70,7 @@ describe("the parameters of a plugin", () => {
     fireEvent.click(await buttonOf("Oscillator"));
     const panel = await panelOf("Oscillator");
     expect(listed(panel)).toEqual(OSCILLATOR_PARAMS);
-    expect(within(panel).getByText("12 parameters")).toBeTruthy();
+    expect(within(panel).getByText("14 parameters")).toBeTruthy();
     expect((await buttonOf("Oscillator")).getAttribute("aria-expanded")).toBe("true");
     expect(document.activeElement).toBe(await searchOf("Oscillator"));
   });
@@ -176,13 +176,13 @@ describe("finding a parameter in the panel", () => {
     const panel = await panelOf("Oscillator");
     fireEvent.change(await searchOf("Oscillator"), { target: { value: "ele" } });
     expect(listed(panel)).toEqual(["release"]);
-    expect(within(panel).getByText("1 of 12 parameters")).toBeTruthy();
+    expect(within(panel).getByText("1 of 14 parameters")).toBeTruthy();
     fireEvent.change(await searchOf("Oscillator"), { target: { value: "  A " } });
-    expect(listed(panel)).toEqual(["waveform", "attack", "decay", "sustain", "release", "pan", "spread"]);
-    expect(within(panel).getByText("7 of 12 parameters")).toBeTruthy();
+    expect(listed(panel)).toEqual(["waveform", "attack", "decay", "sustain", "release", "pan", "spread", "fm_ratio"]);
+    expect(within(panel).getByText("8 of 14 parameters")).toBeTruthy();
     fireEvent.change(await searchOf("Oscillator"), { target: { value: "" } });
     expect(listed(panel)).toEqual(OSCILLATOR_PARAMS);
-    expect(within(panel).getByText("12 parameters")).toBeTruthy();
+    expect(within(panel).getByText("14 parameters")).toBeTruthy();
   });
 
   test("is the whole list for blanks, as for nothing", async () => {
@@ -191,7 +191,7 @@ describe("finding a parameter in the panel", () => {
     const panel = await panelOf("Oscillator");
     fireEvent.change(await searchOf("Oscillator"), { target: { value: "   " } });
     expect(listed(panel)).toEqual(OSCILLATOR_PARAMS);
-    expect(within(panel).getByText("12 parameters")).toBeTruthy();
+    expect(within(panel).getByText("14 parameters")).toBeTruthy();
     expect(within(panel).queryByText(/^No parameter has/)).toBeNull();
   });
 
@@ -202,7 +202,7 @@ describe("finding a parameter in the panel", () => {
     fireEvent.change(await searchOf("Oscillator"), { target: { value: "zzz" } });
     expect(listed(panel)).toEqual([]);
     expect(within(panel).getByText('No parameter has "zzz" in its name')).toBeTruthy();
-    expect(within(panel).getByText("0 of 12 parameters")).toBeTruthy();
+    expect(within(panel).getByText("0 of 14 parameters")).toBeTruthy();
   });
 
   test("shows a page of a long list at a time: the first forty, then forty more as it is asked for, and the button goes with the last", async () => {
