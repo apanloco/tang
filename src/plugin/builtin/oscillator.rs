@@ -169,7 +169,7 @@ pub const PARAM_COUNT: usize = 14;
 pub const FM_RATIOS: [f32; 16] = [0.5, 1.0, 1.4, 1.5, 2.0, 2.5, 2.8, 3.0, 3.5, 4.0, 5.0, 5.6, 6.0, 7.0, 8.0, 12.0];
 /// The place in the list of the ratio of one, which is where `fm_ratio` starts.
 const FM_DEFAULT_RATIO: usize = 1;
-/// How far the phase of the wave is swung at the top of `fm`, in cycles each way: an index of 10 radians, where the partials of a sine run to twenty on a side.
+/// How far the phase of the wave is swung at the top of `fm`, in cycles each way: an index of 10 radians, where a sine has partials of more than a hundredth of its level out to the fourteenth on each side.
 const FM_MAX_CYCLES: f32 = 10.0 / TAU;
 
 /// The most oscillators that sound for a note.
