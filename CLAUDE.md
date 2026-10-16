@@ -498,6 +498,12 @@ envelope that dips below the base). The source types apply differently:
   note's. The notes they hear are the ones the lane's instrument is given: after
   the lane's range, remap and transpose, and a pattern's own notes. A group's
   hear the notes of its members' ranges.
+TODO: the keys of the computer play every note at 100 (a key event has no
+velocity), in the page and in `play`; only a MIDI keyboard and the page's piano
+(by where the pointer is on a key) give a velocity control more than one value.
+TODO: a key control is centred on middle C and spans five octaves for everyone
+(`KEY_CENTRE`, `KEY_SPAN`): to track over fewer octaves a person scales the depth
+of the cable, and the centre cannot be moved.
 - **Macro** (unipolar, additive around the base, as a CC): `base + value * depth *
   range` — rest (0) = no change, full = +depth·range above the base.
 
@@ -1305,7 +1311,7 @@ already, a link that leads nowhere included, unless it is the session's own (tha
 `session::save_new`), not by a look at the path first; the TUI's `Ctrl+Shift+S` asks it too, and so does the page's "Save as…"), `Undo` and `Redo` (the history, below); and eleven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
-an envelope, a macro at rest or an armed MIDI control at the end of the rack of a lane, `parent` being the
+an envelope, a macro at rest, an armed MIDI control, or (step 52) a velocity or a key control, bound at once, at the end of the rack of a lane, `parent` being the
 lane's node, or of a group), `AddModEdge { modulator, to }` (a cable at depth
 `NEW_CABLE_DEPTH`, 0.5, to a plugin parameter or to a modulator's setting: where a cable to a
 parameter may end is `SessionModel::param_targets`, a lane's modulator reaching its lane's
@@ -1985,7 +1991,11 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   browser, which the layout adds to every lane's node), and a lane that has no pattern has it too with what has no use dimmed (its length is the one its first recording
   takes, `PATTERN_DEFAULT_LENGTH`). The mock engine does what the engine does with a recording (`MockServer.settle`, a timer that looks at the recordings every 50 ms while
   there are any: it counts in, takes the length of the pattern at the tempo it began with, counts the notes of the lane's keys that are played, and when it is done the lane has
-  the pattern and the clients are given the session, as the controller does when it polls).
+  the pattern and the clients are given the session, as the controller does when it polls). Step 52 added the controls that follow the notes a lane plays (see "MIDI-learn
+  modulator"): a velocity and a key, made from a lane's or a group's "+" menu and from a knob's "~" menu (`client/modulatorKinds.ts` has the words of every kind and tells a source's
+  kind back), shown as MIDI controls (`velocity of the last note`, `pitch of the last note`), their rings by the laws (a key is bipolar around middle C: `KEY_CENTRE`, `KEY_SPAN` are
+  generated constants), and followed by the mock engine as the engine follows the notes (`MockServer.#listened`: a lane's hear the notes in its keys as its transpose makes them, a
+  group's the notes of its members' keys as they are played; no remap, no patterns). The piano under the canvas plays a pointer harder lower on a key (20 to 127, `velocityAt`).
   The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19), and
   every lane and group has an "fx" menu that puts an installed effect in its chain (`client/catalog.ts`,
   `AddEffectMenu`; `Editor.addEffect`). Step 20 added the instruments: every lane has a "♪" menu that
