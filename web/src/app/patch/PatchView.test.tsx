@@ -49,10 +49,11 @@ const listed = (): [string | null, string[]][] =>
     .map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
 
 /** The names of the controls in a node, sliders and choices (not the list that draws a cable, which is a button), in the order they are in. */
+// (The bars of a step sequencer are sliders too: they are its steps, and not its controls.)
 const controlsIn = (node: HTMLElement): string[] =>
-  Array.from(node.querySelectorAll('[role="slider"], select')).map(
-    (control) => control.getAttribute("aria-label") ?? control.closest("label")?.querySelector(".tang-choice__label")?.textContent ?? "?",
-  );
+  Array.from(node.querySelectorAll('[role="slider"], select'))
+    .filter((control) => !control.closest(".tang-stepbars"))
+    .map((control) => control.getAttribute("aria-label") ?? control.closest("label")?.querySelector(".tang-choice__label")?.textContent ?? "?");
 
 describe("the patch", () => {
   test("has a node for each node of the session, of its kind, with its name", async () => {
@@ -308,7 +309,7 @@ describe("the patch", () => {
     const { requests, clock } = await rig(<PatchView />, { snapshot });
     const sequencer = await nodeOf(90);
     expect(controlsIn(sequencer)).toEqual(["Rate", "Glide", "Length", "Retrigger"]);
-    expect(Array.from(sequencer.querySelectorAll('[role="slider"]')).map((control) => control.getAttribute("aria-valuetext"))).toEqual(["6 Hz", "0.25", "4"]);
+    expect(Array.from(sequencer.querySelectorAll('.tang-knob__dial[role="slider"]')).map((control) => control.getAttribute("aria-valuetext"))).toEqual(["6 Hz", "0.25", "4"]);
     expect(within(sequencer).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("0");
     // (Its name is its kind: no badge says it again.)
     expect(sequencer.querySelector(".tang-node__badge")).toBeNull();
@@ -319,6 +320,10 @@ describe("the patch", () => {
     expect(within(sequencer).queryByRole("button", { name: /^Modulate (glide|length)/ })).toBeNull();
     // It draws what it puts out, from -1 to 1 as an LFO's output is.
     expect(within(sequencer).getByRole("meter", { name: "Steps output" }).hasAttribute("data-centred")).toBe(true);
+    // It has its steps as bars, of which the four in use are bright; and nothing drives a bar, so there is no port or button for one.
+    const bars = within(within(sequencer).getByRole("group", { name: "Steps of Steps" })).getAllByRole("slider");
+    expect(bars.map((bar) => bar.getAttribute("aria-valuenow")).slice(0, 5)).toEqual(["0.5", "-0.25", "1", "-1", "0"]);
+    expect(bars.filter((bar) => !bar.hasAttribute("data-unused"))).toHaveLength(4);
     // The glide, turned, is a setting of the step sequencer.
     fireEvent.keyDown(within(sequencer).getByRole("slider", { name: "Glide" }), { key: "ArrowUp" });
     act(() => {
@@ -453,7 +458,7 @@ describe("the patch", () => {
       await rig(<PatchView />);
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       const menu = screen.getByRole("menu", { name: "Add a modulator to Oscillator" });
-      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "Macro", "MIDI control", "Velocity", "Key"]);
+      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "Macro", "MIDI control", "Velocity", "Key", "Step sequencer"]);
     });
 
     test("asks the server to add the kind that was chosen to that lane, and the node is on the canvas with its controls when it has", async () => {
@@ -488,9 +493,25 @@ describe("the patch", () => {
       expect(added.textContent).toContain(kind === "velocity" ? "velocity of the last note" : "pitch of the last note");
     });
 
+    test("asks for a step sequencer when Step sequencer is chosen, and the node on the canvas has its four controls and its sixteen bars", async () => {
+      const { requests } = await rig(<PatchView />);
+      fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Step sequencer" }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind: "steps" }]);
+      });
+      const added = await screen.findByRole("group", { name: "Steps" });
+      expect(controlsIn(added)).toEqual(["Rate", "Glide", "Length", "Retrigger"]);
+      const bars = within(within(added).getByRole("group", { name: "Steps of Steps" })).getAllByRole("slider");
+      expect(bars).toHaveLength(16);
+      // (A staircase, all in use.)
+      expect(bars.map((bar) => bar.getAttribute("aria-valuenow"))[0]).toBe("-1");
+      expect(bars.filter((bar) => bar.hasAttribute("data-unused"))).toHaveLength(0);
+    });
+
     test("to a group asks for one in the group, whichever kind", async () => {
       const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      for (const [item, kind] of [["LFO", "lfo"], ["Macro", "macro"], ["MIDI control", "midiLearn"], ["Velocity", "velocity"], ["Key", "key"]] as const) {
+      for (const [item, kind] of [["LFO", "lfo"], ["Macro", "macro"], ["MIDI control", "midiLearn"], ["Velocity", "velocity"], ["Key", "key"], ["Step sequencer", "steps"]] as const) {
         fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Group 2" }));
         fireEvent.click(screen.getByRole("menuitem", { name: item }));
         await waitFor(() => {
@@ -498,7 +519,7 @@ describe("the patch", () => {
         });
       }
       await waitFor(() => {
-        expect(requests()).toHaveLength(5);
+        expect(requests()).toHaveLength(6);
       });
     });
 

@@ -15,6 +15,8 @@ import {
   ENVELOPE_NODE_HEIGHT,
   MODULATOR_HEIGHT,
   MODULATOR_SETTINGS_HEIGHT,
+  STEPS_EXTRA,
+  STEPS_NODE_HEIGHT,
   NODE_SCOPE_HEIGHT,
   NODE_WIDTH,
   nodeHeight,
@@ -246,6 +248,12 @@ describe("the nodes on the canvas", () => {
     expect(nodeHeight(envelope, 0)).toBe(ENVELOPE_NODE_HEIGHT);
     expect(nodeHeight(control, 0)).toBe(MODULATOR_HEIGHT);
     expect(MODULATOR_SETTINGS_HEIGHT).toBeGreaterThan(MODULATOR_HEIGHT);
+    // A step sequencer has an LFO's controls (its rate, glide, length and retrigger are four) and the bars above its trace: the bars' height and the gap before them.
+    const steps: Node = { id: 4, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values: Array.from({ length: 16 }, () => 0), length: 16, rate: 8, glide: 0, retrigger: true } };
+    expect(nodeHeight(steps, 0)).toBe(STEPS_NODE_HEIGHT);
+    expect(STEPS_NODE_HEIGHT).toBe(MODULATOR_SETTINGS_HEIGHT + STEPS_EXTRA);
+    expect(STEPS_EXTRA).toBe(64 + 8);
+    expect(nodeHeight(steps, 0, 2)).toBe(STEPS_NODE_HEIGHT + CABLES_GAP + 2 * CABLE_ROW_HEIGHT);
     // (Measured in a browser: 315 for an envelope's node, 249 for an LFO's. The layout assumes a little more of each, never less.)
     expect(ENVELOPE_NODE_HEIGHT).toBeGreaterThanOrEqual(315);
     expect(ENVELOPE_NODE_HEIGHT).toBeLessThanOrEqual(325);

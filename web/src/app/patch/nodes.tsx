@@ -20,7 +20,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell } from "./controls";
+import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell, StepsControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
@@ -62,6 +62,7 @@ const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
   { id: "midiLearn", label: "MIDI control" },
   { id: "velocity", label: "Velocity" },
   { id: "key", label: "Key" },
+  { id: "steps", label: "Step sequencer" },
 ];
 
 /** The `id` of the button that adds a modulator to the lane or group `node`, which what takes a modulator out gives the focus to. */
@@ -493,6 +494,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       <div className="tang-node__body">
         {source?.type === "midiLearn" ? <p className="tang-node__detail">{controlDetail(source)}</p> : null}
         {source?.type === "envelope" ? <EnvelopeShape node={data.node} name={data.name} read={read} /> : null}
+        {source?.type === "steps" ? <StepsControl node={data.node} name={data.name} /> : null}
         <LiveTrace label={`${data.name} output`} read={read} min={scale.min} max={scale.max} centred={scale.centred} frames={frames} />
         <div className="tang-node__drives nodrag nopan nowheel">
           <DrivePicker modulator={data.node} name={data.name} targets={data.targets} />

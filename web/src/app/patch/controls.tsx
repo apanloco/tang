@@ -10,7 +10,7 @@ import type { Modulation } from "../../client/modulation";
 import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
-import { cableDepthOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices } from "../../client/selectors";
+import { cableDepthOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -19,6 +19,7 @@ import { afterKey } from "../../ui/knob-geometry";
 import { LiveBar } from "../../ui/LiveBar";
 import { MenuButton } from "../../ui/MenuButton";
 import type { MenuItem } from "../../ui/MenuButton";
+import { StepBars } from "../../ui/StepBars";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
@@ -553,6 +554,38 @@ export const RetriggerControl = memo(function RetriggerControl({ node }: { node:
         control.set(chosen);
         control.commit();
       }}
+    />
+  );
+});
+
+/**
+ * The bars of a step sequencer: its steps as bars that are painted with a drag and moved with the keys, the ones past its length dimmed, and a playhead on the step it is at
+ * (the position that the engine publishes). A stroke is sent as the steps, all of them, a frame at a time (`Drive.steps`), and shows what it has painted until the server has answered.
+ * Nothing for a node that is no step sequencer.
+ */
+export const StepsControl = memo(function StepsControl({ node, name }: { node: NodeId; name: string }) {
+  const client = useClient();
+  const frames = useFrames();
+  const control = useDrive().steps(node);
+  const stored = useClientState((state) => stepsOf(state, node));
+  const length = useClientState((state) => modulatorFieldOf(state, node, "length"));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const read = useMemo(() => slotReader(client.telemetry, "modulation", node, { type: "modOut" }, "modPosition"), [client, node]);
+  const shown = pending ?? stored;
+  if (shown === undefined || length === undefined) return null;
+  return (
+    <StepBars
+      label={`Steps of ${name}`}
+      values={shown}
+      length={length}
+      onChange={(values) => {
+        control.set(values);
+      }}
+      onCommit={() => {
+        control.commit();
+      }}
+      read={read}
+      frames={frames}
     />
   );
 });

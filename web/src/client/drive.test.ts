@@ -382,6 +382,41 @@ describe("the controls of a session", () => {
     ]);
   });
 
+  test("are one for each step sequencer, and not the control of a setting that has the same number", () => {
+    const { drive } = setup();
+    expect(drive.steps(2)).toBe(drive.steps(2));
+    expect(drive.steps(2)).not.toBe(drive.steps(3));
+    expect(drive.steps(2)).not.toBe(drive.modulatorField(2, "rate"));
+    expect(drive.steps(2)).not.toBe(drive.param(2, 0));
+  });
+
+  test("send all the steps of a step sequencer as setSteps: the latest list, once for a frame, as a list of its own", () => {
+    const { drive, calls, clock } = setup();
+    const control = drive.steps(5);
+    const first = Array.from({ length: 16 }, (_, step) => step / 20);
+    const second = first.map((value) => -value);
+    control.set(first);
+    control.set(second);
+    expect(control.getPending()).toEqual(second);
+    clock.tick(16);
+    expect(calls.map((call) => call.intent)).toEqual([{ type: "setSteps", node: 5, values: second }]);
+    const sent = calls[0]?.intent;
+    expect(sent?.type === "setSteps" ? sent.values : null).not.toBe(second);
+  });
+
+  test("take no notice of a list that is not sixteen long or has a value that is not a number", () => {
+    const { drive, calls, clock } = setup();
+    const control = drive.steps(5);
+    control.set([0.1]);
+    control.set(Array.from({ length: 17 }, () => 0));
+    control.set(Array.from({ length: 16 }, () => Number.NaN));
+    control.set([...Array.from({ length: 15 }, () => 0), Number.POSITIVE_INFINITY]);
+    expect(control.getPending()).toBeNull();
+    expect(clock.pending).toBe(0);
+    clock.tick(16);
+    expect(calls).toEqual([]);
+  });
+
   test("do not share a frame's worth: each sends its own", () => {
     const { drive, calls, clock } = setup();
     drive.param(1, 0).set(0.1);
@@ -389,6 +424,40 @@ describe("the controls of a session", () => {
     drive.param(1, 0).set(0.3);
     clock.tick(16);
     expect(calls.map((call) => call.intent)).toEqual([setParam(0.3, 1, 0), setParam(0.2, 1, 1)]);
+  });
+});
+
+describe("a control of steps against the engine that answers", () => {
+  test("shows the list that a stroke has painted while it is answered, and the session's after it, as one intent a frame", async () => {
+    const server = new MockServer({ telemetryPeriod: 1000 });
+    const client = new Client({ transport: server.transport });
+    client.start();
+    await vi.waitFor(() => {
+      expect(client.state.status).toBe("open");
+    });
+    await client.request({ type: "addModulator", parent: 0, kind: "steps" });
+    const sequencer = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
+    const node = sequencer?.id ?? -1;
+    const clock = new Clock();
+    const drive = new Drive({ frames: new FrameLoop(clock), send: (intent) => client.request(intent) });
+    const control = drive.steps(node);
+    const sessionValues = (): readonly number[] | undefined => {
+      const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+      return found?.kind === "modulator" && found.source.type === "steps" ? found.source.values : undefined;
+    };
+    const sentBefore = server.received.filter((message) => message.type === "request").length;
+    // A stroke: a bar more painted at every frame.
+    for (let frame = 1; frame <= 4; frame += 1) {
+      control.set(Array.from({ length: 16 }, (_, step) => (step < frame ? 0.5 : -1)));
+      clock.tick(frame * 16);
+    }
+    control.commit();
+    await vi.waitFor(() => {
+      expect(control.getPending()).toBeNull();
+    });
+    expect(sessionValues()).toEqual(Array.from({ length: 16 }, (_, step) => (step < 4 ? 0.5 : -1)));
+    expect(server.received.filter((message) => message.type === "request").length - sentBefore).toBe(4);
+    client.stop();
   });
 });
 

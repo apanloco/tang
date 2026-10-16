@@ -46,6 +46,10 @@ export const MODULATOR_HEIGHT = 128 + TRACE_EXTRA;
 export const MODULATOR_SETTINGS_HEIGHT = HEADER_HEIGHT + CONTROL_ROW_HEIGHT + NODE_PADDING + 20 + DRIVES_HEIGHT + TRACE_EXTRA;
 /** ...and an envelope's, which draws its shape, is taller by that. */
 export const ENVELOPE_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + ENVELOPE_EXTRA;
+/** The bars of a step sequencer (`StepBars.css`: 64 px tall) and the gap before them in the body of the node (8) make its node this much taller than an LFO's (measured in a browser: 321 against 249). */
+export const STEPS_EXTRA = 64 + 8;
+/** ...and a step sequencer's node is as tall as an LFO's with the bars. */
+export const STEPS_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + STEPS_EXTRA;
 /** The master: its name and its meter, the scope under them and the choices of the scope's view (measured in a browser: 223). */
 export const MASTER_HEIGHT = 228;
 /** A scope that an instrument, an effect or a group shows below its controls, with the choices of its view and its time: this much taller (measured in a browser: 157). */
@@ -217,6 +221,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false)
     case "modulator": {
       const listed = cables > 0 ? CABLES_GAP + cables * CABLE_ROW_HEIGHT : 0;
       if (node.source.type === "midiLearn") return MODULATOR_HEIGHT + listed;
+      if (node.source.type === "steps") return STEPS_NODE_HEIGHT + listed;
       return (node.source.type === "envelope" ? ENVELOPE_NODE_HEIGHT : MODULATOR_SETTINGS_HEIGHT) + listed;
     }
     case "master":

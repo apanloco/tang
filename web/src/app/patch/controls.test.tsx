@@ -9,7 +9,7 @@ import type { Edge, Node, Param, Port, Snapshot } from "../../protocol";
 import { dragged } from "../../ui/knob-geometry";
 import { angleOf, arcPath, fractionOf, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ModulatorValueControl, ParamControl, ParamRow, RetriggerControl, sameModulations, sameParamFacts, WaveformControl } from "./controls";
+import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ModulatorValueControl, ParamControl, ParamRow, RetriggerControl, sameModulations, sameParamFacts, StepsControl, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -610,6 +610,111 @@ describe("whether a note starts a step sequencer again", () => {
       </div>,
     );
     expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+});
+
+describe("the bars of a step sequencer", () => {
+  /** The bars of a node (they have no layout in jsdom: a box 160 wide and 64 tall is what they are told to be in), and what they show. */
+  const barsOf = (name = "Steps of Steps") => {
+    const group = screen.getByRole("group", { name });
+    group.getBoundingClientRect = () => ({ left: 0, top: 0, x: 0, y: 0, width: 160, height: 64, right: 160, bottom: 64, toJSON: () => ({}) });
+    return group;
+  };
+  const shown = (): number[] => within(barsOf()).getAllByRole("slider").map((bar) => Number(bar.getAttribute("aria-valuenow")));
+  const SEQUENCER_STEPS = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+
+  test("show the steps that the step sequencer has, from the first, and dim those past its length", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    await rig(<StepsControl node={sequencer.id} name="Steps" />, { snapshot });
+    expect(shown()).toEqual(SEQUENCER_STEPS);
+    const unused = within(barsOf()).getAllByRole("slider").flatMap((bar, index) => (bar.hasAttribute("data-unused") ? [index + 1] : []));
+    expect(unused).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  });
+
+  test("send a stroke across them as the steps of the step sequencer, on the frame, once, and show what the stroke has painted", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { requests, clock } = await rig(<StepsControl node={sequencer.id} name="Steps" />, { snapshot });
+    const group = barsOf();
+    // Press on the first bar at the top and go across to the fourth at the bottom: ten pixels to a bar, a bar of 64 pixels.
+    fireEvent.pointerDown(group, { clientX: 5, clientY: 0, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(group, { clientX: 35, clientY: 64, pointerId: 1 });
+    expect(shown().slice(0, 5)).toEqual([1, 0.33, -0.33, -1, 0]);
+    await settle();
+    expect(requests()).toEqual([]);
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setSteps", node: sequencer.id, values: [1, 0.33, -0.33, -1, ...Array<number>(12).fill(0)] });
+    fireEvent.pointerUp(group, { pointerId: 1 });
+    await waitFor(() => {
+      expect(shown().slice(0, 4)).toEqual([1, 0.33, -0.33, -1]);
+    });
+  });
+
+  test("send a key press as the steps, at once: it is a gesture of its own", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { requests } = await rig(<StepsControl node={sequencer.id} name="Steps" />, { snapshot });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Step 2" }), { key: "ArrowUp" });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setSteps", node: sequencer.id, values: [0.5, expect.closeTo(-0.23, 9), 1, -1, ...Array<number>(12).fill(0)] });
+  });
+
+  test("follow a change somebody else makes, and of the length", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { server } = await rig(<StepsControl node={sequencer.id} name="Steps" />, { snapshot });
+    act(() => {
+      server.apply({ type: "setSteps", node: sequencer.id, values: Array.from({ length: 16 }, (_, step) => (step % 2 === 0 ? 0.5 : -0.5)) });
+      server.apply({ type: "setModulatorField", node: sequencer.id, field: "length", value: 2 });
+    });
+    await waitFor(() => {
+      expect(shown().slice(0, 3)).toEqual([0.5, -0.5, 0.5]);
+    });
+    const unused = within(barsOf()).getAllByRole("slider").filter((bar) => bar.hasAttribute("data-unused"));
+    expect(unused).toHaveLength(14);
+  });
+
+  test("show nothing for a node that has no steps: an LFO, a node that is not a modulator, or one that is not there", async () => {
+    const { view } = await rig(
+      <div data-testid="where">
+        <StepsControl node={lfo.id} name="LFO" />
+        <StepsControl node={filter.id} name="Filter" />
+        <StepsControl node={4242} name="Nothing" />
+      </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+
+  test("have a playhead on the step that the engine says the step sequencer is at, which follows it", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    // (The session says where its telemetry is: the output of the step sequencer and its position, in slots after the others.)
+    const slot = Math.max(...snapshot.telemetry.modulation.map((entry) => entry.slot)) + 1;
+    snapshot.telemetry.modulation.unshift(
+      { slot, node: sequencer.id, port: { type: "modOut" }, kind: "modOutput" },
+      { slot: slot + 1, node: sequencer.id, port: { type: "modOut" }, kind: "modPosition" },
+    );
+    const { clock, time } = await rig(<StepsControl node={sequencer.id} name="Steps" />, { snapshot });
+    const playing = (): number[] => within(barsOf()).getAllByRole("slider").flatMap((bar, index) => (bar.hasAttribute("data-playing") ? [index + 1] : []));
+    // Six steps a second, of four in use: 0.45 s is 2.7 steps, in the third.
+    time.seconds = 0.45;
+    await waitFor(() => {
+      act(() => {
+        clock.tick(16);
+      });
+      expect(playing()).toEqual([3]);
+    });
+    // 0.7 s is 4.2 steps, which is round again and 0.2 into the first.
+    time.seconds = 0.7;
+    await waitFor(() => {
+      act(() => {
+        clock.tick(33);
+      });
+      expect(playing()).toEqual([1]);
+    });
   });
 });
 

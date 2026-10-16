@@ -1,5 +1,5 @@
 // The button on a control that modulates what the control sets (the TUI's `m` and `l`): a menu of a new LFO, a new envelope, a new macro, a new MIDI control
-// that learns, and a new velocity and a new key (which follow the notes of the lane), made for the parameter or setting with a cable to it in one change
+// that learns, and a new velocity and a new key (which follow the notes of the lane) and a new step sequencer, made for the parameter or setting with a cable to it in one change
 // (`Modulate`), and of the modulators that are there and could drive it, which get a cable (`AddModEdge`). What could drive it is looked up when the menu is opened, not when anything changes: there is a button on every knob.
 import { useMemo, useState } from "react";
 
@@ -18,6 +18,7 @@ const NEW: readonly { kind: ModulatorKind; label: string }[] = [
   { kind: "midiLearn", label: "New MIDI control" },
   { kind: "velocity", label: "New velocity" },
   { kind: "key", label: "New key" },
+  { kind: "steps", label: "New step sequencer" },
 ];
 
 /** A modulator that is there and could drive the control, by the name the canvas gives it. */
