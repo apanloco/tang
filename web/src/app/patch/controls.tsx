@@ -10,7 +10,7 @@ import type { Modulation } from "../../client/modulation";
 import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
-import { cableDepthOf, cableSourceOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameGroupChoices } from "../../client/selectors";
+import { cableDepthOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -386,6 +386,50 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
           ))}
           <option value="new">new group</option>
         </select>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * The mute and the solo of a lane or a group, two buttons in a cell of its node (the controller's `SetMute` and `SetSolo`): a muted node is never heard, and while anything is
+ * soloed only what is soloed is (`audibleOf` says what that makes of every node). A press asks for the other way and the buttons show what the session has: they are
+ * not changed before the answer is in, and a refusal is said among the notices. A node that is neither a lane nor a group has none, and nothing is drawn for it.
+ */
+export const MuteSoloCell = memo(function MuteSoloCell({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const flags = useClientSelection((state) => flagsOf(state, node), sameFlags);
+  if (flags === undefined) return null;
+  return (
+    <div className="tang-cell">
+      <div className="tang-keys">
+        <span className="tang-keys__label">Mute / Solo</span>
+        <span className="tang-flags">
+          <button
+            type="button"
+            className="tang-flag tang-flag--mute"
+            aria-label={`Mute ${name}`}
+            aria-pressed={flags.muted}
+            title={`${flags.muted ? "Unmute" : "Mute"} ${name}`}
+            onClick={() => {
+              void editor.setMute(node, !flags.muted);
+            }}
+          >
+            M
+          </button>
+          <button
+            type="button"
+            className="tang-flag tang-flag--solo"
+            aria-label={`Solo ${name}`}
+            aria-pressed={flags.solo}
+            title={`${flags.solo ? "Unsolo" : "Solo"} ${name}`}
+            onClick={() => {
+              void editor.setSolo(node, !flags.solo);
+            }}
+          >
+            S
+          </button>
+        </span>
       </div>
     </div>
   );

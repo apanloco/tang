@@ -35,6 +35,7 @@ import type {
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { sessionFileName } from "./filenames";
+import { audibleOf, heardOf } from "./audible";
 import { cablesThatGo, isModulation } from "./cables";
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
@@ -1514,20 +1515,33 @@ export class MockServer {
       const held = this.heldNotes;
       return frameBytes(channel, 0, Array.from({ length: 128 }, (_, note) => (held.has(note) ? 1 : 0)));
     }
-    // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's.)
-    if (channel === "scope") return frameBytes(channel, 0, scopeValues(this.heldNotes, seconds, this.#snapshot.meta.sampleRate));
     const { telemetry } = this.#snapshot;
     const nodes = this.#snapshot.graph.nodes;
+    // What can be heard: a lane that has an instrument and reaches the master by the mute and solo of the session (`audibleOf`), which is what the master's meter and its scope have
+    // an ear for. The mock has no ear for anything else: a note that is held is a level in every meter and a sound in every scope, where it can be heard.
+    const audible = audibleOf(this.#snapshot.graph);
+    const heard = heardOf(this.#snapshot.graph);
+    const sounding = nodes.some((n) => n.kind === "instrument" && n.plugin !== null && audible.get(n.id) === true);
+    // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's.)
+    if (channel === "scope") return frameBytes(channel, 0, scopeValues(sounding ? this.heldNotes : new Set<number>(), seconds, this.#snapshot.meta.sampleRate));
     const outputOf = (id: NodeId): number => {
       const node = nodes.find((n) => n.id === id);
       return node ? this.#modulatorOutput(node, seconds) : 0;
     };
     const fall = 10 ** ((-PEAK_FALL_DB_PER_SECOND * elapsed) / 20);
-    const level = this.heldNotes.size > 0 ? 0.35 : 0;
+    const playing = this.heldNotes.size > 0 ? 0.35 : 0;
+    // What a meter has an ear for, as the engine's are: a lane's after its own mute and solo, a group's after the bus is let go of and with a lane to carry, and the master's
+    // after everything.
+    const levelOf = (id: NodeId): number => {
+      const node = nodes.find((n) => n.id === id);
+      if (node?.kind === "instrument") return heard.get(id) === true ? playing : 0;
+      if (node?.kind === "group") return heard.get(id) === true && nodes.some((n) => n.kind === "instrument" && n.parent === id && heard.get(n.id) === true) ? playing : 0;
+      return sounding ? playing : 0;
+    };
     const value = (entry: LayoutEntry): number => {
       switch (entry.kind) {
         case "peak": {
-          const peak = Math.max(level, (peaks.get(entry.slot) ?? 0) * fall);
+          const peak = Math.max(levelOf(entry.node), (peaks.get(entry.slot) ?? 0) * fall);
           peaks.set(entry.slot, peak);
           return peak;
         }

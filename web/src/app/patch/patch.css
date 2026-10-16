@@ -252,6 +252,48 @@
   outline-offset: 1px;
 }
 
+/* The mute and the solo of a lane or a group, in a cell like the keys': two small buttons side by side, a pressed one in the colour of what it does. */
+.tang-flags {
+  display: flex;
+  gap: 2px;
+}
+
+.tang-flag {
+  flex: 1;
+  padding: 2px 0;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text-muted);
+  font: 11px / 1.4 var(--tang-font);
+  cursor: pointer;
+}
+
+.tang-flag:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-flag[aria-pressed="true"] {
+  color: var(--tang-bg);
+  font-weight: 600;
+}
+
+.tang-flag--mute[aria-pressed="true"] {
+  border-color: var(--tang-danger);
+  background: var(--tang-danger);
+}
+
+.tang-flag--solo[aria-pressed="true"] {
+  border-color: var(--tang-warn);
+  background: var(--tang-warn);
+}
+
+/* A node that cannot be heard at the master (muted, not soloed while something is, or in the chain of one): dimmed, and as ready as it was. (It stays dimmed under the pointer: a press of its mute is seen at once.) */
+.tang-node--unheard {
+  opacity: 0.55;
+}
+
 /* The pattern of a lane, under its controls: record, clear and the length; the three switches; and a line that says what it is. It is as tall whatever it shows (`PATTERN_HEIGHT` in toFlow.ts). */
 .tang-pattern {
   display: grid;

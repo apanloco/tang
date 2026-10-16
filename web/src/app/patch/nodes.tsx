@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
 import { slotReader } from "../../client/readers";
-import { chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, removalOf, sameChainPlace, sameRemoval, sameStages } from "../../client/selectors";
+import { audibleAt, chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, removalOf, sameChainPlace, sameRemoval, sameStages } from "../../client/selectors";
 import type { Removal } from "../../client/selectors";
 import { NAME_LIMIT } from "../../protocol";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
@@ -20,7 +20,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, ParamCell, RangeCell } from "./controls";
+import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
@@ -365,15 +365,24 @@ function RenameGroupButton({ node, name, onEdit }: { node: NodeId; name: string;
   );
 }
 
-/** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain. */
+/**
+ * The class of a node that cannot be heard at the master (`audibleAt`): a lane or a group that is muted, or not soloed while something is, and the effects in the chain of
+ * one. It is dimmed, and still works.
+ */
+function useUnheard(node: NodeId): string {
+  return useClientState((state) => audibleAt(state, node) === false) ? " tang-node--unheard" : "";
+}
+
+/** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain; a lane's keys, group, mute and solo as well. */
 export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const effect = type === "effect";
   // (A lane that has no instrument has no sound to look at.)
   const silent = !effect && data.format === null;
   // (Where an effect is: the lane or group whose chain it is in, which the focus goes back to when it is taken out.)
   const parent = useClientState((state) => (effect ? (nodeById(state, data.node)?.parent ?? null) : null));
+  const unheard = useUnheard(data.node);
   return (
-    <div className={`tang-node tang-node--${type}`}>
+    <div className={`tang-node tang-node--${type}${unheard}`}>
       {effect ? <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" /> : null}
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
       <Header name={data.name} badge={data.format}>
@@ -404,6 +413,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />
         <RangeCell node={data.node} name={data.name} />
         <GroupCell node={data.node} name={data.name} />
+        <MuteSoloCell node={data.node} name={data.name} />
       </div>
       {/* (A node that is no lane has no pattern: the cell draws nothing for it.) */}
       <PatternCell node={data.node} name={data.name} />
@@ -494,11 +504,12 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   );
 }
 
-/** A submix group: its volume and its pan, between its members and the master; its name is changed in place, and it can be taken out. */
+/** A submix group: its volume and its pan, between its members and the master, and its mute and solo; its name is changed in place, and it can be taken out. */
 export function GroupNode({ data }: NodeProps<PatchNode>) {
   const [editing, setEditing] = useState(false);
+  const unheard = useUnheard(data.node);
   return (
-    <div className="tang-node tang-node--group">
+    <div className={`tang-node tang-node--group${unheard}`}>
       <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
       <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
       <Header
@@ -534,6 +545,7 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
       <div className="tang-node__controls nodrag nopan nowheel">
         <GainCell node={data.node} gain="groupVolume" />
         <GainCell node={data.node} gain="groupPan" />
+        <MuteSoloCell node={data.node} name={data.name} />
       </div>
       {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
     </div>

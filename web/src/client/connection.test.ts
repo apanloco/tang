@@ -2036,6 +2036,96 @@ describe("muting and soloing a lane or a group", () => {
   });
 });
 
+describe("the meters and the scope of the mock for a lane or a group that is muted or soloed", () => {
+  // The reach fixture: groups 0 (lanes 4 and 7) and 2 (lane 9), lane 11 in none, and lane 14, which has no instrument.
+  const GROUP_A = 0;
+  const GROUP_B = 2;
+  const [LANE_1, LANE_2, LANE_3, LANE_4] = [4, 7, 9, 11];
+  const LEVEL = 0.35;
+  const SILENT = 0;
+
+  /** A server over the fixture, a client of it and a note that is held, once the server knows it is. */
+  async function playing(): Promise<{ server: MockServer; client: Client }> {
+    const server = new MockServer({ snapshot: reachFixture.snapshot, telemetryPeriod: 5 });
+    const client = await open(server);
+    client.noteOn(60);
+    await until(() => server.heldNotes.has(60), "the note");
+    return { server, client };
+  }
+
+  /** What each meter of the layout reads in a frame of the server, by node: a peak, as the page's meters read it. */
+  function peaks(server: MockServer): Map<number, number> {
+    const values = decodeFrame(server.frame("meters", 1, new Map(), 0))?.values ?? new Float32Array(0);
+    const read = new Map<number, number>();
+    reachFixture.snapshot.telemetry.meters.forEach((entry, place) => {
+      if (entry.kind === "peak") read.set(entry.node, values[place] ?? NaN);
+    });
+    return read;
+  }
+  const near = (read: Map<number, number>, expected: Record<number, number>) => {
+    for (const [node, level] of Object.entries(expected)) expect(read.get(Number(node)), `node ${node}`).toBeCloseTo(level, 5);
+  };
+  const flag = (client: Client, intent: Intent) => client.request(intent);
+
+  test("read the level of a note that is held in every lane, every group and the master while nothing is muted or soloed", async () => {
+    const { server } = await playing();
+    near(peaks(server), { [MASTER]: LEVEL, [GROUP_A]: LEVEL, [GROUP_B]: LEVEL, [LANE_1]: LEVEL, [LANE_2]: LEVEL, [LANE_3]: LEVEL, [LANE_4]: LEVEL });
+  });
+
+  test("a muted lane reads nothing and the others read as they did", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setMute", node: LANE_1, muted: true });
+    near(peaks(server), { [MASTER]: LEVEL, [GROUP_A]: LEVEL, [LANE_1]: SILENT, [LANE_2]: LEVEL, [LANE_3]: LEVEL, [GROUP_B]: LEVEL });
+  });
+
+  test("a group whose lanes are all muted reads nothing, and so does the master when every lane is", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setMute", node: LANE_1, muted: true });
+    await flag(client, { type: "setMute", node: LANE_2, muted: true });
+    near(peaks(server), { [GROUP_A]: SILENT, [GROUP_B]: LEVEL, [MASTER]: LEVEL });
+    for (const node of [LANE_3, LANE_4, 14]) await flag(client, { type: "setMute", node, muted: true });
+    near(peaks(server), { [MASTER]: SILENT, [GROUP_A]: SILENT, [GROUP_B]: SILENT });
+  });
+
+  test("a muted group reads nothing, its lanes still read as they put their sound into a bus that is cut, and the master reads what comes from the others", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setMute", node: GROUP_A, muted: true });
+    near(peaks(server), { [GROUP_A]: SILENT, [LANE_1]: LEVEL, [LANE_2]: LEVEL, [GROUP_B]: LEVEL, [LANE_3]: LEVEL, [LANE_4]: LEVEL, [MASTER]: LEVEL });
+    await flag(client, { type: "setMute", node: GROUP_B, muted: true });
+    await flag(client, { type: "setMute", node: LANE_4, muted: true });
+    near(peaks(server), { [MASTER]: SILENT, [LANE_1]: LEVEL });
+  });
+
+  test("while a lane is soloed only it, its group and the master read, and a lane of the group that is not soloed does not", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setSolo", node: LANE_1, solo: true });
+    near(peaks(server), { [LANE_1]: LEVEL, [GROUP_A]: LEVEL, [MASTER]: LEVEL, [LANE_2]: SILENT, [GROUP_B]: SILENT, [LANE_3]: SILENT, [LANE_4]: SILENT });
+  });
+
+  test("while a group is soloed its lanes and the group and the master read, and nothing else does", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setSolo", node: GROUP_B, solo: true });
+    near(peaks(server), { [GROUP_B]: LEVEL, [LANE_3]: LEVEL, [MASTER]: LEVEL, [GROUP_A]: SILENT, [LANE_1]: SILENT, [LANE_2]: SILENT, [LANE_4]: SILENT });
+  });
+
+  test("a mute wins over a solo", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setSolo", node: LANE_3, solo: true });
+    await flag(client, { type: "setMute", node: LANE_3, muted: true });
+    near(peaks(server), { [LANE_3]: SILENT, [GROUP_B]: SILENT, [MASTER]: SILENT, [LANE_1]: SILENT });
+  });
+
+  test("the scope of the output is silent while nothing is heard, and has the notes while something is", async () => {
+    const { server, client } = await playing();
+    const loud = (seconds = 1) => (decodeFrame(server.frame("scope", seconds, new Map(), 0))?.values ?? new Float32Array(0)).some((sample) => sample !== 0);
+    expect(loud()).toBe(true);
+    for (const node of [LANE_1, LANE_2, LANE_3, LANE_4, 14]) await flag(client, { type: "setMute", node, muted: true });
+    expect(loud()).toBe(false);
+    await flag(client, { type: "setMute", node: LANE_4, muted: false });
+    expect(loud()).toBe(true);
+  });
+});
+
 describe("placing a node", () => {
   const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
   const put = (node: number, ui: { x: number; y: number } | null): Intent => ({ type: "setNodeUi", node, ui });

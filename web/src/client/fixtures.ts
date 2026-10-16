@@ -12,6 +12,7 @@ import fields from "./fixtures/fields.json";
 import filenames from "./fixtures/filenames.json";
 import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
+import audible from "./fixtures/audible.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
@@ -21,6 +22,14 @@ import reach from "./fixtures/reach.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
 export const tracerSnapshot = tracer as unknown as Snapshot;
+
+/**
+ * What the engine makes of every combination of mute and solo of two groups and four lanes (the first two in the first group, the third in the second, the
+ * fourth in none), read from a run of the audio graph by `the_web_clients_fixture_of_what_is_heard_is_current`: a case is the state of each node, two bits
+ * each (the first muted and the second soloed), the groups first and then the lanes, and a sum whose bits are which lanes reach the master (1, 2, 4 and 8) and
+ * which buses are heard (16 and 32).
+ */
+export const audibleFixture = audible as unknown as { groups: number; lanes: (number | null)[]; cases: [number, number][] };
 
 /**
  * A session with two groups, lanes in them and out of them, an empty lane and a modulator in a few of each,

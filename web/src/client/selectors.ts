@@ -4,6 +4,7 @@ import { WAVEFORMS } from "../protocol";
 import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, PatternInfo, Preset } from "../protocol";
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
+import { audibleOf } from "./audible";
 import { displayNames } from "./names";
 import { shownParams } from "./pinning";
 
@@ -108,6 +109,44 @@ export function rangeOf(state: ClientState, id: NodeId): NoteRange | null | unde
 export function patternOf(state: ClientState, id: NodeId): PatternInfo | null | undefined {
   const node = nodeById(state, id);
   return node?.kind === "instrument" ? node.pattern : undefined;
+}
+
+/** What a lane's or a group's mute and solo are set to. */
+export interface Flags {
+  muted: boolean;
+  solo: boolean;
+}
+
+/** The mute and the solo of a lane or a group (a lane that has no instrument has them too); undefined if the node is neither. */
+export function flagsOf(state: ClientState, id: NodeId): Flags | undefined {
+  const node = nodeById(state, id);
+  return node?.kind === "instrument" || node?.kind === "group" ? { muted: node.muted, solo: node.solo } : undefined;
+}
+
+/** Whether two answers of `flagsOf` are the same flags (the answer is made anew each time). */
+export function sameFlags(a: Flags | undefined, b: Flags | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.muted === b.muted && a.solo === b.solo;
+}
+
+/**
+ * Whether what a node puts out can be heard at the master, by the mute and solo of the session (`audibleOf`): a lane's or a group's own, and an effect's by the lane
+ * or group whose chain it is in, which is what carries it. Undefined for the nodes that put out no sound, a modulator and the master among them.
+ */
+export function audibleAt(state: ClientState, id: NodeId): boolean | undefined {
+  const graph = state.snapshot?.graph;
+  const node = graph?.nodes.find((n) => n.id === id);
+  if (graph === undefined || node === undefined) return undefined;
+  switch (node.kind) {
+    case "instrument":
+    case "group":
+      return audibleOf(graph).get(node.id);
+    case "effect":
+      return node.parent === null ? undefined : audibleOf(graph).get(node.parent);
+    default:
+      return undefined;
+  }
 }
 
 /** The group a lane is in and the groups there are, for the lane's choice of group: each by the name the canvas gives it. */

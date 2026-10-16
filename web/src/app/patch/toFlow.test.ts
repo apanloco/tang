@@ -167,10 +167,10 @@ function tall(graph: Graph, id: NodeId): number {
 
 describe("the height of a node", () => {
   test("is as much more for a lane as its pattern under its controls is, which no other node has: a lane and an effect with as many rows of controls differ by it", () => {
-    // (A lane has the volume, the keys and the group beside its knobs, an effect only its mix: one knob and three make a row of four each.)
-    expect(controlCount(nodeOf(twoLanes, 1), 1)).toBe(controlCount(nodeOf(twoLanes, 2), 3));
-    expect(nodeHeight(nodeOf(twoLanes, 1), 1) - nodeHeight(nodeOf(twoLanes, 2), 3)).toBe(PATTERN_HEIGHT);
-    // A group, and a modulator, have none (a group has two controls and no pattern).
+    // (A lane has the volume, the keys, the group and the mute and solo beside its knobs, an effect only its mix: no knob and three make a row of four each.)
+    expect(controlCount(nodeOf(twoLanes, 1), 0)).toBe(controlCount(nodeOf(twoLanes, 2), 3));
+    expect(nodeHeight(nodeOf(twoLanes, 1), 0) - nodeHeight(nodeOf(twoLanes, 2), 3)).toBe(PATTERN_HEIGHT);
+    // A group, and a modulator, have none (a group has three controls and no pattern).
     expect(nodeHeight(nodeOf(grouped, 10), 0)).toBe(nodeHeight(nodeOf(twoLanes, 2), 3));
   });
 });
@@ -1305,7 +1305,7 @@ describe("the parameters a node shows", () => {
   });
 
   test("lay the lane below further down when a pin makes a node of the lane a row taller, by what a row is", () => {
-    // (An instrument has its volume and its keys among the controls: ten are three rows of four, thirteen are four.)
+    // (An instrument has its volume, its keys, its group and its mute and solo among the controls: twelve are three rows of four, thirteen are four.)
     const lanes = (pinned: number[]): Graph => ({
       nodes: [instrumentOf(1, { ...plugin(12), pinned }), instrumentOf(2, plugin(2)), master],
       edges: [audio(1, MASTER), audio(2, MASTER)],
@@ -1316,8 +1316,10 @@ describe("the parameters a node shows", () => {
     const grown = at(toFlow(eleven), 2).position.y - at(toFlow(eight), 2).position.y;
     expect(grown).toBeGreaterThan(0);
     expect(grown).toBe(nodeHeight(nodeOf(eight, 1), 11) - nodeHeight(nodeOf(eight, 1), 8));
-    // A pin that leaves the node as tall as it was moves nothing.
-    expect(at(toFlow(lanes(indices.slice(0, 9))), 2).position.y).toBe(at(toFlow(eight), 2).position.y);
+    // A pin that leaves the node as tall as it was moves nothing (eleven parameters and twelve are four rows each).
+    expect(at(toFlow(lanes(indices)), 2).position.y).toBe(at(toFlow(eleven), 2).position.y);
+    // And the ninth parameter, which makes thirteen controls, is the one that begins the fourth row.
+    expect(at(toFlow(lanes(indices.slice(0, 9))), 2).position.y).toBe(at(toFlow(eleven), 2).position.y);
   });
 
   test("include a parameter that is beyond the first few when a cable ends at it", () => {
@@ -1331,9 +1333,9 @@ describe("the parameters a node shows", () => {
   });
 
   test("are counted with the node's own gain, so that the layout knows how tall it is", () => {
-    expect(controlCount(instrument(1), 3)).toBe(6); // the parameters, the volume, the keys and the group
+    expect(controlCount(instrument(1), 3)).toBe(7); // the parameters, the volume, the keys, the group and the mute and solo
     expect(controlCount(effect(2, 1), 8)).toBe(9);
-    expect(controlCount(group(3), 0)).toBe(2);
+    expect(controlCount(group(3), 0)).toBe(3); // the volume, the pan and the mute and solo
     expect(controlCount(modulator(4, 1), 0)).toBe(0);
     expect(controlCount(master, 0)).toBe(0);
     // Four controls to a row: a fifth begins a second row, a ninth a third.
@@ -1341,11 +1343,12 @@ describe("the parameters a node shows", () => {
     expect(nodeHeight(effect(2, 1), 4)).toBeGreaterThan(nodeHeight(effect(2, 1), 3));
     expect(nodeHeight(effect(2, 1), 7)).toBe(nodeHeight(effect(2, 1), 4));
     expect(nodeHeight(effect(2, 1), 8)).toBeGreaterThan(nodeHeight(effect(2, 1), 7));
-    // An instrument has its keys and its group as well as its volume: one parameter fills the first row with them, a second begins a second, a sixth a third.
-    expect(nodeHeight(instrument(1), 1)).toBe(nodeHeight(instrument(1), 0));
-    expect(nodeHeight(instrument(1), 2)).toBeGreaterThan(nodeHeight(instrument(1), 1));
-    expect(nodeHeight(instrument(1), 5)).toBe(nodeHeight(instrument(1), 2));
-    expect(nodeHeight(instrument(1), 6)).toBeGreaterThan(nodeHeight(instrument(1), 5));
+    // An instrument has its keys, its group and its mute and solo as well as its volume: they fill the first row, a first parameter begins a second, a fifth a third.
+    expect(nodeHeight(instrument(1), 1)).toBeGreaterThan(nodeHeight(instrument(1), 0));
+    expect(nodeHeight(instrument(1), 4)).toBe(nodeHeight(instrument(1), 1));
+    expect(nodeHeight(instrument(1), 5)).toBeGreaterThan(nodeHeight(instrument(1), 4));
+    expect(nodeHeight(instrument(1), 8)).toBe(nodeHeight(instrument(1), 5));
+    expect(nodeHeight(instrument(1), 9)).toBeGreaterThan(nodeHeight(instrument(1), 8));
   });
 });
 
@@ -1651,12 +1654,12 @@ describe("a node that shows a scope", () => {
   test("puts the group below a group that shows a scope further down when they would be over each other, in the layout and where the places are remembered", () => {
     // (Two lanes of one row of controls each, so that the groups are as near as they can be: the second a row's gap below the first, which a scope on the first is in the way of.)
     const groups: Graph = {
-      nodes: [group(10), group(20), instrument(1, 1, 10), instrument(2, 1, 20), master],
+      nodes: [group(10), group(20), instrument(1, 0, 10), instrument(2, 0, 20), master],
       edges: [member(1, 10), member(2, 20), audio(10, MASTER), audio(20, MASTER)],
     };
     const closed = toFlow(groups);
     // (A row is as tall as the tallest node in it, which is the lane: it has its pattern under its controls.)
-    const row = Math.max(nodeHeight(nodeOf(groups, 10), 0), nodeHeight(nodeOf(groups, 1), 1));
+    const row = Math.max(nodeHeight(nodeOf(groups, 10), 0), nodeHeight(nodeOf(groups, 1), 0));
     expect(at(closed, 20).position.y - at(closed, 10).position.y).toBe(row + ROW_GAP);
     expect(nodeHeight(nodeOf(groups, 10), 0, 0, true), "the scope is in the way, which is what this is about").toBeGreaterThan(row);
     const wanted = at(closed, 10).position.y + nodeHeight(nodeOf(groups, 10), 0, 0, true) + ROW_GAP;

@@ -12193,6 +12193,50 @@ mod tests {
         assert!(all_at(&heard, 0.25), "{heard:?}");
     }
 
+    /// What the engine makes of every combination of mute and solo of two groups and four lanes (the first two in the first group, the third in the second, the fourth in
+    /// none), as the web client's `audibleOf` has to say it (`web/src/client/fixtures/audible.json`): which of them reach the master, read from a run of the audio graph. The
+    /// lanes put out 1, 2, 4 and 8, and each bus has an effect that puts 16 or 32 out whatever comes in (a tail), so that the sum is a number whose bits are which lanes are
+    /// heard and which buses. A case is the state of each node, two bits each (the first muted and the second soloed), the groups first and then the lanes, and the sum.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_is_heard_is_current() {
+        // (One graph for all of them: each case sets every flag, and two buffers settle what the last case left.)
+        let mut rig = MeterRig::new(&[1.0, 2.0, 4.0, 8.0], &[Some(0), Some(0), Some(1), None], 2);
+        for group in 0..2 {
+            send(&rig, GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(16.0 * (1 << group) as f32)), mix: 1.0 });
+        }
+        let cases: Vec<serde_json::Value> = (0..4096u32)
+            .map(|case| {
+                for node in 0..6usize {
+                    let (muted, solo) = (case >> (2 * node) & 1 == 1, case >> (2 * node) & 2 == 2);
+                    let commands = if node < 2 {
+                        [GraphCommand::SetGroupMute { group: node, muted }, GraphCommand::SetGroupSolo { group: node, solo }]
+                    } else {
+                        [GraphCommand::SetMute { inst: node - 2, muted }, GraphCommand::SetSolo { inst: node - 2, solo }]
+                    };
+                    commands.into_iter().for_each(|command| send(&rig, command));
+                }
+                // (Two buffers: the first lets go of what is let go of, over a ramp.)
+                let heard = heard_after(&mut rig, 2);
+                assert!(heard.iter().all(|&s| s == heard[0] && s.fract() == 0.0), "case {case}: a steady whole number, {:?}", &heard[..4]);
+                serde_json::json!([case, heard[0] as u32])
+            })
+            .collect();
+        let fresh = serde_json::to_string(&serde_json::json!({ "groups": 2, "lanes": [0, 0, 1, null], "cases": cases })).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/audible.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the engine makes of a mute and a solo now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     #[test]
     fn a_mute_or_a_solo_for_a_lane_or_a_group_that_is_not_there_is_ignored() {
         let mut rig = MeterRig::new(&[0.3], &[None], 0);

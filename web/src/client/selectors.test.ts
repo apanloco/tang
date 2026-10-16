@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
+import { audibleAt, cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -569,5 +569,90 @@ describe("what goes when a lane or a group is taken out", () => {
     expect(sameRemoval(undefined, undefined)).toBe(true);
     expect(sameRemoval(a, undefined)).toBe(false);
     expect(sameRemoval(undefined, a)).toBe(false);
+  });
+});
+
+describe("the mute and the solo of a lane or a group", () => {
+  const groups = stateOf(groupsFixture.snapshot);
+  /** The tracer with the oscillator's flags set, or `snapshot` with those of the node `id`. */
+  const flagged = (flags: { muted?: boolean; solo?: boolean }, snapshot: Snapshot = tracerSnapshot, id: number = oscillator.id): ClientState => {
+    const copy = structuredClone(snapshot);
+    const node = copy.graph.nodes.find((n) => n.id === id);
+    if (node?.kind !== "instrument" && node?.kind !== "group") throw new Error("no lane or group");
+    Object.assign(node, flags);
+    return stateOf(copy);
+  };
+
+  test("are both off for a lane or a group that was not touched, and for a lane that has no instrument", () => {
+    expect(flagsOf(state, oscillator.id)).toEqual({ muted: false, solo: false });
+    expect(flagsOf(groups, 0)).toEqual({ muted: false, solo: false }); // a group
+    expect(flagsOf(stateOf(reachFixture.snapshot), 14)).toEqual({ muted: false, solo: false }); // a lane that has no instrument
+  });
+
+  test("are what the node says of them, each by itself: of a lane and of a group", () => {
+    expect(flagsOf(flagged({ muted: true }), oscillator.id)).toEqual({ muted: true, solo: false });
+    expect(flagsOf(flagged({ solo: true }), oscillator.id)).toEqual({ muted: false, solo: true });
+    expect(flagsOf(flagged({ muted: true, solo: true }), oscillator.id)).toEqual({ muted: true, solo: true });
+    expect(flagsOf(flagged({ solo: true }, groupsFixture.snapshot, 1), 1)).toEqual({ muted: false, solo: true });
+    expect(flagsOf(flagged({ muted: true }, groupsFixture.snapshot, 1), 0)).toEqual({ muted: false, solo: false });
+  });
+
+  test("are none for what is neither a lane nor a group: an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
+    for (const node of [filter.id, lfo.id, MASTER, 424242]) expect(flagsOf(state, node), `node ${String(node)}`).toBeUndefined();
+    expect(flagsOf(stateOf(null), oscillator.id)).toBeUndefined();
+  });
+
+  test("are the same flags when both are as they were, and not otherwise", () => {
+    const a = flagsOf(state, oscillator.id);
+    const b = flagsOf(state, oscillator.id);
+    expect(a).not.toBe(b);
+    expect(sameFlags(a, b)).toBe(true);
+    expect(sameFlags(a, flagsOf(flagged({ muted: true }), oscillator.id))).toBe(false);
+    expect(sameFlags(a, flagsOf(flagged({ solo: true }), oscillator.id))).toBe(false);
+    expect(sameFlags(flagsOf(flagged({ muted: true }), oscillator.id), flagsOf(flagged({ solo: true }), oscillator.id))).toBe(false);
+    expect(sameFlags(undefined, undefined)).toBe(true);
+    expect(sameFlags(a, undefined)).toBe(false);
+    expect(sameFlags(undefined, a)).toBe(false);
+  });
+});
+
+describe("whether a node can be heard at the master", () => {
+  const muted = (): ClientState => {
+    const copy = structuredClone(tracerSnapshot);
+    const node = copy.graph.nodes.find((n) => n.id === oscillator.id);
+    if (node?.kind !== "instrument") throw new Error("no lane");
+    node.muted = true;
+    return stateOf(copy);
+  };
+
+  test("is yes for everything of a session that has no mute and no solo: a lane and the effects of its chain", () => {
+    expect(audibleAt(state, oscillator.id)).toBe(true);
+    expect(audibleAt(state, filter.id)).toBe(true);
+  });
+
+  test("is no for a lane that is muted, and for the effects of its chain, which have nothing to say", () => {
+    expect(audibleAt(muted(), oscillator.id)).toBe(false);
+    expect(audibleAt(muted(), filter.id)).toBe(false);
+  });
+
+  test("is the engine's for a group: a muted group is not heard, nor are the lanes and the effects of the lanes that are in it", () => {
+    const copy = structuredClone(groupsFixture.snapshot);
+    const group = copy.graph.nodes.find((n) => n.id === 0);
+    if (group?.kind !== "group") throw new Error("no group");
+    group.muted = true;
+    const cut = stateOf(copy);
+    expect(audibleAt(cut, 0)).toBe(false);
+    expect(audibleAt(cut, 3)).toBe(false); // a lane of the group
+    expect(audibleAt(cut, 11)).toBe(false); // an effect of another lane of the group
+    expect(audibleAt(cut, 10)).toBe(false);
+    expect(audibleAt(cut, 5)).toBe(true); // a lane that is in no group
+    expect(audibleAt(cut, 6)).toBe(true);
+    expect(audibleAt(cut, 9)).toBe(true); // a lane of the other group
+    expect(audibleAt(cut, 1)).toBe(true);
+  });
+
+  test("says nothing of what is no lane, no group and no effect: a modulator, the master, a node that is not there, and a session that is not there", () => {
+    for (const node of [lfo.id, MASTER, 424242]) expect(audibleAt(state, node), `node ${String(node)}`).toBeUndefined();
+    expect(audibleAt(stateOf(null), oscillator.id)).toBeUndefined();
   });
 });

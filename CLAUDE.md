@@ -323,6 +323,15 @@ beside `volume`, written only when on. In the model they are `InstrumentNode::mu
   are after it (a muted lane stops clipping); the scope taps of a node are before it (they show the
   signal of the node, not what is heard). The lane's mute and solo go where the lane goes (a swap
   of two lanes, undo of a removal: the lane is handed back whole).
+- The terminal (`M` and `S`, see the key table) and the page (the "Mute / Solo" cell of a lane's
+  and a group's node, which draws what cannot be heard dimmed) set them through the intents
+  `SetMute` and `SetSolo`, which are steps of the history.
+
+TODO: a click that solos one lane and takes the others' solo off (the Shift or Alt click of a
+console), and a button that takes every solo off: the buttons turn each one by itself, as the keys do.
+TODO: a muted lane (or one that is not heard for a solo) still renders its plugins every buffer, for
+what a held note and a tail are when it is brought back; one that has been silent for a while could
+stop, at the cost of that.
 
 ### Plugin slot fields
 
@@ -2048,6 +2057,11 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   kind back), shown as MIDI controls (`velocity of the last note`, `pitch of the last note`), their rings by the laws (a key is bipolar around middle C: `KEY_CENTRE`, `KEY_SPAN` are
   generated constants), and followed by the mock engine as the engine follows the notes (`MockServer.#listened`: a lane's hear the notes in its keys as its transpose makes them, a
   group's the notes of its members' keys as they are played; no remap, no patterns). The piano under the canvas plays a pointer harder lower on a key (20 to 127, `velocityAt`).
+  Step 53 gave every lane and group a mute and a solo (see "Mute and solo"): a "Mute / Solo" cell last in the node's grid (`MuteSoloCell`: two buttons, `M` and `S`, `aria-pressed`, named
+  `Mute Oscillator` and `Solo Pad`; a press asks `Editor.setMute` or `setSolo` for the other way and the buttons show what the session has, nothing is changed before the answer, and the title
+  says what a press does), a node that cannot be heard drawn dimmed (`tang-node--unheard`, `opacity: 0.55` and not brighter under the pointer: a lane or a group that is muted, or not soloed
+  while something is, and the effects in the chain of one; `audibleAt` over `audibleOf` in `client/audible.ts`, which is the engine's law written again and pinned to a run of the engine over every
+  combination of the flags of two groups and four lanes by `fixtures/audible.json`, 4,096 cases), and the mock engine's meters and scope silent for what is not heard (`MockServer.frame`; no fade).
   The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19), and
   every lane and group has an "fx" menu that puts an installed effect in its chain (`client/catalog.ts`,
   `AddEffectMenu`; `Editor.addEffect`). Step 20 added the instruments: every lane has a "♪" menu that
