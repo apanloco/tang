@@ -747,6 +747,9 @@ velocity = 0
   on a pattern are `ClearPattern { node }`, and the rows of the pane (typed or stepped) are `SetPatternField { node, field, value }` (see "Session state"). The
   pattern is on its lane's node in the graph a browser is given (`PatternInfo`: whether it is recording, enabled, looping and in key, its length in beats, the tempo
   it was recorded at and how many notes it has), and what is done to it is told as `PatternSet`.
+- The browser page has the same controls in a block under every lane (`app/patch/PatternCell.tsx`, step 51; see "Web UI"): Record / Stop, Clear (it asks first: a pattern is
+  not put back by undo), the length in beats, Play, Loop and In key, and a line that says what the pattern is. The count-in is `COUNT_IN_BEATS` (4) beats of the metronome,
+  which the page reads as `PATTERN_COUNT_IN_BEATS`.
 
 ## Note remapping
 
@@ -1945,7 +1948,15 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`). Step 49 put the
   tempo in that bar (`app/Tempo.tsx`, a field of beats a minute that is a `spinbutton`: what is typed is asked for as `SetBpm` with Enter or on leaving the field,
   Escape gives it up, and the arrow keys turn it by one, by ten with Shift, each step asked as it is made, so that a held key is one step of the history; the server
-  holds it to 20–300 and the field shows what it was held to; `Editor.setBpm`).
+  holds it to 20–300 and the field shows what it was held to; `Editor.setBpm`; the field is the page's `ui/NumberField`, which the length of a pattern uses too). Step 51 put
+  the pattern of a lane in the page: a block under the controls of every lane, an empty lane too (`app/patch/PatternCell.tsx`: a button that records, `Editor.setRecording`,
+  red and "Stop" while a recording goes on; a menu that clears the pattern, `Editor.clearPattern`, which asks first, in words that say it is for good; the length, a
+  `NumberField` of 1 to 32 beats, `Editor.setPatternField`; the switches Play, Loop and In key; and a line, `client/patternWords.ts`: "4 beats · 3 notes · 90 BPM", the tempo
+  it was recorded at, or "Counting in, then 4 beats at 120 BPM: play now" while it records). The block is as tall whatever it shows (`PATTERN_HEIGHT`, 97 px measured in a
+  browser, which the layout adds to every lane's node), and a lane that has no pattern has it too with what has no use dimmed (its length is the one its first recording
+  takes, `PATTERN_DEFAULT_LENGTH`). The mock engine does what the engine does with a recording (`MockServer.settle`, a timer that looks at the recordings every 50 ms while
+  there are any: it counts in, takes the length of the pattern at the tempo it began with, counts the notes of the lane's keys that are played, and when it is done the lane has
+  the pattern and the clients are given the session, as the controller does when it polls).
   The client's store also keeps the server's plugin catalog (`ClientState.catalog`, step 19), and
   every lane and group has an "fx" menu that puts an installed effect in its chain (`client/catalog.ts`,
   `AddEffectMenu`; `Editor.addEffect`). Step 20 added the instruments: every lane has a "♪" menu that
@@ -2148,6 +2159,8 @@ edge, and two cables with the same middle put theirs over each other; sliders th
 cable would settle it (nodes can be placed since step 25, which helps but does not settle it; a cable that ends at a depth has its slider on the
 run under what drives it, since step 36).
 TODO: patterns as graph nodes (a lane's pattern is on the lane's node, as a `PatternInfo`, but has no `NodeId` of its own).
+TODO: the page does not draw the notes of a pattern (a snapshot has how many there are), nor says where a recording is: it knows that one goes on, and not whether it is counting
+in or recording, nor how far it is (the engine reports its end and nothing before it); a telemetry channel or an event for the phase of a recording would give a progress bar.
 TODO: events of their own for what the audio thread reports to the controller (a
 finished pattern recording, a captured MIDI-learn control) and for what the TUI
 changes without an intent: until then connected browsers are given a snapshot
