@@ -1,0 +1,34 @@
+# Example: a wavefolder. A triangle, which is nearly a pure tone, goes through the Drive's
+# `fold` shape: the harder it is driven the more times the wave is folded back on itself,
+# and every fold is more harmonics, so that a slow LFO on `drive` is a sweep from a soft
+# sound to a bright, metallic one and back. The pitch is the key's all the way: a fold
+# changes the colour of a wave and not its period. Play slowly.
+# On the page, try the Drive's other shapes (`type`), its `tone`, and the depth of the LFO's cable.
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[instrument.params]
+waveform = 1.0 # triangle
+attack = 0.01
+release = 0.4
+
+[[instrument.effect]]
+plugin = "builtin:drive"
+mix = 1.0
+
+[instrument.effect.params]
+type = 3.0     # fold
+drive = 0.5
+tone = 0.85
+level = 0.4
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 0.2
+
+[[instrument.modulator.target]]
+slot = 1
+param = "drive"
+depth = 0.3

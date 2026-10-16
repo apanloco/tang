@@ -981,7 +981,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 8] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml"];
+    const SOUND_EXAMPLES: [&str; 9] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1116,6 +1116,23 @@ mod tests {
         let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
         let (start, later) = (brightness(window(0.02)), brightness(window(1.8)));
         assert!(start > 1.3 * later, "{start} and {later}");
+    }
+
+    #[test]
+    fn the_fold_example_sweeps_from_a_soft_sound_to_a_bright_one_with_the_pitch_of_the_key() {
+        // The LFO goes round in 5 s (0.2 Hz), so that it is at its top at 1.25 s and at its bottom at 3.75 s: the drive is at 0.8 and at 0.2 (a gain of 27 and of 2.3 at the fold).
+        let out = play(&example("fold.toml"), &[48], 0.0, 9.0, 5.0);
+        let window = |from: f32| &out[(from * 48_000.0) as usize..((from + 0.1) * 48_000.0) as usize];
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        let (folded, soft) = (brightness(window(1.25)), brightness(window(3.75)));
+        assert!(folded > 4.0 * soft, "{folded} at the top of the sweep and {soft} at the bottom");
+        // A fold changes the colour of a wave and not its period. (Not measured at the very top: there the first peak of the autocorrelation that is nearly the best is at a lag of
+        // the seventh harmonic, and it says 915 Hz for a key of 131.)
+        let c3 = 440.0 * 2.0f32.powf(-21.0 / 12.0);
+        for from in [1.0f32, 1.5, 2.0] {
+            let cents = 1200.0 * (pitch_of(window(from), 48_000.0) / c3).log2();
+            assert!(cents.abs() < 5.0, "{cents} cents from C3 at {from} s");
+        }
     }
 
     #[test]
