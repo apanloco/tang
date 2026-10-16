@@ -65,6 +65,10 @@ export const PATTERN_COUNT_IN_BEATS = 4;
 /** How long a pattern is, in beats, when a lane is given one that has nothing recorded (`PatternState::empty`). */
 export const PATTERN_DEFAULT_LENGTH = 4;
 
+/** The note that a key control is centred on (middle C), and how many semitones either way make the whole of its depth (`KEY_CENTRE`, `KEY_SPAN`). */
+export const KEY_CENTRE = 60;
+export const KEY_SPAN = 60;
+
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 

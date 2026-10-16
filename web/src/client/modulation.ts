@@ -77,8 +77,8 @@ function offsetRange(modulation: Modulation, base: number, min: number, max: num
       return between(-amount * (base - min), 0);
     case "midiLearn":
       if (source.control === null) return null; // not bound to anything yet: the base shows through
-      // Pitch bend is bipolar around its centre; a CC and pressure start from nothing at rest.
-      return source.control.type === "pitchBend" ? between(-amount * range, amount * range) : between(0, amount * range);
+      // Pitch bend is bipolar around its centre, and a key around middle C (five octaves either way are the whole of the depth); a CC, pressure and a velocity start from nothing at rest.
+      return source.control.type === "pitchBend" || source.control.type === "key" ? between(-amount * range, amount * range) : between(0, amount * range);
     // A macro is unipolar, as a CC is: it starts from nothing at rest and adds up to depth × range at full.
     case "macro":
       return between(0, amount * range);

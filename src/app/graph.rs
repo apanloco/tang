@@ -185,6 +185,10 @@ pub enum MidiControl {
     Cc { number: u8 },
     PitchBend,
     Aftertouch,
+    /// The velocity of the last note of the lane.
+    Velocity,
+    /// The number of the last note of the lane.
+    Key,
 }
 
 /// A connection from a port of one node to a port of another.
@@ -277,6 +281,8 @@ impl From<MidiBindSource> for MidiControl {
             MidiBindSource::Cc(number) => MidiControl::Cc { number },
             MidiBindSource::PitchBend => MidiControl::PitchBend,
             MidiBindSource::Aftertouch => MidiControl::Aftertouch,
+            MidiBindSource::Velocity => MidiControl::Velocity,
+            MidiBindSource::Key => MidiControl::Key,
         }
     }
 }
@@ -852,6 +858,8 @@ depth = 0.1
         for (slot, expected) in [
             (learn(Some(MidiBindSource::Cc(74)), false), "CC 74"),
             (learn(Some(MidiBindSource::PitchBend), false), "Pitch Bend"),
+            (learn(Some(MidiBindSource::Velocity), false), "Velocity"),
+            (learn(Some(MidiBindSource::Key), false), "Key"),
             (learn(None, true), "MIDI (learning…)"),
         ] {
             model.instruments[0].modulators[1].source = slot;
@@ -963,10 +971,12 @@ depth = 0.1
                 &ModulatorSource::MidiLearn { control: None, learning: true },
                 &ModulatorSource::MidiLearn { control: Some(MidiControl::PitchBend), learning: false },
                 &ModulatorSource::MidiLearn { control: Some(MidiControl::Aftertouch), learning: false },
+                &ModulatorSource::MidiLearn { control: Some(MidiControl::Velocity), learning: false },
+                &ModulatorSource::MidiLearn { control: Some(MidiControl::Key), learning: false },
             ]
         );
         let names: Vec<&str> = lane.modulators.iter().map(|m| node(&graph, m.node).name.as_str()).collect();
-        assert_eq!(names, ["CC 74", "MIDI (learning…)", "Pitch Bend", "Aftertouch"]);
+        assert_eq!(names, ["CC 74", "MIDI (learning…)", "Pitch Bend", "Aftertouch", "Velocity", "Key"]);
     }
 
     #[test]
@@ -1567,6 +1577,8 @@ depth = 0.2
         );
         assert_eq!(serde_json::to_value(ModulatorSource::Macro { value: 0.25 }).unwrap(), json!({"type": "macro", "value": 0.25}));
         assert_eq!(serde_json::to_value(MidiControl::PitchBend).unwrap(), json!({"type": "pitchBend"}));
+        assert_eq!(serde_json::to_value(MidiControl::Velocity).unwrap(), json!({"type": "velocity"}));
+        assert_eq!(serde_json::to_value(MidiControl::Key).unwrap(), json!({"type": "key"}));
         assert_eq!(
             serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5, pattern: None })
                 .unwrap(),

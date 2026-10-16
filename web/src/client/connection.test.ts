@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, SCOPE_FRAME_LENGTH } from "../protocol";
-import type { CatalogEntry, ClientMessage, Edge, Intent, Node, Port, ServerMessage, Snapshot, TelemetryLayout, Waveform } from "../protocol";
+import type { CatalogEntry, ClientMessage, Edge, Intent, MidiControl, Node, Port, ServerMessage, Snapshot, TelemetryLayout, Waveform } from "../protocol";
 import { Client, RequestError, SLOW_AFTER } from "./connection";
 import type { ClientOptions, Transport, TransportFactory } from "./connection";
 import { builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, fieldsFixture, MASTER, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
@@ -2922,7 +2922,7 @@ describe("the value of a parameter that several cables drive", () => {
 });
 
 describe("what a MIDI control puts out and does in the mock engine, which has no MIDI: it rests where the engine's does (f137)", () => {
-  const withControl = (control: { type: "cc"; number: number } | { type: "pitchBend" } | { type: "aftertouch" } | null): Snapshot => {
+  const withControl = (control: MidiControl | null): Snapshot => {
     const nodes = tracerSnapshot.graph.nodes.map((node) =>
       node.kind === "modulator" ? { ...node, source: { type: "midiLearn" as const, control, learning: control === null } } : node,
     );
@@ -2936,7 +2936,9 @@ describe("what a MIDI control puts out and does in the mock engine, which has no
     ["a CC", { type: "cc", number: 74 }, 0],
     ["key pressure", { type: "aftertouch" }, 0],
     ["the pitch bend wheel", { type: "pitchBend" }, 0.5],
-  ] as const)("puts out what it rests at when it is %s: nothing, and the middle for the pitch bend wheel", async (_name, control, rest) => {
+    ["a velocity", { type: "velocity" }, 0],
+    ["a key", { type: "key" }, Math.fround(60 / 127)], // (a telemetry frame holds 32-bit numbers)
+  ] as const)("puts out what it rests at when it is %s: nothing, the middle for the pitch bend wheel and middle C for a key", async (_name, control, rest) => {
     const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) }), { telemetry: ["modulation"] });
     // (The buffers hold 0 until a frame comes: a rest of 0 is looked at after two.)
     await until(() => client.telemetry.frames > 1, "frames");
@@ -2948,6 +2950,8 @@ describe("what a MIDI control puts out and does in the mock engine, which has no
     ["a CC", { type: "cc", number: 74 }],
     ["key pressure", { type: "aftertouch" }],
     ["the pitch bend wheel", { type: "pitchBend" }],
+    ["a velocity", { type: "velocity" }],
+    ["a key", { type: "key" }],
   ] as const)("leaves a parameter where the user set it when it is %s and at rest", async (_name, control) => {
     // The cutoff, which the user set to 0.5, has the cable of the tracer's LFO at depth 0.4, from this control now.
     const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) }), { telemetry: ["modulation"] });
@@ -2955,7 +2959,7 @@ describe("what a MIDI control puts out and does in the mock engine, which has no
   });
 
   test("leaves the setting of a modulator where the user set it too, for the pitch bend wheel at rest and for a control that is not bound", async () => {
-    for (const control of [null, { type: "pitchBend" } as const]) {
+    for (const control of [null, { type: "pitchBend" } as const, { type: "key" } as const]) {
       const server = new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) });
       const client = await open(server, { telemetry: ["modulation"] });
       const oscillator = nodeNamed(tracerSnapshot, "Oscillator");

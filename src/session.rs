@@ -190,6 +190,12 @@ pub struct ModulatorConfig {
     /// pressure or poly aftertouch).
     #[serde(default)]
     pub midi_aftertouch: bool,
+    /// For `type = "midi"`: follows the velocity of the notes the lane plays (the last one's, which stays when it ends).
+    #[serde(default)]
+    pub midi_velocity: bool,
+    /// For `type = "midi"`: follows the number of the notes the lane plays (the last one's).
+    #[serde(default)]
+    pub midi_key: bool,
     #[serde(default, rename = "target")]
     pub targets: Vec<ModTargetConfig>,
     /// Where the modulator is drawn.
@@ -739,9 +745,9 @@ pub enum SaveModSource {
     Lfo { waveform: String, rate: f32 },
     Envelope { attack: f32, decay: f32, sustain: f32, release: f32 },
     /// A MIDI-learned control. `cc = Some(n)` = CC n, else `pitch_bend` /
-    /// `aftertouch` select the wheel or key pressure. All unset = unbound
-    /// (still learning).
-    MidiLearn { cc: Option<u8>, pitch_bend: bool, aftertouch: bool },
+    /// `aftertouch` select the wheel or key pressure, and `velocity` / `key` follow the notes
+    /// of the lane. All unset = unbound (still learning).
+    MidiLearn { cc: Option<u8>, pitch_bend: bool, aftertouch: bool, velocity: bool, key: bool },
     /// A macro: the number it is set to.
     Macro { value: f32 },
 }
@@ -964,6 +970,10 @@ struct ModulatorOut {
     midi_pitch_bend: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     midi_aftertouch: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    midi_velocity: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    midi_key: bool,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "target")]
     targets: Vec<ModTargetOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1139,6 +1149,8 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_cc: None,
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
+                    midi_velocity: false,
+                    midi_key: false,
                     targets,
                     ui,
                 },
@@ -1154,10 +1166,12 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_cc: None,
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
+                    midi_velocity: false,
+                    midi_key: false,
                     targets,
                     ui,
                 },
-                SaveModSource::MidiLearn { cc, pitch_bend, aftertouch } => ModulatorOut {
+                SaveModSource::MidiLearn { cc, pitch_bend, aftertouch, velocity, key } => ModulatorOut {
                     mod_type: "midi".into(),
                     waveform: None,
                     rate: None,
@@ -1169,6 +1183,8 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_cc: *cc,
                     midi_pitch_bend: *pitch_bend,
                     midi_aftertouch: *aftertouch,
+                    midi_velocity: *velocity,
+                    midi_key: *key,
                     targets,
                     ui,
                 },
@@ -1184,6 +1200,8 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_cc: None,
                     midi_pitch_bend: false,
                     midi_aftertouch: false,
+                    midi_velocity: false,
+                    midi_key: false,
                     targets,
                     ui,
                 },
@@ -1928,7 +1946,7 @@ range = "C4-C8"
             transpose: 0,
             group: None,
             modulators: vec![SaveModulator {
-                source: SaveModSource::MidiLearn { cc: Some(74), pitch_bend: false, aftertouch: false },
+                source: SaveModSource::MidiLearn { cc: Some(74), pitch_bend: false, aftertouch: false, velocity: false, key: false },
                 targets: vec![SaveModTarget {
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     label: "cutoff".into(),
@@ -1979,7 +1997,7 @@ range = "C4-C8"
             transpose: 0,
             group: None,
             modulators: vec![SaveModulator {
-                source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: true },
+                source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: true, velocity: false, key: false },
                 targets: vec![SaveModTarget {
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     label: "cutoff".into(),
@@ -2012,6 +2030,48 @@ range = "C4-C8"
         assert!(m.midi_aftertouch);
         assert!(m.midi_cc.is_none());
         assert!(!m.midi_pitch_bend);
+    }
+
+    #[test]
+    fn save_and_reload_velocity_and_key_modulators() {
+        // A control that follows the notes round-trips as `type = "midi"` + `midi_velocity = true` or `midi_key = true`, and only one of them is written for each.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        let modulator = |velocity, key| SaveModulator {
+            source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: false, velocity, key },
+            targets: vec![],
+            ui: None,
+        };
+        let instruments = vec![SaveInstrumentSlot {
+            range: None,
+            transpose: 0,
+            group: None,
+            modulators: vec![modulator(true, false), modulator(false, true)],
+            instrument: Some(SaveInstrument {
+                pinned: vec![],
+                plugin: "builtin:filter".into(),
+                volume: 1.0,
+                preset: None,
+                params: vec![],
+                pitch_bend_range: 2.0,
+                remap: HashMap::new(),
+            }),
+            effects: vec![],
+            pattern: None,
+            ui: None,
+        }];
+
+        save(&path, &instruments, &[], None, None, None).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(raw.matches("midi_velocity = true").count(), 1, "{raw}");
+        assert_eq!(raw.matches("midi_key = true").count(), 1, "{raw}");
+        assert!(!raw.contains("midi_cc") && !raw.contains("midi_pitch_bend") && !raw.contains("midi_aftertouch"), "{raw}");
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        let [first, second] = &config.instruments[0].modulators[..] else { panic!("two modulators") };
+        assert_eq!((first.mod_type.as_str(), first.midi_velocity, first.midi_key), ("midi", true, false));
+        assert_eq!((second.mod_type.as_str(), second.midi_velocity, second.midi_key), ("midi", false, true));
+        assert!(first.midi_cc.is_none() && !first.midi_pitch_bend && !first.midi_aftertouch);
     }
 
     #[test]

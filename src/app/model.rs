@@ -1216,6 +1216,8 @@ impl ModSourceSlot {
                 Some(MidiBindSource::Cc(n)) => format!("CC {n}"),
                 Some(MidiBindSource::PitchBend) => "Pitch Bend".to_string(),
                 Some(MidiBindSource::Aftertouch) => "Aftertouch".to_string(),
+                Some(MidiBindSource::Velocity) => "Velocity".to_string(),
+                Some(MidiBindSource::Key) => "Key".to_string(),
                 None if *learning => "MIDI (learning…)".to_string(),
                 None => "MIDI (unbound)".to_string(),
             },
@@ -4384,7 +4386,14 @@ depth = 0.5
     #[test]
     fn a_bound_control_goes_to_the_audio_thread_resting_where_its_knob_or_wheel_does() {
         // (The wheel sends nothing until it is moved, and its centre is where it is: half of the range of its 14 bits.)
-        for (source, rest) in [(MidiBindSource::Cc(74), 0.0), (MidiBindSource::PitchBend, 0.5), (MidiBindSource::Aftertouch, 0.0)] {
+        // (A key rests at middle C, which is where it adds nothing: note 60 of 127.)
+        for (source, rest) in [
+            (MidiBindSource::Cc(74), 0.0),
+            (MidiBindSource::PitchBend, 0.5),
+            (MidiBindSource::Aftertouch, 0.0),
+            (MidiBindSource::Velocity, 0.0),
+            (MidiBindSource::Key, 60.0 / 127.0),
+        ] {
             match mod_source_slot_to_graph(&ModSourceSlot::MidiLearn { source: Some(source), learning: false }) {
                 ModSource::MidiLearn { value, .. } => assert_eq!(value, rest, "{source:?}"),
                 other => panic!("{other:?}"),
@@ -4443,6 +4452,8 @@ depth = 0.5
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false }), "CC 74");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::PitchBend), learning: false }), "Pitch Bend");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Aftertouch), learning: false }), "Aftertouch");
+        assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false }), "Velocity");
+        assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "Key");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: None, learning: true }), "MIDI (learning…)");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: None, learning: false }), "MIDI (unbound)");
     }

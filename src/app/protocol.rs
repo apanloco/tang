@@ -416,7 +416,7 @@ mod typescript {
     use crate::app::intent::{Event, Gain, Intent, ModulatorField, PatternField, StampedEvent};
     use crate::app::layout::TelemetryLayout;
     use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN};
-    use crate::plugin::chain::COUNT_IN_BEATS;
+    use crate::plugin::chain::{COUNT_IN_BEATS, KEY_CENTRE, KEY_SPAN};
     use crate::app::snapshot::Snapshot;
     use super::{ClientMessage, ServerMessage};
 
@@ -558,6 +558,9 @@ mod typescript {
                  export const PATTERN_COUNT_IN_BEATS = {COUNT_IN_BEATS};\n\n\
                  /** How long a pattern is, in beats, when a lane is given one that has nothing recorded (`PatternState::empty`). */\n\
                  export const PATTERN_DEFAULT_LENGTH = {};\n\n\
+                 /** The note that a key control is centred on (middle C), and how many semitones either way make the whole of its depth (`KEY_CENTRE`, `KEY_SPAN`). */\n\
+                 export const KEY_CENTRE = {KEY_CENTRE};\n\
+                 export const KEY_SPAN = {KEY_SPAN};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
                  /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */\n\

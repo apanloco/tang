@@ -103,6 +103,8 @@ fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> 
                     },
                     pitch_bend: matches!(source, Some(MidiBindSource::PitchBend)),
                     aftertouch: matches!(source, Some(MidiBindSource::Aftertouch)),
+                    velocity: matches!(source, Some(MidiBindSource::Velocity)),
+                    key: matches!(source, Some(MidiBindSource::Key)),
                 },
                 ModSourceSlot::Macro { value } => SaveModSource::Macro { value: *value },
             };

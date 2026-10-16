@@ -3734,6 +3734,50 @@ fn a_macro_is_in_the_tree_with_its_value_and_what_it_drives() {
     assert!(h.tree().iter().any(|line| line.contains("~ Macro 0.25 → Filter: cutoff (40%)")), "{:#?}", h.tree());
 }
 
+// ---------------------------------------------------------------------------
+// Velocity and key: controls that follow the notes a lane plays
+// ---------------------------------------------------------------------------
+
+/// One oscillator with a filter, and a velocity and a key, each with a cable to the filter's cutoff.
+fn scene_notes() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "midi"
+midi_velocity = true
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+[[instrument.modulator]]
+type = "midi"
+midi_key = true
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.3
+"#
+}
+
+#[test]
+fn a_velocity_and_a_key_are_in_the_tree_with_what_they_drive() {
+    let h = Harness::new(scene_notes());
+    let tree = h.tree();
+    assert!(tree.iter().any(|line| line.contains("~ Velocity → Filter: cutoff (40%)")), "{tree:#?}");
+    assert!(tree.iter().any(|line| line.contains("~ Key → Filter: cutoff (30%)")), "{tree:#?}");
+}
+
+#[test]
+fn a_velocity_and_a_key_are_saved_as_the_controls_that_they_are() {
+    let h = Harness::new(scene_notes());
+    let (instruments, groups) = crate::app::save::to_save(&h.s.ctl.model);
+    let file = crate::session::to_toml(&instruments, &groups, None, h.s.ctl.model.master_ui(), h.s.ctl.model.bpm_to_save()).unwrap();
+    assert!(file.contains("midi_velocity = true") && file.contains("midi_key = true"), "{file}");
+}
+
 #[test]
 fn the_modulate_popup_has_a_new_macro_that_is_made_at_rest_with_a_cable_to_the_parameter_as_one_step() {
     let mut h = on_the_bass_filters_cutoff();

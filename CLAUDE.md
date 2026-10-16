@@ -390,7 +390,8 @@ depth = 0.5
 ```
 
 **MIDI-learn modulator** (a hardware CC, the pitch-bend wheel, or key
-pressure / aftertouch drives the target):
+pressure / aftertouch drives the target; or the velocity or the pitch of the
+notes the lane plays):
 
 ```toml
 [[instrument.modulator]]
@@ -399,7 +400,10 @@ midi_cc = 74            # bound CC number …
 # midi_pitch_bend = true  # … or the pitch-bend wheel …
 # midi_aftertouch = true  # … or key pressure (channel pressure / poly
                         # aftertouch — the "press harder" dimension on MPE
-                        # controllers). The three are mutually exclusive;
+                        # controllers) …
+# midi_velocity = true  # … or the velocity of the last note the lane plays …
+# midi_key = true       # … or its number (the pitch). The five are mutually
+                        # exclusive (the first of them, in this order, wins);
                         # omit all = unbound (re-arms for learning on load).
 
 [[instrument.modulator.target]]
@@ -414,8 +418,8 @@ next incoming CC / pitch-bend / aftertouch on any channel is captured and bound
 binding). It targets anything the param pane can select — plugin params
 (instrument, effect, group-bus effect) and modulator fields (bind a knob to an
 LFO's rate, an envelope stage, or a target's depth). In the tree it shows as
-`CC 74 → cutoff` / `Pitch Bend → …` / `Aftertouch → …` (or `MIDI (learning…)`
-while armed). `t` and `d` work on it like any modulator. A learned control
+`CC 74 → cutoff` / `Pitch Bend → …` / `Aftertouch → …` / `Velocity → …` /
+`Key → …` (or `MIDI (learning…)` while armed). `t` and `d` work on it like any modulator. A learned control
 *combines* with your set value (see the apply math below) rather than
 overwriting it. The whole path (a controller, the MIDI thread, the audio
 thread's capture, the notification, the controller's binding, the browsers told,
@@ -468,13 +472,29 @@ envelope that dips below the base). The source types apply differently:
   still-learning control contributes nothing — the base shows through; nor
   does a bound one that has sent nothing yet: it starts at rest, a CC or
   pressure at 0 and the pitch-bend wheel at its centre, `MidiBindSource::rest`).
-  Two rest-aware laws by source:
+  The rest-aware laws by source:
   - **Pitch bend** (bipolar): `base + (output − 0.5) * 2 * depth * range` —
     centre = no change, full bend = ±depth·range around the base. This makes
     the wheel behave like a pitch/mod wheel and is the natural mapping for
     expressive (MPE) controllers.
   - **CC** (unipolar): `base + output * depth * range` — rest (0) = no change,
     full = +depth·range above the base.
+  - **Velocity** (unipolar, as a CC): the velocity of the last note-on the lane
+    plays, over 127; `base + velocity/127 * depth * range`. Before a note it is
+    at rest (0), and it keeps the last note's velocity when the note ends (a
+    release goes by its own note's velocity). A note-on with no velocity is a
+    note-off and does not count.
+  - **Key** (bipolar around middle C): the number of the last note-on over 127,
+    `base + clamp((note − 60) / 60, −1, 1) * depth * range` — note 60 (middle C)
+    adds nothing and five octaves either way are the whole depth (`KEY_CENTRE`,
+    `KEY_SPAN`; the page reads both). It rests at note 60 before any note.
+
+  Velocity and key are not learned (no controller sends them as a control): they
+  are bound when they are made (`midi_velocity` / `midi_key` in a file). Like
+  every modulator they are block-rate and lane-global: a chord has its last
+  note's. The notes they hear are the ones the lane's instrument is given: after
+  the lane's range, remap and transpose, and a pattern's own notes. A group's
+  hear the notes of its members' ranges.
 - **Macro** (unipolar, additive around the base, as a CC): `base + value * depth *
   range` — rest (0) = no change, full = +depth·range above the base.
 

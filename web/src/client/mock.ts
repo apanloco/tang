@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -215,6 +215,8 @@ function offsetOf(source: Node | undefined, output: number, amount: number, base
   if (modulator?.type === "midiLearn") {
     if (modulator.control === null) return 0;
     if (modulator.control.type === "pitchBend") return (output - 0.5) * 2 * amount * (max - min);
+    // A key goes by the number of the note, middle C being the centre and five octaves either way the whole of the depth.
+    if (modulator.control.type === "key") return Math.min(Math.max((Math.round(output * 127) - KEY_CENTRE) / KEY_SPAN, -1), 1) * amount * (max - min);
   }
   return output * amount * (max - min);
 }
@@ -1447,9 +1449,9 @@ export class MockServer {
         return shape(source.waveform, source.rate * seconds, node.id);
       case "envelope":
         return this.heldNotes.size > 0 ? source.sustain : 0;
-      // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, and the pitch bend wheel in the middle.)
+      // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, the pitch bend wheel in the middle and a key at middle C.)
       case "midiLearn":
-        return source.control?.type === "pitchBend" ? 0.5 : 0;
+        return source.control?.type === "pitchBend" ? 0.5 : source.control?.type === "key" ? KEY_CENTRE / 127 : 0;
       // (A macro puts out the number it is set to, and nothing moves it but a person.)
       case "macro":
         return source.value;

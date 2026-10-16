@@ -51,9 +51,11 @@ describe("how far modulation swings a parameter", () => {
     expect(modulationExtent(0, 0, 1, [envelope(1)])).toBeUndefined();
   });
 
-  test("goes up from the base by depth × range for a CC and for pressure, and down for a negative depth", () => {
+  test("goes up from the base by depth × range for a CC, for pressure and for a velocity, and down for a negative depth", () => {
     expect(modulationExtent(2, 0, 10, [midi({ type: "cc", number: 74 }, 0.5)])).toEqual({ low: 2, high: 7 });
     expect(modulationExtent(2, 0, 10, [midi({ type: "aftertouch" }, 0.25)])).toEqual({ low: 2, high: 4.5 });
+    expect(modulationExtent(2, 0, 10, [midi({ type: "velocity" }, 0.25)])).toEqual({ low: 2, high: 4.5 });
+    expect(modulationExtent(2, 0, 10, [midi({ type: "velocity" }, -0.5)])).toEqual({ low: 0, high: 2 });
     expect(modulationExtent(2, 0, 10, [midi({ type: "cc", number: 1 }, -0.5)])).toEqual({ low: 0, high: 2 });
   });
 
@@ -68,6 +70,11 @@ describe("how far modulation swings a parameter", () => {
   test("goes both ways from the base for the pitch bend, which rests in the middle", () => {
     expect(modulationExtent(2, 0, 10, [midi({ type: "pitchBend" }, 0.5)])).toEqual({ low: 0, high: 7 });
     expect(modulationExtent(5, 0, 10, [midi({ type: "pitchBend" }, 0.25)])).toEqual({ low: 2.5, high: 7.5 });
+  });
+
+  test("goes both ways from the base for a key, which rests at middle C and has five octaves either way for the whole of its depth", () => {
+    expect(modulationExtent(2, 0, 10, [midi({ type: "key" }, 0.5)])).toEqual({ low: 0, high: 7 });
+    expect(modulationExtent(5, 0, 10, [midi({ type: "key" }, 0.25)])).toEqual({ low: 2.5, high: 7.5 });
   });
 
   test("is nothing for a MIDI control that is not bound yet: the base shows through", () => {

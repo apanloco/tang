@@ -553,6 +553,14 @@ midi_pitch_bend = true
 [[instrument.modulator]]
 type = "midi"
 midi_aftertouch = true
+[[instrument.modulator]]
+type = "midi"
+midi_velocity = true
+[[instrument.modulator.target]]
+param = "volume"
+[[instrument.modulator]]
+type = "midi"
+midi_key = true
 "#;
 
 pub const SETTINGS: &str = r#"

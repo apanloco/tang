@@ -47,6 +47,10 @@ export function controlDetail(source: Extract<ModulatorSource, { type: "midiLear
       return "pitch bend";
     case "aftertouch":
       return "aftertouch";
+    case "velocity":
+      return "velocity of the last note";
+    case "key":
+      return "pitch of the last note";
   }
 }
 

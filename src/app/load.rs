@@ -803,6 +803,10 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
                 Some(plugin::chain::MidiBindSource::PitchBend)
             } else if mod_config.midi_aftertouch {
                 Some(plugin::chain::MidiBindSource::Aftertouch)
+            } else if mod_config.midi_velocity {
+                Some(plugin::chain::MidiBindSource::Velocity)
+            } else if mod_config.midi_key {
+                Some(plugin::chain::MidiBindSource::Key)
             } else {
                 None
             };
@@ -812,6 +816,8 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
                 Some(plugin::chain::MidiBindSource::Cc(n)) => format!("MIDI CC {n}"),
                 Some(plugin::chain::MidiBindSource::PitchBend) => "MIDI pitch bend".to_string(),
                 Some(plugin::chain::MidiBindSource::Aftertouch) => "MIDI aftertouch".to_string(),
+                Some(plugin::chain::MidiBindSource::Velocity) => "MIDI velocity".to_string(),
+                Some(plugin::chain::MidiBindSource::Key) => "MIDI key".to_string(),
                 None => "MIDI (learning)".to_string(),
             };
             (source, desc)
@@ -1422,7 +1428,7 @@ mod tests {
 
     #[test]
     fn each_of_a_lanes_modulators_is_told_its_own_slot_by_its_index() {
-        // MIDI: four modulators in lane 0, the first with one target.
+        // MIDI: six modulators in lane 0, the first and the fifth with one target.
         let run = load(MIDI);
         assert_eq!(
             run.telemetry,
@@ -1433,10 +1439,13 @@ mod tests {
                 "SetModulatorOutput Lane(0) index=1 slot=6",
                 "SetModulatorOutput Lane(0) index=2 slot=7",
                 "SetModulatorOutput Lane(0) index=3 slot=8",
+                "SetModulatorOutput Lane(0) index=4 slot=9",
+                // slot 10 is the fifth modulator's target
+                "SetModulatorOutput Lane(0) index=5 slot=11",
             ]
         );
         let outputs: Vec<u32> = run.model.instruments[0].modulators.iter().map(|m| m.output.unwrap().index()).collect();
-        assert_eq!(outputs, [4, 6, 7, 8]);
+        assert_eq!(outputs, [4, 6, 7, 8, 9, 11]);
     }
 
     #[test]
@@ -1936,6 +1945,9 @@ mod_rate = 7
                 "InsertModulator inst=0 index=1 source=MidiLearn { source: None, value: 0.0, learning: true }",
                 "InsertModulator inst=0 index=2 source=MidiLearn { source: Some(PitchBend), value: 0.5, learning: false }",
                 "InsertModulator inst=0 index=3 source=MidiLearn { source: Some(Aftertouch), value: 0.0, learning: false }",
+                "InsertModulator inst=0 index=4 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }",
+                "AddModTarget inst=0 mod=4 kind=PluginParam { slot: 0, param_index: 2 } depth=0.500 base=1.000 range=[0.000, 1.000]",
+                &format!("InsertModulator inst=0 index=5 source=MidiLearn {{ source: Some(Key), value: {:?}, learning: false }}", 60.0f32 / 127.0),
             ]
         );
     }

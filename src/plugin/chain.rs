@@ -486,7 +486,17 @@ pub enum MidiBindSource {
     /// interchangeably (a controller sends one kind consistently); unipolar,
     /// like a CC.
     Aftertouch,
+    /// The velocity of the last note the lane plays, over the 127 steps of MIDI (a note-on with none is a note-off and does not count): it stays when the note ends, so that
+    /// a release goes by the velocity of its own note. Unipolar, like a CC. It is not learned (no controller sends it as a control): it is bound when it is made.
+    Velocity,
+    /// The number of the last note the lane plays, over 127. The notes it hears are the ones the instrument is given (after the lane's range, remap and transpose, and a
+    /// pattern's own). Bipolar around middle C: it adds nothing at note 60, and the whole of the depth at `KEY_SPAN` semitones, five octaves, either way.
+    Key,
 }
+
+/// The note that a `Key` control is centred on (middle C), and how many semitones either way make the whole of its depth (the page reads both: `KEY_CENTRE`, `KEY_SPAN`).
+pub const KEY_CENTRE: f32 = 60.0;
+pub const KEY_SPAN: f32 = 60.0;
 
 impl MidiBindSource {
     /// Where the control is before it has sent anything, as the `value` of a `MidiLearn` source (0 to 1): a knob or a pressure at nothing, the pitch-bend wheel at its centre,
@@ -494,9 +504,26 @@ impl MidiBindSource {
     pub fn rest(self) -> f32 {
         match self {
             MidiBindSource::PitchBend => 0.5,
-            MidiBindSource::Cc(_) | MidiBindSource::Aftertouch => 0.0,
+            MidiBindSource::Key => KEY_CENTRE / 127.0,
+            MidiBindSource::Cc(_) | MidiBindSource::Aftertouch | MidiBindSource::Velocity => 0.0,
         }
     }
+
+    /// The value (0 to 1) that the MIDI message `bytes` gives this control, if it is one of its messages.
+    fn follow(self, bytes: [u8; 3]) -> Option<f32> {
+        match self {
+            MidiBindSource::Velocity => note_on_of(bytes).map(|(_, velocity)| f32::from(velocity) / 127.0),
+            MidiBindSource::Key => note_on_of(bytes).map(|(note, _)| f32::from(note) / 127.0),
+            MidiBindSource::Cc(_) | MidiBindSource::PitchBend | MidiBindSource::Aftertouch => {
+                parse_learnable(bytes).filter(|(source, ..)| *source == self).map(|(_, norm, _)| norm)
+            }
+        }
+    }
+}
+
+/// The note and the velocity of a note-on in `bytes` (a note-on with no velocity is a note-off, and has none).
+fn note_on_of(bytes: [u8; 3]) -> Option<(u8, u8)> {
+    (bytes[0] & 0xF0 == 0x90 && bytes[2] > 0).then_some((bytes[1], bytes[2]))
 }
 
 /// Parse a MIDI message into a learnable control: its source, normalized value
@@ -700,12 +727,10 @@ impl Modulator {
                         self.last_learned = Some(src);
                     }
                 } else if let Some(bound) = *source {
-                    // Bound: track the value of the matching control.
+                    // Bound: track the value of the matching control (the last of its messages in the buffer stands).
                     for &(_frame, bytes) in midi_events {
-                        if let Some((src, norm, _)) = parse_learnable(bytes) {
-                            if src == bound {
-                                *value = norm;
-                            }
+                        if let Some(norm) = bound.follow(bytes) {
+                            *value = norm;
                         }
                     }
                 }
@@ -742,11 +767,14 @@ impl Modulator {
             // learned control *combines* with your set value instead of
             // overwriting it. The rest position contributes nothing:
             //   - pitch bend is bipolar (centre = 0, ±full bend = ±depth·range)
-            //   - a CC / pressure is unipolar (0 = 0, full = +depth·range)
+            //   - a CC / pressure / velocity is unipolar (0 = 0, full = +depth·range)
+            //   - a key is bipolar around middle C (note 60 = 0, five octaves either way = ±depth·range)
             ModSource::MidiLearn { source: Some(src), .. } => {
                 let deflection = match src {
                     MidiBindSource::PitchBend => (self.last_output - 0.5) * 2.0,
-                    MidiBindSource::Cc(_) | MidiBindSource::Aftertouch => self.last_output,
+                    MidiBindSource::Cc(_) | MidiBindSource::Aftertouch | MidiBindSource::Velocity => self.last_output,
+                    // (The value is the number of the note over 127, and 127 times it is the note again exactly, in 32 bits, for every note: a test goes through all of them.)
+                    MidiBindSource::Key => ((self.last_output * 127.0 - KEY_CENTRE) / KEY_SPAN).clamp(-1.0, 1.0),
                 };
                 deflection * depth * (max - min)
             }
@@ -8535,7 +8563,7 @@ mod tests {
     /// bound pulled what it drove down by the whole of its depth until it was first moved).
     #[test]
     fn a_bound_control_that_has_sent_nothing_yet_adds_nothing_to_what_it_drives() {
-        for control in [MidiBindSource::Cc(74), MidiBindSource::PitchBend, MidiBindSource::Aftertouch] {
+        for control in [MidiBindSource::Cc(74), MidiBindSource::PitchBend, MidiBindSource::Aftertouch, MidiBindSource::Velocity, MidiBindSource::Key] {
             let source = crate::app::model::mod_source_slot_to_graph(&crate::app::model::ModSourceSlot::MidiLearn { source: Some(control), learning: false });
             let mut rig = Rig::new();
             rig.lane_modulator(0, source);
@@ -8550,6 +8578,160 @@ mod tests {
         let effective = rig.gain_target(0, 0.4);
         rig.process(&[(0, [0xE0, 0, 0])]);
         assert!(close(rig.read(effective), 0.1), "{}", rig.read(effective));
+    }
+
+    /// The control that follows the velocity of the notes a lane plays, as the model gives it to the audio thread.
+    fn velocity() -> ModSource {
+        crate::app::model::mod_source_slot_to_graph(&crate::app::model::ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false })
+    }
+
+    /// The control that follows their numbers.
+    fn key() -> ModSource {
+        crate::app::model::mod_source_slot_to_graph(&crate::app::model::ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false })
+    }
+
+    #[test]
+    fn a_velocity_control_publishes_the_velocity_of_the_last_note_and_keeps_it_when_the_note_ends() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, velocity());
+        rig.process(&[]);
+        assert_eq!(rig.read(output), 0.0, "before a note it is at rest");
+        rig.process(&[(0, [0x90, 60, 127])]);
+        assert_eq!(rig.read(output), 1.0);
+        rig.process(&[(0, [0x80, 60, 0])]);
+        assert_eq!(rig.read(output), 1.0, "the end of the note leaves it where it was: a release has the velocity of its own note");
+        rig.process(&[(0, [0x80, 60, 64])]);
+        assert_eq!(rig.read(output), 1.0, "a note-off has a velocity of its own, which is not a note's (many keyboards say 64)");
+        rig.process(&[(0, [0x90, 62, 64])]);
+        assert_eq!(rig.read(output), 64.0 / 127.0);
+        rig.process(&[(0, [0x90, 62, 0])]);
+        assert_eq!(rig.read(output), 64.0 / 127.0, "a note-on with no velocity is a note-off");
+        rig.process(&[(0, [0xB0, 74, 0]), (0, [0xD0, 0, 0]), (0, [0xE0, 0, 0])]);
+        assert_eq!(rig.read(output), 64.0 / 127.0, "a control is not a note");
+        rig.process(&[(0, [0x90, 60, 20]), (10, [0x90, 64, 90])]);
+        assert_eq!(rig.read(output), 90.0 / 127.0, "of two notes in a buffer, the later one");
+    }
+
+    #[test]
+    fn a_key_control_publishes_the_number_of_the_last_note_over_127_and_keeps_it_when_the_note_ends() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, key());
+        rig.process(&[]);
+        assert_eq!(rig.read(output), 60.0 / 127.0, "before a note it is at rest, at middle C");
+        rig.process(&[note_on(72)]);
+        assert_eq!(rig.read(output), 72.0 / 127.0);
+        rig.process(&[note_off(72)]);
+        assert_eq!(rig.read(output), 72.0 / 127.0, "the end of the note leaves it where it was");
+        rig.process(&[(0, [0x80, 40, 64])]);
+        assert_eq!(rig.read(output), 72.0 / 127.0, "a note-off with a velocity is not a note");
+        rig.process(&[note_on(127)]);
+        assert_eq!(rig.read(output), 1.0);
+        rig.process(&[note_on(0)]);
+        assert_eq!(rig.read(output), 0.0);
+        rig.process(&[(0, [0x90, 40, 0]), (0, [0xB0, 74, 99])]);
+        assert_eq!(rig.read(output), 0.0, "neither a note-on with no velocity nor a control is a note");
+    }
+
+    #[test]
+    fn a_velocity_controls_target_is_the_base_with_the_velocity_times_the_depth_of_the_range_added_to_it() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, velocity());
+        let up = rig.gain_target(0, 0.4);
+        rig.process(&[]);
+        assert!(close(rig.read(up), 0.5), "before a note it is the base: {}", rig.read(up));
+        rig.process(&[(0, [0x90, 60, 127])]);
+        assert!(close(rig.read(up), 0.9), "{}", rig.read(up));
+        rig.process(&[(0, [0x90, 60, 64])]);
+        assert!(close(rig.read(up), 0.5 + 0.4 * 64.0 / 127.0), "{}", rig.read(up));
+
+        // A negative depth is the other way: the harder the note, the lower.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, velocity());
+        let down = rig.gain_target(0, -0.4);
+        rig.process(&[(0, [0x90, 60, 127])]);
+        assert!(close(rig.read(down), 0.1), "{}", rig.read(down));
+    }
+
+    #[test]
+    fn a_key_controls_target_is_the_base_at_middle_c_and_moves_by_the_depth_of_the_range_in_five_octaves_either_way() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, key());
+        let effective = rig.gain_target(0, 0.4);
+        rig.process(&[]);
+        assert_eq!(rig.read(effective), 0.5, "before a note it is the base, exactly: the note that it rests at is a whole one");
+        for (note, expected) in [(60u8, 0.5), (90, 0.7), (120, 0.9), (127, 0.9), (30, 0.3), (0, 0.1)] {
+            rig.process(&[note_on(note)]);
+            assert!(close(rig.read(effective), expected), "note {note}: {} for {expected}", rig.read(effective));
+        }
+    }
+
+    #[test]
+    fn a_key_control_goes_by_the_exact_distance_of_every_note_from_middle_c() {
+        // The value is the note over 127 and the law multiplies it by 127 again: it has to give the note back, or a note would move what it drives by the rest of a division.
+        for note in 0..=127u8 {
+            let mut key = Modulator::new(ModSource::MidiLearn { source: Some(MidiBindSource::Key), value: MidiBindSource::Key.rest(), learning: false }, 48000.0);
+            key.tick(FRAMES, &[note_on(note)]);
+            let expected = ((f32::from(note) - 60.0) / 60.0).clamp(-1.0, 1.0);
+            assert_eq!(key.offset(1.0, 0.0, 0.0, 1.0), expected, "note {note}");
+        }
+    }
+
+    #[test]
+    fn velocity_and_key_controls_hear_the_notes_that_a_lane_plays_and_no_others() {
+        // The lane takes the notes from 60 to 71 and shifts them up an octave.
+        let mut rig = Rig::new();
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((60, 71)) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetTranspose { inst: 0, semitones: 12 }).unwrap();
+        let velocity_out = rig.lane_modulator(0, velocity());
+        let key_out = rig.lane_modulator(1, key());
+        rig.process(&[(0, [0x90, 40, 120])]);
+        assert_eq!((rig.read(velocity_out), rig.read(key_out)), (0.0, 60.0 / 127.0), "a note below the range is not the lane's: both are at rest");
+        rig.process(&[(0, [0x90, 62, 100])]);
+        assert_eq!(rig.read(velocity_out), 100.0 / 127.0);
+        assert_eq!(rig.read(key_out), 74.0 / 127.0, "the note that the instrument is given is 62 and an octave: 74");
+    }
+
+    #[test]
+    fn a_control_that_is_learning_is_not_bound_by_a_note() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, ModSource::MidiLearn { source: None, value: 0.0, learning: true });
+        rig.process(&[note_on(60), note_off(60)]);
+        assert_eq!(rig.read(output), 0.0);
+        assert!(rig.graph.instruments[0].modulators[0].last_learned.is_none(), "no control was captured");
+        assert!(matches!(rig.graph.instruments[0].modulators[0].source, ModSource::MidiLearn { source: None, learning: true, .. }), "it goes on waiting for a controller");
+    }
+
+    #[test]
+    fn a_group_velocity_control_hears_the_notes_of_its_members_and_drives_a_member_parameter() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
+        let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
+        cmd_tx.send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None }).unwrap();
+        cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((60, 71)) }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: velocity() }).unwrap();
+        cmd_tx
+            .send(GraphCommand::AddGroupModTarget {
+                group: 0,
+                mod_index: 0,
+                target: ModTarget {
+                    kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
+                    depth: 0.4,
+                    base_value: 0.5,
+                    param_min: 0.0,
+                    param_max: 1.0,
+                    effective: None,
+                },
+            })
+            .unwrap();
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        assert!(close(out[0][0], 0.5), "before a note it is the base: {}", out[0][0]);
+        graph.process(&[(0, [0x90, 40, 127])], &mut out).unwrap();
+        assert!(close(out[0][0], 0.5), "a note that no member takes is not heard: {}", out[0][0]);
+        graph.process(&[(0, [0x90, 64, 127])], &mut out).unwrap();
+        assert!(close(out[0][0], 0.9), "{}", out[0][0]);
     }
 
     #[test]

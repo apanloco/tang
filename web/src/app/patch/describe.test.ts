@@ -28,6 +28,8 @@ describe("a modulator in words", () => {
     expect(controlDetail(midi({ type: "cc", number: 74 }))).toBe("CC 74");
     expect(controlDetail(midi({ type: "pitchBend" }))).toBe("pitch bend");
     expect(controlDetail(midi({ type: "aftertouch" }))).toBe("aftertouch");
+    expect(controlDetail(midi({ type: "velocity" }))).toBe("velocity of the last note");
+    expect(controlDetail(midi({ type: "key" }))).toBe("pitch of the last note");
     expect(controlDetail(midi(null))).toBe("not bound");
     expect(controlDetail(midi(null, true))).toBe("waiting for a control…");
     // While it is learning it is waiting, whatever it was bound to.
@@ -52,10 +54,13 @@ describe("the scale of a modulator's output", () => {
     expect(outputScale(lfo)).toEqual({ min: -1, max: 1, centred: true });
   });
 
-  test("goes from nothing up for an envelope, a CC and pressure, and a control that is not bound", () => {
+  test("goes from nothing up for an envelope, a CC, pressure, a velocity and a key, and a control that is not bound", () => {
     expect(outputScale(envelope)).toEqual({ min: 0, max: 1, centred: false });
     expect(outputScale(midi({ type: "cc", number: 74 }))).toEqual({ min: 0, max: 1, centred: false });
     expect(outputScale(midi({ type: "aftertouch" }))).toEqual({ min: 0, max: 1, centred: false });
+    expect(outputScale(midi({ type: "velocity" }))).toEqual({ min: 0, max: 1, centred: false });
+    // (A key is the number of the note over 127, drawn as it is: middle C is a little under the middle of the picture, not on it.)
+    expect(outputScale(midi({ type: "key" }))).toEqual({ min: 0, max: 1, centred: false });
     expect(outputScale(midi(null))).toEqual({ min: 0, max: 1, centred: false });
   });
 
