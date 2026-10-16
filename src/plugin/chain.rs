@@ -488,6 +488,17 @@ pub enum MidiBindSource {
     Aftertouch,
 }
 
+impl MidiBindSource {
+    /// Where the control is before it has sent anything, as the `value` of a `MidiLearn` source (0 to 1): a knob or a pressure at nothing, the pitch-bend wheel at its centre,
+    /// which is where it rests and sends nothing from until it is moved.
+    pub fn rest(self) -> f32 {
+        match self {
+            MidiBindSource::PitchBend => 0.5,
+            MidiBindSource::Cc(_) | MidiBindSource::Aftertouch => 0.0,
+        }
+    }
+}
+
 /// Parse a MIDI message into a learnable control: its source, normalized value
 /// (0..1), and deflection from rest (0..1). Non-learnable messages → None.
 ///
@@ -8517,6 +8528,28 @@ mod tests {
         assert!(close(rig.read(effective), 0.5), "at rest it is the base");
         rig.process(&[(0, [0xB0, 74, 127])]);
         assert!(close(rig.read(effective), 0.9), "{}", rig.read(effective));
+    }
+
+    /// A control that is bound and has sent nothing yet adds nothing to what it drives: a CC and pressure rest at 0, and the pitch-bend wheel at its centre, which a wheel does not
+    /// send until it is moved. The source is the one the model gives the audio thread (`mod_source_slot_to_graph`: it went at 0 for every control, so that a wheel that a session file
+    /// bound pulled what it drove down by the whole of its depth until it was first moved).
+    #[test]
+    fn a_bound_control_that_has_sent_nothing_yet_adds_nothing_to_what_it_drives() {
+        for control in [MidiBindSource::Cc(74), MidiBindSource::PitchBend, MidiBindSource::Aftertouch] {
+            let source = crate::app::model::mod_source_slot_to_graph(&crate::app::model::ModSourceSlot::MidiLearn { source: Some(control), learning: false });
+            let mut rig = Rig::new();
+            rig.lane_modulator(0, source);
+            let effective = rig.gain_target(0, 0.4);
+            rig.process(&[]);
+            assert!(close(rig.read(effective), 0.5), "{control:?} at rest leaves the base: {}", rig.read(effective));
+        }
+        // And the wheel, once it is moved, goes by its own law: all the way down is the whole of the depth below the base.
+        let source = crate::app::model::mod_source_slot_to_graph(&crate::app::model::ModSourceSlot::MidiLearn { source: Some(MidiBindSource::PitchBend), learning: false });
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, source);
+        let effective = rig.gain_target(0, 0.4);
+        rig.process(&[(0, [0xE0, 0, 0])]);
+        assert!(close(rig.read(effective), 0.1), "{}", rig.read(effective));
     }
 
     #[test]

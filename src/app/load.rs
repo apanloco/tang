@@ -1934,7 +1934,7 @@ mod_rate = 7
                 "InsertModulator inst=0 index=0 source=MidiLearn { source: Some(Cc(74)), value: 0.0, learning: false }",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.500 base=0.000 range=[-24.000, 24.000]",
                 "InsertModulator inst=0 index=1 source=MidiLearn { source: None, value: 0.0, learning: true }",
-                "InsertModulator inst=0 index=2 source=MidiLearn { source: Some(PitchBend), value: 0.0, learning: false }",
+                "InsertModulator inst=0 index=2 source=MidiLearn { source: Some(PitchBend), value: 0.5, learning: false }",
                 "InsertModulator inst=0 index=3 source=MidiLearn { source: Some(Aftertouch), value: 0.0, learning: false }",
             ]
         );

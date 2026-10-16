@@ -1980,7 +1980,8 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
         },
         ModSourceSlot::MidiLearn { source, learning } => crate::plugin::chain::ModSource::MidiLearn {
             source: *source,
-            value: 0.0,
+            // (Where the control is before it sends anything: the wheel's centre is not 0.)
+            value: source.map_or(0.0, crate::plugin::chain::MidiBindSource::rest),
             learning: *learning,
         },
         ModSourceSlot::Macro { value } => crate::plugin::chain::ModSource::Macro { value: *value },
@@ -4369,7 +4370,7 @@ depth = 0.5
         let learned = ModSourceSlot::MidiLearn { source: Some(MidiBindSource::PitchBend), learning: false };
         match mod_source_slot_to_graph(&learned) {
             ModSource::MidiLearn { source, value, learning } => {
-                assert_eq!((source, value, learning), (Some(MidiBindSource::PitchBend), 0.0, false));
+                assert_eq!((source, value, learning), (Some(MidiBindSource::PitchBend), 0.5, false));
             }
             other => panic!("{other:?}"),
         }
@@ -4378,6 +4379,22 @@ depth = 0.5
             mod_source_slot_to_graph(&armed),
             ModSource::MidiLearn { source: None, learning: true, .. }
         ));
+    }
+
+    #[test]
+    fn a_bound_control_goes_to_the_audio_thread_resting_where_its_knob_or_wheel_does() {
+        // (The wheel sends nothing until it is moved, and its centre is where it is: half of the range of its 14 bits.)
+        for (source, rest) in [(MidiBindSource::Cc(74), 0.0), (MidiBindSource::PitchBend, 0.5), (MidiBindSource::Aftertouch, 0.0)] {
+            match mod_source_slot_to_graph(&ModSourceSlot::MidiLearn { source: Some(source), learning: false }) {
+                ModSource::MidiLearn { value, .. } => assert_eq!(value, rest, "{source:?}"),
+                other => panic!("{other:?}"),
+            }
+        }
+        // A control that is waiting to learn is bound to nothing, and rests at 0 (the base shows through whatever its value).
+        match mod_source_slot_to_graph(&ModSourceSlot::new_midi_learn()) {
+            ModSource::MidiLearn { value, .. } => assert_eq!(value, 0.0),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

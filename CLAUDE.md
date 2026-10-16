@@ -465,8 +465,10 @@ envelope that dips below the base). The source types apply differently:
 - **MIDI learn** (additive around the base, like the LFO): the control
   *offsets* the parameter around the user's set value rather than overwriting
   it, so it combines with the base and any other modulators (an unbound /
-  still-learning control contributes nothing — the base shows through). Two
-  rest-aware laws by source:
+  still-learning control contributes nothing — the base shows through; nor
+  does a bound one that has sent nothing yet: it starts at rest, a CC or
+  pressure at 0 and the pitch-bend wheel at its centre, `MidiBindSource::rest`).
+  Two rest-aware laws by source:
   - **Pitch bend** (bipolar): `base + (output − 0.5) * 2 * depth * range` —
     centre = no change, full bend = ±depth·range around the base. This makes
     the wheel behave like a pitch/mod wheel and is the natural mapping for
