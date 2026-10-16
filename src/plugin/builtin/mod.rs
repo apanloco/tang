@@ -162,10 +162,17 @@ mod tests {
     }
 
     #[test]
-    fn the_delays_parameters_say_their_unit() {
+    fn the_delays_parameters_say_their_unit_and_their_section() {
         assert_eq!(
             metadata("builtin:delay"),
-            [row("time", Some("s"), &[], 0), row("feedback", None, &[], 0), row("tone", None, &[], 0), row("pingpong", None, &[], 0)]
+            [
+                row("time", Some("s"), &[], 0),
+                row("feedback", None, &[], 0),
+                row("tone", None, &[], 0),
+                row("pingpong", None, &[], 0),
+                row("mod_rate", Some("Hz"), &["Modulation"], 0),
+                row("mod_depth", Some("ms"), &["Modulation"], 0),
+            ]
         );
     }
 

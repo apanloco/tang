@@ -12,7 +12,7 @@ source: src/tui/golden_tests.rs
 │                 ┌ Select Effect (scanning…) ───────────────────────────────────────────────────────┐░░░░░░░░     0.10│
 │                 │/                                                                                 │▓▓▓▓▓▓▓▓     1.00│
 │                 │Name                                                       Format   Params Presets│░░░░░░░░     0.01│
-│                 │Delay                                                      Built-in 4      4      │░░░░░░░░     0.00│
+│                 │Delay                                                      Built-in 6      4      │░░░░░░░░     0.00│
 │                 │Filter                                                     Built-in 4      0      │                 │
 │                 │Reverb                                                     Built-in 10     5      │                 │
 │                 │                                                                                  │                 │

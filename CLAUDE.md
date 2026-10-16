@@ -1888,8 +1888,14 @@ Plugin loading is behind a trait. Three formats supported:
   none at all from 0.999 up, so that the first echo is always the sound as it was put in and each
   repeat is darker than the one before) and `pingpong` (0–1, default 0: how far the feedback
   crosses to the other side, and the sound put in goes to the left as the sum of the two sides,
-  so that a mono sound starts on the left and goes from side to side; 0 keeps the sides apart).
-  Four presets (Slapback, Tape Echo, Ping-Pong, Dub Echo). A change of `time` (a knob, a
+  so that a mono sound starts on the left and goes from side to side; 0 keeps the sides apart),
+  and, in a section of their own as the reverb's are, `mod_rate` (0.05–10 Hz, default 0.5) and
+  `mod_depth` (0–10 ms, default 0: off): a sine that moves the time of the left side, and a cosine
+  that moves the right side's, a quarter of a cycle apart, by `mod_depth` milliseconds each way
+  (a tape echo's wobble at 1 or 2 ms and 0.5 Hz, a chorus at 5 ms and 2 Hz; a modulator can move
+  either, `mod_depth` over a range of 10 ms, where a cable to `time` has a range of 2 s). A change
+  of the depth is gone through over 50 ms. Four presets (Slapback, Tape Echo, Ping-Pong, Dub Echo;
+  Tape Echo has a wobble of 1.5 ms and Dub Echo of 0.8). A change of `time` (a knob, a
   modulator) is gone through by a one-pole of 10 ms and no faster than half a sample of delay for
   each sample that goes by, so a jump is a sweep in the pitch of the echoes, within an octave
   down and a fifth up, as on a tape echo, and never a click or a held sample; the delay's place
@@ -1901,10 +1907,10 @@ Plugin loading is behind a trait. Three formats supported:
   put in (it would stay in the echoes for ever). The lines are made for the longest time, and
   nothing is allocated while it runs. `examples/echo.toml` is a session with it.
 
-TODO: a delay that follows the session's tempo (a `time` that is a note value at `bpm`), a
-modulation of its own (a chorus), and a `time` on a log scale: a modulator's depth is a fraction of
-the range, so that ±5 ms of chorus on a range of 2 s is a depth of 0.0025, finer than a slider
-sets it (a file can say it, as `examples/echo.toml` does).
+TODO: a delay that follows the session's tempo (a `time` that is a note value at `bpm`), and a
+finer step for a modulator's depth (a cable's depth is a fraction of the range, so that ±5 ms on
+the `time` of a delay is 0.0025 of its 2 s, finer than the page's slider (0.01) and the terminal's
+keys set it: a file can say it, as `examples/echo.toml` does, and `mod_depth` has the milliseconds).
 
 ## Plugin I/O handling
 

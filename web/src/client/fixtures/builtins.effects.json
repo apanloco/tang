@@ -56,6 +56,34 @@
           "stepCount": 0,
           "unit": null,
           "value": 0.0
+        },
+        {
+          "default": 0.5,
+          "group": [
+            "Modulation"
+          ],
+          "index": 4,
+          "labels": null,
+          "max": 10.0,
+          "min": 0.05,
+          "name": "mod_rate",
+          "stepCount": 0,
+          "unit": "Hz",
+          "value": 0.5
+        },
+        {
+          "default": 0.0,
+          "group": [
+            "Modulation"
+          ],
+          "index": 5,
+          "labels": null,
+          "max": 10.0,
+          "min": 0.0,
+          "name": "mod_depth",
+          "stepCount": 0,
+          "unit": "ms",
+          "value": 0.0
         }
       ],
       "pinned": [],

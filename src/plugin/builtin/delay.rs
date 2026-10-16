@@ -1,6 +1,6 @@
 //! A stereo delay: echoes of the input that repeat by a feedback, which can cross from one side to the other (a ping-pong) and be darkened
-//! at every pass (a tone). It puts out the echoes only, as the reverb puts out its tail only: the host's `mix` is the blend with the dry
-//! sound, so that what is heard first of a note is the note.
+//! at every pass (a tone), and whose time can wobble by a modulation of its own (a tape echo, a chorus). It puts out the echoes only, as the
+//! reverb puts out its tail only: the host's `mix` is the blend with the dry sound, so that what is heard first of a note is the note.
 
 use std::f32::consts::TAU;
 
@@ -9,7 +9,7 @@ use crate::plugin::{ParameterInfo, Plugin, Preset};
 
 pub const NAME: &str = "Delay";
 pub const ID: &str = "builtin:delay";
-pub const PARAM_COUNT: usize = 4;
+pub const PARAM_COUNT: usize = 6;
 
 /// The longest time the delay can be set to, in seconds: the top of the `time` parameter.
 const MAX_TIME_SEC: f32 = 2.0;
@@ -30,27 +30,36 @@ const TONE_HIGH_HZ: f32 = 20_000.0;
 /// A tone at or above this is no filter: the echoes are as they were put in.
 const TONE_OPEN: f32 = 0.999;
 
+/// The most the modulation can move the time, in milliseconds each way: the top of the `mod_depth` parameter.
+const MAX_MOD_DEPTH_MS: f32 = 10.0;
+/// How fast the depth of the modulation follows what it is set to, in seconds: slowly, since a depth that grows is a delay that moves, by as
+/// much as the depth is at that point of the cycle (at the top of 10 ms, 480 samples, in this time it is 0.2 of a sample for each sample).
+const MOD_DEPTH_SMOOTHING_SEC: f64 = 0.05;
+
 struct ParamSpec {
     name: &'static str,
     min: f32,
     max: f32,
     default: f32,
     unit: Option<&'static str>,
+    group: Option<&'static str>,
 }
 
 const PARAMS: &[ParamSpec] = &[
-    ParamSpec { name: "time",     min: 0.001, max: MAX_TIME_SEC, default: 0.375, unit: Some("s") },
-    ParamSpec { name: "feedback", min: 0.0,   max: 0.95,         default: 0.45,  unit: None },
-    ParamSpec { name: "tone",     min: 0.0,   max: 1.0,          default: 0.7,   unit: None },
-    ParamSpec { name: "pingpong", min: 0.0,   max: 1.0,          default: 0.0,   unit: None },
+    ParamSpec { name: "time",      min: 0.001, max: MAX_TIME_SEC,   default: 0.375, unit: Some("s"),  group: None },
+    ParamSpec { name: "feedback",  min: 0.0,   max: 0.95,           default: 0.45,  unit: None,       group: None },
+    ParamSpec { name: "tone",      min: 0.0,   max: 1.0,            default: 0.7,   unit: None,       group: None },
+    ParamSpec { name: "pingpong",  min: 0.0,   max: 1.0,            default: 0.0,   unit: None,       group: None },
+    ParamSpec { name: "mod_rate",  min: 0.05,  max: 10.0,           default: 0.5,   unit: Some("Hz"), group: Some("Modulation") },
+    ParamSpec { name: "mod_depth", min: 0.0,   max: MAX_MOD_DEPTH_MS, default: 0.0, unit: Some("ms"), group: Some("Modulation") },
 ];
 
 pub const PRESETS: &[(&str, &str, [f32; PARAM_COUNT])] = &[
-    // (id, display_name, [time, feedback, tone, pingpong])
-    ("slapback", "Slapback",  [0.09, 0.12, 0.85, 0.0]),
-    ("tape",     "Tape Echo", [0.38, 0.50, 0.45, 0.0]),
-    ("pingpong", "Ping-Pong", [0.30, 0.55, 0.70, 1.0]),
-    ("dub",      "Dub Echo",  [0.45, 0.78, 0.30, 0.35]),
+    // (id, display_name, [time, feedback, tone, pingpong, mod_rate, mod_depth])
+    ("slapback", "Slapback",  [0.09, 0.12, 0.85, 0.0,  0.5, 0.0]),
+    ("tape",     "Tape Echo", [0.38, 0.50, 0.45, 0.0,  0.6, 1.5]),
+    ("pingpong", "Ping-Pong", [0.30, 0.55, 0.70, 1.0,  0.5, 0.0]),
+    ("dub",      "Dub Echo",  [0.45, 0.78, 0.30, 0.35, 0.3, 0.8]),
 ];
 
 pub struct Delay {
@@ -71,10 +80,15 @@ pub struct Delay {
     /// Whether the delay has run since it was made or given a preset. It starts at the time that is set and does not sweep to it from where
     /// it was.
     started: bool,
+    /// Where the modulation is in its cycle, 0 to 1, and how deep it is now, in samples (see `MOD_DEPTH_SMOOTHING_SEC`).
+    mod_phase: f64,
+    mod_depth_now: f64,
     time: f32,
     feedback: f32,
     tone: f32,
     pingpong: f32,
+    mod_rate: f32,
+    mod_depth: f32,
 }
 
 impl Delay {
@@ -90,10 +104,14 @@ impl Delay {
             pingpong_now: PARAMS[3].default,
             tone_state: [0.0; 2],
             started: false,
+            mod_phase: 0.0,
+            mod_depth_now: f64::from(PARAMS[5].default),
             time: PARAMS[0].default,
             feedback: PARAMS[1].default,
             tone: PARAMS[2].default,
             pingpong: PARAMS[3].default,
+            mod_rate: PARAMS[4].default,
+            mod_depth: PARAMS[5].default,
         }
     }
 }
@@ -161,13 +179,17 @@ impl Plugin for Delay {
         let in_r = audio_in.get(1).copied().or(in_l);
         let sample_rate = self.sample_rate;
         let target = f64::from((self.time * sample_rate).clamp(1.0, (self.lines[0].len() - 2) as f32));
+        let depth_target = f64::from(self.mod_depth) * 1e-3 * f64::from(sample_rate);
         if !self.started {
             self.delay = target;
+            self.mod_depth_now = depth_target;
             self.feedback_now = self.feedback;
             self.pingpong_now = self.pingpong;
             self.started = true;
         }
         let time_coef = 1.0 - (-1.0 / (TIME_SMOOTHING_SEC * f64::from(sample_rate))).exp();
+        let depth_coef = 1.0 - (-1.0 / (MOD_DEPTH_SMOOTHING_SEC * f64::from(sample_rate))).exp();
+        let phase_step = f64::from(self.mod_rate) / f64::from(sample_rate);
         let gain_coef = 1.0 - (-1.0 / (GAIN_SMOOTHING_SEC * sample_rate)).exp();
         let tone_coef = tone_coefficient(self.tone, sample_rate);
 
@@ -176,8 +198,15 @@ impl Plugin for Delay {
             self.feedback_now += (self.feedback - self.feedback_now) * gain_coef;
             self.pingpong_now += (self.pingpong - self.pingpong_now) * gain_coef;
 
-            let delay = self.delay as f32;
-            let echo = [read(&self.lines[0], self.write, delay), read(&self.lines[1], self.write, delay)];
+            // The modulation: a sine on the left and a cosine on the right, a quarter of a cycle apart, added to the delay.
+            self.mod_depth_now += (depth_target - self.mod_depth_now) * depth_coef;
+            let (sine, cosine) = (TAU as f64 * self.mod_phase).sin_cos();
+            self.mod_phase += phase_step;
+            if self.mod_phase >= 1.0 {
+                self.mod_phase -= 1.0;
+            }
+            let delays = [(self.delay + sine * self.mod_depth_now) as f32, (self.delay + cosine * self.mod_depth_now) as f32];
+            let echo = [read(&self.lines[0], self.write, delays[0]), read(&self.lines[1], self.write, delays[1])];
 
             // What is fed back: the echoes, darkened by the tone, and crossed to the other side as far as the ping-pong says.
             let fed = match tone_coef {
@@ -225,6 +254,7 @@ impl Plugin for Delay {
                 max: p.max,
                 default: p.default,
                 unit: p.unit.map(String::from),
+                group: p.group.map(String::from).into_iter().collect(),
                 ..Default::default()
             })
             .collect()
@@ -236,6 +266,8 @@ impl Plugin for Delay {
             1 => Some(self.feedback),
             2 => Some(self.tone),
             3 => Some(self.pingpong),
+            4 => Some(self.mod_rate),
+            5 => Some(self.mod_depth),
             _ => None,
         }
     }
@@ -249,6 +281,8 @@ impl Plugin for Delay {
             1 => self.feedback = v,
             2 => self.tone = v,
             3 => self.pingpong = v,
+            4 => self.mod_rate = v,
+            5 => self.mod_depth = v,
             _ => unreachable!(),
         }
         Ok(())
@@ -260,7 +294,7 @@ impl Plugin for Delay {
 
     fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
         let (_, _, values) = PRESETS.iter().find(|(pid, _, _)| *pid == id).ok_or_else(|| anyhow::anyhow!("no preset with id {id:?}"))?;
-        [self.time, self.feedback, self.tone, self.pingpong] = *values;
+        [self.time, self.feedback, self.tone, self.pingpong, self.mod_rate, self.mod_depth] = *values;
         // A fresh sound: what was echoing is gone, and the time is the preset's from the first sample.
         for line in self.lines.iter_mut() {
             line.fill(0.0);
@@ -414,6 +448,64 @@ mod tests {
         }
     }
 
+    /// A delay with no feedback, `time` seconds long, that wobbles at `rate` Hz by `depth` milliseconds.
+    fn wobbling(time: f32, rate: f32, depth: f32) -> Delay {
+        let mut delay = delay_with(time, 0.0, 1.0, 0.0);
+        delay.set_parameter(4, rate).unwrap();
+        delay.set_parameter(5, depth).unwrap();
+        delay
+    }
+
+    #[test]
+    fn a_modulation_moves_the_echo_of_each_side_by_as_much_as_it_is_deep_a_quarter_of_a_cycle_apart() {
+        // At 0.05 Hz the cycle is 960,000 frames long, so that over the first thousand the left side's delay (a sine) is where it began, and the
+        // right side's (a cosine) is at the top of its cycle: 8 ms, 384 samples more than the time. The echo is read when the delay has brought
+        // the sample back, so a delay that is 1.5 samples more at 601.5 is where the left side's is.
+        let mut delay = wobbling(SIX_HUNDRED, 0.05, 8.0);
+        let (l, r) = run(&mut delay, &impulse(0.5, 1200), &impulse(0.5, 1200));
+        let (left, right) = (heard(&l), heard(&r));
+        assert!(left.first().is_some_and(|e| (601..=602).contains(&e.0)) && left.last().is_some_and(|e| (601..=603).contains(&e.0)), "{left:?}");
+        assert!(right.first().is_some_and(|e| (983..=984).contains(&e.0)) && right.last().is_some_and(|e| (984..=985).contains(&e.0)), "{right:?}");
+        // (The echo is all there, over the frames that it falls between, to a part in a few hundred: the delay is moving, so that it is read
+        // at a speed that is a little more or less than one.)
+        assert!((left.iter().map(|e| e.1).sum::<f32>() - 0.5).abs() < 5e-3 && (right.iter().map(|e| e.1).sum::<f32>() - 0.5).abs() < 5e-3, "{left:?} {right:?}");
+    }
+
+    #[test]
+    fn a_modulation_sweeps_the_pitch_of_the_echoes_by_as_much_as_its_rate_and_its_depth_say() {
+        let sine: Vec<f32> = (0..96_000).map(|k| 0.4 * (TAU * 440.0 * k as f32 / SAMPLE_RATE).sin()).collect();
+        let steepest = |signal: &[f32]| signal[6000..].windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        // A sine of this pitch and level moves by at most 0.0230 a sample. With 4 ms at 5 Hz the delay changes by at most 192 * 2 pi * 5 / 48000
+        // = 0.1257 samples for each that goes by, so that the echoes are read at between 0.874 and 1.126 times the speed, and move by at most 0.0259.
+        let (still, _) = run(&mut wobbling(0.1, 5.0, 0.0), &sine, &sine);
+        assert!(steepest(&still) < 0.0235, "{}", steepest(&still));
+        let mut delay = wobbling(0.1, 5.0, 4.0);
+        let (wobbled, _) = run(&mut delay, &sine, &sine);
+        assert!(steepest(&wobbled) > 0.025 && steepest(&wobbled) < 0.027, "{}", steepest(&wobbled));
+        // The cycle goes round and starts again, and the place in it is a number from 0 to 1 however long it has gone on (2 s at 5 Hz is ten cycles).
+        assert!((0.0..1.0).contains(&delay.mod_phase), "{}", delay.mod_phase);
+    }
+
+    #[test]
+    fn a_change_of_the_depth_of_the_modulation_is_gone_through_and_does_not_click() {
+        // The change is made 12,037 frames in, a quarter of a cycle into a modulation at 1 Hz, where the delay is at the top of what it can be:
+        // a depth that stepped from 0 to 10 ms there would step the delay by 480 samples.
+        const CHANGE: usize = 12_037;
+        let sine = |k: usize| 0.4 * (TAU * 440.0 * k as f32 / SAMPLE_RATE).sin();
+        let mut delay = wobbling(0.1, 1.0, 0.0);
+        let first: Vec<f32> = (0..CHANGE).map(sine).collect();
+        let (before, _) = run(&mut delay, &first, &first);
+        delay.set_parameter(5, 10.0).unwrap();
+        let second: Vec<f32> = (CHANGE..CHANGE + 48_000).map(sine).collect();
+        let (after, _) = run(&mut delay, &second, &second);
+        let out = [before, after].concat();
+        // (Reading at up to 1.126 times the speed of a sine that moves by 0.0230 a sample, and a delay that is gone through over 0.05 s.)
+        let steepest = out[6000..].windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(steepest < 0.05, "{steepest}");
+        // It is as deep as it was set within a second.
+        assert!((delay.mod_depth_now - 480.0).abs() < 0.01, "{}", delay.mod_depth_now);
+    }
+
     /// The energy of a signal between two frames.
     fn energy(signal: &[f32], from: usize, to: usize) -> f32 {
         signal[from..to].iter().map(|x| x * x).sum()
@@ -532,9 +624,15 @@ mod tests {
                 ("feedback", None, 0.0, 0.95, 0.45),
                 ("tone", None, 0.0, 1.0, 0.7),
                 ("pingpong", None, 0.0, 1.0, 0.0),
+                ("mod_rate", Some("Hz"), 0.05, 10.0, 0.5),
+                ("mod_depth", Some("ms"), 0.0, 10.0, 0.0),
             ]
         );
-        assert!(parameters.iter().all(|p| p.labels.is_none() && p.group.is_empty() && p.step_count == 0));
+        assert!(parameters.iter().all(|p| p.labels.is_none() && p.step_count == 0));
+        // (The modulation is a section of its own, as the reverb's is.)
+        let sections: Vec<Vec<String>> = parameters.iter().map(|p| p.group.clone()).collect();
+        assert_eq!(sections[..4], [Vec::<String>::new(), vec![], vec![], vec![]]);
+        assert_eq!(sections[4..], [["Modulation"], ["Modulation"]]);
         for (index, p) in parameters.iter().enumerate() {
             assert_eq!(delay.get_parameter(index as u32), Some(p.default), "{}", p.name);
             delay.set_parameter(index as u32, p.max + 1000.0).unwrap();
@@ -553,8 +651,8 @@ mod tests {
             assert!(delay.set_parameter(0, bad).is_err());
             assert_eq!(delay.get_parameter(0), Some(0.375), "a refused value changes nothing");
         }
-        assert!(delay.set_parameter(4, 0.5).is_err());
-        assert_eq!(delay.get_parameter(4), None);
+        assert!(delay.set_parameter(6, 0.5).is_err());
+        assert_eq!(delay.get_parameter(6), None);
     }
 
     #[test]

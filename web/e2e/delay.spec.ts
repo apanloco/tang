@@ -47,7 +47,7 @@ test("a delay from the page puts out the echoes and not the sound, one time afte
   const delay = node(page, "Delay");
   await expect(delay).toBeVisible();
   // Its parameters, with what the plugin starts at, and the mix that an effect is added at.
-  await expectKnobs(delay, { time: "0.375", feedback: "0.45", tone: "0.7", pingpong: "0", Mix: "0.5" });
+  await expectKnobs(delay, { time: "0.375", feedback: "0.45", tone: "0.7", pingpong: "0", mod_rate: "0.5", mod_depth: "0", Mix: "0.5" });
 
   // The scope of a node is of what comes out of the node, which is the delay blended with the sound that went in by the mix: to see the echoes alone the mix is all the way up.
   const mix = delay.getByRole("slider", { name: "Mix", exact: true });
@@ -60,7 +60,7 @@ test("a delay from the page puts out the echoes and not the sound, one time afte
   const menu = page.getByRole("menu", { name: "Load a preset into Delay" });
   await expect(menu.getByRole("menuitem")).toHaveText(["Slapback", "Tape Echo", "Ping-Pong", "Dub Echo"]);
   await menu.getByRole("menuitem", { name: "Slapback" }).click();
-  await expectKnobs(delay, { time: "0.09", feedback: "0.12", tone: "0.85", pingpong: "0" });
+  await expectKnobs(delay, { time: "0.09", feedback: "0.12", tone: "0.85", pingpong: "0", mod_rate: "0.5", mod_depth: "0" });
 
   // The scope of the delay's node is of what comes out of the delay: silent until a key, and then silent for the time (a slapback's is 0.09 s) and not the dry sound at once.
   await delay.getByRole("button", { name: "Scope of Delay" }).click();
@@ -74,7 +74,7 @@ test("a delay from the page puts out the echoes and not the sound, one time afte
   await expect.poll(() => peakOf(scope), { message: "the slapback has died away", timeout: 10_000 }).toBeLessThan(1e-4);
   await page.getByRole("button", { name: "Load a preset into Delay" }).click();
   await menu.getByRole("menuitem", { name: "Tape Echo" }).click();
-  await expectKnobs(delay, { time: "0.38", feedback: "0.5", tone: "0.45", pingpong: "0" });
+  await expectKnobs(delay, { time: "0.38", feedback: "0.5", tone: "0.45", pingpong: "0", mod_rate: "0.6", mod_depth: "1.5" });
   const tape = await firstHeard(page, scope, "z");
   expect(tape, "the tape echo comes after its time").toBeGreaterThan(340);
   expect(tape, "and well after the slapback").toBeGreaterThan(slapback + 150);
