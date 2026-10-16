@@ -561,7 +561,26 @@ fn parse_learnable(bytes: [u8; 3]) -> Option<(MidiBindSource, f32, f32)> {
     }
 }
 
-/// Modulation source: an LFO, an ADSR envelope, a learned MIDI control, or a macro.
+/// How many steps a step sequencer has to set: the bars of its node (generated into the page's constants as `MAX_STEPS`).
+pub const MAX_STEPS: usize = 16;
+
+/// What a step sequencer puts out at `position` (the step it is at as the whole part, how far into it as the fraction, 0 to `length`): the value of the step,
+/// held for the part of it before its last `glide`, which is spent going to the value of the next step (the first, after the last) in a straight line.
+pub fn steps_output(values: &[f32; MAX_STEPS], length: usize, position: f32, glide: f32) -> f32 {
+    let length = length.clamp(1, MAX_STEPS);
+    let position = if position.is_finite() { position.rem_euclid(length as f32) } else { 0.0 };
+    let step = (position as usize).min(length - 1);
+    let within = position - step as f32;
+    let here = values[step];
+    let glide = glide.clamp(0.0, 1.0);
+    if glide <= 0.0 || within <= 1.0 - glide {
+        return here;
+    }
+    let next = values[(step + 1) % length];
+    here + (next - here) * ((within - (1.0 - glide)) / glide)
+}
+
+/// Modulation source: an LFO, an ADSR envelope, a learned MIDI control, a macro, or a step sequencer.
 #[derive(Debug, Clone)]
 pub enum ModSource {
     Lfo {
@@ -591,6 +610,36 @@ pub enum ModSource {
     Macro {
         value: f32,
     },
+    /// A step sequencer: up to `MAX_STEPS` values from -1 to 1 that it goes through one after the other, `rate` steps a second, the first `length` of them and
+    /// round again (`steps_output` says what each moment of it puts out). A note starts it again at the first step if `retrigger` is on. It drives its targets as
+    /// an LFO does, around what the user set.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes one from the next commit on"))]
+    Steps {
+        values: [f32; MAX_STEPS],
+        length: usize,
+        rate: f32,
+        glide: f32,
+        retrigger: bool,
+        /// Where it is: the whole part is the step, the fraction how far into it.
+        position: f32,
+    },
+}
+
+impl ModSource {
+    /// How fast it goes, if it has a rate: an LFO's cycles and a step sequencer's steps a second.
+    fn rate(&self) -> Option<f32> {
+        match self {
+            ModSource::Lfo { rate, .. } | ModSource::Steps { rate, .. } => Some(*rate),
+            ModSource::Envelope { .. } | ModSource::MidiLearn { .. } | ModSource::Macro { .. } => None,
+        }
+    }
+
+    /// Set how fast it goes, if it has a rate.
+    fn set_rate(&mut self, new: f32) {
+        if let ModSource::Lfo { rate, .. } | ModSource::Steps { rate, .. } = self {
+            *rate = new;
+        }
+    }
 }
 
 /// A block-rate modulator with a source (LFO or Envelope) and targets.
@@ -607,6 +656,8 @@ pub struct Modulator {
     /// Set for one buffer when a `MidiLearn` source just captured a control, so
     /// the graph can notify the main thread. Consumed (taken) by the graph.
     pub last_learned: Option<MidiBindSource>,
+    /// Where the position of a step sequencer is published each buffer (telemetry); `None` publishes nothing.
+    position_out: Option<Slot>,
     /// What makes the numbers of a random LFO its own: the graph gives every modulator that comes in the next (`AudioGraph::next_modulator_seed`).
     seed: u32,
     /// How many times an LFO has gone round (counted as the phase wraps, so that a rate that is turned does not start the numbers again): the random
@@ -623,6 +674,7 @@ impl Modulator {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            position_out: None,
             seed: 0,
             cycle: 0,
         }
@@ -741,6 +793,19 @@ impl Modulator {
                 self.last_output = *value;
             }
             ModSource::Macro { value } => self.last_output = *value,
+            ModSource::Steps { values, length, rate, glide, retrigger, position } => {
+                let length = (*length).clamp(1, MAX_STEPS);
+                if *retrigger && midi_events.iter().any(|&(_frame, bytes)| note_on_of(bytes).is_some()) {
+                    // A note puts it at the first step, which this buffer puts out.
+                    *position = 0.0;
+                } else {
+                    *position = (*position + *rate * buffer_size as f32 / self.sample_rate).rem_euclid(length as f32);
+                }
+                if !position.is_finite() {
+                    *position = 0.0;
+                }
+                self.last_output = steps_output(values, length, *position, *glide);
+            }
         }
     }
 
@@ -784,6 +849,8 @@ impl Modulator {
             }
             // Unipolar and additive around the base, like a CC: at rest (0) it adds nothing.
             ModSource::Macro { .. } => self.last_output * depth * (max - min),
+            // Bipolar and additive around the base, like the LFO: a value of 0 adds nothing.
+            ModSource::Steps { .. } => self.last_output * depth * (max - min),
         }
     }
 
@@ -864,7 +931,7 @@ fn sibling_field(kind: &ModTargetKind) -> Option<(usize, CrossModField)> {
 /// What the setting `field` of `m` is now, or `None` if `m` has no such setting (an envelope has no rate, an LFO has no stages) or no such cable.
 fn cross_mod_field_value(m: &Modulator, field: CrossModField) -> Option<f32> {
     match (field, &m.source) {
-        (CrossModField::Rate, ModSource::Lfo { rate, .. }) => Some(*rate),
+        (CrossModField::Rate, source) => source.rate(),
         (CrossModField::Attack, ModSource::Envelope { attack, .. }) => Some(*attack),
         (CrossModField::Decay, ModSource::Envelope { decay, .. }) => Some(*decay),
         (CrossModField::Sustain, ModSource::Envelope { sustain, .. }) => Some(*sustain),
@@ -910,11 +977,7 @@ fn publish_group_member_mod_effective(groups: &[Group], instruments: &[Instrumen
 /// cross-mod and group→member-modulator cross-mod.
 fn apply_cross_mod_field(m: &mut Modulator, field: CrossModField, value: f32) {
     match field {
-        CrossModField::Rate => {
-            if let ModSource::Lfo { rate, .. } = &mut m.source {
-                *rate = value;
-            }
-        }
+        CrossModField::Rate => m.source.set_rate(value),
         CrossModField::Attack => {
             if let ModSource::Envelope { attack, .. } = &mut m.source {
                 *attack = value;
@@ -985,6 +1048,9 @@ fn publish_outputs(modulators: &[Modulator], telemetry: &Telemetry) {
     for m in modulators {
         if let Some(slot) = m.output {
             telemetry.store(slot, m.last_output);
+        }
+        if let (Some(slot), ModSource::Steps { position, .. }) = (m.position_out, &m.source) {
+            telemetry.store(slot, *position);
         }
     }
 }
@@ -2240,6 +2306,23 @@ pub enum GraphCommand {
         location: ModulatorLocation,
         index: usize,
         slot: Slot,
+    },
+    /// Publish where a step sequencer is (its position) each buffer into `slot`. The slot stays with the modulator when others around it come and go.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends it from the next commit on"))]
+    SetModulatorPosition {
+        location: ModulatorLocation,
+        index: usize,
+        slot: Slot,
+    },
+    /// Set what a step sequencer goes through, how many of them, how it glides and whether a note starts it again; where it is stays.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends it from the next commit on"))]
+    SetModulatorSteps {
+        location: ModulatorLocation,
+        index: usize,
+        values: [f32; MAX_STEPS],
+        length: usize,
+        glide: f32,
+        retrigger: bool,
     },
     /// Insert a new modulator into the lane (modulators are lane-scoped).
     InsertModulator {
@@ -4404,16 +4487,22 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetModulatorOutput { location, index, slot } => {
-                    let rack = match location {
-                        ModulatorLocation::Lane(inst) => {
-                            self.get_instrument_mut(inst).map(|lane| &mut lane.modulators)
-                        }
-                        ModulatorLocation::Group(group) => {
-                            self.groups.get_mut(group).map(|g| &mut g.modulators)
-                        }
-                    };
-                    if let Some(m) = rack.and_then(|rack| rack.get_mut(index)) {
+                    if let Some(m) = self.modulator_mut(location, index) {
                         m.output = Some(slot);
+                    }
+                }
+                GraphCommand::SetModulatorPosition { location, index, slot } => {
+                    if let Some(m) = self.modulator_mut(location, index) {
+                        m.position_out = Some(slot);
+                    }
+                }
+                GraphCommand::SetModulatorSteps { location, index, values, length, glide, retrigger } => {
+                    // (Where it is stays: it is the place in the pattern that goes on, whatever the pattern now is.)
+                    if let Some(ModSource::Steps { values: v, length: l, glide: g, retrigger: r, .. }) = self.modulator_mut(location, index).map(|m| &mut m.source) {
+                        *v = values;
+                        *l = length;
+                        *g = glide;
+                        *r = retrigger;
                     }
                 }
                 GraphCommand::InsertModulator {
@@ -4467,9 +4556,7 @@ impl AudioGraph {
                 } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         if let Some(m) = lane.modulators.get_mut(mod_index) {
-                            if let ModSource::Lfo { rate: ref mut r, .. } = m.source {
-                                *r = rate;
-                            }
+                            m.source.set_rate(rate);
                         }
                         // Update cross-mod base values for targets pointing at this rate.
                         update_cross_mod_base(&mut lane.modulators, mod_index, CrossModField::Rate, rate);
@@ -4670,9 +4757,7 @@ impl AudioGraph {
                 } => {
                     if let Some(g) = self.groups.get_mut(group) {
                         if let Some(m) = g.modulators.get_mut(mod_index) {
-                            if let ModSource::Lfo { rate: ref mut r, .. } = m.source {
-                                *r = rate;
-                            }
+                            m.source.set_rate(rate);
                         }
                         update_cross_mod_base(&mut g.modulators, mod_index, CrossModField::Rate, rate);
                     }
@@ -4907,6 +4992,14 @@ impl AudioGraph {
 
     fn get_instrument_mut(&mut self, inst: usize) -> Option<&mut InstrumentLane> {
         self.instruments.get_mut(inst)
+    }
+
+    /// The modulator `index` of a lane's rack or of a group's, if it is there.
+    fn modulator_mut(&mut self, location: ModulatorLocation, index: usize) -> Option<&mut Modulator> {
+        match location {
+            ModulatorLocation::Lane(inst) => self.instruments.get_mut(inst)?.modulators.get_mut(index),
+            ModulatorLocation::Group(group) => self.groups.get_mut(group)?.modulators.get_mut(index),
+        }
     }
 
     /// Run `fix` on the modulators of the group that lane `inst` belongs to, with
@@ -6614,6 +6707,7 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            position_out: None,
             seed: 0,
             cycle: 0,
         };
@@ -6650,6 +6744,7 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            position_out: None,
             seed: 0,
             cycle: 0,
         };
@@ -6681,6 +6776,7 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            position_out: None,
             seed: 0,
             cycle: 0,
         };
@@ -6869,6 +6965,7 @@ mod tests {
             last_output: 0.0,
             output: None,
             last_learned: None,
+            position_out: None,
             seed: 0,
             cycle: 0,
         };
@@ -8920,6 +9017,289 @@ mod tests {
         assert!(close(rig.read(output), 0.8) && close(rig.read(effective), 0.9), "{} {}", rig.read(output), rig.read(effective));
     }
 
+    /// A step sequencer's source with `values` for its first steps (the others 0), `length` of them in use, at `rate` steps a second, at its first step.
+    fn steps(values: &[f32], length: usize, rate: f32, glide: f32, retrigger: bool) -> ModSource {
+        let mut all = [0.0; MAX_STEPS];
+        all[..values.len()].copy_from_slice(values);
+        ModSource::Steps { values: all, length, rate, glide, retrigger, position: 0.0 }
+    }
+
+    /// The rate at which a step sequencer takes `buffers` buffers (of `FRAMES` frames, at 48 kHz) to go through a step.
+    fn a_step_every(buffers: f32) -> f32 {
+        48000.0 / FRAMES as f32 / buffers
+    }
+
+    /// A step sequencer in lane 0 that publishes its output and its position; their slots.
+    fn lane_steps(rig: &mut Rig, index: usize, source: ModSource) -> (Slot, Slot) {
+        let output = rig.lane_modulator(index, source);
+        let position = rig.slot();
+        rig.cmd_tx.send(GraphCommand::SetModulatorPosition { location: ModulatorLocation::Lane(0), index, slot: position }).unwrap();
+        (output, position)
+    }
+
+    #[test]
+    fn a_step_sequencer_puts_out_the_value_of_the_step_it_is_at_and_goes_on_by_its_rate() {
+        let mut rig = Rig::new();
+        // Three steps of two buffers each, and a fourth value that is set and not in use.
+        let output = rig.lane_modulator(0, steps(&[0.5, -0.25, 1.0, 0.9], 3, a_step_every(2.0), 0.0, false));
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            rig.process(&[]);
+            seen.push(rig.read(output));
+        }
+        // (A buffer takes it half a step on, so the first ends in the middle of the first step, and the pattern goes round after the third step.)
+        assert_eq!(seen, [0.5, -0.25, -0.25, 1.0, 1.0, 0.5, 0.5, -0.25]);
+    }
+
+    #[test]
+    fn a_step_sequencers_glide_is_the_last_part_of_each_step_spent_going_to_the_value_of_the_next() {
+        // Three steps in use, and a fourth that is set and not (the last step goes to the first, and not to it).
+        let mut values = [0.0; MAX_STEPS];
+        values[..4].copy_from_slice(&[0.5, 1.0, -1.0, 0.9]);
+        // No glide: the value of the step all through it.
+        for position in [0.0, 0.25, 0.999, 1.0, 1.5, 2.999] {
+            assert_eq!(steps_output(&values, 3, position, 0.0), values[position as usize], "at {position}");
+        }
+        // A glide of a half: held for the first half of the step, then a straight line to the next value (the first, after the last).
+        let at = |position| steps_output(&values, 3, position, 0.5);
+        assert_eq!(at(0.0), 0.5);
+        assert_eq!(at(0.5), 0.5, "the glide begins after the half");
+        assert!(close(at(0.75), 0.75), "{}", at(0.75));
+        assert_eq!(at(1.0), 1.0);
+        assert!(close(at(1.75), 0.0), "{}", at(1.75));
+        assert!(close(at(2.75), -0.25), "the last step goes to the first: {}", at(2.75));
+        // A glide of 1 is a straight line through the values all the time.
+        assert!(close(steps_output(&values, 3, 0.25, 1.0), 0.625));
+        assert!(close(steps_output(&values, 3, 1.5, 1.0), 0.0));
+        // One step has nothing to go to.
+        assert_eq!(steps_output(&values, 1, 0.9, 1.0), 0.5);
+        // A glide beyond its range is kept to it, and a place that is not a number is the beginning.
+        assert_eq!(steps_output(&values, 3, 0.25, 7.0), steps_output(&values, 3, 0.25, 1.0));
+        assert_eq!(steps_output(&values, 3, 0.9, -2.0), 0.5);
+        assert_eq!(steps_output(&values, 3, f32::NAN, 0.5), 0.5);
+    }
+
+    #[test]
+    fn a_step_sequencer_of_no_steps_or_of_more_than_there_are_is_kept_to_the_ones_it_has() {
+        let mut values = [0.0; MAX_STEPS];
+        values[0] = 0.3;
+        values[MAX_STEPS - 1] = -0.6;
+        assert_eq!(steps_output(&values, 0, 0.0, 0.0), 0.3, "a length of none is a length of one");
+        assert_eq!(steps_output(&values, 99, MAX_STEPS as f32 - 0.5, 0.0), -0.6, "and one of more than there are is all of them");
+        assert_eq!(steps_output(&values, 99, MAX_STEPS as f32, 0.0), 0.3, "which goes round");
+    }
+
+    #[test]
+    fn a_step_sequencer_of_no_steps_stays_at_its_first_and_one_of_too_many_goes_round_at_the_most_there_are() {
+        let mut rig = Rig::new();
+        let (output, position) = lane_steps(&mut rig, 0, steps(&[0.8, 0.6], 0, a_step_every(4.0), 0.0, false));
+        rig.process(&[]);
+        assert_eq!((rig.read(output), rig.read(position)), (0.8, 0.25), "of none it is of one: it goes round at the first");
+        for _ in 0..4 {
+            rig.process(&[]);
+        }
+        assert_eq!((rig.read(output), rig.read(position)), (0.8, 0.25));
+
+        let mut rig = Rig::new();
+        let (_, position) = lane_steps(&mut rig, 0, steps(&[], MAX_STEPS + 5, a_step_every(1.0), 0.0, false));
+        for _ in 0..MAX_STEPS + 1 {
+            rig.process(&[]);
+        }
+        assert_eq!(rig.read(position), 1.0, "one more than there are goes round at the last");
+    }
+
+    #[test]
+    fn a_step_sequencer_that_was_given_no_rate_goes_on_when_it_is_given_one() {
+        let mut rig = Rig::new();
+        let (_, position) = lane_steps(&mut rig, 0, steps(&[], 4, a_step_every(1.0), 0.0, false));
+        rig.cmd_tx.send(GraphCommand::SetModulatorRate { inst: 0, mod_index: 0, rate: f32::NAN }).unwrap();
+        rig.process(&[]);
+        assert_eq!(rig.read(position), 0.0, "it is at the beginning, and not nowhere");
+        rig.cmd_tx.send(GraphCommand::SetModulatorRate { inst: 0, mod_index: 0, rate: a_step_every(1.0) }).unwrap();
+        rig.process(&[]);
+        assert_eq!(rig.read(position), 1.0);
+    }
+
+    #[test]
+    fn a_step_sequencer_moves_what_it_drives_by_the_depth_of_the_range_that_it_has() {
+        // A parameter that runs from 0.2 to 0.6, set to 0.3: a value of 0.5 at a depth of 0.5 is a quarter of that range of 0.4, 0.1, above it.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, steps(&[0.5], 1, 0.0, 0.0, false));
+        let effective = rig.slot();
+        let target = ModTarget { kind: ModTargetKind::PluginParam { slot: 1, param_index: 0 }, depth: 0.5, base_value: 0.3, param_min: 0.2, param_max: 0.6, effective: Some(effective) };
+        rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.4), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn a_step_sequencer_publishes_where_it_is_after_every_buffer_and_goes_round_at_its_length() {
+        let mut rig = Rig::new();
+        let (_, position) = lane_steps(&mut rig, 0, steps(&[], 3, a_step_every(4.0), 0.0, false));
+        let mut seen = Vec::new();
+        for _ in 0..13 {
+            rig.process(&[]);
+            seen.push(rig.read(position));
+        }
+        // A quarter of a step a buffer.
+        assert_eq!(seen, [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 0.0, 0.25]);
+    }
+
+    #[test]
+    fn a_modulator_that_is_not_a_step_sequencer_publishes_no_position() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, lfo(LfoWaveform::Sine, 100.0));
+        let position = rig.slot();
+        rig.cmd_tx.send(GraphCommand::SetModulatorPosition { location: ModulatorLocation::Lane(0), index: 0, slot: position }).unwrap();
+        rig.process(&[]);
+        assert!(rig.read(output) != 0.0, "the LFO is going");
+        assert_eq!(rig.read(position), 0.0);
+    }
+
+    #[test]
+    fn a_position_slot_for_a_modulator_that_is_not_there_is_left_alone() {
+        let mut rig = Rig::new();
+        let slot = rig.slot();
+        for location in [ModulatorLocation::Lane(0), ModulatorLocation::Lane(9), ModulatorLocation::Group(0)] {
+            rig.cmd_tx.send(GraphCommand::SetModulatorPosition { location, index: 3, slot }).unwrap();
+        }
+        rig.process(&[]);
+        assert_eq!(rig.read(slot), 0.0);
+    }
+
+    #[test]
+    fn a_note_starts_a_step_sequencer_again_at_its_first_step_if_it_retriggers() {
+        let mut rig = Rig::new();
+        let (output, position) = lane_steps(&mut rig, 0, steps(&[0.1, 0.2, 0.3, 0.4], 4, a_step_every(1.0), 0.0, true));
+        for _ in 0..3 {
+            rig.process(&[]);
+        }
+        assert_eq!((rig.read(output), rig.read(position)), (0.4, 3.0), "at the fourth step");
+        rig.process(&[note_on(60)]);
+        assert_eq!((rig.read(output), rig.read(position)), (0.1, 0.0), "a note puts it at the first");
+        rig.process(&[]);
+        assert_eq!((rig.read(output), rig.read(position)), (0.2, 1.0), "and it goes on from there");
+    }
+
+    #[test]
+    fn a_step_sequencer_that_does_not_retrigger_goes_on_through_a_note() {
+        let mut rig = Rig::new();
+        let (output, position) = lane_steps(&mut rig, 0, steps(&[0.1, 0.2, 0.3, 0.4], 4, a_step_every(1.0), 0.0, false));
+        for _ in 0..2 {
+            rig.process(&[]);
+        }
+        rig.process(&[note_on(60)]);
+        assert_eq!((rig.read(output), rig.read(position)), (0.4, 3.0));
+    }
+
+    #[test]
+    fn a_note_off_and_a_note_on_with_no_velocity_do_not_start_a_step_sequencer_again() {
+        let mut rig = Rig::new();
+        let (_, position) = lane_steps(&mut rig, 0, steps(&[0.1, 0.2, 0.3, 0.4], 4, a_step_every(1.0), 0.0, true));
+        rig.process(&[]);
+        rig.process(&[note_off(60), (0, [0x90, 60, 0]), (0, [0xB0, 74, 100])]);
+        assert_eq!(rig.read(position), 2.0, "it went on");
+    }
+
+    #[test]
+    fn a_step_sequencers_target_is_the_base_with_the_value_times_the_depth_of_the_range_added_to_it_as_an_lfos_is() {
+        // The base is 0.5 and the range is 1: a value of -1 at a depth of 0.4 is 0.4 below it, a value of 0.5 is 0.2 above it.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, steps(&[0.5, -1.0], 2, a_step_every(1.0), 0.0, false));
+        let effective = rig.gain_target(0, 0.4);
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.1), "{}", rig.read(effective));
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.7), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn a_step_sequencer_at_rest_in_the_middle_leaves_what_it_drives_where_the_user_set_it() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, steps(&[0.0, 0.0], 2, a_step_every(1.0), 0.0, false));
+        let effective = rig.gain_target(0, 1.0);
+        rig.process(&[]);
+        assert!(close(rig.read(effective), 0.5), "{}", rig.read(effective));
+    }
+
+    #[test]
+    fn the_rate_of_a_step_sequencer_is_set_as_an_lfos_is_and_a_cable_can_drive_it() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0));
+        let (_, position) = lane_steps(&mut rig, 1, steps(&[], 4, 2.0, 0.0, false));
+        // The rate is given: one step a buffer.
+        rig.cmd_tx.send(GraphCommand::SetModulatorRate { inst: 0, mod_index: 1, rate: a_step_every(1.0) }).unwrap();
+        rig.process(&[]);
+        assert_eq!(rig.read(position), 1.0);
+        // And back to something slow, driven by the square LFO (always +1) from a cable: a fifth of the knob's travel up from 2 Hz, from the second buffer on (the
+        // cable writes the rate after the modulators have gone a buffer).
+        rig.cmd_tx.send(GraphCommand::SetModulatorRate { inst: 0, mod_index: 1, rate: 2.0 }).unwrap();
+        let rate = rig.field_target(0, ModTargetKind::ModulatorRate { mod_index: 1 }, 0.2, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        rig.process(&[]);
+        let driven = value_on_decades(place_on_decades(2.0, 0.01, 50.0) + 0.2, 0.01, 50.0);
+        assert!(near(rig.read(rate), driven), "{} for {driven}", rig.read(rate));
+        let moved = 1.0 + (2.0 + driven) * FRAMES as f32 / 48000.0;
+        assert!(near(rig.read(position), moved), "{} for {moved}", rig.read(position));
+    }
+
+    #[test]
+    fn a_step_sequencer_is_given_other_steps_without_losing_its_place() {
+        let mut rig = Rig::new();
+        let (output, position) = lane_steps(&mut rig, 0, steps(&[0.1, 0.2, 0.3, 0.4], 4, a_step_every(2.0), 0.0, false));
+        for _ in 0..3 {
+            rig.process(&[]);
+        }
+        assert_eq!(rig.read(position), 1.5);
+        let mut values = [0.0; MAX_STEPS];
+        values[..3].copy_from_slice(&[-0.1, -0.2, -0.3]);
+        rig.cmd_tx.send(GraphCommand::SetModulatorSteps { location: ModulatorLocation::Lane(0), index: 0, values, length: 3, glide: 0.0, retrigger: true }).unwrap();
+        rig.process(&[]);
+        assert_eq!((rig.read(position), rig.read(output)), (2.0, -0.3), "it is where it was, with the new values");
+        rig.process(&[]);
+        rig.process(&[]);
+        assert_eq!((rig.read(position), rig.read(output)), (0.0, -0.1), "and goes round at the new length");
+        rig.process(&[]);
+        rig.process(&[note_on(60)]);
+        assert_eq!(rig.read(position), 0.0, "and a note starts it again, which it had not");
+    }
+
+    #[test]
+    fn the_glide_of_a_step_sequencer_is_given_with_its_steps() {
+        let mut rig = Rig::new();
+        let (output, _) = lane_steps(&mut rig, 0, steps(&[0.0, 1.0], 2, a_step_every(4.0), 0.0, false));
+        rig.process(&[]);
+        assert_eq!(rig.read(output), 0.0, "a quarter of the way into the first step, with no glide");
+        let mut values = [0.0; MAX_STEPS];
+        values[1] = 1.0;
+        rig.cmd_tx.send(GraphCommand::SetModulatorSteps { location: ModulatorLocation::Lane(0), index: 0, values, length: 2, glide: 1.0, retrigger: false }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(output), 0.5), "half way through the first step, on the way to the second: {}", rig.read(output));
+    }
+
+    #[test]
+    fn steps_are_given_to_a_step_sequencer_in_a_group_and_a_note_of_a_member_starts_it_again() {
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx
+            .send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: steps(&[0.1, 0.2, 0.3, 0.4], 4, a_step_every(1.0), 0.0, true) })
+            .unwrap();
+        let (output, position) = (g.rig.slot(), g.rig.slot());
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(0), index: 1, slot: output }).unwrap();
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorPosition { location: ModulatorLocation::Group(0), index: 1, slot: position }).unwrap();
+        g.rig.process(&[]);
+        g.rig.process(&[]);
+        assert_eq!((g.rig.read(output), g.rig.read(position)), (0.3, 2.0));
+        g.rig.process(&[note_on(60)]);
+        assert_eq!((g.rig.read(output), g.rig.read(position)), (0.1, 0.0), "a note of a member starts it again");
+        let mut values = [0.0; MAX_STEPS];
+        values[..3].copy_from_slice(&[0.7, 0.8, 0.9]);
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorSteps { location: ModulatorLocation::Group(0), index: 1, values, length: 3, glide: 0.0, retrigger: false }).unwrap();
+        g.rig.process(&[]);
+        assert_eq!((g.rig.read(output), g.rig.read(position)), (0.8, 1.0), "the group's has the steps it was given and keeps its place");
+        g.rig.process(&[note_on(60)]);
+        assert_eq!(g.rig.read(position), 2.0, "and a note no longer starts it again");
+    }
+
     #[test]
     fn modulators_on_the_same_parameter_share_one_effective_value() {
         let mut rig = Rig::new();
@@ -9155,6 +9535,7 @@ mod tests {
     fn a_group_modulator_moves_each_setting_of_a_members_modulator_that_is_turned_on_a_log_scale_a_fraction_of_the_knobs_travel_and_a_sustain_a_fraction_of_its_range() {
         for (field, member_source, base, (min, max)) in [
             (CrossModField::Rate, lfo(LfoWaveform::Sine, 10.0), 10.0, (0.01, 50.0)),
+            (CrossModField::Rate, steps(&[], 4, 10.0, 0.0, false), 10.0, (0.01, 50.0)),
             (CrossModField::Attack, adsr(0.01), 0.01, (0.001, 10.0)),
             (CrossModField::Decay, adsr(0.01), 0.3, (0.001, 10.0)),
             (CrossModField::Release, adsr(0.01), 0.5, (0.001, 10.0)),
@@ -9179,14 +9560,14 @@ mod tests {
             // (A sustain is a level, turned by distances: it goes by the range.)
             let expected = if field == CrossModField::Sustain { base + 0.1 * (max - min) } else { value_on_decades(place_on_decades(base, min, max) + 0.1, min, max) };
             let value = match graph.instruments[0].modulators[0].source {
-                ModSource::Lfo { rate, .. } => rate,
+                ModSource::Lfo { rate, .. } | ModSource::Steps { rate, .. } => rate,
                 ModSource::Envelope { attack, decay, sustain, release, .. } => match field {
                     CrossModField::Attack => attack,
                     CrossModField::Decay => decay,
                     CrossModField::Sustain => sustain,
                     _ => release,
                 },
-                ModSource::MidiLearn { .. } | ModSource::Macro { .. } => panic!("the member's modulator is an LFO or an envelope"),
+                ModSource::MidiLearn { .. } | ModSource::Macro { .. } => panic!("the member's modulator is an LFO, a step sequencer or an envelope"),
             };
             assert!(near(value, expected), "{field:?}: {value} for {expected}");
         }
@@ -9597,6 +9978,9 @@ mod tests {
         // (Cables to settings, which publish what they were set to: the LFO drives the attack of the envelope and the envelope the rate of the LFO.)
         rig.field_target(0, ModTargetKind::ModulatorAttack { mod_index: 1 }, 0.01, 0.01, 0.001, 10.0);
         rig.field_target(1, ModTargetKind::ModulatorRate { mod_index: 0 }, 0.2, 3.0, 0.01, 50.0);
+        // (A step sequencer that glides and starts again at a note, publishing its output and its position, driving a parameter.)
+        lane_steps(&mut rig, 2, steps(&[0.1, -0.3, 0.9], 3, 40.0, 0.5, true));
+        rig.gain_target(2, 0.3);
         rig.graph.drain_commands();
         let allocations = allocations_while_processing(&mut rig.graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "a lane: the audio thread asked the allocator for memory");
@@ -9613,6 +9997,10 @@ mod tests {
             let target = ModTarget { kind, depth: 0.2, base_value: base, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
             g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
         }
+        // (And a group's step sequencer.)
+        g.rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 2, source: steps(&[0.1, -0.3, 0.9], 3, 40.0, 0.5, true) }).unwrap();
+        let position = g.rig.slot();
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorPosition { location: ModulatorLocation::Group(0), index: 2, slot: position }).unwrap();
         g.rig.graph.drain_commands();
         let allocations = allocations_while_processing(&mut g.rig.graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "a group: the audio thread asked the allocator for memory");
