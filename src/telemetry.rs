@@ -629,6 +629,20 @@ mod tests {
         assert_eq!(written, 13_000, "what the third copy began at");
     }
 
+    /// What a copy of the latest frames (`left` and `right`, which the ring said were up to the `written`th frame) comes to for a test that reads while the writer pushes: whether it
+    /// is a run of the frames that were pushed, if the ring promises one, and `None` if it does not. The ring's promise is that a copy is made again when the writer has gone on by
+    /// more than the safe distance (the ring less what is read and less a chunk that the writer may have half stored: written out here, and not read from `SCOPE_SAFE_ADVANCE`,
+    /// which is what is tested) and that after the third try it gives what it has: a reader that a busy machine stops in the middle of its copy is lapped by a writer that does not
+    /// wait, and then nothing is promised. (The writer's count is read now, which is at least what it was when the copy was checked, so that a count that is within the distance now was within it then.)
+    fn run_if_promised(ring: &ScopeRing, left: &[f32], right: &[f32], written: u64) -> Option<bool> {
+        let safe = (SCOPE_FRAMES - SCOPE_READ_MAX - SCOPE_CHUNK) as u64;
+        if ring.written.load(Ordering::Acquire) - written > safe {
+            return None;
+        }
+        let end = written as usize;
+        Some(left == counting(end - left.len(), end) && left.iter().zip(right).all(|(l, r)| *r == -*l))
+    }
+
     #[test]
     fn a_reader_that_looks_while_the_writer_pushes_sees_a_run_of_frames_that_were_pushed() {
         use std::sync::Arc;
@@ -644,18 +658,55 @@ mod tests {
                 }
             })
         };
-        let mut looks = 0;
+        let (mut looks, mut promised) = (0, 0);
         while !writer.is_finished() {
             let (left, right, written) = latest(&ring, SCOPE_READ_MAX);
             if written >= SCOPE_READ_MAX as u64 {
-                let end = written as usize;
-                assert_eq!(left, counting(end - SCOPE_READ_MAX, end), "frames up to {written}");
-                assert!(left.iter().zip(&right).all(|(l, r)| *r == -*l));
                 looks += 1;
+                // (A machine that is busy can stop the reader in the middle of a copy, three times in a row: f162. Then the ring does not promise a run.)
+                if let Some(run) = run_if_promised(&ring, &left, &right, written) {
+                    assert!(run, "frames up to {written}");
+                    promised += 1;
+                }
             }
         }
         writer.join().unwrap();
         assert!(looks > 10, "the reader looked {looks} times while the writer ran");
+        assert!(promised > 0, "the ring promised a run for none of {looks} copies");
+    }
+
+    #[test]
+    fn a_copy_is_a_run_the_ring_promises_when_the_writer_has_not_gone_on_by_more_than_the_safe_distance() {
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 3000));
+        let (left, right, written) = latest(&ring, 1000);
+        assert_eq!((written, run_if_promised(&ring, &left, &right, written)), (3000, Some(true)));
+        // Four thousand and ninety-six frames on is the most that the ring is safe for (8192 less 2048 read and 2048 that may be half stored), and one more is not.
+        ring.push(&ramp(3000, 4096));
+        assert_eq!(run_if_promised(&ring, &left, &right, written), Some(true));
+        ring.push(&ramp(7096, 1));
+        assert_eq!(run_if_promised(&ring, &left, &right, written), None, "a frame past the distance");
+        // A reader that is stopped by the writer every time it copies gives up after three tries, and nothing is promised for what it has.
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 3000));
+        let (mut left, mut right) = (vec![0.0; 1000], vec![0.0; 1000]);
+        let mut at = 3000;
+        let written = ring.latest_checked(&mut left, &mut right, || {
+            ring.push(&ramp(at, 5000));
+            at += 5000;
+        });
+        assert_eq!(run_if_promised(&ring, &left, &right, written), None);
+        // A copy that is not a run, with the ring quiet since it was made, is what the test must see: the side that is not the other's negative, and a frame that is not the one before it plus one.
+        let ring = ScopeRing::new();
+        ring.push(&ramp(0, 3000));
+        let (left, mut right, written) = latest(&ring, 1000);
+        right[10] += 1.0;
+        assert_eq!(run_if_promised(&ring, &left, &right, written), Some(false));
+        // (Both sides changed, so that the right is still the left's negative and it is the run that is not one.)
+        let (mut left, mut right, written) = latest(&ring, 1000);
+        left[999] += 1.0;
+        right[999] -= 1.0;
+        assert_eq!(run_if_promised(&ring, &left, &right, written), Some(false));
     }
 
     #[test]
