@@ -55,7 +55,7 @@ function valueOf(client: Client, node: typeof filter, param: number): number | u
 
 /** The tracer with two more modulators: one drives the depth of the cutoff's cable, the other the depth of that. */
 function withCablesThatDriveCables(): Snapshot {
-  const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } });
+  const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } });
   const drives = (from: number, edge: number, id: number) =>
     ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: from === 5 ? 2 : 5, port: { type: "depth", edge } } }) as const;
   return {
@@ -69,7 +69,7 @@ function withCablesThatDriveCables(): Snapshot {
 
 /** The tracer with a second LFO that drives the same cutoff: two cables, one value, one slot for it in the layout. */
 function withTwoCablesToTheCutoff(): Snapshot {
-  const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+  const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
   const cable = { kind: "modulation", id: 1, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } } as const;
   const [output, ...rest] = tracerSnapshot.telemetry.modulation;
   return {
@@ -254,7 +254,7 @@ describe("a request", () => {
     parent: 0,
     name: "Steps",
     kind: "modulator",
-    source: { type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false },
+    source: { type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 },
   };
   const withSequencer: Snapshot = { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, sequencer] } };
   const sourceOfSequencer = (client: Client) => {
@@ -331,7 +331,7 @@ describe("a request", () => {
     for (const field of ["glide", "length"] as const) {
       await expect(client.request({ type: "setModulatorField", node: lfo.id, field, value: 1 }), field).rejects.toMatchObject({ code: "invalid" });
     }
-    expect(sourceOfSequencer(client)).toEqual({ type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false });
+    expect(sourceOfSequencer(client)).toEqual({ type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 });
   });
 
   test("sets all the steps of a step sequencer at once, each held to -1 to 1, and tells what it has", async () => {
@@ -377,7 +377,7 @@ describe("a request", () => {
     await client.request({ type: "addModulator", parent: nodeNamed(tracerSnapshot, "Oscillator").id, kind: "steps" });
     const added = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
     expect(added?.name).toBe("Steps");
-    expect(added?.kind === "modulator" ? added.source : null).toEqual({ type: "steps", values: [...NEW_STEPS.values], length: 16, rate: 8, glide: 0, retrigger: true });
+    expect(added?.kind === "modulator" ? added.source : null).toEqual({ type: "steps", values: [...NEW_STEPS.values], length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 });
     expect(MAX_STEPS).toBe(16);
   });
 
@@ -693,7 +693,7 @@ describe("adding a modulator", () => {
     const added = nodesOf(client).slice(3, 7);
     expect(added.map((n) => n.name)).toEqual(["LFO", "ADSR", "MIDI (learning…)", "Macro"]);
     expect(added.map((n) => (n.kind === "modulator" ? n.source : null))).toEqual([
-      { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 },
+      { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 },
       { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
       { type: "midiLearn", control: null, learning: true },
       { type: "macro", value: 0 },
@@ -806,7 +806,7 @@ describe("taking a modulator out", () => {
 
   test("takes the cable of another that drives its rate, which ends at it", async () => {
     // A second LFO (5) whose cable drives the rate of the first (2): the first has no other cable than the cutoff's.
-    const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+    const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
     const cable = { kind: "modulation", id: 1, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: lfo.id, port: { type: "rate" } } } as const;
     const snapshot = { ...tracerSnapshot, graph: { nodes: [...tracerSnapshot.graph.nodes, second], edges: [...tracerSnapshot.graph.edges, cable] } };
     const server = new MockServer({ snapshot });
@@ -3475,7 +3475,7 @@ describe("what a step sequencer puts out and does in the mock engine: its steps 
   /** The tracer's LFO as a step sequencer of two steps, 0.5 and -0.5, that goes through one a second: its cable to the cutoff (which the user set to 0.5) is at depth 0.4. */
   const withSequencer = (glide: number, retrigger: boolean, rate = 1): Snapshot => {
     const values = [0.5, -0.5, ...Array<number>(14).fill(0)];
-    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Steps", source: { type: "steps" as const, values, length: 2, rate, glide, retrigger } } : node));
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Steps", source: { type: "steps" as const, values, length: 2, rate, glide, retrigger, sync: 0 } } : node));
     // (It has a place for its position, in the slot after the last that the session has, where the controller would put it.)
     const slot = Math.max(...tracerSnapshot.telemetry.modulation.map((entry) => entry.slot)) + 1;
     const position = { slot, node: lfo.id, port: { type: "modOut" as const }, kind: "modPosition" as const };

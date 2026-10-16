@@ -108,11 +108,11 @@ function noNode(id: NodeId): Outcome {
 
 /** The settings that a modulator of each kind has (`ModSourceSlot::setting`). */
 const FIELDS_OF: Record<ModulatorSource["type"], readonly ModulatorField[]> = {
-  lfo: ["rate", "waveform", "retrigger", "fade"],
+  lfo: ["rate", "waveform", "retrigger", "fade", "sync"],
   envelope: ["attack", "decay", "sustain", "release"],
   midiLearn: [],
   macro: ["value"],
-  steps: ["rate", "glide", "length", "retrigger"],
+  steps: ["rate", "glide", "length", "retrigger", "sync"],
 };
 
 /** A setting of a modulator: clamped to its range, rounded if it is a whole number (an index, a count, a switch), and only if the modulator has it. */
@@ -473,14 +473,14 @@ function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
 
 /** What a node of each kind of modulator is called (`ModSourceSlot::node_name`), and what it is to begin with. */
 const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSource }> = {
-  lfo: { name: "LFO", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } },
+  lfo: { name: "LFO", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } },
   envelope: { name: "ADSR", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } },
   midiLearn: { name: "MIDI (learning…)", source: { type: "midiLearn", control: null, learning: true } },
   macro: { name: "Macro", source: { type: "macro", value: 0 } },
   // (A control that follows the notes is bound when it is made: no controller is moved for it.)
   velocity: { name: "Velocity", source: { type: "midiLearn", control: { type: "velocity" }, learning: false } },
   key: { name: "Key", source: { type: "midiLearn", control: { type: "key" }, learning: false } },
-  steps: { name: "Steps", source: { type: "steps", values: [...NEW_STEPS.values], length: NEW_STEPS.length, rate: NEW_STEPS.rate, glide: NEW_STEPS.glide, retrigger: NEW_STEPS.retrigger } },
+  steps: { name: "Steps", source: { type: "steps", values: [...NEW_STEPS.values], length: NEW_STEPS.length, rate: NEW_STEPS.rate, glide: NEW_STEPS.glide, retrigger: NEW_STEPS.retrigger, sync: NEW_STEPS.sync } },
 };
 
 /**

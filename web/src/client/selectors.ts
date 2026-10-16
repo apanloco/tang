@@ -224,7 +224,8 @@ export function gainOf(state: ClientState, id: NodeId, gain: Gain): number | und
 /**
  * The value of a setting of the modulator in node `id`, if it has that setting (`withSetting` in
  * reducers.ts is the other way round): an LFO's rate, or its waveform as the index the intent
- * takes, its switch (1 when a note starts it again) and its fade in seconds, a stage of an envelope, a macro's value, or a step sequencer's rate, glide, length and switch.
+ * takes, its switch (1 when a note starts it again), its fade in seconds and the place in the list of note lengths that it follows the tempo by (0 for none), a stage of an envelope, a macro's value, or a step
+ * sequencer's rate, glide, length, switch and note length.
  */
 export function modulatorFieldOf(state: ClientState, id: NodeId, field: ModulatorField): number | undefined {
   const node = nodeById(state, id);
@@ -235,6 +236,7 @@ export function modulatorFieldOf(state: ClientState, id: NodeId, field: Modulato
     if (field === "waveform") return WAVEFORMS.indexOf(source.waveform);
     if (field === "retrigger") return source.retrigger ? 1 : 0;
     if (field === "fade") return source.fade;
+    if (field === "sync") return source.sync;
   }
   if (source.type === "envelope") {
     if (field === "attack" || field === "decay" || field === "sustain" || field === "release") return source[field];
@@ -243,6 +245,7 @@ export function modulatorFieldOf(state: ClientState, id: NodeId, field: Modulato
   if (source.type === "steps") {
     if (field === "rate" || field === "glide" || field === "length") return source[field];
     if (field === "retrigger") return source.retrigger ? 1 : 0;
+    if (field === "sync") return source.sync;
   }
   return undefined;
 }

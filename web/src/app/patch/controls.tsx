@@ -11,7 +11,7 @@ import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { cableDepthOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, WAVEFORMS } from "../../protocol";
+import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
@@ -559,6 +559,29 @@ export const RetriggerControl = memo(function RetriggerControl({ node }: { node:
   );
 });
 
+/** What the places of a modulator's `sync` are called: none (`free`), and then each note length (`SYNC_DIVISIONS`), as the screens and a session file name them. */
+const SYNC_NAMES: readonly string[] = [SYNC_FREE, ...SYNC_DIVISIONS.map((division) => division.name)];
+
+/** The note length that an LFO or a step sequencer follows the tempo by, in place of its rate: free, or one of the note lengths, chosen. */
+export const SyncControl = memo(function SyncControl({ node }: { node: NodeId }) {
+  const control = useDrive().modulatorField(node, "sync");
+  const stored = useClientState((state) => modulatorFieldOf(state, node, "sync"));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  return (
+    <Choice
+      label="Sync"
+      labels={SYNC_NAMES}
+      value={shown}
+      onChange={(chosen) => {
+        control.set(chosen);
+        control.commit();
+      }}
+    />
+  );
+});
+
 /**
  * The bars of a step sequencer: its steps as bars that are painted with a drag and moved with the keys, the ones past its length dimmed, and a playhead on the step it is at
  * (the position that the engine publishes). A stroke is sent as the steps, all of them, a frame at a time (`Drive.steps`), and shows what it has painted until the server has answered.
@@ -690,6 +713,13 @@ export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, f
     return (
       <div className="tang-cell">
         <RetriggerControl node={node} />
+      </div>
+    );
+  }
+  if (field === "sync") {
+    return (
+      <div className="tang-cell">
+        <SyncControl node={node} />
       </div>
     );
   }

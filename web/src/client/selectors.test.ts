@@ -102,7 +102,7 @@ describe("the settings of a modulator and the depths of its cables", () => {
   });
 
   const steps = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
-  const sequencer: Node = { id: 44, parent: oscillator.id, name: "Steps", kind: "modulator", source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  const sequencer: Node = { id: 44, parent: oscillator.id, name: "Steps", kind: "modulator", source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 } };
   const withSequencer = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, sequencer, macro] } });
 
   test("the rate, the glide, the length and the switch of a step sequencer, as numbers, and none of the settings of the other kinds", () => {
@@ -116,7 +116,7 @@ describe("the settings of a modulator and the depths of its cables", () => {
   });
 
   test("the retrigger and the fade of an LFO, as numbers, and none for the other kinds but the switch of a step sequencer", () => {
-    const keyed: Node = { id: lfo.id, parent: lfo.parent, name: lfo.name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: true, fade: 0.75 } };
+    const keyed: Node = { id: lfo.id, parent: lfo.parent, name: lfo.name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: true, fade: 0.75, sync: 0 } };
     const state = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes.filter((n) => n.id !== lfo.id), keyed, sequencer, macro] } });
     expect((["retrigger", "fade"] as const).map((field) => modulatorFieldOf(state, keyed.id, field))).toEqual([1, 0.75]);
     expect(modulatorFieldOf(withSequencer, lfo.id, "retrigger"), "a free LFO's switch is off").toBe(0);
@@ -126,8 +126,17 @@ describe("the settings of a modulator and the depths of its cables", () => {
     expect(modulatorFieldOf(state, macro.id, "retrigger")).toBeUndefined();
   });
 
+  test("the note length that an LFO and a step sequencer follow the tempo by, as a place in the list (0 for none), and none for the other kinds", () => {
+    const synced: Node = { id: lfo.id, parent: lfo.parent, name: lfo.name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: false, fade: 0, sync: 11 } };
+    const timed: Node = { ...sequencer, source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 14 } };
+    const state = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes.filter((n) => n.id !== lfo.id), synced, timed, macro, envelope, control] } });
+    expect([synced.id, timed.id].map((id) => modulatorFieldOf(state, id, "sync"))).toEqual([11, 14]);
+    expect([lfo.id, sequencer.id].map((id) => modulatorFieldOf(withSequencer, id, "sync")), "the ones that are free").toEqual([0, 0]);
+    expect([macro.id, envelope.id, control.id].map((id) => modulatorFieldOf(state, id, "sync")), "an envelope, a macro and a control have none").toEqual([undefined, undefined, undefined]);
+  });
+
   test("the switch of a step sequencer that a note starts again is 1", () => {
-    const on: Node = { ...sequencer, source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: true } };
+    const on: Node = { ...sequencer, source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: true, sync: 0 } };
     expect(modulatorFieldOf(stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, on] } }), on.id, "retrigger")).toBe(1);
   });
 

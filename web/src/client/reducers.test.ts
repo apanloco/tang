@@ -54,7 +54,7 @@ function withMacro(): { snapshot: Snapshot; knob: Node } {
 /** The tracer with a step sequencer of four steps added: at 6 steps a second, a glide of a quarter, and a note does not start it again. */
 function withSequencer(): { snapshot: Snapshot; sequencer: Node } {
   const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
-  const sequencer: Node = { id: 44, parent: oscillator.id, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  const sequencer: Node = { id: 44, parent: oscillator.id, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 } };
   return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, sequencer] } }, sequencer };
 }
 
@@ -587,14 +587,14 @@ describe("a preset loaded", () => {
 describe("a modulator field set", () => {
   test("sets the rate of an LFO", () => {
     const after = applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "rate", value: 4 });
-    expect(sourceOf(after, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 4, retrigger: false, fade: 0 });
+    expect(sourceOf(after, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 4, retrigger: false, fade: 0, sync: 0 });
   });
 
   test("sets the waveform of an LFO by its index: sine, triangle, saw, square, random, smooth", () => {
     const waveforms = ["sine", "triangle", "saw", "square", "random", "smooth"];
     waveforms.forEach((name, index) => {
       const after = applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "waveform", value: index });
-      expect(sourceOf(after, lfo), `index ${index}`).toEqual({ type: "lfo", waveform: name, rate: 0.5, retrigger: false, fade: 0 });
+      expect(sourceOf(after, lfo), `index ${index}`).toEqual({ type: "lfo", waveform: name, rate: 0.5, retrigger: false, fade: 0, sync: 0 });
     });
   });
 
@@ -628,10 +628,10 @@ describe("a modulator field set", () => {
     const { snapshot, sequencer } = withSequencer();
     const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
     const set = (field: "rate" | "glide" | "length" | "retrigger", value: number) => applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field, value });
-    expect(sourceOf(set("rate", 12.5), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 12.5, glide: 0.25, retrigger: false });
-    expect(sourceOf(set("glide", 0.75), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.75, retrigger: false });
-    expect(sourceOf(set("length", 9), sequencer)).toEqual({ type: "steps", values, length: 9, rate: 6, glide: 0.25, retrigger: false });
-    expect(sourceOf(set("retrigger", 1), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: true });
+    expect(sourceOf(set("rate", 12.5), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 12.5, glide: 0.25, retrigger: false, sync: 0 });
+    expect(sourceOf(set("glide", 0.75), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.75, retrigger: false, sync: 0 });
+    expect(sourceOf(set("length", 9), sequencer)).toEqual({ type: "steps", values, length: 9, rate: 6, glide: 0.25, retrigger: false, sync: 0 });
+    expect(sourceOf(set("retrigger", 1), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: true, sync: 0 });
     expect(sourceOf(set("retrigger", 0), sequencer)).toMatchObject({ retrigger: false });
     const after = set("glide", 0.5);
     expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
@@ -641,13 +641,42 @@ describe("a modulator field set", () => {
 
   test("sets the retrigger and the fade of an LFO, one at a time, and changes nothing else of it or of the graph", () => {
     const set = (field: "retrigger" | "fade", value: number) => applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field, value });
-    expect(sourceOf(set("retrigger", 1), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: true, fade: 0 });
-    expect(sourceOf(set("fade", 0.75), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0.75 });
+    expect(sourceOf(set("retrigger", 1), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: true, fade: 0, sync: 0 });
+    expect(sourceOf(set("fade", 0.75), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0.75, sync: 0 });
     expect(sourceOf(set("retrigger", 0), lfo)).toMatchObject({ retrigger: false });
     const after = set("fade", 2);
     expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
     expect(after.graph.edges).toBe(tracerSnapshot.graph.edges);
     expect(sourceOf(tracerSnapshot, lfo), "the snapshot it was applied to").toMatchObject({ fade: 0 });
+  });
+
+  test("sets the note length that an LFO and a step sequencer follow the tempo by, as a place in the list, and keeps the rate they have", () => {
+    const { snapshot, sequencer } = withSequencer();
+    const setLfo = (value: number) => applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "sync", value });
+    expect(sourceOf(setLfo(11), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0, sync: 11 });
+    expect(sourceOf(setLfo(0), lfo)).toMatchObject({ rate: 0.5, sync: 0 });
+    const after = applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field: "sync", value: 14 });
+    expect(sourceOf(after, sequencer)).toMatchObject({ type: "steps", rate: 6, sync: 14 });
+    expect(after.graph.edges).toBe(snapshot.graph.edges);
+    expect(sourceOf(tracerSnapshot, lfo), "the snapshot it was applied to").toMatchObject({ sync: 0 });
+  });
+
+  test("a note length is a place in the list, from 0 for none to the last, and nothing else is one", () => {
+    const { snapshot, sequencer } = withSequencer();
+    for (const node of [lfo, sequencer]) {
+      for (const value of [-1, 17, 2.5, Number.NaN]) {
+        expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: node.id, field: "sync", value }), `${node.name} ${String(value)}`).toEqual({ ok: false, reason: `${String(value)} is not a note length` });
+      }
+      for (const value of [0, 1, 16]) expect(sourceOf(applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: node.id, field: "sync", value }), node), `${node.name} ${String(value)}`).toMatchObject({ sync: value });
+    }
+  });
+
+  test("is refused by an envelope, a control and a macro, which have no rate to follow the tempo", () => {
+    const { snapshot: withKnob, knob } = withMacro();
+    const { snapshot: withOthers, envelope: adsr, learn } = withEnvelope();
+    for (const [snapshot, node] of [[withOthers, adsr], [withOthers, learn], [withKnob, knob]] as const) {
+      expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: node.id, field: "sync", value: 3 }), node.name).toEqual({ ok: false, reason: `sync does not apply to node ${node.id}` });
+    }
   });
 
   test("a length is a whole number of the steps that there are, and nothing else is one", () => {
@@ -674,7 +703,7 @@ describe("a modulator field set", () => {
     const { snapshot, sequencer } = withSequencer();
     const values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4];
     const after = applied(snapshot, { rev: 1, type: "stepsSet", node: sequencer.id, values });
-    expect(sourceOf(after, sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false });
+    expect(sourceOf(after, sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 });
     expect(after.graph.nodes.find((n) => n.id === lfo.id)).toBe(lfo);
     expect(after.graph.edges).toBe(snapshot.graph.edges);
     expect(sourceOf(snapshot, sequencer), "the snapshot it was applied to").toMatchObject({ values: [0.5, -0.25, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] });
@@ -712,7 +741,7 @@ describe("a modulator field set", () => {
     expect(after.graph.nodes.find((n) => n.id === envelope.id)).toBe(envelope);
     expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
     expect(after.graph.edges).toBe(snapshot.graph.edges);
-    expect(sourceOf(snapshot, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0 });
+    expect(sourceOf(snapshot, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0, sync: 0 });
   });
 
   test("is refused by what it does not fit, and says why", () => {

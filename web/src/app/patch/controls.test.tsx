@@ -9,7 +9,7 @@ import type { Edge, Node, Param, Port, Snapshot } from "../../protocol";
 import { dragged } from "../../ui/knob-geometry";
 import { angleOf, arcPath, fractionOf, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ModulatorValueControl, ParamControl, ParamRow, RetriggerControl, sameModulations, sameParamFacts, StepsControl, WaveformControl } from "./controls";
+import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ModulatorValueControl, ParamControl, ParamRow, RetriggerControl, sameModulations, sameParamFacts, StepsControl, SyncControl, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -494,7 +494,7 @@ describe("the value of a macro", () => {
 /** The tracer with a step sequencer in it: four steps, at 6 steps a second, a glide of a quarter, and a note does not start it again. */
 function withSequencer(): { snapshot: Snapshot; sequencer: Node } {
   const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
-  const sequencer: Node = { id: 92, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  const sequencer: Node = { id: 92, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 } };
   const snapshot: Snapshot = structuredClone(tracerSnapshot);
   snapshot.graph.nodes.push(sequencer);
   return { snapshot, sequencer };
@@ -619,6 +619,62 @@ describe("whether a note starts a step sequencer again", () => {
       <div data-testid="where">
         <RetriggerControl node={filter.id} />
         <RetriggerControl node={4242} />
+      </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+});
+
+describe("the note length that an LFO or a step sequencer follows the tempo by", () => {
+  const names = ["free", "4 bars", "2 bars", "1 bar", "1/2 dotted", "1/2", "1/2 triplet", "1/4 dotted", "1/4", "1/4 triplet", "1/8 dotted", "1/8", "1/8 triplet", "1/16 dotted", "1/16", "1/16 triplet", "1/32"];
+
+  test("is a choice of free and each of the note lengths, in the order of the list, with the one that the LFO has chosen", async () => {
+    await rig(<SyncControl node={lfo.id} />);
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" });
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(names);
+    expect(select.value, "an LFO that is new runs at its own rate").toBe("0");
+  });
+
+  test("asks for a place in the list, as a number from 0 for none, and follows a change somebody else makes", async () => {
+    const { requests, server } = await rig(<SyncControl node={lfo.id} />);
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" });
+    fireEvent.change(select, { target: { value: "11" } });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setModulatorField", node: lfo.id, field: "sync", value: 11 } }]);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" }).selectedOptions[0]?.textContent).toBe("1/8");
+    });
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "sync", value: 0 });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" }).value).toBe("0");
+    });
+  });
+
+  test("is the choice of a step sequencer too, which starts at the one that it has", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const synced: Node = { id: sequencer.id, parent: sequencer.parent, name: sequencer.name, kind: "modulator", source: { type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 14 } };
+    snapshot.graph.nodes = snapshot.graph.nodes.map((node) => (node.id === sequencer.id ? synced : node));
+    const { requests } = await rig(<SyncControl node={sequencer.id} />, { snapshot });
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" });
+    expect(select.selectedOptions[0]?.textContent).toBe("1/16");
+    fireEvent.change(select, { target: { value: "0" } });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setModulatorField", node: sequencer.id, field: "sync", value: 0 } }]);
+    });
+    // (And the server took it: the choice stays at free when what it says has come.)
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" }).selectedOptions[0]?.textContent).toBe("free");
+    });
+  });
+
+  test("shows nothing for a node that has no rate to follow the tempo by", async () => {
+    const { view } = await rig(
+      <div data-testid="where">
+        <SyncControl node={filter.id} />
+        <SyncControl node={4242} />
       </div>,
     );
     expect(view.getByTestId("where").innerHTML).toBe("");
@@ -903,7 +959,7 @@ describe("the modulation of a number of a modulator", () => {
   /** The rate of the tracer's LFO is 0.5 Hz, over 0.01 to 50 and a knob of decades. */
   const rateFraction = (hertz: number) => fractionOf(hertz, 0.01, 50, "log");
   /** The same, of a second LFO and of a control that is not bound, which can drive it as well. */
-  const second: Node = { id: 91, parent: 0, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+  const second: Node = { id: 91, parent: 0, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
   const unbound: Node = { id: 92, parent: 0, name: "Control", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } };
   /** The tracer with an envelope (90), an LFO (91) and a control (92) that can be given cables. */
   const crowded = (cables: Edge[]): Snapshot => {
@@ -1226,7 +1282,7 @@ describe("whether two parameters are drawn the same", () => {
 });
 
 describe("whether two sets of modulators are the same", () => {
-  const lfo = { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } as const;
+  const lfo = { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } as const;
   const envelope = { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } as const;
   const one: Modulation = { source: lfo, amount: 0.4 };
 

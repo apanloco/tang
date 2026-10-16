@@ -152,8 +152,8 @@ fn sibling_field(kind: &ModTargetKind) -> Option<(usize, CrossModField)> {
     }
 }
 
-/// The tempo of a session none of whose patterns has been recorded, in beats a minute.
-pub const DEFAULT_BPM: f32 = 120.0;
+/// The tempo of a session none of whose patterns has been recorded, in beats a minute: the one the audio thread begins at as well.
+pub const DEFAULT_BPM: f32 = crate::plugin::chain::DEFAULT_BPM;
 /// The slowest and the fastest tempo there can be, in beats a minute: a tempo that a session file has is held to them, as is one that is set.
 pub const BPM_MIN: f32 = 20.0;
 pub const BPM_MAX: f32 = 300.0;
@@ -1166,12 +1166,14 @@ impl GroupNode {
 
 #[derive(Debug)]
 pub enum ModSourceSlot {
-    /// An LFO: its waveform and rate, whether a note starts it again at the start of its wave, and how many seconds it takes to come in after a note (0 for none).
+    /// An LFO: its waveform and rate, whether a note starts it again at the start of its wave, how many seconds it takes to come in after a note (0 for none) and the note length of the tempo
+    /// that a cycle of it is instead of its rate, as a place in `SYNC_DIVISIONS` from 1 (0 for none: it goes at its rate, which is kept for when it does).
     Lfo {
         waveform: crate::plugin::chain::LfoWaveform,
         rate: f32,
         retrigger: bool,
         fade: f32,
+        sync: usize,
     },
     Envelope {
         attack: f32,
@@ -1190,20 +1192,22 @@ pub enum ModSourceSlot {
         value: f32,
     },
     /// A step sequencer: the values it goes through, -1 to 1 (the first `length` of them are in use, the others are kept for when it is longer), how many
-    /// steps it goes through a second, how much of each step is spent gliding to the next one's value, and whether a note starts it again at the first step.
+    /// steps it goes through a second, how much of each step is spent gliding to the next one's value, whether a note starts it again at the first step, and the note length of the tempo
+    /// that a step of it is instead of its rate (a place in `SYNC_DIVISIONS` from 1, or 0 for none).
     Steps {
         values: [f32; crate::plugin::chain::MAX_STEPS],
         length: usize,
         rate: f32,
         glide: f32,
         retrigger: bool,
+        sync: usize,
     },
 }
 
 impl ModSourceSlot {
     /// What a modulator added without further ado starts as: a 1 Hz sine.
     pub fn new_lfo() -> Self {
-        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0, retrigger: false, fade: 0.0 }
+        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }
     }
 
     /// An envelope as the modulate popup makes it: 10 ms attack, 0.3 s decay,
@@ -1236,6 +1240,7 @@ impl ModSourceSlot {
             rate: 8.0,
             glide: 0.0,
             retrigger: true,
+            sync: 0,
         }
     }
 
@@ -1268,7 +1273,8 @@ impl ModSourceSlot {
     pub fn label(&self) -> String {
         use crate::plugin::chain::MidiBindSource;
         match self {
-            ModSourceSlot::Lfo { waveform, rate, .. } => format!("LFO {:.1}Hz {}", rate, waveform.name()),
+            ModSourceSlot::Lfo { waveform, rate, sync, .. } if *sync == 0 => format!("LFO {:.1}Hz {}", rate, waveform.name()),
+            ModSourceSlot::Lfo { waveform, sync, .. } => format!("LFO {} {}", sync_name(*sync), waveform.name()),
             ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
             ModSourceSlot::MidiLearn { source, learning } => match source {
                 Some(MidiBindSource::Cc(n)) => format!("CC {n}"),
@@ -1280,7 +1286,8 @@ impl ModSourceSlot {
                 None => "MIDI (unbound)".to_string(),
             },
             ModSourceSlot::Macro { value } => format!("Macro {value:.2}"),
-            ModSourceSlot::Steps { length, rate, .. } => format!("Steps {length} {rate:.1}Hz"),
+            ModSourceSlot::Steps { length, rate, sync, .. } if *sync == 0 => format!("Steps {length} {rate:.1}Hz"),
+            ModSourceSlot::Steps { length, sync, .. } => format!("Steps {length} {}", sync_name(*sync)),
         }
     }
 }
@@ -1495,6 +1502,52 @@ pub const STEP_MIN: f32 = -1.0;
 pub const STEP_MAX: f32 = 1.0;
 /// The longest an LFO's fade can be, in seconds.
 pub const MAX_FADE: f32 = 5.0;
+/// The note lengths that a cycle of an LFO, or a step of a step sequencer, can be tied to the tempo by (`ModulatorField::Sync`): each with the name that a session file and the screens give it, and
+/// how many beats of the tempo it is, a beat being a quarter note and a bar four beats (a session has no time signature: the four beats of a pattern are a bar). They go from the slowest note
+/// to the fastest, and a note's dotted length (half as long again), its own and its triplet (two thirds of it) are together, as a plugin lists them, so that a step along the list goes to the
+/// next note and not always to a faster one. The place of one in this list, counted from 1, is what a modulator's `sync` is; 0 is none, and the modulator goes at its own rate.
+pub const SYNC_DIVISIONS: [(&str, f32); 16] = [
+    ("4 bars", 16.0),
+    ("2 bars", 8.0),
+    ("1 bar", 4.0),
+    ("1/2 dotted", 3.0),
+    ("1/2", 2.0),
+    ("1/2 triplet", 4.0 / 3.0),
+    ("1/4 dotted", 1.5),
+    ("1/4", 1.0),
+    ("1/4 triplet", 2.0 / 3.0),
+    ("1/8 dotted", 0.75),
+    ("1/8", 0.5),
+    ("1/8 triplet", 1.0 / 3.0),
+    ("1/16 dotted", 0.375),
+    ("1/16", 0.25),
+    ("1/16 triplet", 1.0 / 6.0),
+    ("1/32", 0.125),
+];
+
+/// What a modulator that does not follow the tempo (a `sync` of 0) is called.
+pub const FREE: &str = "free";
+
+/// The name of a `sync`: that of its note length, or `free` for none (and for a place the list has not).
+pub fn sync_name(sync: usize) -> &'static str {
+    sync.checked_sub(1).and_then(|place| SYNC_DIVISIONS.get(place)).map_or(FREE, |&(name, _)| name)
+}
+
+/// How many beats of the tempo a cycle or a step is for a `sync`: 0 for none (and for a place the list has not).
+pub fn sync_beats(sync: usize) -> f32 {
+    sync.checked_sub(1).and_then(|place| SYNC_DIVISIONS.get(place)).map_or(0.0, |&(_, beats)| beats)
+}
+
+/// The `sync` that `name` says, whatever its case and the space round it and in it: `free` (or `off`, `none`, or nothing at all) is 0, and a note length is its place in `SYNC_DIVISIONS`.
+/// `None` for any other.
+pub fn sync_from_name(name: &str) -> Option<usize> {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    if matches!(name.as_str(), "" | FREE | "off" | "none") {
+        return Some(0);
+    }
+    SYNC_DIVISIONS.iter().position(|&(known, _)| known == name).map(|place| place + 1)
+}
+
 /// How deep a cable pulls when it is first drawn: half way, which a person can hear and turn either way.
 pub const NEW_CABLE_DEPTH: f32 = 0.5;
 /// How many parameters of a plugin can be pinned to its node: a node that shows more is taller than a canvas has room for, and a plugin of
@@ -1518,24 +1571,27 @@ pub enum ModulatorRow {
     Separator,
     /// The switch for whether a note starts a step sequencer or an LFO again: a choice of two.
     Retrigger,
+    /// Whether the rate follows the tempo, and by what note length: a choice of `free` and the note lengths of `SYNC_DIVISIONS`.
+    Sync,
     /// The value of the step sequencer's step with this index.
     Step(usize),
     /// The depth of the target with this index.
     Depth(usize),
 }
 
-/// The rows of the pane of a step sequencer before its targets': its settings, a choice, its sixteen steps, and the separator.
-const STEPS_ROWS: [ModulatorRow; 4 + crate::plugin::chain::MAX_STEPS + 1] = {
+/// The rows of the pane of a step sequencer before its targets': its settings and its choices, its sixteen steps, and the separator.
+const STEPS_ROWS: [ModulatorRow; 5 + crate::plugin::chain::MAX_STEPS + 1] = {
     use ModulatorField as F;
     use ModulatorRow as R;
-    let mut rows = [R::Separator; 4 + crate::plugin::chain::MAX_STEPS + 1];
+    let mut rows = [R::Separator; 5 + crate::plugin::chain::MAX_STEPS + 1];
     rows[0] = R::Setting(F::Rate);
-    rows[1] = R::Setting(F::Glide);
-    rows[2] = R::Setting(F::Length);
-    rows[3] = R::Retrigger;
+    rows[1] = R::Sync;
+    rows[2] = R::Setting(F::Glide);
+    rows[3] = R::Setting(F::Length);
+    rows[4] = R::Retrigger;
     let mut step = 0;
     while step < crate::plugin::chain::MAX_STEPS {
-        rows[4 + step] = R::Step(step);
+        rows[5 + step] = R::Step(step);
         step += 1;
     }
     rows
@@ -1547,7 +1603,7 @@ impl ModSourceSlot {
         use ModulatorField as F;
         use ModulatorRow as R;
         match self {
-            ModSourceSlot::Lfo { .. } => &[R::Type, R::Waveform, R::Setting(F::Rate), R::Retrigger, R::Setting(F::Fade), R::Separator],
+            ModSourceSlot::Lfo { .. } => &[R::Type, R::Waveform, R::Setting(F::Rate), R::Sync, R::Retrigger, R::Setting(F::Fade), R::Separator],
             ModSourceSlot::Envelope { .. } => {
                 &[R::Type, R::Setting(F::Attack), R::Setting(F::Decay), R::Setting(F::Sustain), R::Setting(F::Release), R::Separator]
             }
@@ -1564,6 +1620,7 @@ impl ModSourceSlot {
             (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => Some(waveform.to_index() as f32),
             (ModSourceSlot::Lfo { retrigger, .. }, ModulatorField::Retrigger) => Some(if *retrigger { 1.0 } else { 0.0 }),
             (ModSourceSlot::Lfo { fade, .. }, ModulatorField::Fade) => Some(*fade),
+            (ModSourceSlot::Lfo { sync, .. } | ModSourceSlot::Steps { sync, .. }, ModulatorField::Sync) => Some(*sync as f32),
             (ModSourceSlot::Envelope { attack, .. }, ModulatorField::Attack) => Some(*attack),
             (ModSourceSlot::Envelope { decay, .. }, ModulatorField::Decay) => Some(*decay),
             (ModSourceSlot::Envelope { sustain, .. }, ModulatorField::Sustain) => Some(*sustain),
@@ -1605,13 +1662,13 @@ pub fn modulator_param_range(m: &ModulatorSlot, pa: usize) -> Option<(f32, f32)>
         ModulatorRow::Setting(field) => Some(field.range()),
         ModulatorRow::Step(_) => Some((STEP_MIN, STEP_MAX)),
         ModulatorRow::Depth(_) => Some((DEPTH_MIN, DEPTH_MAX)),
-        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Separator => None,
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Sync | ModulatorRow::Separator => None,
     }
 }
 
-/// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform / Retrigger).
+/// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform / Retrigger / Sync).
 pub fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
-    matches!(modulator_row(m, pa), Some(ModulatorRow::Type | ModulatorRow::Waveform | ModulatorRow::Retrigger))
+    matches!(modulator_row(m, pa), Some(ModulatorRow::Type | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Sync))
 }
 
 impl ModulatorSlot {
@@ -1628,11 +1685,9 @@ impl ModulatorSlot {
     /// a row that is not a number (the type, the waveform, a separator, a control's source).
     pub fn row_intent(&self, row: usize, f: impl FnOnce(f32) -> f32) -> Option<Intent> {
         match modulator_row(self, row)? {
-            ModulatorRow::Setting(field) => Some(Intent::SetModulatorField { node: self.node, field, value: f(self.source.setting(field)?) }),
-            ModulatorRow::Retrigger => {
-                let field = ModulatorField::Retrigger;
-                Some(Intent::SetModulatorField { node: self.node, field, value: f(self.source.setting(field)?) })
-            }
+            ModulatorRow::Setting(field) => self.field_intent(field, f),
+            ModulatorRow::Retrigger => self.field_intent(ModulatorField::Retrigger, f),
+            ModulatorRow::Sync => self.field_intent(ModulatorField::Sync, f),
             ModulatorRow::Step(step) => {
                 let mut values = self.source.steps()?;
                 let value = values.get_mut(step)?;
@@ -1645,6 +1700,11 @@ impl ModulatorSlot {
             }
             ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
         }
+    }
+
+    /// The intent that sets `field` to what `f` makes of it now, if the source has it.
+    fn field_intent(&self, field: ModulatorField, f: impl FnOnce(f32) -> f32) -> Option<Intent> {
+        Some(Intent::SetModulatorField { node: self.node, field, value: f(self.source.setting(field)?) })
     }
 }
 
@@ -1683,7 +1743,7 @@ pub fn modulator_row_to_cross_mod(
                 // (It has a row of its own, `ModulatorRow::Waveform`, which is not a number for a control to move.)
                 ModulatorField::Waveform => return None,
                 // (A macro's value is turned by a person: a cable that drives it is not built. Nor is a step sequencer's glide, length or switch.)
-                ModulatorField::Value | ModulatorField::Glide | ModulatorField::Length | ModulatorField::Retrigger | ModulatorField::Fade => return None,
+                ModulatorField::Value | ModulatorField::Glide | ModulatorField::Length | ModulatorField::Retrigger | ModulatorField::Fade | ModulatorField::Sync => return None,
             };
             let (min, max) = field.range();
             Some((kind, min, max, m.source.setting(field)?, format!("Mod {mod_index} {name}")))
@@ -1692,7 +1752,7 @@ pub fn modulator_row_to_cross_mod(
             let depth = m.targets.get(target)?.depth;
             Some((K::ModulatorDepth { mod_index, target_index: target }, DEPTH_MIN, DEPTH_MAX, depth, format!("Mod {mod_index} depth {target}")))
         }
-        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Step(_) | ModulatorRow::Separator => None,
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Sync | ModulatorRow::Step(_) | ModulatorRow::Separator => None,
     }
 }
 
@@ -2094,7 +2154,9 @@ pub fn lane_member_ordinal(instruments: &[InstrumentNode], inst: usize) -> Optio
 /// Convert a `ModSourceSlot` to the audio-thread `ModSource` carried by `GraphCommand`s.
 pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::ModSource {
     match slot {
-        ModSourceSlot::Lfo { waveform, rate, retrigger, fade } => crate::plugin::chain::ModSource::lfo(*waveform, *rate).with_key(*retrigger, *fade),
+        ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
+            crate::plugin::chain::ModSource::lfo(*waveform, *rate).with_key(*retrigger, *fade).with_sync(sync_beats(*sync))
+        }
         ModSourceSlot::Envelope { attack, decay, sustain, release } => crate::plugin::chain::ModSource::Envelope {
             attack: *attack,
             decay: *decay,
@@ -2111,12 +2173,13 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
             learning: *learning,
         },
         ModSourceSlot::Macro { value } => crate::plugin::chain::ModSource::Macro { value: *value },
-        ModSourceSlot::Steps { values, length, rate, glide, retrigger } => crate::plugin::chain::ModSource::Steps {
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger, sync } => crate::plugin::chain::ModSource::Steps {
             values: *values,
             length: *length,
             rate: *rate,
             glide: *glide,
             retrigger: *retrigger,
+            sync: sync_beats(*sync),
             position: 0.0,
         },
     }
@@ -3600,7 +3663,7 @@ param = "pan"
     fn spare_modulator(node: u32) -> ModulatorSlot {
         let mut cable = spare_cable(900 + node);
         cable.kind = K::ModulatorRate { mod_index: 0 };
-        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0, retrigger: false, fade: 0.0 }, targets: vec![cable], output: None, position: None }
+        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0, retrigger: false, fade: 0.0, sync: 0 }, targets: vec![cable], output: None, position: None }
     }
 
     #[test]
@@ -3802,7 +3865,7 @@ param = "pan"
     fn lfo(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
             node: NodeId(0),
-            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, retrigger: false, fade: 0.0 },
+            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 },
             targets,
             output: None,
             position: None,
@@ -4512,14 +4575,14 @@ depth = 0.5
 
     #[test]
     fn mod_source_slot_converts_to_a_fresh_audio_source() {
-        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Saw, rate: 3.5, retrigger: false, fade: 0.0 }) {
-            ModSource::Lfo { waveform, rate, phase, retrigger, fade, age } => {
-                assert_eq!((waveform, rate, phase, retrigger, fade, age), (LfoWaveform::Saw, 3.5, 0.0, false, 0.0, f32::INFINITY));
+        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Saw, rate: 3.5, retrigger: false, fade: 0.0, sync: 0 }) {
+            ModSource::Lfo { waveform, rate, phase, retrigger, fade, sync, age } => {
+                assert_eq!((waveform, rate, phase, retrigger, fade, sync, age), (LfoWaveform::Saw, 3.5, 0.0, false, 0.0, 0.0, f32::INFINITY));
             }
             other => panic!("{other:?}"),
         }
         // The key goes with it: a note that starts it again and a fade that is as long as it was set to; it rests at full until a note.
-        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, retrigger: true, fade: 0.5 }) {
+        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, retrigger: true, fade: 0.5, sync: 0 }) {
             ModSource::Lfo { retrigger, fade, age, .. } => assert_eq!((retrigger, fade, age), (true, 0.5, f32::INFINITY)),
             other => panic!("{other:?}"),
         }
@@ -4604,12 +4667,99 @@ depth = 0.5
     }
 
     #[test]
+    fn the_note_lengths_go_from_the_slowest_note_to_the_fastest_and_each_has_a_name_of_its_own_and_the_beats_it_is() {
+        // The notes (the lengths that are neither dotted nor triplets) halve all the way: four bars to a thirty-second.
+        let notes: Vec<f32> = SYNC_DIVISIONS.iter().filter(|(name, _)| !name.ends_with("dotted") && !name.ends_with("triplet")).map(|&(_, beats)| beats).collect();
+        assert_eq!(notes, [16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125]);
+        // A dotted length is half as long again as its note, and a triplet two thirds of it.
+        for &(name, beats) in &SYNC_DIVISIONS {
+            for (suffix, times) in [(" dotted", 1.5), (" triplet", 2.0 / 3.0)] {
+                if let Some(note) = name.strip_suffix(suffix) {
+                    let &(_, of_the_note) = SYNC_DIVISIONS.iter().find(|&&(other, _)| other == note).unwrap_or_else(|| panic!("{name} has no note {note}"));
+                    assert!((beats - of_the_note * times).abs() < 1e-6, "{name}: {beats} of {of_the_note}");
+                }
+            }
+        }
+        let mut names: Vec<&str> = SYNC_DIVISIONS.iter().map(|&(name, _)| name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), SYNC_DIVISIONS.len(), "no two are called the same");
+        // A sync is a place in the list from 1, and 0 is none. A bar is four beats, a dotted note is a half as long again and a triplet two thirds of it.
+        assert_eq!([sync_name(0), sync_name(1), sync_name(8), sync_name(16)], ["free", "4 bars", "1/4", "1/32"]);
+        assert_eq!([sync_beats(0), sync_beats(3), sync_beats(8), sync_beats(7), sync_beats(11), sync_beats(16)], [0.0, 4.0, 1.0, 1.5, 0.5, 0.125]);
+        assert!((sync_beats(9) - 2.0 / 3.0).abs() < 1e-6 && (sync_beats(15) - 1.0 / 6.0).abs() < 1e-6, "a triplet of quarters and of sixteenths");
+        // A place that the list has not is none.
+        for beyond in [17, 99, usize::MAX] {
+            assert_eq!((sync_name(beyond), sync_beats(beyond)), ("free", 0.0), "{beyond}");
+        }
+    }
+
+    #[test]
+    fn a_note_length_is_found_by_its_name_in_any_case_and_none_by_free_and_what_is_neither_is_not_found() {
+        for place in 1..=SYNC_DIVISIONS.len() {
+            assert_eq!(sync_from_name(sync_name(place)), Some(place), "{}", sync_name(place));
+        }
+        for (written, place) in [("1/8", 11), ("  1/8   Triplet ", 12), ("4 BARS", 1), ("1/16 Dotted", 13), ("free", 0), ("Off", 0), ("NONE", 0), ("", 0), ("  ", 0)] {
+            assert_eq!(sync_from_name(written), Some(place), "{written:?}");
+        }
+        for unknown in ["1/7", "1/8t", "1/8.", "8 bars", "1 bars", "triplet", "1/8 triplets", "0"] {
+            assert_eq!(sync_from_name(unknown), None, "{unknown:?}");
+        }
+    }
+
+    #[test]
+    fn what_a_modulator_that_follows_the_tempo_goes_at_is_what_its_note_length_and_the_tempo_make() {
+        let at = |place: usize, bpm: f32| crate::plugin::chain::rate_at_tempo(bpm, sync_beats(place));
+        let near = |got: f32, want: f32| (got - want).abs() < 1e-4;
+        // A sixteenth note at 120 beats a minute is eight a second, a quarter note two, a bar a half of one; the tempo scales all of them.
+        assert!(near(at(14, 120.0), 8.0));
+        assert!(near(at(8, 120.0), 2.0));
+        assert!(near(at(3, 120.0), 0.5));
+        assert!(near(at(8, 90.0), 1.5));
+        assert!(near(at(14, 60.0), 4.0));
+        assert!(near(at(12, 120.0), 6.0), "a triplet of eighths: three in the time of two");
+        assert!(near(at(10, 120.0), 2.0 * 4.0 / 3.0), "a dotted eighth: two in the time of three");
+    }
+
+    #[test]
+    fn an_lfo_and_a_step_sequencer_that_follow_the_tempo_are_labelled_by_the_note_length_and_not_the_rate_they_keep() {
+        let lfo = |sync| ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 4.0, retrigger: false, fade: 0.0, sync };
+        assert_eq!(lfo(0).label(), "LFO 4.0Hz sine");
+        assert_eq!(lfo(11).label(), "LFO 1/8 sine");
+        assert_eq!(lfo(12).label(), "LFO 1/8 triplet sine");
+        let mut steps = ModSourceSlot::new_steps();
+        assert_eq!(steps.label(), "Steps 16 8.0Hz");
+        if let ModSourceSlot::Steps { sync, .. } = &mut steps {
+            *sync = 14;
+        }
+        assert_eq!(steps.label(), "Steps 16 1/16");
+    }
+
+    #[test]
+    fn an_lfo_and_a_step_sequencer_go_to_the_engine_with_the_beats_of_their_note_length_and_none_for_none() {
+        let beats = |source: &ModSourceSlot| match mod_source_slot_to_graph(source) {
+            ModSource::Lfo { sync, .. } | ModSource::Steps { sync, .. } => sync,
+            other => panic!("{other:?}"),
+        };
+        let lfo = |sync| ModSourceSlot::Lfo { waveform: LfoWaveform::Saw, rate: 3.5, retrigger: false, fade: 0.0, sync };
+        assert_eq!([0, 3, 11, 16].map(|sync| beats(&lfo(sync))), [0.0, 4.0, 0.5, 0.125]);
+        let mut steps = ModSourceSlot::new_steps();
+        assert_eq!(beats(&steps), 0.0);
+        if let ModSourceSlot::Steps { sync, .. } = &mut steps {
+            *sync = 14;
+        }
+        assert_eq!(beats(&steps), 0.25);
+        // (The rate is sent as it is, whether or not it is followed: the engine keeps it for when the modulator is free again.)
+        assert!(matches!(mod_source_slot_to_graph(&lfo(11)), ModSource::Lfo { rate, .. } if rate == 3.5));
+    }
+
+    #[test]
     fn source_labels_are_what_the_tree_shows() {
         let label = |s: ModSourceSlot| s.label();
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 0.25, retrigger: false, fade: 0.0 }), "LFO 0.2Hz triangle");
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 12.0, retrigger: false, fade: 0.0 }), "LFO 12.0Hz sine");
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Random, rate: 4.0, retrigger: false, fade: 0.0 }), "LFO 4.0Hz random");
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Smooth, rate: 0.5, retrigger: false, fade: 0.0 }), "LFO 0.5Hz smooth");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 0.25, retrigger: false, fade: 0.0, sync: 0 }), "LFO 0.2Hz triangle");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 12.0, retrigger: false, fade: 0.0, sync: 0 }), "LFO 12.0Hz sine");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Random, rate: 4.0, retrigger: false, fade: 0.0, sync: 0 }), "LFO 4.0Hz random");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Smooth, rate: 0.5, retrigger: false, fade: 0.0, sync: 0 }), "LFO 0.5Hz smooth");
         assert_eq!(label(ModSourceSlot::Envelope { attack: 0.0, decay: 0.0, sustain: 0.0, release: 0.0 }), "ADSR");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false }), "CC 74");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::PitchBend), learning: false }), "Pitch Bend");
@@ -4628,7 +4778,7 @@ depth = 0.5
         let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
 
         let m = lfo(two());
-        assert_eq!(modulator_param_len(&m), 5 + 1 + 2);
+        assert_eq!(modulator_param_len(&m), 6 + 1 + 2);
         let rows: Vec<_> = (0..modulator_param_len(&m))
             .map(|r| (modulator_param_is_enum(&m, r), modulator_param_range(&m, r)))
             .collect();
@@ -4638,6 +4788,7 @@ depth = 0.5
                 (true, None),                   // Type
                 (true, None),                   // Waveform
                 (false, Some((0.01, 50.0))),    // Rate
+                (true, None),                   // Sync
                 (true, None),                   // Retrigger
                 (false, Some((0.0, 5.0))),      // Fade
                 (false, None),                  // "Targets" separator
@@ -4716,7 +4867,7 @@ depth = 0.5
     fn keyed_lfo(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
             node: NodeId(7),
-            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, retrigger: true, fade: 0.75 },
+            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, retrigger: true, fade: 0.75, sync: 0 },
             targets,
             output: None,
             position: None,
@@ -4729,9 +4880,9 @@ depth = 0.5
         use ModulatorRow::*;
         let m = keyed_lfo(vec![target(K::PluginParam { slot: 0, param_index: 0 })]);
         let rows: Vec<_> = (0..=modulator_param_len(&m)).map(|r| modulator_row(&m, r)).collect();
-        assert_eq!(rows, [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), Some(Depth(0)), None]);
+        assert_eq!(rows, [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Sync), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), Some(Depth(0)), None]);
         let enums: Vec<usize> = (0..modulator_param_len(&m)).filter(|&r| modulator_param_is_enum(&m, r)).collect();
-        assert_eq!(enums, [0, 1, 3], "the type, the waveform and the retrigger are choices");
+        assert_eq!(enums, [0, 1, 3, 4], "the type, the waveform, the note length to follow the tempo by and the retrigger are choices");
     }
 
     #[test]
@@ -4742,9 +4893,9 @@ depth = 0.5
         assert_eq!(ModSourceSlot::new_lfo().setting(F::Retrigger), Some(0.0), "a new one runs free");
         assert_eq!(ModSourceSlot::new_lfo().setting(F::Fade), Some(0.0), "and does not fade in");
         let set = |field, value| Some(Intent::SetModulatorField { node: NodeId(7), field, value });
-        assert_eq!(m.row_intent(3, |on| 1.0 - on), set(F::Retrigger, 0.0), "the switch is turned over by the closure");
-        assert_eq!(m.row_intent(4, |fade| fade + 0.25), set(F::Fade, 1.0));
-        assert_eq!(m.row_intent(5, |value| value), None, "the separator");
+        assert_eq!(m.row_intent(4, |on| 1.0 - on), set(F::Retrigger, 0.0), "the switch is turned over by the closure");
+        assert_eq!(m.row_intent(5, |fade| fade + 0.25), set(F::Fade, 1.0));
+        assert_eq!(m.row_intent(6, |value| value), None, "the separator");
         // The settings that are not an LFO's: an envelope, a control and a macro have neither, and a step sequencer has a retrigger of its own but no fade.
         for other in [adsr(vec![]), midi(vec![]), knob(vec![])] {
             for field in [F::Retrigger, F::Fade] {
@@ -4759,10 +4910,10 @@ depth = 0.5
     fn the_key_of_an_lfo_is_set_by_a_person_and_no_cable_drives_it() {
         let m = keyed_lfo(vec![target(K::PluginParam { slot: 0, param_index: 0 })]);
         assert!(modulator_row_to_cross_mod(&m, 3, 2).is_some(), "the rate is");
-        for row in [0, 1, 3, 4, 5] {
-            assert_eq!(modulator_row_to_cross_mod(&m, 3, row), None, "row {row}");
+        for row in [0, 1, 3, 4, 5, 6] {
+            assert_eq!(modulator_row_to_cross_mod(&m, 3, row), None, "row {row}: the type, the waveform, the sync, the key and the separator");
         }
-        let (kind, ..) = modulator_row_to_cross_mod(&m, 3, 6).unwrap();
+        let (kind, ..) = modulator_row_to_cross_mod(&m, 3, 7).unwrap();
         assert!(matches!(kind, K::ModulatorDepth { mod_index: 3, target_index: 0 }), "{kind:?}");
     }
 
@@ -4776,30 +4927,35 @@ depth = 0.5
         use ModulatorRow::*;
         let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
         let m = sequencer(two());
-        assert_eq!(modulator_param_len(&m), 4 + 16 + 1 + 2);
+        assert_eq!(modulator_param_len(&m), 5 + 16 + 1 + 2);
         let rows: Vec<_> = (0..=modulator_param_len(&m)).map(|r| modulator_row(&m, r)).collect();
-        let mut expected = vec![Some(Setting(F::Rate)), Some(Setting(F::Glide)), Some(Setting(F::Length)), Some(Retrigger)];
+        let mut expected = vec![Some(Setting(F::Rate)), Some(Sync), Some(Setting(F::Glide)), Some(Setting(F::Length)), Some(Retrigger)];
         expected.extend((0..16).map(|i| Some(Step(i))));
         expected.extend([Some(Separator), Some(Depth(0)), Some(Depth(1)), None]);
         assert_eq!(rows, expected);
-        // What a row can be turned over: the rate, the glide and the length by their fields, a step by -1 to 1, and the switch and the separator by nothing (the switch is a choice).
+        // What a row can be turned over: the rate, the glide and the length by their fields, a step by -1 to 1, and the two choices and the separator by nothing.
         assert_eq!(modulator_param_range(&m, 0), Some(F::Rate.range()));
-        assert_eq!(modulator_param_range(&m, 1), Some((0.0, 1.0)));
-        assert_eq!(modulator_param_range(&m, 2), Some((1.0, 16.0)));
-        assert_eq!(modulator_param_range(&m, 3), None);
-        assert_eq!(modulator_param_range(&m, 4), Some((-1.0, 1.0)));
-        assert_eq!(modulator_param_range(&m, 19), Some((-1.0, 1.0)));
-        assert_eq!(modulator_param_range(&m, 20), None, "the separator");
-        assert_eq!(modulator_param_range(&m, 21), Some((DEPTH_MIN, DEPTH_MAX)));
+        assert_eq!(modulator_param_range(&m, 1), None);
+        assert_eq!(modulator_param_range(&m, 2), Some((0.0, 1.0)));
+        assert_eq!(modulator_param_range(&m, 3), Some((1.0, 16.0)));
+        assert_eq!(modulator_param_range(&m, 4), None);
+        assert_eq!(modulator_param_range(&m, 5), Some((-1.0, 1.0)));
+        assert_eq!(modulator_param_range(&m, 20), Some((-1.0, 1.0)));
+        assert_eq!(modulator_param_range(&m, 21), None, "the separator");
+        assert_eq!(modulator_param_range(&m, 22), Some((DEPTH_MIN, DEPTH_MAX)));
         let enums: Vec<usize> = (0..modulator_param_len(&m)).filter(|&r| modulator_param_is_enum(&m, r)).collect();
-        assert_eq!(enums, [3], "the retrigger is a choice, and no type is to be turned (it is not an LFO or an envelope)");
+        assert_eq!(enums, [1, 4], "the note length and the retrigger are choices, and no type is to be turned (it is not an LFO or an envelope)");
     }
 
     #[test]
     fn a_step_sequencer_says_the_value_of_its_settings_and_a_row_makes_the_intent_that_sets_it() {
         use ModulatorField as F;
         let m = sequencer(vec![]);
-        assert_eq!([F::Rate, F::Glide, F::Length, F::Retrigger].map(|field| m.source.setting(field)), [Some(8.0), Some(0.0), Some(16.0), Some(1.0)]);
+        assert_eq!(
+            [F::Rate, F::Glide, F::Length, F::Retrigger, F::Sync].map(|field| m.source.setting(field)),
+            [Some(8.0), Some(0.0), Some(16.0), Some(1.0), Some(0.0)],
+            "(a new one is not tied to the tempo)"
+        );
         for field in [F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release, F::Value] {
             assert_eq!(m.source.setting(field), None, "{field:?}");
         }
@@ -4814,18 +4970,19 @@ depth = 0.5
         }
         let set = |field, value| Some(Intent::SetModulatorField { node: NodeId(7), field, value });
         assert_eq!(m.row_intent(0, |rate| rate * 2.0), set(F::Rate, 16.0));
-        assert_eq!(m.row_intent(1, |glide| glide + 0.5), set(F::Glide, 0.5));
-        assert_eq!(m.row_intent(2, |length| length - 1.0), set(F::Length, 15.0));
-        assert_eq!(m.row_intent(3, |on| 1.0 - on), set(F::Retrigger, 0.0), "the switch is turned over by the closure");
+        assert_eq!(m.row_intent(1, |sync| sync + 14.0), set(F::Sync, 14.0), "a place in the list of note lengths");
+        assert_eq!(m.row_intent(2, |glide| glide + 0.5), set(F::Glide, 0.5));
+        assert_eq!(m.row_intent(3, |length| length - 1.0), set(F::Length, 15.0));
+        assert_eq!(m.row_intent(4, |on| 1.0 - on), set(F::Retrigger, 0.0), "the switch is turned over by the closure");
         // A step is one of the values, and the intent has all of them: the one that is turned and the others as they are.
         let steps = |i: usize, value: f32| {
             let ModSourceSlot::Steps { mut values, .. } = ModSourceSlot::new_steps() else { unreachable!() };
             values[i] = value;
             Some(Intent::SetSteps { node: NodeId(7), values: values.to_vec() })
         };
-        assert_eq!(m.row_intent(4 + 3, |value| value + 0.25), steps(3, -0.625 + 0.25));
-        assert_eq!(m.row_intent(4 + 15, |_| -0.5), steps(15, -0.5), "a value that was typed");
-        assert_eq!(m.row_intent(4 + 16, |value| value), None, "the separator");
+        assert_eq!(m.row_intent(5 + 3, |value| value + 0.25), steps(3, -0.625 + 0.25));
+        assert_eq!(m.row_intent(5 + 15, |_| -0.5), steps(15, -0.5), "a value that was typed");
+        assert_eq!(m.row_intent(5 + 16, |value| value), None, "the separator");
     }
 
     #[test]
@@ -4834,11 +4991,11 @@ depth = 0.5
         let (kind, min, max, base, label) = modulator_row_to_cross_mod(&m, 3, 0).unwrap();
         assert!(matches!(kind, K::ModulatorRate { mod_index: 3 }), "{kind:?}");
         assert_eq!((min, max, base, label.as_str()), (0.01, 50.0, 8.0, "Mod 3 rate"));
-        for row in 1..=19 {
-            assert_eq!(modulator_row_to_cross_mod(&m, 3, row), None, "row {row}: the glide, the length, the switch and the steps are set by a person");
+        for row in 1..=20 {
+            assert_eq!(modulator_row_to_cross_mod(&m, 3, row), None, "row {row}: the note length, the glide, the length, the switch and the steps are set by a person");
         }
-        assert_eq!(modulator_row_to_cross_mod(&m, 3, 20), None, "the separator");
-        let (kind, ..) = modulator_row_to_cross_mod(&m, 3, 21).unwrap();
+        assert_eq!(modulator_row_to_cross_mod(&m, 3, 21), None, "the separator");
+        let (kind, ..) = modulator_row_to_cross_mod(&m, 3, 22).unwrap();
         assert!(matches!(kind, K::ModulatorDepth { mod_index: 3, target_index: 0 }), "{kind:?}");
     }
 
@@ -4859,10 +5016,10 @@ depth = 0.5
     fn a_step_sequencer_goes_to_the_engine_with_all_that_it_has_and_at_its_first_step() {
         let mut values = [0.0; 16];
         values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
-        let source = ModSourceSlot::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false };
+        let source = ModSourceSlot::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false, sync: 0 };
         match mod_source_slot_to_graph(&source) {
-            ModSource::Steps { values: sent, length, rate, glide, retrigger, position } => {
-                assert_eq!((sent, length, rate, glide, retrigger, position), (values, 3, 6.5, 0.25, false, 0.0));
+            ModSource::Steps { values: sent, length, rate, glide, retrigger, sync, position } => {
+                assert_eq!((sent, length, rate, glide, retrigger, sync, position), (values, 3, 6.5, 0.25, false, 0.0, 0.0));
             }
             other => panic!("{other:?}"),
         }
@@ -4887,7 +5044,7 @@ depth = 0.5
         let rows = |m: &ModulatorSlot| (0..=modulator_param_len(m)).map(|r| modulator_row(m, r)).collect::<Vec<_>>();
         assert_eq!(
             rows(&lfo(two())),
-            [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]
+            [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Sync), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]
         );
         assert_eq!(
             rows(&adsr(two())),
@@ -4904,7 +5061,7 @@ depth = 0.5
             ]
         );
         assert_eq!(rows(&midi(two())), [Some(Info), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]);
-        assert_eq!(rows(&lfo(vec![])), [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), None]);
+        assert_eq!(rows(&lfo(vec![])), [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Sync), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), None]);
     }
 
     #[test]
@@ -4925,7 +5082,7 @@ depth = 0.5
     #[test]
     fn a_source_says_the_value_of_a_setting_it_has_and_nothing_of_one_it_has_not() {
         use ModulatorField as F;
-        let triangle = ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 2.5, retrigger: false, fade: 0.0 };
+        let triangle = ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 2.5, retrigger: false, fade: 0.0, sync: 0 };
         let envelope = ModSourceSlot::Envelope { attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 };
         let control = ModSourceSlot::MidiLearn { source: None, learning: true };
         let all = [F::Rate, F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release];
@@ -4951,7 +5108,7 @@ depth = 0.5
         // A value is what the closure makes of the one the row has now (the controller clamps it).
         assert_eq!(
             intents(&with_edges(lfo(two()), 7)),
-            [None, None, set(7, F::Rate, 3.0), set(7, F::Retrigger, 1.0), set(7, F::Fade, 1.0), None, depth(50, 1.5), depth(51, 1.5), None]
+            [None, None, set(7, F::Rate, 3.0), set(7, F::Sync, 1.0), set(7, F::Retrigger, 1.0), set(7, F::Fade, 1.0), None, depth(50, 1.5), depth(51, 1.5), None]
         );
         assert_eq!(
             intents(&with_edges(adsr(two()), 8)),
@@ -5001,13 +5158,13 @@ depth = 0.5
         let m = lfo(two);
         let (kind, _, _, base, label) = modulator_row_to_cross_mod(&m, 3, 2).unwrap();
         assert_eq!((format!("{kind:?}"), base, label.as_str()), ("ModulatorRate { mod_index: 3 }".to_string(), 2.0, "Mod 3 rate"));
-        let (kind, _, _, base, label) = modulator_row_to_cross_mod(&m, 3, 7).unwrap();
+        let (kind, _, _, base, label) = modulator_row_to_cross_mod(&m, 3, 8).unwrap();
         assert_eq!(
             (format!("{kind:?}"), base, label.as_str()),
             ("ModulatorDepth { mod_index: 3, target_index: 1 }".to_string(), -0.6, "Mod 3 depth 1")
         );
-        // Type, waveform, the key's switch and fade and the separator are not bindable.
-        for row in [0, 1, 3, 4, 5] {
+        // Type, waveform, the note length, the key's switch and fade and the separator are not bindable.
+        for row in [0, 1, 3, 4, 5, 6] {
             assert!(modulator_row_to_cross_mod(&m, 3, row).is_none(), "row {row}");
         }
 

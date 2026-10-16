@@ -41,7 +41,7 @@ describe("where a cable from a modulator may end", () => {
   });
 
   test("is nothing for a modulator whose lane or group is not there", () => {
-    const orphan: Node = { id: 50, parent: 60, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+    const orphan: Node = { id: 50, parent: 60, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
     const graph: Graph = { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, orphan] };
     expect(reachFrom(graph, 50).size).toBe(0);
     const homeless: Node = { ...orphan, id: 51, parent: null };
@@ -68,7 +68,7 @@ describe("what a modulator can still be drawn to", () => {
   });
 
   test("keeps a parameter that another modulator drives: two can drive one", () => {
-    const second: Node = { id: 7, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+    const second: Node = { id: 7, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
     const graph: Graph = { ...tracer, nodes: [...tracer.nodes, second] };
     const groups = drivablesOf(graph, 7, displayNames(graph));
     expect(groups.find((group) => group.node === 1)?.params.map((p) => p.name)).toEqual(["cutoff", "resonance", "type", "drive"]);
@@ -141,7 +141,7 @@ describe("which settings of other modulators a modulator can be drawn to", () =>
   });
 
   test("is nothing for a modulator whose lane or group is not there", () => {
-    const orphan: Node = { id: 50, parent: 60, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+    const orphan: Node = { id: 50, parent: 60, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
     const graph: Graph = { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, orphan] };
     expect(fieldsOf(graph, 50)).toEqual([]);
     expect(fieldsOf({ ...graph, nodes: [...graph.nodes, { ...orphan, id: 51, parent: null }] }, 51)).toEqual([]);
@@ -149,11 +149,11 @@ describe("which settings of other modulators a modulator can be drawn to", () =>
 
   test("is the settings its source has: an LFO's rate, an envelope's four stages, and nothing of a MIDI control", () => {
     const rack = (...sources: Node[]): Graph => ({ ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, ...sources] });
-    const lfo = (id: number): Node => ({ id, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } });
+    const lfo = (id: number): Node => ({ id, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } });
     const envelope: Node = { id: 21, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 } };
     const control: Node = { id: 22, parent: 0, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
     const knob: Node = { id: 23, parent: 0, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.5 } };
-    const sequencer: Node = { id: 24, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true } };
+    const sequencer: Node = { id: 24, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 } };
     const graph = rack(lfo(20), envelope, control, knob, sequencer);
     const types = (id: number, of: number): string[] => fieldsOf(graph, id).filter((found) => found.node === of).map((found) => found.port.type);
     expect(types(20, 21)).toEqual(["attack", "decay", "sustain", "release"]);
@@ -279,7 +279,7 @@ describe("which modulators can still drive a port", () => {
     return { type: "param", index };
   };
   /** The tracer with a second LFO in its lane. */
-  const second: Node = { id: 7, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+  const second: Node = { id: 7, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
   const withSecond: Graph = { ...tracer, nodes: [...tracer.nodes, second] };
 
   test("is the modulators that reach a parameter, in the order of the graph, and none that drives it already", () => {

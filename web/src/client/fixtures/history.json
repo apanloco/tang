@@ -1072,6 +1072,147 @@
       ]
     },
     {
+      "name": "a note length to follow the tempo by is a step in the words of the setting, put back and set again, and an envelope has none",
+      "rows": [
+        {
+          "events": [
+            {
+              "field": "sync",
+              "node": 6,
+              "rev": 1,
+              "type": "modulatorFieldSet",
+              "value": 11.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set sync"
+          },
+          "intent": {
+            "field": "sync",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 11.0
+          },
+          "restructured": false
+        },
+        {
+          "wait": 5000
+        },
+        {
+          "events": [
+            {
+              "field": "sync",
+              "node": 6,
+              "rev": 2,
+              "type": "modulatorFieldSet",
+              "value": 14.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set sync"
+          },
+          "intent": {
+            "field": "sync",
+            "node": 6,
+            "type": "setModulatorField",
+            "value": 14.0
+          },
+          "restructured": false
+        },
+        {
+          "error": "Sync does not apply to that modulator",
+          "history": {
+            "redo": null,
+            "undo": "set sync"
+          },
+          "intent": {
+            "field": "sync",
+            "node": 7,
+            "type": "setModulatorField",
+            "value": 3.0
+          }
+        },
+        {
+          "events": [
+            {
+              "field": "sync",
+              "node": 6,
+              "rev": 3,
+              "type": "modulatorFieldSet",
+              "value": 11.0
+            }
+          ],
+          "history": {
+            "redo": "set sync",
+            "undo": "set sync"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "sync",
+              "node": 6,
+              "rev": 4,
+              "type": "modulatorFieldSet",
+              "value": 0.0
+            }
+          ],
+          "history": {
+            "redo": "set sync",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "sync",
+              "node": 6,
+              "rev": 5,
+              "type": "modulatorFieldSet",
+              "value": 11.0
+            }
+          ],
+          "history": {
+            "redo": "set sync",
+            "undo": "set sync"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "field": "sync",
+              "node": 6,
+              "rev": 6,
+              "type": "modulatorFieldSet",
+              "value": 14.0
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "set sync"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
       "name": "a tempo is put back, a drag of it is one step, and one that is held to the tempos there can be says what it is",
       "rows": [
         {
@@ -29690,6 +29831,7 @@
                 "fade": 0.0,
                 "rate": 1.0,
                 "retrigger": false,
+                "sync": 0,
                 "type": "lfo",
                 "waveform": "sine"
               }
@@ -29703,6 +29845,7 @@
                 "fade": 0.0,
                 "rate": 2.0,
                 "retrigger": false,
+                "sync": 0,
                 "type": "lfo",
                 "waveform": "sine"
               }
@@ -30298,6 +30441,7 @@
                 "fade": 0.0,
                 "rate": 1.0,
                 "retrigger": false,
+                "sync": 0,
                 "type": "lfo",
                 "waveform": "sine"
               }
@@ -30311,6 +30455,7 @@
                 "fade": 0.0,
                 "rate": 2.0,
                 "retrigger": false,
+                "sync": 0,
                 "type": "lfo",
                 "waveform": "sine"
               }
@@ -31009,6 +31154,7 @@
                 "fade": 0.0,
                 "rate": 1.0,
                 "retrigger": false,
+                "sync": 0,
                 "type": "lfo",
                 "waveform": "sine"
               }
@@ -31411,6 +31557,7 @@
                 "fade": 0.0,
                 "rate": 2.0,
                 "retrigger": false,
+                "sync": 0,
                 "type": "lfo",
                 "waveform": "sine"
               }
@@ -32853,6 +33000,7 @@
             "fade": 0.0,
             "rate": 2.0,
             "retrigger": false,
+            "sync": 0,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -33192,6 +33340,7 @@
             "fade": 0.0,
             "rate": 3.0,
             "retrigger": false,
+            "sync": 0,
             "type": "lfo",
             "waveform": "sine"
           }

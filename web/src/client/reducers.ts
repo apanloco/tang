@@ -138,6 +138,12 @@ function withGain(node: Node, gain: Gain, value: number): Node | null {
   return null;
 }
 
+/** Whether `value` is a place in the list of note lengths that a modulator can follow the tempo by (0 is none, and the last place is the last note length): a whole number of those. */
+function isNoteLength(value: number): boolean {
+  const [lowest, highest] = MODULATOR_FIELD_RANGES.sync;
+  return Number.isInteger(value) && value >= lowest && value <= highest;
+}
+
 /** The node with a setting of its modulator set; a reason if it is not a modulator, or not one that has that setting. */
 function withSetting(node: Node, field: ModulatorField, value: number): Node | string {
   if (node.kind !== "modulator") return `node ${node.id} is not a modulator`;
@@ -152,6 +158,8 @@ function withSetting(node: Node, field: ModulatorField, value: number): Node | s
     // (Its key: whether a note starts it again at the start of its wave, and the seconds it takes to come in after one.)
     if (field === "retrigger") return { ...node, source: { ...source, retrigger: value !== 0 } };
     if (field === "fade") return { ...node, source: { ...source, fade: value } };
+    // (The note length that its rate follows the tempo by: a place in the list, from 0 for none.)
+    if (field === "sync") return isNoteLength(value) ? { ...node, source: { ...source, sync: value } } : `${String(value)} is not a note length`;
   }
   if (source.type === "envelope" && (field === "attack" || field === "decay" || field === "sustain" || field === "release")) {
     return { ...node, source: { ...source, [field]: value } };
@@ -165,6 +173,7 @@ function withSetting(node: Node, field: ModulatorField, value: number): Node | s
       return Number.isInteger(value) && value >= lowest && value <= highest ? { ...node, source: { ...source, length: value } } : `${String(value)} is not a length`;
     }
     if (field === "retrigger") return { ...node, source: { ...source, retrigger: value !== 0 } };
+    if (field === "sync") return isNoteLength(value) ? { ...node, source: { ...source, sync: value } } : `${String(value)} is not a note length`;
   }
   return `${field} does not apply to node ${node.id}`;
 }

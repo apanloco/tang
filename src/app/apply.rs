@@ -5,11 +5,11 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, rate_command, steps_command};
+use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, rate_command, steps_command, sync_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PatternState, PluginSlot, STEP_MAX, STEP_MIN};
+use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PatternState, PluginSlot, STEP_MAX, STEP_MIN, sync_beats};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, MAX_STEPS, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -501,6 +501,11 @@ impl Controller {
                     _ => *retrigger = value != 0.0,
                 }
                 steps_command(at, index, values, *length, *glide, *retrigger)
+            }
+            // (A note length to follow the tempo by goes to the engine as the beats it is, and its own rate stays where it was: the engine goes by the one or the other.)
+            (ModSourceSlot::Lfo { sync, .. } | ModSourceSlot::Steps { sync, .. }, ModulatorField::Sync) => {
+                *sync = value as usize;
+                sync_command(at, index, sync_beats(*sync))
             }
             // (An LFO's key goes to the engine as the two together, whichever of them was changed: the model has both.)
             (ModSourceSlot::Lfo { retrigger, fade, .. }, ModulatorField::Retrigger | ModulatorField::Fade) => {
@@ -2363,6 +2368,86 @@ rate = 1.0
         assert_eq!((ctl.rev, sent(&engine)), (0, Vec::<String>::new()), "nothing changed");
     }
 
+    /// The note length an LFO of the lane follows the tempo by (a place in `SYNC_DIVISIONS`, 0 for none) and its own rate.
+    fn lane_sync(ctl: &Controller, index: usize) -> (usize, f32) {
+        match &ctl.model.instruments[0].modulators[index].source {
+            ModSourceSlot::Lfo { sync, rate, .. } => (*sync, *rate),
+            other => panic!("{other:?} is not an LFO"),
+        }
+    }
+
+    #[test]
+    fn set_modulator_field_sets_the_note_length_an_lfo_follows_the_tempo_by_and_gives_the_engine_its_beats_and_keeps_the_rate() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lfo = lane_mod(&ctl, 0);
+        let (_, rate) = lane_sync(&ctl, 0);
+        // 11 is an eighth note, 14 a sixteenth, 6 a triplet of halves and 0 none.
+        let applied = field(&mut ctl, lfo, ModulatorField::Sync, 11.0).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Sync, value: 11.0 }]));
+        assert_eq!(lane_sync(&ctl, 0), (11, rate));
+        field(&mut ctl, lfo, ModulatorField::Sync, 14.0).unwrap();
+        field(&mut ctl, lfo, ModulatorField::Sync, 6.0).unwrap();
+        field(&mut ctl, lfo, ModulatorField::Sync, 0.0).unwrap();
+        assert_eq!(lane_sync(&ctl, 0), (0, rate), "its own rate is what it was all through");
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetModulatorSync Lane(0) index=0 beats=0.500",
+                "SetModulatorSync Lane(0) index=0 beats=0.250",
+                "SetModulatorSync Lane(0) index=0 beats=1.333",
+                "SetModulatorSync Lane(0) index=0 beats=0.000",
+            ],
+            "the beats of the note length, and nothing of the rate"
+        );
+        assert!(ctl.dirty);
+        assert_eq!(ctl.rev, 4);
+    }
+
+    #[test]
+    fn set_modulator_field_reaches_the_sync_of_the_lfo_of_a_group_by_the_same_command_and_leaves_the_lanes_alone() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let group = group_mod(&ctl, 0);
+        field(&mut ctl, group, ModulatorField::Sync, 8.0).unwrap();
+        assert_eq!(sent(&engine), ["SetModulatorSync Group(0) index=0 beats=1.000"]);
+        assert_eq!(lane_sync(&ctl, 0).0, 0, "the lane's is another modulator");
+    }
+
+    #[test]
+    fn a_sync_is_held_to_the_list_and_rounded_to_a_place_in_it() {
+        let (engine, mut ctl) = modulated();
+        let lfo = lane_mod(&ctl, 0);
+        let told = |applied: Applied| match applied.events[0] {
+            Event::ModulatorFieldSet { value, .. } => value,
+            ref other => panic!("{other:?}"),
+        };
+        for (asked, got) in [(99.0, 16.0), (-3.0, 0.0), (2.4, 2.0), (2.6, 3.0), (16.0, 16.0)] {
+            assert_eq!(told(field(&mut ctl, lfo, ModulatorField::Sync, asked).unwrap()), got, "{asked}");
+        }
+        assert_eq!(lane_sync(&ctl, 0).0, 16);
+        sent(&engine);
+        let rev = ctl.rev;
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(matches!(field(&mut ctl, lfo, ModulatorField::Sync, bad), Err(IntentError::Invalid(_))), "{bad}");
+        }
+        assert_eq!((ctl.rev, sent(&engine), lane_sync(&ctl, 0).0), (rev, Vec::<String>::new(), 16), "a refusal changes nothing");
+    }
+
+    #[test]
+    fn an_envelope_a_midi_control_and_a_macro_do_not_follow_the_tempo_and_have_no_sync_to_set() {
+        let (engine, mut ctl) = modulated();
+        let (envelope, control) = (lane_mod(&ctl, 1), lane_mod(&ctl, 2));
+        sent(&engine);
+        for (name, node) in [("an envelope", envelope), ("a MIDI control", control)] {
+            assert!(matches!(field(&mut ctl, node, ModulatorField::Sync, 4.0), Err(IntentError::Invalid(_))), "{name}");
+        }
+        let (_engine, mut knobs) = macros();
+        let knob = lane_mod(&knobs, 0);
+        assert!(matches!(field(&mut knobs, knob, ModulatorField::Sync, 4.0), Err(IntentError::Invalid(_))), "a macro");
+        assert_eq!((ctl.rev, sent(&engine)), (0, Vec::<String>::new()), "nothing changed");
+    }
+
     #[test]
     fn set_modulator_field_sets_an_envelope_stage_and_sends_all_four() {
         let (engine, mut ctl) = modulated();
@@ -2503,9 +2588,26 @@ type = "steps"
             ModulatorLocation::Group(group) => &ctl.model.groups[group].modulators,
         };
         match &rack[0].source {
-            ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (*values, *length, *rate, *glide, *retrigger),
+            ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } => (*values, *length, *rate, *glide, *retrigger),
             other => panic!("{other:?} is not a step sequencer"),
         }
+    }
+
+    #[test]
+    fn set_modulator_field_sets_the_note_length_a_step_sequencer_follows_the_tempo_by_and_gives_the_engine_the_beats_and_not_its_steps() {
+        let (engine, mut ctl) = sequencers();
+        sent(&engine);
+        let lane = lane_mod(&ctl, 0);
+        let rate = steps_in(&ctl, ModulatorLocation::Lane(0)).2;
+        field(&mut ctl, lane, ModulatorField::Sync, 14.0).unwrap();
+        match &ctl.model.instruments[0].modulators[0].source {
+            ModSourceSlot::Steps { sync, rate: kept, .. } => assert_eq!((*sync, *kept), (14, rate)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(sent(&engine), ["SetModulatorSync Lane(0) index=0 beats=0.250"]);
+        let group = group_mod(&ctl, 0);
+        field(&mut ctl, group, ModulatorField::Sync, 11.0).unwrap();
+        assert_eq!(sent(&engine), ["SetModulatorSync Group(0) index=0 beats=0.500"]);
     }
 
     /// What `sent` says of the command that gives the engine the steps of a step sequencer.
@@ -2920,7 +3022,7 @@ type = "steps"
         let applied = add(&mut ctl, parent, ModulatorKind::Lfo).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
-        assert_eq!(sent(&engine), ["InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]);
+        assert_eq!(sent(&engine), ["InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
         let rack = &ctl.model.instruments[0].modulators;
         assert_eq!(rack.len(), 1);
         assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate, .. } if rate == 1.0));
@@ -2992,7 +3094,7 @@ type = "steps"
         assert_eq!(
             sent(&engine),
             [
-                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }".to_string(),
+                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }".to_string(),
                 "InsertModulator inst=1 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }".to_string(),
                 "InsertModulator inst=1 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
                 "InsertModulator inst=1 index=3 source=Macro { value: 0.0 }".to_string(),

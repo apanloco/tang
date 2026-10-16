@@ -5,7 +5,7 @@
 //! touches the disk or the terminal, so any front-end (and a test) can serialize
 //! a session.
 
-use crate::app::model::{ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel};
+use crate::app::model::{ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel, sync_name};
 use crate::plugin::chain::MidiBindSource;
 use crate::session::{
     NodeUi, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveModSource, SaveModTarget, SaveModulator,
@@ -87,12 +87,17 @@ fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect 
     }
 }
 
+/// What the file says of a modulator's note length: the name of it, or nothing for a modulator that goes at its own rate (as a file that was written before there was one).
+fn sync_for_file(sync: usize) -> Option<String> {
+    (sync > 0).then(|| sync_name(sync).to_string())
+}
+
 fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> Vec<SaveModulator> {
     mods.iter()
         .map(|m| {
             let source = match &m.source {
-                ModSourceSlot::Lfo { waveform, rate, retrigger, fade } => {
-                    SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate, retrigger: *retrigger, fade: *fade }
+                ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
+                    SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: sync_for_file(*sync) }
                 }
                 ModSourceSlot::Envelope { attack, decay, sustain, release } => SaveModSource::Envelope {
                     attack: *attack,
@@ -111,8 +116,8 @@ fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> 
                     key: matches!(source, Some(MidiBindSource::Key)),
                 },
                 ModSourceSlot::Macro { value } => SaveModSource::Macro { value: *value },
-                ModSourceSlot::Steps { values, length, rate, glide, retrigger } => {
-                    SaveModSource::Steps { values: values.to_vec(), length: *length, rate: *rate, glide: *glide, retrigger: *retrigger }
+                ModSourceSlot::Steps { values, length, rate, glide, retrigger, sync } => {
+                    SaveModSource::Steps { values: values.to_vec(), length: *length, rate: *rate, glide: *glide, retrigger: *retrigger, sync: sync_for_file(*sync) }
                 }
             };
             SaveModulator {
@@ -304,7 +309,7 @@ depth = 0.4
             let second = load(&file);
             let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
             assert_eq!(source(&second), source(&first), "{name}");
-            assert_eq!(source(&first), format!("Lfo {{ waveform: {waveform:?}, rate: 3.0, retrigger: false, fade: 0.0 }}"), "{name}");
+            assert_eq!(source(&first), format!("Lfo {{ waveform: {waveform:?}, rate: 3.0, retrigger: false, fade: 0.0, sync: 0 }}"), "{name}");
         }
     }
 
@@ -316,10 +321,38 @@ depth = 0.4
         let second = load(&file);
         let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
         assert_eq!(source(&second), source(&first));
-        assert_eq!(source(&first), "Lfo { waveform: Sine, rate: 3.0, retrigger: true, fade: 0.3 }");
+        assert_eq!(source(&first), "Lfo { waveform: Sine, rate: 3.0, retrigger: true, fade: 0.3, sync: 0 }");
         // A session that was written before an LFO had a key is saved as it was.
         let free = saved(&load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 3.0\n").model);
         assert!(!free.contains("retrigger") && !free.contains("fade"), "{free}");
+    }
+
+    #[test]
+    fn an_lfo_and_a_step_sequencer_that_follow_the_tempo_are_saved_with_the_name_of_the_note_length_and_the_rate_they_keep_and_are_the_same_when_loaded_again() {
+        let session = "[[group]]\n[[group.modulator]]\nrate = 0.5\nsync = \"2 bars\"\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.modulator]]\nrate = 3.0\nsync = \"1/8 triplet\"\n\
+                       [[instrument.modulator]]\ntype = \"steps\"\nrate = 6.5\nsync = \"1/16 dotted\"\n[[instrument.modulator]]\nrate = 2.0\nsync = \"free\"\n";
+        let first = load(session);
+        let file = saved(&first.model);
+        // Each is written by the name, once; the one that is free has no key; the rates are what they were.
+        assert_eq!(file.matches("sync = ").count(), 3, "{file}");
+        for line in ["sync = \"2 bars\"", "sync = \"1/8 triplet\"", "sync = \"1/16 dotted\"", "rate = 0.5", "rate = 3.0", "rate = 6.5", "rate = 2.0"] {
+            assert!(file.contains(line), "{line}:\n{file}");
+        }
+        let second = load(&file);
+        let sources = |run: &crate::app::testutil::Run| {
+            let lane = run.model.instruments[0].modulators.iter().map(|m| format!("{:?}", m.source));
+            lane.chain(run.model.groups[0].modulators.iter().map(|m| format!("{:?}", m.source))).collect::<Vec<_>>()
+        };
+        assert_eq!(sources(&second), sources(&first));
+        assert_eq!(saved(&second.model), file, "and saving it again gives the same file");
+        let sync = |run: &crate::app::testutil::Run| {
+            let of = |m: &crate::app::model::ModulatorSlot| match &m.source {
+                ModSourceSlot::Lfo { sync, .. } | ModSourceSlot::Steps { sync, .. } => *sync,
+                other => panic!("{other:?}"),
+            };
+            run.model.groups[0].modulators.iter().chain(&run.model.instruments[0].modulators).map(of).collect::<Vec<_>>()
+        };
+        assert_eq!(sync(&second), [2, 12, 13, 0], "the group's, then the lane's three");
     }
 
     #[test]
@@ -480,7 +513,7 @@ pinned = ["cutoff", "resonance"]
         let mut run = load(SEQUENCERS);
         let mut values = [0.0; 16];
         values[..3].copy_from_slice(&[-1.0, 0.125, 0.75]);
-        run.model.instruments[0].modulators[0].source = ModSourceSlot::Steps { values, length: 3, rate: 12.5, glide: 1.0, retrigger: false };
+        run.model.instruments[0].modulators[0].source = ModSourceSlot::Steps { values, length: 3, rate: 12.5, glide: 1.0, retrigger: false, sync: 0 };
         let file = saved(&run.model);
         assert!(file.contains("steps = [-1.0, 0.125, 0.75, 0.0,"), "{file}");
         assert!(file.contains("length = 3") && file.contains("rate = 12.5") && file.contains("glide = 1.0"), "{file}");

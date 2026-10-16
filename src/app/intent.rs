@@ -17,7 +17,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
-use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId};
+use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId, SYNC_DIVISIONS};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
 use crate::session::NodeUi;
 
@@ -336,13 +336,15 @@ pub enum ModulatorField {
     Retrigger,
     /// How many seconds an LFO takes to come in from nothing after a note: 0 (it does not) to 5.
     Fade,
+    /// Whether an LFO or a step sequencer follows the tempo, and by what note length: 0 (it goes at its own rate) or the place of a note length in `SYNC_DIVISIONS`, from 1, a whole number.
+    Sync,
 }
 
 impl ModulatorField {
     /// Every setting there is, for what goes through all of them (a table of the page's constants, a test of each: only tests do). One that is left out is a key missing in the `Record` of
     /// the page's constants, which its typecheck refuses.
     #[cfg(test)]
-    pub const ALL: [ModulatorField; 11] = [
+    pub const ALL: [ModulatorField; 12] = [
         ModulatorField::Rate,
         ModulatorField::Waveform,
         ModulatorField::Attack,
@@ -354,6 +356,7 @@ impl ModulatorField {
         ModulatorField::Length,
         ModulatorField::Retrigger,
         ModulatorField::Fade,
+        ModulatorField::Sync,
     ];
 
     /// What it is called.
@@ -370,6 +373,7 @@ impl ModulatorField {
             ModulatorField::Length => "length",
             ModulatorField::Retrigger => "retrigger",
             ModulatorField::Fade => "fade",
+            ModulatorField::Sync => "sync",
         }
     }
 
@@ -382,12 +386,13 @@ impl ModulatorField {
             ModulatorField::Sustain | ModulatorField::Value | ModulatorField::Glide | ModulatorField::Retrigger => (0.0, 1.0),
             ModulatorField::Length => (1.0, MAX_STEPS as f32),
             ModulatorField::Fade => (0.0, MAX_FADE),
+            ModulatorField::Sync => (0.0, SYNC_DIVISIONS.len() as f32),
         }
     }
 
     /// Whether its value is a whole number, which the controller rounds it to: a place in a list (a waveform), a count (a length) or a switch.
     pub fn is_whole(self) -> bool {
-        matches!(self, ModulatorField::Waveform | ModulatorField::Length | ModulatorField::Retrigger)
+        matches!(self, ModulatorField::Waveform | ModulatorField::Length | ModulatorField::Retrigger | ModulatorField::Sync)
     }
 
     /// How its values are spread over its range when it is turned: a rate and a time run over thousands, which a linear control would crowd into its first
@@ -401,7 +406,8 @@ impl ModulatorField {
             | ModulatorField::Glide
             | ModulatorField::Length
             | ModulatorField::Retrigger
-            | ModulatorField::Fade => Taper::Linear,
+            | ModulatorField::Fade
+            | ModulatorField::Sync => Taper::Linear,
         }
     }
 }
@@ -629,7 +635,7 @@ mod tests {
     #[test]
     fn a_step_sequencer_is_made_as_a_staircase_of_sixteen_steps_and_is_the_kind_that_it_says() {
         let source = ModulatorKind::Steps.source();
-        let ModSourceSlot::Steps { values, length, rate, glide, retrigger } = source else { panic!("{source:?}") };
+        let ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } = source else { panic!("{source:?}") };
         assert_eq!(
             values,
             [-1.0, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],

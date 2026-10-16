@@ -8,12 +8,12 @@ source: src/tui/golden_tests.rs
 │♪ Oscillator  [Built-in]                        ││  Type                     ◂ LFO ▸                                  │
 │├ fx Filter  [Built-in]                         ││  Waveform                 ◂ sine ▸                                 │
 │├ fx Reverb  [Built-in]                         ││  Rate (Hz)                ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.50│
-│╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Rever││  Retrigger                ◂ off ▸                                  │
+│╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Rever││  Sync                     ◂ free ▸                                 │
+│                                                ││  Retrigger                ◂ off ▸                                  │
 │                                                ││  Fade (s)                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
 │                                                ││  Targets                  ──────                                   │
 │                                                ││  cutoff depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░     0.40│
 │                                                ││  damping depth            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░     0.30│
-│                                                ││                                                                    │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
@@ -41,12 +41,12 @@ ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbb........................cbcccccccccccccccccccccccccccccccccc..................................b
 cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
 cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cddddddddddddddddddddddddddddddddddddddddddddddddcb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................b
+cddddddddddddddddddddddddddddddddddddddddddddddddcb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................b
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb....................................................................b
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 c................................................cb....................................................................b

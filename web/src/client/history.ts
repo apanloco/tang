@@ -217,6 +217,7 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
     if (field === "waveform") return WAVEFORMS.indexOf(source.waveform);
     if (field === "retrigger") return source.retrigger ? 1 : 0;
     if (field === "fade") return source.fade;
+    if (field === "sync") return source.sync;
     return undefined;
   }
   if (source.type === "envelope") {
@@ -229,6 +230,7 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
   if (source.type === "steps") {
     if (field === "rate" || field === "glide" || field === "length") return source[field];
     if (field === "retrigger") return source.retrigger ? 1 : 0;
+    if (field === "sync") return source.sync;
   }
   return undefined;
 }

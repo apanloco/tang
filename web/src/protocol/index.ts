@@ -63,5 +63,7 @@ export {
   SCALE_ROOTS,
   SCOPE_FRAME_LENGTH,
   STEP_RANGE,
+  SYNC_DIVISIONS,
+  SYNC_FREE,
   WAVEFORMS,
 } from "./generated/constants";

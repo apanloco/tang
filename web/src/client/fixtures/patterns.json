@@ -5397,6 +5397,7 @@
             "fade": 0.0,
             "rate": 1.0,
             "retrigger": false,
+            "sync": 0,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -5885,6 +5886,7 @@
             "fade": 0.0,
             "rate": 1.0,
             "retrigger": false,
+            "sync": 0,
             "type": "lfo",
             "waveform": "sine"
           }

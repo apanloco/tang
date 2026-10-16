@@ -192,6 +192,13 @@ impl Snapshot {
                     (ModulatorSource::Lfo { rate, .. }, ModulatorField::Rate) => *rate = *value,
                     (ModulatorSource::Lfo { retrigger, .. }, ModulatorField::Retrigger) => *retrigger = *value != 0.0,
                     (ModulatorSource::Lfo { fade, .. }, ModulatorField::Fade) => *fade = *value,
+                    (ModulatorSource::Lfo { sync, .. } | ModulatorSource::Steps { sync, .. }, ModulatorField::Sync) => {
+                        let (lowest, highest) = ModulatorField::Sync.range();
+                        if value.fract() != 0.0 || *value < lowest || *value > highest {
+                            return Err(DoesNotFit(format!("{value} is not a note length")));
+                        }
+                        *sync = *value as u32;
+                    }
                     (ModulatorSource::Lfo { waveform, .. }, ModulatorField::Waveform) => {
                         let index = *value as usize;
                         let known = (*value >= 0.0 && value.fract() == 0.0).then(|| LfoWaveform::ALL.get(index)).flatten();
@@ -811,7 +818,7 @@ type = "envelope"
             let applied = ctl.apply(intent.clone()).unwrap();
             told.apply(&applied).unwrap_or_else(|error| panic!("{intent:?}: {error}"));
             assert_eq!(told, ctl.snapshot(), "{intent:?}");
-            assert_eq!(source(&told), ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger, fade }, "{intent:?}");
+            assert_eq!(source(&told), ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger, fade, sync: 0 }, "{intent:?}");
         }
     }
 
@@ -844,8 +851,8 @@ type = "envelope"
                 }
             }
         }
-        // An LFO's four (in a group, and in the lane), an envelope's four, a macro's one and a step sequencer's four.
-        assert_eq!(changed, 4 + 4 + 4 + 1 + 4);
+        // An LFO's five (in a group, and in the lane), an envelope's four, a macro's one and a step sequencer's five.
+        assert_eq!(changed, 5 + 5 + 4 + 1 + 5);
     }
 
     #[test]
@@ -872,7 +879,7 @@ type = "envelope"
             told.apply(&applied).unwrap();
             assert_eq!(told, ctl.snapshot(), "{intent:?}");
         }
-        assert_eq!(source(&told), ModulatorSource::Steps { values, length: 7, rate: 3.5, glide: 0.25, retrigger: false });
+        assert_eq!(source(&told), ModulatorSource::Steps { values, length: 7, rate: 3.5, glide: 0.25, retrigger: false, sync: 0 });
     }
 
     #[test]
@@ -907,6 +914,28 @@ type = "envelope"
             assert!(error.contains(why), "{event:?}: {error}");
             assert_eq!(told, before, "{event:?}");
         }
+    }
+
+    #[test]
+    fn a_sync_that_is_no_place_in_the_list_of_note_lengths_does_not_fit_and_changes_nothing() {
+        let ctl = controller(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\n[[instrument.modulator]]\ntype = \"steps\"\n[[instrument.modulator]]\ntype = \"envelope\"\n",
+            None,
+        );
+        let mut told = ctl.snapshot();
+        let [lfo, sequencer, envelope] = [0, 1, 2].map(|i| ctl.model.instruments[0].modulators[i].node);
+        let before = told.clone();
+        for node in [lfo, sequencer] {
+            for value in [2.5, -1.0, 17.0, f32::NAN] {
+                let event = Event::ModulatorFieldSet { node, field: ModulatorField::Sync, value };
+                let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();
+                assert!(error.contains("is not a note length"), "{event:?}: {error}");
+                assert_eq!(told, before, "{event:?}");
+            }
+        }
+        let error = told.apply(&applied(1, Event::ModulatorFieldSet { node: envelope, field: ModulatorField::Sync, value: 3.0 })).unwrap_err().to_string();
+        assert!(error.contains("does not apply"), "an envelope does not follow the tempo: {error}");
+        assert_eq!(told, before);
     }
 
     #[test]

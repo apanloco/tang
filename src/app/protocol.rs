@@ -469,13 +469,22 @@ mod typescript {
         names.join(", ")
     }
 
-    /// What a new step sequencer starts as, as a TypeScript object: its steps, its length, its rate, its glide and whether a note starts it again
-    /// (`ModSourceSlot::new_steps`).
+    /// What a new step sequencer starts as, as a TypeScript object: its steps, its length, its rate, its glide, whether a note starts it again and its note length to follow
+    /// the tempo by (`ModSourceSlot::new_steps`).
     fn new_steps() -> String {
         use crate::app::model::ModSourceSlot;
-        let ModSourceSlot::Steps { values, length, rate, glide, retrigger } = ModSourceSlot::new_steps() else { unreachable!("a new step sequencer is one") };
+        let ModSourceSlot::Steps { values, length, rate, glide, retrigger, sync } = ModSourceSlot::new_steps() else { unreachable!("a new step sequencer is one") };
         let values: Vec<String> = values.iter().map(|value| value.to_string()).collect();
-        format!("{{ values: [{}], length: {length}, rate: {rate}, glide: {glide}, retrigger: {retrigger} }}", values.join(", "))
+        format!("{{ values: [{}], length: {length}, rate: {rate}, glide: {glide}, retrigger: {retrigger}, sync: {sync} }}", values.join(", "))
+    }
+
+    /// The note lengths that a modulator can follow the tempo by (`SYNC_DIVISIONS`), as the lines of a TypeScript array of objects: the name a person reads and a session
+    /// file says, and how many beats of the tempo it is, written as the shortest number that is the 32 bits the controller has.
+    fn sync_divisions() -> String {
+        crate::app::model::SYNC_DIVISIONS
+            .iter()
+            .map(|&(name, beats)| format!("  {{ name: {}, beats: {beats} }},\n", serde_json::to_string(name).unwrap()))
+            .collect()
     }
 
     /// The entries of a TypeScript object that says how each setting of a modulator is turned, `"linear"` or `"log"`
@@ -591,6 +600,9 @@ mod typescript {
                  export const BPM_RANGE: readonly [number, number] = [{BPM_MIN}, {BPM_MAX}];\n\n\
                  /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */\n\
                  export const WAVEFORMS: readonly Waveform[] = [{}];\n\n\
+                 /** The note lengths that a cycle of an LFO, or a step of a step sequencer, can follow the tempo by (`SYNC_DIVISIONS`): the name a person reads and a session file says, and how many beats of the tempo it is. A modulator's `sync` is a place in this list counted from 1, and 0 is none, which is called `SYNC_FREE`. */\n\
+                 export const SYNC_DIVISIONS: readonly {{ name: string; beats: number }}[] = [\n{}];\n\
+                 export const SYNC_FREE = {};\n\n\
                  /** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */\n\
                  export const SCALE_ROOTS: readonly string[] = [{}];\n\n\
                  /** The kinds of scale, in the order the TUI lists them: the name a person reads, the short name that `setScale` and a session file say, and the semitones above the root of each of its notes (`scale::SCALES`). */\n\
@@ -620,6 +632,8 @@ mod typescript {
                 crate::app::model::PatternState::empty(120.0).length_beats,
                 new_steps(),
                 waveform_names(),
+                sync_divisions(),
+                serde_json::to_string(crate::app::model::FREE).unwrap(),
                 scale_root_names(),
                 scale_kinds(),
                 crate::session::NodeUi::LIMIT,
@@ -687,7 +701,7 @@ mod typescript {
         // (Not `0.009999999776482582`: an f32 is written as the shortest number that is it.)
         assert_eq!(
             range_entries(&ModulatorField::ALL, ModulatorField::range),
-            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n  glide: [0, 1],\n  length: [1, 16],\n  retrigger: [0, 1],\n  fade: [0, 5],\n"
+            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n  glide: [0, 1],\n  length: [1, 16],\n  retrigger: [0, 1],\n  fade: [0, 5],\n  sync: [0, 16],\n"
         );
     }
 
@@ -695,31 +709,43 @@ mod typescript {
     fn the_taper_of_a_modulator_setting_is_written_for_every_setting() {
         assert_eq!(
             taper_entries(),
-            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n  glide: \"linear\",\n  length: \"linear\",\n  retrigger: \"linear\",\n  fade: \"linear\",\n"
+            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n  glide: \"linear\",\n  length: \"linear\",\n  retrigger: \"linear\",\n  fade: \"linear\",\n  sync: \"linear\",\n"
         );
     }
 
     #[test]
     fn what_a_new_modulator_starts_as_is_written_for_every_setting() {
         // (The retrigger is a switch that an LFO and a step sequencer both have, off for the one and on for the other: the table has the first that has it, the LFO's, and
-        // the page's switch of a step sequencer starts from `NEW_STEPS`. The fade is an LFO's alone.)
+        // the page's switch of a step sequencer starts from `NEW_STEPS`. The fade is an LFO's alone, and the sync is both's, none for either.)
         assert_eq!(
             default_entries(),
-            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n  glide: 0,\n  length: 16,\n  retrigger: 0,\n  fade: 0,\n"
+            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n  glide: 0,\n  length: 16,\n  retrigger: 0,\n  fade: 0,\n  sync: 0,\n"
         );
     }
 
     #[test]
     fn the_settings_that_are_whole_numbers_are_listed_by_their_wire_names() {
-        assert_eq!(whole_fields(), "\"waveform\", \"length\", \"retrigger\"");
+        assert_eq!(whole_fields(), "\"waveform\", \"length\", \"retrigger\", \"sync\"");
     }
 
     #[test]
     fn what_a_new_step_sequencer_starts_as_is_written_whole() {
         assert_eq!(
             new_steps(),
-            "{ values: [-1, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], length: 16, rate: 8, glide: 0, retrigger: true }"
+            "{ values: [-1, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 }"
         );
+    }
+
+    #[test]
+    fn the_note_lengths_are_written_with_their_names_and_beats_in_the_order_of_their_place_and_free_is_what_none_is_called() {
+        let written = sync_divisions();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines.len(), crate::app::model::SYNC_DIVISIONS.len());
+        assert_eq!(lines[0], "  { name: \"4 bars\", beats: 16 },");
+        assert_eq!(lines[7], "  { name: \"1/4\", beats: 1 },");
+        assert_eq!(lines[5], "  { name: \"1/2 triplet\", beats: 1.3333334 },", "a number is written as the shortest one that is its 32 bits");
+        assert_eq!(lines[15], "  { name: \"1/32\", beats: 0.125 },");
+        assert_eq!(crate::app::model::FREE, "free");
     }
 
     #[test]

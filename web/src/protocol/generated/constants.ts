@@ -31,6 +31,7 @@ export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, nu
   length: [1, 16],
   retrigger: [0, 1],
   fade: [0, 5],
+  sync: [0, 16],
 };
 
 /** What each setting of a modulator is when the modulator is new (`ModSourceSlot::new_lfo`, `new_envelope`): where a double click puts a knob. */
@@ -46,6 +47,7 @@ export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {
   length: 16,
   retrigger: 0,
   fade: 0,
+  sync: 0,
 };
 
 /** How a setting of a modulator is turned: a rate and a time run over decades, which a knob turns by ratios (`ModulatorField::taper`). */
@@ -61,10 +63,11 @@ export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = 
   length: "linear",
   retrigger: "linear",
   fade: "linear",
+  sync: "linear",
 };
 
 /** The settings of a modulator whose value is a whole number, which the controller rounds it to: a place in a list, a count, a switch (`ModulatorField::is_whole`). */
-export const MODULATOR_WHOLE_FIELDS: readonly ModulatorField[] = ["waveform", "length", "retrigger"];
+export const MODULATOR_WHOLE_FIELDS: readonly ModulatorField[] = ["waveform", "length", "retrigger", "sync"];
 
 /** The lowest and the highest value of each setting of a pattern: what the controller clamps to (`PatternField::range`); a switch is 0 or 1. */
 export const PATTERN_FIELD_RANGES: Record<PatternField, readonly [number, number]> = {
@@ -92,13 +95,34 @@ export const MAX_STEPS = 16;
 export const STEP_RANGE: readonly [number, number] = [-1, 1];
 
 /** What a new step sequencer starts as (`ModSourceSlot::new_steps`): the staircase of its steps, how many are in use, its rate (not the 1 of an LFO that the defaults of the settings say), its glide and whether a note starts it again. */
-export const NEW_STEPS = { values: [-1, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], length: 16, rate: 8, glide: 0, retrigger: true } as const;
+export const NEW_STEPS = { values: [-1, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 } as const;
 
 /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */
 export const BPM_RANGE: readonly [number, number] = [20, 300];
 
 /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */
 export const WAVEFORMS: readonly Waveform[] = ["sine", "triangle", "saw", "square", "random", "smooth"];
+
+/** The note lengths that a cycle of an LFO, or a step of a step sequencer, can follow the tempo by (`SYNC_DIVISIONS`): the name a person reads and a session file says, and how many beats of the tempo it is. A modulator's `sync` is a place in this list counted from 1, and 0 is none, which is called `SYNC_FREE`. */
+export const SYNC_DIVISIONS: readonly { name: string; beats: number }[] = [
+  { name: "4 bars", beats: 16 },
+  { name: "2 bars", beats: 8 },
+  { name: "1 bar", beats: 4 },
+  { name: "1/2 dotted", beats: 3 },
+  { name: "1/2", beats: 2 },
+  { name: "1/2 triplet", beats: 1.3333334 },
+  { name: "1/4 dotted", beats: 1.5 },
+  { name: "1/4", beats: 1 },
+  { name: "1/4 triplet", beats: 0.6666667 },
+  { name: "1/8 dotted", beats: 0.75 },
+  { name: "1/8", beats: 0.5 },
+  { name: "1/8 triplet", beats: 0.33333334 },
+  { name: "1/16 dotted", beats: 0.375 },
+  { name: "1/16", beats: 0.25 },
+  { name: "1/16 triplet", beats: 0.16666667 },
+  { name: "1/32", beats: 0.125 },
+];
+export const SYNC_FREE = "free";
 
 /** The roots a scale can have by pitch class (0 C to 11 B), as `setScale` and a session file name them (`scale::NOTE_NAMES`). */
 export const SCALE_ROOTS: readonly string[] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];

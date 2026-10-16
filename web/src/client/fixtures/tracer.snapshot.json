@@ -446,6 +446,7 @@
           "fade": 0.0,
           "rate": 0.5,
           "retrigger": false,
+          "sync": 0,
           "type": "lfo",
           "waveform": "sine"
         }

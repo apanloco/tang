@@ -38,8 +38,8 @@ use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
-    BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
-    ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
+    BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
+    ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
 use crate::piano_filter::PianoMode;
@@ -1566,6 +1566,16 @@ impl State {
                 Some(intent) => intent,
                 None => return,
             },
+            // The note lengths are a list that has ends, as the choices of a plugin's enum have: one along, and no further than the first and the last.
+            Some(ModulatorRow::Sync) => {
+                let Some(now) = m.source.setting(ModulatorField::Sync) else { return };
+                let (min, max) = ModulatorField::Sync.range();
+                let next = (now + direction.signum()).clamp(min, max);
+                if next == now {
+                    return;
+                }
+                Intent::SetModulatorField { node: m.node, field: ModulatorField::Sync, value: next }
+            }
             // A step goes by a fraction of the range it can be set over, -1 to 1.
             Some(ModulatorRow::Step(_)) => match m.row_intent(row, |value| value + direction * fraction * (STEP_MAX - STEP_MIN)) {
                 Some(intent) => intent,
@@ -4076,15 +4086,17 @@ fn modulator_field_label(field: ModulatorField) -> &'static str {
         ModulatorField::Length => "Length (steps)",
         ModulatorField::Retrigger => "Retrigger",
         ModulatorField::Fade => "Fade (s)",
+        ModulatorField::Sync => "Sync",
     }
 }
 
-/// How a row of a pane is drawn besides what it says. Only the steps of a step sequencer have a look of their own.
+/// How a row of a pane is drawn besides what it says. Only the steps of a step sequencer, and the rate of a modulator that follows the tempo, have a look of their own.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum RowLook {
     #[default]
     Normal,
-    /// A step that the sequencer does not go through: it is past its length (it keeps its value for when the sequencer is longer).
+    /// A step that the sequencer does not go through: it is past its length (it keeps its value for when the sequencer is longer); or the rate of a modulator that follows the tempo
+    /// (it keeps it for when it is free again).
     Unused,
     /// The step that the sequencer is at.
     Playing,
@@ -4132,12 +4144,15 @@ fn modulator_pane(m: &ModulatorSlot, playhead: Option<usize>) -> (String, Vec<Pa
         ModSourceSlot::Steps { length, .. } => length,
         _ => 0,
     };
+    // (A modulator that follows the tempo does not go by its rate, which it keeps for when it is free again.)
+    let follows_tempo = m.source.setting(ModulatorField::Sync).is_some_and(|sync| sync > 0.0);
     let (rows, looks) = (0..modulator_param_len(m))
         .filter_map(|position| {
             let modulator_row = modulator_row(m, position)?;
             let look = match modulator_row {
                 ModulatorRow::Step(step) if Some(step) == playhead => RowLook::Playing,
                 ModulatorRow::Step(step) if step >= steps_in_use => RowLook::Unused,
+                ModulatorRow::Setting(ModulatorField::Rate) if follows_tempo => RowLook::Unused,
                 _ => RowLook::Normal,
             };
             let slot = match modulator_row {
@@ -4160,6 +4175,12 @@ fn modulator_pane(m: &ModulatorSlot, playhead: Option<usize>) -> (String, Vec<Pa
                 ModulatorRow::Retrigger => {
                     let value = m.source.setting(ModulatorField::Retrigger)?;
                     row(modulator_field_label(ModulatorField::Retrigger).to_string(), position, 0.0, 1.0, 1.0, value, ParamKind::Enum(vec!["off".to_string(), "on".to_string()]))
+                }
+                ModulatorRow::Sync => {
+                    let (min, max) = ModulatorField::Sync.range();
+                    let value = m.source.setting(ModulatorField::Sync)?;
+                    let names = std::iter::once(FREE).chain(SYNC_DIVISIONS.iter().map(|&(name, _)| name)).map(str::to_string).collect();
+                    row(modulator_field_label(ModulatorField::Sync).to_string(), position, min, max, 0.0, value, ParamKind::Enum(names))
                 }
                 ModulatorRow::Step(step) => {
                     let value = *m.source.steps()?.get(step)?;
@@ -4195,7 +4216,7 @@ fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
             let target = m.targets.get(target)?;
             (target.depth, format!("{} depth", target.param_name), DEPTH_MIN, DEPTH_MAX)
         }
-        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Separator => return None,
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Sync | ModulatorRow::Separator => return None,
     };
     Some(EditState { input: TextInputState::new(&format!("{value:.places$}")), param_name: name, param_min: min, param_max: max })
 }
@@ -4684,6 +4705,7 @@ mod tests {
                 rate: 1.0,
                 retrigger: false,
                 fade: 0.0,
+                sync: 0,
             },
             targets: vec![ModTargetSlot {
                 edge: crate::app::model::EdgeId(0),
@@ -4698,10 +4720,12 @@ mod tests {
             output: None,
             position: None,
         };
-        // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Retrigger, 4=Fade, 5=Targets separator, 6=first depth.
-        assert_eq!(modulator_param_range(&m, 4), Some((0.0, 5.0)), "the fade is a number too");
-        assert_eq!(modulator_param_range(&m, 6), Some((-1.0, 1.0)));
-        let edit = modulator_edit_state(&m, 6).expect("depth row is editable");
+        // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Sync, 4=Retrigger, 5=Fade, 6=Targets separator, 7=first depth.
+        assert_eq!(modulator_param_range(&m, 5), Some((0.0, 5.0)), "the fade is a number too");
+        assert_eq!(modulator_param_range(&m, 3), None, "the note length is a choice");
+        assert!(modulator_edit_state(&m, 3).is_none(), "and nothing to type");
+        assert_eq!(modulator_param_range(&m, 7), Some((-1.0, 1.0)));
+        let edit = modulator_edit_state(&m, 7).expect("depth row is editable");
         assert_eq!((edit.param_min, edit.param_max), (-1.0, 1.0));
     }
 }

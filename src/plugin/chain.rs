@@ -597,15 +597,17 @@ pub fn steps_output(values: &[f32; MAX_STEPS], length: usize, position: f32, gli
 /// Modulation source: an LFO, an ADSR envelope, a learned MIDI control, a macro, or a step sequencer.
 #[derive(Debug, Clone)]
 pub enum ModSource {
-    /// A low-frequency oscillator: `rate` cycles a second of `waveform`. With `retrigger` on a note puts it at the start of its wave again (and, if the wave is a random one, takes
-    /// the next number). What it puts out comes in from nothing over `fade` seconds (none if it is 0) from every note, whether or not it retriggers; `age` is how many seconds ago the
-    /// last note was (infinite before the first: it rests at full until a note).
+    /// A low-frequency oscillator: `rate` cycles a second of `waveform`, or, if `sync` is not 0, a cycle every `sync` beats of the tempo (`rate` is kept for when it is 0 again). With
+    /// `retrigger` on a note puts it at the start of its wave again (and, if the wave is a random one, takes the next number). What it puts out comes in from nothing over `fade`
+    /// seconds (none if it is 0) from every note, whether or not it retriggers; `age` is how many seconds ago the last note was (infinite before the first: it rests at full until a
+    /// note).
     Lfo {
         waveform: LfoWaveform,
         rate: f32,
         phase: f32,
         retrigger: bool,
         fade: f32,
+        sync: f32,
         age: f32,
     },
     Envelope {
@@ -630,15 +632,16 @@ pub enum ModSource {
     Macro {
         value: f32,
     },
-    /// A step sequencer: up to `MAX_STEPS` values from -1 to 1 that it goes through one after the other, `rate` steps a second, the first `length` of them and
-    /// round again (`steps_output` says what each moment of it puts out). A note starts it again at the first step if `retrigger` is on. It drives its targets as
-    /// an LFO does, around what the user set.
+    /// A step sequencer: up to `MAX_STEPS` values from -1 to 1 that it goes through one after the other, `rate` steps a second (or, if `sync` is not 0, a step every `sync` beats of
+    /// the tempo), the first `length` of them and round again (`steps_output` says what each moment of it puts out). A note starts it again at the first step if `retrigger` is on. It
+    /// drives its targets as an LFO does, around what the user set.
     Steps {
         values: [f32; MAX_STEPS],
         length: usize,
         rate: f32,
         glide: f32,
         retrigger: bool,
+        sync: f32,
         /// Where it is: the whole part is the step, the fraction how far into it.
         position: f32,
     },
@@ -647,7 +650,7 @@ pub enum ModSource {
 impl ModSource {
     /// An LFO that runs free, as every one did before it had a key: no note puts it at the start of its wave again and it does not fade in.
     pub fn lfo(waveform: LfoWaveform, rate: f32) -> ModSource {
-        ModSource::Lfo { waveform, rate, phase: 0.0, retrigger: false, fade: 0.0, age: f32::INFINITY }
+        ModSource::Lfo { waveform, rate, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: f32::INFINITY }
     }
 
     /// The same, with whether a note starts an LFO again and how many seconds it takes to come in after one (none for 0). Any other source is as it was.
@@ -655,6 +658,14 @@ impl ModSource {
         if let ModSource::Lfo { retrigger, fade, .. } = &mut self {
             *retrigger = key_retrigger;
             *fade = key_fade;
+        }
+        self
+    }
+
+    /// The same, with how many beats of the tempo a cycle of an LFO or a step of a step sequencer is (0: it goes at its own rate). Any other source is as it was.
+    pub fn with_sync(mut self, beats: f32) -> ModSource {
+        if let ModSource::Lfo { sync, .. } | ModSource::Steps { sync, .. } = &mut self {
+            *sync = beats;
         }
         self
     }
@@ -673,6 +684,17 @@ impl ModSource {
             *rate = new;
         }
     }
+}
+
+/// How many cycles (or steps) a second there are at `bpm` beats a minute when each of them is `beats` beats long.
+pub fn rate_at_tempo(bpm: f32, beats: f32) -> f32 {
+    bpm / (60.0 * beats)
+}
+
+/// How fast a source that goes `rate` cycles (or steps) a second goes at `bpm` beats a minute, if each of them takes `sync` beats of the tempo instead (0: it goes at its own rate).
+fn effective_rate(rate: f32, sync: f32, bpm: f32) -> f32 {
+    // (A `sync` that is no number is none: the comparison is false for it.)
+    if sync > 0.0 { rate_at_tempo(bpm, sync) } else { rate }
 }
 
 /// A block-rate modulator with a source (LFO or Envelope) and targets.
@@ -719,10 +741,10 @@ impl Modulator {
         self
     }
 
-    /// Advance the modulator by one buffer. For envelopes, processes MIDI note events.
-    fn tick(&mut self, buffer_size: usize, midi_events: &[(u64, [u8; 3])]) {
+    /// Advance the modulator by one buffer, at `bpm` beats a minute. For envelopes, processes MIDI note events.
+    fn tick(&mut self, buffer_size: usize, midi_events: &[(u64, [u8; 3])], bpm: f32) {
         match &mut self.source {
-            ModSource::Lfo { waveform, rate, phase, retrigger, fade, age } => {
+            ModSource::Lfo { waveform, rate, phase, retrigger, fade, sync, age } => {
                 // A note (a note-on with a velocity, on any channel: the lane's or a member's, as the step sequencer's) starts the fade again, and the wave too if it retriggers.
                 let note = midi_events.iter().any(|&(_frame, bytes)| note_on_of(bytes).is_some());
                 if note {
@@ -735,7 +757,7 @@ impl Modulator {
                     *phase = 0.0;
                     self.cycle = self.cycle.wrapping_add(1);
                 } else {
-                    let phase_inc = *rate * buffer_size as f32 / self.sample_rate;
+                    let phase_inc = effective_rate(*rate, *sync, bpm) * buffer_size as f32 / self.sample_rate;
                     let turned = *phase + phase_inc;
                     // Every time round is a cycle, and a rate that makes more than one in a buffer counts them all.
                     self.cycle = self.cycle.wrapping_add(turned as u32);
@@ -843,13 +865,13 @@ impl Modulator {
                 self.last_output = *value;
             }
             ModSource::Macro { value } => self.last_output = *value,
-            ModSource::Steps { values, length, rate, glide, retrigger, position } => {
+            ModSource::Steps { values, length, rate, glide, retrigger, sync, position } => {
                 let length = (*length).clamp(1, MAX_STEPS);
                 if *retrigger && midi_events.iter().any(|&(_frame, bytes)| note_on_of(bytes).is_some()) {
                     // A note puts it at the first step, which this buffer puts out.
                     *position = 0.0;
                 } else {
-                    *position = (*position + *rate * buffer_size as f32 / self.sample_rate).rem_euclid(length as f32);
+                    *position = (*position + effective_rate(*rate, *sync, bpm) * buffer_size as f32 / self.sample_rate).rem_euclid(length as f32);
                 }
                 if !position.is_finite() {
                     *position = 0.0;
@@ -2379,6 +2401,12 @@ pub enum GraphCommand {
         retrigger: bool,
         fade: f32,
     },
+    /// Set how many beats of the tempo a cycle of an LFO or a step of a step sequencer is, or 0 for neither: it goes at its own rate again. Where it is stays.
+    SetModulatorSync {
+        location: ModulatorLocation,
+        index: usize,
+        beats: f32,
+    },
     /// Insert a new modulator into the lane (modulators are lane-scoped).
     InsertModulator {
         inst: usize,
@@ -2535,7 +2563,7 @@ pub enum GraphCommand {
         inst_a: usize,
         inst_b: usize,
     },
-    /// Set the global BPM (applied to all pattern players).
+    /// Set the global BPM (applied to all pattern players, and what the modulators that follow the tempo go by).
     SetGlobalBpm {
         bpm: f32,
     },
@@ -2652,6 +2680,9 @@ impl NoteMap {
 /// How many beats of the metronome a recording is counted in with, before it takes the length of the pattern (the page tells it as `PATTERN_COUNT_IN_BEATS`).
 pub const COUNT_IN_BEATS: f32 = 4.0;
 
+/// The tempo a graph begins at, in beats a minute: the one that a session begins at (`app::model::DEFAULT_BPM`), which the audio thread has until it is told another.
+pub const DEFAULT_BPM: f32 = 120.0;
+
 /// Per-instrument pattern recorder and player.
 struct PatternPlayer {
     pattern: Pattern,
@@ -2733,7 +2764,7 @@ impl PatternPlayer {
             length_beats: 4.0,
             looping: true,
             in_key: false,
-            bpm: 120.0,
+            bpm: DEFAULT_BPM,
             pattern_tx: None,
             inst_index: 0,
             count_in_beats: COUNT_IN_BEATS,
@@ -3327,13 +3358,14 @@ impl InstrumentLane {
 
     /// Process this instrument + effect chain, writing output to `inst_out`.
     /// `inst_out` must have `num_channels` vecs, each with `frames` length.
-    /// `scale` is the current piano scale for in-key pattern transposition.
+    /// `scale` is the current piano scale for in-key pattern transposition, and `bpm` the tempo that the modulators that follow it go by.
     fn process(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
         inst_out: &mut [Vec<f32>],
         num_channels: usize,
         scale: ScaleSetting,
+        bpm: f32,
         telemetry: Option<&Telemetry>,
     ) -> anyhow::Result<()> {
         // Filter MIDI by range
@@ -3379,7 +3411,7 @@ impl InstrumentLane {
         let buffer_size = inst_out.first().map(|b| b.len()).unwrap_or(0);
         if buffer_size > 0 {
             for m in &mut self.modulators {
-                m.tick(buffer_size, effective_events);
+                m.tick(buffer_size, effective_events, bpm);
             }
             apply_cross_mod(&mut self.modulators, &mut self.cross_mod_scratch, telemetry);
             apply_modulators_to_chain(
@@ -3741,6 +3773,8 @@ pub struct AudioGraph {
     master_meter: Meter,
     /// The seed that the next modulator to come in is given (`next_modulator_seed`).
     modulator_seeds: u32,
+    /// The tempo, in beats a minute: what the modulators that follow it go by (`SetGlobalBpm`).
+    bpm: f32,
 }
 
 impl AudioGraph {
@@ -3770,6 +3804,7 @@ impl AudioGraph {
             telemetry: None,
             master_meter: Meter::new(telemetry::MASTER),
             modulator_seeds: 0,
+            bpm: DEFAULT_BPM,
         }
     }
 
@@ -4566,6 +4601,11 @@ impl AudioGraph {
                         *f = fade;
                     }
                 }
+                GraphCommand::SetModulatorSync { location, index, beats } => {
+                    if let Some(ModSource::Lfo { sync, .. } | ModSource::Steps { sync, .. }) = self.modulator_mut(location, index).map(|m| &mut m.source) {
+                        *sync = beats;
+                    }
+                }
                 GraphCommand::InsertModulator {
                     inst,
                     index,
@@ -5023,6 +5063,10 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetGlobalBpm { bpm } => {
+                    // (A tempo that is no number, or none, is not one for a modulator to follow: it goes on at the one it had.)
+                    if bpm.is_finite() && bpm > 0.0 {
+                        self.bpm = bpm;
+                    }
                     for inst in &mut self.instruments {
                         inst.pattern.bpm = bpm;
                     }
@@ -5136,7 +5180,7 @@ impl AudioGraph {
                     &mut self.group_midi_scratch,
                 );
                 for m in &mut self.groups[gi].modulators {
-                    m.tick(frames, &self.group_midi_scratch);
+                    m.tick(frames, &self.group_midi_scratch, self.bpm);
                 }
                 apply_cross_mod(&mut self.groups[gi].modulators, &mut self.group_cross_mod_scratch, self.telemetry.as_deref());
                 if let Some(telemetry) = &self.telemetry {
@@ -5181,7 +5225,7 @@ impl AudioGraph {
                 buf.fill(0.0);
             }
 
-            inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale, self.telemetry.as_deref())?;
+            inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale, self.bpm, self.telemetry.as_deref())?;
             // What the lane is heard at: its own mute and solo (its group's mute is the bus's). The meter is after it, as it is after the volume.
             let group_solo = inst.group.and_then(|g| self.groups.get(g)).is_some_and(|g| g.solo);
             let heard = if !inst.muted && (!any_solo || inst.solo || group_solo) { 1.0 } else { 0.0 };
@@ -6483,7 +6527,7 @@ mod tests {
         let mut m = lfo_that_goes_round_in(LfoWaveform::Random, 8, 5);
         for cycle in 0..3 {
             for buffer in 1..=8 {
-                m.tick(FRAMES, &[]);
+                m.tick(FRAMES, &[], DEFAULT_BPM);
                 // (The eighth buffer of a cycle wraps the phase: the LFO is in the next cycle by then.)
                 let now = if buffer == 8 { cycle + 1 } else { cycle };
                 assert_eq!(m.last_output, noise(5, now), "cycle {cycle}, buffer {buffer}");
@@ -6496,7 +6540,7 @@ mod tests {
         let mut m = lfo_that_goes_round_in(LfoWaveform::Smooth, 8, 5);
         let mut seen = Vec::new();
         for _ in 0..16 {
-            m.tick(FRAMES, &[]);
+            m.tick(FRAMES, &[], DEFAULT_BPM);
             seen.push(m.last_output);
         }
         assert_eq!(seen[7], noise(5, 1), "the first cycle ends at the number of the second");
@@ -6511,9 +6555,9 @@ mod tests {
     fn an_lfo_that_goes_round_more_than_once_in_a_buffer_counts_every_cycle() {
         // 2.5 turns a buffer: 2 cycles are over after the first, and 5 after the second.
         let mut m = Modulator::new(lfo(LfoWaveform::Random, 2.5 * 48000.0 / FRAMES as f32), 48000.0).with_seed(5);
-        m.tick(FRAMES, &[]);
+        m.tick(FRAMES, &[], DEFAULT_BPM);
         assert_eq!(m.last_output, noise(5, 2));
-        m.tick(FRAMES, &[]);
+        m.tick(FRAMES, &[], DEFAULT_BPM);
         assert_eq!(m.last_output, noise(5, 5));
     }
 
@@ -6522,13 +6566,13 @@ mod tests {
         // Turning the rate moves the phase on from where it is, and the cycle goes on counting.
         let mut m = lfo_that_goes_round_in(LfoWaveform::Random, 8, 5);
         for _ in 0..8 {
-            m.tick(FRAMES, &[]);
+            m.tick(FRAMES, &[], DEFAULT_BPM);
         }
         if let ModSource::Lfo { rate, .. } = &mut m.source {
             *rate *= 2.0;
         }
         for _ in 0..4 {
-            m.tick(FRAMES, &[]);
+            m.tick(FRAMES, &[], DEFAULT_BPM);
         }
         assert_eq!(m.last_output, noise(5, 2), "the second cycle is over at the fourth buffer of the new rate");
     }
@@ -6588,13 +6632,13 @@ mod tests {
     #[test]
     fn a_random_lfo_that_retriggers_takes_the_next_number_with_every_note() {
         let mut m = Modulator::new(keyed_lfo(LfoWaveform::Random, once_in_eight_buffers(), true, 0.0), 48000.0).with_seed(5);
-        m.tick(FRAMES, &[]);
+        m.tick(FRAMES, &[], DEFAULT_BPM);
         assert_eq!(m.last_output, noise(5, 0));
-        m.tick(FRAMES, &[note_on(60)]);
+        m.tick(FRAMES, &[note_on(60)], DEFAULT_BPM);
         assert_eq!(m.last_output, noise(5, 1), "a note is the start of a new cycle: the next number");
-        m.tick(FRAMES, &[]);
+        m.tick(FRAMES, &[], DEFAULT_BPM);
         assert_eq!(m.last_output, noise(5, 1), "which it holds");
-        m.tick(FRAMES, &[note_on(60)]);
+        m.tick(FRAMES, &[note_on(60)], DEFAULT_BPM);
         assert_eq!(m.last_output, noise(5, 2));
     }
 
@@ -6637,7 +6681,7 @@ mod tests {
             let mut m = Modulator::new(ModSource::lfo(LfoWaveform::Sine, 3.7), 48000.0);
             (0..40)
                 .map(|_| {
-                    m.tick(FRAMES, events);
+                    m.tick(FRAMES, events, DEFAULT_BPM);
                     m.last_output
                 })
                 .collect::<Vec<f32>>()
@@ -6703,6 +6747,161 @@ mod tests {
         assert_eq!(g.rig.read(output), 0.0, "a note starts the fade again, at nothing");
         g.rig.process(&[]);
         assert!(close(g.rig.read(output), -0.25 * 0.25), "and the wave went on through it (three eighths, not one): {}", g.rig.read(output));
+    }
+
+    // -- A modulator that follows the tempo --
+
+    /// A saw that goes `rate` cycles a second of its own, or a cycle in `beats` beats of the tempo if that is not 0.
+    fn synced_saw(rate: f32, beats: f32) -> ModSource {
+        ModSource::lfo(LfoWaveform::Saw, rate).with_sync(beats)
+    }
+
+    /// What a saw that has gone round `cycles_a_second` times a second for `buffers` buffers puts out: its phase, as a number from -1 to 1.
+    fn saw_after(cycles_a_second: f32, buffers: usize) -> f32 {
+        lfo_phase(cycles_a_second, buffers) * 2.0 - 1.0
+    }
+
+    #[test]
+    fn an_lfo_that_follows_the_tempo_goes_a_cycle_in_the_beats_it_is_given_and_not_at_its_own_rate() {
+        let mut rig = Rig::new();
+        // A sixteenth note (a quarter of a beat) at the 120 beats a minute that a graph begins at is 8 cycles a second. The 1 that the LFO has of its own is not what it goes at.
+        let output = rig.lane_modulator(0, synced_saw(1.0, 0.25));
+        for _ in 0..30 {
+            rig.process(&[]);
+        }
+        assert!(close(rig.read(output), saw_after(8.0, 30)), "{} for {}", rig.read(output), saw_after(8.0, 30));
+        // Two beats take it as long as a quarter of a beat takes it eight times over, at any tempo.
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, synced_saw(1.0, 2.0));
+        for _ in 0..30 {
+            rig.process(&[]);
+        }
+        assert!(close(rig.read(output), saw_after(1.0, 30)), "{}", rig.read(output));
+    }
+
+    #[test]
+    fn an_lfo_that_follows_the_tempo_goes_by_it_as_it_changes_and_one_that_does_not_goes_on() {
+        let mut rig = Rig::new();
+        let following = rig.lane_modulator(0, synced_saw(1.0, 0.25));
+        let free = rig.lane_modulator(1, lfo(LfoWaveform::Saw, 8.0));
+        for _ in 0..10 {
+            rig.process(&[]);
+        }
+        // Half the tempo, half the rate: the first ten buffers were at 8 cycles a second and the next ten are at 4.
+        rig.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 60.0 }).unwrap();
+        for _ in 0..10 {
+            rig.process(&[]);
+        }
+        let expected = (lfo_phase(8.0, 10) + lfo_phase(4.0, 10)) % 1.0 * 2.0 - 1.0;
+        assert!(close(rig.read(following), expected), "{} for {expected}", rig.read(following));
+        assert!(close(rig.read(free), saw_after(8.0, 20)), "{}", rig.read(free));
+    }
+
+    #[test]
+    fn a_tempo_that_is_no_number_or_is_none_is_not_one_for_an_lfo_to_follow() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, synced_saw(1.0, 0.25));
+        for _ in 0..5 {
+            rig.process(&[]);
+        }
+        for bpm in [f32::NAN, f32::INFINITY, 0.0, -90.0] {
+            rig.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm }).unwrap();
+            rig.process(&[]);
+        }
+        // (It went on at the 120 it had: nine buffers at 8 cycles a second, and not at a rate that is no number, which would have put it at no number at all.)
+        assert!(close(rig.read(output), saw_after(8.0, 9)), "{}", rig.read(output));
+    }
+
+    #[test]
+    fn the_beats_an_lfo_goes_a_cycle_in_are_set_by_a_command_and_it_goes_at_its_own_rate_again_when_they_are_none() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, lfo(LfoWaveform::Saw, 4.0));
+        for _ in 0..5 {
+            rig.process(&[]);
+        }
+        let sync = |beats| GraphCommand::SetModulatorSync { location: ModulatorLocation::Lane(0), index: 0, beats };
+        rig.cmd_tx.send(sync(0.25)).unwrap();
+        for _ in 0..5 {
+            rig.process(&[]);
+        }
+        rig.cmd_tx.send(sync(0.0)).unwrap();
+        for _ in 0..5 {
+            rig.process(&[]);
+        }
+        // Five buffers at its own 4 cycles a second, five at the tempo's 8 and five at its own again, from where it was each time.
+        let expected = (lfo_phase(4.0, 5) + lfo_phase(8.0, 5) + lfo_phase(4.0, 5)) % 1.0 * 2.0 - 1.0;
+        assert!(close(rig.read(output), expected), "{} for {expected}", rig.read(output));
+    }
+
+    #[test]
+    fn the_beats_of_a_modulator_that_is_neither_an_lfo_nor_a_step_sequencer_are_not_set() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, adsr(0.01));
+        rig.cmd_tx.send(GraphCommand::SetModulatorSync { location: ModulatorLocation::Lane(0), index: 0, beats: 0.5 }).unwrap();
+        rig.process(&[note_on(60)]);
+        assert!(matches!(rig.graph.instruments[0].modulators[0].source, ModSource::Envelope { .. }), "it is the envelope it was");
+        assert!(rig.read(output) > 0.0, "and it answers to the note");
+    }
+
+    #[test]
+    fn a_step_sequencer_that_follows_the_tempo_goes_a_step_in_the_beats_it_is_given_and_not_at_its_own_rate() {
+        let mut rig = Rig::new();
+        // A thirty-second note (an eighth of a beat) at 120 beats a minute is 16 steps a second, and the 1 that it has of its own is not what it goes at.
+        let (output, position) = lane_steps(&mut rig, 0, steps(&[0.5, -0.25, 1.0], 3, 1.0, 0.0, false).with_sync(0.125));
+        // (Seventy-five buffers are a tenth of a second: a step and six tenths.)
+        for _ in 0..75 {
+            rig.process(&[]);
+        }
+        assert!((rig.read(position) - 1.6).abs() < 1e-4, "{}", rig.read(position));
+        assert_eq!(rig.read(output), -0.25, "the second step");
+        // At 60 beats a minute it goes half as fast: the next seventy-five buffers are eight tenths of a step more.
+        rig.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 60.0 }).unwrap();
+        for _ in 0..75 {
+            rig.process(&[]);
+        }
+        assert!((rig.read(position) - 2.4).abs() < 1e-4, "{}", rig.read(position));
+        assert_eq!(rig.read(output), 1.0, "the third step");
+    }
+
+    #[test]
+    fn the_beats_a_step_sequencer_goes_a_step_in_are_set_by_a_command_too_and_it_goes_at_its_own_rate_again_when_they_are_none() {
+        let mut rig = Rig::new();
+        let (_output, position) = lane_steps(&mut rig, 0, steps(&[0.5, -0.25, 1.0], 3, 8.0, 0.0, false));
+        let sync = |beats| GraphCommand::SetModulatorSync { location: ModulatorLocation::Lane(0), index: 0, beats };
+        // (Seventy-five buffers are a tenth of a second.) At its own 8 steps a second it is 0.8 of a step on; then 16 a second takes it 1.6 on; then it is at its own rate again.
+        for _ in 0..75 {
+            rig.process(&[]);
+        }
+        assert!((rig.read(position) - 0.8).abs() < 1e-4, "{}", rig.read(position));
+        rig.cmd_tx.send(sync(0.125)).unwrap();
+        for _ in 0..75 {
+            rig.process(&[]);
+        }
+        assert!((rig.read(position) - 2.4).abs() < 1e-4, "{}", rig.read(position));
+        rig.cmd_tx.send(sync(0.0)).unwrap();
+        for _ in 0..75 {
+            rig.process(&[]);
+        }
+        assert!((rig.read(position) - ((2.4 + 0.8) % 3.0)).abs() < 1e-4, "{}", rig.read(position));
+    }
+
+    #[test]
+    fn a_group_lfo_follows_the_tempo_too_and_is_given_the_beats_by_a_command() {
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: lfo(LfoWaveform::Saw, 1.0) }).unwrap();
+        let output = g.rig.slot();
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(0), index: 1, slot: output }).unwrap();
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorSync { location: ModulatorLocation::Group(0), index: 1, beats: 0.25 }).unwrap();
+        for _ in 0..30 {
+            g.rig.process(&[]);
+        }
+        assert!(close(g.rig.read(output), saw_after(8.0, 30)), "{}", g.rig.read(output));
+        g.rig.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 240.0 }).unwrap();
+        for _ in 0..10 {
+            g.rig.process(&[]);
+        }
+        let expected = (lfo_phase(8.0, 30) + lfo_phase(16.0, 10)) % 1.0 * 2.0 - 1.0;
+        assert!(close(g.rig.read(output), expected), "{} for {expected}", g.rig.read(output));
     }
 
     #[test]
@@ -7971,10 +8170,10 @@ mod tests {
             effective: None,
         };
 
-        m.tick(64, &[]); // idle: output 0
+        m.tick(64, &[], DEFAULT_BPM); // idle: output 0
         assert!((target.base_value + m.target_offset(&target) - 0.4).abs() < 1e-6);
 
-        m.tick(64, &[note_on(60)]); // instant attack to peak
+        m.tick(64, &[note_on(60)], DEFAULT_BPM); // instant attack to peak
         assert!((target.base_value + m.target_offset(&target) - 0.8).abs() < 1e-6);
     }
 
@@ -9195,7 +9394,7 @@ mod tests {
         // The value is the note over 127 and the law multiplies it by 127 again: it has to give the note back, or a note would move what it drives by the rest of a division.
         for note in 0..=127u8 {
             let mut key = Modulator::new(ModSource::MidiLearn { source: Some(MidiBindSource::Key), value: MidiBindSource::Key.rest(), learning: false }, 48000.0);
-            key.tick(FRAMES, &[note_on(note)]);
+            key.tick(FRAMES, &[note_on(note)], DEFAULT_BPM);
             let expected = ((f32::from(note) - 60.0) / 60.0).clamp(-1.0, 1.0);
             assert_eq!(key.offset(1.0, 0.0, 0.0, 1.0), expected, "note {note}");
         }
@@ -9345,7 +9544,7 @@ mod tests {
     fn steps(values: &[f32], length: usize, rate: f32, glide: f32, retrigger: bool) -> ModSource {
         let mut all = [0.0; MAX_STEPS];
         all[..values.len()].copy_from_slice(values);
-        ModSource::Steps { values: all, length, rate, glide, retrigger, position: 0.0 }
+        ModSource::Steps { values: all, length, rate, glide, retrigger, sync: 0.0, position: 0.0 }
     }
 
     /// The rate at which a step sequencer takes `buffers` buffers (of `FRAMES` frames, at 48 kHz) to go through a step.

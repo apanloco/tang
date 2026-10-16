@@ -69,7 +69,7 @@ const modulator = (id: NodeId, parent: NodeId): Node => ({
   parent,
   name: `Mod ${String(id)}`,
   kind: "modulator",
-  source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 },
+  source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 },
 });
 
 const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
@@ -249,7 +249,7 @@ describe("the nodes on the canvas", () => {
     expect(nodeHeight(control, 0)).toBe(MODULATOR_HEIGHT);
     expect(MODULATOR_SETTINGS_HEIGHT).toBeGreaterThan(MODULATOR_HEIGHT);
     // A step sequencer has an LFO's controls (its rate, glide, length and retrigger are four) and the bars above its trace: the bars' height and the gap before them.
-    const steps: Node = { id: 4, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values: Array.from({ length: 16 }, () => 0), length: 16, rate: 8, glide: 0, retrigger: true } };
+    const steps: Node = { id: 4, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values: Array.from({ length: 16 }, () => 0), length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 } };
     expect(nodeHeight(steps, 0)).toBe(STEPS_NODE_HEIGHT);
     expect(STEPS_NODE_HEIGHT).toBe(MODULATOR_SETTINGS_HEIGHT + STEPS_EXTRA);
     expect(STEPS_EXTRA).toBe(64 + 8);

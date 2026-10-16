@@ -119,6 +119,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModulatorKey { location, index, retrigger, fade } => {
             format!("SetModulatorKey {location:?} index={index} retrigger={retrigger} fade={fade:.3}")
         }
+        C::SetModulatorSync { location, index, beats } => {
+            format!("SetModulatorSync {location:?} index={index} beats={beats:.3}")
+        }
         C::SetModulatorSteps { location, index, values, length, glide, retrigger } => {
             format!("SetModulatorSteps {location:?} index={index} values={values:?} length={length} glide={glide:.3} retrigger={retrigger}")
         }

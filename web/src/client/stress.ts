@@ -79,7 +79,7 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
     for (let k = 0; k < size.lfosPerLane; k += 1) {
       const lfo: NodeId = id++;
       const rate = 0.25 + 0.15 * (lane * size.lfosPerLane + k);
-      nodes.push({ id: lfo, parent: instrument, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate, retrigger: false, fade: 0 } });
+      nodes.push({ id: lfo, parent: instrument, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate, retrigger: false, fade: 0, sync: 0 } });
       outputs.push({ slot: slot++, node: lfo, port: { type: "modOut" }, kind: "modOutput" });
       for (let t = 0; t < size.targetsPerLfo; t += 1) {
         const target = driveable[next % driveable.length];

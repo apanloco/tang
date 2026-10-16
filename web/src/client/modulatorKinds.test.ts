@@ -7,10 +7,10 @@ const midi = (control: MidiControl | null, learning = false): ModulatorSource =>
 
 describe("the kind of a modulator", () => {
   test("is the one that a button that adds it says: an LFO, an envelope, a macro", () => {
-    expect(kindOf({ type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 })).toBe("lfo");
+    expect(kindOf({ type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 })).toBe("lfo");
     expect(kindOf({ type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 })).toBe("envelope");
     expect(kindOf({ type: "macro", value: 0 })).toBe("macro");
-    expect(kindOf({ type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true })).toBe("steps");
+    expect(kindOf({ type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 })).toBe("steps");
   });
 
   test("is a MIDI control for what a controller sends or has not sent yet, and a velocity or a key for the notes the lane plays (`ModulatorKind::of`)", () => {

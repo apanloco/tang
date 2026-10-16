@@ -5,10 +5,10 @@ import { tracerSnapshot } from "./fixtures";
 import { modulationExtent, modulationsAt, modulationsOn, settingExtent } from "./modulation";
 import type { Modulation } from "./modulation";
 
-const lfo = (amount: number): Modulation => ({ source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 }, amount });
+const lfo = (amount: number): Modulation => ({ source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 }, amount });
 const envelope = (amount: number): Modulation => ({ source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, amount });
 const macro = (amount: number): Modulation => ({ source: { type: "macro", value: 0.5 }, amount });
-const steps = (amount: number): Modulation => ({ source: { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true }, amount });
+const steps = (amount: number): Modulation => ({ source: { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 }, amount });
 const midi = (control: Extract<ModulatorSource, { type: "midiLearn" }>["control"], amount: number): Modulation => ({
   source: { type: "midiLearn", control, learning: false },
   amount,
@@ -176,7 +176,7 @@ describe("how far modulation swings a setting that is turned on a log scale", ()
 describe("the modulators that drive a place on a modulator", () => {
   const modulator = (id: number, source: ModulatorSource): Node => ({ id, parent: 0, name: `Modulator ${String(id)}`, kind: "modulator", source });
   const driven = modulator(60, { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 });
-  const driver = modulator(61, { type: "lfo", waveform: "sine", rate: 2, retrigger: false, fade: 0 });
+  const driver = modulator(61, { type: "lfo", waveform: "sine", rate: 2, retrigger: false, fade: 0, sync: 0 });
   const other = modulator(62, { type: "envelope", attack: 0.2, decay: 0.2, sustain: 0.6, release: 0.2 });
   const cable = (from: number, to: Edge["to"], amount: number, id: number): Edge => ({ kind: "modulation", id, amount, from: { node: from, port: { type: "modOut" } }, to });
   const graph: Graph = {
@@ -219,9 +219,9 @@ describe("the modulators that drive a parameter of a lane that is in a group", (
   const group: Node = { id: 1, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false };
   const lane: Node = { id: 2, parent: 1, name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, pattern: null };
   const filter: Node = { id: 3, parent: 2, name: "Filter", kind: "effect", plugin, mix: 1 };
-  const groupLfo: Node = { id: 4, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
+  const groupLfo: Node = { id: 4, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
   const laneEnvelope: Node = { id: 5, parent: 2, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } };
-  const laneLfo: Node = { id: 6, parent: 2, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 2, retrigger: false, fade: 0 } };
+  const laneLfo: Node = { id: 6, parent: 2, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 2, retrigger: false, fade: 0, sync: 0 } };
   const laneControl: Node = { id: 7, parent: 2, name: "MIDI", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } };
   const nodes = [group, lane, filter, groupLfo, laneEnvelope, laneLfo, laneControl];
   const cable = (from: number, index: number, amount: number, id: number): Edge => ({
@@ -268,7 +268,7 @@ describe("the modulators that drive a parameter of a lane that is in a group", (
   });
 
   test("are those of the group, all of them, when only the group's drive it: they add up, as they do for a lane's, and a bus effect has no others", () => {
-    const secondLfo: Node = { id: 8, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "triangle", rate: 3, retrigger: false, fade: 0 } };
+    const secondLfo: Node = { id: 8, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "triangle", rate: 3, retrigger: false, fade: 0, sync: 0 } };
     const bus: Node = { id: 9, parent: 1, name: "Reverb", kind: "effect", plugin, mix: 0.5 };
     const toBus = (from: number, amount: number, id: number): Edge => ({
       kind: "modulation",
@@ -293,7 +293,7 @@ describe("the modulators that drive a parameter", () => {
   if (!filter || !modulator) throw new Error("the tracer lacks a filter or a modulator");
 
   test("are those whose edges end at it, with their depths", () => {
-    expect(modulationsOn(graph, filter.id, 0)).toEqual([{ source: { type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0 }, amount: 0.4 }]);
+    expect(modulationsOn(graph, filter.id, 0)).toEqual([{ source: { type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0, sync: 0 }, amount: 0.4 }]);
   });
 
   test("are none for a parameter nothing drives, or a node that has none", () => {

@@ -205,6 +205,10 @@ pub struct ModulatorConfig {
     /// For `type = "lfo"`: the seconds it takes to come in from nothing after a note, held to 0 to 5 when the session is loaded (0, none, if the file does not say).
     #[serde(default)]
     pub fade: f64,
+    /// For `type = "lfo"` and `type = "steps"`: the note length that a cycle (an LFO's) or a step follows the tempo by, as the screens name it (`"1/8"`, `"1/8 triplet"`, `"4 bars"`), in place of
+    /// the rate, which is kept for when this is `"free"` or is not there. The loader reads the name: one that is no note length is no sync, and the log says so.
+    #[serde(default)]
+    pub sync: Option<String>,
     /// For `type = "midi"`: the bound CC number (mutually exclusive with
     /// `midi_pitch_bend` / `midi_aftertouch`). Absent = unbound (armed for
     /// learning on load).
@@ -844,8 +848,9 @@ pub struct SavePattern {
 
 /// Data needed to serialize a modulator for saving.
 pub enum SaveModSource {
-    /// An LFO: its waveform and rate, whether a note starts it again at the start of its wave and the seconds it takes to come in after a note (0 for none).
-    Lfo { waveform: String, rate: f32, retrigger: bool, fade: f32 },
+    /// An LFO: its waveform and rate, whether a note starts it again at the start of its wave, the seconds it takes to come in after a note (0 for none) and the name of the
+    /// note length that a cycle of it follows the tempo by (`None` for none: it goes at its rate).
+    Lfo { waveform: String, rate: f32, retrigger: bool, fade: f32, sync: Option<String> },
     Envelope { attack: f32, decay: f32, sustain: f32, release: f32 },
     /// A MIDI-learned control. `cc = Some(n)` = CC n, else `pitch_bend` /
     /// `aftertouch` select the wheel or key pressure, and `velocity` / `key` follow the notes
@@ -853,8 +858,9 @@ pub enum SaveModSource {
     MidiLearn { cc: Option<u8>, pitch_bend: bool, aftertouch: bool, velocity: bool, key: bool },
     /// A macro: the number it is set to.
     Macro { value: f32 },
-    /// A step sequencer: all its steps, how many are in use, how fast it goes, how it glides and whether a note starts it again.
-    Steps { values: Vec<f32>, length: usize, rate: f32, glide: f32, retrigger: bool },
+    /// A step sequencer: all its steps, how many are in use, how fast it goes, how it glides, whether a note starts it again and the name of the note length that a step of it
+    /// follows the tempo by (`None` for none).
+    Steps { values: Vec<f32>, length: usize, rate: f32, glide: f32, retrigger: bool, sync: Option<String> },
 }
 
 pub struct SaveModulator {
@@ -1090,6 +1096,8 @@ struct ModulatorOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     fade: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    sync: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     midi_cc: Option<u8>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     midi_pitch_bend: bool,
@@ -1263,12 +1271,13 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
             let ui = m.ui.map(NodeUiOut::from);
             match &m.source {
                 // (An LFO that runs free writes neither of its key's keys, so that a file that was written before it had a key is as it was.)
-                SaveModSource::Lfo { waveform, rate, retrigger, fade } => ModulatorOut {
+                SaveModSource::Lfo { waveform, rate, retrigger, fade, sync } => ModulatorOut {
                     mod_type: "lfo".into(),
                     waveform: Some(waveform.clone()),
                     rate: Some(clean_f64(*rate)),
                     retrigger: retrigger.then_some(true),
                     fade: (*fade > 0.0).then(|| clean_f64(*fade)),
+                    sync: sync.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -1301,13 +1310,14 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     ui,
                     ..Default::default()
                 },
-                SaveModSource::Steps { values, length, rate, glide, retrigger } => ModulatorOut {
+                SaveModSource::Steps { values, length, rate, glide, retrigger, sync } => ModulatorOut {
                     mod_type: "steps".into(),
                     steps: Some(values.iter().map(|value| clean_f64(*value)).collect()),
                     length: Some(*length),
                     rate: Some(clean_f64(*rate)),
                     glide: Some(clean_f64(*glide)),
                     retrigger: Some(*retrigger),
+                    sync: sync.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -1878,7 +1888,7 @@ mod tests {
     #[test]
     fn an_lfo_that_is_keyed_is_written_with_its_key_and_read_back_the_same_and_one_that_is_free_has_neither_key() {
         let lane = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
-        let keyed = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: true, fade: 0.3 }, targets: vec![], ui: None };
+        let keyed = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: true, fade: 0.3, sync: None }, targets: vec![], ui: None };
         let text = to_toml(&[lane(vec![keyed])], &[], None, None, None).unwrap();
         for line in ["retrigger = true", "fade = 0.3"] {
             assert!(text.contains(line), "{line} (as typed, and not what its 32 bits are): {text}");
@@ -1888,7 +1898,7 @@ mod tests {
         assert_eq!((m.mod_type.as_str(), m.retrigger, m.fade), ("lfo", Some(true), 0.3));
         // One that retriggers and does not fade has the one key, and the other way about.
         let only = |retrigger: bool, fade: f32| {
-            let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger, fade }, targets: vec![], ui: None };
+            let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger, fade, sync: None }, targets: vec![], ui: None };
             to_toml(&[lane(vec![lfo])], &[], None, None, None).unwrap()
         };
         let (a, b) = (only(true, 0.0), only(false, 2.0));
@@ -1897,6 +1907,42 @@ mod tests {
         // A free one has neither.
         let text = only(false, 0.0);
         assert!(!text.contains("retrigger") && !text.contains("fade"), "{text}");
+    }
+
+    #[test]
+    fn an_lfo_and_a_step_sequencer_are_read_with_the_note_length_they_follow_the_tempo_by_and_none_if_the_file_says_none() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        let config = parse(&format!(
+            "{osc}[[instrument.modulator]]\nsync = \"1/8 triplet\"\nrate = 2.0\n[[instrument.modulator]]\ntype = \"steps\"\nsync = \"1/16\"\n[[instrument.modulator]]\ntype = \"lfo\"\nsync = \"free\"\n[[instrument.modulator]]\n"
+        ))
+        .unwrap();
+        let synced = |i: usize| config.instruments[0].modulators[i].sync.as_deref();
+        assert_eq!([synced(0), synced(1), synced(2), synced(3)], [Some("1/8 triplet"), Some("1/16"), Some("free"), None]);
+        // (The rate that goes with it is kept.)
+        assert_eq!(config.instruments[0].modulators[0].rate, Some(2.0));
+    }
+
+    #[test]
+    fn a_modulator_that_follows_the_tempo_is_written_with_the_name_of_its_note_length_and_read_back_the_same_and_one_that_is_free_has_no_sync_key() {
+        let lane = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
+        let lfo = |sync: Option<&str>| SaveModulator {
+            source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: sync.map(str::to_string) },
+            targets: vec![],
+            ui: None,
+        };
+        let steps = |sync: Option<&str>| SaveModulator {
+            source: SaveModSource::Steps { values: vec![0.5; 4], length: 4, rate: 8.0, glide: 0.0, retrigger: true, sync: sync.map(str::to_string) },
+            targets: vec![],
+            ui: None,
+        };
+        let text = to_toml(&[lane(vec![lfo(Some("1/8 triplet")), steps(Some("1/16")), lfo(None), steps(None)])], &[], None, None, None).unwrap();
+        assert_eq!(text.matches("sync = ").count(), 2, "only the two that follow the tempo: {text}");
+        for line in ["sync = \"1/8 triplet\"", "sync = \"1/16\""] {
+            assert!(text.contains(line), "{line}: {text}");
+        }
+        let config = parse(&text).unwrap();
+        let synced = |i: usize| config.instruments[0].modulators[i].sync.as_deref();
+        assert_eq!([synced(0), synced(1), synced(2), synced(3)], [Some("1/8 triplet"), Some("1/16"), None, None]);
     }
 
     #[test]
@@ -1922,7 +1968,7 @@ mod tests {
         let sequencer = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
         let mut values: Vec<f32> = (0..16).map(|i| i as f32 / 8.0 - 1.0).collect();
         values[3] = 0.3;
-        let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false }, targets: vec![], ui: None };
+        let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false, sync: None }, targets: vec![], ui: None };
         let text = to_toml(&[sequencer(vec![steps])], &[], None, None, None).unwrap();
         assert!(text.contains("type = \"steps\""), "{text}");
         assert!(text.contains("steps = [-1.0, -0.875, -0.75, 0.3, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]"), "every value, as typed: {text}");
@@ -1937,7 +1983,7 @@ mod tests {
         assert_eq!(m.steps.as_ref().unwrap()[3], 0.3);
         assert_eq!((m.length, m.rate, m.glide, m.retrigger), (Some(5), Some(6.5), 0.25, Some(false)));
         // The rest of the modulators have none of it (an LFO that is free has neither of its key's keys, so that a file that was written before it had a key is as it was).
-        let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0 }, targets: vec![], ui: None };
+        let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: None };
         let envelope = SaveModulator { source: SaveModSource::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, targets: vec![], ui: None };
         let knob = SaveModulator { source: SaveModSource::Macro { value: 0.5 }, targets: vec![], ui: None };
         let text = to_toml(&[sequencer(vec![lfo, envelope, knob])], &[], None, None, None).unwrap();
@@ -2196,8 +2242,7 @@ range = "C4-C8"
                     waveform: "sine".into(),
                     rate: 2.5,
                     retrigger: false,
-                    fade: 0.0,
-                },
+                    fade: 0.0, sync: None },
                 targets: vec![SaveModTarget {
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     label: "cutoff".into(),
@@ -2395,7 +2440,7 @@ range = "C4-C8"
             transpose: 0,
             group: None,
             modulators: vec![SaveModulator {
-                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0 },
+                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None },
                 targets: vec![SaveModTarget {
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 },
                     label: "cutoff".into(),
@@ -2542,7 +2587,7 @@ range = "C4-C8"
                 ui: None,
             }],
             modulators: vec![SaveModulator {
-                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 2.0, retrigger: false, fade: 0.0 },
+                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 2.0, retrigger: false, fade: 0.0, sync: None },
                 targets: vec![
                     SaveModTarget {
                         kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
@@ -2737,7 +2782,7 @@ plugin = "builtin:osc"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0 }, targets: vec![], ui }],
+            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui }],
             instrument: Some(SaveInstrument { pinned: vec![], plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, preset: None, params: vec![], ui }],
             pattern: None,
@@ -2755,7 +2800,7 @@ plugin = "builtin:osc"
             volume: 1.0,
             pan: 0.0,
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
-            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0 }, targets: vec![], ui: at(800.0, -120.5) }],
+            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: at(800.0, -120.5) }],
             ui: at(800.0, 40.0),
         };
         let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], None, at(1200.0, 300.0), None).unwrap();

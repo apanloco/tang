@@ -6,8 +6,9 @@ source: src/tui/golden_tests.rs
 (1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Step sequencer ────────────────────────────────────────────────────┐
 │♪ Oscillator  [Built-in]                        ││  Rate (Hz)                ▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░     6.00│
-│├ fx Filter  [Built-in]                         ││  Glide                    ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░     0.25│
-│╰ ~ Steps 4 6.0Hz → Filter: cutoff (40%)        ││  Length (steps)           ▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░     4.00│
+│├ fx Filter  [Built-in]                         ││  Sync                     ◂ free ▸                                 │
+│╰ ~ Steps 4 6.0Hz → Filter: cutoff (40%)        ││  Glide                    ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░     0.25│
+│                                                ││  Length (steps)           ▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░     4.00│
 │                                                ││  Retrigger                ◂ off ▸                                  │
 │                                                ││  Step 1 ▶                 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░     0.50│
 │                                                ││  Step 2                   ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░    -0.25│
@@ -32,15 +33,15 @@ source: src/tui/golden_tests.rs
 │                                                ││                                                                    │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
-│                                                ││                                                                    │
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
  t  add target  d  delete
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbb........................cbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccb
-cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
 cdddddddddddddddddddddddddddddddddddddddd........cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................b
 c................................................cb..eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -60,7 +61,6 @@ c................................................cb..fffffffffffffffffffffffffff
 c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb....................................................................b
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 c................................................cb....................................................................b

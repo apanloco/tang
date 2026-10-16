@@ -541,14 +541,15 @@ fn enter_on_a_row_of_a_modulators_pane_opens_the_value_for_the_numbers_and_nothi
     // (modulator, row) -> the value popup's title, the text it starts with, and the range it is held to; None where
     // the row is not a number to type.
     type Popup = (&'static str, &'static str, f32, f32);
-    let rows: [(usize, usize, Option<Popup>); 17] = [
+    let rows: [(usize, usize, Option<Popup>); 18] = [
         (0, 0, None), // the kind
         (0, 1, None), // the waveform
         (0, 2, Some(("Rate (Hz)", "2.50", 0.01, 50.0))),
-        (0, 3, None), // the retrigger, a choice
-        (0, 4, Some(("Fade (s)", "0.00", 0.0, 5.0))),
-        (0, 5, None), // the separator
-        (0, 6, Some(("cutoff depth", "0.40", -1.0, 1.0))),
+        (0, 3, None), // the note length to follow the tempo by, a choice
+        (0, 4, None), // the retrigger, a choice
+        (0, 5, Some(("Fade (s)", "0.00", 0.0, 5.0))),
+        (0, 6, None), // the separator
+        (0, 7, Some(("cutoff depth", "0.40", -1.0, 1.0))),
         (1, 0, None),
         (1, 1, Some(("Attack (s)", "0.020", 0.001, 10.0))),
         (1, 2, Some(("Decay (s)", "0.300", 0.001, 10.0))),
@@ -1834,7 +1835,7 @@ fn m_on_an_instrument_adds_an_lfo_to_its_lane() {
     let mut h = Harness::new(scene_split());
     h.goto(TreeAddress::Instrument(1));
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]);
+    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
     assert_eq!(h.tree()[4], "╰ ~ LFO 1.0Hz sine");
 }
 
@@ -1843,7 +1844,7 @@ fn m_on_a_group_adds_an_lfo_to_the_groups_rack() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]);
+    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
 }
 
 #[test]
@@ -2524,7 +2525,7 @@ fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
     assert_eq!(
         h.commands(),
         [
-            "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
+            "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
             "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
         ]
     );
@@ -2596,7 +2597,7 @@ fn the_modulate_popup_on_a_bus_parameter_makes_a_group_modulator() {
     assert_eq!(
         h.commands(),
         [
-            "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
+            "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
             "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
         ]
     );
@@ -2962,24 +2963,24 @@ fn left_and_right_on_an_lfos_waveform_go_round_every_waveform_whatever_the_modif
 #[test]
 fn no_popup_opens_for_a_waveform_or_a_type_or_a_separator_and_a_separator_does_not_step() {
     let mut h = Harness::new(scene_split());
-    // (The type, the waveform, the retrigger, which is a choice, and the separator.)
-    for row in [0, 1, 3, 5] {
+    // (The type, the waveform, the note length and the retrigger, which are choices, and the separator.)
+    for row in [0, 1, 3, 4, 6] {
         on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, row);
         h.press(KeyCode::Enter);
         assert!(h.s.editing.is_none(), "row {row}: there is no number to type");
         assert_eq!(h.commands(), Vec::<String>::new(), "row {row}");
         h.press(KeyCode::Esc);
     }
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 5);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
     h.press(KeyCode::Right).press(KeyCode::Left);
     assert_eq!(h.commands(), Vec::<String>::new(), "the separator");
-    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 4.0, retrigger: false, fade: 0.0 }");
+    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 4.0, retrigger: false, fade: 0.0, sync: 0 }");
 }
 
 #[test]
 fn left_and_right_step_the_depth_of_a_target_and_a_typed_depth_goes_from_minus_one_to_one() {
     let mut h = Harness::new(scene_split());
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 7);
     h.press(KeyCode::Right);
     assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=0.090"]);
     h.press_with(KeyCode::Left, KeyModifiers::CONTROL);
@@ -3001,14 +3002,14 @@ fn left_and_right_step_the_depth_of_a_target_and_a_typed_depth_goes_from_minus_o
 fn the_tree_shows_the_depth_of_a_target_as_soon_as_it_is_edited() {
     // The tree says how deep each target goes (`(4%)`): a lane's modulator and a group's.
     let mut h = Harness::new(scene_split());
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 7);
     h.press(KeyCode::Right);
     assert!(h.tree().contains(&"╰ ~ LFO 4.0Hz sine → Oscillator: detune (9%)"), "{:#?}", h.tree());
     enter_value(&mut h, "0.5");
     assert!(h.tree().contains(&"╰ ~ LFO 4.0Hz sine → Oscillator: detune (50%)"), "{:#?}", h.tree());
 
     let mut h = Harness::new(scene_group());
-    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 6);
+    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 7);
     h.press(KeyCode::Right);
     assert!(h.tree().iter().any(|l| l.contains("M0 Oscillator: detune (45%)")), "{:#?}", h.tree());
     enter_value(&mut h, "0.1");
@@ -3031,7 +3032,7 @@ fn a_modulator_edited_in_the_tui_is_told_to_the_subscribers_as_events_and_not_ag
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 1);
     h.press(KeyCode::Right);
     h.press(KeyCode::Esc);
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 7);
     enter_value(&mut h, "-0.5");
 
     let events: Vec<(u64, Vec<Event>)> = heard.lock().unwrap().iter().map(|a| (a.rev, a.events.clone())).collect();
@@ -3053,7 +3054,7 @@ fn the_key_of_an_lfo_is_turned_in_its_pane_the_switch_over_and_the_fade_by_a_twe
     let mut h = Harness::new(scene_split());
     let addr = TreeAddress::Modulator { inst: 0, index: 0 };
     // The retrigger is a choice of two: either key goes to the other.
-    on_modulator_row(&mut h, addr, 3);
+    on_modulator_row(&mut h, addr, 4);
     h.press(KeyCode::Right);
     assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=true fade=0.000"]);
     h.press(KeyCode::Right);
@@ -3061,7 +3062,7 @@ fn the_key_of_an_lfo_is_turned_in_its_pane_the_switch_over_and_the_fade_by_a_twe
     h.press(KeyCode::Right).press(KeyCode::Left);
     assert_eq!(h.commands().len(), 2, "each press turns it over");
     // The fade goes by a twentieth of its five seconds, a hundredth with Shift and a tenth with Ctrl, and Left takes it back.
-    on_modulator_row(&mut h, addr, 4);
+    on_modulator_row(&mut h, addr, 5);
     h.press(KeyCode::Right);
     assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=false fade=0.250"]);
     h.press_with(KeyCode::Right, KeyModifiers::SHIFT);
@@ -3098,9 +3099,9 @@ fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each
     h.press(KeyCode::Left);
     assert_eq!(
         h.commands(),
-        ["SetModulatorSource inst=0 mod=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]
+        ["SetModulatorSource inst=0 mod=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]
     );
-    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 1.0, retrigger: false, fade: 0.0 }");
+    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }");
     assert!(h.s.ctl.dirty);
 }
 
@@ -3201,11 +3202,11 @@ fn a_group_lfo_is_stepped_and_typed_with_the_commands_of_the_group() {
     assert_eq!(lfo_waveform(group_source(&h, 0, 0)), Triangle);
     h.press(KeyCode::Esc);
     // Two targets, a member's detune and the bus's damping: a depth row each.
-    on_modulator_row(&mut h, addr, 6);
+    on_modulator_row(&mut h, addr, 7);
     h.press(KeyCode::Right);
     assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=0 target=0 depth=0.450"]);
     h.press(KeyCode::Esc);
-    on_modulator_row(&mut h, addr, 7);
+    on_modulator_row(&mut h, addr, 8);
     enter_value(&mut h, "-4");
     assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=0 target=1 depth=-1.000"]);
     assert!((group_depth(&h, 0, 0, 0) - 0.45).abs() < 1e-5);
@@ -3864,19 +3865,20 @@ depth = 0.4
 
 fn steps_in_the_lane(h: &Harness) -> ([f32; 16], usize, f32, f32, bool) {
     match h.s.ctl.model.instruments[0].modulators[0].source {
-        ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (values, length, rate, glide, retrigger),
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } => (values, length, rate, glide, retrigger),
         ref other => panic!("{other:?}"),
     }
 }
 
-/// The rows of a step sequencer's pane that are not its steps: the rate, the glide, the length and whether a note starts it again.
+/// The rows of a step sequencer's pane that are not its steps: the rate, the note length to follow the tempo by, the glide, the length and whether a note starts it again.
 const RATE: usize = 0;
-const GLIDE: usize = 1;
-const LENGTH: usize = 2;
-const RETRIGGER: usize = 3;
+const SYNC: usize = 1;
+const GLIDE: usize = 2;
+const LENGTH: usize = 3;
+const RETRIGGER: usize = 4;
 /// The row of step `i` (counting from 0).
 const fn step_row(i: usize) -> usize {
-    4 + i
+    5 + i
 }
 
 #[test]
@@ -3901,17 +3903,21 @@ fn publish_position(h: &Harness, position: f32) {
 /// The style of row `step` (from 1) of the parameter pane, which all of the row from its name to the pane's border has (the cursor's cells before the name are not the row's own);
 /// the row is found by its name.
 fn step_row_style(h: &mut Harness, step: usize) -> (Color, Modifier) {
+    row_style(h, &format!("Step {step} "))
+}
+
+/// The style of the row of the parameter pane whose name begins with `name` (see `step_row_style`).
+fn row_style(h: &mut Harness, name: &str) -> (Color, Modifier) {
     h.dump();
     let buf = h.terminal.backend().buffer();
     // (The chain is the left 42% of the screen, and the parameter pane has a border on each side.)
     let (from, to) = (buf.area.width * 42 / 100 + 1, buf.area.width - 1);
     let text = |y: u16| (from..to).map(|x| buf[(x, y)].symbol()).collect::<String>();
-    let name = format!("Step {step} ");
     let (y, start) = (0..buf.area.height)
-        .find_map(|y| text(y).find(&name).map(|at| (y, from + text(y)[..at].chars().count() as u16)))
-        .unwrap_or_else(|| panic!("the pane has no row for step {step}: {}", dump_buffer(buf)));
+        .find_map(|y| text(y).find(name).map(|at| (y, from + text(y)[..at].chars().count() as u16)))
+        .unwrap_or_else(|| panic!("the pane has no row {name:?}: {}", dump_buffer(buf)));
     let styles: Vec<(Color, Modifier)> = (start..to).map(|x| (buf[(x, y)].fg, buf[(x, y)].modifier)).collect();
-    assert!(styles.iter().all(|style| *style == styles[0]), "the row of step {step} has one look: {styles:?}");
+    assert!(styles.iter().all(|style| *style == styles[0]), "the row {name:?} has one look: {styles:?}");
     styles[0]
 }
 
@@ -4087,6 +4093,116 @@ fn left_and_right_on_the_retrigger_of_a_step_sequencer_turn_it_over_either_way()
     assert!(h.commands().last().unwrap().ends_with("retrigger=true"), "{:?}", h.commands());
 }
 
+/// An oscillator with a filter, and an LFO at 3 Hz that follows the tempo by an eighth-note triplet, with a cable to the filter's cutoff.
+fn scene_synced() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 3.0
+sync = "1/8 triplet"
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+"#
+}
+
+/// How many places along the list of note lengths the LFO of the lane is.
+fn lfo_sync(h: &Harness) -> usize {
+    match lane_source(h, 0, 0) {
+        ModSourceSlot::Lfo { sync, .. } => *sync,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn left_and_right_on_the_sync_of_an_lfo_go_one_note_length_along_the_list_and_stop_at_its_ends() {
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 3);
+    assert!(h.dump().contains("◂ free ▸"), "{}", h.dump());
+    // (Left of the first does not go anywhere, and sends nothing.)
+    h.press(KeyCode::Left);
+    assert_eq!((h.commands(), lfo_sync(&h)), (Vec::<String>::new(), 0));
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorSync Lane(0) index=0 beats=16.000"]);
+    assert!(h.dump().contains("◂ 4 bars ▸"), "{}", h.dump());
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorSync Lane(0) index=0 beats=8.000"]);
+    // A list has places and no distances: Ctrl and Shift take it one place along too.
+    h.press_with(KeyCode::Right, KeyModifiers::CONTROL).press_with(KeyCode::Right, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["SetModulatorSync Lane(0) index=0 beats=4.000", "SetModulatorSync Lane(0) index=0 beats=3.000"]);
+    assert_eq!(lfo_sync(&h), 4);
+    // To the end of it, which is the last place, and no further.
+    h.press_n(KeyCode::Right, 30);
+    assert_eq!(lfo_sync(&h), 16);
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetModulatorSync Lane(0) index=0 beats=0.125"));
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), Vec::<String>::new(), "nothing is sent for a step that goes nowhere");
+    assert!(h.dump().contains("◂ 1/32 ▸"), "{}", h.dump());
+    // And back to none, which is the LFO's own rate again, the one it had all the time.
+    h.press_n(KeyCode::Left, 30);
+    assert_eq!(lfo_sync(&h), 0);
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetModulatorSync Lane(0) index=0 beats=0.000"));
+    assert_eq!(lfo_rate(lane_source(&h, 0, 0)), 4.0);
+    assert!(h.s.ctl.dirty);
+}
+
+#[test]
+fn the_sync_of_a_step_sequencer_and_of_a_group_lfo_is_stepped_with_the_commands_of_each() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, SYNC);
+    h.press_n(KeyCode::Right, 14);
+    assert_eq!(h.commands().last().map(String::as_str), Some("SetModulatorSync Lane(0) index=0 beats=0.250"));
+    match lane_source(&h, 0, 0) {
+        ModSourceSlot::Steps { sync, rate, .. } => assert_eq!((*sync, *rate), (14, 6.0), "a sixteenth note, and the rate it keeps"),
+        other => panic!("{other:?}"),
+    }
+    assert!(h.tree().iter().any(|line| line.contains("~ Steps 4 1/16 → Filter: cutoff (40%)")), "the tree says the note length and not a rate: {:#?}", h.tree());
+    let mut h = Harness::new(scene_group());
+    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 3);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorSync Group(0) index=0 beats=16.000"]);
+    assert!(h.tree().iter().any(|line| line.contains("LFO 4 bars")), "{:#?}", h.tree());
+    assert!(matches!(lane_source(&h, 2, 0), ModSourceSlot::Lfo { sync: 0, .. }), "(a lane's LFO is another modulator)");
+}
+
+#[test]
+fn a_sync_that_is_stepped_is_undone_by_ctrl_z_and_the_rate_the_lfo_keeps_is_what_it_was() {
+    let mut h = Harness::new(scene_split());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 3);
+    h.press_n(KeyCode::Right, 3);
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("set sync"));
+    h.commands();
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(lfo_sync(&h), 0, "the three steps of one thing are one step of the history");
+    assert_eq!(h.commands(), ["SetModulatorSync Lane(0) index=0 beats=0.000"]);
+    assert_eq!(lfo_rate(lane_source(&h, 0, 0)), 4.0);
+    h.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(lfo_sync(&h), 3);
+    assert_eq!(h.commands(), ["SetModulatorSync Lane(0) index=0 beats=4.000"]);
+}
+
+#[test]
+fn the_rate_of_a_modulator_that_follows_the_tempo_is_dimmed_in_its_pane_and_is_as_the_others_when_it_is_free() {
+    let mut h = Harness::new(scene_synced());
+    let addr = TreeAddress::Modulator { inst: 0, index: 0 };
+    assert!(h.tree().iter().any(|line| line.contains("~ LFO 1/8 triplet sine → Filter: cutoff (40%)")), "{:#?}", h.tree());
+    on_modulator_row(&mut h, addr, 1);
+    assert_eq!(row_style(&mut h, "Rate (Hz)"), (DIM, Modifier::DIM), "it goes by the tempo: the rate is not used");
+    assert_eq!(row_style(&mut h, "Fade (s)"), (DIM, Modifier::empty()), "(the rows that it does use are not dimmed)");
+    assert_golden("lfo_pane_synced", &mut h);
+    // Free again, the rate is a row like the others, and it is what it was.
+    on_modulator_row(&mut h, addr, 3);
+    h.press_n(KeyCode::Left, 12);
+    assert_eq!(lfo_sync(&h), 0);
+    on_modulator_row(&mut h, addr, 1);
+    assert_eq!(row_style(&mut h, "Rate (Hz)"), (DIM, Modifier::empty()));
+    assert!(h.dump().contains("3.00"), "the rate that it kept: {}", h.dump());
+}
+
 #[test]
 fn left_and_right_turn_a_step_by_a_twentieth_of_minus_one_to_one_and_it_stops_at_the_ends() {
     let mut h = Harness::new(scene_steps());
@@ -4133,7 +4249,7 @@ fn m_on_the_rate_of_a_step_sequencer_opens_the_popup_and_on_the_steps_the_glide_
     h.press(KeyCode::Char('m'));
     assert!(h.s.modulate.is_some(), "the rate can be driven");
     h.press(KeyCode::Esc).press(KeyCode::Esc);
-    for row in [GLIDE, LENGTH, RETRIGGER, step_row(0), step_row(15)] {
+    for row in [SYNC, GLIDE, LENGTH, RETRIGGER, step_row(0), step_row(15)] {
         on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, row);
         h.press(KeyCode::Char('m'));
         assert!(h.s.modulate.is_none(), "row {row} is set by a person");
@@ -4164,7 +4280,7 @@ fn the_modulate_popup_has_a_new_step_sequencer_that_is_made_as_a_staircase_with_
     h.press(KeyCode::Enter);
     let rack = &h.s.ctl.model.instruments[2].modulators;
     assert_eq!(rack.len(), 2);
-    let ModSourceSlot::Steps { values, length, rate, glide, retrigger } = rack[1].source else { panic!("{:?}", rack[1].source) };
+    let ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } = rack[1].source else { panic!("{:?}", rack[1].source) };
     assert_eq!((values, length, rate, glide, retrigger), (ModSourceSlot::staircase(), 16, 8.0, 0.0, true));
     assert_eq!(rack[1].targets.len(), 1);
     let commands = h.commands();

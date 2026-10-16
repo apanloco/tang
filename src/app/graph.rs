@@ -155,8 +155,9 @@ pub struct Preset {
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ModulatorSource {
-    /// An LFO: its waveform and rate in Hz, whether a note starts it again at the start of its wave, and the seconds it takes to come in from nothing after a note (0 for none).
-    Lfo { waveform: Waveform, rate: f32, retrigger: bool, fade: f32 },
+    /// An LFO: its waveform and rate in Hz, whether a note starts it again at the start of its wave, the seconds it takes to come in from nothing after a note (0 for none) and the note
+    /// length of the tempo that a cycle of it is in place of the rate: 0 for none, or the place of the note length in `SYNC_DIVISIONS`, from 1 (the rate is kept for when it is none again).
+    Lfo { waveform: Waveform, rate: f32, retrigger: bool, fade: f32, sync: u32 },
     Envelope { attack: f32, decay: f32, sustain: f32, release: f32 },
     /// A hardware control. `control` is null until one is bound; `learning` is
     /// true while it waits for the next control to come in.
@@ -164,8 +165,9 @@ pub enum ModulatorSource {
     /// A knob: a number that a person sets, 0 to 1.
     Macro { value: f32 },
     /// A step sequencer: all of its `MAX_STEPS` values, -1 to 1, the first `length` of them in use, how many steps it goes through a second, how much of each is
-    /// spent going to the next one's value (0 to 1), and whether a note starts it again at the first step.
-    Steps { values: Vec<f32>, length: u32, rate: f32, glide: f32, retrigger: bool },
+    /// spent going to the next one's value (0 to 1), whether a note starts it again at the first step, and the note length of the tempo that a step of it is in place of the rate (as
+    /// for an LFO: 0 for none).
+    Steps { values: Vec<f32>, length: u32, rate: f32, glide: f32, retrigger: bool, sync: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,7 +465,9 @@ fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
 
 fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
     let source = match &modulator.source {
-        ModSourceSlot::Lfo { waveform, rate, retrigger, fade } => ModulatorSource::Lfo { waveform: (*waveform).into(), rate: *rate, retrigger: *retrigger, fade: *fade },
+        ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
+            ModulatorSource::Lfo { waveform: (*waveform).into(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: *sync as u32 }
+        }
         ModSourceSlot::Envelope { attack, decay, sustain, release } => {
             ModulatorSource::Envelope { attack: *attack, decay: *decay, sustain: *sustain, release: *release }
         }
@@ -471,8 +475,8 @@ fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
             ModulatorSource::MidiLearn { control: source.map(MidiControl::from), learning: *learning }
         }
         ModSourceSlot::Macro { value } => ModulatorSource::Macro { value: *value },
-        ModSourceSlot::Steps { values, length, rate, glide, retrigger } => {
-            ModulatorSource::Steps { values: values.to_vec(), length: *length as u32, rate: *rate, glide: *glide, retrigger: *retrigger }
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger, sync } => {
+            ModulatorSource::Steps { values: values.to_vec(), length: *length as u32, rate: *rate, glide: *glide, retrigger: *retrigger, sync: *sync as u32 }
         }
     };
     Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
@@ -867,7 +871,7 @@ depth = 0.1
         let lfo = model.instruments[0].modulators[0].node;
         let name = |model: &SessionModel| node(&model.graph(), lfo).name.clone();
         assert_eq!(name(&model), "LFO");
-        model.instruments[0].modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5, retrigger: false, fade: 0.0 };
+        model.instruments[0].modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5, retrigger: false, fade: 0.0, sync: 0 };
         assert_eq!(name(&model), "LFO");
 
         let envelope = model.instruments[0].modulators[1].node;
@@ -911,7 +915,7 @@ depth = 0.1
         values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
         let found_first = found(&model);
         assert_eq!(found_first.name, "Steps");
-        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false } });
+        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false, sync: 0 } });
         assert_eq!(found_first.parent, Some(model.instruments[0].node));
         // Its name does not say how fast it goes or how long it is, which change under a client.
         if let ModSourceSlot::Steps { length, rate, .. } = &mut model.instruments[0].modulators[0].source {
@@ -938,7 +942,7 @@ depth = 0.1
         assert_eq!(node(&graph, env).name, "ADSR");
         assert_eq!(
             node(&graph, lfo).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0 } }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 } }
         );
         assert_eq!(
             node(&graph, env).kind,
@@ -1037,7 +1041,7 @@ depth = 0.1
             let m = model.instruments[0].modulators[0].node;
             assert_eq!(
                 node(&graph, m).kind,
-                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0 } },
+                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 } },
                 "{name}"
             );
         }
@@ -1611,24 +1615,43 @@ depth = 0.2
         let (keyed, free) = (model.instruments[0].modulators[0].node, model.instruments[0].modulators[1].node);
         assert_eq!(
             node(&graph, keyed).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75 } }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75, sync: 0 } }
         );
         assert_eq!(
             node(&graph, free).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0 } },
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 } },
             "one that says nothing of it runs free"
         );
     }
 
     #[test]
+    fn the_note_length_an_lfo_and_a_step_sequencer_follow_the_tempo_by_is_in_the_graph_as_a_place_in_the_list_and_none_as_0() {
+        let model = load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 2.0\nsync = \"1/8\"\n[[instrument.modulator]]\ntype = \"steps\"\nsync = \"1/16\"\n[[instrument.modulator]]\n",
+        )
+        .model;
+        let graph = model.graph();
+        let sync_of = |index: usize| match &node(&graph, model.instruments[0].modulators[index].node).kind {
+            NodeKind::Modulator { source: ModulatorSource::Lfo { sync, rate, .. } | ModulatorSource::Steps { sync, rate, .. } } => (*sync, *rate),
+            other => panic!("{other:?}"),
+        };
+        // (The rate is told too, whether or not it is followed: it is what the knob shows, and what it is when the modulator is free again.)
+        assert_eq!([sync_of(0), sync_of(1), sync_of(2)], [(11, 2.0), (14, 8.0), (0, 1.0)]);
+    }
+
+    #[test]
     fn modulator_sources_and_controls_are_tagged_objects() {
         assert_eq!(
-            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0 }).unwrap(),
-            json!({"type": "lfo", "waveform": "saw", "rate": 2.0, "retrigger": false, "fade": 0.0})
+            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 }).unwrap(),
+            json!({"type": "lfo", "waveform": "saw", "rate": 2.0, "retrigger": false, "fade": 0.0, "sync": 0})
         );
         assert_eq!(
-            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: true, fade: 0.5 }).unwrap(),
-            json!({"type": "lfo", "waveform": "sine", "rate": 1.0, "retrigger": true, "fade": 0.5})
+            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: true, fade: 0.5, sync: 11 }).unwrap(),
+            json!({"type": "lfo", "waveform": "sine", "rate": 1.0, "retrigger": true, "fade": 0.5, "sync": 11})
+        );
+        assert_eq!(
+            serde_json::to_value(ModulatorSource::Steps { values: vec![0.5, -0.5], length: 2, rate: 8.0, glide: 0.0, retrigger: true, sync: 14 }).unwrap(),
+            json!({"type": "steps", "values": [0.5, -0.5], "length": 2, "rate": 8.0, "glide": 0.0, "retrigger": true, "sync": 14})
         );
         assert_eq!(
             serde_json::to_value(ModulatorSource::Envelope { attack: 0.5, decay: 0.25, sustain: 1.0, release: 2.0 }).unwrap(),

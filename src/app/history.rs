@@ -1069,6 +1069,50 @@ rate = 3.0
     }
 
     #[test]
+    fn a_sync_is_a_step_in_the_words_of_the_setting_and_is_put_back_with_the_rate_the_lfo_keeps() {
+        let (engine, mut ctl, clock) = controller();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let state = |ctl: &Controller| match ctl.model.instruments[0].modulators[0].source {
+            ModSourceSlot::Lfo { sync, rate, .. } => (sync, rate),
+            _ => panic!("an LFO"),
+        };
+        let (_, rate) = state(&ctl);
+        for value in [11.0, 14.0] {
+            ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Sync, value }).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some("set sync"));
+            clock.advance(Duration::from_secs(5));
+        }
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(state(&ctl), (11, rate));
+        ctl.undo().unwrap();
+        assert_eq!(state(&ctl), (0, rate), "the rate is what it was all the time");
+        assert_eq!(sent(&engine), ["SetModulatorSync Lane(0) index=0 beats=0.500", "SetModulatorSync Lane(0) index=0 beats=0.000"]);
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!(state(&ctl), (14, rate));
+    }
+
+    #[test]
+    fn an_lfo_that_follows_the_tempo_is_put_back_with_its_note_length_when_it_is_taken_out_and_undone() {
+        let (engine, mut ctl, clock) = controller();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Sync, value: 11.0 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::RemoveNode { node: lfo }).unwrap();
+        sent(&engine);
+        ctl.undo().unwrap();
+        let ModSourceSlot::Lfo { sync, .. } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
+        assert_eq!(sync, 11, "as it was, and not free as a new one is");
+        let commands = sent(&engine);
+        assert_eq!(
+            commands.first().map(String::as_str),
+            Some("InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.5, age: inf }"),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
     fn an_lfo_that_is_taken_out_is_put_back_with_its_key() {
         let (engine, mut ctl, clock) = controller();
         let lfo = ctl.model.instruments[0].modulators[0].node;
@@ -1084,7 +1128,7 @@ rate = 3.0
         let commands = sent(&engine);
         assert_eq!(
             commands.first().map(String::as_str),
-            Some("InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: true, fade: 0.5, age: inf }"),
+            Some("InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: true, fade: 0.5, sync: 0.0, age: inf }"),
             "{commands:?}"
         );
     }
@@ -2865,7 +2909,7 @@ depth = 0.9
 
     fn lane_steps(ctl: &Controller, index: usize) -> ([f32; 16], usize, f32, f32, bool) {
         match ctl.model.instruments[0].modulators[index].source {
-            ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (values, length, rate, glide, retrigger),
+            ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } => (values, length, rate, glide, retrigger),
             ref other => panic!("{other:?} is not a step sequencer"),
         }
     }
@@ -2956,6 +3000,7 @@ depth = 0.9
         values[..3].copy_from_slice(&[0.9, 0.8, 0.7]);
         ctl.apply(Intent::SetSteps { node: sequencer, values: values.to_vec() }).unwrap();
         ctl.apply(Intent::SetModulatorField { node: sequencer, field: ModulatorField::Length, value: 2.0 }).unwrap();
+        ctl.apply(Intent::SetModulatorField { node: sequencer, field: ModulatorField::Sync, value: 14.0 }).unwrap();
         clock.advance(Duration::from_secs(5));
         ctl.apply(Intent::RemoveNode { node: sequencer }).unwrap();
         assert_eq!(ctl.model.instruments[0].modulators.len(), 1);
@@ -2963,10 +3008,11 @@ depth = 0.9
         sent(&engine);
         ctl.undo().unwrap();
         assert_eq!(lane_steps(&ctl, 0), (values, 2, 3.5, 0.25, false), "as it was, and not as it was loaded");
+        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::Steps { sync: 14, .. }), "and following the tempo by the note length it had");
         assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1, "with its cable");
         assert_eq!(ctl.model.instruments[0].modulators[0].node, sequencer, "under the id it had");
         let commands = sent(&engine);
-        let inserted = format!("InsertModulator inst=0 index=0 source=Steps {{ values: {values:?}, length: 2, rate: 3.5, glide: 0.25, retrigger: false, position: 0.0 }}");
+        let inserted = format!("InsertModulator inst=0 index=0 source=Steps {{ values: {values:?}, length: 2, rate: 3.5, glide: 0.25, retrigger: false, sync: 0.25, position: 0.0 }}");
         assert_eq!(commands.first(), Some(&inserted), "{commands:?}");
     }
 
@@ -4912,6 +4958,10 @@ size = 0.5
             ("with nothing done there is nothing to undo or redo", vec![undo(), redo()]),
             ("what cannot be undone empties the history, what could be redone too", vec![set(detune, 1.0), pause(), set(volume, 0.5), undo(), Op::Do(Intent::AddGroup { members: vec![lane0] }), undo(), redo()]),
             ("making a group of a lane that is in another is one of them", vec![set(detune, 1.0), Op::Do(Intent::AddGroup { members: vec![lane0] }), undo()]),
+            (
+                "a note length to follow the tempo by is a step in the words of the setting, put back and set again, and an envelope has none",
+                vec![field(lfo, ModulatorField::Sync, 11.0), pause(), field(lfo, ModulatorField::Sync, 14.0), field(envelope, ModulatorField::Sync, 3.0), undo(), undo(), redo(), redo()],
+            ),
             (
                 "a tempo is put back, a drag of it is one step, and one that is held to the tempos there can be says what it is",
                 vec![

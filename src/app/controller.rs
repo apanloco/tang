@@ -153,6 +153,12 @@ pub(super) fn key_command(at: ModulatorLocation, index: usize, retrigger: bool, 
     GraphCommand::SetModulatorKey { location: at, index, retrigger, fade }
 }
 
+/// The command that gives the audio thread how many beats of the tempo a cycle of the LFO, or a step of the step sequencer, at `index` of the rack at `at` is (0 for none: it
+/// goes at its own rate, which the audio thread has kept). Where it is stays.
+pub(super) fn sync_command(at: ModulatorLocation, index: usize, beats: f32) -> GraphCommand {
+    GraphCommand::SetModulatorSync { location: at, index, beats }
+}
+
 /// The command that gives the audio thread the depth of cable `target_index` of the modulator at `mod_index` of the rack at `at`.
 pub(super) fn depth_command(at: ModulatorLocation, mod_index: usize, target_index: usize, depth: f32) -> GraphCommand {
     match at {
@@ -2196,7 +2202,7 @@ plugin = "builtin:osc"
     }
 
     fn lfo_source() -> ModSourceSlot {
-        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0, retrigger: false, fade: 0.0 }
+        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }
     }
 
     fn cutoff_target(depth: f32) -> NewTarget {
@@ -2218,7 +2224,7 @@ plugin = "builtin:osc"
         assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
         assert_eq!(
             sent(&engine),
-            ["InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]
+            ["InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]
         );
         let rack = &ctl.model.instruments[0].modulators;
         assert_eq!(rack.len(), 2);

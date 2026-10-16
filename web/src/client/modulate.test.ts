@@ -54,7 +54,7 @@ describe("the mock engine's modulate", () => {
     expect(told).toEqual({ events: [], restructured: true });
     const { node, cable } = made(snapshot, server.snapshot);
     expect([node.kind, node.parent, node.name]).toEqual(["modulator", lane0.id, "LFO"]);
-    expect(node.kind === "modulator" ? node.source : null).toEqual({ type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 });
+    expect(node.kind === "modulator" ? node.source : null).toEqual({ type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 });
     expect([cable.from, cable.to, cable.amount]).toEqual([{ node: node.id, port: { type: "modOut" } }, { node: filter.id, port: to }, 0.5]);
     // One intent is one revision, as for any change of the structure: the one it was, and the snapshot that tells it.
     expect(server.snapshot.rev).toBe(snapshot.rev + 2);
@@ -62,7 +62,7 @@ describe("the mock engine's modulate", () => {
 
   test("makes each kind of modulator, and a MIDI control is armed to learn", () => {
     for (const [kind, source] of [
-      ["lfo", { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 }],
+      ["lfo", { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 }],
       ["envelope", { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }],
       ["midiLearn", { type: "midiLearn", control: null, learning: true }],
     ] as const) {
