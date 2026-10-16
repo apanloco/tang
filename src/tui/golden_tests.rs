@@ -1254,21 +1254,21 @@ fn a_float_parameter_stops_at_the_ends_of_its_range() {
 #[test]
 fn an_enum_parameter_stops_at_its_first_and_last_label() {
     let mut h = Harness::new(scene_split());
-    h.press(KeyCode::Enter); // `waveform`: sine, triangle, square, saw
-    for _ in 0..5 {
+    h.press(KeyCode::Enter); // `waveform`: sine, triangle, square, saw, noise
+    for _ in 0..6 {
         h.press(KeyCode::Right);
     }
     let values: Vec<String> = h.commands();
     assert_eq!(
         values,
-        [1.0, 2.0, 3.0, 3.0, 3.0].map(|v| format!("SetParameter inst=0 slot=0 param=0 value={v:.3}"))
+        [1.0, 2.0, 3.0, 4.0, 4.0, 4.0].map(|v| format!("SetParameter inst=0 slot=0 param=0 value={v:.3}"))
     );
-    for _ in 0..5 {
+    for _ in 0..6 {
         h.press(KeyCode::Left);
     }
     assert_eq!(
         h.commands(),
-        [2.0, 1.0, 0.0, 0.0, 0.0].map(|v| format!("SetParameter inst=0 slot=0 param=0 value={v:.3}"))
+        [3.0, 2.0, 1.0, 0.0, 0.0, 0.0].map(|v| format!("SetParameter inst=0 slot=0 param=0 value={v:.3}"))
     );
 }
 
@@ -1761,7 +1761,7 @@ fn n_adds_a_full_range_oscillator_lane_and_opens_the_instrument_selector() {
     assert_eq!((osc.mix, osc.current_preset.as_deref()), (1.0, None));
     assert!(osc.params.iter().all(|p| p.value == p.default), "a new plugin starts at its defaults");
     let waveform = osc.params.iter().find(|p| p.name == "waveform").unwrap();
-    assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");
+    assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 5), "labelled parameters are enums");
     assert!(h.s.ctl.dirty);
     assert_eq!(h.s.selected_address().copied(), Some(TreeAddress::Instrument(lanes)), "the cursor is on the new lane");
     assert_eq!(h.s.selector.as_ref().map(|sel| sel.mode), Some(SelectorMode::Instrument));
@@ -2609,13 +2609,13 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
     h.press(KeyCode::Char('t')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
+        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
     );
     let bound = target_fields(&h.s.ctl.model.instruments[2].modulators[0].targets);
     assert_eq!(bound.len(), 2, "the LFO had one target already");
     assert_eq!(
         bound[1],
-        (0, "waveform".to_string(), "PluginParam { slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 3.0)
+        (0, "waveform".to_string(), "PluginParam { slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 4.0)
     );
 
     // Further down the list are the lane's effects: the oscillator's twelve
@@ -2638,13 +2638,13 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
     h.press(KeyCode::Char('t')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 3.000]"]
+        ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 4.000]"]
     );
     let bound = target_fields(&h.s.ctl.model.groups[0].modulators[0].targets);
     assert_eq!(bound.len(), 3, "the group LFO had two targets already");
     assert_eq!(
         bound[2],
-        (0, "waveform".to_string(), "GroupMember { member: 0, slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 3.0)
+        (0, "waveform".to_string(), "GroupMember { member: 0, slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 4.0)
     );
 }
 
@@ -2656,7 +2656,7 @@ fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_
     h.press(KeyCode::Char('t')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
+        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
     );
     assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
 }
@@ -2669,7 +2669,7 @@ fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_wh
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len() + 1).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
+        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
     );
     assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
 }

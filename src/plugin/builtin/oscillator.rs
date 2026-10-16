@@ -5,8 +5,9 @@ use crate::plugin::{ParameterInfo, Plugin, Preset};
 
 /// Selectable waveform names for the `waveform` enum parameter. Saw is
 /// appended (index 3) so the existing sine/triangle/square indices — and the
-/// numeric `waveform` values saved in sessions — stay stable.
-pub const WAVEFORMS: [&str; 4] = ["sine", "triangle", "square", "saw"];
+/// numeric `waveform` values saved in sessions — stay stable, and so is the
+/// noise (index 4).
+pub const WAVEFORMS: [&str; 5] = ["sine", "triangle", "square", "saw", "noise"];
 
 #[derive(Copy, Clone)]
 pub enum Waveform {
@@ -14,15 +15,18 @@ pub enum Waveform {
     Triangle,
     Square,
     Saw,
+    /// White noise: a number from -1 to 1 for every sample, with no cycle (a voice makes them: `Voice::noise`).
+    Noise,
 }
 
 impl Waveform {
-    /// Map the `waveform` parameter value (0–3, rounded) to a waveform.
+    /// Map the `waveform` parameter value (0–4, rounded) to a waveform.
     fn from_param(v: f32) -> Self {
         match v.round() as i32 {
             1 => Waveform::Triangle,
             2 => Waveform::Square,
             3 => Waveform::Saw,
+            4 => Waveform::Noise,
             _ => Waveform::Sine,
         }
     }
@@ -34,10 +38,12 @@ impl Waveform {
             Waveform::Triangle => 1.0,
             Waveform::Square => 2.0,
             Waveform::Saw => 3.0,
+            Waveform::Noise => 4.0,
         }
     }
 
-    /// Render one sample for a phase in [0.0, 1.0). `pulse` is how much of the cycle a square is high (the other waveforms have no use for it).
+    /// Render one sample for a phase in [0.0, 1.0). `pulse` is how much of the cycle a square is high (the other waveforms have no use for it). The noise has no
+    /// cycle to be at a phase of, and a voice makes its numbers (`Voice::noise`): this gives silence for it.
     fn sample(self, phase: f32, pulse: f32) -> f32 {
         match self {
             Waveform::Sine => (2.0 * PI * phase).sin(),
@@ -53,6 +59,7 @@ impl Waveform {
             }
             // Naïve rising sawtooth (no anti-aliasing): -1 → +1 across the cycle.
             Waveform::Saw => 2.0 * phase - 1.0,
+            Waveform::Noise => 0.0,
         }
     }
 }
@@ -88,6 +95,8 @@ pub struct Oscillator {
     decay: f32,
     sustain: f32,
     release: f32,
+    /// How many voices have begun (a note that is hit again while it sounds goes on with its voice): the numbers of a noise are made from it, so that each note has its own.
+    voices_begun: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -101,16 +110,47 @@ enum VoiceState {
 struct Voice {
     /// The place in its cycle of each of the oscillators of the note (the first `Oscillator::unison` of them are in use).
     phases: [f32; MAX_UNISON],
+    /// Where the random numbers of each oscillator of the note are (xorshift32, never 0): they are the voice's, so that what it sounds like does not depend on which of the
+    /// voices of a chord is summed first. Only the noise uses them.
+    noise: [u32; MAX_UNISON],
     amp: f32,
     state: VoiceState,
 }
 
 impl Voice {
     /// A voice that begins its envelope, with its oscillators spread over the cycle (the first at its beginning, which is where a note
-    /// has always begun) so that the oscillators of a unison do not start as one.
-    fn new() -> Self {
-        Self { phases: std::array::from_fn(|u| (u as f32 * 0.618_034).fract()), amp: 0.0, state: VoiceState::Attack }
+    /// has always begun) so that the oscillators of a unison do not start as one. It is the `begun`th voice, which its noise is made from: the numbers of two voices are
+    /// not alike, and a run that has the same notes has the same numbers.
+    fn new(begun: u32) -> Self {
+        Self {
+            phases: std::array::from_fn(|u| (u as f32 * 0.618_034).fract()),
+            noise: std::array::from_fn(|u| noise_seed(begun, u)),
+            amp: 0.0,
+            state: VoiceState::Attack,
+        }
     }
+
+    /// The next number of the noise of oscillator `u` of the note, from -1 up to (not including) 1, all equally likely.
+    fn noise(&mut self, u: usize) -> f32 {
+        let mut x = self.noise[u];
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.noise[u] = x;
+        // (The top 24 bits are all that a 32-bit float holds exactly.)
+        (x >> 8) as f32 * (2.0 / 16_777_216.0) - 1.0
+    }
+}
+
+/// Where the numbers of oscillator `u` of the `begun`th voice start: a hash of the two (Chris Wellons's "lowbias32"), which is never 0 (a state of 0 would stay there).
+fn noise_seed(begun: u32, u: usize) -> u32 {
+    let mut x = begun.wrapping_mul(MAX_UNISON as u32).wrapping_add(u as u32).wrapping_add(0x9E37_79B9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7FEB_352D);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846C_A68B);
+    x ^= x >> 16;
+    if x == 0 { 0x2545_F491 } else { x }
 }
 
 // waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse
@@ -175,6 +215,7 @@ impl Oscillator {
             decay: DEFAULT_DECAY_SEC,
             sustain: DEFAULT_SUSTAIN,
             release: DEFAULT_RELEASE_SEC,
+            voices_begun: 0,
         }
     }
 
@@ -265,7 +306,10 @@ impl Plugin for Oscillator {
                         self.voices
                             .entry(note)
                             .and_modify(|v| v.state = VoiceState::Attack)
-                            .or_insert_with(Voice::new);
+                            .or_insert_with(|| {
+                                self.voices_begun = self.voices_begun.wrapping_add(1);
+                                Voice::new(self.voices_begun)
+                            });
                     }
                     0x80 | 0x90 => {
                         if let Some(v) = self.voices.get_mut(&note) {
@@ -313,7 +357,11 @@ impl Plugin for Oscillator {
 
                 let freq = Self::note_to_freq(note, self.detune);
                 for u in 0..voices {
-                    let heard = self.waveform.sample(voice.phases[u], pulse) * voice.amp * VOICE_GAIN;
+                    let raw = match self.waveform {
+                        Waveform::Noise => voice.noise(u),
+                        waveform => waveform.sample(voice.phases[u], pulse),
+                    };
+                    let heard = raw * voice.amp * VOICE_GAIN;
                     sample_l += heard * gains[u].0;
                     sample_r += heard * gains[u].1;
                     voice.phases[u] += freq * ratios[u] / self.sample_rate;
@@ -1088,6 +1136,212 @@ mod tests {
         centred.set_parameter(9, 0.3).unwrap();
         centred.set_parameter(10, 0.0).unwrap();
         assert_eq!(only, render(&mut centred, &[(0, [0x90, 60, 100])], 2000));
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------------------------
+    // The noise: the fifth waveform
+    // ---------------------------------------------------------------------------------------------------------------------------------
+
+    /// An oscillator whose waveform is the noise, the fifth value of the `waveform` parameter.
+    fn noise() -> Oscillator {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(0, 4.0).unwrap();
+        osc
+    }
+
+    /// What is left of `samples` when the first quarter, where the note starts and the volume settles, has gone.
+    fn settled(samples: &[f32]) -> Vec<f64> {
+        samples[samples.len() / 4..].iter().map(|&x| f64::from(x)).collect()
+    }
+
+    fn mean(x: &[f64]) -> f64 {
+        x.iter().sum::<f64>() / x.len() as f64
+    }
+
+    fn rms(x: &[f64]) -> f64 {
+        (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt()
+    }
+
+    /// How much of `x` is in `x` again `lag` samples on, about its mean: 0 for numbers that have nothing to do with each other, 1 for a signal that repeats.
+    fn autocorrelation(x: &[f64], lag: usize) -> f64 {
+        let m = mean(x);
+        let top: f64 = (0..x.len() - lag).map(|i| (x[i] - m) * (x[i + lag] - m)).sum();
+        let bottom: f64 = x.iter().map(|v| (v - m) * (v - m)).sum();
+        top / bottom
+    }
+
+    #[test]
+    fn the_noise_is_the_fifth_waveform_and_the_four_before_it_are_where_they_were() {
+        assert_eq!(WAVEFORMS.to_vec(), ["sine", "triangle", "square", "saw", "noise"]);
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        let waveform = osc.parameters().remove(0);
+        assert_eq!((waveform.min, waveform.max, waveform.step_count, waveform.labels.map(|labels| labels.len())), (0.0, 4.0, 4, Some(5)));
+        // (A session file has the number: saw is 3, as it always was, and the noise 4.)
+        for (index, name) in WAVEFORMS.iter().enumerate() {
+            osc.set_parameter(0, index as f32).unwrap();
+            assert_eq!(osc.get_parameter(0), Some(index as f32), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_noise_has_numbers_that_have_nothing_to_do_with_each_other_and_the_level_of_a_saw() {
+        let frames = SAMPLE_RATE as usize / 2;
+        let out = settled(&render(&mut noise(), &NOTE_ON, frames));
+        // A voice is a quarter of the numbers, from -1 to 1: they are as far from their mean as a saw's are (a third of the square of the range).
+        let level = 0.25 / 3.0f64.sqrt();
+        assert!(mean(&out).abs() < 0.01, "no lean to one side: {}", mean(&out));
+        assert!((rms(&out) / level - 1.0).abs() < 0.03, "as loud as a saw (rms {}, a saw's {level})", rms(&out));
+        assert!(out.iter().all(|x| x.abs() <= 0.25), "no number is out of the range of a voice");
+        let saw = settled(&render(&mut Oscillator::new(SAMPLE_RATE, Waveform::Saw), &NOTE_ON, frames));
+        assert!((rms(&out) / rms(&saw) - 1.0).abs() < 0.03, "{} and a saw's {}", rms(&out), rms(&saw));
+        // Nothing in a number says what the one before it was: no lag has more than chance in it, which is a hundredth or so for these numbers.
+        for lag in 1..=64 {
+            assert!(autocorrelation(&out, lag).abs() < 0.04, "lag {lag}: {}", autocorrelation(&out, lag));
+        }
+    }
+
+    #[test]
+    fn the_noise_is_as_loud_in_the_bass_as_it_is_in_the_treble() {
+        let out = settled(&render(&mut noise(), &NOTE_ON, SAMPLE_RATE as usize));
+        let signal: Vec<f32> = out.iter().map(|&x| x as f32).collect();
+        // The power of forty sines of each band that are not harmonics of each other (a number of the Goertzel's is as likely to be far from the average as near it, so the
+        // average of forty has to be taken).
+        let band = |from: f32, to: f32| -> f64 {
+            let powers: Vec<f64> = (0..40).map(|i| f64::from(magnitude(&signal, from + (to - from) * (i as f32 + 0.37) / 40.0)).powi(2)).collect();
+            mean(&powers)
+        };
+        let (low, high) = (band(100.0, 1_000.0), band(10_000.0, 20_000.0));
+        assert!(low / high > 0.6 && low / high < 1.6, "as much power in the low band as in the high one: {low} and {high}");
+    }
+
+    #[test]
+    fn the_noise_has_no_pitch_and_the_note_does_not_change_it() {
+        for note in [24u8, 60, 108] {
+            let out = settled(&render(&mut noise(), &[(0, [0x90, note, 100])], SAMPLE_RATE as usize / 2));
+            assert!((rms(&out) / (0.25 / 3.0f64.sqrt()) - 1.0).abs() < 0.03, "note {note}: {}", rms(&out));
+            // Nothing comes round again at the period of the note.
+            let period = (SAMPLE_RATE / Oscillator::note_to_freq(note, 0.0)).round() as usize;
+            assert!(autocorrelation(&out, period).abs() < 0.04, "note {note}, period {period}: {}", autocorrelation(&out, period));
+        }
+    }
+
+    /// `process` is summed in the order of a hash map, which is not the same from one oscillator to the next, so what makes the noise of a voice must not be shared by the
+    /// voices. (The notes begin at frames of their own, so that the voices are at different places of their attacks, which makes the numbers of one voice louder than another's:
+    /// numbers that were dealt out in the order of the map would not be the same sum.)
+    #[test]
+    fn the_noise_of_a_chord_is_the_same_whatever_the_order_that_its_voices_are_summed_in() {
+        for notes in [[48u8, 52, 55, 59, 62, 65, 69], [30, 41, 53, 64, 70, 82, 95], [60, 61, 62, 63, 64, 65, 66]] {
+            let events: Vec<(u64, [u8; 3])> = notes.iter().zip([0u64, 37, 91, 160, 250, 333, 400]).map(|(&note, frame)| (frame, [0x90, note, 100])).collect();
+            for unison in [0.0, 2.0] {
+                let chord = || {
+                    let mut osc = noise();
+                    osc.set_parameter(8, unison).unwrap();
+                    let (mut left, mut right) = (vec![0.0f32; 4096], vec![0.0f32; 4096]);
+                    osc.process(&events, &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+                    (left, right)
+                };
+                let ((first_left, first_right), (second_left, second_right)) = (chord(), chord());
+                assert!(first_left.iter().zip(&second_left).all(|(a, b)| (a - b).abs() < 1e-5), "{notes:?}, unison {unison}");
+                assert!(first_right.iter().zip(&second_right).all(|(a, b)| (a - b).abs() < 1e-5), "{notes:?}, unison {unison}");
+            }
+            // (And it is a chord of noises, not one voice's: the notes are not the same numbers.)
+            let (chord, one) = (render(&mut noise(), &events, 4096), render(&mut noise(), &events[..1], 4096));
+            assert!(chord.iter().zip(&one).any(|(a, b)| (a - b).abs() > 0.01), "{notes:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_that_is_hit_again_has_noise_of_its_own() {
+        let mut osc = noise();
+        let hit = |osc: &mut Oscillator| {
+            let mut out = render(osc, &[(0, [0x90, 60, 100]), (1500, [0x80, 60, 0])], 2048);
+            // (The release ends and the voice goes, so that the next hit is a new voice.)
+            render(osc, &[], 2048);
+            out.drain(..400);
+            out.truncate(1000);
+            out.iter().map(|&x| f64::from(x)).collect::<Vec<f64>>()
+        };
+        let (first, second) = (hit(&mut osc), hit(&mut osc));
+        assert!(osc.voices.is_empty());
+        let m = (mean(&first), mean(&second));
+        let together: f64 = first.iter().zip(&second).map(|(a, b)| (a - m.0) * (b - m.1)).sum::<f64>() / (rms(&first) * rms(&second) * first.len() as f64);
+        assert!(together.abs() < 0.1, "the two hits are alike by {together}");
+    }
+
+    #[test]
+    fn a_unison_of_noise_has_the_level_of_one_voice_and_every_voice_has_noise_of_its_own() {
+        let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+        let mut seven = noise();
+        seven.set_parameter(8, 6.0).unwrap();
+        seven.set_parameter(10, 1.0).unwrap();
+        seven.process(&NOTE_ON, &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+        let (left, right) = (settled(&left), settled(&right));
+        let one = settled(&render(&mut noise(), &NOTE_ON, 24_000));
+        assert!((rms(&left) / rms(&one) - 1.0).abs() < 0.06, "the level of a voice: {} and {}", rms(&left), rms(&one));
+        // The lowest voice is on the left and the highest on the right, and the ones between are across: the two sides are not the same numbers, though they are of the same sum.
+        let m = (mean(&left), mean(&right));
+        let across: f64 = left.iter().zip(&right).map(|(a, b)| (a - m.0) * (b - m.1)).sum::<f64>() / (rms(&left) * rms(&right) * left.len() as f64);
+        assert!(across.abs() < 0.9, "the two sides are not one signal: {across}");
+        // (And a single voice is in the middle, the same numbers on both sides, as a waveform is.)
+        let (mut a, mut b) = (vec![0.0f32; 4096], vec![0.0f32; 4096]);
+        noise().process(&NOTE_ON, &[], &mut [&mut a[..], &mut b[..]]).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn the_envelope_shapes_the_noise_as_it_shapes_a_wave() {
+        // Attack: a long one is quiet at the start. Release: the noise goes down to nothing after the note.
+        let mut slow = noise();
+        slow.set_parameter(3, 0.5).unwrap();
+        let out = render(&mut slow, &NOTE_ON, SAMPLE_RATE as usize);
+        let early = rms(&out[..480].iter().map(|&x| f64::from(x)).collect::<Vec<_>>());
+        let late = rms(&out[out.len() * 3 / 4..].iter().map(|&x| f64::from(x)).collect::<Vec<_>>());
+        assert!(early < late * 0.05, "the first 10 ms of a half second's attack: {early}, and later {late}");
+        let mut osc = noise();
+        osc.set_parameter(6, 0.1).unwrap();
+        let held = render(&mut osc, &NOTE_ON, 4800);
+        assert!(held[4000..].iter().any(|x| x.abs() > 0.05));
+        let released = render(&mut osc, &NOTE_OFF, 9600);
+        assert!(released[..100].iter().any(|x| x.abs() > 0.05), "it does not stop at once");
+        assert!(released[8000..].iter().all(|&x| x == 0.0), "and it is gone after the release");
+    }
+
+    /// The hash that the numbers of the noise start from is 0 for one input only, and a state of 0 would stay there: that seed (the 234,361,646th voice, oscillator 5)
+    /// is not 0, and no other is.
+    #[test]
+    fn the_seed_of_a_noise_is_never_the_state_that_stays_at_zero() {
+        assert_eq!(noise_seed(234_361_646, 5), 0x2545_F491);
+        assert!((0..2000u32).all(|begun| (0..MAX_UNISON).all(|u| noise_seed(begun, u) != 0)));
+        // (And each voice, and each oscillator of a voice, starts from a state of its own.)
+        let seeds: std::collections::HashSet<u32> = (0..2000u32).flat_map(|begun| (0..MAX_UNISON).map(move |u| noise_seed(begun, u))).collect();
+        assert_eq!(seeds.len(), 2000 * MAX_UNISON);
+    }
+
+    /// The numbers of a noise are made as the notes are played, on the audio thread, which must not make a trip to the allocator.
+    #[test]
+    fn the_notes_of_a_noise_that_start_sound_and_end_do_not_allocate() {
+        let mut osc = noise();
+        osc.set_parameter(8, 6.0).unwrap();
+        let mut left = vec![0.0f32; 256];
+        let mut right = vec![0.0f32; 256];
+        let on: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x90, note, 100])).collect();
+        let off: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x80, note, 0])).collect();
+        let mut block = |osc: &mut Oscillator, events: &[(u64, [u8; 3])]| {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            osc.process(events, &[], &mut out).unwrap();
+        };
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..2 {
+                block(&mut osc, &on);
+                block(&mut osc, &[]);
+                block(&mut osc, &off);
+                for _ in 0..8 {
+                    block(&mut osc, &[]);
+                }
+            }
+        });
+        assert!(osc.voices.is_empty(), "the notes have ended");
+        assert_eq!(allocations, 0);
     }
 
     /// What a parameter says of itself: name, unit, lowest, highest, default and steps.

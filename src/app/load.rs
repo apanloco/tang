@@ -1252,7 +1252,7 @@ mod tests {
         let slot = fresh_slot(osc.as_mut(), "builtin:osc", NodeId(4));
         assert!(slot.is_instrument);
         let waveform = slot.params.iter().find(|p| p.name == "waveform").unwrap();
-        assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "labelled parameters are enums");
+        assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 5), "labelled parameters are enums");
     }
 
     /// A plugin whose parameters are not at their declared defaults when it is loaded
@@ -2219,7 +2219,7 @@ mod_rate = 7
         let waveform = osc.params.iter().find(|p| p.name == "waveform").unwrap();
         assert_eq!(waveform.value, 2.0, "the override is the value");
         assert_eq!(waveform.default, 0.0, "the plugin's own value stays the baseline");
-        assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 4), "enums keep their labels");
+        assert!(matches!(&waveform.kind, ParamKind::Enum(labels) if labels.len() == 5), "enums keep their labels");
         let reverb = &lane.effects[0];
         let size = reverb.params.iter().find(|p| p.name == "size").unwrap();
         assert_eq!(size.value, 0.9);

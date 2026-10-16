@@ -668,8 +668,8 @@ mod tests {
         let waveform = the_param(plugin, "waveform");
         assert_eq!(waveform.value, 2.0, "the session's override, not the default");
         assert_eq!(waveform.default, 0.0);
-        assert_eq!(waveform.labels.as_deref(), Some(&["sine", "triangle", "square", "saw"].map(String::from)[..]));
-        assert_eq!(waveform.step_count, 3);
+        assert_eq!(waveform.labels.as_deref(), Some(&["sine", "triangle", "square", "saw", "noise"].map(String::from)[..]));
+        assert_eq!(waveform.step_count, 4);
     }
 
     #[test]

@@ -52,7 +52,7 @@ describe("a parameter of a node", () => {
   test("is a choice when its values have names, with the chosen one selected", async () => {
     await rig(<ParamControl node={oscillator.id} index={0} />);
     const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "waveform" });
-    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "square", "saw"]);
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "square", "saw", "noise"]);
     expect(select.value).toBe("3");
     expect(screen.queryByRole("slider")).toBeNull();
   });
@@ -1279,7 +1279,7 @@ describe("a parameter of a plugin as a row", () => {
   test("is a choice when its values have names, with the chosen one selected, and no slider", async () => {
     await rig(<ParamRow node={oscillator.id} index={0} />);
     const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "waveform" });
-    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "square", "saw"]);
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["sine", "triangle", "square", "saw", "noise"]);
     expect(select.value).toBe("3");
     expect(screen.queryByRole("slider")).toBeNull();
   });

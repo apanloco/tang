@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(
             metadata("builtin:osc"),
             [
-                row("waveform", None, &[], 3),
+                row("waveform", None, &[], 4),
                 row("detune", Some("st"), &[], 0),
                 row("volume", None, &[], 0),
                 row("attack", Some("s"), &["Envelope"], 0),

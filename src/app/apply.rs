@@ -1015,8 +1015,8 @@ plugin = "builtin:reverb"
     #[test]
     fn set_param_rounds_an_enum_parameter_to_a_whole_value() {
         let (engine, mut ctl) = controller();
-        let (waveform, _) = param(&ctl, NodePath::Instrument(0), "waveform"); // 0 ..= 3
-        for (asked, got) in [(1.4, 1.0), (1.6, 2.0), (2.5, 3.0), (99.0, 3.0), (-1.0, 0.0), (0.4, 0.0)] {
+        let (waveform, _) = param(&ctl, NodePath::Instrument(0), "waveform"); // 0 ..= 4
+        for (asked, got) in [(1.4, 1.0), (1.6, 2.0), (2.5, 3.0), (3.6, 4.0), (99.0, 4.0), (-1.0, 0.0), (0.4, 0.0)] {
             let applied = ctl.apply(Intent::SetParam { node: lane(&ctl), param: waveform, value: asked }).unwrap();
             assert_eq!(applied.events, [Event::ParamSet { node: lane(&ctl), param: waveform, value: got }], "{asked}");
         }

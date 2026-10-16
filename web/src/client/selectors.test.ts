@@ -31,7 +31,7 @@ describe("finding what a view shows", () => {
     expect(paramOf(state, filter.id, 0)?.name).toBe("cutoff");
     expect(paramOf(state, filter.id, 1)?.name).toBe("resonance");
     expect(paramOf(state, oscillator.id, 1)?.name).toBe("detune");
-    expect(paramOf(state, oscillator.id, 0)?.labels).toEqual(["sine", "triangle", "square", "saw"]);
+    expect(paramOf(state, oscillator.id, 0)?.labels).toEqual(["sine", "triangle", "square", "saw", "noise"]);
   });
 
   test("no parameter of a node that has none, or of one the plugin does not have", () => {

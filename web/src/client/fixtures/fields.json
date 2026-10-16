@@ -903,12 +903,13 @@
                   "sine",
                   "triangle",
                   "square",
-                  "saw"
+                  "saw",
+                  "noise"
                 ],
-                "max": 3.0,
+                "max": 4.0,
                 "min": 0.0,
                 "name": "waveform",
-                "stepCount": 3,
+                "stepCount": 4,
                 "unit": null,
                 "value": 0.0
               },
@@ -1128,12 +1129,13 @@
                   "sine",
                   "triangle",
                   "square",
-                  "saw"
+                  "saw",
+                  "noise"
                 ],
-                "max": 3.0,
+                "max": 4.0,
                 "min": 0.0,
                 "name": "waveform",
-                "stepCount": 3,
+                "stepCount": 4,
                 "unit": null,
                 "value": 0.0
               },
@@ -1326,12 +1328,13 @@
                   "sine",
                   "triangle",
                   "square",
-                  "saw"
+                  "saw",
+                  "noise"
                 ],
-                "max": 3.0,
+                "max": 4.0,
                 "min": 0.0,
                 "name": "waveform",
-                "stepCount": 3,
+                "stepCount": 4,
                 "unit": null,
                 "value": 0.0
               },
@@ -1524,12 +1527,13 @@
                   "sine",
                   "triangle",
                   "square",
-                  "saw"
+                  "saw",
+                  "noise"
                 ],
-                "max": 3.0,
+                "max": 4.0,
                 "min": 0.0,
                 "name": "waveform",
-                "stepCount": 3,
+                "stepCount": 4,
                 "unit": null,
                 "value": 0.0
               },
