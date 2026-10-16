@@ -1797,6 +1797,20 @@ the block and not a setting made once on a thread, since a host's callback is no
 thread of its own and a plugin may change the unit. The null backend and the sound card's
 callback render through the same `Renderer::render`, so both have it.
 
+The flush does not end a tail, and a tail that does not end is not silence. A state that moves
+by a product of its own distance to something (`s += g * (x - s)`, the integrators of the
+filter) stops where that product is flushed, near the smallest normal number over `g`, and
+stays there: after a note the built-in filter put out a constant of 2e-38 to 5e-35 (by the
+type and the cutoff; the bandpass and the notch, and the ladder and the MS-20 at cutoff 0.9,
+ran down to zero), the same for the 70 seconds it was watched, so that a scope never read
+exactly zero (f160: the browser test of the scope failed four runs of twelve on it, a side
+effect of f149's flush). The filter lets go of each of its states that is under `TAIL_FLOOR`
+(1e-20, −400 dB) at the end of every block, so that a tail runs down by its own arithmetic,
+far above the numbers it stops at, and then is zero
+(`a_note_through_a_filter_of_each_type_and_cutoff_ends_in_silence_after_it_is_let_go`). The
+built-in delay and reverb, at their defaults, ran down to zero within 100 seconds (watched
+for ten minutes); a plugin of another make has what it has.
+
 **Null backend.** `--audio-device none` (`audio::NULL_DEVICE`) opens no host and
 no device: a thread named `tang-null-audio` renders a block every
 `buffer / sample rate` seconds (5.3 ms at 256 frames and 48 kHz) with the same

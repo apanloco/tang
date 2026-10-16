@@ -54,6 +54,14 @@ const ACID_FB_HP_HZ: f32 = 30.0;
 /// zipper noise when dragged or modulated at block rate.
 const SMOOTH_SEC: f32 = 0.005;
 
+/// A state under this is zero (−400 dB, far under anything heard). The renderer has the
+/// processor flush denormals (`audio::NoDenormals`), and a state that runs down to the
+/// smallest numbers then stops short of zero: `s += g * (x - s)` adds a product that is
+/// itself flushed, so `s` stays where it is, and the filter put out that constant (2e-38
+/// to 5e-35, by the type and the cutoff) for as long as it was watched. The numbers it
+/// stops at are far under this, so the tail runs down by its own arithmetic until it is.
+const TAIL_FLOOR: f32 = 1e-20;
+
 /// A stereo multimode filter. Types 0–3 are a trapezoidal state-variable
 /// filter (Simper SVF) — clean, stable under cutoff modulation. Types 4–6
 /// are nonlinear zero-delay-style analog models run at 2× internal
@@ -117,6 +125,20 @@ impl Filter {
     /// Map the Q parameter onto an analog model's feedback range.
     fn feedback(&self, k_max: f32) -> f32 {
         k_max * (self.q_smoothed - Q_MIN) / (Q_MAX - Q_MIN)
+    }
+
+    /// Let the states that have run down to nothing go to zero (`TAIL_FLOOR`): once a
+    /// block, since a state that has stopped does not move within one.
+    fn flush_tails(&mut self) {
+        let floor = |s: &mut f32| {
+            if s.abs() < TAIL_FLOOR {
+                *s = 0.0;
+            }
+        };
+        self.svf.iter_mut().flatten().for_each(floor);
+        for st in &mut self.analog {
+            st.s.iter_mut().chain(std::iter::once(&mut st.fb_lp)).for_each(floor);
+        }
     }
 }
 
@@ -301,6 +323,7 @@ impl Plugin for Filter {
             }
         }
 
+        self.flush_tails();
         Ok(())
     }
 
@@ -419,6 +442,32 @@ mod tests {
 
     fn gain_at(filter: &mut Filter, freq: f32) -> f32 {
         gain_at_amp(filter, freq, 1.0)
+    }
+
+    /// The left side of `input` (both sides are the same) run through `filter` in blocks of `block` frames.
+    fn run_in_blocks(filter: &mut Filter, input: &[f32], block: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(input.len());
+        for chunk in input.chunks(block) {
+            let mut out_l = vec![0.0f32; chunk.len()];
+            let mut out_r = vec![0.0f32; chunk.len()];
+            {
+                let ins: Vec<&[f32]> = vec![chunk, chunk];
+                let mut outs: Vec<&mut [f32]> = vec![&mut out_l, &mut out_r];
+                filter.process(&[], &ins, &mut outs).unwrap();
+            }
+            out.extend_from_slice(&out_l);
+        }
+        out
+    }
+
+    #[test]
+    fn the_output_is_the_same_however_the_input_is_cut_into_blocks() {
+        let input: Vec<f32> = (0..4096).map(|n| 0.5 * (TAU * 220.0 * n as f32 / SAMPLE_RATE).sin()).collect();
+        for (mode, name) in TYPE_NAMES.iter().enumerate() {
+            let whole = run_in_blocks(&mut filter_at_mid_cutoff(mode as f32), &input, input.len());
+            let cut = run_in_blocks(&mut filter_at_mid_cutoff(mode as f32), &input, 64);
+            assert!(whole == cut, "{name}");
+        }
     }
 
     /// Filter with cutoff at 0.5 → 20 * 1000^0.5 ≈ 632 Hz.

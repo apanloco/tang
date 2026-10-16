@@ -118,6 +118,12 @@ fn promote_to_realtime() {
 /// for the plugins the block runs as much as for the built-in ones. A guard is for the
 /// time of a block and not set once for the thread, since a host's callback is
 /// not always on a thread of its own and a plugin may change the unit.
+///
+/// What it does not do is end a tail. A state that moves by a product of its own
+/// distance to something (`s += g * (x - s)`) stops where that product is flushed,
+/// and stays there: the built-in filter's output was a constant of 2e-38 to 5e-35 (by its
+/// type and cutoff) for as long as it was watched, and it lets go of its states under
+/// `TAIL_FLOOR` now.
 struct NoDenormals {
     saved: fpu::State,
     /// The state is the thread's: this is put back on the thread it was taken from.
@@ -652,16 +658,16 @@ mod tests {
 
     // -- Denormals --
 
-    /// A note through a filter that is shut (its lowest cutoff) and let go at once: what it leaves
-    /// in the filter takes a long time to run down, through every number a 32-bit float can hold.
-    const SHUT_FILTER: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nrelease = 0.002\n\
-                               [[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = 0.0\n";
+    /// A note through a delay of a millisecond with the most feedback it has, let go at once: the repeats run down, as the tail of a note does,
+    /// through every number a 32-bit float can hold.
+    const FAST_ECHO: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nrelease = 0.002\n\
+                             [[instrument.effect]]\nplugin = \"builtin:delay\"\nmix = 1.0\n[instrument.effect.params]\ntime = 0.001\nfeedback = 0.95\n";
 
-    /// Render the note of `SHUT_FILTER` and the two seconds after it (the key is let go in the
+    /// Render the note of `FAST_ECHO` and the two seconds after it (the key is let go in the
     /// fifth block) with `render`, and count the samples that are denormal: not zero, and nearer
     /// to it than the smallest normal number.
     fn denormals_in_the_tail(render: impl Fn(&mut Renderer, &mut [f32], u64)) -> usize {
-        let mut rig = rig(SHUT_FILTER, 256);
+        let mut rig = rig(FAST_ECHO, 256);
         rig.midi_tx.send(NOTE_ON_A4).unwrap();
         let mut data = vec![0.0f32; 256 * 2];
         let mut denormals = 0;
@@ -676,16 +682,78 @@ mod tests {
     }
 
     #[test]
-    fn the_tail_of_a_shut_filter_goes_through_denormals_when_the_unit_is_left_as_it_is() {
+    fn the_tail_of_a_fast_echo_goes_through_denormals_when_the_unit_is_left_as_it_is() {
         // The witness of the test below: without it, that test would pass for a tail that never had one.
         let denormals = denormals_in_the_tail(|renderer, data, cb| renderer.render_block(data, cb));
         assert!(denormals > 0, "the tail has denormal samples, which are slow to compute with on some processors");
     }
 
     #[test]
-    fn a_rendered_block_has_no_denormals_in_it_even_in_the_tail_of_a_shut_filter() {
+    fn a_rendered_block_has_no_denormals_in_it_even_in_the_tail_of_a_fast_echo() {
         let denormals = denormals_in_the_tail(|renderer, data, cb| renderer.render(data, cb));
         assert_eq!(denormals, 0, "denormals are flushed to zero while a block is rendered");
+    }
+
+    // -- Tails that end --
+
+    /// The loudest sample of each block of a note of `session` that is let go in block `hold`, from the release on, for `seconds`.
+    fn tail_peaks(session: &str, hold: usize, seconds: f32) -> Vec<f32> {
+        let mut rig = rig(session, 256);
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        let mut data = vec![0.0f32; 256 * 2];
+        let mut peaks = Vec::new();
+        for cb in 0..hold + (seconds * 48_000.0 / 256.0) as usize {
+            if cb == hold {
+                rig.midi_tx.send((0, [0x80, 69, 0])).unwrap();
+            }
+            rig.renderer.render(&mut data, cb as u64);
+            if cb >= hold {
+                peaks.push(data.iter().fold(0.0f32, |peak, s| peak.max(s.abs())));
+            }
+        }
+        peaks
+    }
+
+    /// A saw through the built-in filter of `kind` (its `type` parameter) at `cutoff`, with the resonance the tracer has.
+    fn saw_through_a_filter(kind: usize, cutoff: f32) -> String {
+        format!(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nwaveform = 3.0\n\
+             [[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = {cutoff}\nresonance = 2.0\ntype = {kind}.0\n"
+        )
+    }
+
+    #[test]
+    fn a_note_through_a_filter_of_each_type_and_cutoff_ends_in_silence_after_it_is_let_go() {
+        let mut never = Vec::new();
+        for kind in 0..7 {
+            for cutoff in [0.0, 0.1, 0.5, 0.9] {
+                if tail_peaks(&saw_through_a_filter(kind, cutoff), 100, 8.0).last() != Some(&0.0) {
+                    never.push(format!("type {kind} at cutoff {cutoff}"));
+                }
+            }
+        }
+        assert!(never.is_empty(), "still not silent 8 seconds after the note: {never:?}");
+    }
+
+    /// The tracer's filter: a low-pass at 0.5 that an LFO of 0.5 Hz sweeps by 0.4 of its range, so that the cutoff it has when the key goes up is anywhere from 0.1 to 0.9.
+    const SWEPT_FILTER: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nwaveform = 3.0\n\
+        [[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = 0.5\nresonance = 2.0\n\
+        [[instrument.modulator]]\ntype = \"lfo\"\nrate = 0.5\n[[instrument.modulator.target]]\nslot = 1\nparam = \"cutoff\"\ndepth = 0.4\n";
+
+    #[test]
+    fn a_note_through_a_filter_that_an_lfo_sweeps_ends_in_silence_wherever_the_sweep_is_when_it_is_let_go() {
+        // The LFO's turn takes two seconds, which is 375 blocks: the releases are spread over it.
+        let never: Vec<usize> = (60..60 + 375).step_by(25).filter(|&hold| tail_peaks(SWEPT_FILTER, hold, 8.0).last() != Some(&0.0)).collect();
+        assert!(never.is_empty(), "still not silent 8 seconds after the note, let go in block: {never:?}");
+    }
+
+    #[test]
+    fn the_last_sound_in_the_tail_of_a_note_through_a_shut_filter_is_under_1e_15() {
+        // The tail that runs down the slowest: what is cut off when the filter lets go of it is not heard.
+        let peaks = tail_peaks(&saw_through_a_filter(0, 0.0), 100, 8.0);
+        let last_sound = peaks.iter().rev().find(|&&peak| peak != 0.0).copied().expect("a note has a sound");
+        assert!(last_sound < 1e-15, "{last_sound:e}");
+        assert_eq!(peaks.last(), Some(&0.0), "and then it is silent");
     }
 
     #[test]
