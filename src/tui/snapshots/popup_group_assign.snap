@@ -14,9 +14,9 @@ source: src/tui/golden_tests.rs
 │  ~ ADSR → Mod 0 rate (30%)  (bus)              ││  release                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.01│
 │♪ Oscillator  [Built-in]  -B3                   ││  pan                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
 │├ fx Filter  [Built-in]         ┌ Assign to group ───────────────────────────────────┐                                │
-│╰ ~ LFO 0.2Hz triangle → Filter:│/                                                   │                                │
-│                                │Group                                               │                                │
-│                                │New group                                           │                                │
+│╰ ~ LFO 0.2Hz triangle → Filter:│/                                                   │░░░░░░░░░░░░░░░░░░░░░░░     0.15│
+│                                │Group                                               │▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.50│
+│                                │New group                                           │▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.50│
 │                                │Pad                                                 │                                │
 │                                │                                                    │                                │
 │                                │                                                    │                                │
@@ -47,9 +47,9 @@ ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeecb..bbbbbbbbbbbbbbbbbbbbbbbbbbb
 ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee..............cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaa...................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbb.........ffffffffffffffffffffffffffffffffffffffffffffffffffffff................................b
-ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeefbbg.................................................f................................b
-c................................fhhhhh...............................................f................................b
-c................................faaaaaaaaa...........................................f................................b
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeefbbg.................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................fhhhhh...............................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................faaaaaaaaa...........................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 c................................f....................................................f................................b
 c................................f....................................................f................................b
 c................................f....................................................f................................b

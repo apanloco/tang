@@ -37,15 +37,20 @@ impl Waveform {
         }
     }
 
-    /// Render one sample for a phase in [0.0, 1.0).
-    fn sample(self, phase: f32) -> f32 {
+    /// Render one sample for a phase in [0.0, 1.0). `pulse` is how much of the cycle a square is high (the other waveforms have no use for it).
+    fn sample(self, phase: f32, pulse: f32) -> f32 {
         match self {
             Waveform::Sine => (2.0 * PI * phase).sin(),
             // Triangle in [-1, 1]: rises 0→1 over [0, 0.25), falls 1→-1 over
             // [0.25, 0.75), rises -1→0 over [0.75, 1.0).
             Waveform::Triangle => 4.0 * (phase - (phase + 0.5).floor()).abs() - 1.0,
-            // Naïve square (no anti-aliasing): +1 for first half, -1 for second.
-            Waveform::Square => if phase < 0.5 { 1.0 } else { -1.0 },
+            // Naïve square (no anti-aliasing): +1 for the first `pulse` of the cycle, -1 for the rest, with the offset that a pulse that is not
+            // a half has taken out (its mean is 2 * pulse - 1) and scaled so that its higher side is at most 1: a half is the square it was.
+            Waveform::Square => {
+                let offset = 2.0 * pulse - 1.0;
+                let scale = (2.0 - 2.0 * pulse).max(2.0 * pulse);
+                (if phase < pulse { 1.0 } else { -1.0 } - offset) / scale
+            }
             // Naïve rising sawtooth (no anti-aliasing): -1 → +1 across the cycle.
             Waveform::Saw => 2.0 * phase - 1.0,
         }
@@ -71,6 +76,13 @@ pub struct Oscillator {
     /// Smoothed pan actually applied (same anti-zipper ramp as `volume`).
     pan_smoothed: f32,
     waveform: Waveform,
+    /// How many oscillators sound for each note (a unison, 1 to `MAX_UNISON`), how far the outer ones are from the pitch of the note in
+    /// semitones, and how far across the stereo field they are put (0 is all in the middle, 1 puts the outer ones in a channel each).
+    unison: usize,
+    spread: f32,
+    width: f32,
+    /// How much of the cycle a square is high.
+    pulse: f32,
     /// Per-voice envelope: attack/decay/release in seconds, sustain 0.0–1.0.
     attack: f32,
     decay: f32,
@@ -87,12 +99,30 @@ enum VoiceState {
 }
 
 struct Voice {
-    phase: f32,
+    /// The place in its cycle of each of the oscillators of the note (the first `Oscillator::unison` of them are in use).
+    phases: [f32; MAX_UNISON],
     amp: f32,
     state: VoiceState,
 }
 
-pub const PARAM_COUNT: usize = 8; // waveform, detune, volume, attack, decay, sustain, release, pan
+impl Voice {
+    /// A voice that begins its envelope, with its oscillators spread over the cycle (the first at its beginning, which is where a note
+    /// has always begun) so that the oscillators of a unison do not start as one.
+    fn new() -> Self {
+        Self { phases: std::array::from_fn(|u| (u as f32 * 0.618_034).fract()), amp: 0.0, state: VoiceState::Attack }
+    }
+}
+
+// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse
+pub const PARAM_COUNT: usize = 12;
+
+/// The most oscillators that sound for a note.
+const MAX_UNISON: usize = 7;
+/// The `spread` parameter's top, in semitones.
+const SPREAD_MAX: f32 = 1.0;
+/// The pulse width's lowest and highest: a pulse that is narrower is a click.
+const PULSE_MIN: f32 = 0.05;
+const PULSE_MAX: f32 = 0.95;
 
 /// The keys of a keyboard: one voice for each is the most there can be.
 const KEYS: usize = 128;
@@ -118,6 +148,10 @@ const MIN_RAMP_SEC: f32 = 0.002;
 /// Maximum envelope time in seconds (matches the modulator envelope UI).
 const ADSR_TIME_MAX: f32 = 10.0;
 
+/// What the unison's spread and width start at: they do nothing until a unison is of more than one oscillator.
+const DEFAULT_SPREAD: f32 = 0.15;
+const DEFAULT_WIDTH: f32 = 0.5;
+
 // One-pole smoothing time constant for the volume parameter.
 const VOLUME_SMOOTH_SEC: f32 = 0.005;
 
@@ -133,6 +167,10 @@ impl Oscillator {
             pan: 0.0,
             pan_smoothed: 0.0,
             waveform,
+            unison: 1,
+            spread: DEFAULT_SPREAD,
+            width: DEFAULT_WIDTH,
+            pulse: 0.5,
             attack: DEFAULT_ATTACK_SEC,
             decay: DEFAULT_DECAY_SEC,
             sustain: DEFAULT_SUSTAIN,
@@ -191,6 +229,29 @@ impl Plugin for Oscillator {
         let release_inc = 1.0 / (self.release.max(MIN_RAMP_SEC) * self.sample_rate);
         let volume_alpha = 1.0 - (-1.0 / (VOLUME_SMOOTH_SEC * self.sample_rate)).exp();
 
+        // The oscillators of a unison, spread evenly from -1 to 1 (a single one is in the middle): each one's pitch is that many `spread`s from
+        // the note's, each is put that many `width`s across the channels (with the same power wherever it is, which is the level of one in the
+        // middle at both channels, so that the width does not change how loud the sum is: not by a balance, which would take it down towards
+        // the sides; and none on a single channel), and the sum is brought down by the root of how many there are, which keeps the level of what
+        // is not in step.
+        let voices = self.unison.clamp(1, MAX_UNISON);
+        let mut ratios = [1.0f32; MAX_UNISON];
+        let mut gains = [(1.0f32, 1.0f32); MAX_UNISON];
+        let width = if audio_out.len() > 1 { self.width } else { 0.0 };
+        let norm = 1.0 / (voices as f32).sqrt();
+        for u in 0..voices {
+            let place = if voices > 1 { 2.0 * u as f32 / (voices - 1) as f32 - 1.0 } else { 0.0 };
+            ratios[u] = 2.0f32.powf(self.spread * place / 12.0);
+            let across = width * place;
+            gains[u] = if across == 0.0 {
+                (norm, norm)
+            } else {
+                let angle = (across + 1.0) * std::f32::consts::FRAC_PI_4;
+                (std::f32::consts::SQRT_2 * angle.cos() * norm, std::f32::consts::SQRT_2 * angle.sin() * norm)
+            };
+        }
+        let pulse = self.pulse;
+
         for frame in 0..block_size {
             // Process MIDI events at this frame
             while event_idx < midi_events.len() && midi_events[event_idx].0 as usize <= frame {
@@ -204,11 +265,7 @@ impl Plugin for Oscillator {
                         self.voices
                             .entry(note)
                             .and_modify(|v| v.state = VoiceState::Attack)
-                            .or_insert(Voice {
-                                phase: 0.0,
-                                amp: 0.0,
-                                state: VoiceState::Attack,
-                            });
+                            .or_insert_with(Voice::new);
                     }
                     0x80 | 0x90 => {
                         if let Some(v) = self.voices.get_mut(&note) {
@@ -225,7 +282,7 @@ impl Plugin for Oscillator {
             // voices are added/removed (dividing by voice count causes
             // existing voices to suddenly change volume).
             const VOICE_GAIN: f32 = 0.25;
-            let mut sample = 0.0_f32;
+            let (mut sample_l, mut sample_r) = (0.0_f32, 0.0_f32);
             for (&note, voice) in self.voices.iter_mut() {
                 match voice.state {
                     VoiceState::Attack => {
@@ -255,10 +312,14 @@ impl Plugin for Oscillator {
                 }
 
                 let freq = Self::note_to_freq(note, self.detune);
-                sample += self.waveform.sample(voice.phase) * voice.amp * VOICE_GAIN;
-                voice.phase += freq / self.sample_rate;
-                if voice.phase >= 1.0 {
-                    voice.phase -= 1.0;
+                for u in 0..voices {
+                    let heard = self.waveform.sample(voice.phases[u], pulse) * voice.amp * VOICE_GAIN;
+                    sample_l += heard * gains[u].0;
+                    sample_r += heard * gains[u].1;
+                    voice.phases[u] += freq * ratios[u] / self.sample_rate;
+                    if voice.phases[u] >= 1.0 {
+                        voice.phases[u] -= 1.0;
+                    }
                 }
             }
 
@@ -268,7 +329,7 @@ impl Plugin for Oscillator {
 
             self.volume_smoothed += (self.volume - self.volume_smoothed) * volume_alpha;
             self.pan_smoothed += (self.pan - self.pan_smoothed) * volume_alpha;
-            let mono = sample * self.volume_smoothed;
+            let (left, right) = (sample_l * self.volume_smoothed, sample_r * self.volume_smoothed);
 
             // Balance-style pan: center leaves both channels at full (matching
             // the old mono-to-both behavior), panning attenuates the far channel.
@@ -279,11 +340,11 @@ impl Plugin for Oscillator {
                 (1.0, 1.0 + p)
             };
             if audio_out.len() > 1 {
-                audio_out[0][frame] = mono * left_gain;
-                audio_out[1][frame] = mono * right_gain;
+                audio_out[0][frame] = left * left_gain;
+                audio_out[1][frame] = right * right_gain;
             } else {
-                // Mono output: pan collapses to full level.
-                audio_out[0][frame] = mono;
+                // Mono output: pan collapses to full level, and the voices of a unison have no width (the two sums are the same).
+                audio_out[0][frame] = left;
             }
         }
 
@@ -366,6 +427,42 @@ impl Plugin for Oscillator {
                 default: 0.0,
                 ..Default::default()
             },
+            ParameterInfo {
+                index: 8,
+                name: "unison".into(),
+                min: 0.0,
+                max: (MAX_UNISON - 1) as f32,
+                default: 0.0,
+                // (Named by how many, and the value is the place in the list: 0 is one oscillator.)
+                labels: Some((1..=MAX_UNISON).map(|n| n.to_string()).collect()),
+                step_count: (MAX_UNISON - 1) as u32,
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 9,
+                name: "spread".into(),
+                min: 0.0,
+                max: SPREAD_MAX,
+                default: DEFAULT_SPREAD,
+                unit: Some("st".into()),
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 10,
+                name: "width".into(),
+                min: 0.0,
+                max: 1.0,
+                default: DEFAULT_WIDTH,
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 11,
+                name: "pulse".into(),
+                min: PULSE_MIN,
+                max: PULSE_MAX,
+                default: 0.5,
+                ..Default::default()
+            },
         ]
     }
 
@@ -379,6 +476,10 @@ impl Plugin for Oscillator {
             5 => Some(self.sustain),
             6 => Some(self.release),
             7 => Some(self.pan),
+            8 => Some((self.unison - 1) as f32),
+            9 => Some(self.spread),
+            10 => Some(self.width),
+            11 => Some(self.pulse),
             _ => None,
         }
     }
@@ -417,6 +518,22 @@ impl Plugin for Oscillator {
                 self.pan = value.clamp(PAN_MIN, PAN_MAX);
                 Ok(())
             }
+            8 => {
+                self.unison = value.round().clamp(0.0, (MAX_UNISON - 1) as f32) as usize + 1;
+                Ok(())
+            }
+            9 => {
+                self.spread = value.clamp(0.0, SPREAD_MAX);
+                Ok(())
+            }
+            10 => {
+                self.width = value.clamp(0.0, 1.0);
+                Ok(())
+            }
+            11 => {
+                self.pulse = value.clamp(PULSE_MIN, PULSE_MAX);
+                Ok(())
+            }
             _ => anyhow::bail!("no parameter with index {index}"),
         }
     }
@@ -432,6 +549,8 @@ impl Plugin for Oscillator {
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::TAU;
+
     use super::*;
 
     const SAMPLE_RATE: f32 = 48000.0;
@@ -498,10 +617,10 @@ mod tests {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan"]
+            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse"]
         );
-        // The waveform parameter is an enum.
-        assert!(params[0].labels.is_some());
+        // The waveform parameter is an enum, and so is the unison (a choice of how many).
+        assert!(params[0].labels.is_some() && params[8].labels.is_some());
     }
 
     #[test]
@@ -719,5 +838,281 @@ mod tests {
             (ratio - 0.5).abs() < 0.02,
             "expected sustain at ~0.5 of full level, got ratio {ratio}"
         );
+    }
+
+    // What the oscillator rendered before it had a unison and a pulse width, for a chord of three notes of which one is let go of a block in and
+    // two are at the end (a note-on at frames 0, 100 and 200, then let go of at 1074, 3072 and 3092): the left channel's sum and its sum weighted
+    // by the frame, and ten of its samples. The new parameters start at what changes nothing, so that a session that was made before them sounds as it did.
+    // (A chord is summed in the order of a hash map, which is not the same from one run to the next, so the numbers are compared to a millionth.)
+    const BEFORE: [(Waveform, f64, f64, [f32; 10]); 4] = [
+        (Waveform::Sine, 0.34626, -1277.736, [0.0, 0.0000892, 0.0002673, -0.1238491, 0.0672553, -0.1482764, 0.0137012, -0.422_891, -0.3707744, 0.0]),
+        (Waveform::Triangle, 1.80225, 969.254, [-0.0013021, -0.0025474, -0.0037359, -0.0283506, -0.3617573, 0.291_47, 0.0944284, 0.0905470, -0.0759250, 0.0]),
+        (Waveform::Square, 1.12672, -1763.233, [0.0013021, 0.0026042, 0.0039062, -0.1302082, 0.25, -0.25, -0.0646708, -0.5, -0.4878473, 0.0]),
+        (Waveform::Saw, -0.49097, 1103.494, [-0.0013021, -0.0025758, -0.0038211, 0.1040787, -0.2404989, 0.0677222, -0.0890651, 0.2047265, 0.2818861, 0.0]),
+    ];
+
+    /// The chord of `BEFORE`, rendered in four blocks of 1024 frames: both channels.
+    fn chord(osc: &mut Oscillator) -> (Vec<f32>, Vec<f32>) {
+        let (mut left, mut right) = (vec![0.0f32; 4096], vec![0.0f32; 4096]);
+        let blocks: [Vec<(u64, [u8; 3])>; 4] = [
+            vec![(0, [0x90, 60, 100]), (100, [0x90, 64, 100]), (200, [0x90, 67, 90])],
+            vec![(50, [0x80, 64, 0])],
+            vec![],
+            vec![(10, [0x80, 60, 0]), (20, [0x80, 67, 0])],
+        ];
+        for (block, events) in blocks.iter().enumerate() {
+            let span = block * 1024..(block + 1) * 1024;
+            let mut out: [&mut [f32]; 2] = [&mut left[span.clone()], &mut right[span]];
+            osc.process(events, &[], &mut out).unwrap();
+        }
+        (left, right)
+    }
+
+    #[test]
+    fn the_oscillator_renders_what_it_did_before_it_had_a_unison_and_a_pulse_width() {
+        for (waveform, sum, weighted, picks) in BEFORE {
+            let (left, right) = chord(&mut Oscillator::new(SAMPLE_RATE, waveform));
+            let name = waveform.to_param();
+            assert_eq!(left, right, "waveform {name}: a centred sound is the same on both sides");
+            assert!((left.iter().map(|&x| f64::from(x)).sum::<f64>() - sum).abs() < 1e-3, "waveform {name}: the sum");
+            assert!((left.iter().enumerate().map(|(i, &x)| f64::from(x) * (i as f64 + 1.0)).sum::<f64>() - weighted).abs() < 0.05, "waveform {name}: the weighted sum");
+            for (&frame, expected) in [0usize, 1, 2, 150, 700, 1023, 1500, 2500, 3100, 4000].iter().zip(picks) {
+                assert!((left[frame] - expected).abs() < 1e-5, "waveform {name}, frame {frame}: {} for {expected}", left[frame]);
+            }
+        }
+    }
+
+    /// A note that is 480 Hz, so that a cycle is a hundred frames: the detune that makes the A of 440 Hz that is.
+    fn hundred_frame_cycle(waveform: Waveform) -> Oscillator {
+        let mut osc = Oscillator::new(SAMPLE_RATE, waveform);
+        osc.set_parameter(1, 12.0 * (480.0f32 / 440.0).log2()).unwrap();
+        osc
+    }
+
+    #[test]
+    fn the_pulse_width_is_how_much_of_the_cycle_of_a_square_is_high_and_it_has_no_offset() {
+        for (width, high, low) in [(0.5, 0.25, -0.25), (0.25, 0.25, -0.25 / 3.0), (0.1, 0.25, -0.25 / 9.0), (0.75, 0.25 / 3.0, -0.25), (0.9, 0.25 / 9.0, -0.25)] {
+            let mut osc = hundred_frame_cycle(Waveform::Square);
+            osc.set_parameter(11, width).unwrap();
+            let left = render(&mut osc, &[(0, [0x90, 69, 100])], 6000);
+            // A hundred cycles, past the attack: the share of frames that are high, the mean (none) and the two levels.
+            let settled = &left[2000..5000];
+            let share = settled.iter().filter(|&&x| x > 0.0).count() as f32 / settled.len() as f32;
+            let mean = settled.iter().sum::<f32>() / settled.len() as f32;
+            let top = settled.iter().fold(f32::MIN, |m, &x| m.max(x));
+            let bottom = settled.iter().fold(f32::MAX, |m, &x| m.min(x));
+            assert!((share - width).abs() < 0.02, "pulse {width}: {share} of the cycle is high");
+            assert!(mean.abs() < 0.003, "pulse {width}: the mean is {mean}, and a pulse has none");
+            assert!((top - high).abs() < 1e-3 && (bottom - low).abs() < 1e-3, "pulse {width}: {bottom} to {top}");
+        }
+    }
+
+    #[test]
+    fn the_pulse_width_is_the_square_s_alone() {
+        for waveform in [Waveform::Sine, Waveform::Triangle, Waveform::Saw] {
+            let mut narrow = Oscillator::new(SAMPLE_RATE, waveform);
+            narrow.set_parameter(11, 0.1).unwrap();
+            let mut plain = Oscillator::new(SAMPLE_RATE, waveform);
+            let events = [(0u64, [0x90u8, 60, 100])];
+            assert_eq!(render(&mut narrow, &events, 2000), render(&mut plain, &events, 2000), "waveform {}", waveform.to_param());
+        }
+    }
+
+    /// The magnitude of the part of `signal` that is a sine of `hz` (Goertzel): the amplitude of that sine if there is one.
+    fn magnitude(signal: &[f32], hz: f32) -> f32 {
+        let w = TAU * hz / SAMPLE_RATE;
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &x in signal {
+            let s0 = f64::from(x) + 2.0 * f64::from(w).cos() * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        let power = s1 * s1 + s2 * s2 - 2.0 * f64::from(w).cos() * s1 * s2;
+        (power.sqrt() * 2.0 / signal.len() as f64) as f32
+    }
+
+    #[test]
+    fn a_unison_of_three_is_three_voices_a_spread_apart_each_a_third_of_the_power() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(8, 2.0).unwrap(); // three voices
+        osc.set_parameter(9, 1.0).unwrap(); // a semitone each way
+        osc.set_parameter(10, 0.0).unwrap();
+        let left = render(&mut osc, &[(0, [0x90, 69, 100])], 24_000);
+        let settled = &left[4000..];
+        // Each voice is a sine of 0.25 (the voice's gain) over the root of 3, whole cycles or not.
+        let each = 0.25 / 3.0f32.sqrt();
+        for (name, hz) in [("below", 440.0 * 2.0f32.powf(-1.0 / 12.0)), ("in the middle", 440.0), ("above", 440.0 * 2.0f32.powf(1.0 / 12.0))] {
+            let heard = magnitude(settled, hz);
+            assert!((heard - each).abs() < 0.1 * each, "the voice {name} ({hz} Hz) is {heard} and should be {each}");
+        }
+        // And nothing between them: half a semitone up is not a voice.
+        assert!(magnitude(settled, 440.0 * 2.0f32.powf(0.5 / 12.0)) < 0.2 * each);
+    }
+
+    #[test]
+    fn seven_is_the_most_voices_of_a_unison_and_every_one_of_them_sounds() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(8, 6.0).unwrap();
+        osc.set_parameter(9, 1.0).unwrap();
+        osc.set_parameter(10, 0.0).unwrap();
+        let left = render(&mut osc, &[(0, [0x90, 69, 100])], 48_000);
+        let each = 0.25 / 7.0f32.sqrt();
+        // Seven voices from a semitone below to a semitone above, a third of a semitone apart: the one in the middle is the note.
+        for place in -3..=3 {
+            let hz = 440.0 * 2.0f32.powf(place as f32 / 3.0 / 12.0);
+            let heard = magnitude(&left[8000..], hz);
+            assert!((heard - each).abs() < 0.15 * each, "voice {place} ({hz} Hz) is {heard} and should be {each}");
+        }
+    }
+
+    #[test]
+    fn the_lowest_voice_of_a_unison_is_on_the_left_and_the_highest_on_the_right() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(8, 1.0).unwrap(); // two voices
+        osc.set_parameter(9, 1.0).unwrap();
+        osc.set_parameter(10, 1.0).unwrap();
+        let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+        let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+        osc.process(&[(0, [0x90, 69, 100])], &[], &mut out).unwrap();
+        let (below, above) = (440.0 * 2.0f32.powf(-1.0 / 12.0), 440.0 * 2.0f32.powf(1.0 / 12.0));
+        let each = 0.25 * std::f32::consts::SQRT_2 / 2.0f32.sqrt();
+        // (Each is all in its channel, at full width, and at the level of one voice: the root of two for the width's power and the root of two
+        // of the voices cancel.)
+        assert!((magnitude(&left[4000..], below) - each).abs() < 0.1 * each && magnitude(&left[4000..], above) < 0.05 * each);
+        assert!((magnitude(&right[4000..], above) - each).abs() < 0.1 * each && magnitude(&right[4000..], below) < 0.05 * each);
+    }
+
+    #[test]
+    fn a_unison_of_one_has_no_spread_and_no_width() {
+        let mut plain = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        let mut spread = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        spread.set_parameter(9, 1.0).unwrap();
+        spread.set_parameter(10, 1.0).unwrap();
+        let (left, right) = chord(&mut plain);
+        let (spread_left, spread_right) = chord(&mut spread);
+        // (A chord is summed in the order of a hash map, which is not the same from one oscillator to the next: the sums are the same to a millionth.)
+        assert!(left.iter().zip(&spread_left).chain(right.iter().zip(&spread_right)).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+
+    #[test]
+    fn a_unison_keeps_about_the_level_of_one_voice() {
+        let rms = |signal: &[f32]| (signal.iter().map(|x| x * x).sum::<f32>() / signal.len() as f32).sqrt();
+        let mut one = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        let single = rms(&render(&mut one, &[(0, [0x90, 60, 100])], 48_000)[8000..]);
+        for voices in [2.0, 4.0, 6.0] {
+            let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+            osc.set_parameter(8, voices).unwrap();
+            osc.set_parameter(9, 0.3).unwrap();
+            let level = rms(&render(&mut osc, &[(0, [0x90, 60, 100])], 48_000)[8000..]);
+            // (Voices that are a fraction of a semitone apart are in step for a good part of a second, so the sum is a little over the root: one
+            // that was not brought down would be 2.6 times the level of one at seven, and one that were brought down by the number, 0.38.)
+            assert!(level > 0.8 * single && level < 1.25 * single, "{} voices: {level} for {single}", voices + 1.0);
+        }
+    }
+
+    #[test]
+    fn the_width_puts_the_voices_of_a_unison_across_the_channels() {
+        let render_both = |width: f32| {
+            let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+            osc.set_parameter(8, 2.0).unwrap();
+            osc.set_parameter(9, 0.3).unwrap();
+            osc.set_parameter(10, width).unwrap();
+            let (mut left, mut right) = (vec![0.0f32; 12_000], vec![0.0f32; 12_000]);
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            osc.process(&[(0, [0x90, 60, 100])], &[], &mut out).unwrap();
+            (left, right)
+        };
+        let (left, right) = render_both(0.0);
+        assert_eq!(left, right, "no width: every voice in the middle");
+        // With the whole width the first voice is on the left alone and the last on the right alone, the middle one on both.
+        let (left, right) = render_both(1.0);
+        assert_ne!(left, right);
+        let correlation = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() / (a.iter().map(|x| x * x).sum::<f32>() * b.iter().map(|x| x * x).sum::<f32>()).sqrt();
+        assert!(correlation(&left[4000..], &right[4000..]) < 0.9, "{}", correlation(&left[4000..], &right[4000..]));
+    }
+
+    #[test]
+    fn the_width_does_not_change_how_loud_a_channel_is() {
+        // A balance would take the voices that are put at the side out of the channel at the other side; the width is of the same power wherever
+        // the voices are, so that a channel has the level of one voice, with no width and with all of it.
+        let rms_of_left = |width: f32| {
+            let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+            osc.set_parameter(8, 4.0).unwrap();
+            osc.set_parameter(9, 0.5).unwrap();
+            osc.set_parameter(10, width).unwrap();
+            let left = render(&mut osc, &[(0, [0x90, 60, 100])], 48_000);
+            (left[8000..].iter().map(|x| x * x).sum::<f32>() / 40_000.0).sqrt()
+        };
+        let ratio = rms_of_left(1.0) / rms_of_left(0.0);
+        assert!(ratio > 0.9 && ratio < 1.1, "{ratio}");
+    }
+
+    #[test]
+    fn a_unison_has_the_voices_of_a_note_apart_in_phase_so_that_they_do_not_start_as_one() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        osc.set_parameter(8, 2.0).unwrap();
+        osc.set_parameter(9, 0.0).unwrap();
+        // With no spread the three voices have the same pitch, and if they began together they would be one voice three times as loud.
+        let mut single = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        let with = render(&mut osc, &[(0, [0x90, 60, 100])], 12_000);
+        let without = render(&mut single, &[(0, [0x90, 60, 100])], 12_000);
+        let peak = |signal: &[f32]| signal[4000..].iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(peak(&with) < 0.8 * 3.0f32.sqrt() * peak(&without), "{} against {}", peak(&with), peak(&without));
+    }
+
+    #[test]
+    fn a_unison_does_not_allocate_and_a_mono_output_is_the_sum_of_the_voices() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        osc.set_parameter(8, 6.0).unwrap();
+        osc.set_parameter(9, 0.5).unwrap();
+        osc.set_parameter(10, 1.0).unwrap();
+        let (mut left, mut right) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+        let on: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x90, note, 100])).collect();
+        let off: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x80, note, 0])).collect();
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for events in [&on[..], &[], &off[..], &[]] {
+                let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+                osc.process(events, &[], &mut out).unwrap();
+            }
+        });
+        assert_eq!(allocations, 0);
+        // On one channel there is nothing to put the voices across: it is all of them, with no width.
+        let mut mono = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        mono.set_parameter(8, 2.0).unwrap();
+        mono.set_parameter(9, 0.3).unwrap();
+        mono.set_parameter(10, 1.0).unwrap();
+        let mut only = vec![0.0f32; 2000];
+        mono.process(&[(0, [0x90, 60, 100])], &[], &mut [&mut only[..]]).unwrap();
+        let mut centred = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        centred.set_parameter(8, 2.0).unwrap();
+        centred.set_parameter(9, 0.3).unwrap();
+        centred.set_parameter(10, 0.0).unwrap();
+        assert_eq!(only, render(&mut centred, &[(0, [0x90, 60, 100])], 2000));
+    }
+
+    /// What a parameter says of itself: name, unit, lowest, highest, default and steps.
+    type Described<'a> = (&'a str, Option<&'a str>, f32, f32, f32, u32);
+
+    #[test]
+    fn the_new_parameters_round_trip_and_are_held_to_their_ranges() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        let parameters = osc.parameters();
+        let described: Vec<Described> = parameters[8..].iter().map(|p| (p.name.as_str(), p.unit.as_deref(), p.min, p.max, p.default, p.step_count)).collect();
+        assert_eq!(described, [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0)]);
+        // (A unison is a choice of one to seven voices, named by how many.)
+        assert_eq!(parameters[8].labels.as_deref().map(|l| l.join(" ")), Some("1 2 3 4 5 6 7".to_string()));
+        for (index, p) in parameters.iter().enumerate().skip(8) {
+            assert_eq!(osc.get_parameter(index as u32), Some(p.default), "{}", p.name);
+            osc.set_parameter(index as u32, p.max + 100.0).unwrap();
+            assert_eq!(osc.get_parameter(index as u32), Some(p.max), "{} held to its top", p.name);
+            osc.set_parameter(index as u32, p.min - 100.0).unwrap();
+            assert_eq!(osc.get_parameter(index as u32), Some(p.min), "{} held to its bottom", p.name);
+        }
+        assert!(osc.set_parameter(12, 0.0).is_err() && osc.get_parameter(12).is_none());
+        // A unison is a whole number of voices: a value between two is the nearer.
+        for (set, got) in [(2.4, 2.0), (2.6, 3.0), (0.4, 0.0), (5.6, 6.0)] {
+            osc.set_parameter(8, set).unwrap();
+            assert_eq!(osc.get_parameter(8), Some(got), "{set}");
+        }
     }
 }

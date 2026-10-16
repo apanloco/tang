@@ -22,10 +22,10 @@ source: src/tui/golden_tests.rs
 │                       │Oscillator          sustain                                           │                       │
 │                       │Oscillator          release                                           │                       │
 │                       │Oscillator          pan                                               │                       │
-│                       │Filter              cutoff                                            │                       │
-│                       │Filter              resonance                                         │                       │
-│                       │Filter              type                                              │                       │
-│                       │Filter              drive                                             │                       │
+│                       │Oscillator          unison                                            │                       │
+│                       │Oscillator          spread                                            │                       │
+│                       │Oscillator          width                                             │                       │
+│                       │Oscillator          pulse                                             │                       │
 │                       └──────────────────────────────────────────────────────────────────────┘                       │
 │                                                ││                                                                    │
 │                                                ││                                                                    │

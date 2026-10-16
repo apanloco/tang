@@ -22,10 +22,10 @@ source: src/tui/golden_tests.rs
 │                       │M0 Oscillator       sustain                                           │                       │
 │                       │M0 Oscillator       release                                           │                       │
 │                       │M0 Oscillator       pan                                               │                       │
-│                       │M1 Oscillator       waveform                                          │                       │
-│                       │M1 Oscillator       detune                                            │                       │
-│                       │M1 Oscillator       volume                                            │                       │
-│                       │M1 Oscillator       attack                                            │                       │
+│                       │M0 Oscillator       unison                                            │                       │
+│                       │M0 Oscillator       spread                                            │                       │
+│                       │M0 Oscillator       width                                             │                       │
+│                       │M0 Oscillator       pulse                                             │                       │
 │                       └──────────────────────────────────────────────────────────────────────┘                       │
 │                                                ││                                                                    │
 │                                                ││                                                                    │

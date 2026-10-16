@@ -148,6 +148,10 @@ mod tests {
                 row("sustain", None, &["Envelope"], 0),
                 row("release", Some("s"), &["Envelope"], 0),
                 row("pan", None, &[], 0),
+                row("unison", None, &[], 6),
+                row("spread", Some("st"), &[], 0),
+                row("width", None, &[], 0),
+                row("pulse", None, &[], 0),
             ]
         );
     }

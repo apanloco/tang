@@ -62,10 +62,10 @@ describe("the session for the performance test", () => {
   });
 
   test("names a parameter once in the layout, however many cables end at it", () => {
-    // Twelve cables on the ten parameters of a lane that can be driven: two of them are driven twice.
-    const crowded = stressSnapshot({ lanes: 1, lfosPerLane: 1, targetsPerLfo: 12 });
-    expect(crowded.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(12);
-    expect(crowded.telemetry.modulation.filter((entry) => entry.kind === "effective")).toHaveLength(10);
+    // Fifteen cables on the thirteen parameters of a lane that can be driven: two of them are driven twice.
+    const crowded = stressSnapshot({ lanes: 1, lfosPerLane: 1, targetsPerLfo: 15 });
+    expect(crowded.graph.edges.filter((edge) => edge.kind === "modulation")).toHaveLength(15);
+    expect(crowded.telemetry.modulation.filter((entry) => entry.kind === "effective")).toHaveLength(13);
   });
 
   test("has a telemetry layout with a slot for every output, every driven parameter and every meter, none twice", () => {

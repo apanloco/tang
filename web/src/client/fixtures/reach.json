@@ -609,6 +609,62 @@
                 "stepCount": 0,
                 "unit": null,
                 "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
               }
             ],
             "pinned": [],
@@ -824,6 +880,62 @@
                 "stepCount": 0,
                 "unit": null,
                 "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
               }
             ],
             "pinned": [],
@@ -968,6 +1080,62 @@
                 "stepCount": 0,
                 "unit": null,
                 "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
               }
             ],
             "pinned": [],
@@ -1261,6 +1429,62 @@
                 "stepCount": 0,
                 "unit": null,
                 "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
               }
             ],
             "pinned": [],

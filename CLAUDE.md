@@ -1828,7 +1828,22 @@ Plugin loading is behind a trait. Three formats supported:
   both channels at full; smoothed ~5 ms). Envelope defaults (A=4 ms, S=1.0, R=12 ms) reproduce the original
   click-guard ramps; envelope times are floored to 2 ms so extreme settings
   stay click-free. Voices ring until their release completes. The voices are in a map with room for every key, made with the oscillator, so a note-on
-  does not allocate on the audio thread (`notes_that_start_sound_and_end_do_not_allocate` counts). The old
+  does not allocate on the audio thread (`notes_that_start_sound_and_end_do_not_allocate` counts).
+  Four parameters were added after `pan` (so the others keep their places), and what they start at changes nothing: a chord of each waveform is held
+  to what it rendered before them by `the_oscillator_renders_what_it_did_before_it_had_a_unison_and_a_pulse_width`.
+  `unison` (a choice of 1 to 7 oscillators for each note, named by how many: the value is the place in the list, 0 is one; default 1) with `spread`
+  (0–1 semitone, default 0.15: how far the outer oscillators are from the pitch of the note, each way, the others evenly between) and `width` (0–1,
+  default 0.5: how far across the channels they are put, the lowest on the left and the highest on the right, by a law of equal power, so that a
+  channel keeps the level of one oscillator whatever the width is, and not by a balance, which would take them out of the other side); both do
+  nothing for a unison of one, and a single channel has no width. The oscillators of a note start in different places of their cycles (the first at
+  its beginning, as a note has always begun), and the sum is brought down by the root of how many there are. A change of the unison while a note
+  sounds adds or takes away an oscillator at once (a click: it is a choice, and not meant to be swept). `pulse` (0.05–0.95, default 0.5) is how much
+  of the cycle a square is high: the offset of a pulse that is not a half (its mean) is taken out and it is scaled so that its higher side is at most 1,
+  so that a half is the square it was and a narrow pulse does not carry a hum; the other waveforms have no use for it. A pulse is as naive as the
+  waveforms are (no band-limiting: it aliases at high pitches, a narrow one more than a half, as the square and the saw do).
+  TODO: the voices are in a hash map that is walked in an order that changes from one run to the next, so that the sum of a chord differs by a rounding
+  from one run to another (the pinned test compares to a millionth); a fixed array of the 128 notes would have a fixed order, and would be faster.
+  The old
   `builtin:sine`/`builtin:triangle`/`builtin:square` IDs still load (as
   aliases that start on that waveform) so older sessions keep working, but
   enumeration and the selector show only the unified `builtin:osc`.
