@@ -83,11 +83,12 @@ describe("the Save as of the bar of the session", () => {
     fireEvent.click(opener());
     type("  copy ");
     expect(enter()).toBe(false); // (the key is taken)
+    // (The name is what the answer's event says, and the field closes when the answer's promise has come: which of the two the page does first is not what is looked at here, so both are waited for.)
     await waitFor(() => {
       expect(screen.getByText("copy.toml")).toBeTruthy();
+      expect(closed()).toBe(true);
     });
     expect(asked(made)).toEqual(["  copy "]);
-    expect(closed()).toBe(true);
     expect(screen.getByText("Saved")).toBeTruthy();
     expect(screen.queryByText("tracer.toml")).toBeNull();
     expect(document.activeElement).toBe(opener());
@@ -106,9 +107,9 @@ describe("the Save as of the bar of the session", () => {
     fireEvent.click(okButton());
     await waitFor(() => {
       expect(screen.getByText("mix.toml")).toBeTruthy();
+      expect(closed()).toBe(true);
     });
     expect(asked(made)).toEqual(["mix"]);
-    expect(closed()).toBe(true);
   });
 
   test("saves what is unsaved with the file it makes, so that the session has nothing unsaved after it", async () => {
@@ -156,9 +157,9 @@ describe("the Save as of the bar of the session", () => {
     enter();
     await waitFor(() => {
       expect(screen.getByText("mine.toml")).toBeTruthy();
+      expect(closed()).toBe(true);
     });
     expect(asked(made)).toEqual(["other", "mine"]);
-    expect(closed()).toBe(true);
   });
 
   test("is refused when OK asked for it as when Enter did: the focus, which was on OK, comes back to the field with the name selected", async () => {
