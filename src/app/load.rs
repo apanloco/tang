@@ -1585,6 +1585,32 @@ mod tests {
         assert_eq!(run.model.instruments[1].modulators[0].targets[0].depth, 0.15);
     }
 
+    #[test]
+    fn echo_example_loads_a_filter_and_a_ping_pong_delay_with_an_lfo_each() {
+        let run = load(include_str!("../../examples/echo.toml"));
+        assert_eq!(
+            run.commands,
+            [
+                "AddInstrument range=None",
+                "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
+                "SetVolume inst=0 value=0.300",
+                "SetParameter inst=0 slot=0 param=6 value=0.300",
+                "SetParameter inst=0 slot=0 param=0 value=3.000",
+                "InsertEffect inst=0 index=0 plugin=Filter mix=1.000",
+                "SetParameter inst=0 slot=1 param=0 value=0.550",
+                "SetParameter inst=0 slot=1 param=1 value=2.000",
+                "InsertEffect inst=0 index=1 plugin=Delay mix=0.400",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 0.2, phase: 0.0 }",
+                "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.300 base=0.550 range=[0.000, 1.000]",
+                // (The second LFO moves the delay's `time`, which the preset has at 0.3 s: that is where it is centred, over a range of 0.001 to 2 s.)
+                "InsertModulator inst=0 index=1 source=Lfo { waveform: Triangle, rate: 0.3, phase: 0.0 }",
+                "AddModTarget inst=0 mod=1 kind=PluginParam { slot: 2, param_index: 0 } depth=0.004 base=0.300 range=[0.001, 2.000]",
+            ]
+        );
+        let delay = &run.model.instruments[0].effects[1];
+        assert_eq!((delay.name.as_str(), delay.current_preset.as_deref(), delay.mix), ("Delay", Some("Ping-Pong"), 0.4));
+    }
+
     /// A group with a macro at 0.5, and a lane in it with a macro at 0.25 that drives the oscillator's `detune`.
     const MACROS: &str = r#"
 [[group]]

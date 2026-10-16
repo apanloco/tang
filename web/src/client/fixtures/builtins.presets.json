@@ -1,4 +1,78 @@
 {
+  "builtin:delay": {
+    "dub": [
+      {
+        "param": 0,
+        "value": 0.45
+      },
+      {
+        "param": 1,
+        "value": 0.78
+      },
+      {
+        "param": 2,
+        "value": 0.3
+      },
+      {
+        "param": 3,
+        "value": 0.35
+      }
+    ],
+    "pingpong": [
+      {
+        "param": 0,
+        "value": 0.3
+      },
+      {
+        "param": 1,
+        "value": 0.55
+      },
+      {
+        "param": 2,
+        "value": 0.7
+      },
+      {
+        "param": 3,
+        "value": 1.0
+      }
+    ],
+    "slapback": [
+      {
+        "param": 0,
+        "value": 0.09
+      },
+      {
+        "param": 1,
+        "value": 0.12
+      },
+      {
+        "param": 2,
+        "value": 0.85
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      }
+    ],
+    "tape": [
+      {
+        "param": 0,
+        "value": 0.38
+      },
+      {
+        "param": 1,
+        "value": 0.5
+      },
+      {
+        "param": 2,
+        "value": 0.45
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      }
+    ]
+  },
   "builtin:reverb": {
     "ambient": [
       {

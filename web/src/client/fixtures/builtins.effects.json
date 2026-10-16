@@ -1,4 +1,84 @@
 {
+  "builtin:delay": {
+    "kind": "effect",
+    "mix": 0.5,
+    "name": "Delay",
+    "plugin": {
+      "currentPreset": null,
+      "format": "Built-in",
+      "id": "builtin:delay",
+      "isInstrument": false,
+      "params": [
+        {
+          "default": 0.375,
+          "group": [],
+          "index": 0,
+          "labels": null,
+          "max": 2.0,
+          "min": 0.001,
+          "name": "time",
+          "stepCount": 0,
+          "unit": "s",
+          "value": 0.375
+        },
+        {
+          "default": 0.45,
+          "group": [],
+          "index": 1,
+          "labels": null,
+          "max": 0.95,
+          "min": 0.0,
+          "name": "feedback",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.45
+        },
+        {
+          "default": 0.7,
+          "group": [],
+          "index": 2,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "tone",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.7
+        },
+        {
+          "default": 0.0,
+          "group": [],
+          "index": 3,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "pingpong",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.0
+        }
+      ],
+      "pinned": [],
+      "presets": [
+        {
+          "id": "slapback",
+          "name": "Slapback"
+        },
+        {
+          "id": "tape",
+          "name": "Tape Echo"
+        },
+        {
+          "id": "pingpong",
+          "name": "Ping-Pong"
+        },
+        {
+          "id": "dub",
+          "name": "Dub Echo"
+        }
+      ]
+    }
+  },
   "builtin:filter": {
     "kind": "effect",
     "mix": 1.0,

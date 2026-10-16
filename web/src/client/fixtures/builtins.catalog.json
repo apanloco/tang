@@ -1,5 +1,13 @@
 [
   {
+    "id": "builtin:delay",
+    "name": "Delay",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 4,
+    "presets": 4
+  },
+  {
     "id": "builtin:filter",
     "name": "Filter",
     "format": "Built-in",

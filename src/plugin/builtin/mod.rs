@@ -1,9 +1,11 @@
+mod delay;
 mod filter;
 mod oscillator;
 mod reverb;
 
 use super::{Plugin, PluginInfo};
 
+use delay::Delay;
 use filter::Filter;
 use oscillator::{Oscillator, Waveform};
 use reverb::Reverb;
@@ -42,12 +44,13 @@ pub fn load(
         "square" => Ok(Box::new(Oscillator::new(sample_rate, Waveform::Square))),
         "reverb" => Ok(Box::new(Reverb::new(sample_rate))),
         "filter" => Ok(Box::new(Filter::new(sample_rate))),
+        "delay" => Ok(Box::new(Delay::new(sample_rate))),
         // Only in the tests: an effect with one audio output, which the chains (stereo) have no place for.
         #[cfg(test)]
         "mono-effect" => Ok(Box::new(crate::app::testutil::MonoEffect)),
         _ => anyhow::bail!(
             "Unknown built-in plugin: {name:?}\n\
-             Available built-ins: osc, reverb, filter\n\
+             Available built-ins: osc, reverb, filter, delay\n\
              Usage: builtin:osc"
         ),
     }
@@ -80,6 +83,15 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
             is_instrument: false,
             param_count: filter::PARAM_COUNT,
             preset_count: 0,
+            path: "(built-in)".into(),
+            scan_ms: 0,
+        },
+        PluginInfo {
+            name: delay::NAME.into(),
+            id: delay::ID.into(),
+            is_instrument: false,
+            param_count: delay::PARAM_COUNT,
+            preset_count: delay::PRESETS.len(),
             path: "(built-in)".into(),
             scan_ms: 0,
         },
@@ -146,6 +158,14 @@ mod tests {
         assert_eq!(
             metadata("builtin:filter"),
             [row("cutoff", None, &[], 0), row("resonance", None, &[], 0), row("type", None, &[], 6), row("drive", None, &[], 0)]
+        );
+    }
+
+    #[test]
+    fn the_delays_parameters_say_their_unit() {
+        assert_eq!(
+            metadata("builtin:delay"),
+            [row("time", Some("s"), &[], 0), row("feedback", None, &[], 0), row("tone", None, &[], 0), row("pingpong", None, &[], 0)]
         );
     }
 

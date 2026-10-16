@@ -12,9 +12,9 @@ source: src/tui/golden_tests.rs
 │                 ┌ Select Effect (scanning…) ───────────────────────────────────────────────────────┐░░░░░░░░     0.10│
 │                 │/                                                                                 │▓▓▓▓▓▓▓▓     1.00│
 │                 │Name                                                       Format   Params Presets│░░░░░░░░     0.01│
-│                 │Filter                                                     Built-in 4      0      │░░░░░░░░     0.00│
+│                 │Delay                                                      Built-in 4      4      │░░░░░░░░     0.00│
+│                 │Filter                                                     Built-in 4      0      │                 │
 │                 │Reverb                                                     Built-in 10     5      │                 │
-│                 │                                                                                  │                 │
 │                 │                                                                                  │                 │
 │                 │                                                                                  │                 │
 │                 │                                                                                  │                 │
@@ -45,7 +45,7 @@ cddddddddddddddddddddddddddddddddddddddddddddd...cb..bbbbbbbbbbbbbbbbbbbbbbbbbbb
 c.................eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeebbbbbbbbbbbbbbbbbb
 c.................ebbf...............................................................................ebbbbbbbbbbbbbbbbbb
 c.................egggg.......................................................gggggg...gggggg.gggggggebbbbbbbbbbbbbbbbbb
-c.................eaaaaaa.....................................................aaaaaaaa.a......a......ebbbbbbbbbbbbbbbbbb
+c.................eaaaaa......................................................aaaaaaaa.a......a......ebbbbbbbbbbbbbbbbbb
 c.................e..................................................................................e.................b
 c.................e..................................................................................e.................b
 c.................e..................................................................................e.................b

@@ -1880,6 +1880,31 @@ Plugin loading is behind a trait. Three formats supported:
   Adjust with `x` if a parallel/blended filter is wanted. The `#[ignore]`d tests `diag_full_report` and
   `diag_cutoff_consistency` are a measurement harness (Goertzel-based
   magnitude/THD/slope/aliasing) for iterating on the filter voicing.
+- **Delay** (`builtin:delay`) — a stereo delay that puts out its echoes only, as the reverb
+  puts out its tail only: the host's `mix` (0.5 when it is added) is the blend with the sound
+  put in, so that what is heard first of a note is the note, and an echo of it one `time` later.
+  Parameters: `time` (s, 0.001–2, default 0.375), `feedback` (0–0.95, default 0.45), `tone`
+  (0–1, default 0.7: a one-pole low-pass in the feedback, exponential from 500 Hz to 20 kHz, and
+  none at all from 0.999 up, so that the first echo is always the sound as it was put in and each
+  repeat is darker than the one before) and `pingpong` (0–1, default 0: how far the feedback
+  crosses to the other side, and the sound put in goes to the left as the sum of the two sides,
+  so that a mono sound starts on the left and goes from side to side; 0 keeps the sides apart).
+  Four presets (Slapback, Tape Echo, Ping-Pong, Dub Echo). A change of `time` (a knob, a
+  modulator) is gone through by a one-pole of 10 ms and no faster than half a sample of delay for
+  each sample that goes by, so a jump is a sweep in the pitch of the echoes, within an octave
+  down and a fifth up, as on a tape echo, and never a click or a held sample; the delay's place
+  is a 64-bit number, since a one-pole in 32 bits stops short of what it follows by as much as the
+  steps of its number are over its coefficient (0.1 of a sample at 4,800 samples, and then every
+  echo is a fraction of a sample from where it was asked for). `feedback` and `pingpong` are gone
+  through over 5 ms. The echoes are soft-clipped (`soft_clip`, shared with the reverb), so that a
+  feedback of 0.95 on a loud sound stays within full scale, and a sound that is not a number is not
+  put in (it would stay in the echoes for ever). The lines are made for the longest time, and
+  nothing is allocated while it runs. `examples/echo.toml` is a session with it.
+
+TODO: a delay that follows the session's tempo (a `time` that is a note value at `bpm`), a
+modulation of its own (a chorus), and a `time` on a log scale: a modulator's depth is a fraction of
+the range, so that ±5 ms of chorus on a range of 2 s is a depth of 0.0025, finer than a slider
+sets it (a file can say it, as `examples/echo.toml` does).
 
 ## Plugin I/O handling
 

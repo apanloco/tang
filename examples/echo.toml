@@ -1,0 +1,47 @@
+# Example: echoes. A saw through a low-pass filter into a ping-pong delay (the
+# "Ping-Pong" preset: 0.3 s, a feedback of 0.55, a mono sound starts on the left
+# and goes from side to side). One LFO sweeps the filter, and another wobbles the
+# delay's time a few milliseconds, so that the echoes slide a little in pitch as
+# on a tape echo. On the page, try the delay's `time` and `feedback`, and the
+# wobble's rate and depth.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+
+[instrument.params]
+waveform = 3.0 # saw
+release = 0.3
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.55
+resonance = 2.0
+
+[[instrument.effect]]
+plugin = "builtin:delay"
+preset = "Ping-Pong"
+mix = 0.4
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 0.2
+
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.3
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "triangle"
+rate = 0.3
+
+[[instrument.modulator.target]]
+slot = 2
+param = "time"
+depth = 0.004
