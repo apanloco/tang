@@ -277,10 +277,26 @@ struct TargetSelectorState {
 /// parameter to one of the instrument's existing lane modulators.
 #[derive(Clone, Copy)]
 enum ModulateChoice {
-    NewLfo,
-    NewEnvelope,
-    NewMacro,
+    New(ModulatorKind),
     Existing(usize),
+}
+
+/// The kinds of modulator the popup makes, in the order it lists them, and what each is called there.
+const NEW_MODULATORS: [(ModulatorKind, &str); 3] = [
+    (ModulatorKind::Lfo, "New LFO"),
+    (ModulatorKind::Envelope, "New envelope"),
+    (ModulatorKind::Macro, "New macro"),
+];
+
+/// The first choices of the popup for driving `param_name`: a new modulator of each kind, which `Existing` ones follow.
+fn new_modulator_choices(param_name: &str) -> (Vec<ModulateChoice>, Vec<FilterListItem>) {
+    let choices = NEW_MODULATORS.iter().map(|&(kind, _)| ModulateChoice::New(kind)).collect();
+    let items = NEW_MODULATORS
+        .iter()
+        .enumerate()
+        .map(|(index, (_, name))| FilterListItem { cells: vec![format!("{name} → {param_name}")], index })
+        .collect();
+    (choices, items)
 }
 
 /// The modulator that drives something: one that is made for it, with the depth its cable has if it is not the depth a new cable has, or one that
@@ -930,12 +946,7 @@ impl State {
         let (param_index, param_name) = (param.index, param.name.clone());
 
         // Choices: new LFO, new envelope, then each existing lane modulator.
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope, ModulateChoice::NewMacro];
-        let mut items = vec![
-            FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
-            FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
-            FilterListItem { cells: vec![format!("New macro → {param_name}")], index: 2 },
-        ];
+        let (mut choices, mut items) = new_modulator_choices(&param_name);
         if let Some(node) = self.ctl.model.instruments.get(inst) {
             for (i, m) in node.modulators.iter().enumerate() {
                 let label = m.source.label();
@@ -990,12 +1001,7 @@ impl State {
 
         // Choices: new LFO / envelope, then each sibling modulator in the same
         // rack except this one (no self-modulation).
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope, ModulateChoice::NewMacro];
-        let mut items = vec![
-            FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
-            FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
-            FilterListItem { cells: vec![format!("New macro → {param_name}")], index: 2 },
-        ];
+        let (mut choices, mut items) = new_modulator_choices(&param_name);
         let rack_len = match scope {
             ModulatorLocation::Lane(inst) => self.ctl.model.instruments.get(inst).map_or(0, |n| n.modulators.len()),
             ModulatorLocation::Group(group) => self.ctl.model.groups.get(group).map_or(0, |g| g.modulators.len()),
@@ -1039,9 +1045,7 @@ impl State {
 
         // The modulator that drives the parameter: a new one in the right rack, or one that is there.
         let driver = match choice {
-            ModulateChoice::NewLfo => Driver::New(ModulatorKind::Lfo, None),
-            ModulateChoice::NewEnvelope => Driver::New(ModulatorKind::Envelope, None),
-            ModulateChoice::NewMacro => Driver::New(ModulatorKind::Macro, None),
+            ModulateChoice::New(kind) => Driver::New(kind, None),
             ModulateChoice::Existing(i) => Driver::Existing(i),
         };
         self.bind(ms.scope, driver, &ms.target_kind);
@@ -1139,12 +1143,7 @@ impl State {
         };
         let (param_index, param_name) = (param.index, param.name.clone());
 
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope, ModulateChoice::NewMacro];
-        let mut items = vec![
-            FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
-            FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
-            FilterListItem { cells: vec![format!("New macro → {param_name}")], index: 2 },
-        ];
+        let (mut choices, mut items) = new_modulator_choices(&param_name);
         if let Some(node) = self.ctl.model.groups.get(group) {
             for (i, m) in node.modulators.iter().enumerate() {
                 let label = m.source.label();
