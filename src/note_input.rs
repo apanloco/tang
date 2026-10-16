@@ -83,6 +83,31 @@ impl NoteInput {
         self.held.clone()
     }
 
+    /// Let go of everything that sounds: on every channel the pedal goes up, then each note that is held ends (a plugin that has no ear for the controllers
+    /// that follow still hears these), and then all notes off and all sound off go to every channel, and the held notes are none. They go to the audio thread at the
+    /// start of its next buffer, as every message does. Returns how many of them the channel had no room for (it holds 1024, and a panic is 48 and the notes that are held).
+    pub fn panic(&self) -> usize {
+        let mut lost = 0;
+        let mut send = |message: [u8; 3]| {
+            if self.tx.try_send((0, message)).is_err() {
+                lost += 1;
+            }
+        };
+        for channel in 0..16u8 {
+            send([0xB0 | channel, 64, 0]);
+        }
+        for note in self.held.held() {
+            send([0x80, note, 0]);
+        }
+        for controller in [123u8, 120] {
+            for channel in 0..16u8 {
+                send([0xB0 | channel, controller, 0]);
+            }
+        }
+        self.held.clear();
+        lost
+    }
+
     /// A note-on on channel 1.
     pub fn note_on(&self, note: u8, velocity: u8) -> Delivery {
         self.send(&[0x90, note, velocity])
@@ -190,6 +215,37 @@ mod tests {
         }
         assert_eq!(sent(&rig).len(), 4);
         assert!(rig.held.held().is_empty());
+    }
+
+    #[test]
+    fn a_panic_lets_go_of_the_held_notes_and_says_pedal_up_all_notes_off_and_all_sound_off_on_every_channel() {
+        let rig = rig_with_capacity(256);
+        rig.input.note_on(64, 100);
+        rig.input.note_on(60, 100);
+        sent(&rig);
+        assert_eq!(rig.input.panic(), 0);
+        let mut expected: Vec<MidiEvent> = Vec::new();
+        // The pedal goes up on every channel (so that the notes that follow are not held by it), each note that is held ends, and then all notes off and all sound off go to every channel.
+        expected.extend((0..16u8).map(|channel| (0, [0xB0 | channel, 64, 0])));
+        expected.extend([(0, [0x80, 60, 0]), (0, [0x80, 64, 0])]);
+        expected.extend((0..16u8).map(|channel| (0, [0xB0 | channel, 123, 0])));
+        expected.extend((0..16u8).map(|channel| (0, [0xB0 | channel, 120, 0])));
+        assert_eq!(sent(&rig), expected);
+        assert!(rig.held.held().is_empty(), "and nothing is held after it");
+    }
+
+    #[test]
+    fn a_panic_with_nothing_held_is_the_forty_eight_controllers_only() {
+        let rig = rig_with_capacity(256);
+        assert_eq!(rig.input.panic(), 0);
+        assert_eq!(sent(&rig).len(), 48);
+    }
+
+    #[test]
+    fn a_panic_into_a_channel_that_is_full_says_how_many_messages_it_lost() {
+        let rig = rig_with_capacity(10);
+        assert_eq!(rig.input.panic(), 48 - 10);
+        assert_eq!(sent(&rig).len(), 10);
     }
 
     #[test]

@@ -41,8 +41,8 @@ struct Harness {
     /// The audio thread's end of the command channel: what the TUI asked the
     /// engine to do. Kept alive so `send` never fails or blocks.
     cmd_rx: Receiver<GraphCommand>,
-    /// The notes the controller would play; kept so that sending them cannot fail.
-    _midi_rx: Receiver<crate::audio::MidiEvent>,
+    /// The notes the controller would play (what a key of the terminal that plays or silences notes sends): kept so that sending them cannot fail, and drained by `notes`.
+    midi_rx: Receiver<crate::audio::MidiEvent>,
     /// The audio thread's end of the channel that hands swapped-out plugins back.
     return_tx: crossbeam_channel::Sender<Box<dyn plugin::Plugin>>,
     /// The audio thread's ends of the notification channels.
@@ -78,7 +78,7 @@ impl Harness {
             s,
             terminal,
             cmd_rx: engine.cmd_rx,
-            _midi_rx: engine.midi_rx,
+            midi_rx: engine.midi_rx,
             return_tx: engine.return_tx,
             pattern_tx: engine.pattern_tx,
             learn_tx: engine.learn_tx,
@@ -155,6 +155,11 @@ impl Harness {
     /// Everything the TUI has sent to the audio thread since the last call.
     fn commands(&self) -> Vec<String> {
         described(self.cmd_rx.try_iter())
+    }
+
+    /// The MIDI messages that the TUI has sent since the last call (what silences notes, when it does).
+    fn notes(&self) -> Vec<crate::audio::MidiEvent> {
+        self.midi_rx.try_iter().collect()
     }
 
     /// Draw a frame and dump it (text + style map).
@@ -5793,6 +5798,64 @@ plugin = "builtin:reverb"
         assert!(!h.tree().iter().any(|line| line.contains("LFO 1.0Hz")), "{:#?}", h.tree());
         assert_eq!(cursor_node(&h), reverb, "{:#?}", h.tree());
         assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::Effect { inst: 0, index: 0 });
+    }
+}
+
+mod panic {
+    //! Ctrl+P: every note that sounds is let go of (`NoteInput::panic`), which the browser's button does too.
+
+    use super::*;
+
+    #[test]
+    fn the_help_tab_lists_it() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.press(KeyCode::Char('4'));
+        let frame = h.dump();
+        assert!(frame.contains("Ctrl+P     Panic: let go of every note"), "{frame}");
+    }
+
+    #[test]
+    fn ctrl_p_lets_go_of_the_held_notes_and_sends_all_notes_off_and_all_sound_off_on_every_channel() {
+        let mut h = Harness::new(scene_bus_pair());
+        let held = h.s.ctl.note_input().held();
+        held.note_on(60);
+        h.press_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        let sent = h.notes();
+        // The pedal up on 16 channels, the one note, all notes off on 16 and all sound off on 16.
+        assert_eq!(sent.len(), 16 + 1 + 16 + 16, "{sent:?}");
+        assert_eq!(sent[16], (0, [0x80, 60, 0]));
+        assert!(sent.iter().filter(|(_, m)| m[1] == 123).count() == 16 && sent.iter().filter(|(_, m)| m[1] == 120).count() == 16);
+        assert!(held.held().is_empty(), "and nothing is held");
+        assert!(h.commands().is_empty(), "it asks nothing of the engine's lanes: it is notes, and not the session");
+    }
+
+    #[test]
+    fn ctrl_p_is_heard_on_every_tab_the_piano_tab_that_takes_the_letters_too() {
+        let mut h = Harness::new(scene_bus_pair());
+        for tab in 0..4 {
+            h.s.active_tab = tab;
+            h.press_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+            assert_eq!(h.notes().len(), 16 + 16 + 16, "tab {tab}");
+        }
+    }
+
+    #[test]
+    fn a_popup_has_the_keys_while_it_is_open_and_ctrl_p_is_not_heard_in_it() {
+        let mut h = Harness::new(scene_bus_pair());
+        // The tempo's popup: a letter with Control held is none of its text, and the panic is not heard under it.
+        h.press(KeyCode::Char('b'));
+        h.press_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(h.notes().is_empty());
+        h.press(KeyCode::Esc);
+        h.press_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(h.notes().len(), 16 + 16 + 16, "and it is heard when the popup is closed");
+    }
+
+    #[test]
+    fn a_plain_p_is_still_the_preset_selector_and_makes_no_sound_of_its_own() {
+        let mut h = Harness::new(scene_bus_pair());
+        h.press(KeyCode::Char('p'));
+        assert!(h.notes().is_empty());
     }
 }
 

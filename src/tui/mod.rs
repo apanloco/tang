@@ -2373,6 +2373,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => {
             s.apply(Intent::Undo);
         }
+        // Ctrl+P — panic: let go of every note that sounds (the pedal up, each held note, all notes off and all sound off on every channel), which the browser's
+        // button does too. It is no change of the session and has no step of the history.
+        KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let lost = s.ctl.note_input().panic();
+            if lost > 0 {
+                log::warn!("Panic: the channel to the audio thread was full, and {lost} messages were lost");
+            }
+        }
         KeyCode::Char('1') => s.active_tab = 0,
         KeyCode::Char('2') => s.active_tab = 1,
         KeyCode::Char('3') => s.active_tab = 2,
@@ -4546,6 +4554,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  Ctrl+Shift+S  Save session as (new filename)".into(),
         "  Ctrl+Z     Undo the last thing done (as the browser's Undo does)".into(),
         "  Ctrl+Y     Redo (Ctrl+Shift+Z too)".into(),
+        "  Ctrl+P     Panic: let go of every note that sounds".into(),
         "  Ctrl+Q     Quit".into(),
         "".into(),
         "Session tab (chain focus):".into(),
