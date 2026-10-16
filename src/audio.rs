@@ -981,7 +981,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 6] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml"];
+    const SOUND_EXAMPLES: [&str; 8] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1085,6 +1085,37 @@ mod tests {
             let heard = delay.params.iter().find(|p| p.name == "time").unwrap().value;
             assert_eq!((delay.name.as_str(), heard), ("Delay", time), "{name}: the time of {preset}, and not the delay's own");
         }
+    }
+
+    #[test]
+    fn the_sync_lead_example_opens_its_ratio_over_the_start_of_a_note_and_has_the_pitch_of_the_key_when_it_settles() {
+        let out = play(&example("sync-lead.toml"), &[60], 0.0, 3.0, 4.0);
+        let window = |from: f32| &out[(from * 48_000.0) as usize..((from + 0.1) * 48_000.0) as usize];
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        // The ratio goes from 1 (a plain saw) to 6 over the 0.4 s of the envelope's attack and settles at 2.75 (1.2 s later): the sound is brightest at the top of the sweep.
+        let (start, top, settled) = (brightness(window(0.02)), brightness(window(0.4)), brightness(window(2.4)));
+        assert!(top > 1.4 * start && top > 1.25 * settled, "{start} at the start, {top} at the top and {settled} when it has settled");
+        // A saw that goes round at 2.75 times the pitch of the key would be heard at 719 Hz: it is the sync that keeps it at the key's, C4. (The pitch is not measured while the ratio moves: a wave that changes
+        // from one cycle to the next has an autocorrelation whose peak is moved, by 26 cents at the start of the note, and at the top of the sweep is another one, at 314 Hz, 6/5 of the key's.)
+        let c4 = 440.0 * 2.0f32.powf(-9.0 / 12.0);
+        let cents = 1200.0 * (pitch_of(window(2.4), 48_000.0) / c4).log2();
+        assert!(cents.abs() < 5.0, "{cents} cents from C4");
+    }
+
+    #[test]
+    fn the_sub_bass_example_sounds_an_octave_under_the_key_and_plucks() {
+        let out = play(&example("sub-bass.toml"), &[48], 0.0, 2.0, 3.0);
+        let window = |from: f32| &out[(from * 48_000.0) as usize..((from + 0.1) * 48_000.0) as usize];
+        // C3 is pressed. The sine under it is so much of the sound that it goes round once for two cycles of the saw: what is heard is C2.
+        let c2 = 440.0 * 2.0f32.powf(-33.0 / 12.0);
+        for from in [0.5f32, 1.0, 1.8] {
+            let cents = 1200.0 * (pitch_of(window(from), 48_000.0) / c2).log2();
+            assert!(cents.abs() < 5.0, "{cents} cents from C2 at {from} s");
+        }
+        // The filter is opened by an envelope at the start of the note: brighter then than later.
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        let (start, later) = (brightness(window(0.02)), brightness(window(1.8)));
+        assert!(start > 1.3 * later, "{start} and {later}");
     }
 
     #[test]
