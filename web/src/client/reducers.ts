@@ -149,6 +149,9 @@ function withSetting(node: Node, field: ModulatorField, value: number): Node | s
       const waveform = WAVEFORMS[value];
       return waveform === undefined ? `${value} is not a waveform` : { ...node, source: { ...source, waveform } };
     }
+    // (Its key: whether a note starts it again at the start of its wave, and the seconds it takes to come in after one.)
+    if (field === "retrigger") return { ...node, source: { ...source, retrigger: value !== 0 } };
+    if (field === "fade") return { ...node, source: { ...source, fade: value } };
   }
   if (source.type === "envelope" && (field === "attack" || field === "decay" || field === "sustain" || field === "release")) {
     return { ...node, source: { ...source, [field]: value } };

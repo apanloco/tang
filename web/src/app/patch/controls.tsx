@@ -493,18 +493,19 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   );
 });
 
-/** What the numbers of a modulator that no cable drives are called and written like: a macro's value, a step sequencer's glide and length (a whole number of steps). */
-const VALUES: Record<"value" | "glide" | "length", { label: string; format: (value: number) => string }> = {
+/** What the numbers of a modulator that no cable drives are called and written like: a macro's value, a step sequencer's glide and length (a whole number of steps), an LFO's fade. */
+const VALUES: Record<"value" | "glide" | "length" | "fade", { label: string; format: (value: number) => string }> = {
   value: { label: "Value", format: formatValue },
   glide: { label: "Glide", format: formatValue },
   length: { label: "Length", format: (value) => String(Math.round(value)) },
+  fade: { label: "Fade", format: seconds },
 };
 
 /**
  * A number of a modulator that a person turns and nothing else moves, so that it has no place for a cable on its edge and no ring and no dot (what it drives shows
- * them): a macro's value, a step sequencer's glide and length. The numbers that a modulator can drive (`ModulatorFieldControl`) can be driven by a cable.
+ * them): a macro's value, a step sequencer's glide and length, an LFO's fade. The numbers that a modulator can drive (`ModulatorFieldControl`) can be driven by a cable.
  */
-export const ModulatorValueControl = memo(function ModulatorValueControl({ node, field }: { node: NodeId; field: "value" | "glide" | "length" }) {
+export const ModulatorValueControl = memo(function ModulatorValueControl({ node, field }: { node: NodeId; field: "value" | "glide" | "length" | "fade" }) {
   const frames = useFrames();
   const control = useDrive().modulatorField(node, field);
   const stored = useClientState((state) => modulatorFieldOf(state, node, field));
@@ -677,8 +678,8 @@ export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, f
       </div>
     );
   }
-  // (A macro's value is turned by a person: no cable ends at it, and no modulator is made for it. Nor at a step sequencer's glide and length.)
-  if (field === "value" || field === "glide" || field === "length") {
+  // (A macro's value is turned by a person: no cable ends at it, and no modulator is made for it. Nor at a step sequencer's glide and length, or an LFO's fade.)
+  if (field === "value" || field === "glide" || field === "length" || field === "fade") {
     return (
       <div className="tang-cell">
         <ModulatorValueControl node={node} field={field} />

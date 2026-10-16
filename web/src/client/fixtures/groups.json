@@ -2769,7 +2769,9 @@
           "name": "LFO",
           "parent": 0,
           "source": {
+            "fade": 0.0,
             "rate": 1.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -2803,7 +2805,9 @@
           "name": "LFO",
           "parent": 1,
           "source": {
+            "fade": 0.0,
             "rate": 2.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -3140,7 +3144,9 @@
           "name": "LFO",
           "parent": 3,
           "source": {
+            "fade": 0.0,
             "rate": 3.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -3537,7 +3543,9 @@
           "name": "LFO",
           "parent": 5,
           "source": {
+            "fade": 0.0,
             "rate": 4.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -3548,7 +3556,9 @@
           "name": "LFO",
           "parent": 5,
           "source": {
+            "fade": 0.0,
             "rate": 5.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -4347,7 +4357,9 @@
           "name": "LFO",
           "parent": 10,
           "source": {
+            "fade": 0.0,
             "rate": 6.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }

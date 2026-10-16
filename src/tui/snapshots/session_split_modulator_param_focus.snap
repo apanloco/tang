@@ -8,10 +8,10 @@ source: src/tui/golden_tests.rs
 │♪ Oscillator  [Built-in]  C0-B3                 ││  Type                     ◂ LFO ▸                                  │
 │╰ ~ LFO 4.0Hz sine → Oscillator: detune (4%)    ││  Waveform                 ◂ sine ▸                                 │
 │♪ Oscillator  [Built-in]  C4-C8                 ││▸ Rate (Hz)                ▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     4.00│
-│╰ ~ LFO 7.0Hz sine → Oscillator: detune (15%)   ││  Targets                  ──────                                   │
+│╰ ~ LFO 7.0Hz sine → Oscillator: detune (15%)   ││  Retrigger                ◂ off ▸                                  │
+│                                                ││  Fade (s)                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Targets                  ──────                                   │
 │                                                ││  detune depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░     0.04│
-│                                                ││                                                                    │
-│                                                ││                                                                    │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
@@ -41,10 +41,10 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccc
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................c
 bdddddddddddddddddddddddddddddddddddddddddddd....bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................c
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
-beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee...bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................c
+beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee...bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................c
 b................................................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
-b................................................bc....................................................................c
-b................................................bc....................................................................c
+b................................................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................c
+b................................................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 b................................................bc....................................................................c
 b................................................bc....................................................................c
 b................................................bc....................................................................c

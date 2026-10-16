@@ -4075,6 +4075,7 @@ fn modulator_field_label(field: ModulatorField) -> &'static str {
         ModulatorField::Glide => "Glide",
         ModulatorField::Length => "Length (steps)",
         ModulatorField::Retrigger => "Retrigger",
+        ModulatorField::Fade => "Fade (s)",
     }
 }
 
@@ -4242,7 +4243,12 @@ fn stepped(field: Option<ModulatorField>, value: f32, direction: f32, fraction: 
             let (min, max) = field.range();
             value.max(min) * (max / min).powf(direction * fraction)
         }
-        _ => value + direction * fraction,
+        // (A level that has a range of its own, a fade of 0 to 5 seconds, goes by that fraction of it; the depth of a cable is a fraction of what it drives.)
+        Some(field) => {
+            let (min, max) = field.range();
+            value + direction * fraction * (max - min)
+        }
+        None => value + direction * fraction,
     }
 }
 
@@ -4676,6 +4682,8 @@ mod tests {
             source: ModSourceSlot::Lfo {
                 waveform: crate::plugin::chain::LfoWaveform::Sine,
                 rate: 1.0,
+                retrigger: false,
+                fade: 0.0,
             },
             targets: vec![ModTargetSlot {
                 edge: crate::app::model::EdgeId(0),
@@ -4690,9 +4698,10 @@ mod tests {
             output: None,
             position: None,
         };
-        // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Targets separator, 4=first depth.
-        assert_eq!(modulator_param_range(&m, 4), Some((-1.0, 1.0)));
-        let edit = modulator_edit_state(&m, 4).expect("depth row is editable");
+        // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Retrigger, 4=Fade, 5=Targets separator, 6=first depth.
+        assert_eq!(modulator_param_range(&m, 4), Some((0.0, 5.0)), "the fade is a number too");
+        assert_eq!(modulator_param_range(&m, 6), Some((-1.0, 1.0)));
+        let edit = modulator_edit_state(&m, 6).expect("depth row is editable");
         assert_eq!((edit.param_min, edit.param_max), (-1.0, 1.0));
     }
 }

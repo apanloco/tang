@@ -386,7 +386,8 @@ describe("what changing a step sequencer is to the history", () => {
   const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
   const sequencer: Node = { id: 9_200, parent: lane0.id, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } };
   const other: Node = { ...sequencer, id: 9_201 };
-  const withSequencers: Snapshot = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, sequencer, other] } };
+  const keyed: Node = { id: 9_300, parent: lane0.id, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: true, fade: 1.5 } };
+  const withSequencers: Snapshot = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, sequencer, other, keyed] } };
   const plan = (intent: Intent, at = 7): ReturnType<typeof planOf> => planOf(withSequencers, intent, at, builtinCatalog);
   const stepFor = (intent: Intent, at = 7) => {
     const planned = plan(intent, at);
@@ -434,12 +435,22 @@ describe("what changing a step sequencer is to the history", () => {
     expect(stepFor({ type: "setModulatorField", node: sequencer.id, field: "retrigger", value: 1 }).undo).toEqual([{ type: "setModulatorField", node: sequencer.id, field: "retrigger", value: 0 }]);
   });
 
+  test("a setting of the key of an LFO is a step in the words of the setting, and puts back the value that it had", () => {
+    expect(stepFor({ type: "setModulatorField", node: someLfo.id, field: "retrigger", value: 1 }).label).toBe("set retrigger");
+    expect(stepFor({ type: "setModulatorField", node: someLfo.id, field: "fade", value: 2.5 }).label).toBe("set fade");
+    expect(stepFor({ type: "setModulatorField", node: someLfo.id, field: "retrigger", value: 1 }).undo).toEqual([{ type: "setModulatorField", node: someLfo.id, field: "retrigger", value: 0 }]);
+    expect(stepFor({ type: "setModulatorField", node: someLfo.id, field: "fade", value: 2.5 }).undo).toEqual([{ type: "setModulatorField", node: someLfo.id, field: "fade", value: 0 }]);
+    // One that has a key already puts back what it had.
+    expect(stepFor({ type: "setModulatorField", node: keyed.id, field: "fade", value: 2.5 }).undo).toEqual([{ type: "setModulatorField", node: keyed.id, field: "fade", value: 1.5 }]);
+    expect(stepFor({ type: "setModulatorField", node: keyed.id, field: "retrigger", value: 0 }).undo).toEqual([{ type: "setModulatorField", node: keyed.id, field: "retrigger", value: 1 }]);
+  });
+
   test("is no step for what is not a step sequencer: the intents are refused", () => {
     expect(plan({ type: "setSteps", node: someLfo.id, values })).toBe("nothing");
     expect(plan({ type: "setSteps", node: lane0.id, values })).toBe("nothing");
     expect(plan({ type: "setSteps", node: 12345, values })).toBe("nothing");
-    for (const field of ["glide", "length", "retrigger"] as const) expect(plan({ type: "setModulatorField", node: someLfo.id, field, value: 1 }), field).toBe("nothing");
-    for (const field of ["waveform", "attack", "value"] as const) expect(plan({ type: "setModulatorField", node: sequencer.id, field, value: 1 }), field).toBe("nothing");
+    for (const field of ["glide", "length"] as const) expect(plan({ type: "setModulatorField", node: someLfo.id, field, value: 1 }), field).toBe("nothing");
+    for (const field of ["waveform", "attack", "value", "fade"] as const) expect(plan({ type: "setModulatorField", node: sequencer.id, field, value: 1 }), field).toBe("nothing");
   });
 
   test("taking one out, and adding one, are steps in the words of the button that adds one", () => {
@@ -643,8 +654,8 @@ describe("what a removal of a group is to the history", () => {
     const [group] = groups;
     if (!group) throw new Error("the fixture has a group");
     const modulators: Node[] = [
-      { id: 9_001, parent: group.id, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } },
-      { id: 9_002, parent: group.id, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2 } },
+      { id: 9_001, parent: group.id, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } },
+      { id: 9_002, parent: group.id, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: false, fade: 0 } },
     ];
     const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument");
     if (!lane) throw new Error("the fixture has a lane");

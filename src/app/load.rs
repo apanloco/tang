@@ -866,7 +866,7 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
             let length = mod_config.length.unwrap_or(length).clamp(1, MAX_STEPS);
             let rate = mod_config.rate.map_or(8.0, |rate| rate as f32);
             let glide = (mod_config.glide as f32).clamp(0.0, 1.0);
-            let source = ModSourceSlot::Steps { values, length, rate, glide, retrigger: mod_config.retrigger };
+            let source = ModSourceSlot::Steps { values, length, rate, glide, retrigger: mod_config.retrigger.unwrap_or(true) };
             (source, format!("{length} steps at {rate:.1}Hz"))
         }
         _ => {
@@ -880,7 +880,10 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
                     plugin::chain::LfoWaveform::Sine
                 });
             let rate = mod_config.rate.unwrap_or(1.0);
-            let source = ModSourceSlot::Lfo { waveform, rate: rate as f32 };
+            // (A note does not start an LFO again unless the file says so, as it never did; the fade is held to what one can be.)
+            let (min, max) = crate::app::intent::ModulatorField::Fade.range();
+            let fade = (mod_config.fade as f32).clamp(min, max);
+            let source = ModSourceSlot::Lfo { waveform, rate: rate as f32, retrigger: mod_config.retrigger.unwrap_or(false), fade };
             let desc = format!("{} {:.1}Hz", waveform.name(), rate);
             (source, desc)
         }
@@ -905,7 +908,7 @@ fn member_mod_field_info(mm: &ModulatorSlot, field: plugin::chain::CrossModField
 fn sibling_field_info(config: Option<&session::ModulatorConfig>, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
     match config {
         Some(config) => field_info(&build_mod_source(config).0, |ti| config.targets.get(ti).map(|t| t.depth as f32), field),
-        None => field_info(&ModSourceSlot::Lfo { waveform: plugin::chain::LfoWaveform::Sine, rate: 1.0 }, |_| None, field),
+        None => field_info(&ModSourceSlot::new_lfo(), |_| None, field),
     }
 }
 
@@ -1646,11 +1649,11 @@ mod tests {
             [
                 "AddInstrument range=Some((12, 59))",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
-                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0 }",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.040 base=0.000 range=[-24.000, 24.000]",
                 "AddInstrument range=Some((60, 108))",
                 "SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false",
-                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 7.0, phase: 0.0 }",
+                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 7.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=1 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.150 base=0.000 range=[-24.000, 24.000]",
             ]
         );
@@ -1674,10 +1677,10 @@ mod tests {
                 "SetParameter inst=0 slot=1 param=0 value=0.550",
                 "SetParameter inst=0 slot=1 param=1 value=2.000",
                 "InsertEffect inst=0 index=1 plugin=Delay mix=0.400",
-                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 0.2, phase: 0.0 }",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 0.2, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.300 base=0.550 range=[0.000, 1.000]",
                 // (The second LFO moves the delay's `time`, which the preset has at 0.3 s: that is where it is centred, over a range of 0.001 to 2 s.)
-                "InsertModulator inst=0 index=1 source=Lfo { waveform: Triangle, rate: 0.3, phase: 0.0 }",
+                "InsertModulator inst=0 index=1 source=Lfo { waveform: Triangle, rate: 0.3, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=1 kind=PluginParam { slot: 2, param_index: 0 } depth=0.004 base=0.300 range=[0.001, 2.000]",
             ]
         );
@@ -1784,6 +1787,31 @@ depth = 0.2
     }
 
     #[test]
+    fn an_lfo_with_a_key_in_the_file_is_loaded_with_it_and_one_that_says_nothing_of_it_runs_free() {
+        let lane = |fields: &str| format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"lfo\"\n{fields}");
+        let of = |fields: &str| match load(&lane(fields)).model.instruments[0].modulators[0].source {
+            ModSourceSlot::Lfo { retrigger, fade, .. } => (retrigger, fade),
+            ref other => panic!("{other:?}"),
+        };
+        assert_eq!(of(""), (false, 0.0), "a file that says nothing of it is an LFO that runs free, as every file made one");
+        assert_eq!(of("retrigger = true\nfade = 0.75\n"), (true, 0.75));
+        assert_eq!(of("retrigger = false\n"), (false, 0.0));
+        // A fade is held to what one can be.
+        assert_eq!(of("fade = 9.0\n").1, 5.0);
+        assert_eq!(of("fade = -1.0\n").1, 0.0);
+        // The engine is given the key with the LFO, which rests at full until a note.
+        let run = load(&lane("rate = 2.0\nretrigger = true\nfade = 0.5\n"));
+        let inserted = "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: true, fade: 0.5, age: inf }".to_string();
+        assert!(run.commands.contains(&inserted), "{:#?}", run.commands);
+        // A group's LFO has them too.
+        let run = load("[[group]]\n[[group.modulator]]\nretrigger = true\nfade = 1.5\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n");
+        match run.model.groups[0].modulators[0].source {
+            ModSourceSlot::Lfo { retrigger, fade, .. } => assert_eq!((retrigger, fade), (true, 1.5)),
+            ref other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn what_a_file_says_that_a_step_sequencer_cannot_be_is_held_to_what_it_can() {
         let lane = |fields: &str| format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n{fields}");
         let of = |fields: &str| steps_of(&load(&lane(fields)).model.instruments[0].modulators[0].source);
@@ -1869,13 +1897,13 @@ depth = 0.2
                 "SetLaneGroup inst=1 group=Some(0)",
                 "SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false",
                 "InsertEffect inst=1 index=0 plugin=Filter mix=1.000",
-                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 3.0, phase: 0.0 }",
+                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 3.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddInstrument range=None",
                 "SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false",
                 // Group modulators come last, once the members' chains are known. Two targets
                 // never resolve and are skipped: `param` without member / bus, and a bus
                 // that does not exist.
-                "InsertGroupModulator group=0 index=0 source=Lfo { waveform: Triangle, rate: 0.5, phase: 0.0 }",
+                "InsertGroupModulator group=0 index=0 source=Lfo { waveform: Triangle, rate: 0.5, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 1 } depth=0.400 base=0.000 range=[-24.000, 24.000]",
                 "AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 1, slot: 1, param_index: 0 } depth=-0.300 base=1.000 range=[0.000, 1.000]",
                 "AddGroupModTarget group=0 mod=0 kind=GroupBus { effect_index: 0, param_index: 2 } depth=0.250 base=0.350 range=[0.000, 1.000]",
@@ -1950,11 +1978,11 @@ plugin = "builtin:filter"
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
                 "InsertEffect inst=0 index=0 plugin=Filter mix=1.000",
-                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0 }",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.100 base=0.000 range=[-24.000, 24.000]",
-                "InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 3.0, phase: 0.0 }",
+                "InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 3.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.200 base=1.000 range=[0.000, 1.000]",
-                "InsertModulator inst=0 index=2 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0 }",
+                "InsertModulator inst=0 index=2 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=2 kind=ModulatorRate { mod_index: 1 } depth=0.300 base=3.000 range=[0.010, 50.000]",
             ]
         );
@@ -2095,7 +2123,7 @@ type = "envelope"
             [
                 "AddInstrument range=None",
                 "InsertEffect inst=0 index=0 plugin=Filter mix=1.000",
-                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0 }",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.400 base=1.000 range=[0.000, 1.000]",
                 "InsertModulator inst=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
             ]
@@ -2362,7 +2390,7 @@ slot = 4
             [
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
-                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }",
+                "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
             ],
             "unknown parameter, no field at all, and a slot past the chain are all dropped"
         );

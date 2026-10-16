@@ -1027,7 +1027,7 @@ rate = 3.0
         for _ in 0..4 {
             ctl.undo().unwrap();
         }
-        let ModSourceSlot::Lfo { waveform, rate } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
+        let ModSourceSlot::Lfo { waveform, rate, .. } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
         assert_eq!((format!("{waveform:?}"), rate, ctl.model.instruments[0].modulators[0].targets[0].depth), ("Sine".to_string(), 2.0, 0.5));
         assert_eq!(
             sent(&engine),
@@ -1041,8 +1041,52 @@ rate = 3.0
         for _ in 0..4 {
             ctl.redo().unwrap();
         }
-        let ModSourceSlot::Lfo { waveform, rate } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
+        let ModSourceSlot::Lfo { waveform, rate, .. } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
         assert_eq!((format!("{waveform:?}"), rate, ctl.model.instruments[0].modulators[0].targets[0].depth), ("Saw".to_string(), 9.0, -0.75));
+    }
+
+    #[test]
+    fn a_setting_of_the_key_of_an_lfo_is_a_step_in_the_words_of_the_setting_and_is_put_back() {
+        let (engine, mut ctl, clock) = controller();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        for (field, value, words) in [(ModulatorField::Retrigger, 1.0, "set retrigger"), (ModulatorField::Fade, 2.5, "set fade")] {
+            ctl.apply(Intent::SetModulatorField { node: lfo, field, value }).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(words));
+            clock.advance(Duration::from_secs(5));
+        }
+        sent(&engine);
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        let key = |ctl: &Controller| match ctl.model.instruments[0].modulators[0].source {
+            ModSourceSlot::Lfo { retrigger, fade, .. } => (retrigger, fade),
+            _ => panic!("an LFO"),
+        };
+        assert_eq!(key(&ctl), (false, 0.0));
+        assert_eq!(sent(&engine), ["SetModulatorKey Lane(0) index=0 retrigger=true fade=0.000", "SetModulatorKey Lane(0) index=0 retrigger=false fade=0.000"]);
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!(key(&ctl), (true, 2.5));
+    }
+
+    #[test]
+    fn an_lfo_that_is_taken_out_is_put_back_with_its_key() {
+        let (engine, mut ctl, clock) = controller();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Retrigger, value: 1.0 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Fade, value: 0.5 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::RemoveNode { node: lfo }).unwrap();
+        sent(&engine);
+        ctl.undo().unwrap();
+        let ModSourceSlot::Lfo { retrigger, fade, .. } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
+        assert_eq!((retrigger, fade), (true, 0.5), "as it was, and not as a new one is");
+        let commands = sent(&engine);
+        assert_eq!(
+            commands.first().map(String::as_str),
+            Some("InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: true, fade: 0.5, age: inf }"),
+            "{commands:?}"
+        );
     }
 
     #[test]
@@ -1068,7 +1112,7 @@ rate = 3.0
         ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Rate, value: 9.0 }).unwrap();
         ctl.apply(Intent::SetModulatorField { node: lfo, field: ModulatorField::Waveform, value: 3.0 }).unwrap();
         ctl.undo().unwrap();
-        let ModSourceSlot::Lfo { waveform, rate } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
+        let ModSourceSlot::Lfo { waveform, rate, .. } = ctl.model.instruments[0].modulators[0].source else { panic!("an LFO") };
         assert_eq!((format!("{waveform:?}"), rate), ("Sine".to_string(), 9.0));
     }
 

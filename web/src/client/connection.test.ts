@@ -55,7 +55,7 @@ function valueOf(client: Client, node: typeof filter, param: number): number | u
 
 /** The tracer with two more modulators: one drives the depth of the cutoff's cable, the other the depth of that. */
 function withCablesThatDriveCables(): Snapshot {
-  const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
+  const modulator = (id: number, name: string): Node => ({ id, parent: 0, name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } });
   const drives = (from: number, edge: number, id: number) =>
     ({ kind: "modulation", id, amount: 0.5, from: { node: from, port: { type: "modOut" } }, to: { node: from === 5 ? 2 : 5, port: { type: "depth", edge } } }) as const;
   return {
@@ -69,7 +69,7 @@ function withCablesThatDriveCables(): Snapshot {
 
 /** The tracer with a second LFO that drives the same cutoff: two cables, one value, one slot for it in the layout. */
 function withTwoCablesToTheCutoff(): Snapshot {
-  const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+  const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
   const cable = { kind: "modulation", id: 1, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } } as const;
   const [output, ...rest] = tracerSnapshot.telemetry.modulation;
   return {
@@ -288,12 +288,47 @@ describe("a request", () => {
     expect(sourceOfSequencer(client)?.values.slice(0, 4)).toEqual([0.5, -0.25, 1, -1]);
   });
 
+  const sourceOfLfo = (client: Client) => {
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === lfo.id);
+    return node?.kind === "modulator" && node.source.type === "lfo" ? node.source : undefined;
+  };
+
+  test("sets the retrigger and the fade of an LFO, a fade held to 0 to 5 seconds and a switch rounded, and the rest of the LFO is as it was", async () => {
+    const client = await open(new MockServer());
+    const before = sourceOfLfo(client);
+    const set = (field: "retrigger" | "fade", value: number) => client.request({ type: "setModulatorField", node: lfo.id, field, value });
+    for (const [asked, got] of [[9, 5], [-1, 0], [0.3, 0.3], [5, 5]] as const) {
+      await set("fade", asked);
+      expect(sourceOfLfo(client)?.fade, `fade asked ${String(asked)}`).toBe(got);
+    }
+    for (const [asked, got] of [[0.4, false], [0.6, true], [7, true], [0, false]] as const) {
+      await set("retrigger", asked);
+      expect(sourceOfLfo(client)?.retrigger, `retrigger asked ${String(asked)}`).toBe(got);
+    }
+    expect(sourceOfLfo(client)).toEqual({ ...before, retrigger: false, fade: 5 });
+  });
+
+  test("refuses the retrigger and the fade of what is not an LFO (a step sequencer has a retrigger of its own and no fade), and a fade that is not a number", async () => {
+    const envelope: Node = { id: 41, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } };
+    const nodes = [...withSequencer.graph.nodes, envelope];
+    const client = await open(new MockServer({ snapshot: { ...withSequencer, graph: { ...withSequencer.graph, nodes } } }));
+    for (const field of ["retrigger", "fade"] as const) {
+      await expect(client.request({ type: "setModulatorField", node: envelope.id, field, value: 1 }), `an envelope's ${field}`).rejects.toMatchObject({ code: "invalid" });
+    }
+    await expect(client.request({ type: "setModulatorField", node: sequencer.id, field: "fade", value: 1 }), "a sequencer's fade").rejects.toMatchObject({ code: "invalid" });
+    const server = new MockServer();
+    expect(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "fade", value: Number.NaN });
+    }).toThrow("NaN is not a value for Fade");
+  });
+
   test("refuses of a step sequencer the settings of the other kinds, and of the other kinds the settings of a step sequencer", async () => {
     const client = await open(new MockServer({ snapshot: withSequencer }));
-    for (const field of ["waveform", "attack", "decay", "sustain", "release", "value"] as const) {
+    for (const field of ["waveform", "attack", "decay", "sustain", "release", "value", "fade"] as const) {
       await expect(client.request({ type: "setModulatorField", node: sequencer.id, field, value: 0.5 }), field).rejects.toMatchObject({ code: "invalid" });
     }
-    for (const field of ["glide", "length", "retrigger"] as const) {
+    // (An LFO has the switch, which is its key's.)
+    for (const field of ["glide", "length"] as const) {
       await expect(client.request({ type: "setModulatorField", node: lfo.id, field, value: 1 }), field).rejects.toMatchObject({ code: "invalid" });
     }
     expect(sourceOfSequencer(client)).toEqual({ type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false });
@@ -658,7 +693,7 @@ describe("adding a modulator", () => {
     const added = nodesOf(client).slice(3, 7);
     expect(added.map((n) => n.name)).toEqual(["LFO", "ADSR", "MIDI (learning…)", "Macro"]);
     expect(added.map((n) => (n.kind === "modulator" ? n.source : null))).toEqual([
-      { type: "lfo", waveform: "sine", rate: 1 },
+      { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 },
       { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
       { type: "midiLearn", control: null, learning: true },
       { type: "macro", value: 0 },
@@ -771,7 +806,7 @@ describe("taking a modulator out", () => {
 
   test("takes the cable of another that drives its rate, which ends at it", async () => {
     // A second LFO (5) whose cable drives the rate of the first (2): the first has no other cable than the cutoff's.
-    const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } };
+    const second: Node = { id: 5, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } };
     const cable = { kind: "modulation", id: 1, amount: 0.5, from: { node: 5, port: { type: "modOut" } }, to: { node: lfo.id, port: { type: "rate" } } } as const;
     const snapshot = { ...tracerSnapshot, graph: { nodes: [...tracerSnapshot.graph.nodes, second], edges: [...tracerSnapshot.graph.edges, cable] } };
     const server = new MockServer({ snapshot });

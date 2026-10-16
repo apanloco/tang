@@ -427,7 +427,7 @@ mod typescript {
     /// Every gain and every modulator setting, to write the range of each. (One left out
     /// is a key missing in the `Record` that is generated, which the web's typecheck refuses.)
     const GAINS: [Gain; 4] = [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan];
-    const MODULATOR_FIELDS: [ModulatorField; 10] = [
+    const MODULATOR_FIELDS: [ModulatorField; 11] = [
         ModulatorField::Rate,
         ModulatorField::Waveform,
         ModulatorField::Attack,
@@ -438,6 +438,7 @@ mod typescript {
         ModulatorField::Glide,
         ModulatorField::Length,
         ModulatorField::Retrigger,
+        ModulatorField::Fade,
     ];
     const PATTERN_FIELDS: [PatternField; 4] = [PatternField::Length, PatternField::Enabled, PatternField::Looping, PatternField::Transpose];
 
@@ -699,7 +700,7 @@ mod typescript {
         // (Not `0.009999999776482582`: an f32 is written as the shortest number that is it.)
         assert_eq!(
             range_entries(&MODULATOR_FIELDS, ModulatorField::range),
-            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n  glide: [0, 1],\n  length: [1, 16],\n  retrigger: [0, 1],\n"
+            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n  glide: [0, 1],\n  length: [1, 16],\n  retrigger: [0, 1],\n  fade: [0, 5],\n"
         );
     }
 
@@ -707,15 +708,17 @@ mod typescript {
     fn the_taper_of_a_modulator_setting_is_written_for_every_setting() {
         assert_eq!(
             taper_entries(),
-            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n  glide: \"linear\",\n  length: \"linear\",\n  retrigger: \"linear\",\n"
+            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n  glide: \"linear\",\n  length: \"linear\",\n  retrigger: \"linear\",\n  fade: \"linear\",\n"
         );
     }
 
     #[test]
     fn what_a_new_modulator_starts_as_is_written_for_every_setting() {
+        // (The retrigger is a switch that an LFO and a step sequencer both have, off for the one and on for the other: the table has the first that has it, the LFO's, and
+        // the page's switch of a step sequencer starts from `NEW_STEPS`. The fade is an LFO's alone.)
         assert_eq!(
             default_entries(),
-            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n  glide: 0,\n  length: 16,\n  retrigger: 1,\n"
+            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n  glide: 0,\n  length: 16,\n  retrigger: 0,\n  fade: 0,\n"
         );
     }
 

@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import type { ModulatorSource } from "../../protocol";
 import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, settingsOf } from "./describe";
 
-const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5 };
+const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5, retrigger: false, fade: 0 };
 const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
 const macro: ModulatorSource = { type: "macro", value: 0.25 };
 const steps: ModulatorSource = { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true };

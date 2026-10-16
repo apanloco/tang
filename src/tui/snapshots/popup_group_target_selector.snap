@@ -8,11 +8,11 @@ source: src/tui/golden_tests.rs
 │▦ Pad  vol 0.80                                 ││  Type                     ◂ LFO ▸                                  │
 │  ♪ Oscillator  [Built-in]                      ││  Waveform                 ◂ sine ▸                                 │
 │  ♪ Oscillator  [Built-in]  C4-                 ││  Rate (Hz)                ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.50│
-│  ╰ fx Filter  [Built-in]                       ││  Targets                  ──────                                   │
-│  fx Reverb  [Built-in]  (bus)                  ││  detune depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░     0.40│
-│  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││  damping depth            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░     0.25│
-│  ~ ADSR → Mod 0 rate (┌ Select Target Parameter ─────────────────────────────────────────────┐                       │
-│♪ Oscillator  [Built-in│/                                                                     │                       │
+│  ╰ fx Filter  [Built-in]                       ││  Retrigger                ◂ off ▸                                  │
+│  fx Reverb  [Built-in]  (bus)                  ││  Fade (s)                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││  Targets                  ──────                                   │
+│  ~ ADSR → Mod 0 rate (┌ Select Target Parameter ─────────────────────────────────────────────┐▓▓▓▓░░░░░░░░░░     0.40│
+│♪ Oscillator  [Built-in│/                                                                     │▓▓░░░░░░░░░░░░     0.25│
 │├ fx Filter  [Built-in]│Plugin              Parameter                                         │                       │
 │╰ ~ LFO 0.2Hz triangle │M0 Oscillator       waveform                                          │                       │
 │                       │M0 Oscillator       detune                                            │                       │
@@ -41,11 +41,11 @@ ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cddddddddddddddd.................................cbcccccccccccccccccccccccccccccccccc..................................b
 cbbbbbbbbbbbbbbbbbbbbbbbbbb......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
 cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cbbbbbbbbbbbbbbbbbbbbbbbbb.......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
+cbbbbbbbbbbbbbbbbbbbbbbbbb.......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................b
 cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeecb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cfffffffffffffffffffffffgggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg.......................b
-cbbbbbbbbbbbbbbbbbbbbbbbgbbh...................................................................g.......................b
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeecb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
+cfffffffffffffffffffffffggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbgbbh...................................................................gbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbgiiiiii..............iiiiiiiii.........................................g.......................b
 cfffffffffffffffffffffffgaaaaaaaaaaaaa.......aaaaaaaa..........................................g.......................b
 c.......................g......................................................................g.......................b

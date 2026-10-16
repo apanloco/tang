@@ -597,10 +597,16 @@ pub fn steps_output(values: &[f32; MAX_STEPS], length: usize, position: f32, gli
 /// Modulation source: an LFO, an ADSR envelope, a learned MIDI control, a macro, or a step sequencer.
 #[derive(Debug, Clone)]
 pub enum ModSource {
+    /// A low-frequency oscillator: `rate` cycles a second of `waveform`. With `retrigger` on a note puts it at the start of its wave again (and, if the wave is a random one, takes
+    /// the next number). What it puts out comes in from nothing over `fade` seconds (none if it is 0) from every note, whether or not it retriggers; `age` is how many seconds ago the
+    /// last note was (infinite before the first: it rests at full until a note).
     Lfo {
         waveform: LfoWaveform,
         rate: f32,
         phase: f32,
+        retrigger: bool,
+        fade: f32,
+        age: f32,
     },
     Envelope {
         attack: f32,
@@ -639,6 +645,20 @@ pub enum ModSource {
 }
 
 impl ModSource {
+    /// An LFO that runs free, as every one did before it had a key: no note puts it at the start of its wave again and it does not fade in.
+    pub fn lfo(waveform: LfoWaveform, rate: f32) -> ModSource {
+        ModSource::Lfo { waveform, rate, phase: 0.0, retrigger: false, fade: 0.0, age: f32::INFINITY }
+    }
+
+    /// The same, with whether a note starts an LFO again and how many seconds it takes to come in after one (none for 0). Any other source is as it was.
+    pub fn with_key(mut self, key_retrigger: bool, key_fade: f32) -> ModSource {
+        if let ModSource::Lfo { retrigger, fade, .. } = &mut self {
+            *retrigger = key_retrigger;
+            *fade = key_fade;
+        }
+        self
+    }
+
     /// How fast it goes, if it has a rate: an LFO's cycles and a step sequencer's steps a second.
     fn rate(&self) -> Option<f32> {
         match self {
@@ -702,13 +722,30 @@ impl Modulator {
     /// Advance the modulator by one buffer. For envelopes, processes MIDI note events.
     fn tick(&mut self, buffer_size: usize, midi_events: &[(u64, [u8; 3])]) {
         match &mut self.source {
-            ModSource::Lfo { waveform, rate, phase } => {
-                let phase_inc = *rate * buffer_size as f32 / self.sample_rate;
-                let turned = *phase + phase_inc;
-                // Every time round is a cycle, and a rate that makes more than one in a buffer counts them all.
-                self.cycle = self.cycle.wrapping_add(turned as u32);
-                *phase = turned % 1.0;
+            ModSource::Lfo { waveform, rate, phase, retrigger, fade, age } => {
+                // A note (a note-on with a velocity, on any channel: the lane's or a member's, as the step sequencer's) starts the fade again, and the wave too if it retriggers.
+                let note = midi_events.iter().any(|&(_frame, bytes)| note_on_of(bytes).is_some());
+                if note {
+                    *age = 0.0;
+                } else {
+                    *age += buffer_size as f32 / self.sample_rate;
+                }
+                if note && *retrigger {
+                    // The start of the wave, at the start of a cycle of its own: a random wave takes its next number.
+                    *phase = 0.0;
+                    self.cycle = self.cycle.wrapping_add(1);
+                } else {
+                    let phase_inc = *rate * buffer_size as f32 / self.sample_rate;
+                    let turned = *phase + phase_inc;
+                    // Every time round is a cycle, and a rate that makes more than one in a buffer counts them all.
+                    self.cycle = self.cycle.wrapping_add(turned as u32);
+                    *phase = turned % 1.0;
+                }
                 self.last_output = waveform.eval_cycle(*phase, self.seed, self.cycle);
+                // (A fade of nothing is a gain of one, which is no change to the last bit: the check says so and spares the division.)
+                if *fade > 0.0 {
+                    self.last_output *= (*age / *fade).min(1.0);
+                }
             }
             ModSource::Envelope { attack, decay, sustain, release, state, level, notes_held } => {
                 // Process MIDI events for note-on/off.
@@ -2334,6 +2371,13 @@ pub enum GraphCommand {
         length: usize,
         glide: f32,
         retrigger: bool,
+    },
+    /// Set whether a note starts an LFO again at the start of its wave and how many seconds it takes to come in after one (none for 0); where it is stays.
+    SetModulatorKey {
+        location: ModulatorLocation,
+        index: usize,
+        retrigger: bool,
+        fade: f32,
     },
     /// Insert a new modulator into the lane (modulators are lane-scoped).
     InsertModulator {
@@ -4516,6 +4560,12 @@ impl AudioGraph {
                         *r = retrigger;
                     }
                 }
+                GraphCommand::SetModulatorKey { location, index, retrigger, fade } => {
+                    if let Some(ModSource::Lfo { retrigger: r, fade: f, .. }) = self.modulator_mut(location, index).map(|m| &mut m.source) {
+                        *r = retrigger;
+                        *f = fade;
+                    }
+                }
                 GraphCommand::InsertModulator {
                     inst,
                     index,
@@ -6483,6 +6533,178 @@ mod tests {
         assert_eq!(m.last_output, noise(5, 2), "the second cycle is over at the fourth buffer of the new rate");
     }
 
+    // -- An LFO that a note starts again, and that fades in --
+
+    /// An LFO of `waveform` at `rate` that a note starts again if `retrigger` is on, and that comes in over `fade` seconds from every note (not at all if it is 0).
+    fn keyed_lfo(waveform: LfoWaveform, rate: f32, retrigger: bool, fade: f32) -> ModSource {
+        ModSource::lfo(waveform, rate).with_key(retrigger, fade)
+    }
+
+    /// The rate of an LFO that goes round once in eight buffers, so that a saw climbs a quarter of its height a buffer (from -1).
+    fn once_in_eight_buffers() -> f32 {
+        48000.0 / (FRAMES * 8) as f32
+    }
+
+    /// How many seconds `buffers` buffers are.
+    fn seconds_of(buffers: usize) -> f32 {
+        (buffers * FRAMES) as f32 / 48000.0
+    }
+
+    #[test]
+    fn a_note_starts_an_lfo_that_retriggers_again_at_the_start_of_its_wave() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), true, 0.0));
+        for _ in 0..3 {
+            rig.process(&[]);
+        }
+        assert!(close(rig.read(output), -0.25), "three buffers into the wave: {}", rig.read(output));
+        rig.process(&[note_on(60)]);
+        assert!(close(rig.read(output), -1.0), "a note puts it at the start of its wave: {}", rig.read(output));
+        rig.process(&[]);
+        assert!(close(rig.read(output), -0.75), "and it goes on from there: {}", rig.read(output));
+    }
+
+    #[test]
+    fn an_lfo_that_does_not_retrigger_goes_on_through_a_note() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), false, 0.0));
+        for _ in 0..3 {
+            rig.process(&[]);
+        }
+        rig.process(&[note_on(60)]);
+        assert!(close(rig.read(output), 0.0), "the fourth buffer of the wave, half way up: {}", rig.read(output));
+    }
+
+    #[test]
+    fn a_note_off_and_a_note_on_with_no_velocity_do_not_start_an_lfo_again_or_its_fade() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), true, seconds_of(4)));
+        rig.process(&[]);
+        rig.process(&[note_off(60), (0, [0x90, 60, 0]), (0, [0xB0, 74, 100])]);
+        // (A wave that had been started again would be at -1, and a fade that had been started would have put it at nothing: it is a quarter of the way up and at full.)
+        assert!(close(rig.read(output), -0.5), "{}", rig.read(output));
+    }
+
+    #[test]
+    fn a_random_lfo_that_retriggers_takes_the_next_number_with_every_note() {
+        let mut m = Modulator::new(keyed_lfo(LfoWaveform::Random, once_in_eight_buffers(), true, 0.0), 48000.0).with_seed(5);
+        m.tick(FRAMES, &[]);
+        assert_eq!(m.last_output, noise(5, 0));
+        m.tick(FRAMES, &[note_on(60)]);
+        assert_eq!(m.last_output, noise(5, 1), "a note is the start of a new cycle: the next number");
+        m.tick(FRAMES, &[]);
+        assert_eq!(m.last_output, noise(5, 1), "which it holds");
+        m.tick(FRAMES, &[note_on(60)]);
+        assert_eq!(m.last_output, noise(5, 2));
+    }
+
+    #[test]
+    fn an_lfo_with_a_fade_rests_at_full_until_a_note_and_then_comes_in_over_the_fade() {
+        let mut rig = Rig::new();
+        // A square that stays at +1 (a rate of nothing), so that what is read is the fade alone: four buffers long.
+        let output = rig.lane_modulator(0, keyed_lfo(LfoWaveform::Square, 0.0, false, seconds_of(4)));
+        rig.process(&[]);
+        assert_eq!(rig.read(output), 1.0, "before the first note it is at full");
+        rig.process(&[note_on(60)]);
+        assert_eq!(rig.read(output), 0.0, "a note starts it at nothing");
+        for (after, expected) in [(1, 0.25), (2, 0.5), (3, 0.75), (4, 1.0), (5, 1.0)] {
+            rig.process(&[]);
+            assert!(close(rig.read(output), expected), "{after} buffers after the note: {}", rig.read(output));
+        }
+        rig.process(&[note_on(62)]);
+        assert_eq!(rig.read(output), 0.0, "and the next note starts it at nothing again");
+    }
+
+    #[test]
+    fn a_note_starts_the_fade_again_whether_or_not_the_lfo_retriggers_and_the_wave_of_one_that_does_not_goes_on() {
+        let mut rig = Rig::new();
+        let fading = rig.lane_modulator(0, keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), false, seconds_of(8)));
+        let starting = rig.lane_modulator(1, keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), true, seconds_of(8)));
+        for _ in 0..3 {
+            rig.process(&[]);
+        }
+        rig.process(&[note_on(60)]);
+        rig.process(&[]);
+        rig.process(&[]);
+        // Two buffers after the note the fade is a quarter of the way in. The wave that does not retrigger is six eighths round (a saw at a half), the one that does two eighths (at minus a half).
+        assert!(close(rig.read(fading), 0.25 * 0.5), "{}", rig.read(fading));
+        assert!(close(rig.read(starting), 0.25 * -0.5), "{}", rig.read(starting));
+    }
+
+    #[test]
+    fn a_note_changes_nothing_of_an_lfo_that_neither_retriggers_nor_fades() {
+        let run = |events: &[(u64, [u8; 3])]| {
+            let mut m = Modulator::new(ModSource::lfo(LfoWaveform::Sine, 3.7), 48000.0);
+            (0..40)
+                .map(|_| {
+                    m.tick(FRAMES, events);
+                    m.last_output
+                })
+                .collect::<Vec<f32>>()
+        };
+        assert_eq!(run(&[note_on(60)]), run(&[]), "the same numbers, to the last bit");
+    }
+
+    #[test]
+    fn an_lfo_that_retriggers_hears_the_notes_the_lane_takes_and_no_others() {
+        let mut rig = Rig::new();
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((60, 71)) }).unwrap();
+        let output = rig.lane_modulator(0, keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), true, 0.0));
+        rig.process(&[]);
+        rig.process(&[(0, [0x90, 40, 100])]);
+        assert!(close(rig.read(output), -0.5), "a note below the lane's range is not the lane's: the wave went on to a quarter: {}", rig.read(output));
+        rig.process(&[(0, [0x90, 62, 100])]);
+        assert!(close(rig.read(output), -1.0), "{}", rig.read(output));
+    }
+
+    #[test]
+    fn the_key_of_an_lfo_is_set_by_a_command_and_the_lfo_stays_where_it_is() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, lfo(LfoWaveform::Saw, once_in_eight_buffers()));
+        for _ in 0..2 {
+            rig.process(&[]);
+        }
+        rig.cmd_tx.send(GraphCommand::SetModulatorKey { location: ModulatorLocation::Lane(0), index: 0, retrigger: true, fade: 0.0 }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(output), -0.25), "it went on from where it was: {}", rig.read(output));
+        rig.process(&[note_on(60)]);
+        assert!(close(rig.read(output), -1.0), "and a note starts it again, which it had not: {}", rig.read(output));
+    }
+
+    #[test]
+    fn the_key_of_a_modulator_that_is_not_an_lfo_is_not_set() {
+        let mut rig = Rig::new();
+        let output = rig.lane_modulator(0, adsr(0.01));
+        rig.cmd_tx.send(GraphCommand::SetModulatorKey { location: ModulatorLocation::Lane(0), index: 0, retrigger: true, fade: 1.0 }).unwrap();
+        rig.process(&[note_on(60)]);
+        assert!(matches!(rig.graph.instruments[0].modulators[0].source, ModSource::Envelope { .. }), "it is the envelope it was");
+        assert!(rig.read(output) > 0.0, "and it answers to the note");
+    }
+
+    #[test]
+    fn a_group_lfo_that_retriggers_is_started_again_by_a_note_of_a_member_and_is_given_its_key_by_a_command() {
+        let mut g = GroupRig::new();
+        g.rig
+            .cmd_tx
+            .send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: keyed_lfo(LfoWaveform::Saw, once_in_eight_buffers(), true, 0.0) })
+            .unwrap();
+        let output = g.rig.slot();
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(0), index: 1, slot: output }).unwrap();
+        g.rig.process(&[]);
+        g.rig.process(&[]);
+        assert!(close(g.rig.read(output), -0.5), "{}", g.rig.read(output));
+        g.rig.process(&[note_on(60)]);
+        assert!(close(g.rig.read(output), -1.0), "a note of a member starts it again: {}", g.rig.read(output));
+        // Now it does not retrigger, and fades over four buffers: the fade is one buffer old when the command has been taken.
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorKey { location: ModulatorLocation::Group(0), index: 1, retrigger: false, fade: seconds_of(4) }).unwrap();
+        g.rig.process(&[]);
+        assert!(close(g.rig.read(output), -0.75 * 0.25), "{}", g.rig.read(output));
+        g.rig.process(&[note_on(60)]);
+        assert_eq!(g.rig.read(output), 0.0, "a note starts the fade again, at nothing");
+        g.rig.process(&[]);
+        assert!(close(g.rig.read(output), -0.25 * 0.25), "and the wave went on through it (three eighths, not one): {}", g.rig.read(output));
+    }
+
     #[test]
     fn the_random_lfos_of_a_graph_have_numbers_of_their_own_and_a_graph_that_is_made_again_has_the_same() {
         let run = || {
@@ -6796,7 +7018,7 @@ mod tests {
     #[test]
     fn group_member_target_fixups() {
         let mk = |member: usize| Modulator {
-            source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             sample_rate: 48000.0,
             targets: vec![ModTarget {
                 kind: ModTargetKind::GroupMember { member, slot: 0, param_index: 0 },
@@ -6833,7 +7055,7 @@ mod tests {
 
         // The same ordinal fixups apply to GroupMemberMod targets.
         let mk_mm = |member: usize| Modulator {
-            source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             sample_rate: 48000.0,
             targets: vec![ModTarget {
                 kind: ModTargetKind::GroupMemberMod { member, mod_index: 0, field: CrossModField::Rate },
@@ -6865,7 +7087,7 @@ mod tests {
         // Member-modulator removal: member 0's modulator 1 deleted → targets at
         // (member 0, mod 1) drop, and (member 0, mod >1) shift down.
         let mk_mm_idx = |mod_index: usize| Modulator {
-            source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             sample_rate: 48000.0,
             targets: vec![ModTarget {
                 kind: ModTargetKind::GroupMemberMod { member: 0, mod_index, field: CrossModField::Rate },
@@ -6939,7 +7161,7 @@ mod tests {
             .send(GraphCommand::InsertGroupModulator {
                 group: 0,
                 index: 0,
-                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             })
             .unwrap();
         for (param_index, (member, slot)) in [(0, 0), (0, 1), (0, 2), (1, 1)].into_iter().enumerate() {
@@ -7061,7 +7283,7 @@ mod tests {
     fn group_member_slot_fixups_touch_only_that_members_slots() {
         let target = |kind| ModTarget { kind, depth: 0.5, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
         let modulator = |targets: Vec<ModTarget>| Modulator {
-            source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             sample_rate: 48000.0,
             targets,
             last_output: 0.0,
@@ -7141,7 +7363,7 @@ mod tests {
             .send(GraphCommand::InsertModulator {
                 inst: 0,
                 index: 0,
-                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 10.0, phase: 0.0 },
+                source: ModSource::lfo(LfoWaveform::Sine, 10.0),
             })
             .unwrap();
         // Group envelope modulator (idle) drives that member LFO's rate, depth 1.
@@ -7542,7 +7764,7 @@ mod tests {
             .send(GraphCommand::InsertModulator {
                 inst: 0,
                 index: 0,
-                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             })
             .unwrap();
         cmd_tx
@@ -7598,7 +7820,7 @@ mod tests {
             .send(GraphCommand::InsertModulator {
                 inst: 0,
                 index: 0,
-                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             })
             .unwrap();
         cmd_tx
@@ -7776,7 +7998,7 @@ mod tests {
             .send(GraphCommand::InsertModulator {
                 inst: 0,
                 index: 0,
-                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             })
             .unwrap();
         cmd_tx
@@ -7832,7 +8054,7 @@ mod tests {
             .send(GraphCommand::InsertModulator {
                 inst: 0,
                 index: 0,
-                source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                source: ModSource::lfo(LfoWaveform::Sine, 1.0),
             })
             .unwrap();
         cmd_tx
@@ -7870,7 +8092,7 @@ mod tests {
             vec![Box::new(ParamTrackingInstrument { param_value: 0.5 })];
 
         let mut m = Modulator::new(
-            ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+            ModSource::lfo(LfoWaveform::Sine, 1.0),
             48000.0,
         );
         m.targets = vec![ModTarget {
@@ -7922,7 +8144,7 @@ mod tests {
         };
         let make = || {
             let mut m = Modulator::new(
-                ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 },
+                ModSource::lfo(LfoWaveform::Sine, 1.0),
                 48000.0,
             );
             m.targets = vec![target(0), target(2), target(3)];
@@ -8139,7 +8361,7 @@ mod tests {
         swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
         insert_effect(&cmd_tx, 0, scale_effect(), 1.0);
         let sources = [
-            ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, phase: 0.0 },
+            ModSource::lfo(LfoWaveform::Sine, 2.0),
             ModSource::Envelope {
                 attack: 0.01,
                 decay: 0.1,
@@ -8149,7 +8371,7 @@ mod tests {
                 level: 0.0,
                 notes_held: 0,
             },
-            ModSource::Lfo { waveform: LfoWaveform::Triangle, rate: 0.5, phase: 0.0 },
+            ModSource::lfo(LfoWaveform::Triangle, 0.5),
         ];
         for (index, source) in sources.into_iter().enumerate() {
             cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index, source }).unwrap();
@@ -8210,7 +8432,7 @@ mod tests {
         cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 0.5 }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.8 }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: -0.3 }).unwrap();
-        let lfo = |rate| ModSource::Lfo { waveform: LfoWaveform::Sine, rate, phase: 0.0 };
+        let lfo = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
         let adsr = ModSource::Envelope {
             attack: 0.01,
             decay: 0.1,
@@ -8300,7 +8522,7 @@ mod tests {
         insert_effect(&cmd_tx, 0, load("builtin:filter"), 1.0);
         insert_effect(&cmd_tx, 1, load("builtin:reverb"), 0.5);
         cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 0.8 }).unwrap();
-        let lfo = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, phase: 0.0 };
+        let lfo = ModSource::lfo(LfoWaveform::Sine, 2.0);
         cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo }).unwrap();
         // The filter's `cutoff` (0) and the reverb's `damping` (2), and the oscillator's `detune` (1).
         for kind in [
@@ -8755,7 +8977,7 @@ mod tests {
     }
 
     fn lfo(waveform: LfoWaveform, rate: f32) -> ModSource {
-        ModSource::Lfo { waveform, rate, phase: 0.0 }
+        ModSource::lfo(waveform, rate)
     }
 
     fn adsr(attack: f32) -> ModSource {
@@ -10440,7 +10662,7 @@ mod tests {
     }
 
     fn insert_lane_lfo(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, index: usize) {
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertModulator { inst, index, source }).unwrap();
     }
 
@@ -10561,7 +10783,7 @@ mod tests {
         for (i, depth) in [0.4, 0.5, 0.6].into_iter().enumerate() {
             add_lane_cable(&cmd_tx, 1, 1, cable(param(0, i as u32), depth));
         }
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
         let member_mod = |member, field| ModTargetKind::GroupMemberMod { member, mod_index: 0, field };
         add_group_cable(&cmd_tx, 0, 0, cable(member_mod(0, CrossModField::Depth(0)), 0.4));
@@ -10649,7 +10871,7 @@ mod tests {
     fn removing_a_group_modulators_cable_moves_its_siblings_cables_to_the_depths_of_its_later_ones() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        let source = || ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = || ModSource::lfo(LfoWaveform::Sine, 1.0);
         for index in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source() }).unwrap();
         }
@@ -10890,7 +11112,7 @@ mod tests {
     fn a_group_modulators_cable_that_goes_in_moves_its_siblings_cables_to_the_depths_of_its_later_ones_and_no_others() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        let source = || ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = || ModSource::lfo(LfoWaveform::Sine, 1.0);
         for index in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source() }).unwrap();
         }
@@ -10944,7 +11166,7 @@ mod tests {
 
     /// A lane's modulator with the rate `rate`, which tells it from the others.
     fn insert_lane_lfo_at(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, index: usize, rate: f32) {
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, rate);
         cmd_tx.send(GraphCommand::InsertModulator { inst, index, source }).unwrap();
     }
 
@@ -11024,7 +11246,7 @@ mod tests {
     fn a_groups_modulators_that_are_added_in_order_leave_the_cables_that_address_the_ones_that_come_later_as_they_are() {
         let (mut graph, cmd_tx, _rr) = make_graph(1);
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: source.clone() }).unwrap();
         add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::ModulatorRate { mod_index: 1 }, 0.4));
         add_group_cable(&cmd_tx, 0, 0, cable(depth_of(2, 0), 0.6));
@@ -11040,7 +11262,7 @@ mod tests {
         let (mut graph, cmd_tx, _rr) = make_graph(1);
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
         let member_mod = |mod_index, field| ModTargetKind::GroupMemberMod { member: 0, mod_index, field };
         add_group_cable(&cmd_tx, 0, 0, cable(member_mod(1, CrossModField::Rate), 0.4));
@@ -11057,7 +11279,7 @@ mod tests {
         let (mut graph, cmd_tx) = lane_with_cables_that_drive_cables();
         let before = all_modulators(&graph);
         insert_lane_lfo_at(&cmd_tx, 4, 0, 7.0);
-        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 3, index: 0, source: ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 7.0, phase: 0.0 } }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupModulator { group: 3, index: 0, source: ModSource::lfo(LfoWaveform::Sine, 7.0) }).unwrap();
         graph.drain_commands();
         assert_eq!(all_modulators(&graph), before);
     }
@@ -11094,7 +11316,7 @@ mod tests {
     fn a_group_modulator_that_goes_in_tells_the_cables_of_its_siblings_and_not_a_lanes() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        let source = |rate| ModSource::Lfo { waveform: LfoWaveform::Sine, rate, phase: 0.0 };
+        let source = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
         for index in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source(index as f32) }).unwrap();
         }
@@ -11120,7 +11342,7 @@ mod tests {
         for index in [2, 3, 99] {
             let (mut graph, cmd_tx, _rr) = make_graph(2);
             cmd_tx.send(GraphCommand::AddGroup).unwrap();
-            let source = |rate| ModSource::Lfo { waveform: LfoWaveform::Sine, rate, phase: 0.0 };
+            let source = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
             for place in 0..2 {
                 cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: place, source: source(place as f32) }).unwrap();
             }
@@ -11260,7 +11482,7 @@ mod tests {
     fn a_group_modulator_that_is_taken_out_and_put_back_leaves_its_siblings_cables_as_they_were() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        let source = |rate| ModSource::Lfo { waveform: LfoWaveform::Sine, rate, phase: 0.0 };
+        let source = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
         for index in 0..3 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source(index as f32) }).unwrap();
         }
@@ -11497,7 +11719,7 @@ mod tests {
     /// `group_with_three_bus_effects` with a modulator of the group whose cables go to the effects (told apart by their parameter, 0 to 2) and to a member's plugin.
     fn group_with_cables_to_three_bus_effects() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
         let (mut graph, cmd_tx, return_rx) = group_with_three_bus_effects();
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
         for param_index in 0..3 {
             add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupBus { effect_index: param_index as usize, param_index }, 0.1 * f32::from(param_index as u8 + 1)));
@@ -11658,7 +11880,7 @@ mod tests {
         for index in 0..3 {
             cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index, effect: Box::new(ParamScaleEffect { gain: 0.25 * (index + 1) as f32 }), mix: 1.0 }).unwrap();
         }
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
         for slot in 0..4 {
             add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member: 0, slot, param_index: 0 }, 0.1 + 0.1 * slot as f32));
@@ -11727,7 +11949,7 @@ mod tests {
             cmd_tx.send(GraphCommand::SetInstrumentRange { inst, range: Some((40 + inst as u8, 100)) }).unwrap();
             cmd_tx.send(GraphCommand::SetTranspose { inst, semitones: inst as i8 }).unwrap();
         }
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
         for member in 0..3 {
             add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::GroupMember { member, slot: 0, param_index: 0 }, 0.2 * (member + 1) as f32));
@@ -12031,7 +12253,7 @@ mod tests {
             }
             cmd_tx.send(GraphCommand::SetGroupVolume { group, value: 0.5 + 0.1 * n }).unwrap();
             cmd_tx.send(GraphCommand::SetGroupPan { group, value: 0.1 * n - 0.2 }).unwrap();
-            let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: n, phase: 0.0 };
+            let source = ModSource::lfo(LfoWaveform::Sine, n);
             cmd_tx.send(GraphCommand::InsertGroupModulator { group, index: 0, source }).unwrap();
             add_group_cable(&cmd_tx, group, 0, cable(ModTargetKind::GroupBus { effect_index: 0, param_index: 0 }, 0.1 * n));
             add_group_cable(&cmd_tx, group, 0, cable(ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 }, 0.2 * n));
@@ -12330,7 +12552,7 @@ mod tests {
         for inst in [0, 2, 3] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
         }
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: source.clone() }).unwrap();
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 1, index: 0, source }).unwrap();
         for member in 0..3 {
@@ -12393,7 +12615,7 @@ mod tests {
         for (inst, group) in [(0, 0), (1, 1), (2, 0), (3, 1), (4, 1)] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(group) }).unwrap();
         }
-        let source = ModSource::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, phase: 0.0 };
+        let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         for group in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group, index: 0, source: source.clone() }).unwrap();
         }

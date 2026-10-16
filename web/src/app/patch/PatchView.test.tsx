@@ -243,7 +243,7 @@ describe("the patch", () => {
   test("tells two modulators of one name apart: each node is a group of its own name, and so are the controls in it and the cables", async () => {
     const snapshot: Snapshot = structuredClone(tracerSnapshot);
     // A second LFO on the same lane, driving the same cutoff.
-    snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });
+    snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0 } });
     snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
     await rig(<PatchView />, { snapshot });
     const first = await screen.findByRole("group", { name: "LFO 1" });
@@ -1396,7 +1396,7 @@ describe("the patch", () => {
 
     test("gives it to the list of the modulator of that cable, whichever modulators there are", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
       // (A second cable of the second modulator, so that it still has one cable when the first is taken out.)
       snapshot.graph.edges.push({ kind: "modulation", id: 2, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: oscillator.id, port: { type: "param", index: 1 } } });
@@ -1435,7 +1435,7 @@ describe("the patch", () => {
 
     test("names two cables of two modulators of one name apart", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7 } });
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
       await rig(<PatchView />, { snapshot });
       expect(await screen.findByRole("button", { name: "Remove cable LFO 1 → Filter: cutoff" })).toBeTruthy();
@@ -1733,7 +1733,7 @@ describe("the patch while it plays", () => {
 
     test("is lit by the modulator that drives it: two cables of two modulators have each their own", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 1 } });
+      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 1, retrigger: false, fade: 0 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 1 } } });
       const { clock, time, view } = await rig(<PatchView />, { snapshot: withOutput(snapshot, 90) });
       await nodeOf(90);

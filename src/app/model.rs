@@ -1166,9 +1166,12 @@ impl GroupNode {
 
 #[derive(Debug)]
 pub enum ModSourceSlot {
+    /// An LFO: its waveform and rate, whether a note starts it again at the start of its wave, and how many seconds it takes to come in after a note (0 for none).
     Lfo {
         waveform: crate::plugin::chain::LfoWaveform,
         rate: f32,
+        retrigger: bool,
+        fade: f32,
     },
     Envelope {
         attack: f32,
@@ -1200,7 +1203,7 @@ pub enum ModSourceSlot {
 impl ModSourceSlot {
     /// What a modulator added without further ado starts as: a 1 Hz sine.
     pub fn new_lfo() -> Self {
-        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0 }
+        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0, retrigger: false, fade: 0.0 }
     }
 
     /// An envelope as the modulate popup makes it: 10 ms attack, 0.3 s decay,
@@ -1265,7 +1268,7 @@ impl ModSourceSlot {
     pub fn label(&self) -> String {
         use crate::plugin::chain::MidiBindSource;
         match self {
-            ModSourceSlot::Lfo { waveform, rate } => format!("LFO {:.1}Hz {}", rate, waveform.name()),
+            ModSourceSlot::Lfo { waveform, rate, .. } => format!("LFO {:.1}Hz {}", rate, waveform.name()),
             ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
             ModSourceSlot::MidiLearn { source, learning } => match source {
                 Some(MidiBindSource::Cc(n)) => format!("CC {n}"),
@@ -1490,6 +1493,8 @@ pub const DEPTH_MAX: f32 = 1.0;
 /// The range of the value of a step of a step sequencer: below and above what the user set, by as much as the depth of the cable says.
 pub const STEP_MIN: f32 = -1.0;
 pub const STEP_MAX: f32 = 1.0;
+/// The longest an LFO's fade can be, in seconds.
+pub const MAX_FADE: f32 = 5.0;
 /// How deep a cable pulls when it is first drawn: half way, which a person can hear and turn either way.
 pub const NEW_CABLE_DEPTH: f32 = 0.5;
 /// How many parameters of a plugin can be pinned to its node: a node that shows more is taller than a canvas has room for, and a plugin of
@@ -1511,7 +1516,7 @@ pub enum ModulatorRow {
     Setting(ModulatorField),
     /// The "Targets" separator.
     Separator,
-    /// A step sequencer's switch for whether a note starts it again: a choice of two.
+    /// The switch for whether a note starts a step sequencer or an LFO again: a choice of two.
     Retrigger,
     /// The value of the step sequencer's step with this index.
     Step(usize),
@@ -1542,7 +1547,7 @@ impl ModSourceSlot {
         use ModulatorField as F;
         use ModulatorRow as R;
         match self {
-            ModSourceSlot::Lfo { .. } => &[R::Type, R::Waveform, R::Setting(F::Rate), R::Separator],
+            ModSourceSlot::Lfo { .. } => &[R::Type, R::Waveform, R::Setting(F::Rate), R::Retrigger, R::Setting(F::Fade), R::Separator],
             ModSourceSlot::Envelope { .. } => {
                 &[R::Type, R::Setting(F::Attack), R::Setting(F::Decay), R::Setting(F::Sustain), R::Setting(F::Release), R::Separator]
             }
@@ -1557,6 +1562,8 @@ impl ModSourceSlot {
         match (self, field) {
             (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => Some(*rate),
             (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => Some(waveform.to_index() as f32),
+            (ModSourceSlot::Lfo { retrigger, .. }, ModulatorField::Retrigger) => Some(if *retrigger { 1.0 } else { 0.0 }),
+            (ModSourceSlot::Lfo { fade, .. }, ModulatorField::Fade) => Some(*fade),
             (ModSourceSlot::Envelope { attack, .. }, ModulatorField::Attack) => Some(*attack),
             (ModSourceSlot::Envelope { decay, .. }, ModulatorField::Decay) => Some(*decay),
             (ModSourceSlot::Envelope { sustain, .. }, ModulatorField::Sustain) => Some(*sustain),
@@ -1676,7 +1683,7 @@ pub fn modulator_row_to_cross_mod(
                 // (It has a row of its own, `ModulatorRow::Waveform`, which is not a number for a control to move.)
                 ModulatorField::Waveform => return None,
                 // (A macro's value is turned by a person: a cable that drives it is not built. Nor is a step sequencer's glide, length or switch.)
-                ModulatorField::Value | ModulatorField::Glide | ModulatorField::Length | ModulatorField::Retrigger => return None,
+                ModulatorField::Value | ModulatorField::Glide | ModulatorField::Length | ModulatorField::Retrigger | ModulatorField::Fade => return None,
             };
             let (min, max) = field.range();
             Some((kind, min, max, m.source.setting(field)?, format!("Mod {mod_index} {name}")))
@@ -2087,11 +2094,7 @@ pub fn lane_member_ordinal(instruments: &[InstrumentNode], inst: usize) -> Optio
 /// Convert a `ModSourceSlot` to the audio-thread `ModSource` carried by `GraphCommand`s.
 pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::ModSource {
     match slot {
-        ModSourceSlot::Lfo { waveform, rate } => crate::plugin::chain::ModSource::Lfo {
-            waveform: *waveform,
-            rate: *rate,
-            phase: 0.0,
-        },
+        ModSourceSlot::Lfo { waveform, rate, retrigger, fade } => crate::plugin::chain::ModSource::lfo(*waveform, *rate).with_key(*retrigger, *fade),
         ModSourceSlot::Envelope { attack, decay, sustain, release } => crate::plugin::chain::ModSource::Envelope {
             attack: *attack,
             decay: *decay,
@@ -3597,7 +3600,7 @@ param = "pan"
     fn spare_modulator(node: u32) -> ModulatorSlot {
         let mut cable = spare_cable(900 + node);
         cable.kind = K::ModulatorRate { mod_index: 0 };
-        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0 }, targets: vec![cable], output: None, position: None }
+        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0, retrigger: false, fade: 0.0 }, targets: vec![cable], output: None, position: None }
     }
 
     #[test]
@@ -3799,7 +3802,7 @@ param = "pan"
     fn lfo(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
             node: NodeId(0),
-            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0 },
+            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, retrigger: false, fade: 0.0 },
             targets,
             output: None,
             position: None,
@@ -4509,10 +4512,15 @@ depth = 0.5
 
     #[test]
     fn mod_source_slot_converts_to_a_fresh_audio_source() {
-        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Saw, rate: 3.5 }) {
-            ModSource::Lfo { waveform, rate, phase } => {
-                assert_eq!((waveform, rate, phase), (LfoWaveform::Saw, 3.5, 0.0));
+        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Saw, rate: 3.5, retrigger: false, fade: 0.0 }) {
+            ModSource::Lfo { waveform, rate, phase, retrigger, fade, age } => {
+                assert_eq!((waveform, rate, phase, retrigger, fade, age), (LfoWaveform::Saw, 3.5, 0.0, false, 0.0, f32::INFINITY));
             }
+            other => panic!("{other:?}"),
+        }
+        // The key goes with it: a note that starts it again and a fade that is as long as it was set to; it rests at full until a note.
+        match mod_source_slot_to_graph(&ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 1.0, retrigger: true, fade: 0.5 }) {
+            ModSource::Lfo { retrigger, fade, age, .. } => assert_eq!((retrigger, fade, age), (true, 0.5, f32::INFINITY)),
             other => panic!("{other:?}"),
         }
         let env = ModSourceSlot::Envelope { attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 };
@@ -4586,7 +4594,7 @@ depth = 0.5
         use crate::plugin::chain::LfoWaveform;
         assert!(matches!(
             ModSourceSlot::new_lfo(),
-            ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0
+            ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate, .. } if rate == 1.0
         ));
         assert!(matches!(
             ModSourceSlot::new_envelope(),
@@ -4598,10 +4606,10 @@ depth = 0.5
     #[test]
     fn source_labels_are_what_the_tree_shows() {
         let label = |s: ModSourceSlot| s.label();
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 0.25 }), "LFO 0.2Hz triangle");
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 12.0 }), "LFO 12.0Hz sine");
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Random, rate: 4.0 }), "LFO 4.0Hz random");
-        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Smooth, rate: 0.5 }), "LFO 0.5Hz smooth");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 0.25, retrigger: false, fade: 0.0 }), "LFO 0.2Hz triangle");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 12.0, retrigger: false, fade: 0.0 }), "LFO 12.0Hz sine");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Random, rate: 4.0, retrigger: false, fade: 0.0 }), "LFO 4.0Hz random");
+        assert_eq!(label(ModSourceSlot::Lfo { waveform: LfoWaveform::Smooth, rate: 0.5, retrigger: false, fade: 0.0 }), "LFO 0.5Hz smooth");
         assert_eq!(label(ModSourceSlot::Envelope { attack: 0.0, decay: 0.0, sustain: 0.0, release: 0.0 }), "ADSR");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false }), "CC 74");
         assert_eq!(label(ModSourceSlot::MidiLearn { source: Some(MidiBindSource::PitchBend), learning: false }), "Pitch Bend");
@@ -4620,7 +4628,7 @@ depth = 0.5
         let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
 
         let m = lfo(two());
-        assert_eq!(modulator_param_len(&m), 3 + 1 + 2);
+        assert_eq!(modulator_param_len(&m), 5 + 1 + 2);
         let rows: Vec<_> = (0..modulator_param_len(&m))
             .map(|r| (modulator_param_is_enum(&m, r), modulator_param_range(&m, r)))
             .collect();
@@ -4630,6 +4638,8 @@ depth = 0.5
                 (true, None),                   // Type
                 (true, None),                   // Waveform
                 (false, Some((0.01, 50.0))),    // Rate
+                (true, None),                   // Retrigger
+                (false, Some((0.0, 5.0))),      // Fade
                 (false, None),                  // "Targets" separator
                 (false, depth),
                 (false, depth),
@@ -4702,6 +4712,60 @@ depth = 0.5
         assert_eq!(m.row_intent(1, |value| value), None, "the separator");
     }
 
+    /// An LFO that a note starts again and that comes in over three quarters of a second.
+    fn keyed_lfo(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
+        ModulatorSlot {
+            node: NodeId(7),
+            source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0, retrigger: true, fade: 0.75 },
+            targets,
+            output: None,
+            position: None,
+        }
+    }
+
+    #[test]
+    fn the_pane_of_an_lfo_has_its_waveform_its_rate_its_key_and_then_its_targets() {
+        use ModulatorField as F;
+        use ModulatorRow::*;
+        let m = keyed_lfo(vec![target(K::PluginParam { slot: 0, param_index: 0 })]);
+        let rows: Vec<_> = (0..=modulator_param_len(&m)).map(|r| modulator_row(&m, r)).collect();
+        assert_eq!(rows, [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), Some(Depth(0)), None]);
+        let enums: Vec<usize> = (0..modulator_param_len(&m)).filter(|&r| modulator_param_is_enum(&m, r)).collect();
+        assert_eq!(enums, [0, 1, 3], "the type, the waveform and the retrigger are choices");
+    }
+
+    #[test]
+    fn an_lfo_says_the_value_of_its_key_settings_and_a_row_makes_the_intent_that_sets_it() {
+        use ModulatorField as F;
+        let m = keyed_lfo(vec![]);
+        assert_eq!([F::Retrigger, F::Fade].map(|field| m.source.setting(field)), [Some(1.0), Some(0.75)]);
+        assert_eq!(ModSourceSlot::new_lfo().setting(F::Retrigger), Some(0.0), "a new one runs free");
+        assert_eq!(ModSourceSlot::new_lfo().setting(F::Fade), Some(0.0), "and does not fade in");
+        let set = |field, value| Some(Intent::SetModulatorField { node: NodeId(7), field, value });
+        assert_eq!(m.row_intent(3, |on| 1.0 - on), set(F::Retrigger, 0.0), "the switch is turned over by the closure");
+        assert_eq!(m.row_intent(4, |fade| fade + 0.25), set(F::Fade, 1.0));
+        assert_eq!(m.row_intent(5, |value| value), None, "the separator");
+        // The settings that are not an LFO's: an envelope, a control and a macro have neither, and a step sequencer has a retrigger of its own but no fade.
+        for other in [adsr(vec![]), midi(vec![]), knob(vec![])] {
+            for field in [F::Retrigger, F::Fade] {
+                assert_eq!(other.source.setting(field), None, "{field:?}");
+            }
+        }
+        assert_eq!(sequencer(vec![]).source.setting(F::Fade), None);
+        assert_eq!(sequencer(vec![]).source.setting(F::Retrigger), Some(1.0));
+    }
+
+    #[test]
+    fn the_key_of_an_lfo_is_set_by_a_person_and_no_cable_drives_it() {
+        let m = keyed_lfo(vec![target(K::PluginParam { slot: 0, param_index: 0 })]);
+        assert!(modulator_row_to_cross_mod(&m, 3, 2).is_some(), "the rate is");
+        for row in [0, 1, 3, 4, 5] {
+            assert_eq!(modulator_row_to_cross_mod(&m, 3, row), None, "row {row}");
+        }
+        let (kind, ..) = modulator_row_to_cross_mod(&m, 3, 6).unwrap();
+        assert!(matches!(kind, K::ModulatorDepth { mod_index: 3, target_index: 0 }), "{kind:?}");
+    }
+
     fn sequencer(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot { node: NodeId(7), source: ModSourceSlot::new_steps(), targets, output: None, position: None }
     }
@@ -4739,11 +4803,14 @@ depth = 0.5
         for field in [F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release, F::Value] {
             assert_eq!(m.source.setting(field), None, "{field:?}");
         }
-        // The other kinds have none of its settings.
+        // The other kinds have none of its settings (an LFO has a switch of the same name, which is the key's: a note starts it again).
         for other in [lfo(vec![]), adsr(vec![]), midi(vec![]), knob(vec![])] {
-            for field in [F::Glide, F::Length, F::Retrigger] {
+            for field in [F::Glide, F::Length] {
                 assert_eq!(other.source.setting(field), None, "{field:?}");
             }
+        }
+        for other in [adsr(vec![]), midi(vec![]), knob(vec![])] {
+            assert_eq!(other.source.setting(F::Retrigger), None);
         }
         let set = |field, value| Some(Intent::SetModulatorField { node: NodeId(7), field, value });
         assert_eq!(m.row_intent(0, |rate| rate * 2.0), set(F::Rate, 16.0));
@@ -4820,7 +4887,7 @@ depth = 0.5
         let rows = |m: &ModulatorSlot| (0..=modulator_param_len(m)).map(|r| modulator_row(m, r)).collect::<Vec<_>>();
         assert_eq!(
             rows(&lfo(two())),
-            [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]
+            [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]
         );
         assert_eq!(
             rows(&adsr(two())),
@@ -4837,7 +4904,7 @@ depth = 0.5
             ]
         );
         assert_eq!(rows(&midi(two())), [Some(Info), Some(Separator), Some(Depth(0)), Some(Depth(1)), None]);
-        assert_eq!(rows(&lfo(vec![])), [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Separator), None]);
+        assert_eq!(rows(&lfo(vec![])), [Some(Type), Some(Waveform), Some(Setting(F::Rate)), Some(Retrigger), Some(Setting(F::Fade)), Some(Separator), None]);
     }
 
     #[test]
@@ -4858,7 +4925,7 @@ depth = 0.5
     #[test]
     fn a_source_says_the_value_of_a_setting_it_has_and_nothing_of_one_it_has_not() {
         use ModulatorField as F;
-        let triangle = ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 2.5 };
+        let triangle = ModSourceSlot::Lfo { waveform: LfoWaveform::Triangle, rate: 2.5, retrigger: false, fade: 0.0 };
         let envelope = ModSourceSlot::Envelope { attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 };
         let control = ModSourceSlot::MidiLearn { source: None, learning: true };
         let all = [F::Rate, F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release];
@@ -4884,7 +4951,7 @@ depth = 0.5
         // A value is what the closure makes of the one the row has now (the controller clamps it).
         assert_eq!(
             intents(&with_edges(lfo(two()), 7)),
-            [None, None, set(7, F::Rate, 3.0), None, depth(50, 1.5), depth(51, 1.5), None]
+            [None, None, set(7, F::Rate, 3.0), set(7, F::Retrigger, 1.0), set(7, F::Fade, 1.0), None, depth(50, 1.5), depth(51, 1.5), None]
         );
         assert_eq!(
             intents(&with_edges(adsr(two()), 8)),
@@ -4917,6 +4984,8 @@ depth = 0.5
                 match (range, cross) {
                     (None, None) => {}
                     (Some((lo, hi)), Some((_, min, max, _, _))) => assert_eq!((lo, hi), (min, max), "row {row}"),
+                    // (An LFO's fade is a number that a person turns and that no cable drives, as a step sequencer's glide is: it has a range and no cross-mod.)
+                    (Some(_), None) if matches!(modulator_row(&m, row), Some(ModulatorRow::Setting(ModulatorField::Fade))) => {}
                     (range, cross) => panic!("row {row}: range {range:?} vs cross-mod {:?}", cross.map(|c| c.4)),
                 }
             }
@@ -4932,13 +5001,13 @@ depth = 0.5
         let m = lfo(two);
         let (kind, _, _, base, label) = modulator_row_to_cross_mod(&m, 3, 2).unwrap();
         assert_eq!((format!("{kind:?}"), base, label.as_str()), ("ModulatorRate { mod_index: 3 }".to_string(), 2.0, "Mod 3 rate"));
-        let (kind, _, _, base, label) = modulator_row_to_cross_mod(&m, 3, 5).unwrap();
+        let (kind, _, _, base, label) = modulator_row_to_cross_mod(&m, 3, 7).unwrap();
         assert_eq!(
             (format!("{kind:?}"), base, label.as_str()),
             ("ModulatorDepth { mod_index: 3, target_index: 1 }".to_string(), -0.6, "Mod 3 depth 1")
         );
-        // Type, waveform and the separator are not bindable.
-        for row in [0, 1, 3] {
+        // Type, waveform, the key's switch and fade and the separator are not bindable.
+        for row in [0, 1, 3, 4, 5] {
             assert!(modulator_row_to_cross_mod(&m, 3, row).is_none(), "row {row}");
         }
 

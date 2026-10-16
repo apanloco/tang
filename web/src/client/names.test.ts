@@ -4,7 +4,7 @@ import type { Edge, Endpoint, Graph, Node } from "../protocol";
 import { reachFixture, tracerSnapshot } from "./fixtures";
 import { cableWords, displayNames, endLabel, portName } from "./names";
 
-const lfo = (id: number, parent: number): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1 } });
+const lfo = (id: number, parent: number): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 } });
 
 describe("what the nodes are called", () => {
   test("a node that is alone with its name keeps it", () => {

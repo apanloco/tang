@@ -116,6 +116,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModulatorPosition { location, index, slot } => {
             format!("SetModulatorPosition {location:?} index={index} slot={}", slot.index())
         }
+        C::SetModulatorKey { location, index, retrigger, fade } => {
+            format!("SetModulatorKey {location:?} index={index} retrigger={retrigger} fade={fade:.3}")
+        }
         C::SetModulatorSteps { location, index, values, length, glide, retrigger } => {
             format!("SetModulatorSteps {location:?} index={index} values={values:?} length={length} glide={glide:.3} retrigger={retrigger}")
         }

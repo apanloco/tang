@@ -541,12 +541,14 @@ fn enter_on_a_row_of_a_modulators_pane_opens_the_value_for_the_numbers_and_nothi
     // (modulator, row) -> the value popup's title, the text it starts with, and the range it is held to; None where
     // the row is not a number to type.
     type Popup = (&'static str, &'static str, f32, f32);
-    let rows: [(usize, usize, Option<Popup>); 15] = [
+    let rows: [(usize, usize, Option<Popup>); 17] = [
         (0, 0, None), // the kind
         (0, 1, None), // the waveform
         (0, 2, Some(("Rate (Hz)", "2.50", 0.01, 50.0))),
-        (0, 3, None), // the separator
-        (0, 4, Some(("cutoff depth", "0.40", -1.0, 1.0))),
+        (0, 3, None), // the retrigger, a choice
+        (0, 4, Some(("Fade (s)", "0.00", 0.0, 5.0))),
+        (0, 5, None), // the separator
+        (0, 6, Some(("cutoff depth", "0.40", -1.0, 1.0))),
         (1, 0, None),
         (1, 1, Some(("Attack (s)", "0.020", 0.001, 10.0))),
         (1, 2, Some(("Decay (s)", "0.300", 0.001, 10.0))),
@@ -1832,7 +1834,7 @@ fn m_on_an_instrument_adds_an_lfo_to_its_lane() {
     let mut h = Harness::new(scene_split());
     h.goto(TreeAddress::Instrument(1));
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]);
+    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]);
     assert_eq!(h.tree()[4], "╰ ~ LFO 1.0Hz sine");
 }
 
@@ -1841,7 +1843,7 @@ fn m_on_a_group_adds_an_lfo_to_the_groups_rack() {
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Group(0));
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]);
+    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]);
 }
 
 #[test]
@@ -2522,7 +2524,7 @@ fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
     assert_eq!(
         h.commands(),
         [
-            "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }",
+            "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
             "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
         ]
     );
@@ -2594,7 +2596,7 @@ fn the_modulate_popup_on_a_bus_parameter_makes_a_group_modulator() {
     assert_eq!(
         h.commands(),
         [
-            "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }",
+            "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }",
             "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
         ]
     );
@@ -2960,23 +2962,24 @@ fn left_and_right_on_an_lfos_waveform_go_round_every_waveform_whatever_the_modif
 #[test]
 fn no_popup_opens_for_a_waveform_or_a_type_or_a_separator_and_a_separator_does_not_step() {
     let mut h = Harness::new(scene_split());
-    for row in [0, 1, 3] {
+    // (The type, the waveform, the retrigger, which is a choice, and the separator.)
+    for row in [0, 1, 3, 5] {
         on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, row);
         h.press(KeyCode::Enter);
         assert!(h.s.editing.is_none(), "row {row}: there is no number to type");
         assert_eq!(h.commands(), Vec::<String>::new(), "row {row}");
         h.press(KeyCode::Esc);
     }
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 3);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 5);
     h.press(KeyCode::Right).press(KeyCode::Left);
     assert_eq!(h.commands(), Vec::<String>::new(), "the separator");
-    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 4.0 }");
+    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 4.0, retrigger: false, fade: 0.0 }");
 }
 
 #[test]
 fn left_and_right_step_the_depth_of_a_target_and_a_typed_depth_goes_from_minus_one_to_one() {
     let mut h = Harness::new(scene_split());
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
     h.press(KeyCode::Right);
     assert_eq!(h.commands(), ["SetModTargetDepth inst=0 mod=0 target=0 depth=0.090"]);
     h.press_with(KeyCode::Left, KeyModifiers::CONTROL);
@@ -2998,14 +3001,14 @@ fn left_and_right_step_the_depth_of_a_target_and_a_typed_depth_goes_from_minus_o
 fn the_tree_shows_the_depth_of_a_target_as_soon_as_it_is_edited() {
     // The tree says how deep each target goes (`(4%)`): a lane's modulator and a group's.
     let mut h = Harness::new(scene_split());
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
     h.press(KeyCode::Right);
     assert!(h.tree().contains(&"╰ ~ LFO 4.0Hz sine → Oscillator: detune (9%)"), "{:#?}", h.tree());
     enter_value(&mut h, "0.5");
     assert!(h.tree().contains(&"╰ ~ LFO 4.0Hz sine → Oscillator: detune (50%)"), "{:#?}", h.tree());
 
     let mut h = Harness::new(scene_group());
-    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 4);
+    on_modulator_row(&mut h, TreeAddress::GroupModulator { group: 0, index: 0 }, 6);
     h.press(KeyCode::Right);
     assert!(h.tree().iter().any(|l| l.contains("M0 Oscillator: detune (45%)")), "{:#?}", h.tree());
     enter_value(&mut h, "0.1");
@@ -3028,7 +3031,7 @@ fn a_modulator_edited_in_the_tui_is_told_to_the_subscribers_as_events_and_not_ag
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 1);
     h.press(KeyCode::Right);
     h.press(KeyCode::Esc);
-    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 4);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 6);
     enter_value(&mut h, "-0.5");
 
     let events: Vec<(u64, Vec<Event>)> = heard.lock().unwrap().iter().map(|a| (a.rev, a.events.clone())).collect();
@@ -3046,6 +3049,41 @@ fn a_modulator_edited_in_the_tui_is_told_to_the_subscribers_as_events_and_not_ag
 }
 
 #[test]
+fn the_key_of_an_lfo_is_turned_in_its_pane_the_switch_over_and_the_fade_by_a_twentieth_of_its_range_and_a_typed_fade_is_held_to_it() {
+    let mut h = Harness::new(scene_split());
+    let addr = TreeAddress::Modulator { inst: 0, index: 0 };
+    // The retrigger is a choice of two: either key goes to the other.
+    on_modulator_row(&mut h, addr, 3);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=true fade=0.000"]);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=false fade=0.000"]);
+    h.press(KeyCode::Right).press(KeyCode::Left);
+    assert_eq!(h.commands().len(), 2, "each press turns it over");
+    // The fade goes by a twentieth of its five seconds, a hundredth with Shift and a tenth with Ctrl, and Left takes it back.
+    on_modulator_row(&mut h, addr, 4);
+    h.press(KeyCode::Right);
+    assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=false fade=0.250"]);
+    h.press_with(KeyCode::Right, KeyModifiers::SHIFT);
+    assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=false fade=0.300"]);
+    h.press_with(KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=false fade=0.800"]);
+    h.press(KeyCode::Left);
+    assert_eq!(h.commands(), ["SetModulatorKey Lane(0) index=0 retrigger=false fade=0.550"]);
+    // A typed fade is held to 0 to 5.
+    for (text, fade) in [("9", 5.0), ("-1", 0.0), ("1.5", 1.5)] {
+        enter_value(&mut h, text);
+        assert_eq!(h.commands(), [format!("SetModulatorKey Lane(0) index=0 retrigger=false fade={fade:.3}")], "{text}");
+    }
+    assert!(h.s.ctl.dirty);
+    let (retrigger, fade) = match lane_source(&h, 0, 0) {
+        ModSourceSlot::Lfo { retrigger, fade, .. } => (*retrigger, *fade),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((retrigger, fade), (false, 1.5));
+}
+
+#[test]
 fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each() {
     let mut h = Harness::new(scene_split());
     on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 0);
@@ -3060,9 +3098,9 @@ fn the_type_row_turns_an_lfo_into_an_envelope_and_back_with_the_defaults_of_each
     h.press(KeyCode::Left);
     assert_eq!(
         h.commands(),
-        ["SetModulatorSource inst=0 mod=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]
+        ["SetModulatorSource inst=0 mod=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]
     );
-    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 1.0 }");
+    assert_eq!(format!("{:?}", lane_source(&h, 0, 0)), "Lfo { waveform: Sine, rate: 1.0, retrigger: false, fade: 0.0 }");
     assert!(h.s.ctl.dirty);
 }
 
@@ -3163,11 +3201,11 @@ fn a_group_lfo_is_stepped_and_typed_with_the_commands_of_the_group() {
     assert_eq!(lfo_waveform(group_source(&h, 0, 0)), Triangle);
     h.press(KeyCode::Esc);
     // Two targets, a member's detune and the bus's damping: a depth row each.
-    on_modulator_row(&mut h, addr, 4);
+    on_modulator_row(&mut h, addr, 6);
     h.press(KeyCode::Right);
     assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=0 target=0 depth=0.450"]);
     h.press(KeyCode::Esc);
-    on_modulator_row(&mut h, addr, 5);
+    on_modulator_row(&mut h, addr, 7);
     enter_value(&mut h, "-4");
     assert_eq!(h.commands(), ["SetGroupModTargetDepth group=0 mod=0 target=1 depth=-1.000"]);
     assert!((group_depth(&h, 0, 0, 0) - 0.45).abs() < 1e-5);

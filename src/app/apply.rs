@@ -5,7 +5,7 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, macro_command, rate_command, steps_command};
+use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, rate_command, steps_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
@@ -501,6 +501,14 @@ impl Controller {
                     _ => *retrigger = value != 0.0,
                 }
                 steps_command(at, index, values, *length, *glide, *retrigger)
+            }
+            // (An LFO's key goes to the engine as the two together, whichever of them was changed: the model has both.)
+            (ModSourceSlot::Lfo { retrigger, fade, .. }, ModulatorField::Retrigger | ModulatorField::Fade) => {
+                match field {
+                    ModulatorField::Fade => *fade = value,
+                    _ => *retrigger = value != 0.0,
+                }
+                key_command(at, index, *retrigger, *fade)
             }
             (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => {
                 *waveform = LfoWaveform::ALL[value as usize];
@@ -2226,7 +2234,7 @@ rate = 1.0
 
     fn lane_lfo(ctl: &Controller, index: usize) -> (LfoWaveform, f32) {
         match &ctl.model.instruments[0].modulators[index].source {
-            ModSourceSlot::Lfo { waveform, rate } => (*waveform, *rate),
+            ModSourceSlot::Lfo { waveform, rate, .. } => (*waveform, *rate),
             other => panic!("{other:?} is not an LFO"),
         }
     }
@@ -2263,6 +2271,96 @@ rate = 1.0
         field(&mut ctl, lfo, ModulatorField::Waveform, 5.0).unwrap();
         assert_eq!(lane_lfo(&ctl, 0).0, LfoWaveform::Smooth);
         assert_eq!(sent(&engine), ["SetModulatorWaveform inst=0 mod=0 waveform=Random", "SetModulatorWaveform inst=0 mod=0 waveform=Smooth"]);
+    }
+
+    /// Whether a note starts an LFO of the lane again, and how many seconds it takes to come in.
+    fn lane_key(ctl: &Controller, index: usize) -> (bool, f32) {
+        match &ctl.model.instruments[0].modulators[index].source {
+            ModSourceSlot::Lfo { retrigger, fade, .. } => (*retrigger, *fade),
+            other => panic!("{other:?} is not an LFO"),
+        }
+    }
+
+    #[test]
+    fn set_modulator_field_sets_whether_a_note_starts_an_lfo_again_and_how_it_fades_in_and_gives_the_engine_both_each_time() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let lfo = lane_mod(&ctl, 0);
+        let applied = field(&mut ctl, lfo, ModulatorField::Retrigger, 1.0).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Retrigger, value: 1.0 }]));
+        field(&mut ctl, lfo, ModulatorField::Fade, 0.75).unwrap();
+        field(&mut ctl, lfo, ModulatorField::Retrigger, 0.0).unwrap();
+        assert_eq!(lane_key(&ctl, 0), (false, 0.75));
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetModulatorKey Lane(0) index=0 retrigger=true fade=0.000",
+                "SetModulatorKey Lane(0) index=0 retrigger=true fade=0.750",
+                "SetModulatorKey Lane(0) index=0 retrigger=false fade=0.750",
+            ],
+            "one command that has both, whichever was changed"
+        );
+        assert!(ctl.dirty);
+        assert_eq!(ctl.rev, 3);
+    }
+
+    #[test]
+    fn set_modulator_field_reaches_the_key_of_the_lfo_of_a_group_by_the_same_command_and_leaves_the_lanes_alone() {
+        let (engine, mut ctl) = modulated();
+        sent(&engine);
+        let group = group_mod(&ctl, 0);
+        field(&mut ctl, group, ModulatorField::Fade, 2.0).unwrap();
+        field(&mut ctl, group, ModulatorField::Retrigger, 1.0).unwrap();
+        assert_eq!(
+            sent(&engine),
+            ["SetModulatorKey Group(0) index=0 retrigger=false fade=2.000", "SetModulatorKey Group(0) index=0 retrigger=true fade=2.000"]
+        );
+        assert_eq!(lane_key(&ctl, 0), (false, 0.0), "the lane's is another modulator");
+    }
+
+    #[test]
+    fn the_key_of_an_lfo_is_held_to_its_range_and_the_switch_is_rounded() {
+        let (engine, mut ctl) = modulated();
+        let lfo = lane_mod(&ctl, 0);
+        let told = |applied: Applied| match applied.events[0] {
+            Event::ModulatorFieldSet { value, .. } => value,
+            ref other => panic!("{other:?}"),
+        };
+        for (setting, asked, got) in [
+            (ModulatorField::Fade, 9.0, 5.0),
+            (ModulatorField::Fade, -1.0, 0.0),
+            (ModulatorField::Fade, 0.3, 0.3),
+            (ModulatorField::Retrigger, 0.4, 0.0),
+            (ModulatorField::Retrigger, 0.6, 1.0),
+            (ModulatorField::Retrigger, 7.0, 1.0),
+        ] {
+            assert_eq!(told(field(&mut ctl, lfo, setting, asked).unwrap()), got, "{setting:?} {asked}");
+        }
+        sent(&engine);
+        let rev = ctl.rev;
+        for setting in [ModulatorField::Fade, ModulatorField::Retrigger] {
+            for bad in [f32::NAN, f32::INFINITY] {
+                assert!(matches!(field(&mut ctl, lfo, setting, bad), Err(IntentError::Invalid(_))), "{setting:?} {bad}");
+            }
+        }
+        assert_eq!((ctl.rev, sent(&engine)), (rev, Vec::<String>::new()), "a refusal changes nothing");
+    }
+
+    #[test]
+    fn an_envelope_has_no_key_and_a_modulator_that_is_not_an_lfo_has_no_fade() {
+        let (engine, mut ctl) = modulated();
+        let envelope = lane_mod(&ctl, 1);
+        sent(&engine);
+        for setting in [ModulatorField::Retrigger, ModulatorField::Fade] {
+            assert!(matches!(field(&mut ctl, envelope, setting, 0.5), Err(IntentError::Invalid(_))), "an envelope: {setting:?}");
+        }
+        let (_engine, mut sequencers) = sequencers();
+        let sequencer = lane_mod(&sequencers, 0);
+        assert!(matches!(field(&mut sequencers, sequencer, ModulatorField::Fade, 0.5), Err(IntentError::Invalid(_))), "a step sequencer has no fade");
+        let (_engine, mut knobs) = macros();
+        let knob = lane_mod(&knobs, 0);
+        assert!(matches!(field(&mut knobs, knob, ModulatorField::Fade, 0.5), Err(IntentError::Invalid(_))), "a macro");
+        assert_eq!((ctl.rev, sent(&engine)), (0, Vec::<String>::new()), "nothing changed");
     }
 
     #[test]
@@ -2303,7 +2401,7 @@ rate = 1.0
                 "SetGroupModulatorEnvelopeParam group=0 mod=1 attack=0.010 decay=0.300 sustain=0.100 release=0.500",
             ]
         );
-        assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate } if rate == 7.5));
+        assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate, .. } if rate == 7.5));
     }
 
     /// A group with a macro at 0.5 and a lane in it with a macro at 0.25.
@@ -2490,16 +2588,20 @@ type = "steps"
     }
 
     #[test]
-    fn a_step_sequencer_has_no_waveform_or_stage_or_value_and_the_others_have_no_glide_length_or_switch() {
+    fn a_step_sequencer_has_no_waveform_or_stage_or_value_and_the_others_have_no_glide_or_length_and_an_envelope_and_a_macro_no_switch() {
         let (engine, mut ctl) = sequencers();
         let lane = lane_mod(&ctl, 0);
         sent(&engine);
         for setting in [ModulatorField::Waveform, ModulatorField::Attack, ModulatorField::Decay, ModulatorField::Sustain, ModulatorField::Release, ModulatorField::Value] {
             assert!(matches!(field(&mut ctl, lane, setting, 0.5), Err(IntentError::Invalid(_))), "{setting:?}");
         }
-        for (name, mut other, modulator) in [("an LFO", modulated(), 0), ("an envelope", modulated(), 1)] {
+        // (An LFO has the switch, which is its key's, and neither the glide nor the length.)
+        for (name, mut other, modulator, refused) in [
+            ("an LFO", modulated(), 0, vec![ModulatorField::Glide, ModulatorField::Length]),
+            ("an envelope", modulated(), 1, vec![ModulatorField::Glide, ModulatorField::Length, ModulatorField::Retrigger]),
+        ] {
             let node = lane_mod(&other.1, modulator);
-            for setting in [ModulatorField::Glide, ModulatorField::Length, ModulatorField::Retrigger] {
+            for setting in refused {
                 assert!(matches!(field(&mut other.1, node, setting, 0.5), Err(IntentError::Invalid(_))), "{name}: {setting:?}");
             }
         }
@@ -2818,10 +2920,10 @@ type = "steps"
         let applied = add(&mut ctl, parent, ModulatorKind::Lfo).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
-        assert_eq!(sent(&engine), ["InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }"]);
+        assert_eq!(sent(&engine), ["InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }"]);
         let rack = &ctl.model.instruments[0].modulators;
         assert_eq!(rack.len(), 1);
-        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate, .. } if rate == 1.0));
         assert!(rack[0].targets.is_empty(), "it drives nothing yet");
         assert_eq!(ctl.model.locate(rack[0].node), Some(NodePath::Modulator { at: ModulatorLocation::Lane(0), index: 0 }));
         assert!(ctl.dirty);
@@ -2878,7 +2980,7 @@ type = "steps"
             add(&mut ctl, empty, kind).unwrap();
         }
         let rack = &ctl.model.instruments[1].modulators;
-        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate, .. } if rate == 1.0));
         assert!(matches!(
             rack[1].source,
             ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)
@@ -2890,7 +2992,7 @@ type = "steps"
         assert_eq!(
             sent(&engine),
             [
-                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0 }".to_string(),
+                "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, age: inf }".to_string(),
                 "InsertModulator inst=1 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }".to_string(),
                 "InsertModulator inst=1 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
                 "InsertModulator inst=1 index=3 source=Macro { value: 0.0 }".to_string(),
@@ -2974,7 +3076,7 @@ type = "steps"
             modulate(&mut ctl, osc, Port::Param { index: param }, kind, None).unwrap();
         }
         let rack = &ctl.model.instruments[0].modulators;
-        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate } if rate == 1.0));
+        assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate, .. } if rate == 1.0));
         assert!(matches!(rack[1].source, ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)));
         assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
         assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "at rest, so that the cable moves nothing until the macro is turned");

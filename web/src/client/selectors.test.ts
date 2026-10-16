@@ -108,10 +108,22 @@ describe("the settings of a modulator and the depths of its cables", () => {
   test("the rate, the glide, the length and the switch of a step sequencer, as numbers, and none of the settings of the other kinds", () => {
     expect((["rate", "glide", "length", "retrigger"] as const).map((field) => modulatorFieldOf(withSequencer, sequencer.id, field))).toEqual([6, 0.25, 4, 0]);
     for (const field of ["waveform", "attack", "decay", "sustain", "release", "value"] as const) expect(modulatorFieldOf(withSequencer, sequencer.id, field), field).toBeUndefined();
-    // (And the others have no glide, length or switch.)
+    // (And the others have no glide or length, and a macro no switch: an LFO has one, which is its key's.)
     for (const id of [lfo.id, macro.id]) {
-      for (const field of ["glide", "length", "retrigger"] as const) expect(modulatorFieldOf(withSequencer, id, field), `${field} of ${id}`).toBeUndefined();
+      for (const field of ["glide", "length"] as const) expect(modulatorFieldOf(withSequencer, id, field), `${field} of ${id}`).toBeUndefined();
     }
+    expect(modulatorFieldOf(withSequencer, macro.id, "retrigger")).toBeUndefined();
+  });
+
+  test("the retrigger and the fade of an LFO, as numbers, and none for the other kinds but the switch of a step sequencer", () => {
+    const keyed: Node = { id: lfo.id, parent: lfo.parent, name: lfo.name, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: true, fade: 0.75 } };
+    const state = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes.filter((n) => n.id !== lfo.id), keyed, sequencer, macro] } });
+    expect((["retrigger", "fade"] as const).map((field) => modulatorFieldOf(state, keyed.id, field))).toEqual([1, 0.75]);
+    expect(modulatorFieldOf(withSequencer, lfo.id, "retrigger"), "a free LFO's switch is off").toBe(0);
+    expect(modulatorFieldOf(withSequencer, lfo.id, "fade")).toBe(0);
+    expect(modulatorFieldOf(state, sequencer.id, "fade"), "a step sequencer has no fade").toBeUndefined();
+    expect(modulatorFieldOf(state, macro.id, "fade")).toBeUndefined();
+    expect(modulatorFieldOf(state, macro.id, "retrigger")).toBeUndefined();
   });
 
   test("the switch of a step sequencer that a note starts again is 1", () => {

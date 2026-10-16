@@ -215,6 +215,8 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
   if (source.type === "lfo") {
     if (field === "rate") return source.rate;
     if (field === "waveform") return WAVEFORMS.indexOf(source.waveform);
+    if (field === "retrigger") return source.retrigger ? 1 : 0;
+    if (field === "fade") return source.fade;
     return undefined;
   }
   if (source.type === "envelope") {

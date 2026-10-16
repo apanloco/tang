@@ -4072,7 +4072,9 @@
           "name": "LFO",
           "parent": 0,
           "source": {
+            "fade": 0.0,
             "rate": 1.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -4866,7 +4868,9 @@
           "name": "LFO",
           "parent": 5,
           "source": {
+            "fade": 0.0,
             "rate": 2.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }
@@ -5498,7 +5502,9 @@
           "name": "LFO",
           "parent": 11,
           "source": {
+            "fade": 0.0,
             "rate": 3.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }

@@ -69,7 +69,7 @@ const modulator = (id: NodeId, parent: NodeId): Node => ({
   parent,
   name: `Mod ${String(id)}`,
   kind: "modulator",
-  source: { type: "lfo", waveform: "sine", rate: 1 },
+  source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0 },
 });
 
 const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });

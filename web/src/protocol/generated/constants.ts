@@ -30,6 +30,7 @@ export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, nu
   glide: [0, 1],
   length: [1, 16],
   retrigger: [0, 1],
+  fade: [0, 5],
 };
 
 /** What each setting of a modulator is when the modulator is new (`ModSourceSlot::new_lfo`, `new_envelope`): where a double click puts a knob. */
@@ -43,7 +44,8 @@ export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {
   value: 0,
   glide: 0,
   length: 16,
-  retrigger: 1,
+  retrigger: 0,
+  fade: 0,
 };
 
 /** How a setting of a modulator is turned: a rate and a time run over decades, which a knob turns by ratios (`ModulatorField::taper`). */
@@ -58,6 +60,7 @@ export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = 
   glide: "linear",
   length: "linear",
   retrigger: "linear",
+  fade: "linear",
 };
 
 /** The settings of a modulator whose value is a whole number, which the controller rounds it to: a place in a list, a count, a switch (`ModulatorField::is_whole`). */

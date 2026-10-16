@@ -587,14 +587,14 @@ describe("a preset loaded", () => {
 describe("a modulator field set", () => {
   test("sets the rate of an LFO", () => {
     const after = applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "rate", value: 4 });
-    expect(sourceOf(after, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 4 });
+    expect(sourceOf(after, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 4, retrigger: false, fade: 0 });
   });
 
   test("sets the waveform of an LFO by its index: sine, triangle, saw, square, random, smooth", () => {
     const waveforms = ["sine", "triangle", "saw", "square", "random", "smooth"];
     waveforms.forEach((name, index) => {
       const after = applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "waveform", value: index });
-      expect(sourceOf(after, lfo), `index ${index}`).toEqual({ type: "lfo", waveform: name, rate: 0.5 });
+      expect(sourceOf(after, lfo), `index ${index}`).toEqual({ type: "lfo", waveform: name, rate: 0.5, retrigger: false, fade: 0 });
     });
   });
 
@@ -639,6 +639,17 @@ describe("a modulator field set", () => {
     expect(sourceOf(snapshot, sequencer), "the snapshot it was applied to").toMatchObject({ glide: 0.25 });
   });
 
+  test("sets the retrigger and the fade of an LFO, one at a time, and changes nothing else of it or of the graph", () => {
+    const set = (field: "retrigger" | "fade", value: number) => applied(tracerSnapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field, value });
+    expect(sourceOf(set("retrigger", 1), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: true, fade: 0 });
+    expect(sourceOf(set("fade", 0.75), lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0.75 });
+    expect(sourceOf(set("retrigger", 0), lfo)).toMatchObject({ retrigger: false });
+    const after = set("fade", 2);
+    expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
+    expect(after.graph.edges).toBe(tracerSnapshot.graph.edges);
+    expect(sourceOf(tracerSnapshot, lfo), "the snapshot it was applied to").toMatchObject({ fade: 0 });
+  });
+
   test("a length is a whole number of the steps that there are, and nothing else is one", () => {
     const { snapshot, sequencer } = withSequencer();
     for (const value of [0, 17, 2.5, -1, Number.NaN]) {
@@ -652,9 +663,11 @@ describe("a modulator field set", () => {
     for (const field of ["waveform", "attack", "decay", "sustain", "release", "value"] as const) {
       expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field, value: 0.5 }), field).toEqual({ ok: false, reason: `${field} does not apply to node ${sequencer.id}` });
     }
-    for (const field of ["glide", "length", "retrigger"] as const) {
+    for (const field of ["glide", "length"] as const) {
       expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field, value: 1 }), field).toEqual({ ok: false, reason: `${field} does not apply to node ${lfo.id}` });
     }
+    // (An LFO has the switch, which is its key's, and a fade that a step sequencer has not.)
+    expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field: "fade", value: 1 }), "fade").toEqual({ ok: false, reason: `fade does not apply to node ${sequencer.id}` });
   });
 
   test("gives a step sequencer all of its steps, and changes nothing else of it or of the graph", () => {
@@ -699,7 +712,7 @@ describe("a modulator field set", () => {
     expect(after.graph.nodes.find((n) => n.id === envelope.id)).toBe(envelope);
     expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
     expect(after.graph.edges).toBe(snapshot.graph.edges);
-    expect(sourceOf(snapshot, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5 });
+    expect(sourceOf(snapshot, lfo)).toEqual({ type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0 });
   });
 
   test("is refused by what it does not fit, and says why", () => {

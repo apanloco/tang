@@ -91,8 +91,8 @@ fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> 
     mods.iter()
         .map(|m| {
             let source = match &m.source {
-                ModSourceSlot::Lfo { waveform, rate } => {
-                    SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate }
+                ModSourceSlot::Lfo { waveform, rate, retrigger, fade } => {
+                    SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate, retrigger: *retrigger, fade: *fade }
                 }
                 ModSourceSlot::Envelope { attack, decay, sustain, release } => SaveModSource::Envelope {
                     attack: *attack,
@@ -304,8 +304,22 @@ depth = 0.4
             let second = load(&file);
             let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
             assert_eq!(source(&second), source(&first), "{name}");
-            assert_eq!(source(&first), format!("Lfo {{ waveform: {waveform:?}, rate: 3.0 }}"), "{name}");
+            assert_eq!(source(&first), format!("Lfo {{ waveform: {waveform:?}, rate: 3.0, retrigger: false, fade: 0.0 }}"), "{name}");
         }
+    }
+
+    #[test]
+    fn an_lfo_that_retriggers_and_fades_is_saved_with_its_key_and_is_the_same_when_the_file_is_loaded_again_and_one_that_runs_free_has_neither_key() {
+        let first = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 3.0\nretrigger = true\nfade = 0.3\n");
+        let file = saved(&first.model);
+        assert!(file.contains("retrigger = true") && file.contains("fade = 0.3"), "{file}");
+        let second = load(&file);
+        let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
+        assert_eq!(source(&second), source(&first));
+        assert_eq!(source(&first), "Lfo { waveform: Sine, rate: 3.0, retrigger: true, fade: 0.3 }");
+        // A session that was written before an LFO had a key is saved as it was.
+        let free = saved(&load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 3.0\n").model);
+        assert!(!free.contains("retrigger") && !free.contains("fade"), "{free}");
     }
 
     #[test]

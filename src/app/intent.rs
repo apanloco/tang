@@ -17,7 +17,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
-use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
+use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
 use crate::session::NodeUi;
 
@@ -332,8 +332,10 @@ pub enum ModulatorField {
     Glide,
     /// How many of a step sequencer's steps are in use: 1 to 16, a whole number.
     Length,
-    /// Whether a note starts a step sequencer again at its first step: 0 or 1.
+    /// Whether a note starts a step sequencer again at its first step, or an LFO again at the start of its wave: 0 or 1.
     Retrigger,
+    /// How many seconds an LFO takes to come in from nothing after a note: 0 (it does not) to 5.
+    Fade,
 }
 
 impl ModulatorField {
@@ -350,6 +352,7 @@ impl ModulatorField {
             ModulatorField::Glide => "glide",
             ModulatorField::Length => "length",
             ModulatorField::Retrigger => "retrigger",
+            ModulatorField::Fade => "fade",
         }
     }
 
@@ -361,6 +364,7 @@ impl ModulatorField {
             ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => (0.001, 10.0),
             ModulatorField::Sustain | ModulatorField::Value | ModulatorField::Glide | ModulatorField::Retrigger => (0.0, 1.0),
             ModulatorField::Length => (1.0, MAX_STEPS as f32),
+            ModulatorField::Fade => (0.0, MAX_FADE),
         }
     }
 
@@ -379,7 +383,8 @@ impl ModulatorField {
             | ModulatorField::Value
             | ModulatorField::Glide
             | ModulatorField::Length
-            | ModulatorField::Retrigger => Taper::Linear,
+            | ModulatorField::Retrigger
+            | ModulatorField::Fade => Taper::Linear,
         }
     }
 }
@@ -636,6 +641,17 @@ mod tests {
         for field in [ModulatorField::Rate, Glide, ModulatorField::Attack, ModulatorField::Decay, ModulatorField::Sustain, ModulatorField::Release, ModulatorField::Value] {
             assert!(!field.is_whole(), "{field:?}");
         }
+    }
+
+    #[test]
+    fn the_fade_of_an_lfo_is_seconds_from_nothing_to_five_turned_on_a_linear_scale_and_is_not_whole() {
+        let fade = ModulatorField::Fade;
+        assert_eq!(fade.range(), (0.0, 5.0));
+        assert_eq!(fade.label(), "fade");
+        assert_eq!(wire(&fade), json!("fade"));
+        assert_eq!(serde_json::from_value::<ModulatorField>(json!("fade")).unwrap(), fade);
+        assert!(!fade.is_whole());
+        assert_eq!(fade.taper(), Taper::Linear);
     }
 
     #[test]

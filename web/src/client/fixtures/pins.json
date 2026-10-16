@@ -1730,7 +1730,9 @@
           "name": "LFO",
           "parent": 0,
           "source": {
+            "fade": 0.0,
             "rate": 1.0,
+            "retrigger": false,
             "type": "lfo",
             "waveform": "sine"
           }

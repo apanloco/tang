@@ -155,7 +155,8 @@ pub struct Preset {
 #[cfg_attr(feature = "web", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ModulatorSource {
-    Lfo { waveform: Waveform, rate: f32 },
+    /// An LFO: its waveform and rate in Hz, whether a note starts it again at the start of its wave, and the seconds it takes to come in from nothing after a note (0 for none).
+    Lfo { waveform: Waveform, rate: f32, retrigger: bool, fade: f32 },
     Envelope { attack: f32, decay: f32, sustain: f32, release: f32 },
     /// A hardware control. `control` is null until one is bound; `learning` is
     /// true while it waits for the next control to come in.
@@ -462,7 +463,7 @@ fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
 
 fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
     let source = match &modulator.source {
-        ModSourceSlot::Lfo { waveform, rate } => ModulatorSource::Lfo { waveform: (*waveform).into(), rate: *rate },
+        ModSourceSlot::Lfo { waveform, rate, retrigger, fade } => ModulatorSource::Lfo { waveform: (*waveform).into(), rate: *rate, retrigger: *retrigger, fade: *fade },
         ModSourceSlot::Envelope { attack, decay, sustain, release } => {
             ModulatorSource::Envelope { attack: *attack, decay: *decay, sustain: *sustain, release: *release }
         }
@@ -866,7 +867,7 @@ depth = 0.1
         let lfo = model.instruments[0].modulators[0].node;
         let name = |model: &SessionModel| node(&model.graph(), lfo).name.clone();
         assert_eq!(name(&model), "LFO");
-        model.instruments[0].modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5 };
+        model.instruments[0].modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5, retrigger: false, fade: 0.0 };
         assert_eq!(name(&model), "LFO");
 
         let envelope = model.instruments[0].modulators[1].node;
@@ -937,7 +938,7 @@ depth = 0.1
         assert_eq!(node(&graph, env).name, "ADSR");
         assert_eq!(
             node(&graph, lfo).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0 } }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0 } }
         );
         assert_eq!(
             node(&graph, env).kind,
@@ -1036,7 +1037,7 @@ depth = 0.1
             let m = model.instruments[0].modulators[0].node;
             assert_eq!(
                 node(&graph, m).kind,
-                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0 } },
+                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0 } },
                 "{name}"
             );
         }
@@ -1604,10 +1605,30 @@ depth = 0.2
     }
 
     #[test]
+    fn an_lfos_key_is_in_the_graph_as_the_nodes_source() {
+        let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 2.0\nretrigger = true\nfade = 0.75\n[[instrument.modulator]]\n").model;
+        let graph = model.graph();
+        let (keyed, free) = (model.instruments[0].modulators[0].node, model.instruments[0].modulators[1].node);
+        assert_eq!(
+            node(&graph, keyed).kind,
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75 } }
+        );
+        assert_eq!(
+            node(&graph, free).kind,
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0 } },
+            "one that says nothing of it runs free"
+        );
+    }
+
+    #[test]
     fn modulator_sources_and_controls_are_tagged_objects() {
         assert_eq!(
-            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0 }).unwrap(),
-            json!({"type": "lfo", "waveform": "saw", "rate": 2.0})
+            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0 }).unwrap(),
+            json!({"type": "lfo", "waveform": "saw", "rate": 2.0, "retrigger": false, "fade": 0.0})
+        );
+        assert_eq!(
+            serde_json::to_value(ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: true, fade: 0.5 }).unwrap(),
+            json!({"type": "lfo", "waveform": "sine", "rate": 1.0, "retrigger": true, "fade": 0.5})
         );
         assert_eq!(
             serde_json::to_value(ModulatorSource::Envelope { attack: 0.5, decay: 0.25, sustain: 1.0, release: 2.0 }).unwrap(),
