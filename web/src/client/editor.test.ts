@@ -597,6 +597,46 @@ describe("setting the keys of a lane", () => {
   });
 });
 
+describe("muting and soloing a lane or a group", () => {
+  const flags = (client: Client, node: number) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" || found?.kind === "group" ? { muted: found.muted, solo: found.solo } : "neither";
+  };
+
+  test("resolves true when the lane has the flag, which the session shows, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setMute(oscillator.id, true)).toBe(true);
+    expect(flags(client, oscillator.id)).toEqual({ muted: true, solo: false });
+    expect(await editor.setSolo(oscillator.id, true)).toBe(true);
+    expect(flags(client, oscillator.id)).toEqual({ muted: true, solo: true });
+    expect(await editor.setMute(oscillator.id, false)).toBe(true);
+    expect(await editor.setSolo(oscillator.id, false)).toBe(true);
+    expect(flags(client, oscillator.id)).toEqual({ muted: false, solo: false });
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a node that is neither: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setMute(filter.id, true)).toBe(false);
+    expect(await editor.setSolo(lfo.id, true)).toBe(false);
+    expect(await editor.setMute(filter.id, false)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not mute Filter: only a lane or a group can be muted",
+      "Could not solo LFO: only a lane or a group can be soloed",
+      "Could not unmute Filter: only a lane or a group can be muted",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setMute(oscillator.id, true)).toBe(false);
+    expect(await editor.setSolo(oscillator.id, true)).toBe(false);
+    expect(said(notices)).toEqual(["Could not mute Oscillator: Not connected to the server.", "Could not solo Oscillator: Not connected to the server."]);
+  });
+});
+
 describe("moving a node", () => {
   const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
 

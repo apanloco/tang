@@ -60,6 +60,8 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
       range: null,
       transpose: 0,
       volume: 0.1,
+      muted: false,
+      solo: false,
       pattern: null,
     });
     nodes.push({ id: effect, parent: instrument, name: `Filter ${String(lane + 1)}`, kind: "effect", plugin: structuredClone(filter), mix: 1 });

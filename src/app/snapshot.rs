@@ -143,6 +143,14 @@ impl Snapshot {
                 };
                 *keys = *range;
             }
+            Event::MuteSet { node, muted } => match &mut self.node_mut(*node)?.kind {
+                NodeKind::Instrument { muted: flag, .. } | NodeKind::Group { muted: flag, .. } => *flag = *muted,
+                _ => return Err(DoesNotFit(format!("node {} is neither a lane nor a group", node.0))),
+            },
+            Event::SoloSet { node, solo } => match &mut self.node_mut(*node)?.kind {
+                NodeKind::Instrument { solo: flag, .. } | NodeKind::Group { solo: flag, .. } => *flag = *solo,
+                _ => return Err(DoesNotFit(format!("node {} is neither a lane nor a group", node.0))),
+            },
             Event::NodeUiSet { node, ui } => {
                 self.node_mut(*node)?.ui = *ui;
             }
@@ -542,6 +550,12 @@ type = "envelope"
             Intent::SetRange { node: n.osc, range: Some(NoteRange { low: 36, high: 84 }) },
             Intent::SetRange { node: n.empty, range: Some(NoteRange { low: 0, high: 59 }) },
             Intent::SetRange { node: n.osc, range: None },
+            Intent::SetMute { node: n.osc, muted: true },
+            Intent::SetSolo { node: n.osc, solo: true },
+            Intent::SetMute { node: n.group, muted: true },
+            Intent::SetSolo { node: n.group, solo: true },
+            Intent::SetMute { node: n.osc, muted: false },
+            Intent::SetSolo { node: n.group, solo: false },
             Intent::SetScale { scale: "F# dorian".to_string() },
             Intent::SetLocked { locked: true },
             Intent::SetScale { scale: "Bb Natural Minor".to_string() },
@@ -574,7 +588,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 48);
+        assert_eq!(told.rev, 54);
     }
 
     #[test]
@@ -612,6 +626,8 @@ type = "envelope"
             Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Sustain, value: 0.25 },
             Intent::SetEdgeDepth { edge: cables(&told)[0], depth: -0.5 },
             Intent::SetRange { node: n.osc, range: Some(NoteRange { low: 36, high: 84 }) },
+            Intent::SetMute { node: n.osc, muted: true },
+            Intent::SetSolo { node: n.group, solo: true },
             Intent::SetScale { scale: "F# dorian".to_string() },
             Intent::SetLocked { locked: true },
             Intent::SetNodeUi { node: n.osc, ui: Some(NodeUi { x: 80.0, y: 120.0 }) },

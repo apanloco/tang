@@ -591,7 +591,7 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   const master = nodes.find((n) => n.kind === "master");
   if (!master) return invalid("the session has no master to hear a lane");
 
-  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, pattern: null };
+  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, pattern: null };
   const atNode = nodes.indexOf(master);
   const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
   const firstCable = edges.findIndex(isModulation);
@@ -776,7 +776,7 @@ function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counter
   if (!master) return invalid("the session has no master to hear a group");
 
   const id = counters.node();
-  const added: Node = { id, parent: null, name: `Group ${nodes.filter((n) => n.kind === "group").length + 1}`, kind: "group", volume: 1, pan: 0 };
+  const added: Node = { id, parent: null, name: `Group ${nodes.filter((n) => n.kind === "group").length + 1}`, kind: "group", volume: 1, pan: 0, muted: false, solo: false };
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const inLane = (node: NodeId): boolean => {
     const found = byId.get(node);
@@ -928,6 +928,15 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
       return presetOutcome(snapshot, node, intent.preset);
     case "setRange":
       return rangeOutcome(node, intent.range);
+    // (A lane or a group: nothing else has a mute or a solo.)
+    case "setMute":
+      return node.kind === "instrument" || node.kind === "group"
+        ? { event: { type: "muteSet", node: node.id, muted: intent.muted } }
+        : invalid("only a lane or a group can be muted");
+    case "setSolo":
+      return node.kind === "instrument" || node.kind === "group"
+        ? { event: { type: "soloSet", node: node.id, solo: intent.solo } }
+        : invalid("only a lane or a group can be soloed");
     case "setModulatorField":
       return fieldOutcome(node, intent.field, intent.value);
   }

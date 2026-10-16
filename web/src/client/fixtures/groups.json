@@ -2756,9 +2756,11 @@
         {
           "id": 0,
           "kind": "group",
+          "muted": false,
           "name": "Group 1",
           "pan": 0.0,
           "parent": null,
+          "solo": false,
           "volume": 1.0
         },
         {
@@ -2788,9 +2790,11 @@
         {
           "id": 1,
           "kind": "group",
+          "muted": false,
           "name": "Group 2",
           "pan": 0.0,
           "parent": null,
+          "solo": false,
           "volume": 1.0
         },
         {
@@ -2807,14 +2811,17 @@
         {
           "id": 2,
           "kind": "group",
+          "muted": false,
           "name": "Lead",
           "pan": 0.0,
           "parent": null,
+          "solo": false,
           "volume": 1.0
         },
         {
           "id": 3,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": 0,
           "pattern": null,
@@ -2941,6 +2948,7 @@
             "high": 59,
             "low": 12
           },
+          "solo": false,
           "transpose": 0,
           "volume": 0.5
         },
@@ -2958,6 +2966,7 @@
         {
           "id": 5,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": null,
           "pattern": null,
@@ -3081,6 +3090,7 @@
             "presets": []
           },
           "range": null,
+          "solo": false,
           "transpose": 7,
           "volume": 0.6
         },
@@ -3182,6 +3192,7 @@
         {
           "id": 9,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": 1,
           "pattern": null,
@@ -3305,12 +3316,14 @@
             "presets": []
           },
           "range": null,
+          "solo": false,
           "transpose": 0,
           "volume": 0.7
         },
         {
           "id": 10,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": 0,
           "pattern": null,
@@ -3434,6 +3447,7 @@
             "presets": []
           },
           "range": null,
+          "solo": false,
           "transpose": 0,
           "volume": 0.8
         },

@@ -36,7 +36,7 @@ function asked(server: MockServer): NodeId[] {
 /** The tracer's lane in a group, with the group between the filter and the master. */
 function grouped(): Snapshot {
   const snapshot: Snapshot = structuredClone(tracerSnapshot);
-  snapshot.graph.nodes.unshift({ id: 77, parent: null, name: "Pad", kind: "group", volume: 0.8, pan: -0.25 });
+  snapshot.graph.nodes.unshift({ id: 77, parent: null, name: "Pad", kind: "group", volume: 0.8, pan: -0.25, muted: false, solo: false });
   for (const node of snapshot.graph.nodes) if (node.id === oscillator.id) node.parent = 77;
   snapshot.graph.edges = snapshot.graph.edges.flatMap((edge) => {
     if (edge.kind === "audio" && edge.to.node === MASTER) {

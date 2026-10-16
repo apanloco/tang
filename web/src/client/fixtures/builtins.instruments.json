@@ -1,6 +1,7 @@
 {
   "builtin:osc": {
     "kind": "instrument",
+    "muted": false,
     "name": "Oscillator",
     "pattern": null,
     "plugin": {
@@ -123,6 +124,7 @@
       "presets": []
     },
     "range": null,
+    "solo": false,
     "transpose": 0,
     "volume": 1.0
   }

@@ -341,8 +341,8 @@ impl LfoWaveform {
 #[cfg(test)]
 pub type RackCables = Vec<(ModulatorLocation, usize, Vec<(ModTargetKind, f32)>)>;
 
-/// What a lane is, for tests: the group it is in, its key range, transpose and volume, whether it has an
-/// instrument, how many effects and modulators, and which lane its pattern player says it is.
+/// What a lane is, for tests: the group it is in, its key range, transpose and volume, whether it is muted or
+/// soloed, whether it has an instrument, how many effects and modulators, and which lane its pattern player says it is.
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub struct LaneFacts {
@@ -350,6 +350,8 @@ pub struct LaneFacts {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
     pub volume: f32,
+    pub muted: bool,
+    pub solo: bool,
     pub has_instrument: bool,
     pub effects: usize,
     pub modulators: usize,
@@ -357,7 +359,7 @@ pub struct LaneFacts {
 }
 
 /// What a group is, for a test to compare with the model's: the names of its bus effects, how many
-/// modulators, its volume and its pan.
+/// modulators, its volume and its pan, and whether it is muted or soloed.
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub struct GroupFacts {
@@ -365,6 +367,8 @@ pub struct GroupFacts {
     pub modulators: usize,
     pub volume: f32,
     pub pan: f32,
+    pub muted: bool,
+    pub solo: bool,
 }
 
 /// Identifies what a modulation target points at.
@@ -3714,6 +3718,8 @@ impl AudioGraph {
                 range: lane.range,
                 transpose: lane.transpose,
                 volume: lane.volume,
+                muted: lane.muted,
+                solo: lane.solo,
                 has_instrument: lane.instrument.is_some(),
                 effects: lane.effects.len(),
                 modulators: lane.modulators.len(),
@@ -3738,6 +3744,8 @@ impl AudioGraph {
                 modulators: group.modulators.len(),
                 volume: group.volume,
                 pan: group.pan,
+                muted: group.muted,
+                solo: group.solo,
             })
             .collect()
     }
@@ -11771,17 +11779,21 @@ mod tests {
         shape_lane(&cmd_tx, 0, true, 2, 1, 0.5, Some((36, 60)));
         shape_lane(&cmd_tx, 1, false, 0, 3, 1.5, None);
         shape_lane(&cmd_tx, 2, true, 1, 0, 2.5, Some((61, 72)));
+        // (The first is muted and the second soloed, which go where the lane goes.)
+        cmd_tx.send(GraphCommand::SetMute { inst: 0, muted: true }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
         graph.drain_commands();
         let before = graph.lanes();
         cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 0, inst_b: 1 }).unwrap();
         graph.drain_commands();
         let after = graph.lanes();
         // Each lane is the other one: everything but the place its pattern player knows it by.
-        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
+        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, muted: lane.muted, solo: lane.solo, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
         assert_eq!(after[0], moved(&before[1], 0));
         assert_eq!(after[1], moved(&before[0], 1));
         assert_eq!((after[0].volume, after[0].modulators, after[0].has_instrument), (1.5, 3, false));
         assert_eq!((after[1].volume, after[1].effects, after[1].range, after[1].transpose), (0.5, 2, Some((36, 60)), 1));
+        assert_eq!(((after[0].muted, after[0].solo), (after[1].muted, after[1].solo)), ((false, true), (true, false)));
         assert_eq!(after[2], before[2], "the lane that was not named is as it was");
     }
 
@@ -11810,7 +11822,7 @@ mod tests {
         // What the model keeps (it only empties the instrument's slot): the effect, the modulators, the rest.
         assert_eq!(
             graph.lanes(),
-            [LaneFacts { group: None, range: Some((36, 60)), transpose: 1, volume: 0.5, has_instrument: false, effects: 1, modulators: 2, pattern_index: 0 }]
+            [LaneFacts { group: None, range: Some((36, 60)), transpose: 1, volume: 0.5, muted: false, solo: false, has_instrument: false, effects: 1, modulators: 2, pattern_index: 0 }]
         );
         assert!(return_rx.try_recv().is_ok(), "and the plugin is handed back");
     }

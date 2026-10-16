@@ -507,7 +507,7 @@ describe("adding a modulator", () => {
 
   /** The tracer with its lane in a group (a node of the group first, as the controller lists them). */
   function inAGroup(): Snapshot {
-    const group: Node = { id: 10, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0 };
+    const group: Node = { id: 10, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false };
     const nodes = tracerSnapshot.graph.nodes.map((n) => (n.id === lane.id ? { ...n, parent: 10 } : n));
     return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [group, ...nodes] } };
   }
@@ -1970,6 +1970,69 @@ describe("setting the keys of a lane", () => {
     const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
     await client.request(set({ low: 0, high: 59 }, 14));
     expect(keys(client, 14)).toEqual({ low: 0, high: 59 });
+  });
+});
+
+describe("muting and soloing a lane or a group", () => {
+  const flagsOf = (client: Client, node: number) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    if (found?.kind !== "instrument" && found?.kind !== "group") throw new Error(`node ${String(node)} is neither a lane nor a group`);
+    return { muted: found.muted, solo: found.solo };
+  };
+  const mute = (node: number, muted: boolean): Intent => ({ type: "setMute", node, muted });
+  const solo = (node: number, soloed: boolean): Intent => ({ type: "setSolo", node, solo: soloed });
+  const lane = reachFixture.snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null)?.id ?? -1;
+  const GROUP = 0;
+  const EMPTY_LANE = 14;
+
+  test("is what the controller says it is: the lane or the group has the flag, the other flag is as it was, and the session has something unsaved", async () => {
+    const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    expect(flagsOf(client, lane)).toEqual({ muted: false, solo: false });
+    await client.request(mute(lane, true));
+    expect(flagsOf(client, lane)).toEqual({ muted: true, solo: false });
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    await client.request(solo(lane, true));
+    expect(flagsOf(client, lane)).toEqual({ muted: true, solo: true });
+    await client.request(mute(GROUP, true));
+    await client.request(solo(GROUP, true));
+    expect(flagsOf(client, GROUP)).toEqual({ muted: true, solo: true });
+    await client.request(mute(lane, false));
+    await client.request(solo(GROUP, false));
+    expect(flagsOf(client, lane)).toEqual({ muted: false, solo: true });
+    expect(flagsOf(client, GROUP)).toEqual({ muted: true, solo: false });
+  });
+
+  test("is for a lane that has no instrument too, and it is that lane alone", async () => {
+    const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    await client.request(mute(EMPTY_LANE, true));
+    expect(flagsOf(client, EMPTY_LANE)).toEqual({ muted: true, solo: false });
+    expect(flagsOf(client, lane)).toEqual({ muted: false, solo: false });
+  });
+
+  test("is told to the other clients as the event it is", async () => {
+    const server = new MockServer({ snapshot: reachFixture.snapshot });
+    const first = await open(server);
+    const second = await open(server);
+    await first.request(solo(lane, true));
+    await until(() => flagsOf(second, lane).solo, "the second client's copy");
+    expect(flagsOf(second, lane)).toEqual({ muted: false, solo: true });
+  });
+
+  test("is refused for what is neither a lane nor a group, in the controller's words, and changes nothing", async () => {
+    const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
+    const refused = [
+      [mute(10, true), "invalid", "only a lane or a group can be muted"], // an effect
+      [solo(3, true), "invalid", "only a lane or a group can be soloed"], // a bus effect
+      [mute(15, true), "invalid", "only a lane or a group can be muted"], // a modulator
+      [solo(15, false), "invalid", "only a lane or a group can be soloed"],
+      [mute(424242, true), "notFound", "there is no node 424242"],
+      [solo(MASTER, true), "notFound", `there is no node ${String(MASTER)}`],
+    ] as const;
+    for (const [intent, code, message] of refused) {
+      const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], JSON.stringify(intent)).toEqual([code, message]);
+    }
+    expect(client.state.snapshot).toEqual(reachFixture.snapshot);
   });
 });
 

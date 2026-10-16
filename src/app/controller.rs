@@ -2779,6 +2779,8 @@ rate = 2.0
                 range: lane.range,
                 transpose: lane.transpose,
                 volume: lane.volume,
+                muted: lane.muted,
+                solo: lane.solo,
                 has_instrument: lane.instrument.is_some(),
                 effects: lane.effects.len(),
                 modulators: lane.modulators.len(),
@@ -2802,6 +2804,8 @@ rate = 2.0
                 modulators: group.modulators.len(),
                 volume: group.volume,
                 pan: group.pan,
+                muted: group.muted,
+                solo: group.solo,
             })
             .collect()
     }

@@ -1312,7 +1312,9 @@ stage or a macro's value, in a lane's modulator or a group's, clamped to `Modula
 waveform rounded to its index: sine, triangle, saw, square, random, smooth), `SetEdgeDepth` (a
 modulation cable's depth, -1 to 1) and `SetRange { node, range }` (the notes a lane takes, both
 ends included, or every note for none; refused for a node that is no lane, a note above 127 and a low
-note above the high one; the TUI's `R` popup asks it too), `SetScale { scale }` (the Piano tab's scale, as
+note above the high one; the TUI's `R` popup asks it too), `SetMute { node, muted }` and `SetSolo { node, solo }` (a lane or a group muted or soloed, see "Mute and solo"; refused
+for any other node and, as for every intent, not found for the master; told as `MuteSet` and `SoloSet`, which a `Snapshot` applies; the model's `muted` and `solo` and the audio thread's
+`SetMute`, `SetSolo`, `SetGroupMute` and `SetGroupSolo`; saved as `mute` and `solo`), `SetScale { scale }` (the Piano tab's scale, as
 the session file writes it, `F# dorian`, flats, long names and any case taken; refused for text that is
 not a scale; answered with `ScaleSet`, which has the root and the pitch classes a client draws from) and
 `SetLocked { locked }` (the lock to the scale; the TUI's `k` and `l` ask them too), `SetBpm { bpm }` (the tempo that patterns are recorded at, held to 20 to 300;
@@ -1412,7 +1414,8 @@ pointing at the same plugins, as the audio thread does). What the TUI still edit
 step 50: `r`, `d` and `Ctrl+R` on a pattern and the rows of its pane ask `SetRecording`, `ClearPattern` and `SetPatternField` now, which are no step of the history.)
 
 **Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
-step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetNodeUi`,
+step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetMute` and `SetSolo` (in the words `mute the lane of Oscillator`,
+`unmute Pad`, `solo an empty lane`: never merged with the one before them, since a toggle that is merged with its opposite leaves a step that does nothing, and none for what changes nothing), `SetNodeUi`,
 `SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `SetBpm`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
 `AddModulator`, `AddModEdge`, `Modulate`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
 intents that put it back and the intents that do it again (read from the model before the change, so that it puts back what the change
@@ -1934,7 +1937,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   model, the engine handles and the plugin catalog. Front-ends call
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
-  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `RemoveEdge`,
+  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetMute`, `SetSolo`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `Modulate`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
   `SetNodeUi`, `SetPinned`, `SetBpm`, `SetRecording`, `ClearPattern`, `SetPatternField`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
   or a group), `Save`, `SaveAs`, `Undo` and `Redo` (see "Session state"). Effects are

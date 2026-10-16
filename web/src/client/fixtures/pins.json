@@ -1644,9 +1644,11 @@
         {
           "id": 0,
           "kind": "group",
+          "muted": false,
           "name": "Group 1",
           "pan": 0.0,
           "parent": null,
+          "solo": false,
           "volume": 1.0
         },
         {
@@ -1736,6 +1738,7 @@
         {
           "id": 2,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": 0,
           "pattern": null,
@@ -1859,6 +1862,7 @@
             "presets": []
           },
           "range": null,
+          "solo": false,
           "transpose": 0,
           "volume": 1.0
         },
@@ -2027,11 +2031,13 @@
         {
           "id": 4,
           "kind": "instrument",
+          "muted": false,
           "name": "(empty)",
           "parent": null,
           "pattern": null,
           "plugin": null,
           "range": null,
+          "solo": false,
           "transpose": 0,
           "volume": 1.0
         },

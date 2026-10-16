@@ -2989,6 +2989,391 @@
       ]
     },
     {
+      "name": "a mute and a solo are steps in the words of the lane or the group, and what changes nothing is none",
+      "rows": [
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 3,
+              "rev": 1,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "mute the lane of Oscillator"
+          },
+          "intent": {
+            "muted": true,
+            "node": 3,
+            "type": "setMute"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 2,
+              "solo": true,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "solo the lane of Oscillator"
+          },
+          "intent": {
+            "node": 3,
+            "solo": true,
+            "type": "setSolo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 0,
+              "rev": 3,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "mute Pad"
+          },
+          "intent": {
+            "muted": true,
+            "node": 0,
+            "type": "setMute"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 2,
+              "rev": 4,
+              "solo": true,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "solo Group 2"
+          },
+          "intent": {
+            "node": 2,
+            "solo": true,
+            "type": "setSolo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 0,
+              "rev": 5,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "solo Group 2"
+          },
+          "intent": {
+            "muted": true,
+            "node": 0,
+            "type": "setMute"
+          },
+          "restructured": false
+        },
+        {
+          "error": "only a lane or a group can be muted",
+          "history": {
+            "redo": null,
+            "undo": "solo Group 2"
+          },
+          "intent": {
+            "muted": true,
+            "node": 4,
+            "type": "setMute"
+          }
+        },
+        {
+          "error": "there is no node 4294967295",
+          "history": {
+            "redo": null,
+            "undo": "solo Group 2"
+          },
+          "intent": {
+            "node": 4294967295,
+            "solo": true,
+            "type": "setSolo"
+          }
+        },
+        {
+          "events": [
+            {
+              "muted": false,
+              "node": 3,
+              "rev": 6,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "unmute the lane of Oscillator"
+          },
+          "intent": {
+            "muted": false,
+            "node": 3,
+            "type": "setMute"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 2,
+              "rev": 7,
+              "solo": false,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "unsolo Group 2"
+          },
+          "intent": {
+            "node": 2,
+            "solo": false,
+            "type": "setSolo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 2,
+              "rev": 8,
+              "solo": true,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": "unsolo Group 2",
+            "undo": "unmute the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 3,
+              "rev": 9,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "unmute the lane of Oscillator",
+            "undo": "solo Group 2"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 2,
+              "rev": 10,
+              "solo": false,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": "solo Group 2",
+            "undo": "mute Pad"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": false,
+              "node": 0,
+              "rev": 11,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "mute Pad",
+            "undo": "solo the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 12,
+              "solo": false,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": "solo the lane of Oscillator",
+            "undo": "mute the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": false,
+              "node": 3,
+              "rev": 13,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "mute the lane of Oscillator",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 3,
+              "rev": 14,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "solo the lane of Oscillator",
+            "undo": "mute the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 3,
+              "rev": 15,
+              "solo": true,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": "mute Pad",
+            "undo": "solo the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 0,
+              "rev": 16,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "solo Group 2",
+            "undo": "mute Pad"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 2,
+              "rev": 17,
+              "solo": true,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": "unmute the lane of Oscillator",
+            "undo": "solo Group 2"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": false,
+              "node": 3,
+              "rev": 18,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "unsolo Group 2",
+            "undo": "unmute the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "node": 2,
+              "rev": 19,
+              "solo": false,
+              "type": "soloSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "unsolo Group 2"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        }
+      ]
+    },
+    {
       "name": "the scale and the lock of the piano are put back",
       "rows": [
         {
@@ -27828,6 +28213,7 @@
             {
               "id": 0,
               "kind": "instrument",
+              "muted": false,
               "name": "Oscillator",
               "parent": null,
               "pattern": null,
@@ -27951,6 +28337,7 @@
                 "presets": []
               },
               "range": null,
+              "solo": false,
               "transpose": 0,
               "volume": 1.0
             },
@@ -28248,6 +28635,7 @@
             {
               "id": 0,
               "kind": "instrument",
+              "muted": false,
               "name": "Oscillator",
               "parent": null,
               "pattern": null,
@@ -28371,6 +28759,7 @@
                 "presets": []
               },
               "range": null,
+              "solo": false,
               "transpose": 0,
               "volume": 1.0
             },
@@ -29074,9 +29463,11 @@
             {
               "id": 0,
               "kind": "group",
+              "muted": false,
               "name": "Pad",
               "pan": 0.0,
               "parent": null,
+              "solo": false,
               "volume": 1.0
             },
             {
@@ -29093,6 +29484,7 @@
             {
               "id": 1,
               "kind": "instrument",
+              "muted": false,
               "name": "Oscillator",
               "parent": 0,
               "pattern": null,
@@ -29219,6 +29611,7 @@
                 "high": 84,
                 "low": 36
               },
+              "solo": false,
               "transpose": 3,
               "volume": 0.5
             },
@@ -29309,6 +29702,7 @@
             {
               "id": 4,
               "kind": "instrument",
+              "muted": false,
               "name": "Oscillator",
               "parent": null,
               "pattern": null,
@@ -29432,17 +29826,20 @@
                 "presets": []
               },
               "range": null,
+              "solo": false,
               "transpose": 0,
               "volume": 1.0
             },
             {
               "id": 5,
               "kind": "instrument",
+              "muted": false,
               "name": "(empty)",
               "parent": null,
               "pattern": null,
               "plugin": null,
               "range": null,
+              "solo": false,
               "transpose": 0,
               "volume": 1.0
             },
@@ -29911,9 +30308,11 @@
         {
           "id": 0,
           "kind": "group",
+          "muted": false,
           "name": "Pad",
           "pan": 0.0,
           "parent": null,
+          "solo": false,
           "volume": 1.0
         },
         {
@@ -29992,14 +30391,17 @@
         {
           "id": 2,
           "kind": "group",
+          "muted": false,
           "name": "Group 2",
           "pan": 0.0,
           "parent": null,
+          "solo": false,
           "volume": 1.0
         },
         {
           "id": 3,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": 0,
           "pattern": null,
@@ -30123,6 +30525,7 @@
             "presets": []
           },
           "range": null,
+          "solo": false,
           "transpose": 0,
           "volume": 1.0
         },
@@ -30388,6 +30791,7 @@
         {
           "id": 8,
           "kind": "instrument",
+          "muted": false,
           "name": "Oscillator",
           "parent": null,
           "pattern": null,
@@ -30511,6 +30915,7 @@
             "presets": []
           },
           "range": null,
+          "solo": false,
           "transpose": 0,
           "volume": 1.0
         },

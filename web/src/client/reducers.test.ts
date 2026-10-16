@@ -28,7 +28,7 @@ function applied(snapshot: Snapshot, event: StampedEvent): Snapshot {
 
 /** The tracer with a group node (and a bus effect in it) added, for the gains that are about groups. */
 function withGroup(): { snapshot: Snapshot; group: Node } {
-  const group: Node = { id: 40, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0 };
+  const group: Node = { id: 40, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false };
   return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, group] } }, group };
 }
 
@@ -114,6 +114,8 @@ describe("any event", () => {
     ["a gain set", { rev: 1, type: "gainSet", node: oscillator.id, gain: "volume", value: 0.5 }],
     ["a preset loaded", { rev: 1, type: "presetLoaded", node: filter.id, preset: "Dark", values: [{ param: 0, value: 0.2 }] }],
     ["a range set", { rev: 1, type: "rangeSet", node: oscillator.id, range: { low: 36, high: 84 } }],
+    ["a mute set", { rev: 1, type: "muteSet", node: oscillator.id, muted: true }],
+    ["a solo set", { rev: 1, type: "soloSet", node: oscillator.id, solo: true }],
     ["a pattern set", { rev: 1, type: "patternSet", node: oscillator.id, pattern: A_PATTERN }],
     ["a node's place set", { rev: 1, type: "nodeUiSet", node: oscillator.id, ui: { x: 80, y: 120 } }],
     ["pinned parameters set", { rev: 1, type: "pinnedSet", node: filter.id, params: [1] }],
@@ -306,6 +308,51 @@ describe("a range set", () => {
   });
 });
 
+describe("a mute and a solo set", () => {
+  const flagsOf = (snapshot: Snapshot, id: number) => {
+    const node = snapshot.graph.nodes.find((n) => n.id === id);
+    if (node?.kind !== "instrument" && node?.kind !== "group") throw new Error("neither a lane nor a group");
+    return { muted: node.muted, solo: node.solo };
+  };
+
+  test("mutes and unmutes a lane, and says nothing of its solo", () => {
+    expect(flagsOf(tracerSnapshot, oscillator.id)).toEqual({ muted: false, solo: false });
+    const muted = applied(tracerSnapshot, { rev: 1, type: "muteSet", node: oscillator.id, muted: true });
+    expect(flagsOf(muted, oscillator.id)).toEqual({ muted: true, solo: false });
+    const soloed = applied(muted, { rev: 2, type: "soloSet", node: oscillator.id, solo: true });
+    expect(flagsOf(soloed, oscillator.id)).toEqual({ muted: true, solo: true });
+    const brought = applied(soloed, { rev: 3, type: "muteSet", node: oscillator.id, muted: false });
+    expect(flagsOf(brought, oscillator.id)).toEqual({ muted: false, solo: true });
+    expect(flagsOf(applied(brought, { rev: 4, type: "soloSet", node: oscillator.id, solo: false }), oscillator.id)).toEqual({ muted: false, solo: false });
+  });
+
+  test("does the same for a group", () => {
+    const { snapshot, group } = withGroup();
+    const muted = applied(snapshot, { rev: 1, type: "muteSet", node: group.id, muted: true });
+    expect(flagsOf(muted, group.id)).toEqual({ muted: true, solo: false });
+    expect(flagsOf(applied(muted, { rev: 2, type: "soloSet", node: group.id, solo: true }), group.id)).toEqual({ muted: true, solo: true });
+  });
+
+  test("changes that node and nothing else: every other node is the object it was, and the node is what it was but for the flag", () => {
+    const after = applied(tracerSnapshot, { rev: 1, type: "muteSet", node: oscillator.id, muted: true });
+    for (const node of tracerSnapshot.graph.nodes) {
+      const now = after.graph.nodes.find((n) => n.id === node.id);
+      if (node.id === oscillator.id) expect(now).toEqual({ ...node, muted: true });
+      else expect(now).toBe(node);
+    }
+    expect(after.graph.edges).toBe(tracerSnapshot.graph.edges);
+  });
+
+  test("is refused by a node that is neither a lane nor a group, and by one that is not there", () => {
+    for (const node of [filter.id, lfo.id, MASTER]) {
+      expect(applyEvent(tracerSnapshot, { rev: 1, type: "muteSet", node, muted: true }).ok, `mute of node ${node}`).toBe(false);
+      expect(applyEvent(tracerSnapshot, { rev: 1, type: "soloSet", node, solo: true }).ok, `solo of node ${node}`).toBe(false);
+    }
+    expect(applyEvent(tracerSnapshot, { rev: 1, type: "muteSet", node: 4242, muted: true })).toEqual({ ok: false, reason: "there is no node 4242" });
+    expect(applyEvent(tracerSnapshot, { rev: 1, type: "soloSet", node: filter.id, solo: true })).toEqual({ ok: false, reason: `node ${filter.id} is neither a lane nor a group` });
+  });
+});
+
 describe("a pattern set", () => {
   const patternOf = (snapshot: Snapshot) => {
     const found = snapshot.graph.nodes.find((n) => n.id === oscillator.id);
@@ -408,7 +455,7 @@ describe("a group renamed", () => {
   test("changes that group and nothing else: every other node is the object it was, the group is still a group of the same volume and pan", () => {
     const { snapshot: plain, group: first } = withGroup();
     // (A group that is not at its defaults, so that a volume and a pan that were lost would show.)
-    const group: Node = { ...first, kind: "group", volume: 0.5, pan: -0.25 };
+    const group: Node = { ...first, kind: "group", volume: 0.5, pan: -0.25, muted: false, solo: false };
     const snapshot = { ...plain, graph: { ...plain.graph, nodes: plain.graph.nodes.map((n) => (n.id === group.id ? group : n)) } };
     const after = applied(snapshot, rename(group.id, "Strings"));
     for (const node of snapshot.graph.nodes) {

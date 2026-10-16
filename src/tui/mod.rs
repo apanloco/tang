@@ -1489,8 +1489,8 @@ impl State {
             match event {
                 // The group header shows the volume.
                 intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
-                // A lane's label shows its keys.
-                intent::Event::RangeSet { .. } => self.rebuild_tree(),
+                // A lane's label shows its keys, and a lane's and a group's whether it is muted or soloed.
+                intent::Event::RangeSet { .. } | intent::Event::MuteSet { .. } | intent::Event::SoloSet { .. } => self.rebuild_tree(),
                 // (The Piano tab reads the scale and the lock from the shared filter, on every frame.)
                 intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
                 // (The status bar reads the tempo from the model, on every frame.)

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::app::controller::Controller;
 use crate::app::graph::{NoteRange, Port};
 use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind};
-use crate::app::journal::Journal;
+use crate::app::journal::{Journal, lane_words};
 use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
 
@@ -316,6 +316,22 @@ impl Controller {
         all.ok_or_else(|| IntentError::Invalid("the step has nothing to do".to_string()))
     }
 
+    /// What a lane or a group is called in the words of a step of a mute or a solo, and whether it is muted and whether it is soloed: none for a node that is
+    /// neither.
+    fn lane_or_group_flags(&self, node: NodeId) -> Option<(String, bool, bool)> {
+        match self.model.locate(node)? {
+            NodePath::Instrument(inst) => {
+                let lane = &self.model.instruments[inst];
+                Some((lane_words(lane), lane.muted, lane.solo))
+            }
+            NodePath::Group(group) => {
+                let bus = &self.model.groups[group];
+                Some((bus.display_name(group), bus.muted, bus.solo))
+            }
+            _ => None,
+        }
+    }
+
     /// What `intent` is to the history, read from the session before it is applied: the step that puts back what it will change
     /// (so it is the value it will overwrite that is read), or that it cannot be undone.
     pub(super) fn plan_history(&self, intent: &Intent) -> Plan {
@@ -347,6 +363,19 @@ impl Controller {
                 Some(NodePath::Instrument(inst)) => {
                     let old = self.model.instruments[inst].range.map(|(low, high)| NoteRange { low, high });
                     step("set the keys".to_string(), Intent::SetRange { node: *node, range: old }, None)
+                }
+                _ => Plan::Nothing,
+            },
+            // (A node that is neither a lane nor a group is refused, and what is as it is asked to be changes nothing: no step is kept for either.)
+            Intent::SetMute { node, muted } => match self.lane_or_group_flags(*node) {
+                Some((name, was, _)) if was != *muted => {
+                    step(format!("{} {name}", if *muted { "mute" } else { "unmute" }), Intent::SetMute { node: *node, muted: was }, None)
+                }
+                _ => Plan::Nothing,
+            },
+            Intent::SetSolo { node, solo } => match self.lane_or_group_flags(*node) {
+                Some((name, _, was)) if was != *solo => {
+                    step(format!("{} {name}", if *solo { "solo" } else { "unsolo" }), Intent::SetSolo { node: *node, solo: was }, None)
                 }
                 _ => Plan::Nothing,
             },
@@ -1119,6 +1148,100 @@ rate = 3.0
         let undone = ctl.undo().unwrap();
         assert!(undone.restructured, "the second of them did");
         assert_eq!(undone.events.len(), 1, "and the first did not");
+    }
+
+    #[test]
+    fn a_mute_and_a_solo_are_steps_in_the_words_of_what_they_do_and_undo_puts_the_flag_back_in_the_model_and_the_engine() {
+        let (engine, mut ctl, clock) = controller();
+        let (instrument, group) = (lane(&ctl), node(&ctl, NodePath::Group(0)));
+        let step = |ctl: &mut Controller, intent: Intent| {
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(intent).unwrap();
+        };
+        step(&mut ctl, Intent::SetMute { node: instrument, muted: true });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute the lane of Oscillator"));
+        step(&mut ctl, Intent::SetSolo { node: instrument, solo: true });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("solo the lane of Oscillator"));
+        step(&mut ctl, Intent::SetMute { node: group, muted: true });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute Pad"));
+        step(&mut ctl, Intent::SetSolo { node: group, solo: true });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("solo Pad"));
+        step(&mut ctl, Intent::SetMute { node: instrument, muted: false });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("unmute the lane of Oscillator"));
+        step(&mut ctl, Intent::SetSolo { node: group, solo: false });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("unsolo Pad"));
+        sent(&engine);
+
+        // Undo puts each back as it was, in the model and in the engine, the last first.
+        ctl.undo().unwrap();
+        assert!(ctl.model.groups[0].solo);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("unsolo Pad"));
+        ctl.undo().unwrap();
+        assert!(ctl.model.instruments[0].muted);
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!((ctl.model.instruments[0].muted, ctl.model.instruments[0].solo, ctl.model.groups[0].muted, ctl.model.groups[0].solo), (false, false, false, false));
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetGroupSolo group=0 solo=true",
+                "SetMute inst=0 muted=true",
+                "SetGroupSolo group=0 solo=false",
+                "SetGroupMute group=0 muted=false",
+                "SetSolo inst=0 solo=false",
+                "SetMute inst=0 muted=false",
+            ]
+        );
+        ctl.redo().unwrap();
+        assert!(ctl.model.instruments[0].muted);
+    }
+
+    #[test]
+    fn a_lane_that_has_no_instrument_is_muted_in_the_words_of_an_empty_lane() {
+        let (_engine, mut ctl, _clock) = controller();
+        ctl.model.instruments[1].instrument = None;
+        let empty = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::SetMute { node: empty, muted: true }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute an empty lane"));
+        ctl.apply(Intent::SetSolo { node: empty, solo: true }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("solo an empty lane"));
+    }
+
+    #[test]
+    fn two_toggles_of_one_lane_in_a_moment_are_two_steps_and_a_mute_that_changes_nothing_keeps_none() {
+        let (_engine, mut ctl, _clock) = controller();
+        let (instrument, empty) = (lane(&ctl), node(&ctl, NodePath::Instrument(1)));
+        ctl.apply(Intent::SetMute { node: empty, muted: true }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute the lane of Oscillator"));
+        // (Both are in the same moment: a toggle is not merged with the one before it, which would leave a step that does nothing.)
+        ctl.apply(Intent::SetMute { node: instrument, muted: true }).unwrap();
+        ctl.apply(Intent::SetMute { node: instrument, muted: false }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("unmute the lane of Oscillator"));
+        ctl.undo().unwrap();
+        assert!(ctl.model.instruments[0].muted, "the unmute alone");
+        ctl.undo().unwrap();
+        assert!(!ctl.model.instruments[0].muted, "and the mute alone");
+        assert!(ctl.model.instruments[1].muted);
+        // Muting what is muted is told and changes nothing, so it keeps no step.
+        ctl.apply(Intent::SetMute { node: empty, muted: true }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute the lane of Oscillator"));
+        // (Nor does a solo that is asked not to be what it is not.)
+        ctl.apply(Intent::SetSolo { node: empty, solo: false }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute the lane of Oscillator"));
+        ctl.undo().unwrap();
+        assert!(!ctl.model.instruments[1].muted, "the step that is there is the first mute of the lane, and not a second");
+        assert_eq!(undo_label(&ctl), None);
+    }
+
+    #[test]
+    fn a_mute_that_is_refused_leaves_no_step() {
+        let (_engine, mut ctl, _clock) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        assert!(ctl.apply(Intent::SetMute { node: reverb, muted: true }).is_err());
+        assert!(ctl.apply(Intent::SetSolo { node: NodeId::MASTER, solo: true }).is_err());
+        assert_eq!(undo_label(&ctl), None);
     }
 
     #[test]
@@ -3346,6 +3469,30 @@ plugin = "builtin:reverb"
     /// A group of two lanes (the first and the third) with a reverb on its bus, whose modulator has cables to the first member's detune, to the second member's filter and its
     /// modulator's rate, and to the bus; the first lane has a filter and a modulator that drives it and its own volume; the second, in no group, a reverb, a filter and an
     /// envelope that drives the filter; the third a filter and a modulator; and a fourth lane has no instrument, a reverb and a modulator that drives it.
+    /// Two groups, one muted and one soloed, and lanes that are muted, soloed, both and neither, in the groups and out of them.
+    const MUTED_AND_SOLOED: &str = r#"
+[[group]]
+name = "Pad"
+mute = true
+[[group]]
+solo = true
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+mute = true
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+solo = true
+[[instrument]]
+plugin = "builtin:osc"
+mute = true
+solo = true
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
     const LANES: &str = r#"
 [[group]]
 name = "Pad"
@@ -3471,6 +3618,7 @@ depth = 0.6
     #[test]
     fn every_lane_of_every_session_is_put_back_by_undo_as_the_very_lane_in_the_model_the_picture_the_file_and_on_the_audio_thread() {
         let sessions = [
+            ("MUTED_AND_SOLOED", MUTED_AND_SOLOED),
             ("LANES", LANES),
             ("SESSION", SESSION),
             ("EFFECTS", EFFECTS),
@@ -3813,6 +3961,7 @@ plugin = "builtin:osc"
     #[test]
     fn every_group_of_every_session_is_put_back_by_undo_as_the_very_group_in_the_model_the_picture_the_file_and_on_the_audio_thread() {
         let sessions = [
+            ("MUTED_AND_SOLOED", MUTED_AND_SOLOED),
             ("GROUPS_AMONG_LANES", GROUPS_AMONG_LANES),
             ("LANES", LANES),
             ("SESSION", SESSION),
@@ -4625,6 +4774,21 @@ size = 0.5
         names.extend(n_of(4, undo));
         names.extend(n_of(4, redo));
         scripts.push(("the name of a group is put back, and a group that had none has its default again", names));
+        let mut flags = vec![
+            Op::Do(Intent::SetMute { node: lane0, muted: true }),
+            Op::Do(Intent::SetSolo { node: lane0, solo: true }),
+            Op::Do(Intent::SetMute { node: g0, muted: true }),
+            Op::Do(Intent::SetSolo { node: g1, solo: true }),
+            // (What changes nothing keeps no step, a node that is neither a lane nor a group is refused, and the master is not found.)
+            Op::Do(Intent::SetMute { node: g0, muted: true }),
+            Op::Do(Intent::SetMute { node: reverb, muted: true }),
+            Op::Do(Intent::SetSolo { node: NodeId::MASTER, solo: true }),
+            Op::Do(Intent::SetMute { node: lane0, muted: false }),
+            Op::Do(Intent::SetSolo { node: g1, solo: false }),
+        ];
+        flags.extend(n_of(6, undo));
+        flags.extend(n_of(6, redo));
+        scripts.push(("a mute and a solo are steps in the words of the lane or the group, and what changes nothing is none", flags));
         let mut piano = vec![
             Op::Do(Intent::SetScale { scale: "F# dorian".to_string() }),
             pause(),

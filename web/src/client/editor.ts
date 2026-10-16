@@ -46,6 +46,8 @@ const DOING: Record<Intent["type"], string> = {
   addInstrument: "add an instrument",
   replaceInstrument: "change the instrument of a lane",
   setRange: "set the keys of a lane",
+  setMute: "mute or unmute a lane or a group",
+  setSolo: "solo or unsolo a lane or a group",
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
   setBpm: "set the tempo",
@@ -177,6 +179,16 @@ export class Editor {
    */
   setRange(node: NodeId, range: NoteRange | null): Promise<boolean> {
     return this.#attempt(`set the keys of ${this.#name(node)} to ${rangeLabel(range)}`, { type: "setRange", node, range });
+  }
+
+  /** Mute or unmute the lane or group `node`: it is never heard while it is muted, whatever is soloed. True if it was done (the page says why if it was not). */
+  setMute(node: NodeId, muted: boolean): Promise<boolean> {
+    return this.#attempt(`${muted ? "mute" : "unmute"} ${this.#name(node)}`, { type: "setMute", node, muted });
+  }
+
+  /** Solo or unsolo the lane or group `node`: while anything is soloed only what is soloed is heard. True if it was done (the page says why if it was not). */
+  setSolo(node: NodeId, solo: boolean): Promise<boolean> {
+    return this.#attempt(`${solo ? "solo" : "unsolo"} ${this.#name(node)}`, { type: "setSolo", node, solo });
   }
 
   /**

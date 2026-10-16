@@ -227,6 +227,12 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
   return undefined;
 }
 
+/** What a lane or a group is called in the words of a step: "the lane of Oscillator", "an empty lane", or the group's name. As `lane_words` of the controller. */
+function laneOrGroupWords(node: Extract<Node, { kind: "instrument" | "group" }>): string {
+  if (node.kind === "group") return node.name;
+  return node.plugin ? `the lane of ${node.name}` : "an empty lane";
+}
+
 /**
  * What `intent` is to the history, read from the session before it is applied: the step that puts back what it will change (so it is the value it
  * will overwrite that is read), or that it cannot be undone, or that it is no change. As `plan_history` of the controller.
@@ -274,6 +280,17 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const node = nodeOf(intent.node);
       if (node?.kind !== "instrument") return "nothing";
       return step("set the keys", { type: "setRange", node: intent.node, range: node.range }, null);
+    }
+    // (A node that is neither a lane nor a group is refused, and what is as it is asked to be changes nothing: no step is kept for either.)
+    case "setMute": {
+      const node = nodeOf(intent.node);
+      if ((node?.kind !== "instrument" && node?.kind !== "group") || node.muted === intent.muted) return "nothing";
+      return step(`${intent.muted ? "mute" : "unmute"} ${laneOrGroupWords(node)}`, { type: "setMute", node: intent.node, muted: node.muted }, null);
+    }
+    case "setSolo": {
+      const node = nodeOf(intent.node);
+      if ((node?.kind !== "instrument" && node?.kind !== "group") || node.solo === intent.solo) return "nothing";
+      return step(`${intent.solo ? "solo" : "unsolo"} ${laneOrGroupWords(node)}`, { type: "setSolo", node: intent.node, solo: node.solo }, null);
     }
     case "setNodeUi": {
       const node = nodeOf(intent.node);
@@ -357,7 +374,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // comes back with them, at its place among the lanes and in its group (the controller's `Inverse::Lane`). None of those cables is on a cycle of cables that drive each other's
       // depths: a cable drives one thing, and those of its group drive a place in the lane, so the ones that drive their depths are a tree of drivers. (A lane with no instrument
       // is "an empty lane".)
-      if (node?.kind === "instrument") return { removed: { label: `remove ${node.plugin === null ? "an empty lane" : `the lane of ${node.name}`}`, intent, at: now } };
+      if (node?.kind === "instrument") return { removed: { label: `remove ${laneOrGroupWords(node)}`, intent, at: now } };
       // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them, at its place among the groups and with its members put in
       // it again (the controller's `Inverse::Group`). The cables of its modulators, and those that drive the depth of any of them, are checked for cables that drive each other's depths,
       // which are not put back (`RemovedCable::still_driven`), as for a modulator.
@@ -366,7 +383,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
         const parentOf = new Map(nodes.map((n) => [n.id, n.parent]));
         const own = edges.flatMap((e) => (isModulation(e) && parentOf.get(e.from.node) === node.id ? [e.id] : []));
         if (drivesRoundToItself(edges, cablesThatGo(edges, own))) return "barrier";
-        return { removed: { label: `remove ${node.name}`, intent, at: now } };
+        return { removed: { label: `remove ${laneOrGroupWords(node)}`, intent, at: now } };
       }
       if (node?.kind !== "modulator") return node ? "barrier" : "nothing";
       // The cables that go with it: its own, those that drive its settings and those that drive the depth of any of them (`removeNodeOutcome`).

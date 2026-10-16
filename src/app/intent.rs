@@ -99,6 +99,15 @@ pub enum Intent {
     /// 0 to 127, and the low one is not above the high one. Refused, with nothing changed, for a node that is not
     /// a lane and for a range that is not a range of notes.
     SetRange { node: NodeId, range: Option<NoteRange> },
+    /// Mute or unmute a lane or a group (the TUI's `M`, the page's M button): `node` is the node of the lane (its instrument's, which an empty lane has
+    /// too) or of the group. A muted lane or group is never heard, and a mute wins over a solo; its notes, modulators and pattern go on (and a muted group's
+    /// members and bus effects), so that what is heard when it is brought back is where it would be. It is let go of, and brought back, over one buffer.
+    /// Saved with the session (`mute = true`). Refused, with nothing changed, for a node that is neither a lane nor a group.
+    SetMute { node: NodeId, muted: bool },
+    /// Solo or unsolo a lane or a group (the TUI's `S`, the page's S button): while anything is soloed only what is soloed is heard, with the group a soloed
+    /// lane is in (its bus is heard for it) and every member of a soloed group. Saved with the session (`solo = true`). Refused, with nothing changed, for a node
+    /// that is neither a lane nor a group.
+    SetSolo { node: NodeId, solo: bool },
     /// Set the scale of the piano (the Piano tab's): `scale` is a root and a kind of scale as the session file
     /// says it, `C major` or `F# dorian`, where the root may be a sharp or a flat, and the name of the kind
     /// short or long, in any case. The piano colours the notes of the scale, and drops the others when it is
@@ -405,6 +414,10 @@ pub enum Event {
     PresetLoaded { node: NodeId, preset: String, values: Vec<ParamValue> },
     /// A lane now takes the notes of `range`, or every note if it is `None`.
     RangeSet { node: NodeId, range: Option<NoteRange> },
+    /// A lane or a group is now muted, or is not.
+    MuteSet { node: NodeId, muted: bool },
+    /// A lane or a group is now soloed, or is not.
+    SoloSet { node: NodeId, solo: bool },
     /// The piano's scale is now this: `scale` as the session file says it (`F# dorian`), and what a client
     /// needs to draw it without knowing any scale: its `root` (a pitch class, 0 C to 11 B), the short name of
     /// its `kind` (`dorian`, `harm minor`) and the pitch classes of its `notes`, lowest first.
@@ -616,6 +629,8 @@ mod tests {
                 json!({"type": "setRange", "node": 2, "range": {"low": 36, "high": 84}}),
             ),
             (Intent::SetRange { node: NodeId(2), range: None }, json!({"type": "setRange", "node": 2, "range": null})),
+            (Intent::SetMute { node: NodeId(2), muted: true }, json!({"type": "setMute", "node": 2, "muted": true})),
+            (Intent::SetSolo { node: NodeId(4), solo: false }, json!({"type": "setSolo", "node": 4, "solo": false})),
             (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
             (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
             (Intent::SetBpm { bpm: 96.5 }, json!({"type": "setBpm", "bpm": 96.5})),
@@ -678,6 +693,8 @@ mod tests {
                 json!({"type": "rangeSet", "node": 2, "range": {"low": 36, "high": 84}}),
             ),
             (Event::RangeSet { node: NodeId(2), range: None }, json!({"type": "rangeSet", "node": 2, "range": null})),
+            (Event::MuteSet { node: NodeId(2), muted: true }, json!({"type": "muteSet", "node": 2, "muted": true})),
+            (Event::SoloSet { node: NodeId(4), solo: false }, json!({"type": "soloSet", "node": 4, "solo": false})),
             (
                 Event::ScaleSet { scale: "F# dorian".to_string(), root: 6, kind: "dorian".to_string(), notes: vec![1, 3, 4, 6, 8, 9, 11] },
                 json!({"type": "scaleSet", "scale": "F# dorian", "root": 6, "kind": "dorian", "notes": [1, 3, 4, 6, 8, 9, 11]}),

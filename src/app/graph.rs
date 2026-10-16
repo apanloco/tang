@@ -62,15 +62,15 @@ pub struct Node {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum NodeKind {
     /// An instrument lane: the instrument plugin (null while the lane is empty),
-    /// the key range it answers to, its host-side output volume and its pattern (null while it has none).
-    Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, pattern: Option<PatternInfo> },
+    /// the key range it answers to, its host-side output volume, whether it is muted or soloed and its pattern (null while it has none).
+    Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, muted: bool, solo: bool, pattern: Option<PatternInfo> },
     /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix.
     Effect { plugin: Plugin, mix: f32 },
     /// A modulator, lane-scoped or group-scoped. What it drives are its modulation
     /// edges.
     Modulator { source: ModulatorSource },
-    /// A submix group: its volume and stereo balance.
-    Group { volume: f32, pan: f32 },
+    /// A submix group: its volume and stereo balance, and whether it is muted or soloed.
+    Group { volume: f32, pan: f32, muted: bool, solo: bool },
     /// The master mix.
     Master,
 }
@@ -302,7 +302,7 @@ impl SessionModel {
                 parent: None,
                 name: group.display_name(g),
                 ui: None,
-                kind: NodeKind::Group { volume: group.volume, pan: group.pan },
+                kind: NodeKind::Group { volume: group.volume, pan: group.pan, muted: group.muted, solo: group.solo },
             });
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
             nodes.extend(group.modulators.iter().map(|m| modulator_node(m, group.node)));
@@ -324,6 +324,8 @@ impl SessionModel {
                     range: lane.range.map(|(low, high)| NoteRange { low, high }),
                     transpose: lane.transpose,
                     volume: lane.volume,
+                    muted: lane.muted,
+                    solo: lane.solo,
                     pattern: lane.pattern.as_ref().map(PatternState::info),
                 },
             });
@@ -769,8 +771,20 @@ plugin = "builtin:osc"
             [(pad, None), (bus, Some(pad)), (lane0, Some(pad)), (filter, Some(lane0)), (lane1, None), (NodeId::MASTER, None)]
         );
         assert_eq!(node(&graph, pad).name, "Pad");
-        assert_eq!(node(&graph, pad).kind, NodeKind::Group { volume: 0.8, pan: -0.25 });
+        assert_eq!(node(&graph, pad).kind, NodeKind::Group { volume: 0.8, pan: -0.25, muted: false, solo: false });
         assert!(matches!(&node(&graph, bus).kind, NodeKind::Effect { mix, .. } if *mix == 0.6));
+    }
+
+    #[test]
+    fn a_lane_and_a_group_say_whether_they_are_muted_or_soloed() {
+        let model = load("[[group]]\nsolo = true\n[[instrument]]\nplugin = \"builtin:osc\"\nmute = true\ngroup = 0\n[[instrument]]\nplugin = \"builtin:osc\"\nsolo = true\nmute = true\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let graph = model.graph();
+        let flags = |id: NodeId| match &node(&graph, id).kind {
+            NodeKind::Instrument { muted, solo, .. } | NodeKind::Group { muted, solo, .. } => (*muted, *solo),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(flags(model.groups[0].node), (false, true));
+        assert_eq!(model.instruments.iter().map(|lane| flags(lane.node)).collect::<Vec<_>>(), [(true, false), (true, true), (false, false)]);
     }
 
     #[test]
@@ -1580,12 +1594,15 @@ depth = 0.2
         assert_eq!(serde_json::to_value(MidiControl::Velocity).unwrap(), json!({"type": "velocity"}));
         assert_eq!(serde_json::to_value(MidiControl::Key).unwrap(), json!({"type": "key"}));
         assert_eq!(
-            serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5, pattern: None })
+            serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5, muted: true, solo: false, pattern: None })
                 .unwrap(),
-            json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5, "pattern": null})
+            json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5, "muted": true, "solo": false, "pattern": null})
         );
         assert_eq!(serde_json::to_value(NodeKind::Master).unwrap(), json!({"kind": "master"}));
-        assert_eq!(serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0 }).unwrap(), json!({"kind": "group", "volume": 1.0, "pan": 0.0}));
+        assert_eq!(
+            serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0, muted: false, solo: true }).unwrap(),
+            json!({"kind": "group", "volume": 1.0, "pan": 0.0, "muted": false, "solo": true})
+        );
     }
 
     #[test]

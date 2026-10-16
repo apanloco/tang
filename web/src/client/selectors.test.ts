@@ -64,7 +64,7 @@ describe("finding what a view shows", () => {
 
   test("a group's volume and pan", () => {
     const grouped = structuredClone(tracerSnapshot);
-    grouped.graph.nodes.push({ id: 77, parent: null, name: "Group 1", kind: "group", volume: 0.8, pan: -0.25 });
+    grouped.graph.nodes.push({ id: 77, parent: null, name: "Group 1", kind: "group", volume: 0.8, pan: -0.25, muted: false, solo: false });
     const withGroup = stateOf(grouped);
     expect(gainOf(withGroup, 77, "groupVolume")).toBeCloseTo(0.8, 6);
     expect(gainOf(withGroup, 77, "groupPan")).toBeCloseTo(-0.25, 6);

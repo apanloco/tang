@@ -71,6 +71,10 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
     }
     case "rangeSet":
       return node.kind === "instrument" ? { ...node, range: event.range } : `node ${node.id} is not a lane`;
+    case "muteSet":
+      return node.kind === "instrument" || node.kind === "group" ? { ...node, muted: event.muted } : `node ${node.id} is neither a lane nor a group`;
+    case "soloSet":
+      return node.kind === "instrument" || node.kind === "group" ? { ...node, solo: event.solo } : `node ${node.id} is neither a lane nor a group`;
     case "patternSet":
       return node.kind === "instrument" ? { ...node, pattern: event.pattern } : `node ${node.id} is not a lane`;
     case "nodeUiSet":

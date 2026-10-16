@@ -70,6 +70,8 @@ impl Controller {
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
+            Intent::SetMute { node, muted } => Done::Event(self.set_mute(node, muted)?),
+            Intent::SetSolo { node, solo } => Done::Event(self.set_solo(node, solo)?),
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::SetBpm { bpm } => Done::Event(self.set_bpm(bpm)?),
@@ -315,6 +317,47 @@ impl Controller {
         self.model.instruments[inst].range = range;
         let _ = self.cmd_tx.send(GraphCommand::SetInstrumentRange { inst, range });
         Ok(Event::RangeSet { node, range: range.map(|(low, high)| NoteRange { low, high }) })
+    }
+
+    /// The lane or the group `node` is, for what a mute or a solo is of: a lane's place or a group's, and a refusal for any other node (the master is a node of
+    /// the graph and not of the model: it is not found, as for every intent).
+    fn lane_or_group(&self, node: NodeId, what: &str) -> Result<NodePath, IntentError> {
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            path @ (NodePath::Instrument(_) | NodePath::Group(_)) => Ok(path),
+            _ => Err(invalid(format!("only a lane or a group can be {what}"))),
+        }
+    }
+
+    /// Mute or unmute a lane or a group, in the model and in the audio thread (which lets it go, or brings it back, over a buffer).
+    fn set_mute(&mut self, node: NodeId, muted: bool) -> Result<Event, IntentError> {
+        match self.lane_or_group(node, "muted")? {
+            NodePath::Instrument(inst) => {
+                self.model.instruments[inst].muted = muted;
+                let _ = self.cmd_tx.send(GraphCommand::SetMute { inst, muted });
+            }
+            NodePath::Group(group) => {
+                self.model.groups[group].muted = muted;
+                let _ = self.cmd_tx.send(GraphCommand::SetGroupMute { group, muted });
+            }
+            _ => unreachable!("`lane_or_group` says a lane or a group"),
+        }
+        Ok(Event::MuteSet { node, muted })
+    }
+
+    /// Solo or unsolo a lane or a group, in the model and in the audio thread.
+    fn set_solo(&mut self, node: NodeId, solo: bool) -> Result<Event, IntentError> {
+        match self.lane_or_group(node, "soloed")? {
+            NodePath::Instrument(inst) => {
+                self.model.instruments[inst].solo = solo;
+                let _ = self.cmd_tx.send(GraphCommand::SetSolo { inst, solo });
+            }
+            NodePath::Group(group) => {
+                self.model.groups[group].solo = solo;
+                let _ = self.cmd_tx.send(GraphCommand::SetGroupSolo { group, solo });
+            }
+            _ => unreachable!("`lane_or_group` says a lane or a group"),
+        }
+        Ok(Event::SoloSet { node, solo })
     }
 
     /// The scale of the piano, which the threads that send notes and the Piano tab read: it is nothing of the audio thread's.
@@ -1176,6 +1219,91 @@ plugin = "builtin:reverb"
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
+    }
+
+    #[test]
+    fn set_mute_mutes_a_lane_and_a_group_in_the_model_and_the_engine_and_tells_it() {
+        let (engine, mut ctl) = controller();
+        let (instrument, empty, group) = (lane(&ctl), node(&ctl, NodePath::Instrument(1)), node(&ctl, NodePath::Group(0)));
+        let applied = ctl.apply(Intent::SetMute { node: instrument, muted: true }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::MuteSet { node: instrument, muted: true }]));
+        assert_eq!((ctl.model.instruments[0].muted, ctl.model.instruments[0].solo), (true, false));
+        assert_eq!(sent(&engine), ["SetMute inst=0 muted=true"]);
+        assert!(ctl.dirty);
+
+        let applied = ctl.apply(Intent::SetMute { node: group, muted: true }).unwrap();
+        assert_eq!(applied, Applied::of(2, vec![Event::MuteSet { node: group, muted: true }]));
+        assert_eq!((ctl.model.groups[0].muted, ctl.model.groups[0].solo), (true, false));
+        assert_eq!(sent(&engine), ["SetGroupMute group=0 muted=true"]);
+
+        // A lane with no instrument can be muted, and it is that lane alone.
+        ctl.apply(Intent::SetMute { node: empty, muted: true }).unwrap();
+        assert_eq!(sent(&engine), ["SetMute inst=1 muted=true"]);
+        assert_eq!(ctl.model.instruments.iter().map(|lane| lane.muted).collect::<Vec<_>>(), [true, true]);
+
+        ctl.apply(Intent::SetMute { node: instrument, muted: false }).unwrap();
+        ctl.apply(Intent::SetMute { node: group, muted: false }).unwrap();
+        assert_eq!(sent(&engine), ["SetMute inst=0 muted=false", "SetGroupMute group=0 muted=false"]);
+        assert_eq!((ctl.model.instruments[0].muted, ctl.model.groups[0].muted), (false, false));
+    }
+
+    #[test]
+    fn set_solo_solos_a_lane_and_a_group_in_the_model_and_the_engine_and_tells_it() {
+        let (engine, mut ctl) = controller();
+        let (instrument, group) = (lane(&ctl), node(&ctl, NodePath::Group(0)));
+        let applied = ctl.apply(Intent::SetSolo { node: instrument, solo: true }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::SoloSet { node: instrument, solo: true }]));
+        assert_eq!((ctl.model.instruments[0].muted, ctl.model.instruments[0].solo), (false, true));
+        assert_eq!(sent(&engine), ["SetSolo inst=0 solo=true"]);
+        assert!(ctl.dirty);
+
+        let applied = ctl.apply(Intent::SetSolo { node: group, solo: true }).unwrap();
+        assert_eq!(applied, Applied::of(2, vec![Event::SoloSet { node: group, solo: true }]));
+        assert_eq!((ctl.model.groups[0].muted, ctl.model.groups[0].solo), (false, true));
+        assert_eq!(sent(&engine), ["SetGroupSolo group=0 solo=true"]);
+
+        ctl.apply(Intent::SetSolo { node: instrument, solo: false }).unwrap();
+        ctl.apply(Intent::SetSolo { node: group, solo: false }).unwrap();
+        assert_eq!(sent(&engine), ["SetSolo inst=0 solo=false", "SetGroupSolo group=0 solo=false"]);
+        assert_eq!((ctl.model.instruments[0].solo, ctl.model.groups[0].solo), (false, false));
+    }
+
+    #[test]
+    fn set_mute_and_set_solo_refuse_what_is_neither_a_lane_nor_a_group() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let lfo = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        let ghost = NodeId(9_999);
+        for node in [reverb, bus, lfo] {
+            assert_eq!(ctl.apply(Intent::SetMute { node, muted: true }), Err(invalid("only a lane or a group can be muted")), "{node:?}");
+            assert_eq!(ctl.apply(Intent::SetSolo { node, solo: true }), Err(invalid("only a lane or a group can be soloed")), "{node:?}");
+        }
+        // (The master is a node of the graph and not of the model, so it is not found, as it is for every intent.)
+        for node in [ghost, NodeId::MASTER] {
+            assert_eq!(ctl.apply(Intent::SetMute { node, muted: true }), Err(IntentError::NotFound(node)));
+            assert_eq!(ctl.apply(Intent::SetSolo { node, solo: true }), Err(IntentError::NotFound(node)));
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+    }
+
+    #[test]
+    fn what_is_muted_or_soloed_is_what_a_session_saves() {
+        let (_engine, mut ctl) = controller();
+        let (instrument, group) = (lane(&ctl), node(&ctl, NodePath::Group(0)));
+        ctl.apply(Intent::SetMute { node: instrument, muted: true }).unwrap();
+        ctl.apply(Intent::SetSolo { node: group, solo: true }).unwrap();
+        let saved = |ctl: &Controller| {
+            let (instruments, groups) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, None, None, None).unwrap()
+        };
+        let text = saved(&ctl);
+        assert_eq!((text.matches("mute = true").count(), text.matches("solo = true").count()), (1, 1), "{text}");
+        ctl.apply(Intent::SetMute { node: instrument, muted: false }).unwrap();
+        ctl.apply(Intent::SetSolo { node: group, solo: false }).unwrap();
+        let text = saved(&ctl);
+        assert!(!text.contains("mute") && !text.contains("solo"), "{text}");
     }
 
     fn place(ctl: &mut Controller, node: NodeId, x: f32, y: f32) -> Result<Applied, IntentError> {

@@ -441,6 +441,61 @@ describe("what a removal of a lane is to the history", () => {
   });
 });
 
+describe("what a mute or a solo is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+  const group = snapshot.graph.nodes.find((n) => n.kind === "group" && n.name === "Pad");
+  const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+  if (!lane || !group || !effect) throw new Error("the fixture has a lane, a group named Pad and an effect");
+  /** The step that a plan is, without the time it was made at. */
+  const stepMade = (made: ReturnType<typeof planOf>) => {
+    if (typeof made === "string" || !("step" in made)) throw new Error(`not a step: ${JSON.stringify(made)}`);
+    return { label: made.step.label, undo: made.step.undo, redo: made.step.redo, key: made.step.key };
+  };
+
+  test("is a step in the words of the lane or the group, that puts the flag back, and is never merged with the one before it", () => {
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: true }))).toEqual({
+      label: `mute the lane of ${lane.name}`,
+      undo: [{ type: "setMute", node: lane.id, muted: false }],
+      redo: [{ type: "setMute", node: lane.id, muted: true }],
+      key: null,
+    });
+    expect(stepMade(plan({ type: "setSolo", node: group.id, solo: true }))).toEqual({
+      label: "solo Pad",
+      undo: [{ type: "setSolo", node: group.id, solo: false }],
+      redo: [{ type: "setSolo", node: group.id, solo: true }],
+      key: null,
+    });
+  });
+
+  test("says what it undoes: a node that is muted or soloed is brought back, in the words of the other way", () => {
+    const flagged = {
+      ...snapshot,
+      graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, muted: true, solo: true } : n)) },
+    };
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: false }, flagged)).label).toBe(`unmute the lane of ${lane.name}`);
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: false }, flagged)).undo).toEqual([{ type: "setMute", node: lane.id, muted: true }]);
+    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: false }, flagged)).label).toBe(`unsolo the lane of ${lane.name}`);
+    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: false }, flagged)).undo).toEqual([{ type: "setSolo", node: lane.id, solo: true }]);
+  });
+
+  test("is in the words of a lane that has no instrument", () => {
+    const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
+    const empty = { ...snapshot, graph: { ...snapshot.graph, nodes } };
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: true }, empty)).label).toBe("mute an empty lane");
+    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: true }, empty)).label).toBe("solo an empty lane");
+  });
+
+  test("is no step when it changes nothing, or is refused", () => {
+    expect(plan({ type: "setMute", node: lane.id, muted: false })).toBe("nothing");
+    expect(plan({ type: "setSolo", node: group.id, solo: false })).toBe("nothing");
+    expect(plan({ type: "setMute", node: effect.id, muted: true })).toBe("nothing");
+    expect(plan({ type: "setSolo", node: effect.id, solo: true })).toBe("nothing");
+    expect(plan({ type: "setMute", node: 424242, muted: true })).toBe("nothing");
+  });
+});
+
 describe("what loading a preset is to the history", () => {
   const snapshot = historyFixture.snapshot;
   const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);

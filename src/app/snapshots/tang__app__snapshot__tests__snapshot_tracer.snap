@@ -58,6 +58,7 @@ expression: tracer_json()
       {
         "id": 0,
         "kind": "instrument",
+        "muted": false,
         "name": "Oscillator",
         "parent": null,
         "pattern": null,
@@ -181,6 +182,7 @@ expression: tracer_json()
           "presets": []
         },
         "range": null,
+        "solo": false,
         "transpose": 0,
         "volume": 0.1
       },
