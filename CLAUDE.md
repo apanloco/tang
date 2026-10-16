@@ -317,6 +317,12 @@ the model and the audio thread hold: TOML has `nan` and `inf`, and 64-bit floats
 when it is loaded, with the place in the error
 (`instrument[0].volume is not a finite number (NaN)`,
 `instrument[0].volume is too big for the 32-bit numbers the audio engine holds (1e39)`).
+An LFO's `rate` below 0 is refused in the same way, wherever the LFO is (a lane's, a group's, an older
+session's modulator nested in an effect): `instrument[0].modulator[0].rate is below 0 (-1): an LFO cannot go
+round backwards` (`session::reject_backwards_lfos`; the phase of such an LFO counts down from 0 and its
+shapes leave the -1 to 1 that a cable's law assumes: a saw from -3 to -1, f147). Zero is an LFO that
+stands still, a rate above the knob's 50 Hz is the file's to say, and a modulator that is not an LFO (an
+envelope, a MIDI control, a macro) has no rate that is read.
 
 ### Modulator fields
 
@@ -339,7 +345,7 @@ or sibling group modulators. See "Group modulators" above.)
 [[instrument.modulator]]
 type = "lfo"            # optional, "lfo" is the default
 waveform = "sine"       # sine, triangle, saw, square, random, smooth (default: sine)
-rate = 0.5              # Hz (default: 1.0)
+rate = 0.5              # Hz (default: 1.0; not below 0: a file with a negative rate is refused)
 
 [[instrument.modulator.target]]
 param = "cutoff"        # parameter name (resolved within `slot`'s plugin)

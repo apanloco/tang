@@ -458,10 +458,41 @@ fn reject_non_finite(table: &toml::Table) -> anyhow::Result<()> {
     table.iter().try_for_each(|(key, value)| walk(value, key))
 }
 
+impl ModulatorConfig {
+    /// Whether the loader makes an LFO of it: the types it knows that are not one are `envelope`, `midi` and `macro`, and a type that it does not know is one too.
+    pub fn is_lfo(&self) -> bool {
+        !matches!(self.mod_type.as_str(), "envelope" | "midi" | "macro")
+    }
+}
+
+/// Refuse an LFO whose rate is below 0, in a lane, in a group and in an effect of a lane (where older sessions kept a lane's modulators): the phase
+/// of one counts down from 0 towards -1 and the shapes leave the -1 to 1 that a cable's law assumes (a saw is from -3 to -1), where the knob
+/// stops at 0.01 and the controller holds to it. Zero is an LFO that stands still, and a rate above the knob's end (50 Hz) is the file's to say.
+/// The error says where it is, as that of a number that is not one does.
+fn reject_backwards_lfos(raw: &SessionRaw) -> anyhow::Result<()> {
+    fn check(modulators: &[ModulatorConfig], place: &str) -> anyhow::Result<()> {
+        match modulators.iter().position(|m| m.is_lfo() && m.rate < 0.0) {
+            Some(i) => anyhow::bail!("{place}.modulator[{i}].rate is below 0 ({}): an LFO cannot go round backwards", modulators[i].rate),
+            None => Ok(()),
+        }
+    }
+    for (g, group) in raw.groups.iter().enumerate() {
+        check(&group.modulators, &format!("group[{g}]"))?;
+    }
+    for (i, slot) in raw.instruments.iter().enumerate() {
+        check(&slot.modulators, &format!("instrument[{i}]"))?;
+        for (e, effect) in slot.effects.iter().enumerate() {
+            check(&effect.modulators, &format!("instrument[{i}].effect[{e}]"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Parse session TOML text (the body of `load`, usable without a file).
 pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
     reject_non_finite(&content.parse::<toml::Table>()?)?;
     let raw: SessionRaw = toml::from_str(content)?;
+    reject_backwards_lfos(&raw)?;
     let groups: Vec<GroupConfig> = raw
         .groups
         .into_iter()
@@ -1678,6 +1709,48 @@ mod tests {
         // The largest the audio thread holds is as good as any other number, and so is a very small one.
         assert!(parse(&format!("{osc}volume = 3.4e38\n")).is_ok());
         assert!(parse(&format!("{osc}volume = 1e-50\n")).is_ok());
+    }
+
+    #[test]
+    fn an_lfo_with_a_rate_below_zero_is_refused_wherever_it_is_and_the_error_says_where() {
+        // A rate below 0 counts the phase down from 0 towards -1, where the shapes go out of the -1 to 1 that a cable's law
+        // assumes (a saw from -3 to -1). The knob stops at 0.01 and the controller holds to it: a hand-written file is told.
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        let reverb = "[[instrument.effect]]\nplugin = \"builtin:reverb\"\n";
+        for (text, place, rate) in [
+            (format!("{osc}[[instrument.modulator]]\nrate = -1.0\n"), "instrument[0].modulator[0].rate", "-1"),
+            (format!("{osc}[[instrument.modulator]]\ntype = \"lfo\"\nwaveform = \"saw\"\nrate = -0.5\n"), "instrument[0].modulator[0].rate", "-0.5"),
+            (format!("{osc}[[instrument.modulator]]\n[[instrument.modulator]]\nrate = -1e-3\n"), "instrument[0].modulator[1].rate", "-0.001"),
+            (format!("{osc}{osc}[[instrument.modulator]]\nrate = -2.0\n"), "instrument[1].modulator[0].rate", "-2"),
+            // (The loader makes an LFO of a type it does not know, too.)
+            (format!("{osc}[[instrument.modulator]]\ntype = \"wobble\"\nrate = -2.0\n"), "instrument[0].modulator[0].rate", "-2"),
+            (format!("[[group]]\n[[group.modulator]]\nrate = -2.5\n{osc}"), "group[0].modulator[0].rate", "-2.5"),
+            (format!("[[group]]\n[[group]]\n[[group.modulator]]\n[[group.modulator]]\nrate = -4.0\n{osc}"), "group[1].modulator[1].rate", "-4"),
+            // Older sessions nested the modulators of an effect in it, and the loader moves them into the lane.
+            (format!("{osc}{reverb}[[instrument.effect.modulator]]\nrate = -3.0\n"), "instrument[0].effect[0].modulator[0].rate", "-3"),
+            (format!("{osc}{reverb}{reverb}[[instrument.effect.modulator]]\n[[instrument.effect.modulator]]\nrate = -3.5\n"), "instrument[0].effect[1].modulator[1].rate", "-3.5"),
+        ] {
+            let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert_eq!(error, format!("{place} is below 0 ({rate}): an LFO cannot go round backwards"), "for:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_rate_that_is_no_rate_below_zero_is_not_refused() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        // Zero is an LFO that stands still, 100 Hz is above the knob's end and may be wanted, and a rate on a modulator
+        // that is not an LFO is not read.
+        for modulator in [
+            "rate = 0.0",
+            "rate = -0.0",
+            "rate = 100.0",
+            "type = \"envelope\"\nrate = -1.0",
+            "type = \"midi\"\nrate = -1.0",
+            "type = \"macro\"\nrate = -1.0",
+        ] {
+            let text = format!("{osc}[[instrument.modulator]]\n{modulator}\n");
+            assert!(parse(&text).is_ok(), "refused:\n{text}");
+        }
     }
 
     #[test]
