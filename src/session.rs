@@ -110,6 +110,10 @@ pub struct GroupConfig {
     pub name: Option<String>,
     pub volume: f32,
     pub pan: f32,
+    /// Muted (`mute = true`): the bus is never heard.
+    pub muted: bool,
+    /// Soloed (`solo = true`): while anything is soloed, only what is soloed is heard.
+    pub solo: bool,
     pub effects: Vec<EffectConfig>,
     /// Group-scoped modulators. Their targets address member instruments
     /// (`member` + optional `slot`), bus effects (`bus`), or sibling
@@ -134,6 +138,10 @@ pub struct PianoConfig {
 pub struct InstrumentSlotConfig {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
+    /// Muted (`mute = true`): the lane is never heard; its notes, modulators and pattern go on.
+    pub muted: bool,
+    /// Soloed (`solo = true`): while anything is soloed, only what is soloed is heard.
+    pub solo: bool,
     pub instrument: Option<PluginConfig>,
     pub effects: Vec<EffectConfig>,
     /// The lane's modulators (their targets carry the chain slot they land on). They belong to the lane, not
@@ -318,6 +326,10 @@ struct GroupRaw {
     volume: f64,
     #[serde(default)]
     pan: f64,
+    #[serde(default)]
+    mute: bool,
+    #[serde(default)]
+    solo: bool,
     #[serde(default, rename = "effect")]
     effects: Vec<EffectConfig>,
     #[serde(default, rename = "modulator")]
@@ -351,6 +363,10 @@ struct InstrumentSlotRaw {
     transpose: i8,
     #[serde(default)]
     group: Option<usize>,
+    #[serde(default)]
+    mute: bool,
+    #[serde(default)]
+    solo: bool,
     #[serde(default, rename = "effect")]
     effects: Vec<EffectConfig>,
     #[serde(default)]
@@ -500,6 +516,8 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             name: g.name,
             volume: g.volume as f32,
             pan: (g.pan as f32).clamp(-1.0, 1.0),
+            muted: g.mute,
+            solo: g.solo,
             effects: g.effects,
             modulators: g.modulators,
             ui: g.ui,
@@ -523,6 +541,8 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
         instruments.push(InstrumentSlotConfig {
             range,
             transpose: slot.transpose,
+            muted: slot.mute,
+            solo: slot.solo,
             instrument,
             effects: slot.effects,
             modulators: slot.modulators,
@@ -737,6 +757,8 @@ pub fn apply_preset(plugin: &mut Box<dyn Plugin>, preset_ref: &str) {
 pub struct SaveInstrumentSlot {
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
+    pub muted: bool,
+    pub solo: bool,
     /// Lane-scoped modulators (targets carry their chain slot).
     pub modulators: Vec<SaveModulator>,
     pub instrument: Option<SaveInstrument>,
@@ -753,6 +775,8 @@ pub struct SaveGroup {
     pub name: Option<String>,
     pub volume: f32,
     pub pan: f32,
+    pub muted: bool,
+    pub solo: bool,
     pub effects: Vec<SaveEffect>,
     /// Group-scoped modulators (targets address members / bus effects).
     pub modulators: Vec<SaveModulator>,
@@ -877,6 +901,11 @@ struct GroupOut {
     volume: f32,
     #[serde(skip_serializing_if = "is_default_pan_f32", serialize_with = "f32_clean")]
     pan: f32,
+    /// Only written when on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    mute: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    solo: bool,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
@@ -942,6 +971,11 @@ struct InstrumentSlotOut {
     transpose: i8,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<usize>,
+    /// Only written when on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    mute: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    solo: bool,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1270,6 +1304,8 @@ pub fn to_toml(
                 name: g.name.clone(),
                 volume: g.volume,
                 pan: g.pan,
+                mute: g.muted,
+                solo: g.solo,
                 effects: g.effects.iter().map(effect_to_out).collect(),
                 modulators: mods_to_out(&g.modulators),
                 ui: g.ui.map(NodeUiOut::from),
@@ -1322,6 +1358,8 @@ pub fn to_toml(
                     range: slot.range.map(format_range),
                     transpose: slot.transpose,
                     group: slot.group,
+                    mute: slot.muted,
+                    solo: slot.solo,
                     effects: slot.effects.iter().map(effect_to_out).collect(),
                     pattern: slot.pattern.as_ref().map(|p| {
                         PatternOut {
@@ -1754,6 +1792,32 @@ mod tests {
     }
 
     #[test]
+    fn mute_and_solo_are_read_from_a_lane_and_a_group_and_are_off_when_a_file_has_none() {
+        let config = parse(
+            "[[group]]\nmute = true\n[[group]]\nsolo = true\n[[group]]\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nmute = true\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nsolo = true\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.instruments.iter().map(|lane| (lane.muted, lane.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (false, false)]);
+        assert_eq!(config.groups.iter().map(|group| (group.muted, group.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (false, false)]);
+    }
+
+    #[test]
+    fn mute_and_solo_are_written_by_to_toml_only_when_on() {
+        let lane = |muted: bool, solo: bool| SaveInstrumentSlot { muted, solo, ..placed_lane(None) };
+        let group = |muted: bool, solo: bool| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted, solo, effects: vec![], modulators: vec![], ui: None };
+        let text = to_toml(&[lane(true, false), lane(false, true), lane(true, true), lane(false, false)], &[group(true, false), group(false, true), group(false, false)], None, None, None).unwrap();
+        let config = parse(&text).unwrap();
+        assert_eq!(config.instruments.iter().map(|l| (l.muted, l.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (true, true), (false, false)]);
+        assert_eq!(config.groups.iter().map(|g| (g.muted, g.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (false, false)]);
+        assert_eq!(text.matches("mute = true").count(), 3, "{text}");
+        assert_eq!(text.matches("solo = true").count(), 3, "{text}");
+        assert!(!text.contains("false"), "nothing that is off is written: {text}");
+    }
+
+    #[test]
     fn a_word_that_looks_like_a_number_that_is_not_one_is_only_a_word() {
         let config = parse("[[instrument]]\nplugin = \"builtin:osc\"\npreset = \"nan\"\nvolume = 1e2\n").unwrap();
         assert_eq!(config.instruments[0].instrument.as_ref().map(|i| (i.preset.as_deref(), i.volume)), Some((Some("nan"), 100.0)));
@@ -1853,6 +1917,8 @@ range = "C4-C8"
 
         let instruments = vec![
             SaveInstrumentSlot {
+                muted: false,
+                solo: false,
                 range: Some((12, 59)), // C0-B3
                 transpose: 0,
                 group: None,
@@ -1878,6 +1944,8 @@ range = "C4-C8"
                 ui: None,
             },
             SaveInstrumentSlot {
+                muted: false,
+                solo: false,
                 range: None,
                 transpose: 0,
                 group: None,
@@ -1917,6 +1985,8 @@ range = "C4-C8"
         let path = dir.path().join("preset_test.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -1961,6 +2031,8 @@ range = "C4-C8"
         let path = dir.path().join("mod_test.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2015,6 +2087,8 @@ range = "C4-C8"
         let path = dir.path().join("midi_learn.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2066,6 +2140,8 @@ range = "C4-C8"
         let path = dir.path().join("aftertouch.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2116,6 +2192,8 @@ range = "C4-C8"
             ui: None,
         };
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2154,6 +2232,8 @@ range = "C4-C8"
         let path = dir.path().join("cross_slot.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2207,6 +2287,8 @@ range = "C4-C8"
         let path = dir.path().join("group.toml");
 
         let member = |group: Option<usize>| SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group,
@@ -2226,6 +2308,8 @@ range = "C4-C8"
         };
         let instruments = vec![member(Some(0)), member(Some(0)), member(None)];
         let groups = vec![SaveGroup {
+            muted: false,
+            solo: false,
             name: Some("Pad".into()),
             volume: 0.5,
             pan: -0.5,
@@ -2267,6 +2351,8 @@ range = "C4-C8"
         let path = dir.path().join("group_mod.toml");
 
         let member = SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: Some(0),
@@ -2285,6 +2371,8 @@ range = "C4-C8"
             ui: None,
         };
         let groups = vec![SaveGroup {
+            muted: false,
+            solo: false,
             name: None,
             volume: 1.0,
             pan: 0.0,
@@ -2370,6 +2458,8 @@ range = "C4-C8"
         );
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2485,6 +2575,8 @@ plugin = "builtin:osc"
     /// A lane with an effect and a modulator, each with this position, for the tests of what is written.
     fn placed_lane(ui: Option<NodeUi>) -> SaveInstrumentSlot {
         SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2500,6 +2592,8 @@ plugin = "builtin:osc"
     fn positions_are_written_on_their_nodes_as_inline_tables_the_master_in_a_table_of_its_own_and_read_back() {
         let at = |x: f32, y: f32| Some(NodeUi { x, y });
         let group = SaveGroup {
+            muted: false,
+            solo: false,
             name: None,
             volume: 1.0,
             pan: 0.0,
@@ -2566,6 +2660,8 @@ plugin = "builtin:osc"
         lane.instrument.as_mut().unwrap().pinned = vec!["sustain".into(), "detune".into()];
         lane.effects[0].pinned = vec!["cutoff".into()];
         let group = SaveGroup {
+            muted: false,
+            solo: false,
             name: None,
             volume: 1.0,
             pan: 0.0,
@@ -2629,6 +2725,8 @@ plugin = "builtin:osc"
         let path = dir.path().join("piano.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2664,6 +2762,8 @@ plugin = "builtin:osc"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tang").join("sessions").join("session-1.toml");
         let lane = SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2680,6 +2780,8 @@ plugin = "builtin:osc"
     /// A session of one lane, for the tests of what a write does to the file system.
     fn one_lane() -> Vec<SaveInstrumentSlot> {
         vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,
@@ -2759,6 +2861,8 @@ plugin = "builtin:osc"
         let path = dir.path().join("locked.toml");
         let instruments = || {
             vec![SaveInstrumentSlot {
+                muted: false,
+                solo: false,
                 range: None,
                 transpose: 0,
                 group: None,
@@ -2827,6 +2931,8 @@ plugin = "builtin:osc"
         let path = dir.path().join("pattern.toml");
 
         let instruments = vec![SaveInstrumentSlot {
+            muted: false,
+            solo: false,
             range: None,
             transpose: 0,
             group: None,

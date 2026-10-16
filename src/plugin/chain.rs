@@ -1323,6 +1323,28 @@ fn update_cross_mod_base(modulators: &mut [Modulator], target_mod_index: usize, 
     }
 }
 
+/// Scale `bufs` by a gain that goes from `from` to `to` over the buffer, in equal steps: a lane or a bus that is let go of by a mute or a solo, or
+/// brought back, is not cut or opened in one sample, which would click. Nothing at all for a gain that is 1 and stays so, which is what every lane
+/// and group is until something is muted or soloed; and a gain that is 0 and stays so puts zeros and does not multiply by them, so that what a
+/// plugin puts out that is not a number is not let through a mute (`NaN * 0` is `NaN`).
+fn fade(bufs: &mut [Vec<f32>], num_channels: usize, from: f32, to: f32) {
+    if from == 1.0 && to == 1.0 {
+        return;
+    }
+    for buf in bufs.iter_mut().take(num_channels) {
+        if from == 0.0 && to == 0.0 {
+            buf.fill(0.0);
+        } else {
+            let step = (to - from) / buf.len() as f32;
+            let mut gain = from;
+            for s in buf.iter_mut() {
+                gain += step;
+                *s *= gain;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Group-scoped modulator helpers
 // ---------------------------------------------------------------------------
@@ -2069,6 +2091,18 @@ pub enum GraphCommand {
         inst: usize,
         value: f32,
     },
+    /// Mute or unmute a lane: its output is let go of (or brought back) over one buffer, and its notes, its modulators and its pattern go on,
+    /// so that what is heard when it is brought back is where it would be.
+    SetMute {
+        inst: usize,
+        muted: bool,
+    },
+    /// Solo or unsolo a lane: while anything is soloed (a lane or a group), only what is soloed is heard, and a group is heard for a lane in it
+    /// that is soloed.
+    SetSolo {
+        inst: usize,
+        solo: bool,
+    },
     /// Set the note range for an instrument lane. None = full range.
     SetInstrumentRange {
         inst: usize,
@@ -2153,6 +2187,16 @@ pub enum GraphCommand {
     SetGroupPan {
         group: usize,
         value: f32,
+    },
+    /// Mute or unmute a group's bus: the members and the bus effects go on, and what comes out of the bus is let go of over one buffer.
+    SetGroupMute {
+        group: usize,
+        muted: bool,
+    },
+    /// Solo or unsolo a group: every member of it is heard, with its bus, while the others that are not soloed are not.
+    SetGroupSolo {
+        group: usize,
+        solo: bool,
     },
     /// Insert an effect into a group's bus chain.
     InsertGroupEffect {
@@ -3048,6 +3092,13 @@ struct InstrumentLane {
     /// is sounding a note on that channel, so one instrument's expression can't
     /// bleed into another's modulators.
     active_note_channels: [u16; 16],
+    /// Muted: never heard (a mute wins over a solo). Its notes, modulators and pattern go on.
+    muted: bool,
+    /// Soloed: while anything is, only what is soloed is heard.
+    solo: bool,
+    /// The gain the lane's output was heard at when the last buffer ended, 1 or 0: the next buffer goes from it to where the lane should be,
+    /// over the buffer, so that a mute is not a step.
+    heard_at: f32,
 }
 
 impl InstrumentLane {
@@ -3074,6 +3125,9 @@ impl InstrumentLane {
             transpose: 0,
             group: None,
             active_note_channels: [0; 16],
+            muted: false,
+            solo: false,
+            heard_at: 1.0,
         }
     }
 
@@ -3364,6 +3418,12 @@ struct Group {
     meter: Option<Meter>,
     /// The probes that listen to this group: its bus after the pan, and each of its bus effects.
     taps: Vec<Tap>,
+    /// Muted: the bus is never heard (the members and the effects go on, so that its tail is where it would be). A mute wins over a solo.
+    muted: bool,
+    /// Soloed: while anything is, only what is soloed is heard, and every member of this group.
+    solo: bool,
+    /// The gain the bus was heard at when the last buffer ended (see `InstrumentLane::heard_at`).
+    heard_at: f32,
 }
 
 impl Group {
@@ -3379,6 +3439,9 @@ impl Group {
             buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
             meter: None,
             taps: Vec::with_capacity(telemetry::PROBES),
+            muted: false,
+            solo: false,
+            heard_at: 1.0,
         }
     }
 
@@ -4029,6 +4092,16 @@ impl AudioGraph {
                         lane.volume = value;
                     }
                 }
+                GraphCommand::SetMute { inst, muted } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
+                        lane.muted = muted;
+                    }
+                }
+                GraphCommand::SetSolo { inst, solo } => {
+                    if let Some(lane) = self.get_instrument_mut(inst) {
+                        lane.solo = solo;
+                    }
+                }
                 GraphCommand::SetInstrumentRange { inst, range } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.range = range;
@@ -4244,6 +4317,16 @@ impl AudioGraph {
                 GraphCommand::SetGroupPan { group, value } => {
                     if let Some(g) = self.groups.get_mut(group) {
                         g.pan = value.clamp(-1.0, 1.0);
+                    }
+                }
+                GraphCommand::SetGroupMute { group, muted } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        g.muted = muted;
+                    }
+                }
+                GraphCommand::SetGroupSolo { group, solo } => {
+                    if let Some(g) = self.groups.get_mut(group) {
+                        g.solo = solo;
                     }
                 }
                 GraphCommand::InsertGroupEffect { group, index, effect, mix } => {
@@ -4869,6 +4952,9 @@ impl AudioGraph {
             group.begin(frames, self.num_channels);
         }
 
+        // Whether anything is soloed: then only what is soloed is heard (and what a soloed lane or group needs to be: see `heard` below).
+        let any_solo = self.instruments.iter().any(|lane| lane.solo) || self.groups.iter().any(|group| group.solo);
+
         // Group-scoped modulators: tick each group's modulators (envelopes are
         // triggered by the union of its members' ranges), resolve cross-mod,
         // then apply their targets to member-instrument and bus-effect
@@ -4934,6 +5020,11 @@ impl AudioGraph {
             }
 
             inst.process(midi_events, &mut self.lane_buf, self.num_channels, scale, self.telemetry.as_deref())?;
+            // What the lane is heard at: its own mute and solo (its group's mute is the bus's). The meter is after it, as it is after the volume.
+            let group_solo = inst.group.and_then(|g| self.groups.get(g)).is_some_and(|g| g.solo);
+            let heard = if !inst.muted && (!any_solo || inst.solo || group_solo) { 1.0 } else { 0.0 };
+            fade(&mut self.lane_buf, self.num_channels, inst.heard_at, heard);
+            inst.heard_at = heard;
             if let (Some(telemetry), Some(fall)) = (&self.telemetry, fall) {
                 publish_outputs(&inst.modulators, telemetry);
                 if let Some(meter) = inst.meter.as_mut() {
@@ -4964,8 +5055,13 @@ impl AudioGraph {
         }
 
         // Run each group's volume + effect chain, then fold into the master.
-        for group in self.groups.iter_mut() {
+        for (gi, group) in self.groups.iter_mut().enumerate() {
             group.finish(self.num_channels, frames, self.telemetry.as_deref())?;
+            // What the bus is heard at: a group that is not muted is heard when nothing is soloed, when it is, and when a lane in it is.
+            let member_solo = self.instruments.iter().any(|lane| lane.solo && lane.group == Some(gi));
+            let heard = if !group.muted && (!any_solo || group.solo || member_solo) { 1.0 } else { 0.0 };
+            fade(&mut group.accum, self.num_channels, group.heard_at, heard);
+            group.heard_at = heard;
             if let (Some(telemetry), Some(fall), Some(meter)) = (&self.telemetry, fall, group.meter.as_mut()) {
                 meter.update(telemetry, &group.accum, fall);
             }
@@ -11878,5 +11974,224 @@ mod tests {
             }
         }
         assert!(checked > 3000, "{checked}");
+    }
+
+    // -- Mute and solo --
+
+    /// Process `buffers` buffers with a note held, and say what the last one had: the left channel and then the right. A mute or a solo is let go
+    /// of over one buffer, so what a test asks about is the second.
+    fn heard_after(rig: &mut MeterRig, buffers: usize) -> Vec<f32> {
+        let mut out = make_output();
+        for _ in 0..buffers {
+            out = make_output();
+            rig.graph.process(&[note_on(60)], &mut out).unwrap();
+        }
+        out.concat()
+    }
+
+    fn all_at(samples: &[f32], expected: f32) -> bool {
+        samples.iter().all(|&s| (s - expected).abs() < 1e-6)
+    }
+
+    fn send(rig: &MeterRig, command: GraphCommand) {
+        rig.cmd_tx.send(command).unwrap();
+    }
+
+    #[test]
+    fn a_muted_lane_is_not_heard_and_the_other_lanes_are_until_it_is_brought_back() {
+        let mut rig = MeterRig::new(&[0.3, 0.5], &[None, None], 0);
+        assert!(all_at(&heard_after(&mut rig, 2), 0.8));
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        let muted = heard_after(&mut rig, 2);
+        assert!(all_at(&muted, 0.5), "{muted:?}");
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: false });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.8));
+    }
+
+    #[test]
+    fn a_mute_is_a_ramp_over_one_buffer_and_not_a_step() {
+        let mut rig = MeterRig::new(&[0.5], &[None], 0);
+        assert!(all_at(&heard_after(&mut rig, 1), 0.5));
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        let both = heard_after(&mut rig, 1);
+        let (fading, right) = both.split_at(FRAMES);
+        assert_eq!(fading, right, "both channels are let go of alike");
+        let step = 0.5 / FRAMES as f32;
+        // From just under where it was down to nothing, by equal steps.
+        assert!((fading[0] - (0.5 - step)).abs() < 1e-6, "{}", fading[0]);
+        assert!(fading.last().unwrap().abs() < 1e-6, "{}", fading.last().unwrap());
+        assert!(fading.windows(2).all(|pair| ((pair[0] - pair[1]) - step).abs() < 1e-6), "{fading:?}");
+        // And back up the same way.
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: false });
+        let both = heard_after(&mut rig, 1);
+        let rising = &both[..FRAMES];
+        assert!((rising[0] - step).abs() < 1e-6, "{}", rising[0]);
+        assert!((rising.last().unwrap() - 0.5).abs() < 1e-6, "{}", rising.last().unwrap());
+        assert!(rising.windows(2).all(|pair| ((pair[1] - pair[0]) - step).abs() < 1e-6), "{rising:?}");
+    }
+
+    #[test]
+    fn while_a_lane_is_soloed_only_the_soloed_lanes_are_heard() {
+        let mut rig = MeterRig::new(&[0.1, 0.2, 0.4], &[None, None, None], 0);
+        assert!(all_at(&heard_after(&mut rig, 2), 0.7));
+        send(&rig, GraphCommand::SetSolo { inst: 1, solo: true });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.2));
+        send(&rig, GraphCommand::SetSolo { inst: 2, solo: true });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.6), "two lanes soloed are both heard");
+        send(&rig, GraphCommand::SetSolo { inst: 1, solo: false });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.4));
+        send(&rig, GraphCommand::SetSolo { inst: 2, solo: false });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.7), "with nothing soloed everything that is not muted is heard");
+    }
+
+    #[test]
+    fn a_mute_wins_over_a_solo_and_the_lanes_that_are_not_soloed_stay_silent_all_the_same() {
+        let mut rig = MeterRig::new(&[0.1, 0.2], &[None, None], 0);
+        send(&rig, GraphCommand::SetSolo { inst: 0, solo: true });
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        let silence = heard_after(&mut rig, 2);
+        assert!(all_at(&silence, 0.0), "{silence:?}");
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: false });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.1));
+    }
+
+    #[test]
+    fn a_muted_group_is_not_heard_but_its_lanes_go_on_and_the_lanes_outside_it_are() {
+        let mut rig = MeterRig::new(&[0.1, 0.2, 0.4], &[Some(0), Some(0), None], 1);
+        assert!(all_at(&heard_after(&mut rig, 2), 0.7));
+        send(&rig, GraphCommand::SetGroupMute { group: 0, muted: true });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.4));
+        // (The lanes in it are not muted: what they put into the bus is what they would.)
+        assert!((rig.read(rig.lanes[0]).0 - 0.1).abs() < 1e-6 && (rig.read(rig.lanes[1]).0 - 0.2).abs() < 1e-6);
+        send(&rig, GraphCommand::SetGroupMute { group: 0, muted: false });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.7));
+    }
+
+    #[test]
+    fn a_soloed_lane_in_a_group_has_its_bus_heard_with_the_bus_volume_and_the_others_of_the_group_are_not() {
+        let mut rig = MeterRig::new(&[0.1, 0.2, 0.4], &[Some(0), Some(0), None], 1);
+        send(&rig, GraphCommand::SetGroupVolume { group: 0, value: 0.5 });
+        send(&rig, GraphCommand::SetSolo { inst: 0, solo: true });
+        let heard = heard_after(&mut rig, 2);
+        assert!(all_at(&heard, 0.05), "the soloed lane through its bus, and nothing else: {heard:?}");
+    }
+
+    #[test]
+    fn a_group_is_heard_for_a_lane_of_its_own_that_is_soloed_and_not_for_a_lane_of_another() {
+        // Each bus has an effect that puts out 0.1 whatever comes in, which stands for a tail that a bus keeps while its members are silent.
+        let mut rig = MeterRig::new(&[0.2, 0.4], &[Some(0), Some(1)], 2);
+        for group in 0..2 {
+            send(&rig, GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(0.1)), mix: 1.0 });
+        }
+        assert!(all_at(&heard_after(&mut rig, 2), 0.2 + 0.1 + 0.4 + 0.1));
+        send(&rig, GraphCommand::SetSolo { inst: 1, solo: true });
+        let heard = heard_after(&mut rig, 2);
+        assert!(all_at(&heard, 0.4 + 0.1), "the bus of the soloed lane, with its effect, and the other bus not at all: {heard:?}");
+    }
+
+    #[test]
+    fn a_soloed_group_has_every_member_heard_and_what_is_outside_it_is_not() {
+        let mut rig = MeterRig::new(&[0.1, 0.2, 0.4], &[Some(0), Some(0), None], 1);
+        send(&rig, GraphCommand::SetGroupVolume { group: 0, value: 0.5 });
+        send(&rig, GraphCommand::SetGroupSolo { group: 0, solo: true });
+        let heard = heard_after(&mut rig, 2);
+        assert!(all_at(&heard, 0.15), "{heard:?}");
+        // A member that is muted is not heard, soloed group or not.
+        send(&rig, GraphCommand::SetMute { inst: 1, muted: true });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.05));
+    }
+
+    #[test]
+    fn a_soloed_lane_in_a_muted_group_is_not_heard_and_a_group_that_is_soloed_and_muted_is_not_either() {
+        let mut rig = MeterRig::new(&[0.1, 0.4], &[Some(0), None], 1);
+        send(&rig, GraphCommand::SetSolo { inst: 0, solo: true });
+        send(&rig, GraphCommand::SetGroupMute { group: 0, muted: true });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.0));
+        send(&rig, GraphCommand::SetSolo { inst: 0, solo: false });
+        send(&rig, GraphCommand::SetGroupSolo { group: 0, solo: true });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.0));
+        send(&rig, GraphCommand::SetGroupMute { group: 0, muted: false });
+        assert!(all_at(&heard_after(&mut rig, 2), 0.1));
+    }
+
+    #[test]
+    fn a_muted_lane_still_gets_its_notes_and_is_where_it_would_be_when_it_is_brought_back() {
+        let mut rig = MeterRig::new(&[0.5], &[None], 0);
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        // A note that is played and let go of while the lane is muted is over when it is brought back.
+        let mut out = make_output();
+        rig.graph.process(&[note_on(60)], &mut out).unwrap();
+        rig.graph.process(&[note_off(60)], &mut out).unwrap();
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: false });
+        rig.graph.process(&[], &mut out).unwrap();
+        rig.graph.process(&[], &mut out).unwrap();
+        assert!(all_at(&out[0], 0.0), "{:?}", &out[0][..4]);
+        // One that is held is sounding, with no new note.
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        rig.graph.process(&[note_on(62)], &mut out).unwrap();
+        rig.graph.process(&[], &mut out).unwrap();
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: false });
+        rig.graph.process(&[], &mut out).unwrap();
+        rig.graph.process(&[], &mut out).unwrap();
+        assert!(all_at(&out[0], 0.5), "{:?}", &out[0][..4]);
+    }
+
+    #[test]
+    fn a_lane_is_measured_after_its_mute_so_that_it_stops_clipping_and_puts_nothing_into_its_bus() {
+        let mut rig = MeterRig::new(&[1.5], &[Some(0)], 1);
+        for _ in 0..2 {
+            rig.play();
+        }
+        let (lane, group) = (rig.lanes[0], rig.groups[0]);
+        assert_eq!((rig.read(lane).1, rig.read(group).1), (2, 2), "one clip a buffer in each while it is heard");
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        // The buffer it is let go of in has what is left of it (still over full scale at its start), and then nothing.
+        rig.play();
+        assert_eq!((rig.read(lane).1, rig.read(group).1), (3, 3));
+        rig.play();
+        rig.play();
+        assert_eq!((rig.read(lane).1, rig.read(group).1), (3, 3));
+    }
+
+    #[test]
+    fn a_group_is_measured_after_its_mute_and_its_lanes_are_not() {
+        let mut rig = MeterRig::new(&[1.5], &[Some(0)], 1);
+        for _ in 0..2 {
+            rig.play();
+        }
+        let (lane, group) = (rig.lanes[0], rig.groups[0]);
+        send(&rig, GraphCommand::SetGroupMute { group: 0, muted: true });
+        rig.play();
+        assert_eq!((rig.read(lane).1, rig.read(group).1), (3, 3), "the buffer that the bus is let go of in");
+        rig.play();
+        rig.play();
+        assert_eq!((rig.read(lane).1, rig.read(group).1), (5, 3), "the lane goes on clipping into a bus that is cut");
+    }
+
+    #[test]
+    fn a_lane_that_puts_out_what_is_not_a_number_is_silent_once_it_is_muted_and_so_is_a_group() {
+        // (`NaN * 0` is `NaN`: a mute puts zeros. The buffer it is let go of in is a ramp, and has what the plugin put in it.)
+        let mut rig = MeterRig::new(&[f32::NAN, 0.25], &[None, None], 0);
+        send(&rig, GraphCommand::SetMute { inst: 0, muted: true });
+        let heard = heard_after(&mut rig, 2);
+        assert!(all_at(&heard, 0.25), "{heard:?}");
+        let mut rig = MeterRig::new(&[f32::NAN, 0.25], &[Some(0), None], 1);
+        send(&rig, GraphCommand::SetGroupMute { group: 0, muted: true });
+        let heard = heard_after(&mut rig, 2);
+        assert!(all_at(&heard, 0.25), "{heard:?}");
+    }
+
+    #[test]
+    fn a_mute_or_a_solo_for_a_lane_or_a_group_that_is_not_there_is_ignored() {
+        let mut rig = MeterRig::new(&[0.3], &[None], 0);
+        for command in [
+            GraphCommand::SetMute { inst: 5, muted: true },
+            GraphCommand::SetSolo { inst: 5, solo: true },
+            GraphCommand::SetGroupMute { group: 0, muted: true },
+            GraphCommand::SetGroupSolo { group: 0, solo: true },
+        ] {
+            send(&rig, command);
+        }
+        assert!(all_at(&heard_after(&mut rig, 2), 0.3));
     }
 }

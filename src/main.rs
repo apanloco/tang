@@ -267,6 +267,8 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
         instruments: vec![session::InstrumentSlotConfig {
             range: None,
             transpose: 0,
+            muted: false,
+            solo: false,
             instrument: Some(session::PluginConfig {
                 plugin: "builtin:osc".into(),
                 preset: None,

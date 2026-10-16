@@ -180,6 +180,8 @@ plugin = "builtin:osc"
   - `params` — parameter overrides applied after preset (optional)
   - `group` — submix group membership: index into the top-level `[[group]]`
     list (optional, omit for ungrouped)
+  - `mute`, `solo` — muted / soloed (default: false, written only when true; see
+    "Mute and solo")
   - `[[instrument.effect]]` — zero or more effects in series
   - `[[instrument.modulator]]` — zero or more modulators (LFO or ADSR envelope)
 
@@ -216,6 +218,8 @@ group = 0               # ...and so does this one
   0.0; balance-style, applied to the bus output after the effect chain). In
   the TUI a group's parameter pane shows Volume + Pan as editable rows
   (`Enter` to focus, `Left`/`Right`/`Enter` to edit); `v` still edits volume.
+- `mute`, `solo` — muted / soloed (default: false, written only when true; see
+  "Mute and solo")
 - `[[group.effect]]` — zero or more bus effects in series (each with `mix`)
 - `[[group.modulator]]` — zero or more group-scoped modulators (see below)
 - Membership is set on the instruments via their `group` index, not listed on
@@ -294,6 +298,31 @@ depth = 0.3
   `plugin/chain.rs`, `a_lane_modulator_and_a_group_modulator_on_one_parameter_…`
   and `a_lane_control_that_is_not_bound_yet_…`). The page's ring follows it
   (`modulationsOn`, f134), and so does the mock engine's value of a parameter.
+
+### Mute and solo
+
+A lane and a group can be muted (`mute = true`) or soloed (`solo = true`), keys of its table
+beside `volume`, written only when on. In the model they are `InstrumentNode::muted` / `solo` and
+`GroupNode::muted` / `solo`; the audio thread has them from `GraphCommand::SetMute`, `SetSolo`,
+`SetGroupMute` and `SetGroupSolo`, which the loader sends for what a file turns on.
+
+- A **muted** lane or group is never heard. A mute wins over a solo: a lane that is muted and
+  soloed is silent, and (since it is soloed) it silences what is not soloed all the same. Its
+  notes, modulators and pattern go on, and a muted group's members and bus effects go on, so
+  what is heard when it is brought back is where it would be (a note that is held through the
+  mute is sounding, a reverb's tail is where it would be).
+- While **anything is soloed** (a lane or a group) only what is soloed is heard: a soloed lane,
+  a lane in a soloed group, and a group that is soloed or has a soloed lane in it (its bus is
+  heard for that lane, with its volume and effects, and its other members are not). A lane's
+  mute is its own: a lane in a muted group is not itself muted (its meter still reads); the
+  bus is cut.
+- A lane or a bus is let go of, or brought back, over one buffer by a linear ramp of its gain
+  (`fade` in `plugin/chain.rs`: 5.3 ms at 256 frames), so that it does not click. A gain that is
+  1 and stays so costs nothing, and one that is 0 and stays so puts zeros and does not multiply by
+  them, so that a plugin that puts out `NaN` is silenced by a mute. The lane's meter and the group's
+  are after it (a muted lane stops clipping); the scope taps of a node are before it (they show the
+  signal of the node, not what is heard). The lane's mute and solo go where the lane goes (a swap
+  of two lanes, undo of a removal: the lane is handed back whole).
 
 ### Plugin slot fields
 

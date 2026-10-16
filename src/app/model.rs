@@ -1088,6 +1088,10 @@ pub struct InstrumentNode {
     pub transpose: i8,
     /// Host-side output gain, applied before effects (1.0 = unity).
     pub volume: f32,
+    /// Muted: never heard (a mute wins over a solo); the lane's notes, modulators and pattern go on.
+    pub muted: bool,
+    /// Soloed: while anything is, only what is soloed is heard (and the group a soloed lane is in).
+    pub solo: bool,
     pub instrument: Option<PluginSlot>,
     pub effects: Vec<PluginSlot>,
     /// Lane-scoped modulators. Each target addresses a plugin in this chain by
@@ -1131,6 +1135,10 @@ pub struct GroupNode {
     pub volume: f32,
     /// Stereo balance pan for the group bus (-1 left … 0 center … +1 right).
     pub pan: f32,
+    /// Muted: the bus is never heard (a mute wins over a solo); the members and the bus effects go on.
+    pub muted: bool,
+    /// Soloed: while anything is, only what is soloed is heard, and every member of this group.
+    pub solo: bool,
     pub effects: Vec<PluginSlot>,
     /// Group-scoped modulators. Each target addresses a member instrument
     /// (`GroupMember`), a bus effect (`GroupBus`), or a sibling group modulator.
@@ -4336,6 +4344,8 @@ depth = 0.5
             range: None,
             transpose: 0,
             volume: 1.0,
+            muted: false,
+            solo: false,
             instrument: None,
             effects: vec![],
             modulators: vec![],

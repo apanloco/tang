@@ -24,6 +24,8 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
             name: g.name.clone(),
             volume: g.volume,
             pan: g.pan,
+            muted: g.muted,
+            solo: g.solo,
             effects: g.effects.iter().map(|fx| effect_to_save(fx, ui)).collect(),
             modulators: modulators_to_save(&g.modulators, ui),
             ui: ui.get(&g.node).copied(),
@@ -35,6 +37,8 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
         .map(|lane| SaveInstrumentSlot {
             range: lane.range,
             transpose: lane.transpose,
+            muted: lane.muted,
+            solo: lane.solo,
             group: lane.group,
             modulators: modulators_to_save(&lane.modulators, ui),
             instrument: lane.instrument.as_ref().map(|inst| SaveInstrument {
@@ -218,6 +222,31 @@ velocity = 100
     fn remapped_keys_are_written_as_inline_tables() {
         let file = saved(&load(SETTINGS).model);
         assert!(file.contains("\"G#4\" = { note = \"G4\", detune = 1.0 }"), "{file}");
+    }
+
+    #[test]
+    fn mute_and_solo_are_written_where_they_are_on_and_nowhere_else_and_come_back_when_the_file_is_loaded() {
+        let text = "[[group]]\nmute = true\n[[group]]\nsolo = true\n[[group]]\n\
+                    [[instrument]]\nplugin = \"builtin:osc\"\nsolo = true\n\
+                    [[instrument]]\nplugin = \"builtin:osc\"\nmute = true\nsolo = true\n\
+                    [[instrument]]\nplugin = \"builtin:osc\"\n";
+        let first = load(text);
+        let file = saved(&first.model);
+        assert_eq!(file.matches("mute = true").count(), 2, "{file}");
+        assert_eq!(file.matches("solo = true").count(), 3, "{file}");
+        assert!(!file.contains("mute = false") && !file.contains("solo = false"), "{file}");
+        let second = try_load(&file).unwrap_or_else(|e| panic!("the saved file does not load: {e:#}\n{file}"));
+        let state = |model: &SessionModel| {
+            (
+                model.instruments.iter().map(|lane| (lane.muted, lane.solo)).collect::<Vec<_>>(),
+                model.groups.iter().map(|group| (group.muted, group.solo)).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(state(&second.model), state(&first.model));
+        assert_eq!(state(&second.model), (vec![(false, true), (true, true), (false, false)], vec![(true, false), (false, true), (false, false)]));
+        // A session with neither is written with neither.
+        let file = saved(&load("[[instrument]]\nplugin = \"builtin:osc\"\n").model);
+        assert!(!file.contains("mute") && !file.contains("solo"), "{file}");
     }
 
     #[test]

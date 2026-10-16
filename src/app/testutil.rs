@@ -31,6 +31,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::InsertGroup { index, group, members } => format!("InsertGroup index={index} plugins={} members={members:?}", group.plugin_count()),
         C::SetGroupVolume { group, value } => format!("SetGroupVolume group={group} value={value:.3}"),
         C::SetGroupPan { group, value } => format!("SetGroupPan group={group} value={value:.3}"),
+        C::SetGroupMute { group, muted } => format!("SetGroupMute group={group} muted={muted}"),
+        C::SetGroupSolo { group, solo } => format!("SetGroupSolo group={group} solo={solo}"),
         C::SetGroupMix { group, index, value } => {
             format!("SetGroupMix group={group} fx={index} value={value:.3}")
         }
@@ -80,6 +82,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
             if keep.is_some() { " keep" } else { "" }
         ),
         C::SetVolume { inst, value } => format!("SetVolume inst={inst} value={value:.3}"),
+        C::SetMute { inst, muted } => format!("SetMute inst={inst} muted={muted}"),
+        C::SetSolo { inst, solo } => format!("SetSolo inst={inst} solo={solo}"),
         C::SetTranspose { inst, semitones } => format!("SetTranspose inst={inst} semitones={semitones}"),
         C::SetParameter { inst, slot, param_index, value } => {
             format!("SetParameter inst={inst} slot={slot} param={param_index} value={value:.3}")

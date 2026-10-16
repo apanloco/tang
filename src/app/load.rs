@@ -224,6 +224,12 @@ pub fn load_session(
         if group_config.pan.abs() > f32::EPSILON {
             send(cmd_tx, GraphCommand::SetGroupPan { group: g_idx, value: group_config.pan })?;
         }
+        if group_config.muted {
+            send(cmd_tx, GraphCommand::SetGroupMute { group: g_idx, muted: true })?;
+        }
+        if group_config.solo {
+            send(cmd_tx, GraphCommand::SetGroupSolo { group: g_idx, solo: true })?;
+        }
         let mut group_effects: Vec<PluginSlot> = Vec::new();
         let mut group_bus_params = Vec::new();
         for (fx_idx, effect_config) in group_config.effects.iter().enumerate() {
@@ -278,6 +284,8 @@ pub fn load_session(
             name: group_config.name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(String::from),
             volume: group_config.volume,
             pan: group_config.pan,
+            muted: group_config.muted,
+            solo: group_config.solo,
             effects: group_effects,
             // Group modulators are loaded after the instruments, once member
             // chains are known (so member-target param names resolve).
@@ -486,6 +494,14 @@ pub fn load_session(
         let modulators =
             load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui })?;
 
+        // Mute and solo: what the engine has to begin with is neither.
+        if inst_config.muted {
+            send(cmd_tx, GraphCommand::SetMute { inst: inst_idx, muted: true })?;
+        }
+        if inst_config.solo {
+            send(cmd_tx, GraphCommand::SetSolo { inst: inst_idx, solo: true })?;
+        }
+
         // Apply instrument transpose.
         if inst_config.transpose != 0 {
             let _ = cmd_tx.send(plugin::chain::GraphCommand::SetTranspose {
@@ -558,6 +574,8 @@ pub fn load_session(
             range: inst_config.range,
             transpose: inst_config.transpose,
             volume,
+            muted: inst_config.muted,
+            solo: inst_config.solo,
             instrument: instrument_slot,
             effects,
             modulators,
@@ -1615,6 +1633,34 @@ depth = 0.4
         let Err(error) = try_load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = nan\n") else { panic!("a value that is not a number is refused") };
         let error = format!("{error:#}");
         assert!(error.contains("instrument[0].modulator[0].value") && error.contains("is not a finite number"), "{error}");
+    }
+
+    #[test]
+    fn a_lane_and_a_group_that_a_file_mutes_or_solos_are_so_in_the_model_and_the_engine_and_the_others_are_not() {
+        let run = load(
+            "[[group]]\nmute = true\n[[group]]\nsolo = true\n[[group]]\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nmute = true\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nsolo = true\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nmute = true\nsolo = true\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n",
+        );
+        let lanes: Vec<(bool, bool)> = run.model.instruments.iter().map(|lane| (lane.muted, lane.solo)).collect();
+        assert_eq!(lanes, [(true, false), (false, true), (true, true), (false, false)]);
+        let groups: Vec<(bool, bool)> = run.model.groups.iter().map(|group| (group.muted, group.solo)).collect();
+        assert_eq!(groups, [(true, false), (false, true), (false, false)]);
+        // (The engine starts every lane and group neither muted nor soloed, so only what a file turns on is sent.)
+        let sent: Vec<&str> = run.commands.iter().map(String::as_str).filter(|c| c.starts_with("SetMute") || c.starts_with("SetSolo") || c.starts_with("SetGroupMute") || c.starts_with("SetGroupSolo")).collect();
+        assert_eq!(
+            sent,
+            [
+                "SetGroupMute group=0 muted=true",
+                "SetGroupSolo group=1 solo=true",
+                "SetMute inst=0 muted=true",
+                "SetSolo inst=1 solo=true",
+                "SetMute inst=2 muted=true",
+                "SetSolo inst=2 solo=true",
+            ]
+        );
     }
 
     #[test]
