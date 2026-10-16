@@ -977,4 +977,111 @@ mod tests {
         // More than a period behind (a stall): do not burst through the missed blocks.
         assert_eq!(next_deadline(at(0), period, at(35)), at(35));
     }
+
+    // -- The example sessions --
+
+    /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
+    const SOUND_EXAMPLES: [&str; 5] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml"];
+
+    fn example(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// The left side of `session` as it sounds for `seconds` when the keys `keys` go down after `from` seconds and up `held` seconds after that.
+    fn play(session: &str, keys: &[u8], from: f32, held: f32, seconds: f32) -> Vec<f32> {
+        let mut rig = rig(session, 256);
+        let blocks = (seconds * 48_000.0 / 256.0) as usize;
+        let press_at = (from * 48_000.0 / 256.0) as usize;
+        let release_at = ((from + held) * 48_000.0 / 256.0) as usize;
+        let mut data = vec![0.0f32; 256 * 2];
+        let mut left = Vec::with_capacity(blocks * 256);
+        for cb in 0..blocks {
+            if cb == press_at {
+                for &key in keys {
+                    rig.midi_tx.send((0, [0x90, key, 100])).unwrap();
+                }
+            }
+            if cb == release_at {
+                for &key in keys {
+                    rig.midi_tx.send((0, [0x80, key, 0])).unwrap();
+                }
+            }
+            rig.renderer.render(&mut data, cb as u64);
+            left.extend(data.chunks(2).map(|frame| frame[0]));
+        }
+        left
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn the_example_sounds_load_and_play_a_chord_that_is_heard_and_is_not_loud() {
+        for name in SOUND_EXAMPLES {
+            let out = play(&example(name), &[48, 52, 55], 0.0, 5.0, 8.0);
+            let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            assert!(out.iter().all(|x| x.is_finite()), "{name}");
+            assert!(peak > 0.05, "{name} is heard: its loudest sample is {peak}");
+            assert!(peak < 0.6, "{name} is not loud: its loudest sample is {peak}");
+        }
+    }
+
+    /// The frequency of the periodic signal in `window`, from its autocorrelation: the first of the lags between 40 and 1000 Hz that is nearly as good as the best (the multiples of a
+    /// period are as good as the period itself), brought between two samples.
+    fn pitch_of(window: &[f32], sample_rate: f32) -> f32 {
+        let (shortest, longest) = ((sample_rate / 1000.0) as usize, (sample_rate / 40.0) as usize);
+        let correlation: Vec<f32> = (shortest..=longest).map(|lag| window[..window.len() - longest].iter().zip(&window[lag..]).map(|(a, b)| a * b).sum()).collect();
+        let best = correlation.iter().cloned().fold(f32::MIN, f32::max);
+        let first = (1..correlation.len() - 1)
+            .find(|&i| correlation[i] > 0.9 * best && correlation[i] >= correlation[i - 1] && correlation[i] >= correlation[i + 1])
+            .expect("a period");
+        let (a, b, c) = (correlation[first - 1], correlation[first], correlation[first + 1]);
+        let offset = 0.5 * (a - c) / (a - 2.0 * b + c);
+        sample_rate / ((shortest + first) as f32 + offset)
+    }
+
+    #[test]
+    fn the_arp_example_goes_through_the_notes_of_a_minor_seventh_in_tune_when_a_key_is_held() {
+        // C3 held, after a pause that is not a whole number of steps: the steps are the semitones 0 3 7 10 12 10 7 3 of a chord, six a second, and the key starts them from the first.
+        let out = play(&example("arp.toml"), &[48], 0.4, 3.0, 3.6);
+        let c3 = 440.0 * 2.0f32.powf(-21.0 / 12.0);
+        for (step, semitones) in [0, 3, 7, 10, 12, 10, 7, 3, 0, 3, 7, 10].into_iter().enumerate() {
+            let start = ((0.4 + step as f32 / 6.0 + 0.03) * 48_000.0) as usize;
+            let heard = pitch_of(&out[start..start + 4800], 48_000.0);
+            let wanted = c3 * 2.0f32.powf(semitones as f32 / 12.0);
+            let cents = 1200.0 * (heard / wanted).log2();
+            assert!(cents.abs() < 5.0, "step {step}: {heard} Hz for {wanted} Hz, {cents} cents off");
+        }
+    }
+
+    #[test]
+    fn the_bell_example_starts_bright_and_dies_away_to_a_plain_tone() {
+        let out = play(&example("bell.toml"), &[72], 0.0, 3.0, 4.0);
+        let window = |from: f32| &out[(from * 48_000.0) as usize..((from + 0.1) * 48_000.0) as usize];
+        // How much of a signal is in its changes: more for a signal with high partials than for one with a low tone.
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        let (start, later) = (brightness(window(0.02)), brightness(window(1.8)));
+        assert!(start > 4.0 * later, "the first moments are brighter than the later ones: {start} and {later}");
+        assert!(rms(window(1.8)) < 0.6 * rms(window(0.02)), "and louder");
+    }
+
+    #[test]
+    fn the_wind_example_swells_in_over_the_attack_and_is_still_there_when_the_key_goes_up() {
+        let out = play(&example("wind.toml"), &[48], 0.0, 5.0, 8.0);
+        let window = |from: f32| &out[(from * 48_000.0) as usize..((from + 0.2) * 48_000.0) as usize];
+        // An attack of two and a half seconds: the first moments are far quieter than the held sound, and the release (four seconds) is far from over a moment after the key goes up.
+        assert!(rms(window(0.1)) < 0.2 * rms(window(4.5)), "{} and {}", rms(window(0.1)), rms(window(4.5)));
+        assert!(rms(window(5.2)) > 0.5 * rms(window(4.5)), "{} and {}", rms(window(5.2)), rms(window(4.5)));
+    }
+
+    #[test]
+    fn the_pwm_example_has_the_delay_preset_that_it_names() {
+        // (A preset that the plugin does not have is only logged by the loader, so a misspelled name would load and sound like no preset at all.)
+        let run = crate::app::testutil::load(&example("pwm.toml"));
+        let delay = &run.model.instruments[0].effects[1];
+        let time = delay.params.iter().find(|p| p.name == "time").unwrap().value;
+        assert_eq!((delay.name.as_str(), time), ("Delay", 0.09), "the preset's time, and not the delay's own");
+    }
 }

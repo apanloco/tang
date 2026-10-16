@@ -1,0 +1,35 @@
+# Example: an arpeggio from a step sequencer. The sequencer moves the oscillator's
+# `detune` (a range of 48 semitones, so a depth of 0.25 makes a step of 1 twelve
+# semitones) through the notes of a minor seventh, six steps a second, and a key
+# starts it from the first step: hold C and it goes C, E flat, G, B flat, C, B flat, G, E flat
+# and round again, whatever key you hold. The values are the notes over twelve, which
+# the page's bars (a hundredth) cannot paint, and a file can say.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+
+[instrument.params]
+waveform = 3.0 # saw
+attack = 0.002
+release = 0.15
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.62
+resonance = 2.0
+
+[[instrument.modulator]]
+type = "steps"
+# the semitones 0 3 7 10 12 10 7 3, each over twelve
+steps = [0.0, 0.25, 0.58333334, 0.8333333, 1.0, 0.8333333, 0.58333334, 0.25]
+rate = 6.0
+glide = 0.0
+retrigger = true
+
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.25
