@@ -3849,6 +3849,148 @@ fn the_pane_of_a_step_sequencer_has_its_settings_its_sixteen_steps_and_its_targe
     assert_golden("steps_pane", &mut h);
 }
 
+/// What the audio thread says of where the step sequencer of `scene_steps` is: the whole part of the number is the step it is at (`ModulatorSlot::position`).
+fn publish_position(h: &Harness, position: f32) {
+    let slot = h.s.ctl.model.instruments[0].modulators[0].position.expect("a step sequencer has a slot for where it is");
+    h.s.ctl.telemetry.store(slot, position);
+}
+
+/// The style of row `step` (from 1) of the parameter pane, which all of the row from its name to the pane's border has (the cursor's cells before the name are not the row's own);
+/// the row is found by its name.
+fn step_row_style(h: &mut Harness, step: usize) -> (Color, Modifier) {
+    h.dump();
+    let buf = h.terminal.backend().buffer();
+    // (The chain is the left 42% of the screen, and the parameter pane has a border on each side.)
+    let (from, to) = (buf.area.width * 42 / 100 + 1, buf.area.width - 1);
+    let text = |y: u16| (from..to).map(|x| buf[(x, y)].symbol()).collect::<String>();
+    let name = format!("Step {step} ");
+    let (y, start) = (0..buf.area.height)
+        .find_map(|y| text(y).find(&name).map(|at| (y, from + text(y)[..at].chars().count() as u16)))
+        .unwrap_or_else(|| panic!("the pane has no row for step {step}: {}", dump_buffer(buf)));
+    let styles: Vec<(Color, Modifier)> = (start..to).map(|x| (buf[(x, y)].fg, buf[(x, y)].modifier)).collect();
+    assert!(styles.iter().all(|style| *style == styles[0]), "the row of step {step} has one look: {styles:?}");
+    styles[0]
+}
+
+/// How the pane shows each of the sixteen steps, a character each: `>` for the step the sequencer is at, `.` for one it goes through and `_` for one past its length
+/// (the rows that the cursor is not on: it is drawn as the selected row is).
+fn step_looks(h: &mut Harness) -> String {
+    (1..=16)
+        .map(|step| match step_row_style(h, step) {
+            (Color::Magenta, modifier) if modifier.is_empty() => '>',
+            (fg, modifier) if fg == DIM && modifier.is_empty() => '.',
+            (fg, modifier) if fg == DIM && modifier == Modifier::DIM => '_',
+            other => panic!("step {step} has a look that is none of the three: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn the_pane_of_a_step_sequencer_colours_the_step_it_is_at_and_dims_the_steps_past_its_length() {
+    let mut h = Harness::new(scene_steps());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    // (Nothing has been published yet: it is at the beginning.)
+    assert_eq!(step_looks(&mut h), ">...____________");
+    for (position, looks) in [
+        (0.99, ">...____________"),
+        (1.0, ".>..____________"),
+        (2.5, "..>.____________"),
+        (3.99, "...>____________"),
+        // The length brings the position round, as the engine does (`step_at`): four steps, so 4 is the first again, 5.5 the second, -0.5 the last.
+        (4.0, ">...____________"),
+        (5.5, ".>..____________"),
+        (-0.5, "...>____________"),
+        (f32::NAN, ">...____________"),
+    ] {
+        publish_position(&h, position);
+        assert_eq!(step_looks(&mut h), looks, "at {position}");
+    }
+}
+
+#[test]
+fn the_step_a_step_sequencer_is_at_has_a_marker_in_its_name() {
+    let mut h = Harness::new(scene_steps());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    publish_position(&h, 2.5);
+    let dump = h.dump();
+    assert!(dump.contains("Step 3 ▶ "), "{dump}");
+    assert_eq!(dump.matches('▶').count(), 1, "one step has it: {dump}");
+    publish_position(&h, 1.5);
+    let dump = h.dump();
+    assert!(dump.contains("Step 2 ▶ ") && !dump.contains("Step 3 ▶"), "the marker moves with it: {dump}");
+}
+
+#[test]
+fn the_steps_that_are_dimmed_are_the_ones_past_the_length_the_pane_has_now() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, LENGTH);
+    assert_eq!(step_looks(&mut h), ">...____________");
+    h.press(KeyCode::Right);
+    assert_eq!(step_looks(&mut h), ">....___________", "a step that the length brings in is not dimmed");
+    h.press_n(KeyCode::Left, 2);
+    assert_eq!(step_looks(&mut h), ">.._____________", "one that it takes out is");
+    // The playhead is where the position is at the length that there is.
+    publish_position(&h, 3.5);
+    assert_eq!(step_looks(&mut h), ">.._____________", "three steps bring 3.5 round to the first");
+    h.press_n(KeyCode::Right, 13);
+    assert_eq!(step_looks(&mut h), "...>............", "and sixteen leave it at the fourth");
+}
+
+#[test]
+fn the_row_under_the_cursor_is_bold_and_keeps_its_colour_or_its_dimming() {
+    let mut h = Harness::new(scene_steps());
+    publish_position(&h, 2.5);
+    let lane = TreeAddress::Modulator { inst: 0, index: 0 };
+    on_modulator_row(&mut h, lane, step_row(0));
+    assert_eq!(step_row_style(&mut h, 1), (Color::White, Modifier::BOLD), "a step that it goes through");
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, lane, step_row(2));
+    assert_eq!(step_row_style(&mut h, 3), (Color::Magenta, Modifier::BOLD), "the step that it is at");
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, lane, step_row(8));
+    assert_eq!(step_row_style(&mut h, 9), (Color::White, Modifier::BOLD | Modifier::DIM), "a step past its length");
+}
+
+#[test]
+fn a_step_sequencer_that_has_no_slot_for_where_it_is_has_no_marker() {
+    let mut h = Harness::new(scene_steps());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    // (The harness checks the ids after every key, and a step sequencer that has no slot is one it would refuse: the slots run out only in a session that has used all there are.)
+    h.s.ctl.model.instruments[0].modulators[0].position = None;
+    assert_eq!(step_looks(&mut h), "....____________");
+    assert!(!h.dump().contains('▶'));
+}
+
+#[test]
+fn the_pane_of_a_groups_step_sequencer_has_its_playhead_too() {
+    let mut h = Harness::new(
+        r#"
+[[group]]
+[[group.modulator]]
+type = "steps"
+steps = [0.5, -0.25, 1.0, -1.0]
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+"#,
+    );
+    h.goto(TreeAddress::GroupModulator { group: 0, index: 0 });
+    let slot = h.s.ctl.model.groups[0].modulators[0].position.expect("a group's step sequencer has a slot for where it is");
+    h.s.ctl.telemetry.store(slot, 1.25);
+    assert_eq!(step_looks(&mut h), ".>..____________");
+}
+
+#[test]
+fn the_playhead_of_another_modulator_or_node_is_not_drawn() {
+    // An LFO and an oscillator, with a step sequencer whose position is published all the same: the marker is for the pane of the step sequencer that is shown.
+    let mut h = Harness::new(format!("{}\n[[instrument.modulator]]\ntype = \"lfo\"\n", scene_steps()));
+    publish_position(&h, 2.5);
+    h.goto(TreeAddress::Modulator { inst: 0, index: 1 });
+    assert!(!h.dump().contains('▶'), "{}", h.dump());
+    h.goto(TreeAddress::Instrument(0));
+    assert!(!h.dump().contains('▶'), "{}", h.dump());
+}
+
 #[test]
 fn left_and_right_turn_the_rate_and_the_glide_of_a_step_sequencer_and_the_engine_is_given_all_it_has() {
     let mut h = Harness::new(scene_steps());

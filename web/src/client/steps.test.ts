@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { stepsFixture } from "./fixtures";
 import { stepsOutput, stepsPlace } from "./steps";
+import { playheadStep } from "./stepbars";
 
 // What a step sequencer puts out (`plugin::chain::steps_output`): the page's law, pinned to the engine's by what the engine makes of a spread of cases (the fixture).
 describe("what a step sequencer puts out", () => {
@@ -61,6 +62,17 @@ describe("what a step sequencer puts out", () => {
 
 // Where a step sequencer is, as the engine publishes it for a playhead: the step it is at as the whole part of the number, how far into it as the fraction.
 describe("where a step sequencer is", () => {
+  test("has the bar that the playhead is on that the engine says it is, for each case of its fixture, past the length and before the start and a huge position too", () => {
+    expect(stepsFixture.steps.length).toBeGreaterThan(100);
+    const wrong = stepsFixture.steps.filter((entry) => playheadStep(entry.position, entry.length) !== entry.step);
+    expect(wrong).toEqual([]);
+    const has = (test: (entry: (typeof stepsFixture.steps)[number]) => boolean) => stepsFixture.steps.some(test);
+    expect(has((entry) => entry.position >= entry.length && entry.length > 0)).toBe(true);
+    expect(has((entry) => entry.position < 0)).toBe(true);
+    expect(has((entry) => entry.length === 0)).toBe(true);
+    expect(has((entry) => entry.length === 99)).toBe(true);
+  });
+
   test("goes round at the length: the whole part is the step, the fraction how far into it", () => {
     expect(stepsPlace(3, 0, 16)).toBe(0);
     expect(stepsPlace(3, 2.5, 16)).toBe(2.5);

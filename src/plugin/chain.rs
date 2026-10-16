@@ -564,11 +564,25 @@ fn parse_learnable(bytes: [u8; 3]) -> Option<(MidiBindSource, f32, f32)> {
 /// How many steps a step sequencer has to set: the bars of its node (generated into the page's constants as `MAX_STEPS`).
 pub const MAX_STEPS: usize = 16;
 
+/// Where a step sequencer of `length` steps in use is at `position`: how many steps are in use (held to 1 to `MAX_STEPS`) and the position brought round at them
+/// (a position that is not a number is the beginning).
+fn steps_place(length: usize, position: f32) -> (usize, f32) {
+    let length = length.clamp(1, MAX_STEPS);
+    (length, if position.is_finite() { position.rem_euclid(length as f32) } else { 0.0 })
+}
+
+/// The step that a step sequencer of `length` steps in use is at when its position is `position`: the whole part of it, brought round at the length. The bar that a
+/// playhead is on (the page's `playheadStep` is pinned to it by `fixtures/steps.json`).
+pub fn step_at(length: usize, position: f32) -> usize {
+    let (length, position) = steps_place(length, position);
+    // (A position a hair below 0 comes round to the length itself, in an `f32`.)
+    (position as usize).min(length - 1)
+}
+
 /// What a step sequencer puts out at `position` (the step it is at as the whole part, how far into it as the fraction, 0 to `length`): the value of the step,
 /// held for the part of it before its last `glide`, which is spent going to the value of the next step (the first, after the last) in a straight line.
 pub fn steps_output(values: &[f32; MAX_STEPS], length: usize, position: f32, glide: f32) -> f32 {
-    let length = length.clamp(1, MAX_STEPS);
-    let position = if position.is_finite() { position.rem_euclid(length as f32) } else { 0.0 };
+    let (length, position) = steps_place(length, position);
     let step = (position as usize).min(length - 1);
     let within = position - step as f32;
     let here = values[step];
@@ -6309,6 +6323,38 @@ mod tests {
     /// What `steps_output` makes of a spread of patterns, lengths, places and glides, as the web client's mock engine reads them (`web/src/client/fixtures/steps.json`): they pin the page's
     /// law of a step sequencer (`client/steps.ts`) to this one. A number is written as the 64-bit one it widens to. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
     #[test]
+    fn the_step_a_step_sequencer_is_at_is_the_whole_part_of_its_position_brought_round_at_its_length() {
+        assert_eq!(step_at(4, 0.0), 0);
+        assert_eq!(step_at(4, 0.99), 0);
+        assert_eq!(step_at(4, 2.5), 2);
+        assert_eq!(step_at(4, 3.999), 3);
+        assert_eq!(step_at(3, 3.0), 0, "round at the length");
+        assert_eq!(step_at(3, 4.5), 1);
+        assert_eq!(step_at(3, -0.5), 2, "a position before the start comes round from the end");
+        assert_eq!(step_at(3, -1.0e-8), 2, "and one so little before it that the sum is the length itself is still the last step");
+    }
+
+    #[test]
+    fn the_step_a_step_sequencer_is_at_is_kept_to_the_steps_there_are_and_is_the_first_for_a_position_that_is_not_a_number() {
+        assert_eq!(step_at(0, 2.5), 0, "a length of none is one step");
+        assert_eq!(step_at(99, 17.5), 1, "and one of more than there are is all of them");
+        assert_eq!(step_at(MAX_STEPS, 15.99), MAX_STEPS - 1);
+        for position in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(step_at(5, position), 0, "{position}");
+        }
+    }
+
+    #[test]
+    fn the_step_a_step_sequencer_is_at_is_the_one_whose_value_it_puts_out_with_no_glide() {
+        let values: [f32; MAX_STEPS] = std::array::from_fn(|i| i as f32 / 16.0);
+        for length in [1, 3, 5, 16] {
+            for position in [0.0, 0.3, 1.0, 2.7, 4.99, 7.5, 15.5, 16.2, -0.3] {
+                assert_eq!(steps_output(&values, length, position, 0.0), values[step_at(length, position)], "length {length}, position {position}");
+            }
+        }
+    }
+
+    #[test]
     fn the_web_clients_fixture_of_what_a_step_sequencer_puts_out_is_current() {
         let patterns: [[f32; MAX_STEPS]; 3] = [
             // The staircase of a new one.
@@ -6341,8 +6387,16 @@ mod tests {
                 }
             }
         }
+        // The bar of a playhead: for the positions a sequencer is at, and some that are past its length, before its start and huge, which it is brought round for (and one so little
+        // before the start that, in a 64-bit number as well as in a 32-bit one, the sum with the length is the length itself, which is not a step).
+        let mut steps = Vec::new();
+        for &length in &[0, 1, 2, 3, 5, 8, 16, 99] {
+            for &position in &[0.0, 0.5, 1.0, 2.9, 3.0, 4.5, 7.25, 15.99, 16.0, 17.5, 40.25, -0.5, -3.0, -1.0e-20, 1000.75] {
+                steps.push(serde_json::json!({ "length": length, "position": f64::from(position), "step": step_at(length, position) }));
+            }
+        }
         let patterns: Vec<Vec<f64>> = patterns.iter().map(|values| values.iter().map(|&v| f64::from(v)).collect()).collect();
-        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "patterns": patterns, "cases": cases })).unwrap() + "\n";
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "patterns": patterns, "cases": cases, "steps": steps })).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/steps.json");
         if std::env::var_os("TANG_UPDATE_TYPES").is_some() {

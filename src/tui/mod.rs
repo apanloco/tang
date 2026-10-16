@@ -727,6 +727,14 @@ impl State {
         self.tree_entries.get(self.chain_state.selected).map(|e| &e.address)
     }
 
+    /// The step that the step sequencer under the chain cursor is at: the whole part of the position that the audio thread last published for it, brought round at the length
+    /// the model has (`step_at`, which the engine's own output is made by). `None` for any other node, and for a step sequencer that has no slot to publish to.
+    fn selected_playhead(&self) -> Option<usize> {
+        let m = self.modulator_at(*self.selected_address()?)?;
+        let ModSourceSlot::Steps { length, .. } = m.source else { return None };
+        Some(crate::plugin::chain::step_at(length, self.ctl.telemetry.load(m.position?)))
+    }
+
     /// The node under the chain cursor if it has a signal to look at, and what to call it: an instrument that has a plugin, an effect, a group or an effect of its bus. A modulator
     /// and a pattern put out no sound, and a lane that has no instrument puts out none.
     fn selected_signal(&self) -> Option<(NodeId, String)> {
@@ -3149,6 +3157,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             s.chain_state.ensure_visible(inner_h);
             s.param_state.ensure_visible(inner_h);
 
+            let playhead = s.selected_playhead();
             let (ci, pi) = render_session(
                 frame,
                 session_area,
@@ -3161,6 +3170,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
                 &s.param_filter_input,
                 s.param_filtering,
                 &s.param_filtered,
+                playhead,
             );
             s.areas.chain_inner = ci;
             s.areas.param_inner = pi;
@@ -3273,6 +3283,7 @@ fn render_session(
     param_filter_input: &TextInputState,
     param_filtering: bool,
     param_filtered: &[usize],
+    playhead: Option<usize>,
 ) -> (Rect, Rect) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(42), Constraint::Fill(1)]).areas(area);
@@ -3313,6 +3324,7 @@ fn render_session(
     // Param pane — find the selected plugin or modulator.
     let selected = chain_state.selected;
     let mut mod_params: Vec<ParamSlot> = Vec::new(); // temp storage for modulator pseudo-params
+    let mut mod_looks: Vec<RowLook> = Vec::new(); // how each of them is drawn, if it is not as the others are
     let (plugin_name, plugin_params) = if selected < tree_entries.len() {
         let addr = &tree_entries[selected].address;
         match addr {
@@ -3328,8 +3340,9 @@ fn render_session(
                 };
                 match m {
                     Some(m) => {
-                        let (name, rows) = modulator_pane(m);
+                        let (name, rows, looks) = modulator_pane(m, playhead);
                         mod_params = rows;
+                        mod_looks = looks;
                         (name, mod_params.as_slice())
                     }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
@@ -3551,21 +3564,26 @@ fn render_session(
     let sep_style = Style::default().fg(DIM);
     let param_items: Vec<ListItem> = param_strings
         .iter()
-        .map(|(name, col1, col2, col3, row_kind)| match row_kind {
-            ParamRow::Separator => ListItem::spans(vec![
-                ListSpan::new(name, sep_style),
-                ListSpan::new(col1, sep_style),
-            ]),
-            ParamRow::Enum => ListItem::spans(vec![
-                ListSpan::new(name, Style::default()),
-                ListSpan::new(col1, Style::default()),
-            ]),
-            ParamRow::Normal => ListItem::spans(vec![
-                ListSpan::new(name, Style::default()),
-                ListSpan::new(col1, Style::default()),
-                ListSpan::new(col2, Style::default()),
-                ListSpan::new(col3, Style::default()),
-            ]),
+        .enumerate()
+        .map(|(i, (name, col1, col2, col3, row_kind))| {
+            // (Only a modulator's pane has looks, and it shows every row it has, so a row's look is at its own place.)
+            let look = mod_looks.get(i).copied().unwrap_or_default().style();
+            match row_kind {
+                ParamRow::Separator => ListItem::spans(vec![
+                    ListSpan::new(name, sep_style),
+                    ListSpan::new(col1, sep_style),
+                ]),
+                ParamRow::Enum => ListItem::spans(vec![
+                    ListSpan::new(name, look),
+                    ListSpan::new(col1, look),
+                ]),
+                ParamRow::Normal => ListItem::spans(vec![
+                    ListSpan::new(name, look),
+                    ListSpan::new(col1, look),
+                    ListSpan::new(col2, look),
+                    ListSpan::new(col3, look),
+                ]),
+            }
         })
         .collect();
 
@@ -4052,9 +4070,33 @@ fn modulator_field_label(field: ModulatorField) -> &'static str {
     }
 }
 
-/// The pane of a modulator: its title, and a row for each of what `modulator_row` says its rows are (the
-/// kind it is, its waveform, its settings, a separator, a depth for each cable), as parameters to draw.
-fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
+/// How a row of a pane is drawn besides what it says. Only the steps of a step sequencer have a look of their own.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum RowLook {
+    #[default]
+    Normal,
+    /// A step that the sequencer does not go through: it is past its length (it keeps its value for when the sequencer is longer).
+    Unused,
+    /// The step that the sequencer is at.
+    Playing,
+}
+
+impl RowLook {
+    /// What the row's cells have on top of the style of their list: a dimmed step is a step the sequencer does not play, as a chain entry that is not selected is dimmed to
+    /// recede, and the step that it is at is magenta, the colour of a modulator in the chain.
+    fn style(self) -> Style {
+        match self {
+            RowLook::Normal => Style::default(),
+            RowLook::Unused => Style::default().add_modifier(Modifier::DIM),
+            RowLook::Playing => Style::default().fg(Color::Magenta),
+        }
+    }
+}
+
+/// The pane of a modulator: its title, a row for each of what `modulator_row` says its rows are (the
+/// kind it is, its waveform, its settings, a separator, a depth for each cable), as parameters to draw, and the look of each. A step sequencer's step that is `playhead` is
+/// marked in its name (`Step 3 ▶`), and the steps past its length are `Unused`.
+fn modulator_pane(m: &ModulatorSlot, playhead: Option<usize>) -> (String, Vec<ParamSlot>, Vec<RowLook>) {
     use crate::plugin::chain::LfoWaveform;
     let title = match &m.source {
         ModSourceSlot::Lfo { .. } => m.source.label(),
@@ -4077,9 +4119,19 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
     let (new_lfo, new_envelope, new_macro, new_steps) =
         (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro(), ModSourceSlot::new_steps());
     let is_steps = matches!(m.source, ModSourceSlot::Steps { .. });
-    let rows = (0..modulator_param_len(m))
+    let steps_in_use = match m.source {
+        ModSourceSlot::Steps { length, .. } => length,
+        _ => 0,
+    };
+    let (rows, looks) = (0..modulator_param_len(m))
         .filter_map(|position| {
-            Some(match modulator_row(m, position)? {
+            let modulator_row = modulator_row(m, position)?;
+            let look = match modulator_row {
+                ModulatorRow::Step(step) if Some(step) == playhead => RowLook::Playing,
+                ModulatorRow::Step(step) if step >= steps_in_use => RowLook::Unused,
+                _ => RowLook::Normal,
+            };
+            let slot = match modulator_row {
                 ModulatorRow::Type => {
                     let envelope = matches!(m.source, ModSourceSlot::Envelope { .. });
                     row("Type".to_string(), position, 0.0, 1.0, 0.0, if envelope { 1.0 } else { 0.0 }, ParamKind::Enum(vec!["LFO".to_string(), "Envelope".to_string()]))
@@ -4102,7 +4154,8 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
                 }
                 ModulatorRow::Step(step) => {
                     let value = *m.source.steps()?.get(step)?;
-                    row(format!("Step {}", step + 1), position, STEP_MIN, STEP_MAX, ModSourceSlot::staircase()[step], value, ParamKind::Float)
+                    let marker = if look == RowLook::Playing { " ▶" } else { "" };
+                    row(format!("Step {}{marker}", step + 1), position, STEP_MIN, STEP_MAX, ModSourceSlot::staircase()[step], value, ParamKind::Float)
                 }
                 // A control's source, shown and not edited.
                 ModulatorRow::Info => row(format!("Source: {}", m.source.label()), position, 0.0, 0.0, 0.0, 0.0, ParamKind::Separator),
@@ -4111,10 +4164,11 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
                     let target = m.targets.get(target)?;
                     row(format!("{} depth", target.param_name), position, DEPTH_MIN, DEPTH_MAX, 0.5, target.depth, ParamKind::Float)
                 }
-            })
+            };
+            Some((slot, look))
         })
-        .collect();
-    (title, rows)
+        .unzip();
+    (title, rows, looks)
 }
 
 /// Build the value-entry `EditState` for row `pa` of a modulator's pane, or None for a row that is
