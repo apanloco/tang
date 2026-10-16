@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
+import { audibleAt, cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -99,6 +99,30 @@ describe("the settings of a modulator and the depths of its cables", () => {
     for (const field of ["rate", "waveform", "attack", "decay", "sustain", "release"] as const) expect(modulatorFieldOf(withMore, macro.id, field), field).toBeUndefined();
     // (And an LFO, an envelope and a control have no value.)
     expect([lfo.id, envelope.id, control.id].map((id) => modulatorFieldOf(withMore, id, "value"))).toEqual([undefined, undefined, undefined]);
+  });
+
+  const steps = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+  const sequencer: Node = { id: 44, parent: oscillator.id, name: "Steps", kind: "modulator", source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  const withSequencer = stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, sequencer, macro] } });
+
+  test("the rate, the glide, the length and the switch of a step sequencer, as numbers, and none of the settings of the other kinds", () => {
+    expect((["rate", "glide", "length", "retrigger"] as const).map((field) => modulatorFieldOf(withSequencer, sequencer.id, field))).toEqual([6, 0.25, 4, 0]);
+    for (const field of ["waveform", "attack", "decay", "sustain", "release", "value"] as const) expect(modulatorFieldOf(withSequencer, sequencer.id, field), field).toBeUndefined();
+    // (And the others have no glide, length or switch.)
+    for (const id of [lfo.id, macro.id]) {
+      for (const field of ["glide", "length", "retrigger"] as const) expect(modulatorFieldOf(withSequencer, id, field), `${field} of ${id}`).toBeUndefined();
+    }
+  });
+
+  test("the switch of a step sequencer that a note starts again is 1", () => {
+    const on: Node = { ...sequencer, source: { type: "steps", values: steps, length: 4, rate: 6, glide: 0.25, retrigger: true } };
+    expect(modulatorFieldOf(stateOf({ ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, on] } }), on.id, "retrigger")).toBe(1);
+  });
+
+  test("the steps of a step sequencer, all of them and the very list that the node has, and none for a node that is not one", () => {
+    expect(stepsOf(withSequencer, sequencer.id)).toBe(steps);
+    expect([lfo.id, macro.id, oscillator.id, 12345].map((id) => stepsOf(withSequencer, id))).toEqual([undefined, undefined, undefined, undefined]);
+    expect(stepsOf(stateOf(null), sequencer.id)).toBeUndefined();
   });
 
   test("the stages of an envelope", () => {

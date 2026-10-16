@@ -153,7 +153,8 @@ describe("which settings of other modulators a modulator can be drawn to", () =>
     const envelope: Node = { id: 21, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 } };
     const control: Node = { id: 22, parent: 0, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } };
     const knob: Node = { id: 23, parent: 0, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.5 } };
-    const graph = rack(lfo(20), envelope, control, knob);
+    const sequencer: Node = { id: 24, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true } };
+    const graph = rack(lfo(20), envelope, control, knob, sequencer);
     const types = (id: number, of: number): string[] => fieldsOf(graph, id).filter((found) => found.node === of).map((found) => found.port.type);
     expect(types(20, 21)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(types(21, 20)).toEqual(["rate"]);
@@ -162,6 +163,10 @@ describe("which settings of other modulators a modulator can be drawn to", () =>
     expect(types(20, 23)).toEqual([]);
     expect(types(23, 20)).toEqual(["rate"]);
     expect(types(23, 21)).toEqual(["attack", "decay", "sustain", "release"]);
+    // A step sequencer's rate can be driven, as an LFO's is, and its glide, length and switch are set by a person.
+    expect(types(20, 24)).toEqual(["rate"]);
+    expect(types(24, 20)).toEqual(["rate"]);
+    expect(types(24, 21)).toEqual(["attack", "decay", "sustain", "release"]);
     // (The tracer's own LFO is in the lane too: it has its rate, and the depth of its cable.)
     expect(types(20, 2)).toEqual(["rate", "depth"]);
   });

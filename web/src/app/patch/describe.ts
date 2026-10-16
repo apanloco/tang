@@ -19,6 +19,8 @@ export function kindOf(source: ModulatorSource): string {
       return "MIDI";
     case "macro":
       return "Macro";
+    case "steps":
+      return "Steps";
   }
 }
 
@@ -33,6 +35,8 @@ export function settingsOf(source: ModulatorSource): readonly ModulatorField[] {
       return [];
     case "macro":
       return ["value"];
+    case "steps":
+      return ["rate", "glide", "length", "retrigger"];
   }
 }
 
@@ -54,14 +58,14 @@ export function controlDetail(source: Extract<ModulatorSource, { type: "midiLear
   }
 }
 
-/** The range the output of a modulator of a kind goes over: an LFO's goes both ways, the rest from nothing up. */
+/** The range the output of a modulator of a kind goes over: an LFO's and a step sequencer's go both ways, the rest from nothing up. */
 export function outputRange(type: ModulatorSource["type"]): { min: number; max: number } {
-  return type === "lfo" ? { min: -1, max: 1 } : { min: 0, max: 1 };
+  return type === "lfo" || type === "steps" ? { min: -1, max: 1 } : { min: 0, max: 1 };
 }
 
-/** The range a source's output is drawn over: a LFO and the pitch bend go both ways (the bend's rest is 0.5), the rest from nothing up. */
+/** The range a source's output is drawn over: a LFO, a step sequencer and the pitch bend go both ways (the bend's rest is 0.5), the rest from nothing up. */
 export function outputScale(source: ModulatorSource): { min: number; max: number; centred: boolean } {
-  const centred = source.type === "lfo" || (source.type === "midiLearn" && source.control?.type === "pitchBend");
+  const centred = source.type === "lfo" || source.type === "steps" || (source.type === "midiLearn" && source.control?.type === "pitchBend");
   return { ...outputRange(source.type), centred };
 }
 

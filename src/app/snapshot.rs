@@ -200,8 +200,27 @@ impl Snapshot {
                     (ModulatorSource::Envelope { sustain, .. }, ModulatorField::Sustain) => *sustain = *value,
                     (ModulatorSource::Envelope { release, .. }, ModulatorField::Release) => *release = *value,
                     (ModulatorSource::Macro { value: set }, ModulatorField::Value) => *set = *value,
+                    (ModulatorSource::Steps { rate, .. }, ModulatorField::Rate) => *rate = *value,
+                    (ModulatorSource::Steps { glide, .. }, ModulatorField::Glide) => *glide = *value,
+                    (ModulatorSource::Steps { length, .. }, ModulatorField::Length) => {
+                        let (lowest, highest) = ModulatorField::Length.range();
+                        if value.fract() != 0.0 || *value < lowest || *value > highest {
+                            return Err(DoesNotFit(format!("{value} is not a length")));
+                        }
+                        *length = *value as u32;
+                    }
+                    (ModulatorSource::Steps { retrigger, .. }, ModulatorField::Retrigger) => *retrigger = *value != 0.0,
                     _ => return Err(DoesNotFit(format!("{field:?} does not apply to node {}", node.0))),
                 }
+            }
+            Event::StepsSet { node, values } => {
+                let NodeKind::Modulator { source: ModulatorSource::Steps { values: shown, .. } } = &mut self.node_mut(*node)?.kind else {
+                    return Err(DoesNotFit(format!("node {} is not a step sequencer", node.0)));
+                };
+                if values.len() != shown.len() {
+                    return Err(DoesNotFit(format!("a step sequencer has {} steps, and {} were told", shown.len(), values.len())));
+                }
+                shown.clone_from(values);
             }
             Event::EdgeDepthSet { edge, depth } => {
                 let amount = self
@@ -771,6 +790,66 @@ type = "envelope"
         let error = told.apply(&Applied::of(2, vec![Event::ModulatorFieldSet { node: knob, field: ModulatorField::Rate, value: 1.0 }])).unwrap_err().to_string();
         assert!(error.contains("does not apply"), "{error}");
         assert_eq!(told, before);
+    }
+
+    #[test]
+    fn a_step_sequencer_that_is_changed_is_changed_in_the_snapshot_as_it_is_in_the_session() {
+        let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n", None);
+        let mut told = ctl.snapshot();
+        let sequencer = ctl.model.instruments[0].modulators[0].node;
+        let source = |told: &Snapshot| match &told.graph.nodes.iter().find(|n| n.id == sequencer).unwrap().kind {
+            NodeKind::Modulator { source } => source.clone(),
+            other => panic!("{other:?}"),
+        };
+        // Each of its settings and then its steps, one intent after another, the snapshot told each.
+        let mut values = vec![0.0; 16];
+        values[0] = -0.5;
+        values[15] = 0.75;
+        for intent in [
+            Intent::SetModulatorField { node: sequencer, field: ModulatorField::Rate, value: 3.5 },
+            Intent::SetModulatorField { node: sequencer, field: ModulatorField::Glide, value: 0.25 },
+            Intent::SetModulatorField { node: sequencer, field: ModulatorField::Length, value: 7.0 },
+            Intent::SetModulatorField { node: sequencer, field: ModulatorField::Retrigger, value: 0.0 },
+            Intent::SetSteps { node: sequencer, values: values.clone() },
+        ] {
+            let applied = ctl.apply(intent.clone()).unwrap();
+            told.apply(&applied).unwrap();
+            assert_eq!(told, ctl.snapshot(), "{intent:?}");
+        }
+        assert_eq!(source(&told), ModulatorSource::Steps { values, length: 7, rate: 3.5, glide: 0.25, retrigger: false });
+    }
+
+    #[test]
+    fn an_event_that_does_not_fit_a_step_sequencer_is_refused_and_changes_nothing() {
+        let ctl = controller(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n[[instrument.modulator]]\n",
+            None,
+        );
+        let mut told = ctl.snapshot();
+        let (sequencer, lfo) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[1].node);
+        let osc = ctl.model.instruments[0].node;
+        let before = told.clone();
+        let refused = [
+            (Event::StepsSet { node: sequencer, values: vec![0.0; 15] }, "has 16 steps"),
+            (Event::StepsSet { node: sequencer, values: vec![] }, "has 16 steps"),
+            (Event::StepsSet { node: lfo, values: vec![0.0; 16] }, "is not a step sequencer"),
+            (Event::StepsSet { node: osc, values: vec![0.0; 16] }, "is not a step sequencer"),
+            (Event::StepsSet { node: NodeId(9_999), values: vec![0.0; 16] }, "there is no node 9999"),
+            (Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Glide, value: 0.5 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Length, value: 4.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Retrigger, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Waveform, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Attack, value: 1.0 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Value, value: 0.5 }, "does not apply"),
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Length, value: 0.0 }, "0 is not a length"),
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Length, value: 17.0 }, "17 is not a length"),
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Length, value: 2.5 }, "2.5 is not a length"),
+        ];
+        for (event, why) in refused {
+            let error = told.apply(&applied(1, event.clone())).unwrap_err().to_string();
+            assert!(error.contains(why), "{event:?}: {error}");
+            assert_eq!(told, before, "{event:?}");
+        }
     }
 
     #[test]

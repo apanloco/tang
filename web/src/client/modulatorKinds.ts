@@ -9,6 +9,7 @@ export const MODULATOR_LABELS: Record<ModulatorKind, string> = {
   macro: "a macro",
   velocity: "a velocity control",
   key: "a key control",
+  steps: "a step sequencer",
 };
 
 /**

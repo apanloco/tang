@@ -3,7 +3,7 @@
 // what changed replaced (so an unchanged node is the same object, which is what a
 // store's subscribers compare). The rules are the controller's (`src/app/apply.rs`),
 // read from the other side.
-import { WAVEFORMS } from "../protocol";
+import { MODULATOR_FIELD_RANGES, WAVEFORMS } from "../protocol";
 import type { Gain, Graph, ModulatorField, Node, NodeUi, ParamValue, PianoMeta, Plugin, Snapshot, StampedEvent } from "../protocol";
 
 /** The snapshot after an event, or why the event does not fit the one it was applied to. */
@@ -90,6 +90,12 @@ function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthS
       return node.kind === "group" ? { ...node, name: event.name } : `node ${node.id} is not a group`;
     case "modulatorFieldSet":
       return withSetting(node, event.field, event.value);
+    case "stepsSet": {
+      if (node.kind !== "modulator" || node.source.type !== "steps") return `node ${node.id} is not a step sequencer`;
+      const { values } = node.source;
+      if (event.values.length !== values.length) return `a step sequencer has ${values.length} steps, and ${event.values.length} were told`;
+      return { ...node, source: { ...node.source, values: event.values } };
+    }
   }
 }
 
@@ -148,6 +154,15 @@ function withSetting(node: Node, field: ModulatorField, value: number): Node | s
     return { ...node, source: { ...source, [field]: value } };
   }
   if (source.type === "macro" && field === "value") return { ...node, source: { ...source, value } };
+  if (source.type === "steps") {
+    if (field === "rate" || field === "glide") return { ...node, source: { ...source, [field]: value } };
+    if (field === "length") {
+      // (Only a whole number of the steps there are: the rest, a half or a hundred or NaN, is no length.)
+      const [lowest, highest] = MODULATOR_FIELD_RANGES.length;
+      return Number.isInteger(value) && value >= lowest && value <= highest ? { ...node, source: { ...source, length: value } } : `${String(value)} is not a length`;
+    }
+    if (field === "retrigger") return { ...node, source: { ...source, retrigger: value !== 0 } };
+  }
   return `${field} does not apply to node ${node.id}`;
 }
 

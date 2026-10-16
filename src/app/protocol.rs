@@ -415,15 +415,15 @@ mod typescript {
     use crate::app::graph::{Graph, Waveform};
     use crate::app::intent::{Event, Gain, Intent, ModulatorField, PatternField, StampedEvent};
     use crate::app::layout::TelemetryLayout;
-    use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN};
-    use crate::plugin::chain::{COUNT_IN_BEATS, KEY_CENTRE, KEY_SPAN};
+    use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, STEP_MAX, STEP_MIN};
+    use crate::plugin::chain::{COUNT_IN_BEATS, KEY_CENTRE, KEY_SPAN, MAX_STEPS};
     use crate::app::snapshot::Snapshot;
     use super::{ClientMessage, ServerMessage};
 
     /// Every gain and every modulator setting, to write the range of each. (One left out
     /// is a key missing in the `Record` that is generated, which the web's typecheck refuses.)
     const GAINS: [Gain; 4] = [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan];
-    const MODULATOR_FIELDS: [ModulatorField; 7] = [
+    const MODULATOR_FIELDS: [ModulatorField; 10] = [
         ModulatorField::Rate,
         ModulatorField::Waveform,
         ModulatorField::Attack,
@@ -431,6 +431,9 @@ mod typescript {
         ModulatorField::Sustain,
         ModulatorField::Release,
         ModulatorField::Value,
+        ModulatorField::Glide,
+        ModulatorField::Length,
+        ModulatorField::Retrigger,
     ];
     const PATTERN_FIELDS: [PatternField; 4] = [PatternField::Length, PatternField::Enabled, PatternField::Looping, PatternField::Transpose];
 
@@ -447,18 +450,40 @@ mod typescript {
     }
 
     /// The entries of a TypeScript object that says what each setting of a modulator is when the
-    /// modulator is new: what a new LFO, a new envelope and a new macro start as.
+    /// modulator is new: what a new LFO, a new envelope, a new macro and a new step sequencer start as (the first
+    /// that has the setting: a step sequencer's rate, which is another, is in `new_steps`).
     fn default_entries() -> String {
         use crate::app::model::ModSourceSlot;
-        let (lfo, envelope, knob) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro());
+        let (lfo, envelope, knob, steps) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro(), ModSourceSlot::new_steps());
         MODULATOR_FIELDS
             .iter()
             .map(|&field| {
                 let name = serde_json::to_value(field).unwrap();
-                let value = lfo.setting(field).or_else(|| envelope.setting(field)).or_else(|| knob.setting(field)).expect("a new LFO, a new envelope or a new macro has every setting");
+                let value = lfo
+                    .setting(field)
+                    .or_else(|| envelope.setting(field))
+                    .or_else(|| knob.setting(field))
+                    .or_else(|| steps.setting(field))
+                    .expect("a new LFO, a new envelope, a new macro or a new step sequencer has every setting");
                 format!("  {}: {value},\n", name.as_str().expect("a unit variant is a string"))
             })
             .collect()
+    }
+
+    /// The settings of a modulator whose value is a whole number, which the controller rounds it to (`ModulatorField::is_whole`), by the name they have on the wire, as the elements
+    /// of a TypeScript array.
+    fn whole_fields() -> String {
+        let names: Vec<String> = MODULATOR_FIELDS.iter().filter(|field| field.is_whole()).map(|&field| serde_json::to_string(&field).unwrap()).collect();
+        names.join(", ")
+    }
+
+    /// What a new step sequencer starts as, as a TypeScript object: its steps, its length, its rate, its glide and whether a note starts it again
+    /// (`ModSourceSlot::new_steps`).
+    fn new_steps() -> String {
+        use crate::app::model::ModSourceSlot;
+        let ModSourceSlot::Steps { values, length, rate, glide, retrigger } = ModSourceSlot::new_steps() else { unreachable!("a new step sequencer is one") };
+        let values: Vec<String> = values.iter().map(|value| value.to_string()).collect();
+        format!("{{ values: [{}], length: {length}, rate: {rate}, glide: {glide}, retrigger: {retrigger} }}", values.join(", "))
     }
 
     /// The entries of a TypeScript object that says how each setting of a modulator is turned, `"linear"` or `"log"`
@@ -552,6 +577,8 @@ mod typescript {
                  export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {{\n{}}};\n\n\
                  /** How a setting of a modulator is turned: a rate and a time run over decades, which a knob turns by ratios (`ModulatorField::taper`). */\n\
                  export const MODULATOR_FIELD_SCALES: Record<ModulatorField, \"linear\" | \"log\"> = {{\n{}}};\n\n\
+                 /** The settings of a modulator whose value is a whole number, which the controller rounds it to: a place in a list, a count, a switch (`ModulatorField::is_whole`). */\n\
+                 export const MODULATOR_WHOLE_FIELDS: readonly ModulatorField[] = [{}];\n\n\
                  /** The lowest and the highest value of each setting of a pattern: what the controller clamps to (`PatternField::range`); a switch is 0 or 1. */\n\
                  export const PATTERN_FIELD_RANGES: Record<PatternField, readonly [number, number]> = {{\n{}}};\n\n\
                  /** How many beats of the metronome a recording is counted in with, before it takes the length of the pattern (`COUNT_IN_BEATS`). */\n\
@@ -563,6 +590,11 @@ mod typescript {
                  export const KEY_SPAN = {KEY_SPAN};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
+                 /** How many steps a step sequencer has, the bars of its node (`MAX_STEPS`), and the lowest and the highest value of a step (`STEP_MIN`, `STEP_MAX`). */\n\
+                 export const MAX_STEPS = {MAX_STEPS};\n\
+                 export const STEP_RANGE: readonly [number, number] = [{STEP_MIN}, {STEP_MAX}];\n\n\
+                 /** What a new step sequencer starts as (`ModSourceSlot::new_steps`): the staircase of its steps, how many are in use, its rate (not the 1 of an LFO that the defaults of the settings say), its glide and whether a note starts it again. */\n\
+                 export const NEW_STEPS = {} as const;\n\n\
                  /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */\n\
                  export const BPM_RANGE: readonly [number, number] = [{BPM_MIN}, {BPM_MAX}];\n\n\
                  /** The waveforms of an LFO by the index that is the value of its `waveform` setting (`LfoWaveform::ALL`). */\n\
@@ -591,8 +623,10 @@ mod typescript {
                 range_entries(&MODULATOR_FIELDS, ModulatorField::range),
                 default_entries(),
                 taper_entries(),
+                whole_fields(),
                 range_entries(&PATTERN_FIELDS, PatternField::range),
                 crate::app::model::PatternState::empty(120.0).length_beats,
+                new_steps(),
                 waveform_names(),
                 scale_root_names(),
                 scale_kinds(),
@@ -661,7 +695,7 @@ mod typescript {
         // (Not `0.009999999776482582`: an f32 is written as the shortest number that is it.)
         assert_eq!(
             range_entries(&MODULATOR_FIELDS, ModulatorField::range),
-            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n"
+            "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n  glide: [0, 1],\n  length: [1, 16],\n  retrigger: [0, 1],\n"
         );
     }
 
@@ -669,7 +703,7 @@ mod typescript {
     fn the_taper_of_a_modulator_setting_is_written_for_every_setting() {
         assert_eq!(
             taper_entries(),
-            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n"
+            "  rate: \"log\",\n  waveform: \"linear\",\n  attack: \"log\",\n  decay: \"log\",\n  sustain: \"linear\",\n  release: \"log\",\n  value: \"linear\",\n  glide: \"linear\",\n  length: \"linear\",\n  retrigger: \"linear\",\n"
         );
     }
 
@@ -677,7 +711,20 @@ mod typescript {
     fn what_a_new_modulator_starts_as_is_written_for_every_setting() {
         assert_eq!(
             default_entries(),
-            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n"
+            "  rate: 1,\n  waveform: 0,\n  attack: 0.01,\n  decay: 0.3,\n  sustain: 0.7,\n  release: 0.5,\n  value: 0,\n  glide: 0,\n  length: 16,\n  retrigger: 1,\n"
+        );
+    }
+
+    #[test]
+    fn the_settings_that_are_whole_numbers_are_listed_by_their_wire_names() {
+        assert_eq!(whole_fields(), "\"waveform\", \"length\", \"retrigger\"");
+    }
+
+    #[test]
+    fn what_a_new_step_sequencer_starts_as_is_written_whole() {
+        assert_eq!(
+            new_steps(),
+            "{ values: [-1, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], length: 16, rate: 8, glide: 0, retrigger: true }"
         );
     }
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::plugin::Plugin;
+use crate::plugin::chain::MAX_STEPS;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RemapTarget {
@@ -173,8 +174,9 @@ pub struct ModulatorConfig {
     pub mod_type: String,
     #[serde(default = "default_waveform")]
     pub waveform: String,
-    #[serde(default = "default_rate")]
-    pub rate: f64,
+    /// An LFO's rate in Hz (1 if the file has none), a step sequencer's in steps a second (8): the loader says which.
+    #[serde(default)]
+    pub rate: Option<f64>,
     #[serde(default = "default_attack")]
     pub attack: f64,
     #[serde(default = "default_decay")]
@@ -186,6 +188,19 @@ pub struct ModulatorConfig {
     /// For `type = "macro"`: the value the knob is at, 0 to 1 (held to it when the session is loaded). A macro that has none is at rest.
     #[serde(default)]
     pub value: f64,
+    /// For `type = "steps"`: the values of the steps from the first, each -1 to 1 (held to it when the session is loaded), 1 to 16 of them; the steps that
+    /// are not given are 0. None (no list at all) is the staircase that a new one starts as.
+    #[serde(default)]
+    pub steps: Option<Vec<f64>>,
+    /// For `type = "steps"`: how many of the steps are in use, held to 1 to 16: as many as `steps` has values if it is not said (all sixteen if there are no values).
+    #[serde(default)]
+    pub length: Option<usize>,
+    /// For `type = "steps"`: how much of each step is spent going to the value of the next, 0 to 1 (held to it when the session is loaded).
+    #[serde(default)]
+    pub glide: f64,
+    /// For `type = "steps"`: whether a note starts it again at its first step (it does, if the file does not say).
+    #[serde(default = "default_true")]
+    pub retrigger: bool,
     /// For `type = "midi"`: the bound CC number (mutually exclusive with
     /// `midi_pitch_bend` / `midi_aftertouch`). Absent = unbound (armed for
     /// learning on load).
@@ -421,10 +436,6 @@ fn default_waveform() -> String {
     "sine".into()
 }
 
-fn default_rate() -> f64 {
-    1.0
-}
-
 fn default_depth() -> f64 {
     0.5
 }
@@ -475,23 +486,54 @@ fn reject_non_finite(table: &toml::Table) -> anyhow::Result<()> {
 }
 
 impl ModulatorConfig {
-    /// Whether the loader makes an LFO of it: the types it knows that are not one are `envelope`, `midi` and `macro`, and a type that it does not know is one too.
+    /// Whether the loader makes an LFO of it: the types it knows that are not one are `envelope`, `midi`, `macro` and `steps`, and a type that it does not know is one too.
     pub fn is_lfo(&self) -> bool {
-        !matches!(self.mod_type.as_str(), "envelope" | "midi" | "macro")
+        !matches!(self.mod_type.as_str(), "envelope" | "midi" | "macro" | "steps")
+    }
+
+    /// Whether the file's `rate` is a speed that is read (an LFO's or a step sequencer's), and not left unread (an envelope's, a control's, a macro's).
+    fn has_a_rate(&self) -> bool {
+        self.is_lfo() || self.mod_type == "steps"
     }
 }
 
-/// Refuse an LFO whose rate is below 0, in a lane, in a group and in an effect of a lane (where older sessions kept a lane's modulators): the phase
-/// of one counts down from 0 towards -1 and the shapes leave the -1 to 1 that a cable's law assumes (a saw is from -3 to -1), where the knob
-/// stops at 0.01 and the controller holds to it. Zero is an LFO that stands still, and a rate above the knob's end (50 Hz) is the file's to say.
-/// The error says where it is, as that of a number that is not one does.
+/// Refuse an LFO or a step sequencer whose rate is below 0, in a lane, in a group and in an effect of a lane (where older sessions kept a lane's modulators): the phase
+/// of an LFO counts down from 0 towards -1 and the shapes leave the -1 to 1 that a cable's law assumes (a saw is from -3 to -1), where the knob
+/// stops at 0.01 and the controller holds to it, and a step sequencer would play its steps backwards. Zero is one that stands still, and a rate above the knob's end
+/// (50 Hz) is the file's to say. The error says where it is, as that of a number that is not one does.
 fn reject_backwards_lfos(raw: &SessionRaw) -> anyhow::Result<()> {
     fn check(modulators: &[ModulatorConfig], place: &str) -> anyhow::Result<()> {
-        match modulators.iter().position(|m| m.is_lfo() && m.rate < 0.0) {
-            Some(i) => anyhow::bail!("{place}.modulator[{i}].rate is below 0 ({}): an LFO cannot go round backwards", modulators[i].rate),
+        let backwards = modulators.iter().enumerate().find_map(|(i, m)| m.rate.filter(|rate| m.has_a_rate() && *rate < 0.0).map(|rate| (i, rate, m.is_lfo())));
+        match backwards {
+            Some((i, rate, lfo)) => {
+                let what = if lfo { "an LFO" } else { "a step sequencer" };
+                anyhow::bail!("{place}.modulator[{i}].rate is below 0 ({rate}): {what} cannot go round backwards")
+            }
             None => Ok(()),
         }
     }
+    each_rack(raw, check)
+}
+
+/// Refuse a step sequencer that has no values or more than it can have (`MAX_STEPS`), where the file has a list of them: which of them would be left out is
+/// not for the loader to say. The error says where it is.
+fn reject_bad_steps(raw: &SessionRaw) -> anyhow::Result<()> {
+    fn check(modulators: &[ModulatorConfig], place: &str) -> anyhow::Result<()> {
+        for (i, m) in modulators.iter().enumerate().filter(|(_, m)| m.mod_type == "steps") {
+            match m.steps.as_ref().map(Vec::len) {
+                Some(0) => anyhow::bail!("{place}.modulator[{i}].steps has no values: a step sequencer has 1 to {MAX_STEPS} steps"),
+                Some(n) if n > MAX_STEPS => anyhow::bail!("{place}.modulator[{i}].steps has {n} values: a step sequencer has {MAX_STEPS} steps at most"),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    each_rack(raw, check)
+}
+
+/// Run `check` on every rack of modulators that a session file can have, with the place of the rack in the file: a group's, a lane's and an effect's of a lane
+/// (where older sessions kept a lane's modulators).
+fn each_rack(raw: &SessionRaw, check: fn(&[ModulatorConfig], &str) -> anyhow::Result<()>) -> anyhow::Result<()> {
     for (g, group) in raw.groups.iter().enumerate() {
         check(&group.modulators, &format!("group[{g}]"))?;
     }
@@ -509,6 +551,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
     reject_non_finite(&content.parse::<toml::Table>()?)?;
     let raw: SessionRaw = toml::from_str(content)?;
     reject_backwards_lfos(&raw)?;
+    reject_bad_steps(&raw)?;
     let groups: Vec<GroupConfig> = raw
         .groups
         .into_iter()
@@ -805,6 +848,8 @@ pub enum SaveModSource {
     MidiLearn { cc: Option<u8>, pitch_bend: bool, aftertouch: bool, velocity: bool, key: bool },
     /// A macro: the number it is set to.
     Macro { value: f32 },
+    /// A step sequencer: all its steps, how many are in use, how fast it goes, how it glides and whether a note starts it again.
+    Steps { values: Vec<f32>, length: usize, rate: f32, glide: f32, retrigger: bool },
 }
 
 pub struct SaveModulator {
@@ -1011,7 +1056,7 @@ struct PatternEventOut {
     velocity: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct ModulatorOut {
     #[serde(rename = "type", skip_serializing_if = "is_lfo_type")]
     mod_type: String,
@@ -1029,6 +1074,14 @@ struct ModulatorOut {
     release: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steps: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glide: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retrigger: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     midi_cc: Option<u8>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -1206,45 +1259,22 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     mod_type: "lfo".into(),
                     waveform: Some(waveform.clone()),
                     rate: Some(clean_f64(*rate)),
-                    attack: None,
-                    decay: None,
-                    sustain: None,
-                    release: None,
-                    value: None,
-                    midi_cc: None,
-                    midi_pitch_bend: false,
-                    midi_aftertouch: false,
-                    midi_velocity: false,
-                    midi_key: false,
                     targets,
                     ui,
+                    ..Default::default()
                 },
                 SaveModSource::Envelope { attack, decay, sustain, release } => ModulatorOut {
                     mod_type: "envelope".into(),
-                    waveform: None,
-                    rate: None,
                     attack: Some(clean_f64(*attack)),
                     decay: Some(clean_f64(*decay)),
                     sustain: Some(clean_f64(*sustain)),
                     release: Some(clean_f64(*release)),
-                    value: None,
-                    midi_cc: None,
-                    midi_pitch_bend: false,
-                    midi_aftertouch: false,
-                    midi_velocity: false,
-                    midi_key: false,
                     targets,
                     ui,
+                    ..Default::default()
                 },
                 SaveModSource::MidiLearn { cc, pitch_bend, aftertouch, velocity, key } => ModulatorOut {
                     mod_type: "midi".into(),
-                    waveform: None,
-                    rate: None,
-                    attack: None,
-                    decay: None,
-                    sustain: None,
-                    release: None,
-                    value: None,
                     midi_cc: *cc,
                     midi_pitch_bend: *pitch_bend,
                     midi_aftertouch: *aftertouch,
@@ -1252,23 +1282,25 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_key: *key,
                     targets,
                     ui,
+                    ..Default::default()
                 },
                 SaveModSource::Macro { value } => ModulatorOut {
                     mod_type: "macro".into(),
-                    waveform: None,
-                    rate: None,
-                    attack: None,
-                    decay: None,
-                    sustain: None,
-                    release: None,
                     value: Some(clean_f64(*value)),
-                    midi_cc: None,
-                    midi_pitch_bend: false,
-                    midi_aftertouch: false,
-                    midi_velocity: false,
-                    midi_key: false,
                     targets,
                     ui,
+                    ..Default::default()
+                },
+                SaveModSource::Steps { values, length, rate, glide, retrigger } => ModulatorOut {
+                    mod_type: "steps".into(),
+                    steps: Some(values.iter().map(|value| clean_f64(*value)).collect()),
+                    length: Some(*length),
+                    rate: Some(clean_f64(*rate)),
+                    glide: Some(clean_f64(*glide)),
+                    retrigger: Some(*retrigger),
+                    targets,
+                    ui,
+                    ..Default::default()
                 },
             }
         })
@@ -1774,6 +1806,54 @@ mod tests {
     }
 
     #[test]
+    fn a_step_sequencer_with_a_rate_below_zero_is_refused_wherever_it_is_and_the_error_says_where() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        for (text, place, rate) in [
+            (format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nrate = -1.0\n"), "instrument[0].modulator[0].rate", "-1"),
+            (format!("{osc}[[instrument.modulator]]\n[[instrument.modulator]]\ntype = \"steps\"\nrate = -0.25\n"), "instrument[0].modulator[1].rate", "-0.25"),
+            (format!("[[group]]\n[[group.modulator]]\ntype = \"steps\"\nrate = -2.5\n{osc}"), "group[0].modulator[0].rate", "-2.5"),
+        ] {
+            let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert_eq!(error, format!("{place} is below 0 ({rate}): a step sequencer cannot go round backwards"), "for:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_step_sequencer_with_no_steps_or_with_more_than_there_are_is_refused_and_the_error_says_where() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        let seventeen = vec!["0.5"; 17].join(", ");
+        for (text, place, what) in [
+            (format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = []\n"), "instrument[0].modulator[0].steps", "has no values: a step sequencer has 1 to 16 steps"),
+            (format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = [{seventeen}]\n"), "instrument[0].modulator[0].steps", "has 17 values: a step sequencer has 16 steps at most"),
+            (format!("[[group]]\n[[group.modulator]]\ntype = \"steps\"\nsteps = []\n{osc}"), "group[0].modulator[0].steps", "has no values: a step sequencer has 1 to 16 steps"),
+        ] {
+            let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert_eq!(error, format!("{place} {what}"), "for:\n{text}");
+        }
+        // Sixteen is as many as there are, and one is as few.
+        let sixteen = vec!["0.5"; 16].join(", ");
+        for list in [sixteen.as_str(), "-1.0"] {
+            let text = format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = [{list}]\n");
+            assert!(parse(&text).is_ok(), "refused:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_step_sequencer_is_read_with_what_the_file_says_and_what_it_leaves_out_is_left_to_the_loader() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        let config = parse(&format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.25, 1.0]\nlength = 2\nrate = 4.5\nglide = 0.25\nretrigger = false\n")).unwrap();
+        let m = &config.instruments[0].modulators[0];
+        assert_eq!(m.mod_type, "steps");
+        assert_eq!((m.steps.as_deref(), m.length, m.rate, m.glide, m.retrigger), (Some(&[0.5, -0.25, 1.0][..]), Some(2), Some(4.5), 0.25, false));
+        // None of them: no values, no length, no rate (an LFO's is 1 Hz and its is 8), no glide, and a note starts it again.
+        let config = parse(&format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\n")).unwrap();
+        let m = &config.instruments[0].modulators[0];
+        assert_eq!((m.steps.as_deref(), m.length, m.rate, m.glide, m.retrigger), (None, None, None, 0.0, true));
+        // A step sequencer is not an LFO, whatever the loader makes of a type it does not know.
+        assert!(!m.is_lfo());
+    }
+
+    #[test]
     fn a_rate_that_is_no_rate_below_zero_is_not_refused() {
         let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
         // Zero is an LFO that stands still, 100 Hz is above the knob's end and may be wanted, and a rate on a modulator
@@ -1788,6 +1868,35 @@ mod tests {
         ] {
             let text = format!("{osc}[[instrument.modulator]]\n{modulator}\n");
             assert!(parse(&text).is_ok(), "refused:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_step_sequencer_is_written_with_all_that_it_has_and_read_back_the_same_and_the_others_have_none_of_it() {
+        let sequencer = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
+        let mut values: Vec<f32> = (0..16).map(|i| i as f32 / 8.0 - 1.0).collect();
+        values[3] = 0.3;
+        let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false }, targets: vec![], ui: None };
+        let text = to_toml(&[sequencer(vec![steps])], &[], None, None, None).unwrap();
+        assert!(text.contains("type = \"steps\""), "{text}");
+        assert!(text.contains("steps = [-1.0, -0.875, -0.75, 0.3, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]"), "every value, as typed: {text}");
+        for line in ["length = 5", "rate = 6.5", "glide = 0.25", "retrigger = false"] {
+            assert!(text.contains(line), "{line}: {text}");
+        }
+        let config = parse(&text).unwrap();
+        let m = &config.instruments[0].modulators[0];
+        assert_eq!(m.mod_type, "steps");
+        // (A value is written as it was typed: 0.3, and not the 0.30000001192092896 that its 32 bits are.)
+        assert_eq!(m.steps.as_deref(), Some(&values.iter().map(|v| clean_f64(*v)).collect::<Vec<_>>()[..]));
+        assert_eq!(m.steps.as_ref().unwrap()[3], 0.3);
+        assert_eq!((m.length, m.rate, m.glide, m.retrigger), (Some(5), Some(6.5), 0.25, false));
+        // The rest of the modulators have none of it.
+        let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0 }, targets: vec![], ui: None };
+        let envelope = SaveModulator { source: SaveModSource::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, targets: vec![], ui: None };
+        let knob = SaveModulator { source: SaveModSource::Macro { value: 0.5 }, targets: vec![], ui: None };
+        let text = to_toml(&[sequencer(vec![lfo, envelope, knob])], &[], None, None, None).unwrap();
+        for key in ["steps", "length", "glide", "retrigger"] {
+            assert!(!text.contains(key), "{key}: {text}");
         }
     }
 
@@ -2071,7 +2180,7 @@ range = "C4-C8"
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.waveform, "sine");
-        assert!((m.rate - 2.5).abs() < 0.01);
+        assert!((m.rate.unwrap() - 2.5).abs() < 0.01);
         assert_eq!(m.targets.len(), 1);
         assert_eq!(m.targets[0].param.as_deref(), Some("cutoff"));
         assert!((m.targets[0].depth - 0.75).abs() < 0.01);
@@ -3019,7 +3128,7 @@ depth = 0.3
         assert_eq!(inst.modulators.len(), 1);
         let m = &inst.modulators[0];
         assert_eq!(m.waveform, "triangle");
-        assert!((m.rate - 0.5).abs() < 0.01);
+        assert!((m.rate.unwrap() - 0.5).abs() < 0.01);
         assert_eq!(m.targets.len(), 1);
         assert_eq!(m.targets[0].param.as_deref(), Some("frequency"));
         assert!((m.targets[0].depth - 0.3).abs() < 0.01);

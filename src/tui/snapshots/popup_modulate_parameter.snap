@@ -20,8 +20,8 @@ source: src/tui/golden_tests.rs
 │                             │New macro → cutoff                                        │                             │
 │                             │New velocity → cutoff                                     │                             │
 │                             │New key → cutoff                                          │                             │
+│                             │New step sequencer → cutoff                               │                             │
 │                             │attach → LFO 0.2Hz triangle                               │                             │
-│                             │                                                          │                             │
 │                             │                                                          │                             │
 │                             │                                                          │                             │
 │                             │                                                          │                             │

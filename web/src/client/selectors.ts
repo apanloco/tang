@@ -224,7 +224,7 @@ export function gainOf(state: ClientState, id: NodeId, gain: Gain): number | und
 /**
  * The value of a setting of the modulator in node `id`, if it has that setting (`withSetting` in
  * reducers.ts is the other way round): an LFO's rate, or its waveform as the index the intent
- * takes, a stage of an envelope, or a macro's value.
+ * takes, a stage of an envelope, a macro's value, or a step sequencer's rate, glide, length and switch (1 when a note starts it again).
  */
 export function modulatorFieldOf(state: ClientState, id: NodeId, field: ModulatorField): number | undefined {
   const node = nodeById(state, id);
@@ -238,7 +238,17 @@ export function modulatorFieldOf(state: ClientState, id: NodeId, field: Modulato
     if (field === "attack" || field === "decay" || field === "sustain" || field === "release") return source[field];
   }
   if (source.type === "macro" && field === "value") return source.value;
+  if (source.type === "steps") {
+    if (field === "rate" || field === "glide" || field === "length") return source[field];
+    if (field === "retrigger") return source.retrigger ? 1 : 0;
+  }
   return undefined;
+}
+
+/** The steps of the step sequencer `id`, all of them (the list that its node has, so that an unchanged one is the same list): none for a node that is not one. */
+export function stepsOf(state: ClientState, id: NodeId): readonly number[] | undefined {
+  const node = nodeById(state, id);
+  return node?.kind === "modulator" && node.source.type === "steps" ? node.source.values : undefined;
 }
 
 /** The four settings of the envelope `id`: the times of its attack, decay and release and the level of its sustain. Null for a node that is no envelope. */

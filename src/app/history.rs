@@ -41,6 +41,8 @@ pub enum Key {
     Gain(NodeId, Gain),
     /// A setting of a modulator.
     Field(NodeId, ModulatorField),
+    /// The steps of a step sequencer, all of them: a stroke across the bars is one change of one thing.
+    Steps(NodeId),
     /// The depth of a cable.
     Depth(EdgeId),
     /// The tempo of the session.
@@ -353,6 +355,13 @@ impl Controller {
             },
             Intent::SetModulatorField { node, field, .. } => match self.field_value(*node, *field) {
                 Some(old) => step(format!("set {}", field.label()), Intent::SetModulatorField { node: *node, field: *field, value: old }, Some(Key::Field(*node, *field))),
+                None => Plan::Nothing,
+            },
+            Intent::SetSteps { node, .. } => match self.model.locate(*node).and_then(|path| match path {
+                NodePath::Modulator { at, index } => self.model.modulators(at)?.get(index)?.source.steps(),
+                _ => None,
+            }) {
+                Some(old) => step("set steps".to_string(), Intent::SetSteps { node: *node, values: old.to_vec() }, Some(Key::Steps(*node))),
                 None => Plan::Nothing,
             },
             Intent::SetEdgeDepth { edge, .. } => match self.edge_depth(*edge) {
@@ -2808,6 +2817,115 @@ depth = 0.9
         assert_eq!(commands.first().map(String::as_str), Some("InsertModulator inst=0 index=0 source=Macro { value: 0.8 }"), "{commands:?}");
     }
 
+    const SEQUENCERS: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.25, 1.0]\nrate = 3.5\nglide = 0.25\nretrigger = false\n[[instrument.modulator.target]]\nparam = \"detune\"\ndepth = 0.4\n[[instrument.modulator]]\ntype = \"steps\"\n";
+
+    fn lane_steps(ctl: &Controller, index: usize) -> ([f32; 16], usize, f32, f32, bool) {
+        match ctl.model.instruments[0].modulators[index].source {
+            ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (values, length, rate, glide, retrigger),
+            ref other => panic!("{other:?} is not a step sequencer"),
+        }
+    }
+
+    /// The command that gives the engine these steps, as `sent` says it (for the step sequencer at the first place of the lane's rack).
+    fn steps_line(values: [f32; 16], length: usize, glide: f32, retrigger: bool) -> String {
+        format!("SetModulatorSteps Lane(0) index=0 values={values:?} length={length} glide={glide:.3} retrigger={retrigger}")
+    }
+
+    #[test]
+    fn the_steps_of_a_step_sequencer_are_put_back_and_done_again_and_a_stroke_across_them_is_one_step() {
+        let (engine, mut ctl, clock) = controller_over(load(SEQUENCERS).model);
+        let sequencer = ctl.model.instruments[0].modulators[0].node;
+        let (first, ..) = lane_steps(&ctl, 0);
+        let mut painted = first;
+        // A stroke: one bar after the other, a moment between, each a change of what the sequencer goes through.
+        for (bar, value) in [(0, 0.9), (1, 0.8), (2, 0.7)] {
+            painted[bar] = value;
+            ctl.apply(Intent::SetSteps { node: sequencer, values: painted.to_vec() }).unwrap();
+            clock.advance(Duration::from_millis(50));
+        }
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set steps"));
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(lane_steps(&ctl, 0).0, first, "all of the stroke is put back at once");
+        assert_eq!(sent(&engine), [steps_line(first, 3, 0.25, false)]);
+        assert_eq!(undo_label(&ctl), None, "the stroke was one step");
+        ctl.redo().unwrap();
+        assert_eq!(lane_steps(&ctl, 0).0, painted);
+        assert_eq!(sent(&engine), [steps_line(painted, 3, 0.25, false)]);
+    }
+
+    #[test]
+    fn the_steps_of_one_step_sequencer_and_of_another_are_two_steps_and_so_are_strokes_a_while_apart() {
+        let (_engine, mut ctl, clock) = controller_over(load(SEQUENCERS).model);
+        let (first, second) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[1].node);
+        let steps = |value: f32| vec![value; 16];
+        ctl.apply(Intent::SetSteps { node: first, values: steps(0.1) }).unwrap();
+        ctl.apply(Intent::SetSteps { node: second, values: steps(0.2) }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::SetSteps { node: second, values: steps(0.3) }).unwrap();
+        let mut labels = Vec::new();
+        while let Some(label) = undo_label(&ctl) {
+            labels.push(label);
+            ctl.undo().unwrap();
+        }
+        assert_eq!(labels, ["set steps", "set steps", "set steps"]);
+        assert_eq!(lane_steps(&ctl, 0).0[..4], [0.5, -0.25, 1.0, 0.0]);
+        assert_eq!(lane_steps(&ctl, 1).0, ModSourceSlot::staircase());
+    }
+
+    #[test]
+    fn a_setting_of_a_step_sequencer_is_a_step_in_the_words_of_the_setting_and_is_put_back() {
+        let (engine, mut ctl, clock) = controller_over(load(SEQUENCERS).model);
+        let sequencer = ctl.model.instruments[0].modulators[0].node;
+        let (values, ..) = lane_steps(&ctl, 0);
+        for (field, value, words) in [
+            (ModulatorField::Glide, 0.75, "set glide"),
+            (ModulatorField::Length, 9.0, "set length"),
+            (ModulatorField::Retrigger, 1.0, "set retrigger"),
+            (ModulatorField::Rate, 20.0, "set rate"),
+        ] {
+            ctl.apply(Intent::SetModulatorField { node: sequencer, field, value }).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(words));
+            clock.advance(Duration::from_secs(5));
+        }
+        sent(&engine);
+        for _ in 0..4 {
+            ctl.undo().unwrap();
+        }
+        assert_eq!(lane_steps(&ctl, 0), (values, 3, 3.5, 0.25, false));
+        assert_eq!(
+            sent(&engine),
+            [
+                "SetModulatorRate inst=0 mod=0 rate=3.500".to_string(),
+                steps_line(values, 9, 0.75, false),
+                steps_line(values, 3, 0.75, false),
+                steps_line(values, 3, 0.25, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_step_sequencer_that_is_taken_out_is_put_back_with_the_steps_it_had_and_its_cable_in_the_words_of_the_button_that_adds_one() {
+        let (engine, mut ctl, clock) = controller_over(load(SEQUENCERS).model);
+        let sequencer = ctl.model.instruments[0].modulators[0].node;
+        let mut values = [0.0; 16];
+        values[..3].copy_from_slice(&[0.9, 0.8, 0.7]);
+        ctl.apply(Intent::SetSteps { node: sequencer, values: values.to_vec() }).unwrap();
+        ctl.apply(Intent::SetModulatorField { node: sequencer, field: ModulatorField::Length, value: 2.0 }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::RemoveNode { node: sequencer }).unwrap();
+        assert_eq!(ctl.model.instruments[0].modulators.len(), 1);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove a step sequencer"));
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(lane_steps(&ctl, 0), (values, 2, 3.5, 0.25, false), "as it was, and not as it was loaded");
+        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1, "with its cable");
+        assert_eq!(ctl.model.instruments[0].modulators[0].node, sequencer, "under the id it had");
+        let commands = sent(&engine);
+        let inserted = format!("InsertModulator inst=0 index=0 source=Steps {{ values: {values:?}, length: 2, rate: 3.5, glide: 0.25, retrigger: false, position: 0.0 }}");
+        assert_eq!(commands.first(), Some(&inserted), "{commands:?}");
+    }
+
     #[test]
     fn a_modulator_that_is_taken_out_is_a_step_in_the_words_of_the_button_that_adds_one_like_it() {
         let (_engine, mut ctl, _clock) = controller_over(load(MODULATORS).model);
@@ -4912,6 +5030,38 @@ size = 0.5
                 redo(),
                 redo(),
             ],
+        ));
+        let steps = |node: NodeId, edits: &[(usize, f32)]| {
+            let mut values = ModSourceSlot::staircase();
+            for &(step, value) in edits {
+                values[step] = value;
+            }
+            Op::Do(Intent::SetSteps { node, values: values.to_vec() })
+        };
+        scripts.push((
+            "a step sequencer is added with a cable, a stroke across its steps is one step, its settings are changed, and it is taken out and put back as it was",
+            {
+                let mut script = vec![
+                    add_modulator(lane0, ModulatorKind::Steps),
+                    cable(fresh(0), lane0, detune),
+                    // A stroke: one bar after the other, in a moment.
+                    steps(fresh(0), &[(0, 0.9)]),
+                    steps(fresh(0), &[(0, 0.9), (1, 0.8)]),
+                    steps(fresh(0), &[(0, 0.9), (1, 0.8), (2, 0.7)]),
+                    pause(),
+                    // Another, a while after: a step of its own.
+                    steps(fresh(0), &[(0, 0.9), (1, 0.8), (2, 0.7), (15, -3.0)]),
+                    field(fresh(0), ModulatorField::Length, 5.0),
+                    field(fresh(0), ModulatorField::Glide, 0.5),
+                    field(fresh(0), ModulatorField::Retrigger, 0.0),
+                    field(fresh(0), ModulatorField::Rate, 3.0),
+                    Op::Do(Intent::RemoveNode { node: fresh(0) }),
+                ];
+                // (Nine steps: the modulator, its cable, the stroke, the other steps, the four settings, and its removal.)
+                script.extend(n_of(9, undo));
+                script.extend(n_of(9, redo));
+                script
+            },
         ));
         scripts.push((
             "a velocity and a key are added with cables, one is taken out, and each goes back and comes again",

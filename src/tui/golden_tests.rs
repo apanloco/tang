@@ -2558,8 +2558,8 @@ fn the_modulate_popup_can_make_an_envelope_instead() {
 fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     let mut h = on_the_bass_filters_cutoff();
     h.press(KeyCode::Down); // the filter's resonance, which the bass's LFO does not drive
-    // (The popup lists a new LFO, a new envelope, a new macro, a new velocity and a new key before the modulators that are there.)
-    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 5).press(KeyCode::Enter);
+    // (The popup lists a new modulator of each kind before the modulators that are there.)
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"],
@@ -2575,7 +2575,7 @@ fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
 fn the_modulate_popup_does_not_attach_a_parameter_to_a_modulator_that_drives_it_already() {
     // (The controller refuses the second cable between the two, in the browser as here.)
     let mut h = on_the_bass_filters_cutoff();
-    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 5).press(KeyCode::Enter);
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
     assert!(h.commands().is_empty());
     assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the LFO's cable to the cutoff, and no more");
     assert_eq!(h.s.ctl.history_state().undo, None);
@@ -2663,10 +2663,10 @@ fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_
 
 #[test]
 fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_whichever_place_it_has_in_its_rack() {
-    // The envelope again: the popup lists a new LFO, a new envelope, a new macro, a new velocity and a new key, and then the three that are there.
+    // The envelope again: the popup lists a new modulator of each kind, and then the three that are there (the envelope is the second).
     let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
     h.goto(TreeAddress::Instrument(0));
-    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 6).press(KeyCode::Enter);
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len() + 1).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
@@ -3793,6 +3793,199 @@ depth = 0.4
 fn a_macro_is_in_the_tree_with_its_value_and_what_it_drives() {
     let h = Harness::new(scene_macro());
     assert!(h.tree().iter().any(|line| line.contains("~ Macro 0.25 → Filter: cutoff (40%)")), "{:#?}", h.tree());
+}
+
+// ---------------------------------------------------------------------------
+// A step sequencer: its settings, its sixteen steps and what it drives
+// ---------------------------------------------------------------------------
+
+/// One oscillator with a filter, and a step sequencer of four steps (at 6 steps a second, a glide of a quarter, not started again by a note) with a cable to the filter's cutoff.
+fn scene_steps() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "steps"
+steps = [0.5, -0.25, 1.0, -1.0]
+rate = 6.0
+glide = 0.25
+retrigger = false
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4
+"#
+}
+
+fn steps_in_the_lane(h: &Harness) -> ([f32; 16], usize, f32, f32, bool) {
+    match h.s.ctl.model.instruments[0].modulators[0].source {
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (values, length, rate, glide, retrigger),
+        ref other => panic!("{other:?}"),
+    }
+}
+
+/// The rows of a step sequencer's pane that are not its steps: the rate, the glide, the length and whether a note starts it again.
+const RATE: usize = 0;
+const GLIDE: usize = 1;
+const LENGTH: usize = 2;
+const RETRIGGER: usize = 3;
+/// The row of step `i` (counting from 0).
+const fn step_row(i: usize) -> usize {
+    4 + i
+}
+
+#[test]
+fn a_step_sequencer_is_in_the_tree_with_how_long_it_is_and_how_fast_and_what_it_drives() {
+    let h = Harness::new(scene_steps());
+    assert!(h.tree().iter().any(|line| line.contains("~ Steps 4 6.0Hz → Filter: cutoff (40%)")), "{:#?}", h.tree());
+}
+
+#[test]
+fn the_pane_of_a_step_sequencer_has_its_settings_its_sixteen_steps_and_its_targets() {
+    let mut h = Harness::new(scene_steps());
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    assert_golden("steps_pane", &mut h);
+}
+
+#[test]
+fn left_and_right_turn_the_rate_and_the_glide_of_a_step_sequencer_and_the_engine_is_given_all_it_has() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, GLIDE);
+    h.press(KeyCode::Right);
+    let (values, length, rate, glide, retrigger) = steps_in_the_lane(&h);
+    assert!((glide - 0.30).abs() < 1e-6, "a twentieth of the glide's range: {glide}");
+    assert_eq!((length, rate, retrigger), (4, 6.0, false));
+    let commands = h.commands();
+    assert!(commands.len() == 1 && commands[0].starts_with("SetModulatorSteps Lane(0) index=0 values=[0.5, -0.25, 1.0, -1.0, 0.0,") && commands[0].ends_with("length=4 glide=0.300 retrigger=false"), "{commands:?}");
+    assert_eq!(values[..5], [0.5, -0.25, 1.0, -1.0, 0.0]);
+    // The rate is turned by ratios, as an LFO's is, and is an LFO's command.
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, RATE);
+    h.press(KeyCode::Right);
+    assert!((steps_in_the_lane(&h).2 - 6.0 * 1.53).abs() < 0.1, "{}", steps_in_the_lane(&h).2);
+    assert!(h.commands().iter().any(|c| c.starts_with("SetModulatorRate inst=0 mod=0 rate=9.")), "{:?}", h.commands());
+    assert!(h.tree().iter().any(|line| line.contains("~ Steps 4 9.")), "the tree has the rate: {:#?}", h.tree());
+}
+
+#[test]
+fn left_and_right_turn_the_length_of_a_step_sequencer_by_one_step_and_stop_at_its_ends() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, LENGTH);
+    h.press(KeyCode::Right);
+    assert_eq!(steps_in_the_lane(&h).1, 5, "one step, and not a twentieth of the range");
+    h.press_n(KeyCode::Left, 2);
+    assert_eq!(steps_in_the_lane(&h).1, 3);
+    // A step with Shift is as long, since a length is a whole number of steps.
+    h.press_with(KeyCode::Right, KeyModifiers::SHIFT);
+    assert_eq!(steps_in_the_lane(&h).1, 4);
+    h.press_n(KeyCode::Left, 10);
+    assert_eq!(steps_in_the_lane(&h).1, 1);
+    h.press_n(KeyCode::Right, 30);
+    assert_eq!(steps_in_the_lane(&h).1, 16);
+    assert!(h.tree().iter().any(|line| line.contains("~ Steps 16 6.0Hz")), "{:#?}", h.tree());
+}
+
+#[test]
+fn left_and_right_on_the_retrigger_of_a_step_sequencer_turn_it_over_either_way() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, RETRIGGER);
+    assert!(h.dump().contains("◂ off ▸"), "{}", h.dump());
+    h.press(KeyCode::Right);
+    assert!(steps_in_the_lane(&h).4);
+    assert!(h.dump().contains("◂ on ▸"), "{}", h.dump());
+    h.press(KeyCode::Left);
+    assert!(!steps_in_the_lane(&h).4);
+    h.press(KeyCode::Left);
+    assert!(steps_in_the_lane(&h).4, "a switch has two places: either key goes to the other");
+    assert!(h.commands().last().unwrap().ends_with("retrigger=true"), "{:?}", h.commands());
+}
+
+#[test]
+fn left_and_right_turn_a_step_by_a_twentieth_of_minus_one_to_one_and_it_stops_at_the_ends() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, step_row(1));
+    h.press(KeyCode::Right);
+    assert!((steps_in_the_lane(&h).0[1] - (-0.15)).abs() < 1e-6, "{}", steps_in_the_lane(&h).0[1]);
+    assert_eq!(steps_in_the_lane(&h).0[0], 0.5, "the others stay");
+    let commands = h.commands();
+    assert!(commands.len() == 1 && commands[0].starts_with("SetModulatorSteps Lane(0) index=0 values=[0.5, -0.15"), "{commands:?}");
+    h.press_with(KeyCode::Left, KeyModifiers::SHIFT);
+    assert!((steps_in_the_lane(&h).0[1] - (-0.17)).abs() < 1e-6, "a hundredth of the range with Shift: {}", steps_in_the_lane(&h).0[1]);
+    h.press_n(KeyCode::Left, 30);
+    assert_eq!(steps_in_the_lane(&h).0[1], -1.0);
+    h.press_n(KeyCode::Right, 30);
+    assert_eq!(steps_in_the_lane(&h).0[1], 1.0);
+    assert!(h.s.ctl.dirty);
+    // And each is a step of the history, of one thing.
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("set steps"));
+}
+
+#[test]
+fn a_value_typed_into_a_step_is_set_and_kept_between_minus_one_and_one() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, step_row(2));
+    enter_value(&mut h, "-0.75");
+    assert_eq!(steps_in_the_lane(&h).0[2], -0.75);
+    enter_value(&mut h, "7");
+    assert_eq!(steps_in_the_lane(&h).0[2], 1.0);
+    // The settings are typed in as numbers too, and a length that has a fraction is rounded.
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, LENGTH);
+    enter_value(&mut h, "9.4");
+    assert_eq!(steps_in_the_lane(&h).1, 9);
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, RETRIGGER);
+    h.press(KeyCode::Enter);
+    assert!(h.s.editing.is_none(), "a switch is turned over with the arrows and not typed");
+}
+
+#[test]
+fn m_on_the_rate_of_a_step_sequencer_opens_the_popup_and_on_the_steps_the_glide_and_the_length_it_does_not() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, RATE);
+    h.press(KeyCode::Char('m'));
+    assert!(h.s.modulate.is_some(), "the rate can be driven");
+    h.press(KeyCode::Esc).press(KeyCode::Esc);
+    for row in [GLIDE, LENGTH, RETRIGGER, step_row(0), step_row(15)] {
+        on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, row);
+        h.press(KeyCode::Char('m'));
+        assert!(h.s.modulate.is_none(), "row {row} is set by a person");
+        h.press(KeyCode::Esc);
+    }
+}
+
+#[test]
+fn a_step_sequencer_is_taken_out_with_d_and_put_back_by_ctrl_z_with_its_steps() {
+    let mut h = Harness::new(scene_steps());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, step_row(0));
+    h.press(KeyCode::Right).press(KeyCode::Esc);
+    h.press(KeyCode::Char('d'));
+    assert!(h.s.ctl.model.instruments[0].modulators.is_empty());
+    assert!(!h.tree().iter().any(|line| line.contains("Steps")), "{:#?}", h.tree());
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("remove a step sequencer"));
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!((steps_in_the_lane(&h).0[0] - 0.6).abs() < 1e-6, "{}", steps_in_the_lane(&h).0[0]);
+    assert_eq!(h.s.ctl.model.instruments[0].modulators[0].targets.len(), 1, "with its cable");
+}
+
+#[test]
+fn the_modulate_popup_has_a_new_step_sequencer_that_is_made_as_a_staircase_with_a_cable_to_the_parameter_as_one_step() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len() - 1);
+    let popup = h.dump();
+    assert!(popup.contains("New step sequencer → cutoff"), "{popup}");
+    h.press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.instruments[2].modulators;
+    assert_eq!(rack.len(), 2);
+    let ModSourceSlot::Steps { values, length, rate, glide, retrigger } = rack[1].source else { panic!("{:?}", rack[1].source) };
+    assert_eq!((values, length, rate, glide, retrigger), (ModSourceSlot::staircase(), 16, 8.0, 0.0, true));
+    assert_eq!(rack[1].targets.len(), 1);
+    let commands = h.commands();
+    assert!(commands[0].starts_with("InsertModulator inst=2 index=1 source=Steps { values: [-1.0, -0.875,"), "{commands:?}");
+    assert!(commands[1].starts_with("AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }"), "{commands:?}");
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the step sequencer and the cable to it are one thing");
 }
 
 // ---------------------------------------------------------------------------
@@ -5687,7 +5880,7 @@ mod undo_and_redo {
     fn the_modulate_popup_with_a_modulator_that_is_there_is_a_step_of_a_cable() {
         let mut h = on_the_bass_filters_cutoff();
         h.press(KeyCode::Down); // the filter's resonance
-        h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 5).press(KeyCode::Enter);
+        h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("draw a cable"));
         ctrl_z(&mut h);
         assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the cable of the LFO that was there");

@@ -68,11 +68,12 @@ export function samePort(a: Port, b: Port): boolean {
   return a.type === b.type;
 }
 
-/** The ports of the settings a modulator has that a cable can end at: an LFO's rate, an envelope's four stages, nothing for a MIDI control or a macro (its value is turned by a person). */
+/** The ports of the settings a modulator has that a cable can end at: the rate of an LFO or of a step sequencer, an envelope's four stages, nothing for a MIDI control or a macro (its value is turned by a person). */
 function settingPorts(node: Node): Port[] {
   if (node.kind !== "modulator") return [];
   switch (node.source.type) {
     case "lfo":
+    case "steps":
       return [{ type: "rate" }];
     case "envelope":
       return [{ type: "attack" }, { type: "decay" }, { type: "sustain" }, { type: "release" }];

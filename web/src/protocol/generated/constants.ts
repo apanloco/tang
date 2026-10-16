@@ -27,6 +27,9 @@ export const MODULATOR_FIELD_RANGES: Record<ModulatorField, readonly [number, nu
   sustain: [0, 1],
   release: [0.001, 10],
   value: [0, 1],
+  glide: [0, 1],
+  length: [1, 16],
+  retrigger: [0, 1],
 };
 
 /** What each setting of a modulator is when the modulator is new (`ModSourceSlot::new_lfo`, `new_envelope`): where a double click puts a knob. */
@@ -38,6 +41,9 @@ export const MODULATOR_FIELD_DEFAULTS: Record<ModulatorField, number> = {
   sustain: 0.7,
   release: 0.5,
   value: 0,
+  glide: 0,
+  length: 16,
+  retrigger: 1,
 };
 
 /** How a setting of a modulator is turned: a rate and a time run over decades, which a knob turns by ratios (`ModulatorField::taper`). */
@@ -49,7 +55,13 @@ export const MODULATOR_FIELD_SCALES: Record<ModulatorField, "linear" | "log"> = 
   sustain: "linear",
   release: "log",
   value: "linear",
+  glide: "linear",
+  length: "linear",
+  retrigger: "linear",
 };
+
+/** The settings of a modulator whose value is a whole number, which the controller rounds it to: a place in a list, a count, a switch (`ModulatorField::is_whole`). */
+export const MODULATOR_WHOLE_FIELDS: readonly ModulatorField[] = ["waveform", "length", "retrigger"];
 
 /** The lowest and the highest value of each setting of a pattern: what the controller clamps to (`PatternField::range`); a switch is 0 or 1. */
 export const PATTERN_FIELD_RANGES: Record<PatternField, readonly [number, number]> = {
@@ -71,6 +83,13 @@ export const KEY_SPAN = 60;
 
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
+
+/** How many steps a step sequencer has, the bars of its node (`MAX_STEPS`), and the lowest and the highest value of a step (`STEP_MIN`, `STEP_MAX`). */
+export const MAX_STEPS = 16;
+export const STEP_RANGE: readonly [number, number] = [-1, 1];
+
+/** What a new step sequencer starts as (`ModSourceSlot::new_steps`): the staircase of its steps, how many are in use, its rate (not the 1 of an LFO that the defaults of the settings say), its glide and whether a note starts it again. */
+export const NEW_STEPS = { values: [-1, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], length: 16, rate: 8, glide: 0, retrigger: true } as const;
 
 /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */
 export const BPM_RANGE: readonly [number, number] = [20, 300];

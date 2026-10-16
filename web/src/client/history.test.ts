@@ -378,6 +378,76 @@ describe("what turning a macro is to the history", () => {
   });
 });
 
+describe("what changing a step sequencer is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const [lane0] = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
+  const someLfo = snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "lfo");
+  if (!lane0 || !someLfo) throw new Error("the fixture has a lane and an LFO");
+  const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+  const sequencer: Node = { id: 9_200, parent: lane0.id, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  const other: Node = { ...sequencer, id: 9_201 };
+  const withSequencers: Snapshot = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, sequencer, other] } };
+  const plan = (intent: Intent, at = 7): ReturnType<typeof planOf> => planOf(withSequencers, intent, at, builtinCatalog);
+  const stepFor = (intent: Intent, at = 7) => {
+    const planned = plan(intent, at);
+    if (typeof planned !== "object" || !("step" in planned)) throw new Error("a step");
+    return planned.step;
+  };
+
+  test("the steps are a step in the words of the steps that puts back the steps there were and does it again", () => {
+    const painted = [0.9, ...values.slice(1)];
+    const planned = stepFor({ type: "setSteps", node: sequencer.id, values: painted });
+    expect(planned.label).toBe("set steps");
+    expect(planned.undo).toEqual([{ type: "setSteps", node: sequencer.id, values }]);
+    expect(planned.redo).toEqual([{ type: "setSteps", node: sequencer.id, values: painted }]);
+  });
+
+  test("a stroke across them is one step: the changes of the steps of one step sequencer that follow one another are one, and another's are a step of its own", () => {
+    const history = new History();
+    const draw = (node: number, painted: number[], at: number): void => {
+      history.record(stepFor({ type: "setSteps", node, values: painted }, at));
+    };
+    draw(sequencer.id, [0.9, ...values.slice(1)], 0);
+    draw(sequencer.id, [0.9, 0.8, ...values.slice(2)], 0.05);
+    draw(sequencer.id, [0.9, 0.8, 0.7, ...values.slice(3)], 0.1);
+    expect(history.undoable).toBe(1);
+    draw(other.id, [0.1, ...values.slice(1)], 0.15);
+    expect(history.undoable).toBe(2);
+    // A stroke a while after the last is a step of its own.
+    draw(other.id, [0.1, 0.2, ...values.slice(2)], 0.15 + HISTORY_SAME_STEP + 0.5);
+    expect(history.undoable).toBe(3);
+    // The one step of the stroke puts back what the stroke found, and does what it did last.
+    history.takeUndo();
+    history.takeUndo();
+    const first = history.takeUndo();
+    expect(first?.label).toBe("set steps");
+    expect(first?.undo).toEqual([{ type: "setSteps", node: sequencer.id, values }]);
+    expect(first?.redo).toEqual([{ type: "setSteps", node: sequencer.id, values: [0.9, 0.8, 0.7, ...values.slice(3)] }]);
+  });
+
+  test("a setting of it is a step in the words of the setting, and a rate, a glide, a length and a switch are each one that it has", () => {
+    for (const [field, value, words] of [["rate", 9, "set rate"], ["glide", 0.5, "set glide"], ["length", 9, "set length"], ["retrigger", 1, "set retrigger"]] as const) {
+      expect(stepFor({ type: "setModulatorField", node: sequencer.id, field, value }).label, field).toBe(words);
+    }
+    expect(stepFor({ type: "setModulatorField", node: sequencer.id, field: "glide", value: 0.5 }).undo).toEqual([{ type: "setModulatorField", node: sequencer.id, field: "glide", value: 0.25 }]);
+    expect(stepFor({ type: "setModulatorField", node: sequencer.id, field: "length", value: 9 }).undo).toEqual([{ type: "setModulatorField", node: sequencer.id, field: "length", value: 4 }]);
+    expect(stepFor({ type: "setModulatorField", node: sequencer.id, field: "retrigger", value: 1 }).undo).toEqual([{ type: "setModulatorField", node: sequencer.id, field: "retrigger", value: 0 }]);
+  });
+
+  test("is no step for what is not a step sequencer: the intents are refused", () => {
+    expect(plan({ type: "setSteps", node: someLfo.id, values })).toBe("nothing");
+    expect(plan({ type: "setSteps", node: lane0.id, values })).toBe("nothing");
+    expect(plan({ type: "setSteps", node: 12345, values })).toBe("nothing");
+    for (const field of ["glide", "length", "retrigger"] as const) expect(plan({ type: "setModulatorField", node: someLfo.id, field, value: 1 }), field).toBe("nothing");
+    for (const field of ["waveform", "attack", "value"] as const) expect(plan({ type: "setModulatorField", node: sequencer.id, field, value: 1 }), field).toBe("nothing");
+  });
+
+  test("taking one out, and adding one, are steps in the words of the button that adds one", () => {
+    expect(plan({ type: "removeNode", node: sequencer.id })).toEqual({ removed: { label: "remove a step sequencer", intent: { type: "removeNode", node: sequencer.id }, at: 7 } });
+    expect(plan({ type: "addModulator", parent: lane0.id, kind: "steps" })).toEqual({ added: { label: "add a step sequencer", intent: { type: "addModulator", parent: lane0.id, kind: "steps" }, at: 7 } });
+  });
+});
+
 describe("what a tempo set is to the history", () => {
   const snapshot: Snapshot = { ...historyFixture.snapshot, meta: { ...historyFixture.snapshot.meta, bpm: 87.5 } };
   const plan = (intent: Intent): ReturnType<typeof planOf> => planOf(snapshot, intent, 7, builtinCatalog);

@@ -162,6 +162,9 @@ pub enum ModulatorSource {
     MidiLearn { control: Option<MidiControl>, learning: bool },
     /// A knob: a number that a person sets, 0 to 1.
     Macro { value: f32 },
+    /// A step sequencer: all of its `MAX_STEPS` values, -1 to 1, the first `length` of them in use, how many steps it goes through a second, how much of each is
+    /// spent going to the next one's value (0 to 1), and whether a note starts it again at the first step.
+    Steps { values: Vec<f32>, length: u32, rate: f32, glide: f32, retrigger: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,6 +470,9 @@ fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
             ModulatorSource::MidiLearn { control: source.map(MidiControl::from), learning: *learning }
         }
         ModSourceSlot::Macro { value } => ModulatorSource::Macro { value: *value },
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger } => {
+            ModulatorSource::Steps { values: values.to_vec(), length: *length as u32, rate: *rate, glide: *glide, retrigger: *retrigger }
+        }
     };
     Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
 }
@@ -890,6 +896,28 @@ depth = 0.1
         assert_eq!(found.name, "Macro");
         assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.25 } });
         assert_eq!(found.parent, Some(model.instruments[0].node));
+    }
+
+    #[test]
+    fn a_step_sequencer_is_a_node_called_steps_whatever_it_goes_through_and_says_all_that_it_has() {
+        let mut model = load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.25, 1.0]\nrate = 6.5\nglide = 0.25\nretrigger = false\n",
+        )
+        .model;
+        let sequencer = model.instruments[0].modulators[0].node;
+        let found = |model: &SessionModel| node(&model.graph(), sequencer).clone();
+        let mut values = vec![0.0; 16];
+        values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
+        let found_first = found(&model);
+        assert_eq!(found_first.name, "Steps");
+        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false } });
+        assert_eq!(found_first.parent, Some(model.instruments[0].node));
+        // Its name does not say how fast it goes or how long it is, which change under a client.
+        if let ModSourceSlot::Steps { length, rate, .. } = &mut model.instruments[0].modulators[0].source {
+            *length = 9;
+            *rate = 0.5;
+        }
+        assert_eq!(found(&model).name, "Steps");
     }
 
     #[test]

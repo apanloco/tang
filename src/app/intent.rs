@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
 use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
-use crate::plugin::chain::MidiBindSource;
+use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
 use crate::session::NodeUi;
 
 /// What a front-end asks of the controller, naming the node it concerns.
@@ -152,6 +152,11 @@ pub enum Intent {
     /// Refused, with nothing changed, for a node that has no plugin, a parameter the plugin does not have, a separator, a parameter
     /// listed twice and more than `MAX_PINNED` of them.
     SetPinned { node: NodeId, params: Vec<u32> },
+    /// Set the values of a step sequencer, a modulator's (lane or group): `node` is the node of the modulator and `values` all of its steps, from the
+    /// first, `MAX_STEPS` of them (the ones past its length are kept for when it is longer again), each held to -1 to 1. It is one thing to the history, so
+    /// that a stroke across the bars is one step to undo. Refused, with nothing changed, for a node that is not a step sequencer, a list that has not as many
+    /// steps as there are, and a value that is not a number.
+    SetSteps { node: NodeId, values: Vec<f32> },
     /// Add a group, a submix bus, at the end: it has no effects and no modulators, full volume and a centred pan, and a meter of
     /// its own. `members` are lanes (each the node of a lane, its instrument's, which an empty lane has too) that are put in it
     /// at once, as `SetLaneGroup` does for each (a lane in another group leaves it); none makes an empty group. Refused, with
@@ -229,6 +234,8 @@ pub enum ModulatorKind {
     Velocity,
     /// The number of the last note the lane plays, bound when it is made.
     Key,
+    /// A step sequencer: sixteen steps that climb from the bottom in eighths, eight a second, started again by every note.
+    Steps,
 }
 
 impl ModulatorKind {
@@ -241,6 +248,7 @@ impl ModulatorKind {
             ModulatorKind::Macro => ModSourceSlot::new_macro(),
             ModulatorKind::Velocity => ModSourceSlot::new_note_control(MidiBindSource::Velocity),
             ModulatorKind::Key => ModSourceSlot::new_note_control(MidiBindSource::Key),
+            ModulatorKind::Steps => ModSourceSlot::new_steps(),
         }
     }
 
@@ -253,6 +261,7 @@ impl ModulatorKind {
             ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), .. } => ModulatorKind::Key,
             ModSourceSlot::MidiLearn { .. } => ModulatorKind::MidiLearn,
             ModSourceSlot::Macro { .. } => ModulatorKind::Macro,
+            ModSourceSlot::Steps { .. } => ModulatorKind::Steps,
         }
     }
 
@@ -265,6 +274,7 @@ impl ModulatorKind {
             ModulatorKind::Macro => "a macro",
             ModulatorKind::Velocity => "a velocity control",
             ModulatorKind::Key => "a key control",
+            ModulatorKind::Steps => "a step sequencer",
         }
     }
 }
@@ -318,6 +328,12 @@ pub enum ModulatorField {
     Release,
     /// A macro's value: 0 to 1.
     Value,
+    /// A step sequencer's glide: how much of each step is spent going to the value of the next, 0 (none: each is held) to 1 (all of it).
+    Glide,
+    /// How many of a step sequencer's steps are in use: 1 to 16, a whole number.
+    Length,
+    /// Whether a note starts a step sequencer again at its first step: 0 or 1.
+    Retrigger,
 }
 
 impl ModulatorField {
@@ -331,6 +347,9 @@ impl ModulatorField {
             ModulatorField::Sustain => "sustain",
             ModulatorField::Release => "release",
             ModulatorField::Value => "value",
+            ModulatorField::Glide => "glide",
+            ModulatorField::Length => "length",
+            ModulatorField::Retrigger => "retrigger",
         }
     }
 
@@ -340,8 +359,14 @@ impl ModulatorField {
             ModulatorField::Rate => (0.01, 50.0),
             ModulatorField::Waveform => (0.0, (crate::plugin::chain::LfoWaveform::ALL.len() - 1) as f32),
             ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => (0.001, 10.0),
-            ModulatorField::Sustain | ModulatorField::Value => (0.0, 1.0),
+            ModulatorField::Sustain | ModulatorField::Value | ModulatorField::Glide | ModulatorField::Retrigger => (0.0, 1.0),
+            ModulatorField::Length => (1.0, MAX_STEPS as f32),
         }
+    }
+
+    /// Whether its value is a whole number, which the controller rounds it to: a place in a list (a waveform), a count (a length) or a switch.
+    pub fn is_whole(self) -> bool {
+        matches!(self, ModulatorField::Waveform | ModulatorField::Length | ModulatorField::Retrigger)
     }
 
     /// How its values are spread over its range when it is turned: a rate and a time run over thousands, which a linear control would crowd into its first
@@ -349,7 +374,12 @@ impl ModulatorField {
     pub fn taper(self) -> Taper {
         match self {
             ModulatorField::Rate | ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Release => Taper::Log,
-            ModulatorField::Waveform | ModulatorField::Sustain | ModulatorField::Value => Taper::Linear,
+            ModulatorField::Waveform
+            | ModulatorField::Sustain
+            | ModulatorField::Value
+            | ModulatorField::Glide
+            | ModulatorField::Length
+            | ModulatorField::Retrigger => Taper::Linear,
         }
     }
 }
@@ -434,6 +464,8 @@ pub enum Event {
     PinnedSet { node: NodeId, params: Vec<u32> },
     /// A group is now called `name`: what it was given, or "Group" and its number if it was given none.
     GroupRenamed { node: NodeId, name: String },
+    /// A step sequencer now has these steps, all of them, held to -1 to 1.
+    StepsSet { node: NodeId, values: Vec<f32> },
     /// A modulator's setting now has `value` (after clamping, and rounding a waveform).
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
@@ -573,10 +605,55 @@ mod tests {
     }
 
     #[test]
+    fn a_step_sequencer_is_made_as_a_staircase_of_sixteen_steps_and_is_the_kind_that_it_says() {
+        let source = ModulatorKind::Steps.source();
+        let ModSourceSlot::Steps { values, length, rate, glide, retrigger } = source else { panic!("{source:?}") };
+        assert_eq!(
+            values,
+            [-1.0, -0.875, -0.75, -0.625, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],
+            "a staircase that climbs from the bottom, which shows at once that it goes round"
+        );
+        assert_eq!((length, rate, glide, retrigger), (16, 8.0, 0.0, true), "all sixteen, a sixteenth note at 120 beats a minute, no glide, started again by a note");
+        assert_eq!(ModulatorKind::of(&source), ModulatorKind::Steps);
+        assert_eq!(ModulatorKind::Steps.label(), "a step sequencer");
+    }
+
+    #[test]
+    fn the_settings_of_a_step_sequencer_have_their_ranges_their_names_and_whether_they_are_whole() {
+        use ModulatorField::{Glide, Length, Retrigger};
+        assert_eq!(Glide.range(), (0.0, 1.0));
+        assert_eq!(Length.range(), (1.0, 16.0));
+        assert_eq!(Retrigger.range(), (0.0, 1.0));
+        for (field, name) in [(Glide, "glide"), (Length, "length"), (Retrigger, "retrigger")] {
+            assert_eq!(field.label(), name);
+            assert_eq!(wire(&field), json!(name));
+            assert_eq!(serde_json::from_value::<ModulatorField>(json!(name)).unwrap(), field);
+        }
+        // A waveform is a place in a list, a length a number of steps and a retrigger a switch: they are whole. The rest are not.
+        for field in [ModulatorField::Waveform, Length, Retrigger] {
+            assert!(field.is_whole(), "{field:?}");
+        }
+        for field in [ModulatorField::Rate, Glide, ModulatorField::Attack, ModulatorField::Decay, ModulatorField::Sustain, ModulatorField::Release, ModulatorField::Value] {
+            assert!(!field.is_whole(), "{field:?}");
+        }
+    }
+
+    #[test]
     fn the_settings_that_run_over_decades_are_turned_on_a_log_scale_and_the_others_on_a_linear_one() {
-        use ModulatorField::{Attack, Decay, Rate, Release, Sustain, Value, Waveform};
+        use ModulatorField::{Attack, Decay, Glide, Length, Rate, Release, Retrigger, Sustain, Value, Waveform};
         use Taper::{Linear, Log};
-        for (field, taper) in [(Rate, Log), (Waveform, Linear), (Attack, Log), (Decay, Log), (Sustain, Linear), (Release, Log), (Value, Linear)] {
+        for (field, taper) in [
+            (Rate, Log),
+            (Waveform, Linear),
+            (Attack, Log),
+            (Decay, Log),
+            (Sustain, Linear),
+            (Release, Log),
+            (Value, Linear),
+            (Glide, Linear),
+            (Length, Linear),
+            (Retrigger, Linear),
+        ] {
             assert_eq!(field.taper(), taper, "{field:?}");
             // A log scale has no zero: what runs over decades has a lowest value above it.
             if taper == Log {
@@ -647,6 +724,10 @@ mod tests {
             (Intent::SetNodeUi { node: NodeId(2), ui: None }, json!({"type": "setNodeUi", "node": 2, "ui": null})),
             (Intent::SetPinned { node: NodeId(2), params: vec![3, 1] }, json!({"type": "setPinned", "node": 2, "params": [3, 1]})),
             (Intent::SetPinned { node: NodeId(2), params: vec![] }, json!({"type": "setPinned", "node": 2, "params": []})),
+            (
+                Intent::SetSteps { node: NodeId(9), values: vec![-1.0, 0.5, 0.25, 0.0, 1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.75] },
+                json!({"type": "setSteps", "node": 9, "values": [-1.0, 0.5, 0.25, 0.0, 1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.75]}),
+            ),
             (Intent::AddGroup { members: vec![NodeId(2), NodeId(5)] }, json!({"type": "addGroup", "members": [2, 5]})),
             (Intent::AddGroup { members: vec![] }, json!({"type": "addGroup", "members": []})),
             (
@@ -717,6 +798,10 @@ mod tests {
             (Event::PinnedSet { node: NodeId(2), params: vec![3, 1] }, json!({"type": "pinnedSet", "node": 2, "params": [3, 1]})),
             (Event::PinnedSet { node: NodeId(2), params: vec![] }, json!({"type": "pinnedSet", "node": 2, "params": []})),
             (
+                Event::StepsSet { node: NodeId(9), values: vec![-1.0, 0.5, 0.25, 0.0, 1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.75] },
+                json!({"type": "stepsSet", "node": 9, "values": [-1.0, 0.5, 0.25, 0.0, 1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.75]}),
+            ),
+            (
                 Event::GroupRenamed { node: NodeId(7), name: "Pad".to_string() },
                 json!({"type": "groupRenamed", "node": 7, "name": "Pad"}),
             ),
@@ -750,8 +835,12 @@ mod tests {
 
     #[test]
     fn every_kind_of_modulator_has_its_own_name() {
-        let names: Vec<Value> = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro, ModulatorKind::Velocity, ModulatorKind::Key].iter().map(wire).collect();
-        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn"), json!("macro"), json!("velocity"), json!("key")]);
+        let names: Vec<Value> =
+            [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro, ModulatorKind::Velocity, ModulatorKind::Key, ModulatorKind::Steps]
+                .iter()
+                .map(wire)
+                .collect();
+        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn"), json!("macro"), json!("velocity"), json!("key"), json!("steps")]);
         for name in names {
             assert!(serde_json::from_value::<ModulatorKind>(name).is_ok());
         }
@@ -779,6 +868,9 @@ mod tests {
             ("a place that is a number", json!({"type": "setNodeUi", "node": 3, "ui": 5})),
             ("a place whose x is a string", json!({"type": "setNodeUi", "node": 3, "ui": {"x": "1", "y": 2.0}})),
             ("a place whose x is null (what NaN becomes)", json!({"type": "setNodeUi", "node": 3, "ui": {"x": null, "y": 2.0}})),
+            ("steps with no list", json!({"type": "setSteps", "node": 3})),
+            ("steps that are strings", json!({"type": "setSteps", "node": 3, "values": ["0.5"]})),
+            ("a step that is null (what NaN becomes)", json!({"type": "setSteps", "node": 3, "values": [null]})),
             ("pinned parameters with no list", json!({"type": "setPinned", "node": 3})),
             ("pinned parameters that are names", json!({"type": "setPinned", "node": 3, "params": ["cutoff"]})),
             ("a pinned parameter that is negative", json!({"type": "setPinned", "node": 3, "params": [-1]})),

@@ -435,12 +435,15 @@ export const MuteSoloCell = memo(function MuteSoloCell({ node, name }: { node: N
   );
 });
 
+/** The settings of a modulator that a cable can end at (`SessionModel::field_targets`): an LFO's and a step sequencer's rate, the stages of an envelope. */
+type PortedField = Extract<ModulatorField, "rate" | "attack" | "decay" | "sustain" | "release">;
+
 /**
  * What a number of a modulator is called and written like. How far each goes, what a double
  * click puts it back to and how its knob is spread (a rate and the times of an envelope run over
  * decades, a level does not) are the controller's (`MODULATOR_FIELD_RANGES`, `_DEFAULTS`, `_SCALES`).
  */
-const NUMBERS: Record<Exclude<ModulatorField, "waveform" | "value">, { label: string; format: (value: number) => string }> = {
+const NUMBERS: Record<PortedField, { label: string; format: (value: number) => string }> = {
   rate: { label: "Rate", format: (value) => `${formatValue(value)} Hz` },
   attack: { label: "Attack", format: seconds },
   decay: { label: "Decay", format: seconds },
@@ -453,7 +456,7 @@ const NUMBERS: Record<Exclude<ModulatorField, "waveform" | "value">, { label: st
  * rate, to a stage), and it shows that as a parameter's knob does: the ring from where the cable can take it (the last cable's alone:
  * the engine writes a setting once for each cable and the last stands) and the dot where the engine says it is.
  */
-export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: Exclude<ModulatorField, "waveform" | "value"> }) {
+export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: PortedField }) {
   const client = useClient();
   const frames = useFrames();
   const control = useDrive().modulatorField(node, field);
@@ -489,27 +492,35 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   );
 });
 
+/** What the numbers of a modulator that no cable drives are called and written like: a macro's value, a step sequencer's glide and length (a whole number of steps). */
+const VALUES: Record<"value" | "glide" | "length", { label: string; format: (value: number) => string }> = {
+  value: { label: "Value", format: formatValue },
+  glide: { label: "Glide", format: formatValue },
+  length: { label: "Length", format: (value) => String(Math.round(value)) },
+};
+
 /**
- * The value of a macro: a knob that a person turns and nothing else moves, so that it has no place for a cable on its edge and no ring and no dot (what
- * it drives shows them). The other modulators' numbers (`ModulatorFieldControl`) can be driven by a cable.
+ * A number of a modulator that a person turns and nothing else moves, so that it has no place for a cable on its edge and no ring and no dot (what it drives shows
+ * them): a macro's value, a step sequencer's glide and length. The numbers that a modulator can drive (`ModulatorFieldControl`) can be driven by a cable.
  */
-export const MacroValueControl = memo(function MacroValueControl({ node }: { node: NodeId }) {
+export const ModulatorValueControl = memo(function ModulatorValueControl({ node, field }: { node: NodeId; field: "value" | "glide" | "length" }) {
   const frames = useFrames();
-  const control = useDrive().modulatorField(node, "value");
-  const stored = useClientState((state) => modulatorFieldOf(state, node, "value"));
+  const control = useDrive().modulatorField(node, field);
+  const stored = useClientState((state) => modulatorFieldOf(state, node, field));
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
   const shown = pending ?? stored;
   if (shown === undefined) return null;
-  const [min, max] = MODULATOR_FIELD_RANGES.value;
+  const [min, max] = MODULATOR_FIELD_RANGES[field];
+  const { label, format } = VALUES[field];
   return (
     <Knob
-      label="Value"
+      label={label}
       value={shown}
       min={min}
       max={max}
-      scale={MODULATOR_FIELD_SCALES.value}
-      defaultValue={MODULATOR_FIELD_DEFAULTS.value}
-      format={formatValue}
+      scale={MODULATOR_FIELD_SCALES[field]}
+      defaultValue={MODULATOR_FIELD_DEFAULTS[field]}
+      format={format}
       onChange={(value) => {
         control.set(value);
       }}
@@ -517,6 +528,31 @@ export const MacroValueControl = memo(function MacroValueControl({ node }: { nod
         control.commit();
       }}
       frames={frames}
+    />
+  );
+});
+
+/** The value of a macro. */
+export const MacroValueControl = memo(function MacroValueControl({ node }: { node: NodeId }) {
+  return <ModulatorValueControl node={node} field="value" />;
+});
+
+/** Whether a note starts a step sequencer again at its first step: a choice of off and on. */
+export const RetriggerControl = memo(function RetriggerControl({ node }: { node: NodeId }) {
+  const control = useDrive().modulatorField(node, "retrigger");
+  const stored = useClientState((state) => modulatorFieldOf(state, node, "retrigger"));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  return (
+    <Choice
+      label="Retrigger"
+      labels={["off", "on"]}
+      value={shown}
+      onChange={(chosen) => {
+        control.set(chosen);
+        control.commit();
+      }}
     />
   );
 });
@@ -608,11 +644,18 @@ export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, f
       </div>
     );
   }
-  // (A macro's value is turned by a person: no cable ends at it, and no modulator is made for it.)
-  if (field === "value") {
+  // (A macro's value is turned by a person: no cable ends at it, and no modulator is made for it. Nor at a step sequencer's glide and length.)
+  if (field === "value" || field === "glide" || field === "length") {
     return (
       <div className="tang-cell">
-        <MacroValueControl node={node} />
+        <ModulatorValueControl node={node} field={field} />
+      </div>
+    );
+  }
+  if (field === "retrigger") {
+    return (
+      <div className="tang-cell">
+        <RetriggerControl node={node} />
       </div>
     );
   }

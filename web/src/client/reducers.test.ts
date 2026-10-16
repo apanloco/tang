@@ -51,6 +51,13 @@ function withMacro(): { snapshot: Snapshot; knob: Node } {
   return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, knob] } }, knob };
 }
 
+/** The tracer with a step sequencer of four steps added: at 6 steps a second, a glide of a quarter, and a note does not start it again. */
+function withSequencer(): { snapshot: Snapshot; sequencer: Node } {
+  const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+  const sequencer: Node = { id: 44, parent: oscillator.id, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, sequencer] } }, sequencer };
+}
+
 function sourceOf(snapshot: Snapshot, node: Node) {
   const found = snapshot.graph.nodes.find((n) => n.id === node.id);
   if (found?.kind !== "modulator") throw new Error("not a modulator");
@@ -615,6 +622,63 @@ describe("a modulator field set", () => {
     expect(after.graph.edges).toBe(snapshot.graph.edges);
     expect(sourceOf(snapshot, knob), "the snapshot it was applied to").toEqual({ type: "macro", value: 0.25 });
     expect(after.graph.nodes.find((n) => n.id === knob.id)).toMatchObject({ name: "Macro", parent: oscillator.id });
+  });
+
+  test("sets the rate, the glide, the length and the switch of a step sequencer, one at a time, and changes nothing else of it or of the graph", () => {
+    const { snapshot, sequencer } = withSequencer();
+    const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+    const set = (field: "rate" | "glide" | "length" | "retrigger", value: number) => applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field, value });
+    expect(sourceOf(set("rate", 12.5), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 12.5, glide: 0.25, retrigger: false });
+    expect(sourceOf(set("glide", 0.75), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.75, retrigger: false });
+    expect(sourceOf(set("length", 9), sequencer)).toEqual({ type: "steps", values, length: 9, rate: 6, glide: 0.25, retrigger: false });
+    expect(sourceOf(set("retrigger", 1), sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: true });
+    expect(sourceOf(set("retrigger", 0), sequencer)).toMatchObject({ retrigger: false });
+    const after = set("glide", 0.5);
+    expect(after.graph.nodes.find((n) => n.id === oscillator.id)).toBe(oscillator);
+    expect(after.graph.edges).toBe(snapshot.graph.edges);
+    expect(sourceOf(snapshot, sequencer), "the snapshot it was applied to").toMatchObject({ glide: 0.25 });
+  });
+
+  test("a length is a whole number of the steps that there are, and nothing else is one", () => {
+    const { snapshot, sequencer } = withSequencer();
+    for (const value of [0, 17, 2.5, -1, Number.NaN]) {
+      expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field: "length", value }), String(value)).toEqual({ ok: false, reason: `${String(value)} is not a length` });
+    }
+    for (const value of [1, 16]) expect(sourceOf(applied(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field: "length", value }), sequencer), String(value)).toMatchObject({ length: value });
+  });
+
+  test("is refused by a step sequencer for the settings of the other kinds, and by the other kinds for the settings of a step sequencer", () => {
+    const { snapshot, sequencer } = withSequencer();
+    for (const field of ["waveform", "attack", "decay", "sustain", "release", "value"] as const) {
+      expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: sequencer.id, field, value: 0.5 }), field).toEqual({ ok: false, reason: `${field} does not apply to node ${sequencer.id}` });
+    }
+    for (const field of ["glide", "length", "retrigger"] as const) {
+      expect(applyEvent(snapshot, { rev: 1, type: "modulatorFieldSet", node: lfo.id, field, value: 1 }), field).toEqual({ ok: false, reason: `${field} does not apply to node ${lfo.id}` });
+    }
+  });
+
+  test("gives a step sequencer all of its steps, and changes nothing else of it or of the graph", () => {
+    const { snapshot, sequencer } = withSequencer();
+    const values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4];
+    const after = applied(snapshot, { rev: 1, type: "stepsSet", node: sequencer.id, values });
+    expect(sourceOf(after, sequencer)).toEqual({ type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false });
+    expect(after.graph.nodes.find((n) => n.id === lfo.id)).toBe(lfo);
+    expect(after.graph.edges).toBe(snapshot.graph.edges);
+    expect(sourceOf(snapshot, sequencer), "the snapshot it was applied to").toMatchObject({ values: [0.5, -0.25, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] });
+  });
+
+  test("a list of steps is refused for what is not a step sequencer, for a node that is not there and for a list of the wrong length", () => {
+    const { snapshot, sequencer } = withSequencer();
+    const sixteen = Array<number>(16).fill(0);
+    expect(applyEvent(snapshot, { rev: 1, type: "stepsSet", node: lfo.id, values: sixteen })).toEqual({ ok: false, reason: `node ${lfo.id} is not a step sequencer` });
+    expect(applyEvent(snapshot, { rev: 1, type: "stepsSet", node: oscillator.id, values: sixteen })).toEqual({ ok: false, reason: `node ${oscillator.id} is not a step sequencer` });
+    expect(applyEvent(snapshot, { rev: 1, type: "stepsSet", node: 12345, values: sixteen })).toEqual({ ok: false, reason: "there is no node 12345" });
+    for (const length of [0, 15, 17]) {
+      expect(applyEvent(snapshot, { rev: 1, type: "stepsSet", node: sequencer.id, values: Array<number>(length).fill(0) }), String(length)).toEqual({
+        ok: false,
+        reason: "a step sequencer has 16 steps, and " + String(length) + " were told",
+      });
+    }
   });
 
   test("is refused by a macro for each of the settings that it has not, and by every other kind for its value", () => {

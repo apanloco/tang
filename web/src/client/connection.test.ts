@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import { MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NODE_UI_LIMIT, SCOPE_FRAME_LENGTH } from "../protocol";
+import { MAX_STEPS, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, NEW_STEPS, NODE_UI_LIMIT, SCOPE_FRAME_LENGTH } from "../protocol";
 import type { CatalogEntry, ClientMessage, Edge, Intent, MidiControl, Node, Port, ServerMessage, Snapshot, TelemetryLayout, Waveform } from "../protocol";
 import { Client, RequestError, SLOW_AFTER } from "./connection";
 import type { ClientOptions, Transport, TransportFactory } from "./connection";
@@ -246,6 +246,104 @@ describe("a request", () => {
     // (And the settings of the others do not include a value.)
     await expect(client.request({ type: "setModulatorField", node: lfo.id, field: "value", value: 0.5 })).rejects.toMatchObject({ code: "invalid", message: "Value does not apply to that modulator" });
     expect(value()).toBe(0.5);
+  });
+
+  /** A step sequencer of four steps, at 6 steps a second, with a glide of a quarter, that a note does not start again. */
+  const sequencer: Node = {
+    id: 44,
+    parent: 0,
+    name: "Steps",
+    kind: "modulator",
+    source: { type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false },
+  };
+  const withSequencer: Snapshot = { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, sequencer] } };
+  const sourceOfSequencer = (client: Client) => {
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === sequencer.id);
+    return node?.kind === "modulator" && node.source.type === "steps" ? node.source : undefined;
+  };
+
+  test("sets the rate, the glide, the length and the switch of a step sequencer, each held to its range, a length and a switch rounded to a whole number", async () => {
+    const client = await open(new MockServer({ snapshot: withSequencer }));
+    const set = (field: "rate" | "glide" | "length" | "retrigger", value: number) => client.request({ type: "setModulatorField", node: sequencer.id, field, value });
+    for (const [field, asked, got] of [
+      ["rate", 99, 50],
+      ["rate", 0, 0.01],
+      ["rate", 12.5, 12.5],
+      ["glide", 3, 1],
+      ["glide", -1, 0],
+      ["glide", 0.75, 0.75],
+      ["length", 0, 1],
+      ["length", 40, 16],
+      ["length", 4.4, 4],
+      ["length", 4.6, 5],
+    ] as const) {
+      await set(field, asked);
+      expect(sourceOfSequencer(client)?.[field], `${field} asked ${String(asked)}`).toBe(got);
+    }
+    for (const [asked, got] of [[0.4, false], [0.6, true], [7, true], [0, false]] as const) {
+      await set("retrigger", asked);
+      expect(sourceOfSequencer(client)?.retrigger, `retrigger asked ${String(asked)}`).toBe(got);
+    }
+    // (And the rest of what it has is as it was.)
+    expect(sourceOfSequencer(client)?.values.slice(0, 4)).toEqual([0.5, -0.25, 1, -1]);
+  });
+
+  test("refuses of a step sequencer the settings of the other kinds, and of the other kinds the settings of a step sequencer", async () => {
+    const client = await open(new MockServer({ snapshot: withSequencer }));
+    for (const field of ["waveform", "attack", "decay", "sustain", "release", "value"] as const) {
+      await expect(client.request({ type: "setModulatorField", node: sequencer.id, field, value: 0.5 }), field).rejects.toMatchObject({ code: "invalid" });
+    }
+    for (const field of ["glide", "length", "retrigger"] as const) {
+      await expect(client.request({ type: "setModulatorField", node: lfo.id, field, value: 1 }), field).rejects.toMatchObject({ code: "invalid" });
+    }
+    expect(sourceOfSequencer(client)).toEqual({ type: "steps", values: [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)], length: 4, rate: 6, glide: 0.25, retrigger: false });
+  });
+
+  test("sets all the steps of a step sequencer at once, each held to -1 to 1, and tells what it has", async () => {
+    const client = await open(new MockServer({ snapshot: withSequencer }));
+    const asked = [3, -7.5, 0.5, ...Array<number>(13).fill(0.25)];
+    await client.request({ type: "setSteps", node: sequencer.id, values: asked });
+    expect(sourceOfSequencer(client)?.values).toEqual([1, -1, 0.5, ...Array<number>(13).fill(0.25)]);
+    expect(sourceOfSequencer(client)).toMatchObject({ length: 4, rate: 6, glide: 0.25, retrigger: false });
+  });
+
+  test("refuses steps for what is not a step sequencer and a list of the wrong length, and changes nothing", async () => {
+    const client = await open(new MockServer({ snapshot: withSequencer }));
+    const sixteen = Array<number>(16).fill(0);
+    for (const [what, node, values] of [
+      ["an LFO", lfo.id, sixteen],
+      ["a filter", filter.id, sixteen],
+      ["a list that is short", sequencer.id, Array<number>(15).fill(0)],
+      ["a list that is long", sequencer.id, Array<number>(17).fill(0)],
+      ["none", sequencer.id, []],
+    ] as const) {
+      await expect(client.request({ type: "setSteps", node, values: [...values] }), what).rejects.toMatchObject({ code: "invalid" });
+    }
+    await expect(client.request({ type: "setSteps", node: 424242, values: sixteen })).rejects.toMatchObject({ code: "notFound" });
+    expect(sourceOfSequencer(client)?.values.slice(0, 4)).toEqual([0.5, -0.25, 1, -1]);
+  });
+
+  test("refuses a setting and a step that is not a number in the server's own process (JSON has no such number to send), in the controller's words", () => {
+    const server = new MockServer({ snapshot: withSequencer });
+    expect(() => {
+      server.apply({ type: "setModulatorField", node: sequencer.id, field: "glide", value: Number.NaN });
+    }).toThrow("NaN is not a value for Glide");
+    expect(() => {
+      server.apply({ type: "setSteps", node: sequencer.id, values: [...Array<number>(15).fill(0), Number.NaN] });
+    }).toThrow("NaN is not a value for a step");
+    expect(() => {
+      server.apply({ type: "setSteps", node: sequencer.id, values: [Number.POSITIVE_INFINITY, ...Array<number>(15).fill(0)] });
+    }).toThrow("inf is not a value for a step");
+    expect(server.snapshot).toEqual(withSequencer);
+  });
+
+  test("makes a step sequencer as the controller makes one: all sixteen steps of a staircase in use, eight a second, no glide, started again by a note", async () => {
+    const client = await open(new MockServer());
+    await client.request({ type: "addModulator", parent: nodeNamed(tracerSnapshot, "Oscillator").id, kind: "steps" });
+    const added = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
+    expect(added?.name).toBe("Steps");
+    expect(added?.kind === "modulator" ? added.source : null).toEqual({ type: "steps", values: [...NEW_STEPS.values], length: 16, rate: 8, glide: 0, retrigger: true });
+    expect(MAX_STEPS).toBe(16);
   });
 
   test("that the server rejects fails with its code, and changes nothing", async () => {
@@ -3267,6 +3365,70 @@ describe("what a macro puts out and does in the mock engine: the number it is se
     await until(() => Math.abs((cutoffOf(client) ?? 9) - 0.7) < 1e-5, "the cutoff with the macro at a half");
     await client.request({ type: "setModulatorField", node: lfo.id, field: "value", value: 1 });
     await until(() => Math.abs((cutoffOf(client) ?? 9) - 0.9) < 1e-5, "the cutoff with the macro at full");
+  });
+});
+
+describe("what a step sequencer puts out and does in the mock engine: its steps at its rate, which move what it drives around where the user set it", () => {
+  /** The tracer's LFO as a step sequencer of two steps, 0.5 and -0.5, that goes through one a second: its cable to the cutoff (which the user set to 0.5) is at depth 0.4. */
+  const withSequencer = (glide: number, retrigger: boolean): Snapshot => {
+    const values = [0.5, -0.5, ...Array<number>(14).fill(0)];
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Steps", source: { type: "steps" as const, values, length: 2, rate: 1, glide, retrigger } } : node));
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  };
+  const cutoffOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 0 }, "effective");
+  const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+  const near = (value: number | undefined, expected: number): boolean => value !== undefined && Math.abs(value - expected) < 1e-5;
+
+  test("puts out the value of the step that the time is in, which sets the cutoff to the user's value and the value times the depth of the range above it", async () => {
+    let now = 0.25;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withSequencer(0, false), clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), 0.5), "the first step, a quarter of the way in");
+    await until(() => near(cutoffOf(client), 0.5 + 0.5 * 0.4), "the cutoff for the first step");
+    now = 1.25;
+    await until(() => near(outputOf(client), -0.5), "the second step");
+    await until(() => near(cutoffOf(client), 0.5 - 0.5 * 0.4), "the cutoff for the second step");
+    now = 2.25;
+    await until(() => near(outputOf(client), 0.5), "the first again: it goes round at its length");
+  });
+
+  test("goes to the next value over the part of a step that its glide says", async () => {
+    let now = 0.5;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withSequencer(1, false), clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), 0), "half way from 0.5 to -0.5, with all of the step to glide in");
+    now = 1.75;
+    await until(() => near(outputOf(client), 0.25), "three quarters of the way from -0.5 to the first step's 0.5, round the end");
+  });
+
+  test("goes on through a note when a note does not start it again, and starts again at the first step at the note when it does", async () => {
+    for (const [retrigger, expected] of [[false, -0.5], [true, 0.5]] as const) {
+      let now = 5.3;
+      const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withSequencer(0, retrigger), clock: () => now }), { telemetry: ["modulation"] });
+      await until(() => near(outputOf(client), -0.5), `the second step at 5.3 (retrigger ${String(retrigger)})`);
+      client.noteOn(60, 100);
+      await quiet();
+      // A fifth of a second later it is in its second step if it went on (5.5 is 1.5 steps), and in its first if the note started it again.
+      now = 5.5;
+      await until(() => near(outputOf(client), expected), `the step a fifth of a second after a note (retrigger ${String(retrigger)})`);
+      // And a second later, in the step after.
+      now = 6.5;
+      await until(() => near(outputOf(client), retrigger ? -0.5 : 0.5), `the step a second and a fifth after (retrigger ${String(retrigger)})`);
+    }
+  });
+
+  test("hears only the notes in the keys of its lane", async () => {
+    const snapshot = withSequencer(0, true);
+    const nodes = snapshot.graph.nodes.map((node) => (node.kind === "instrument" ? { ...node, range: { low: 60, high: 72 } } : node));
+    let now = 5.3;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: { ...snapshot, graph: { ...snapshot.graph, nodes } }, clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), -0.5), "the second step");
+    client.noteOn(40, 100);
+    await quiet();
+    now = 5.5;
+    await until(() => near(outputOf(client), -0.5), "still the second step: the note is below the keys of the lane");
+    client.noteOn(64, 100);
+    await quiet();
+    now = 5.6;
+    await until(() => near(outputOf(client), 0.5), "the first step: the note is in the keys");
   });
 });
 

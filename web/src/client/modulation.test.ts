@@ -8,6 +8,7 @@ import type { Modulation } from "./modulation";
 const lfo = (amount: number): Modulation => ({ source: { type: "lfo", waveform: "sine", rate: 1 }, amount });
 const envelope = (amount: number): Modulation => ({ source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, amount });
 const macro = (amount: number): Modulation => ({ source: { type: "macro", value: 0.5 }, amount });
+const steps = (amount: number): Modulation => ({ source: { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true }, amount });
 const midi = (control: Extract<ModulatorSource, { type: "midiLearn" }>["control"], amount: number): Modulation => ({
   source: { type: "midiLearn", control, learning: false },
   amount,
@@ -57,6 +58,14 @@ describe("how far modulation swings a parameter", () => {
     expect(modulationExtent(2, 0, 10, [midi({ type: "velocity" }, 0.25)])).toEqual({ low: 2, high: 4.5 });
     expect(modulationExtent(2, 0, 10, [midi({ type: "velocity" }, -0.5)])).toEqual({ low: 0, high: 2 });
     expect(modulationExtent(2, 0, 10, [midi({ type: "cc", number: 1 }, -0.5)])).toEqual({ low: 0, high: 2 });
+  });
+
+  test("is ± depth × range around the base for a step sequencer, whose steps go both ways as an LFO's output does", () => {
+    expect(modulationExtent(2, 0, 10, [steps(0.5)])).toEqual({ low: 0, high: 7 });
+    expect(modulationExtent(5, 0, 10, [steps(0.1)])).toEqual({ low: 4, high: 6 });
+    expect(modulationExtent(5, 0, 10, [steps(-0.1)])).toEqual({ low: 4, high: 6 });
+    // (Not from nothing up, as a macro's is.)
+    expect(modulationExtent(5, 0, 10, [macro(0.1)])).toEqual({ low: 5, high: 6 });
   });
 
   test("goes up from the base by depth × range for a macro, which rests at nothing as a CC does, and down for a negative depth", () => {

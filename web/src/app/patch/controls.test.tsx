@@ -9,7 +9,7 @@ import type { Edge, Node, Param, Port, Snapshot } from "../../protocol";
 import { dragged } from "../../ui/knob-geometry";
 import { angleOf, arcPath, fractionOf, pointAt } from "../../ui/knob-geometry";
 import { rig } from "../testing";
-import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ParamControl, ParamRow, sameModulations, sameParamFacts, WaveformControl } from "./controls";
+import { CableDepthControl, GainControl, MacroValueControl, ModulatorFieldControl, ModulatorValueControl, ParamControl, ParamRow, RetriggerControl, sameModulations, sameParamFacts, WaveformControl } from "./controls";
 
 afterEach(cleanup);
 
@@ -485,6 +485,128 @@ describe("the value of a macro", () => {
         <MacroValueControl node={lfo.id} />
         <MacroValueControl node={filter.id} />
         <MacroValueControl node={4242} />
+      </div>,
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+  });
+});
+
+/** The tracer with a step sequencer in it: four steps, at 6 steps a second, a glide of a quarter, and a note does not start it again. */
+function withSequencer(): { snapshot: Snapshot; sequencer: Node } {
+  const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+  const sequencer: Node = { id: 92, parent: 0, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } };
+  const snapshot: Snapshot = structuredClone(tracerSnapshot);
+  snapshot.graph.nodes.push(sequencer);
+  return { snapshot, sequencer };
+}
+
+describe("the glide and the length of a step sequencer", () => {
+  test("are knobs over the range the controller clamps to, at the values the step sequencer has, a length written as a whole number", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    await rig(
+      <>
+        <ModulatorValueControl node={sequencer.id} field="glide" />
+        <ModulatorValueControl node={sequencer.id} field="length" />
+      </>,
+      { snapshot },
+    );
+    const glide = slider("Glide");
+    expect([glide.getAttribute("aria-valuemin"), glide.getAttribute("aria-valuemax"), glide.getAttribute("aria-valuenow"), glide.getAttribute("aria-valuetext")]).toEqual(["0", "1", "0.25", "0.25"]);
+    const length = slider("Length");
+    expect([length.getAttribute("aria-valuemin"), length.getAttribute("aria-valuemax"), length.getAttribute("aria-valuenow"), length.getAttribute("aria-valuetext")]).toEqual(["1", "16", "4", "4"]);
+  });
+
+  test("send what they are dragged to as the setting of the step sequencer, on the frame, once", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { requests, clock } = await rig(<ModulatorValueControl node={sequencer.id} field="glide" />, { snapshot });
+    // (A drag of 100 pixels is half the range: a quarter and a half is three quarters.)
+    drag(slider("Glide"), 100);
+    expect(Number(slider("Glide").getAttribute("aria-valuenow"))).toBeCloseTo(0.75, 9);
+    await settle();
+    expect(requests()).toEqual([]);
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toEqual({ type: "setModulatorField", node: sequencer.id, field: "glide", value: expect.closeTo(0.75, 9) as unknown });
+  });
+
+  test("go back to what a new step sequencer has on a double click: no glide, and all sixteen steps", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { requests } = await rig(
+      <>
+        <ModulatorValueControl node={sequencer.id} field="glide" />
+        <ModulatorValueControl node={sequencer.id} field="length" />
+      </>,
+      { snapshot },
+    );
+    fireEvent.doubleClick(slider("Glide"));
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setModulatorField", node: sequencer.id, field: "glide", value: 0 } }]);
+    });
+    fireEvent.doubleClick(slider("Length"));
+    await waitFor(() => {
+      expect(requests()).toHaveLength(2);
+    });
+    expect(requests()[1]).toEqual({ intent: { type: "setModulatorField", node: sequencer.id, field: "length", value: 16 } });
+  });
+
+  test("follow a change somebody else makes, and show nothing for a node that has none: an LFO, a node that is not a modulator, or one that is not there", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { server, view } = await rig(
+      <>
+        <ModulatorValueControl node={sequencer.id} field="length" />
+        <div data-testid="where">
+          <ModulatorValueControl node={lfo.id} field="glide" />
+          <ModulatorValueControl node={filter.id} field="length" />
+          <ModulatorValueControl node={4242} field="glide" />
+        </div>
+      </>,
+      { snapshot },
+    );
+    expect(view.getByTestId("where").innerHTML).toBe("");
+    act(() => {
+      server.apply({ type: "setModulatorField", node: sequencer.id, field: "length", value: 9 });
+    });
+    await waitFor(() => {
+      expect(slider("Length").getAttribute("aria-valuenow")).toBe("9");
+    });
+  });
+});
+
+describe("whether a note starts a step sequencer again", () => {
+  test("is a choice of off and on, with the one that the step sequencer has chosen", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    await rig(<RetriggerControl node={sequencer.id} />, { snapshot });
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" });
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["off", "on"]);
+    expect(select.value).toBe("0");
+  });
+
+  test("asks for the switch to be turned on or off, as 1 or 0, and follows a change somebody else makes", async () => {
+    const { snapshot, sequencer } = withSequencer();
+    const { requests, server } = await rig(<RetriggerControl node={sequencer.id} />, { snapshot });
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" });
+    fireEvent.change(select, { target: { value: "1" } });
+    await waitFor(() => {
+      expect(requests()).toEqual([{ intent: { type: "setModulatorField", node: sequencer.id, field: "retrigger", value: 1 } }]);
+    });
+    act(() => {
+      server.apply({ type: "setModulatorField", node: sequencer.id, field: "retrigger", value: 0 });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("0");
+    });
+  });
+
+  test("shows nothing for a node that has no switch", async () => {
+    const { view } = await rig(
+      <div data-testid="where">
+        <RetriggerControl node={lfo.id} />
+        <RetriggerControl node={filter.id} />
+        <RetriggerControl node={4242} />
       </div>,
     );
     expect(view.getByTestId("where").innerHTML).toBe("");

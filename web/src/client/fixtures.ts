@@ -19,6 +19,7 @@ import noise from "./fixtures/noise.json";
 import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
+import steps from "./fixtures/steps.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
 export const tracerSnapshot = tracer as unknown as Snapshot;
@@ -129,6 +130,12 @@ export const filenamesFixture = filenames;
  * 64-bit number that the engine's 32-bit one widens to. Written by the engine (`the_web_clients_fixture_of_the_noise_is_current`).
  */
 export const noiseFixture = noise;
+
+/**
+ * What the engine's `steps_output` makes of a spread of patterns (three lists of sixteen steps), lengths, places and glides, written by `the_web_clients_fixture_of_what_a_step_sequencer_puts_out_is_current`:
+ * the page's law of a step sequencer (`stepsOutput`) is pinned to it.
+ */
+export const stepsFixture = steps;
 
 /** What a session comes to, for the fixture of the group intents: a line of text for each entry of each list. */
 export interface Shape {

@@ -1179,6 +1179,15 @@ pub enum ModSourceSlot {
     Macro {
         value: f32,
     },
+    /// A step sequencer: the values it goes through, -1 to 1 (the first `length` of them are in use, the others are kept for when it is longer), how many
+    /// steps it goes through a second, how much of each step is spent gliding to the next one's value, and whether a note starts it again at the first step.
+    Steps {
+        values: [f32; crate::plugin::chain::MAX_STEPS],
+        length: usize,
+        rate: f32,
+        glide: f32,
+        retrigger: bool,
+    },
 }
 
 impl ModSourceSlot {
@@ -1208,6 +1217,31 @@ impl ModSourceSlot {
         ModSourceSlot::Macro { value: 0.0 }
     }
 
+    /// A step sequencer as the modulate popup makes it: all sixteen steps in use, a staircase that climbs from the bottom in eighths (so that it shows at once
+    /// that it goes round), eight steps a second (sixteenths at the 120 beats a minute that a session begins at), no glide, and started again by every note.
+    pub fn new_steps() -> Self {
+        ModSourceSlot::Steps {
+            values: ModSourceSlot::staircase(),
+            length: crate::plugin::chain::MAX_STEPS,
+            rate: 8.0,
+            glide: 0.0,
+            retrigger: true,
+        }
+    }
+
+    /// The steps of a step sequencer that is new: a staircase that climbs from -1 in eighths.
+    pub fn staircase() -> [f32; crate::plugin::chain::MAX_STEPS] {
+        std::array::from_fn(|i| i as f32 / 8.0 - 1.0)
+    }
+
+    /// The values of a step sequencer, if it is one.
+    pub fn steps(&self) -> Option<[f32; crate::plugin::chain::MAX_STEPS]> {
+        match self {
+            ModSourceSlot::Steps { values, .. } => Some(*values),
+            _ => None,
+        }
+    }
+
     /// What the modulator's node is called for a client: its kind, or what a control
     /// is bound to. Not its settings, which a client is told when they change and
     /// which a name would have to follow (`label` has them, for the TUI).
@@ -1215,6 +1249,7 @@ impl ModSourceSlot {
         match self {
             ModSourceSlot::Lfo { .. } => "LFO".to_string(),
             ModSourceSlot::Macro { .. } => "Macro".to_string(),
+            ModSourceSlot::Steps { .. } => "Steps".to_string(),
             other => other.label(),
         }
     }
@@ -1235,6 +1270,7 @@ impl ModSourceSlot {
                 None => "MIDI (unbound)".to_string(),
             },
             ModSourceSlot::Macro { value } => format!("Macro {value:.2}"),
+            ModSourceSlot::Steps { length, rate, .. } => format!("Steps {length} {rate:.1}Hz"),
         }
     }
 }
@@ -1441,6 +1477,9 @@ pub fn format_from_id(id: &str) -> String {
 /// editor's bound; sessions already round-trip negative depth.
 pub const DEPTH_MIN: f32 = -1.0;
 pub const DEPTH_MAX: f32 = 1.0;
+/// The range of the value of a step of a step sequencer: below and above what the user set, by as much as the depth of the cable says.
+pub const STEP_MIN: f32 = -1.0;
+pub const STEP_MAX: f32 = 1.0;
 /// How deep a cable pulls when it is first drawn: half way, which a person can hear and turn either way.
 pub const NEW_CABLE_DEPTH: f32 = 0.5;
 /// How many parameters of a plugin can be pinned to its node: a node that shows more is taller than a canvas has room for, and a plugin of
@@ -1462,9 +1501,30 @@ pub enum ModulatorRow {
     Setting(ModulatorField),
     /// The "Targets" separator.
     Separator,
+    /// A step sequencer's switch for whether a note starts it again: a choice of two.
+    Retrigger,
+    /// The value of the step sequencer's step with this index.
+    Step(usize),
     /// The depth of the target with this index.
     Depth(usize),
 }
+
+/// The rows of the pane of a step sequencer before its targets': its settings, a choice, its sixteen steps, and the separator.
+const STEPS_ROWS: [ModulatorRow; 4 + crate::plugin::chain::MAX_STEPS + 1] = {
+    use ModulatorField as F;
+    use ModulatorRow as R;
+    let mut rows = [R::Separator; 4 + crate::plugin::chain::MAX_STEPS + 1];
+    rows[0] = R::Setting(F::Rate);
+    rows[1] = R::Setting(F::Glide);
+    rows[2] = R::Setting(F::Length);
+    rows[3] = R::Retrigger;
+    let mut step = 0;
+    while step < crate::plugin::chain::MAX_STEPS {
+        rows[4 + step] = R::Step(step);
+        step += 1;
+    }
+    rows
+};
 
 impl ModSourceSlot {
     /// The rows of the pane before the targets' (which follow the separator).
@@ -1478,6 +1538,7 @@ impl ModSourceSlot {
             }
             ModSourceSlot::MidiLearn { .. } => &[R::Info, R::Separator],
             ModSourceSlot::Macro { .. } => &[R::Setting(F::Value), R::Separator],
+            ModSourceSlot::Steps { .. } => &STEPS_ROWS,
         }
     }
 
@@ -1491,6 +1552,10 @@ impl ModSourceSlot {
             (ModSourceSlot::Envelope { sustain, .. }, ModulatorField::Sustain) => Some(*sustain),
             (ModSourceSlot::Envelope { release, .. }, ModulatorField::Release) => Some(*release),
             (ModSourceSlot::Macro { value }, ModulatorField::Value) => Some(*value),
+            (ModSourceSlot::Steps { rate, .. }, ModulatorField::Rate) => Some(*rate),
+            (ModSourceSlot::Steps { glide, .. }, ModulatorField::Glide) => Some(*glide),
+            (ModSourceSlot::Steps { length, .. }, ModulatorField::Length) => Some(*length as f32),
+            (ModSourceSlot::Steps { retrigger, .. }, ModulatorField::Retrigger) => Some(if *retrigger { 1.0 } else { 0.0 }),
             _ => None,
         }
     }
@@ -1521,14 +1586,15 @@ pub fn modulator_row(m: &ModulatorSlot, row: usize) -> Option<ModulatorRow> {
 pub fn modulator_param_range(m: &ModulatorSlot, pa: usize) -> Option<(f32, f32)> {
     match modulator_row(m, pa)? {
         ModulatorRow::Setting(field) => Some(field.range()),
+        ModulatorRow::Step(_) => Some((STEP_MIN, STEP_MAX)),
         ModulatorRow::Depth(_) => Some((DEPTH_MIN, DEPTH_MAX)),
-        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Separator => None,
     }
 }
 
-/// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform).
+/// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform / Retrigger).
 pub fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
-    matches!(modulator_row(m, pa), Some(ModulatorRow::Type | ModulatorRow::Waveform))
+    matches!(modulator_row(m, pa), Some(ModulatorRow::Type | ModulatorRow::Waveform | ModulatorRow::Retrigger))
 }
 
 impl ModulatorSlot {
@@ -1538,6 +1604,16 @@ impl ModulatorSlot {
     pub fn row_intent(&self, row: usize, f: impl FnOnce(f32) -> f32) -> Option<Intent> {
         match modulator_row(self, row)? {
             ModulatorRow::Setting(field) => Some(Intent::SetModulatorField { node: self.node, field, value: f(self.source.setting(field)?) }),
+            ModulatorRow::Retrigger => {
+                let field = ModulatorField::Retrigger;
+                Some(Intent::SetModulatorField { node: self.node, field, value: f(self.source.setting(field)?) })
+            }
+            ModulatorRow::Step(step) => {
+                let mut values = self.source.steps()?;
+                let value = values.get_mut(step)?;
+                *value = f(*value);
+                Some(Intent::SetSteps { node: self.node, values: values.to_vec() })
+            }
             ModulatorRow::Depth(target) => {
                 let target = self.targets.get(target)?;
                 Some(Intent::SetEdgeDepth { edge: target.edge, depth: f(target.depth) })
@@ -1567,8 +1643,8 @@ pub fn modulator_row_to_cross_mod(
                 ModulatorField::Release => (K::ModulatorRelease { mod_index }, "release"),
                 // (It has a row of its own, `ModulatorRow::Waveform`, which is not a number for a control to move.)
                 ModulatorField::Waveform => return None,
-                // (A macro's value is turned by a person: a cable that drives it is not built.)
-                ModulatorField::Value => return None,
+                // (A macro's value is turned by a person: a cable that drives it is not built. Nor is a step sequencer's glide, length or switch.)
+                ModulatorField::Value | ModulatorField::Glide | ModulatorField::Length | ModulatorField::Retrigger => return None,
             };
             let (min, max) = field.range();
             Some((kind, min, max, m.source.setting(field)?, format!("Mod {mod_index} {name}")))
@@ -1577,7 +1653,7 @@ pub fn modulator_row_to_cross_mod(
             let depth = m.targets.get(target)?.depth;
             Some((K::ModulatorDepth { mod_index, target_index: target }, DEPTH_MIN, DEPTH_MAX, depth, format!("Mod {mod_index} depth {target}")))
         }
-        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Step(_) | ModulatorRow::Separator => None,
     }
 }
 
@@ -2000,6 +2076,14 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
             learning: *learning,
         },
         ModSourceSlot::Macro { value } => crate::plugin::chain::ModSource::Macro { value: *value },
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger } => crate::plugin::chain::ModSource::Steps {
+            values: *values,
+            length: *length,
+            rate: *rate,
+            glide: *glide,
+            retrigger: *retrigger,
+            position: 0.0,
+        },
     }
 }
 
@@ -4561,6 +4645,105 @@ depth = 0.5
         // The row makes the intent that sets it.
         assert_eq!(m.row_intent(0, |value| value * 2.0), Some(Intent::SetModulatorField { node: NodeId(7), field: F::Value, value: 0.5 }));
         assert_eq!(m.row_intent(1, |value| value), None, "the separator");
+    }
+
+    fn sequencer(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
+        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::new_steps(), targets, output: None }
+    }
+
+    #[test]
+    fn the_pane_of_a_step_sequencer_has_its_settings_its_sixteen_steps_and_then_its_targets() {
+        use ModulatorField as F;
+        use ModulatorRow::*;
+        let two = || vec![target(K::PluginParam { slot: 0, param_index: 0 }), target(K::PluginParam { slot: 0, param_index: 1 })];
+        let m = sequencer(two());
+        assert_eq!(modulator_param_len(&m), 4 + 16 + 1 + 2);
+        let rows: Vec<_> = (0..=modulator_param_len(&m)).map(|r| modulator_row(&m, r)).collect();
+        let mut expected = vec![Some(Setting(F::Rate)), Some(Setting(F::Glide)), Some(Setting(F::Length)), Some(Retrigger)];
+        expected.extend((0..16).map(|i| Some(Step(i))));
+        expected.extend([Some(Separator), Some(Depth(0)), Some(Depth(1)), None]);
+        assert_eq!(rows, expected);
+        // What a row can be turned over: the rate, the glide and the length by their fields, a step by -1 to 1, and the switch and the separator by nothing (the switch is a choice).
+        assert_eq!(modulator_param_range(&m, 0), Some(F::Rate.range()));
+        assert_eq!(modulator_param_range(&m, 1), Some((0.0, 1.0)));
+        assert_eq!(modulator_param_range(&m, 2), Some((1.0, 16.0)));
+        assert_eq!(modulator_param_range(&m, 3), None);
+        assert_eq!(modulator_param_range(&m, 4), Some((-1.0, 1.0)));
+        assert_eq!(modulator_param_range(&m, 19), Some((-1.0, 1.0)));
+        assert_eq!(modulator_param_range(&m, 20), None, "the separator");
+        assert_eq!(modulator_param_range(&m, 21), Some((DEPTH_MIN, DEPTH_MAX)));
+        let enums: Vec<usize> = (0..modulator_param_len(&m)).filter(|&r| modulator_param_is_enum(&m, r)).collect();
+        assert_eq!(enums, [3], "the retrigger is a choice, and no type is to be turned (it is not an LFO or an envelope)");
+    }
+
+    #[test]
+    fn a_step_sequencer_says_the_value_of_its_settings_and_a_row_makes_the_intent_that_sets_it() {
+        use ModulatorField as F;
+        let m = sequencer(vec![]);
+        assert_eq!([F::Rate, F::Glide, F::Length, F::Retrigger].map(|field| m.source.setting(field)), [Some(8.0), Some(0.0), Some(16.0), Some(1.0)]);
+        for field in [F::Waveform, F::Attack, F::Decay, F::Sustain, F::Release, F::Value] {
+            assert_eq!(m.source.setting(field), None, "{field:?}");
+        }
+        // The other kinds have none of its settings.
+        for other in [lfo(vec![]), adsr(vec![]), midi(vec![]), knob(vec![])] {
+            for field in [F::Glide, F::Length, F::Retrigger] {
+                assert_eq!(other.source.setting(field), None, "{field:?}");
+            }
+        }
+        let set = |field, value| Some(Intent::SetModulatorField { node: NodeId(7), field, value });
+        assert_eq!(m.row_intent(0, |rate| rate * 2.0), set(F::Rate, 16.0));
+        assert_eq!(m.row_intent(1, |glide| glide + 0.5), set(F::Glide, 0.5));
+        assert_eq!(m.row_intent(2, |length| length - 1.0), set(F::Length, 15.0));
+        assert_eq!(m.row_intent(3, |on| 1.0 - on), set(F::Retrigger, 0.0), "the switch is turned over by the closure");
+        // A step is one of the values, and the intent has all of them: the one that is turned and the others as they are.
+        let steps = |i: usize, value: f32| {
+            let ModSourceSlot::Steps { mut values, .. } = ModSourceSlot::new_steps() else { unreachable!() };
+            values[i] = value;
+            Some(Intent::SetSteps { node: NodeId(7), values: values.to_vec() })
+        };
+        assert_eq!(m.row_intent(4 + 3, |value| value + 0.25), steps(3, -0.625 + 0.25));
+        assert_eq!(m.row_intent(4 + 15, |_| -0.5), steps(15, -0.5), "a value that was typed");
+        assert_eq!(m.row_intent(4 + 16, |value| value), None, "the separator");
+    }
+
+    #[test]
+    fn the_rate_of_a_step_sequencer_is_a_setting_that_a_cable_can_drive_and_its_other_rows_are_not() {
+        let m = sequencer(vec![target(K::PluginParam { slot: 0, param_index: 0 })]);
+        let (kind, min, max, base, label) = modulator_row_to_cross_mod(&m, 3, 0).unwrap();
+        assert!(matches!(kind, K::ModulatorRate { mod_index: 3 }), "{kind:?}");
+        assert_eq!((min, max, base, label.as_str()), (0.01, 50.0, 8.0, "Mod 3 rate"));
+        for row in 1..=19 {
+            assert_eq!(modulator_row_to_cross_mod(&m, 3, row), None, "row {row}: the glide, the length, the switch and the steps are set by a person");
+        }
+        assert_eq!(modulator_row_to_cross_mod(&m, 3, 20), None, "the separator");
+        let (kind, ..) = modulator_row_to_cross_mod(&m, 3, 21).unwrap();
+        assert!(matches!(kind, K::ModulatorDepth { mod_index: 3, target_index: 0 }), "{kind:?}");
+    }
+
+    #[test]
+    fn a_step_sequencer_is_named_and_labelled_by_what_it_goes_through_and_how_fast() {
+        let source = ModSourceSlot::new_steps();
+        assert_eq!(source.node_name(), "Steps");
+        assert_eq!(source.label(), "Steps 16 8.0Hz");
+        let mut shorter = ModSourceSlot::new_steps();
+        if let ModSourceSlot::Steps { length, rate, .. } = &mut shorter {
+            *length = 5;
+            *rate = 0.25;
+        }
+        assert_eq!(shorter.label(), "Steps 5 0.2Hz");
+    }
+
+    #[test]
+    fn a_step_sequencer_goes_to_the_engine_with_all_that_it_has_and_at_its_first_step() {
+        let mut values = [0.0; 16];
+        values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
+        let source = ModSourceSlot::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false };
+        match mod_source_slot_to_graph(&source) {
+            ModSource::Steps { values: sent, length, rate, glide, retrigger, position } => {
+                assert_eq!((sent, length, rate, glide, retrigger, position), (values, 3, 6.5, 0.25, false, 0.0));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

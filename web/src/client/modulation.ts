@@ -69,8 +69,9 @@ function offsetRange(modulation: Modulation, base: number, min: number, max: num
   const range = max - min;
   const between = (a: number, b: number) => ({ low: Math.min(a, b), high: Math.max(a, b) });
   switch (source.type) {
-    // A LFO is bipolar, -1 to 1: it wobbles ±depth×range around the base.
+    // A LFO is bipolar, -1 to 1: it wobbles ±depth×range around the base. So does a step sequencer, whose steps are -1 to 1.
     case "lfo":
+    case "steps":
       return between(-amount * range, amount * range);
     // An envelope is unipolar and the base is its peak: from `depth × (base - min)` below it, at rest, up to it.
     case "envelope":

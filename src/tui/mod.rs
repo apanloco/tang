@@ -39,7 +39,7 @@ use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
     BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
-    ParamKind, ParamSlot, PluginSlot, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
+    ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
 use crate::piano_filter::PianoMode;
@@ -287,12 +287,13 @@ enum ModulateChoice {
 }
 
 /// The kinds of modulator the popup makes, in the order it lists them, and what each is called there.
-const NEW_MODULATORS: [(ModulatorKind, &str); 5] = [
+const NEW_MODULATORS: [(ModulatorKind, &str); 6] = [
     (ModulatorKind::Lfo, "New LFO"),
     (ModulatorKind::Envelope, "New envelope"),
     (ModulatorKind::Macro, "New macro"),
     (ModulatorKind::Velocity, "New velocity"),
     (ModulatorKind::Key, "New key"),
+    (ModulatorKind::Steps, "New step sequencer"),
 ];
 
 /// The first choices of the popup for driving `param_name`: a new modulator of each kind, which `Existing` ones follow.
@@ -1519,6 +1520,8 @@ impl State {
                 intent::Event::GroupRenamed { .. } => self.rebuild_tree(),
                 // The tree shows a modulator's rate and waveform, and its cables' depths.
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
+                // (The pane shows the steps of a step sequencer from the model on every frame: the tree's line has no room for them.)
+                intent::Event::StepsSet { .. } => {}
                 intent::Event::ParamSet { .. }
                 | intent::Event::GainSet { .. }
                 | intent::Event::PresetLoaded { .. }
@@ -1550,6 +1553,16 @@ impl State {
                 let next = if direction > 0.0 { waveform.next() } else { waveform.prev() };
                 Intent::SetModulatorField { node: m.node, field: ModulatorField::Waveform, value: next.to_index() as f32 }
             }
+            // A switch has two places: either key goes to the other.
+            Some(ModulatorRow::Retrigger) => match m.row_intent(row, |on| 1.0 - on) {
+                Some(intent) => intent,
+                None => return,
+            },
+            // A step goes by a fraction of the range it can be set over, -1 to 1.
+            Some(ModulatorRow::Step(_)) => match m.row_intent(row, |value| value + direction * fraction * (STEP_MAX - STEP_MIN)) {
+                Some(intent) => intent,
+                None => return,
+            },
             row_kind => {
                 let field = match row_kind {
                     Some(ModulatorRow::Setting(field)) => Some(field),
@@ -4033,6 +4046,9 @@ fn modulator_field_label(field: ModulatorField) -> &'static str {
         ModulatorField::Sustain => "Sustain",
         ModulatorField::Release => "Release (s)",
         ModulatorField::Value => "Value",
+        ModulatorField::Glide => "Glide",
+        ModulatorField::Length => "Length (steps)",
+        ModulatorField::Retrigger => "Retrigger",
     }
 }
 
@@ -4045,6 +4061,7 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
         ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
         ModSourceSlot::MidiLearn { .. } => "MIDI".to_string(),
         ModSourceSlot::Macro { .. } => "Macro".to_string(),
+        ModSourceSlot::Steps { .. } => "Step sequencer".to_string(),
     };
     let row = |name: String, index: usize, min: f32, max: f32, default: f32, value: f32, kind: ParamKind| ParamSlot {
         name,
@@ -4057,7 +4074,9 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
         ..Default::default()
     };
     // What a modulator of each kind starts as, which a row's default is.
-    let (new_lfo, new_envelope, new_macro) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro());
+    let (new_lfo, new_envelope, new_macro, new_steps) =
+        (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro(), ModSourceSlot::new_steps());
+    let is_steps = matches!(m.source, ModSourceSlot::Steps { .. });
     let rows = (0..modulator_param_len(m))
         .filter_map(|position| {
             Some(match modulator_row(m, position)? {
@@ -4073,8 +4092,17 @@ fn modulator_pane(m: &ModulatorSlot) -> (String, Vec<ParamSlot>) {
                 }
                 ModulatorRow::Setting(field) => {
                     let (min, max) = field.range();
-                    let default = new_lfo.setting(field).or_else(|| new_envelope.setting(field)).or_else(|| new_macro.setting(field)).unwrap_or(min);
-                    row(modulator_field_label(field).to_string(), position, min, max, default, m.source.setting(field)?, ParamKind::Float)
+                    // (A step sequencer's rate starts at 8, and not at an LFO's 1.)
+                    let default = if is_steps { new_steps.setting(field) } else { new_lfo.setting(field).or_else(|| new_envelope.setting(field)).or_else(|| new_macro.setting(field)) };
+                    row(modulator_field_label(field).to_string(), position, min, max, default.unwrap_or(min), m.source.setting(field)?, ParamKind::Float)
+                }
+                ModulatorRow::Retrigger => {
+                    let value = m.source.setting(ModulatorField::Retrigger)?;
+                    row(modulator_field_label(ModulatorField::Retrigger).to_string(), position, 0.0, 1.0, 1.0, value, ParamKind::Enum(vec!["off".to_string(), "on".to_string()]))
+                }
+                ModulatorRow::Step(step) => {
+                    let value = *m.source.steps()?.get(step)?;
+                    row(format!("Step {}", step + 1), position, STEP_MIN, STEP_MAX, ModSourceSlot::staircase()[step], value, ParamKind::Float)
                 }
                 // A control's source, shown and not edited.
                 ModulatorRow::Info => row(format!("Source: {}", m.source.label()), position, 0.0, 0.0, 0.0, 0.0, ParamKind::Separator),
@@ -4099,11 +4127,12 @@ fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
             let (min, max) = field.range();
             (m.source.setting(field)?, modulator_field_label(field).to_string(), min, max)
         }
+        ModulatorRow::Step(step) => (*m.source.steps()?.get(step)?, format!("Step {}", step + 1), STEP_MIN, STEP_MAX),
         ModulatorRow::Depth(target) => {
             let target = m.targets.get(target)?;
             (target.depth, format!("{} depth", target.param_name), DEPTH_MIN, DEPTH_MAX)
         }
-        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => return None,
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Separator => return None,
     };
     Some(EditState { input: TextInputState::new(&format!("{value:.places$}")), param_name: name, param_min: min, param_max: max })
 }
@@ -4145,6 +4174,8 @@ fn step_fraction(modifiers: KeyModifiers) -> f32 {
 /// a ratio of nothing is nothing.)
 fn stepped(field: Option<ModulatorField>, value: f32, direction: f32, fraction: f32) -> f32 {
     match field {
+        // (A whole number, a length, goes by one: a twentieth of its range is not a step of it.)
+        Some(field) if field.is_whole() => value + direction,
         Some(field) if field.taper() == Taper::Log => {
             let (min, max) = field.range();
             value.max(min) * (max / min).powf(direction * fraction)

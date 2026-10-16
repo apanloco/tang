@@ -37,6 +37,7 @@ const DOING: Record<Intent["type"], string> = {
   setGain: "set a level",
   loadPreset: "load a preset",
   setModulatorField: "change a modulator's setting",
+  setSteps: "change the steps of a step sequencer",
   setEdgeDepth: "change the depth of a cable",
   removeEdge: "take out a cable",
   addModulator: "add a modulator",

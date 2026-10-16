@@ -613,7 +613,6 @@ pub enum ModSource {
     /// A step sequencer: up to `MAX_STEPS` values from -1 to 1 that it goes through one after the other, `rate` steps a second, the first `length` of them and
     /// round again (`steps_output` says what each moment of it puts out). A note starts it again at the first step if `retrigger` is on. It drives its targets as
     /// an LFO does, around what the user set.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes one from the next commit on"))]
     Steps {
         values: [f32; MAX_STEPS],
         length: usize,
@@ -2315,7 +2314,6 @@ pub enum GraphCommand {
         slot: Slot,
     },
     /// Set what a step sequencer goes through, how many of them, how it glides and whether a note starts it again; where it is stays.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends it from the next commit on"))]
     SetModulatorSteps {
         location: ModulatorLocation,
         index: usize,
@@ -6305,6 +6303,57 @@ mod tests {
         assert!(
             committed == fresh,
             "{} is not what the noise is now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    /// What `steps_output` makes of a spread of patterns, lengths, places and glides, as the web client's mock engine reads them (`web/src/client/fixtures/steps.json`): they pin the page's
+    /// law of a step sequencer (`client/steps.ts`) to this one. A number is written as the 64-bit one it widens to. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_step_sequencer_puts_out_is_current() {
+        let patterns: [[f32; MAX_STEPS]; 3] = [
+            // The staircase of a new one.
+            std::array::from_fn(|i| i as f32 / 8.0 - 1.0),
+            // A few steps with a pattern that is not even, and the rest nothing.
+            std::array::from_fn(|i| [0.5, -0.25, 1.0, -1.0, 0.125][i % 5] * if i < 8 { 1.0 } else { 0.5 }),
+            // All of them at one end.
+            [1.0; MAX_STEPS],
+        ];
+        let lengths = [1, 2, 3, 5, 8, 16];
+        let places = [0.0, 0.01, 0.25, 0.5, 0.75, 0.9, 0.999, 1.0, 1.5, 2.25, 4.75, 7.0, 7.9, 15.5, 15.99];
+        let glides = [0.0, 0.1, 0.25, 0.5, 1.0];
+        let mut cases = Vec::new();
+        for (p, values) in patterns.iter().enumerate() {
+            for &length in &lengths {
+                for &position in &places {
+                    // (A place is within the steps in use: the engine wraps it at the length before it asks.)
+                    if position >= length as f32 {
+                        continue;
+                    }
+                    for &glide in &glides {
+                        cases.push(serde_json::json!({
+                            "pattern": p,
+                            "length": length,
+                            "position": f64::from(position),
+                            "glide": f64::from(glide),
+                            "output": f64::from(steps_output(values, length, position, glide)),
+                        }));
+                    }
+                }
+            }
+        }
+        let patterns: Vec<Vec<f64>> = patterns.iter().map(|values| values.iter().map(|&v| f64::from(v)).collect()).collect();
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "patterns": patterns, "cases": cases })).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/steps.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a step sequencer puts out now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
     }

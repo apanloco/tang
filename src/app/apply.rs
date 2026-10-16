@@ -5,13 +5,13 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, macro_command, rate_command};
+use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, macro_command, rate_command, steps_command};
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PatternState, PluginSlot};
+use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PatternState, PluginSlot, STEP_MAX, STEP_MIN};
 use crate::piano_filter::PianoMode;
-use crate::plugin::chain::{GraphCommand, LfoWaveform, ModulatorLocation};
+use crate::plugin::chain::{GraphCommand, LfoWaveform, MAX_STEPS, ModulatorLocation};
 use crate::scale::ScaleSetting;
 use crate::session::NodeUi;
 use crate::{plugin, session};
@@ -68,6 +68,7 @@ impl Controller {
             Intent::SetGain { node, gain, value } => Done::Event(self.set_gain(node, gain, value)?),
             Intent::LoadPreset { node, preset } => Done::Event(self.load_preset(node, &preset)?),
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
+            Intent::SetSteps { node, values } => Done::Event(self.set_steps(node, values)?),
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
             Intent::SetMute { node, muted } => Done::Event(self.set_mute(node, muted)?),
@@ -476,7 +477,7 @@ impl Controller {
         }
         let (min, max) = field.range();
         let mut value = value.max(min).min(max);
-        if field == ModulatorField::Waveform {
+        if field.is_whole() {
             value = value.round();
         }
         let modulator = self
@@ -485,9 +486,21 @@ impl Controller {
             .and_then(|rack| rack.get_mut(index))
             .ok_or(IntentError::NotFound(node))?;
         let command = match (&mut modulator.source, field) {
-            (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => {
+            (ModSourceSlot::Lfo { rate, .. } | ModSourceSlot::Steps { rate, .. }, ModulatorField::Rate) => {
                 *rate = value;
                 rate_command(at, index, value)
+            }
+            // (A step sequencer's other settings go to the engine together with its steps, whichever of them was changed: the model has them all.)
+            (
+                ModSourceSlot::Steps { values, length, glide, retrigger, .. },
+                ModulatorField::Glide | ModulatorField::Length | ModulatorField::Retrigger,
+            ) => {
+                match field {
+                    ModulatorField::Glide => *glide = value,
+                    ModulatorField::Length => *length = value as usize,
+                    _ => *retrigger = value != 0.0,
+                }
+                steps_command(at, index, values, *length, *glide, *retrigger)
             }
             (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => {
                 *waveform = LfoWaveform::ALL[value as usize];
@@ -518,6 +531,34 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::ModulatorFieldSet { node, field, value })
+    }
+
+    /// Give a step sequencer all of its steps (`Intent::SetSteps`): each held to `STEP_MIN` to `STEP_MAX`, and what is told is what it has.
+    fn set_steps(&mut self, node: NodeId, values: Vec<f32>) -> Result<Event, IntentError> {
+        let path = self.model.locate(node).ok_or(IntentError::NotFound(node))?;
+        let NodePath::Modulator { at, index } = path else {
+            return Err(invalid("that node is not a modulator"));
+        };
+        if values.len() != MAX_STEPS {
+            return Err(invalid(format!("a step sequencer has {MAX_STEPS} steps, and {} were given", values.len())));
+        }
+        if let Some(bad) = values.iter().find(|value| !value.is_finite()) {
+            return Err(invalid(format!("{bad} is not a value for a step")));
+        }
+        let modulator = self
+            .model
+            .modulators_mut(at)
+            .and_then(|rack| rack.get_mut(index))
+            .ok_or(IntentError::NotFound(node))?;
+        let ModSourceSlot::Steps { values: steps, length, glide, retrigger, .. } = &mut modulator.source else {
+            return Err(invalid("that modulator is not a step sequencer"));
+        };
+        for (step, value) in steps.iter_mut().zip(&values) {
+            *step = value.clamp(STEP_MIN, STEP_MAX);
+        }
+        let told = steps.to_vec();
+        let _ = self.cmd_tx.send(steps_command(at, index, steps, *length, *glide, *retrigger));
+        Ok(Event::StepsSet { node, values: told })
     }
 
     fn set_edge_depth(&mut self, edge: EdgeId, depth: f32) -> Result<Event, IntentError> {
@@ -2335,6 +2376,205 @@ value = 0.25
         }
         assert_eq!((lane_macro(&ctl), ctl.rev), (0.3, rev), "a refusal changes nothing");
         assert_eq!(sent(&engine), Vec::<String>::new());
+    }
+
+    /// A group with a step sequencer of three steps (at 3.5 a second) and a lane in it with one that is as a new one is.
+    const SEQUENCERS: &str = r#"
+[[group]]
+[[group.modulator]]
+type = "steps"
+steps = [0.5, -0.25, 1.0]
+rate = 3.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "steps"
+"#;
+
+    fn sequencers() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(SEQUENCERS).model, handles, None))
+    }
+
+    /// What a step sequencer has, in the model.
+    fn steps_in(ctl: &Controller, at: ModulatorLocation) -> ([f32; 16], usize, f32, f32, bool) {
+        let rack = match at {
+            ModulatorLocation::Lane(inst) => &ctl.model.instruments[inst].modulators,
+            ModulatorLocation::Group(group) => &ctl.model.groups[group].modulators,
+        };
+        match &rack[0].source {
+            ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (*values, *length, *rate, *glide, *retrigger),
+            other => panic!("{other:?} is not a step sequencer"),
+        }
+    }
+
+    /// What `sent` says of the command that gives the engine the steps of a step sequencer.
+    fn steps_line(location: &str, values: [f32; 16], length: usize, glide: f32, retrigger: bool) -> String {
+        format!("SetModulatorSteps {location} index=0 values={values:?} length={length} glide={glide:.3} retrigger={retrigger}")
+    }
+
+    #[test]
+    fn set_modulator_field_sets_what_a_step_sequencer_goes_by_in_the_model_and_gives_the_engine_all_of_it_each_time() {
+        let (engine, mut ctl) = sequencers();
+        sent(&engine);
+        let lane = lane_mod(&ctl, 0);
+        let ModSourceSlot::Steps { values: staircase, .. } = ModSourceSlot::new_steps() else { unreachable!() };
+        let applied = field(&mut ctl, lane, ModulatorField::Glide, 0.25).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::ModulatorFieldSet { node: lane, field: ModulatorField::Glide, value: 0.25 }]));
+        field(&mut ctl, lane, ModulatorField::Length, 5.0).unwrap();
+        field(&mut ctl, lane, ModulatorField::Retrigger, 0.0).unwrap();
+        field(&mut ctl, lane, ModulatorField::Rate, 12.5).unwrap();
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Lane(0)), (staircase, 5, 12.5, 0.25, false));
+        assert_eq!(
+            sent(&engine),
+            [
+                steps_line("Lane(0)", staircase, 16, 0.25, true),
+                steps_line("Lane(0)", staircase, 5, 0.25, true),
+                steps_line("Lane(0)", staircase, 5, 0.25, false),
+                "SetModulatorRate inst=0 mod=0 rate=12.500".to_string(),
+            ],
+            "the rate is an LFO's command, and the rest are one that has all of the others"
+        );
+        assert!(ctl.dirty);
+        assert_eq!(ctl.rev, 4);
+    }
+
+    #[test]
+    fn set_modulator_field_reaches_the_step_sequencer_of_a_group_by_the_same_commands_and_leaves_the_lanes_alone() {
+        let (engine, mut ctl) = sequencers();
+        sent(&engine);
+        let group = group_mod(&ctl, 0);
+        field(&mut ctl, group, ModulatorField::Length, 2.0).unwrap();
+        field(&mut ctl, group, ModulatorField::Rate, 9.0).unwrap();
+        let mut values = [0.0; 16];
+        values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Group(0)), (values, 2, 9.0, 0.0, true));
+        assert_eq!(sent(&engine), [steps_line("Group(0)", values, 2, 0.0, true), "SetGroupModulatorRate group=0 mod=0 rate=9.000".to_string()]);
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Lane(0)).1, 16, "the lane's is another modulator");
+    }
+
+    #[test]
+    fn the_settings_of_a_step_sequencer_are_held_to_their_ranges_and_the_whole_ones_are_rounded() {
+        let (engine, mut ctl) = sequencers();
+        let lane = lane_mod(&ctl, 0);
+        let told = |applied: Applied| match applied.events[0] {
+            Event::ModulatorFieldSet { value, .. } => value,
+            ref other => panic!("{other:?}"),
+        };
+        for (setting, asked, got) in [
+            (ModulatorField::Glide, 2.0, 1.0),
+            (ModulatorField::Glide, -1.0, 0.0),
+            (ModulatorField::Glide, 0.3, 0.3),
+            (ModulatorField::Length, 0.0, 1.0),
+            (ModulatorField::Length, 99.0, 16.0),
+            (ModulatorField::Length, 4.4, 4.0),
+            (ModulatorField::Length, 4.6, 5.0),
+            (ModulatorField::Retrigger, 0.4, 0.0),
+            (ModulatorField::Retrigger, 0.6, 1.0),
+            (ModulatorField::Retrigger, 7.0, 1.0),
+            (ModulatorField::Rate, 1.0e9, 50.0),
+            (ModulatorField::Rate, -3.0, 0.01),
+        ] {
+            assert_eq!(told(field(&mut ctl, lane, setting, asked).unwrap()), got, "{setting:?} {asked}");
+        }
+        sent(&engine);
+        let rev = ctl.rev;
+        for setting in [ModulatorField::Glide, ModulatorField::Length, ModulatorField::Retrigger, ModulatorField::Rate] {
+            for bad in [f32::NAN, f32::INFINITY] {
+                assert!(matches!(field(&mut ctl, lane, setting, bad), Err(IntentError::Invalid(_))), "{setting:?} {bad}");
+            }
+        }
+        assert_eq!((ctl.rev, sent(&engine)), (rev, Vec::<String>::new()), "a refusal changes nothing");
+    }
+
+    #[test]
+    fn a_step_sequencer_has_no_waveform_or_stage_or_value_and_the_others_have_no_glide_length_or_switch() {
+        let (engine, mut ctl) = sequencers();
+        let lane = lane_mod(&ctl, 0);
+        sent(&engine);
+        for setting in [ModulatorField::Waveform, ModulatorField::Attack, ModulatorField::Decay, ModulatorField::Sustain, ModulatorField::Release, ModulatorField::Value] {
+            assert!(matches!(field(&mut ctl, lane, setting, 0.5), Err(IntentError::Invalid(_))), "{setting:?}");
+        }
+        for (name, mut other, modulator) in [("an LFO", modulated(), 0), ("an envelope", modulated(), 1)] {
+            let node = lane_mod(&other.1, modulator);
+            for setting in [ModulatorField::Glide, ModulatorField::Length, ModulatorField::Retrigger] {
+                assert!(matches!(field(&mut other.1, node, setting, 0.5), Err(IntentError::Invalid(_))), "{name}: {setting:?}");
+            }
+        }
+        let (_engine, mut knobs) = macros();
+        let knob = lane_mod(&knobs, 0);
+        for setting in [ModulatorField::Glide, ModulatorField::Length, ModulatorField::Retrigger] {
+            assert!(matches!(field(&mut knobs, knob, setting, 0.5), Err(IntentError::Invalid(_))), "a macro: {setting:?}");
+        }
+        assert_eq!((ctl.rev, sent(&engine)), (0, Vec::<String>::new()), "nothing changed");
+    }
+
+    /// The sixteen values of a step sequencer that a test asks for: 0.1, 0.2, ... and then back down.
+    fn some_steps() -> Vec<f32> {
+        (0..16).map(|i| if i < 8 { (i + 1) as f32 / 10.0 } else { (15 - i) as f32 / 10.0 }).collect()
+    }
+
+    #[test]
+    fn set_steps_gives_a_step_sequencer_all_of_its_values_and_the_engine_with_them_and_tells_them() {
+        let (engine, mut ctl) = sequencers();
+        sent(&engine);
+        let lane = lane_mod(&ctl, 0);
+        let values = some_steps();
+        let applied = ctl.apply(Intent::SetSteps { node: lane, values: values.clone() }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::StepsSet { node: lane, values: values.clone() }]));
+        let all: [f32; 16] = values.clone().try_into().unwrap();
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Lane(0)), (all, 16, 8.0, 0.0, true), "the rest of what it has is as it was");
+        assert_eq!(sent(&engine), [steps_line("Lane(0)", all, 16, 0.0, true)]);
+        assert!(ctl.dirty);
+        // A group's has the group's command, with its own length and glide.
+        let group = group_mod(&ctl, 0);
+        ctl.apply(Intent::SetSteps { node: group, values: values.clone() }).unwrap();
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Group(0)), (all, 3, 3.5, 0.0, true));
+        assert_eq!(sent(&engine), [steps_line("Group(0)", all, 3, 0.0, true)]);
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Lane(0)).0, all, "the lane's is another's: it keeps its own");
+    }
+
+    #[test]
+    fn the_values_of_a_step_sequencer_are_held_to_minus_one_to_one_and_what_is_told_is_what_it_has() {
+        let (_engine, mut ctl) = sequencers();
+        let lane = lane_mod(&ctl, 0);
+        let mut values = vec![0.0; 16];
+        values[0] = 3.0;
+        values[1] = -7.5;
+        values[2] = 0.5;
+        let applied = ctl.apply(Intent::SetSteps { node: lane, values }).unwrap();
+        let Event::StepsSet { values: told, .. } = &applied.events[0] else { panic!("{:?}", applied.events) };
+        assert_eq!(told[..4], [1.0, -1.0, 0.5, 0.0]);
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Lane(0)).0[..4], [1.0, -1.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn set_steps_is_refused_for_what_is_not_a_step_sequencer_a_list_of_the_wrong_length_and_a_value_that_is_not_a_number() {
+        let (engine, mut ctl) = sequencers();
+        let (_other, mut lfos) = modulated();
+        let lane = lane_mod(&ctl, 0);
+        sent(&engine);
+        let lane_node = ctl.model.instruments[0].node;
+        let lfo = lane_mod(&lfos, 0);
+        let rev = ctl.rev;
+        for (what, node, values) in [
+            ("a list that is short", lane, vec![0.0; 15]),
+            ("a list that is long", lane, vec![0.0; 17]),
+            ("none", lane, vec![]),
+            ("a value that is not a number", lane, { let mut v = vec![0.0; 16]; v[7] = f32::NAN; v }),
+            ("a value that is not finite", lane, { let mut v = vec![0.0; 16]; v[7] = f32::INFINITY; v }),
+            ("a lane", lane_node, vec![0.0; 16]),
+            ("a node that is not there", NodeId(9999), vec![0.0; 16]),
+        ] {
+            let result = ctl.apply(Intent::SetSteps { node, values });
+            assert!(matches!(result, Err(IntentError::Invalid(_)) | Err(IntentError::NotFound(_))), "{what}: {result:?}");
+        }
+        assert!(matches!(lfos.apply(Intent::SetSteps { node: lfo, values: vec![0.0; 16] }), Err(IntentError::Invalid(_))), "an LFO");
+        assert!(matches!(ctl.apply(Intent::SetSteps { node: NodeId(9999), values: vec![0.0; 16] }), Err(IntentError::NotFound(_))));
+        assert_eq!((ctl.rev, sent(&engine)), (rev, Vec::<String>::new()), "nothing changed, and nothing was sent");
+        assert_eq!(steps_in(&ctl, ModulatorLocation::Lane(0)).0, ModSourceSlot::staircase());
     }
 
     #[test]

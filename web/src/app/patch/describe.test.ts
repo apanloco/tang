@@ -6,6 +6,7 @@ import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, s
 const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5 };
 const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
 const macro: ModulatorSource = { type: "macro", value: 0.25 };
+const steps: ModulatorSource = { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true };
 type Control = Extract<ModulatorSource, { type: "midiLearn" }>;
 const midi = (control: Control["control"], learning = false): Control => ({ type: "midiLearn", control, learning });
 
@@ -15,6 +16,7 @@ describe("a modulator in words", () => {
     expect(kindOf(envelope)).toBe("Envelope");
     expect(kindOf(midi(null))).toBe("MIDI");
     expect(kindOf(macro)).toBe("Macro");
+    expect(kindOf(steps)).toBe("Steps");
   });
 
   test("has the settings that its kind has, in the order they are shown", () => {
@@ -22,6 +24,7 @@ describe("a modulator in words", () => {
     expect(settingsOf(envelope)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(settingsOf(midi({ type: "cc", number: 74 }))).toEqual([]);
     expect(settingsOf(macro)).toEqual(["value"]);
+    expect(settingsOf(steps)).toEqual(["rate", "glide", "length", "retrigger"]);
   });
 
   test("says what a MIDI control is bound to, or that it is not", () => {
@@ -62,6 +65,11 @@ describe("the scale of a modulator's output", () => {
     // (A key is the number of the note over 127, drawn as it is: middle C is a little under the middle of the picture, not on it.)
     expect(outputScale(midi({ type: "key" }))).toEqual({ min: 0, max: 1, centred: false });
     expect(outputScale(midi(null))).toEqual({ min: 0, max: 1, centred: false });
+  });
+
+  test("goes both ways, from the middle, for a step sequencer, whose steps are -1 to 1", () => {
+    expect(outputScale(steps)).toEqual({ min: -1, max: 1, centred: true });
+    expect(outputRange("steps")).toEqual({ min: -1, max: 1 });
   });
 
   test("goes from nothing up for a macro, which is a level", () => {

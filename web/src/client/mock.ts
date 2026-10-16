@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NAME_LIMIT, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -46,6 +46,7 @@ import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
+import { stepsOutput } from "./steps";
 import { fractionOf, isLog, valueAt } from "./travel";
 
 export interface MockOptions {
@@ -111,16 +112,27 @@ const FIELDS_OF: Record<ModulatorSource["type"], readonly ModulatorField[]> = {
   envelope: ["attack", "decay", "sustain", "release"],
   midiLearn: [],
   macro: ["value"],
+  steps: ["rate", "glide", "length", "retrigger"],
 };
 
-/** A setting of a modulator: clamped to its range, rounded if it is an index, and only if the modulator has it. */
+/** A setting of a modulator: clamped to its range, rounded if it is a whole number (an index, a count, a switch), and only if the modulator has it. */
 function fieldOutcome(node: Node, field: ModulatorField, value: number): Outcome {
   if (node.kind !== "modulator") return invalid("that node is not a modulator");
   if (!holds(value)) return invalid(`${shown(value)} is not a value for ${variant(field)}`);
   const [low, high] = MODULATOR_FIELD_RANGES[field];
   const clamped = clamp(value, low, high);
   if (!FIELDS_OF[node.source.type].includes(field)) return invalid(`${variant(field)} does not apply to that modulator`);
-  return { event: { type: "modulatorFieldSet", node: node.id, field, value: field === "waveform" ? roundIn32Bits(clamped) : clamped } };
+  return { event: { type: "modulatorFieldSet", node: node.id, field, value: MODULATOR_WHOLE_FIELDS.includes(field) ? roundIn32Bits(clamped) : clamped } };
+}
+
+/** All the steps of a step sequencer, each held to its range: the controller's `set_steps`, in its order of looking (a node that is a modulator, how many steps, whether they are numbers, whether it is a step sequencer). */
+function stepsOutcome(node: Node, values: readonly number[]): Outcome {
+  if (node.kind !== "modulator") return invalid("that node is not a modulator");
+  if (values.length !== MAX_STEPS) return invalid(`a step sequencer has ${MAX_STEPS} steps, and ${values.length} were given`);
+  const bad = values.find((value) => !holds(value));
+  if (bad !== undefined) return invalid(`${shown(bad)} is not a value for a step`);
+  if (node.source.type !== "steps") return invalid("that modulator is not a step sequencer");
+  return { event: { type: "stepsSet", node: node.id, values: values.map((value) => clamp(value, STEP_RANGE[0], STEP_RANGE[1])) } };
 }
 
 /** The depth of a cable: clamped, and only of a cable that is there. */
@@ -468,6 +480,7 @@ const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSou
   // (A control that follows the notes is bound when it is made: no controller is moved for it.)
   velocity: { name: "Velocity", source: { type: "midiLearn", control: { type: "velocity" }, learning: false } },
   key: { name: "Key", source: { type: "midiLearn", control: { type: "key" }, learning: false } },
+  steps: { name: "Steps", source: { type: "steps", values: [...NEW_STEPS.values], length: NEW_STEPS.length, rate: NEW_STEPS.rate, glide: NEW_STEPS.glide, retrigger: NEW_STEPS.retrigger } },
 };
 
 /**
@@ -940,6 +953,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
         : invalid("only a lane or a group can be soloed");
     case "setModulatorField":
       return fieldOutcome(node, intent.field, intent.value);
+    case "setSteps":
+      return stepsOutcome(node, intent.values);
   }
 }
 
@@ -1065,6 +1080,8 @@ export class MockServer {
   #recordingTimer: ReturnType<typeof setInterval> | undefined;
   /** The last note that each control that follows the notes has heard, by the node of the control (what the engine's controls hold): what it puts out is made of it. */
   readonly #heard = new Map<NodeId, { note: number; velocity: number }>();
+  /** When each step sequencer that a note starts again was started last, in seconds of the server's clock (one that none has started goes from 0). */
+  readonly #restarted = new Map<NodeId, number>();
 
   constructor(options: MockOptions = {}) {
     this.#options = options;
@@ -1344,14 +1361,21 @@ export class MockServer {
     const { nodes } = this.#snapshot.graph;
     const takes = (lane: Node): boolean => lane.kind === "instrument" && (lane.range === null || (note >= lane.range.low && note <= lane.range.high));
     for (const control of nodes) {
-      if (control.kind !== "modulator" || control.source.type !== "midiLearn") continue;
-      if (control.source.control?.type !== "velocity" && control.source.control?.type !== "key") continue;
+      if (control.kind !== "modulator") continue;
+      // (A step sequencer that a note starts again is started by the notes that its lane takes, or that any member of its group does, as an envelope is.)
+      const follows = control.source.type === "midiLearn" && (control.source.control?.type === "velocity" || control.source.control?.type === "key");
+      const restarts = control.source.type === "steps" && control.source.retrigger;
+      if (!follows && !restarts) continue;
       const owner = nodes.find((n) => n.id === control.parent);
+      const remember = (heard: number): void => {
+        if (follows) this.#heard.set(control.id, { note: heard, velocity });
+        else this.#restarted.set(control.id, this.now());
+      };
       if (owner?.kind === "instrument") {
         const heard = note + owner.transpose;
-        if (takes(owner) && heard >= 0 && heard <= 127) this.#heard.set(control.id, { note: heard, velocity });
+        if (takes(owner) && heard >= 0 && heard <= 127) remember(heard);
       } else if (owner?.kind === "group" && nodes.some((n) => n.kind === "instrument" && n.parent === owner.id && takes(n))) {
-        this.#heard.set(control.id, { note, velocity });
+        remember(note);
       }
     }
   }
@@ -1505,6 +1529,10 @@ export class MockServer {
       // (A macro puts out the number it is set to, and nothing moves it but a person.)
       case "macro":
         return source.value;
+      // (A step sequencer goes through its steps at its rate from the last note that started it again, or from the start of the clock: the engine's goes by the buffer, which this does not.
+      // What `#listened` has noted is of the notes that started it, which only a step sequencer that retriggers is.)
+      case "steps":
+        return stepsOutput(source.values, source.length, Math.max(seconds - (this.#restarted.get(node.id) ?? 0), 0) * source.rate, source.glide);
     }
   }
 

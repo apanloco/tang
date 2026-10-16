@@ -224,6 +224,10 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
     if (field === "release") return source.release;
   }
   if (source.type === "macro" && field === "value") return source.value;
+  if (source.type === "steps") {
+    if (field === "rate" || field === "glide" || field === "length") return source[field];
+    if (field === "retrigger") return source.retrigger ? 1 : 0;
+  }
   return undefined;
 }
 
@@ -270,6 +274,12 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const old = node ? fieldOf(node, intent.field) : undefined;
       if (old === undefined) return "nothing";
       return step(`set ${intent.field}`, { type: "setModulatorField", node: intent.node, field: intent.field, value: old }, `field:${String(intent.node)}:${intent.field}`);
+    }
+    // All the steps of a step sequencer are one thing to the history: a stroke across the bars is one step, which puts back what the stroke found.
+    case "setSteps": {
+      const node = nodeOf(intent.node);
+      if (node?.kind !== "modulator" || node.source.type !== "steps") return "nothing";
+      return step("set steps", { type: "setSteps", node: intent.node, values: node.source.values }, `steps:${String(intent.node)}`);
     }
     case "setEdgeDepth": {
       const edge = snapshot.graph.edges.find((e) => e.kind === "modulation" && e.id === intent.edge);

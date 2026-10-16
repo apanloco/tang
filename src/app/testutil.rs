@@ -113,6 +113,12 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModulatorOutput { location, index, slot } => {
             format!("SetModulatorOutput {location:?} index={index} slot={}", slot.index())
         }
+        C::SetModulatorPosition { location, index, slot } => {
+            format!("SetModulatorPosition {location:?} index={index} slot={}", slot.index())
+        }
+        C::SetModulatorSteps { location, index, values, length, glide, retrigger } => {
+            format!("SetModulatorSteps {location:?} index={index} values={values:?} length={length} glide={glide:.3} retrigger={retrigger}")
+        }
         C::SetLaneMeter { inst, slots } => {
             format!("SetLaneMeter inst={inst} peak={} clips={}", slots.peak.index(), slots.clips.index())
         }
@@ -172,7 +178,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
 fn is_telemetry(cmd: &GraphCommand) -> bool {
     matches!(
         cmd,
-        GraphCommand::SetModulatorOutput { .. } | GraphCommand::SetLaneMeter { .. } | GraphCommand::SetGroupMeter { .. }
+        GraphCommand::SetModulatorOutput { .. } | GraphCommand::SetModulatorPosition { .. } | GraphCommand::SetLaneMeter { .. } | GraphCommand::SetGroupMeter { .. }
     )
 }
 

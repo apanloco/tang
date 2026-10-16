@@ -111,6 +111,9 @@ fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> 
                     key: matches!(source, Some(MidiBindSource::Key)),
                 },
                 ModSourceSlot::Macro { value } => SaveModSource::Macro { value: *value },
+                ModSourceSlot::Steps { values, length, rate, glide, retrigger } => {
+                    SaveModSource::Steps { values: values.to_vec(), length: *length, rate: *rate, glide: *glide, retrigger: *retrigger }
+                }
             };
             SaveModulator {
                 source,
@@ -437,6 +440,38 @@ pinned = ["cutoff", "resonance"]
         let second = load(&file);
         assert_eq!(first.commands, second.commands);
         assert_eq!(saved(&second.model), file, "a second save is the same file");
+    }
+
+    const SEQUENCERS: &str = "[[group]]\n[[group.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.5]\nrate = 3.0\nglide = 0.5\nretrigger = false\n\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.modulator]]\ntype = \"steps\"\n";
+
+    #[test]
+    fn a_step_sequencer_is_saved_with_all_that_it_has_and_loaded_again_the_same_in_a_lane_and_in_a_group() {
+        let first = load(SEQUENCERS);
+        let file = saved(&first.model);
+        assert_eq!(file.matches("type = \"steps\"").count(), 2, "{file}");
+        // Every one is written whole: its sixteen steps (the group's with the zeros that the file left out, and its length of 2), and what it has besides.
+        assert_eq!(file.matches("steps = [").count(), 2, "{file}");
+        assert!(file.contains("steps = [0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"), "{file}");
+        assert!(file.contains("length = 2") && file.contains("length = 16"), "{file}");
+        assert!(file.contains("rate = 3.0") && file.contains("rate = 8.0"), "{file}");
+        assert!(file.contains("glide = 0.5") && file.contains("glide = 0.0"), "{file}");
+        assert!(file.contains("retrigger = false") && file.contains("retrigger = true"), "{file}");
+        let second = load(&file);
+        assert_eq!(first.commands, second.commands);
+        assert_eq!(saved(&second.model), file, "a second save is the same file");
+    }
+
+    #[test]
+    fn a_step_sequencer_that_is_changed_is_saved_as_it_is_now() {
+        let mut run = load(SEQUENCERS);
+        let mut values = [0.0; 16];
+        values[..3].copy_from_slice(&[-1.0, 0.125, 0.75]);
+        run.model.instruments[0].modulators[0].source = ModSourceSlot::Steps { values, length: 3, rate: 12.5, glide: 1.0, retrigger: false };
+        let file = saved(&run.model);
+        assert!(file.contains("steps = [-1.0, 0.125, 0.75, 0.0,"), "{file}");
+        assert!(file.contains("length = 3") && file.contains("rate = 12.5") && file.contains("glide = 1.0"), "{file}");
+        assert_eq!(file.matches("retrigger = false").count(), 2, "{file}");
+        assert!(!file.contains("retrigger = true"), "{file}");
     }
 
     #[test]

@@ -846,6 +846,28 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
             let value = (mod_config.value as f32).clamp(min, max);
             (ModSourceSlot::Macro { value }, format!("macro at {value:.2}"))
         }
+        "steps" => {
+            // (What the file gives is held to what a step sequencer can be: a value to -1 to 1, a glide to 0 to 1 and a length to 1 to 16. A step that is
+            // not given is nothing, and a file that gives no list at all has a new one's staircase.)
+            use crate::app::model::{STEP_MAX, STEP_MIN};
+            use crate::plugin::chain::MAX_STEPS;
+            let mut values = ModSourceSlot::staircase();
+            let length = match &mod_config.steps {
+                Some(given) => {
+                    values = [0.0; MAX_STEPS];
+                    for (value, given) in values.iter_mut().zip(given) {
+                        *value = (*given as f32).clamp(STEP_MIN, STEP_MAX);
+                    }
+                    given.len()
+                }
+                None => MAX_STEPS,
+            };
+            let length = mod_config.length.unwrap_or(length).clamp(1, MAX_STEPS);
+            let rate = mod_config.rate.map_or(8.0, |rate| rate as f32);
+            let glide = (mod_config.glide as f32).clamp(0.0, 1.0);
+            let source = ModSourceSlot::Steps { values, length, rate, glide, retrigger: mod_config.retrigger };
+            (source, format!("{length} steps at {rate:.1}Hz"))
+        }
         _ => {
             // Default: LFO.
             let waveform = plugin::chain::LfoWaveform::from_str(&mod_config.waveform)
@@ -856,8 +878,9 @@ fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, St
                     );
                     plugin::chain::LfoWaveform::Sine
                 });
-            let source = ModSourceSlot::Lfo { waveform, rate: mod_config.rate as f32 };
-            let desc = format!("{} {:.1}Hz", waveform.name(), mod_config.rate);
+            let rate = mod_config.rate.unwrap_or(1.0);
+            let source = ModSourceSlot::Lfo { waveform, rate: rate as f32 };
+            let desc = format!("{} {:.1}Hz", waveform.name(), rate);
             (source, desc)
         }
     }
@@ -891,10 +914,7 @@ fn sibling_field_info(config: Option<&session::ModulatorConfig>, field: plugin::
 fn field_info(source: &ModSourceSlot, depth_of: impl Fn(usize) -> Option<f32>, field: plugin::chain::CrossModField) -> (f32, f32, f32) {
     use plugin::chain::CrossModField;
     match field {
-        CrossModField::Rate => {
-            let v = if let ModSourceSlot::Lfo { rate, .. } = source { *rate } else { 1.0 };
-            (v, 0.01, 50.0)
-        }
+        CrossModField::Rate => (source.setting(crate::app::intent::ModulatorField::Rate).unwrap_or(1.0), 0.01, 50.0),
         CrossModField::Attack => {
             let v = if let ModSourceSlot::Envelope { attack, .. } = source { *attack } else { 0.01 };
             (v, 0.001, 10.0)
@@ -1652,6 +1672,91 @@ depth = 0.4
         assert_eq!(value_of(&lane("value = 1.5\n")), 1.0);
         assert_eq!(value_of(&lane("value = -2.0\n")), 0.0);
         assert_eq!(value_of(&lane("value = 0.75\n")), 0.75);
+    }
+
+    /// A group with a step sequencer that the file describes, and a lane in it with one that the file leaves as a new one is, and an LFO whose cable drives its rate.
+    const SEQUENCERS: &str = r#"
+[[group]]
+[[group.modulator]]
+type = "steps"
+steps = [0.5, -0.25, 1.0]
+rate = 3.5
+glide = 0.25
+retrigger = false
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+type = "steps"
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+mod_rate = 0
+depth = 0.2
+"#;
+
+    fn steps_of(source: &ModSourceSlot) -> ([f32; 16], usize, f32, f32, bool) {
+        match source {
+            ModSourceSlot::Steps { values, length, rate, glide, retrigger } => (*values, *length, *rate, *glide, *retrigger),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_step_sequencer_is_loaded_with_what_the_file_gives_it_and_the_engine_is_given_it_at_its_first_step() {
+        let run = load(SEQUENCERS);
+        let mut values = [0.0; 16];
+        values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
+        // The values that are not given are nothing, and as many are in use as are given.
+        assert_eq!(steps_of(&run.model.groups[0].modulators[0].source), (values, 3, 3.5, 0.25, false));
+        assert!(
+            run.commands.contains(
+                &"InsertGroupModulator group=0 index=0 source=Steps { values: [0.5, -0.25, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], length: 3, rate: 3.5, glide: 0.25, retrigger: false, position: 0.0 }"
+                    .to_string()
+            ),
+            "{:#?}",
+            run.commands
+        );
+        // One that the file does not describe is what a new one is: the staircase, all sixteen in use, 8 a second, no glide, started again by a note.
+        let ModSourceSlot::Steps { values: staircase, .. } = ModSourceSlot::new_steps() else { unreachable!() };
+        assert_eq!(steps_of(&run.model.instruments[0].modulators[0].source), (staircase, 16, 8.0, 0.0, true));
+        // And a cable that drives its rate is centred on the 8 that it has, where an LFO that has none is at 1.
+        assert!(
+            run.commands.iter().any(|c| c.starts_with("AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.200 base=8.000 range=[0.010, 50.000]")),
+            "{:#?}",
+            run.commands
+        );
+        assert_eq!(run.model.instruments[0].modulators.len(), 2);
+    }
+
+    #[test]
+    fn what_a_file_says_that_a_step_sequencer_cannot_be_is_held_to_what_it_can() {
+        let lane = |fields: &str| format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n{fields}");
+        let of = |fields: &str| steps_of(&load(&lane(fields)).model.instruments[0].modulators[0].source);
+        // A value is held to -1 to 1, and so is a glide to 0 to 1.
+        let (values, length, ..) = of("steps = [2.0, -3.0, 0.5]\n");
+        assert_eq!((&values[..4], length), (&[1.0, -1.0, 0.5, 0.0][..], 3));
+        assert_eq!(of("glide = -1.0\n").3, 0.0);
+        assert_eq!(of("glide = 2.0\n").3, 1.0);
+        assert_eq!(of("glide = 0.5\n").3, 0.5);
+        // A length is held to 1 to 16, and is how many there are values if the file does not say; steps past the values given are nothing.
+        assert_eq!(of("length = 0\n").1, 1);
+        assert_eq!(of("length = 40\n").1, 16);
+        assert_eq!(of("steps = [0.5]\nlength = 9\n").1, 9);
+        assert_eq!(of("steps = [0.5]\nlength = 9\n").0[1..9], [0.0; 8]);
+        assert_eq!(of("steps = [0.5, 0.25]\n").1, 2);
+        // A rate is what the file says, and a step sequencer's is 8 and not an LFO's 1 if it says none.
+        assert_eq!(of("rate = 0.5\n").2, 0.5);
+        assert_eq!(of("").2, 8.0);
+        let lfo = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\n";
+        assert!(matches!(load(lfo).model.instruments[0].modulators[0].source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
+    }
+
+    #[test]
+    fn a_step_sequencers_values_that_are_not_finite_numbers_are_refused_with_their_place() {
+        let Err(error) = try_load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, nan]\n") else { panic!("a value that is not a number is refused") };
+        let error = format!("{error:#}");
+        assert!(error.contains("instrument[0].modulator[0].steps[1]") && error.contains("is not a finite number"), "{error}");
     }
 
     #[test]

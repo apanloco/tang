@@ -140,6 +140,13 @@ pub(super) fn macro_command(at: ModulatorLocation, index: usize, value: f32) -> 
     }
 }
 
+/// The command that gives the audio thread what the step sequencer at `index` of the rack at `at` goes through, how many of them are in use, how it glides and
+/// whether a note starts it again: all of it, whichever of them was changed, since the model has it all and the command is the whole of it. Its rate is another command,
+/// an LFO's (`rate_command`), and where it is in the pattern stays.
+pub(super) fn steps_command(at: ModulatorLocation, index: usize, values: &[f32; crate::plugin::chain::MAX_STEPS], length: usize, glide: f32, retrigger: bool) -> GraphCommand {
+    GraphCommand::SetModulatorSteps { location: at, index, values: *values, length, glide, retrigger }
+}
+
 /// The command that gives the audio thread the depth of cable `target_index` of the modulator at `mod_index` of the rack at `at`.
 pub(super) fn depth_command(at: ModulatorLocation, mod_index: usize, target_index: usize, depth: f32) -> GraphCommand {
     match at {

@@ -301,6 +301,34 @@ describe("the patch", () => {
     });
   });
 
+  test("gives a step sequencer its rate, which a cable can drive, and its glide, its length and its retrigger, which a person sets, and says nothing of its kind twice", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    const values = [0.5, -0.25, 1, -1, ...Array<number>(12).fill(0)];
+    snapshot.graph.nodes.push({ id: 90, parent: 1, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false } });
+    const { requests, clock } = await rig(<PatchView />, { snapshot });
+    const sequencer = await nodeOf(90);
+    expect(controlsIn(sequencer)).toEqual(["Rate", "Glide", "Length", "Retrigger"]);
+    expect(Array.from(sequencer.querySelectorAll('[role="slider"]')).map((control) => control.getAttribute("aria-valuetext"))).toEqual(["6 Hz", "0.25", "4"]);
+    expect(within(sequencer).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("0");
+    // (Its name is its kind: no badge says it again.)
+    expect(sequencer.querySelector(".tang-node__badge")).toBeNull();
+    // A cable ends at the rate, as at an LFO's, and a modulator is made for it by a button; the glide and the length are set by a person.
+    expect(sequencer.querySelector('.react-flow__handle[data-handleid="rate"]')).not.toBeNull();
+    expect(within(sequencer).getByRole("button", { name: "Modulate rate" })).toBeTruthy();
+    for (const handle of ["glide", "length", "retrigger"]) expect(sequencer.querySelector(`.react-flow__handle[data-handleid="${handle}"]`), handle).toBeNull();
+    expect(within(sequencer).queryByRole("button", { name: /^Modulate (glide|length)/ })).toBeNull();
+    // It draws what it puts out, from -1 to 1 as an LFO's output is.
+    expect(within(sequencer).getByRole("meter", { name: "Steps output" }).hasAttribute("data-centred")).toBe(true);
+    // The glide, turned, is a setting of the step sequencer.
+    fireEvent.keyDown(within(sequencer).getByRole("slider", { name: "Glide" }), { key: "ArrowUp" });
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent)).toEqual([{ type: "setModulatorField", node: 90, field: "glide", value: expect.closeTo(0.26, 9) as unknown }]);
+    });
+  });
+
   test("says what a control is bound to as soon as it is bound, though the settings of a modulator do not render its node", async () => {
     const snapshot: Snapshot = structuredClone(tracerSnapshot);
     snapshot.graph.nodes.push({ id: 91, parent: 1, name: "MIDI (learning…)", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } });
