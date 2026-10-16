@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -809,8 +809,8 @@ function bpmOutcome(bpm: number): Outcome {
   return { event: { type: "bpmSet", bpm: clamp(bpm, low, high) } };
 }
 
-/** The pattern a lane is given when it has none and something is asked of it (`PatternState::empty`): four beats, looping, not in key, not heard, at the tempo of the session. */
-const emptyPattern = (bpm: number): PatternInfo => ({ recording: false, enabled: false, looping: true, inKey: false, lengthBeats: 4, bpm, notes: 0 });
+/** The pattern a lane is given when it has none and something is asked of it (`PatternState::empty`): the length a new pattern has, looping, not in key, not heard, at the tempo of the session. */
+const emptyPattern = (bpm: number): PatternInfo => ({ recording: false, enabled: false, looping: true, inKey: false, lengthBeats: PATTERN_DEFAULT_LENGTH, bpm, notes: 0 });
 
 /**
  * What an intent about the pattern of a lane comes to (`set_recording`, `clear_pattern`, `set_pattern_field`): the pattern the lane has afterwards, as one event. A recording

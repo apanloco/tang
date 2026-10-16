@@ -556,6 +556,8 @@ mod typescript {
                  export const PATTERN_FIELD_RANGES: Record<PatternField, readonly [number, number]> = {{\n{}}};\n\n\
                  /** How many beats of the metronome a recording is counted in with, before it takes the length of the pattern (`COUNT_IN_BEATS`). */\n\
                  export const PATTERN_COUNT_IN_BEATS = {COUNT_IN_BEATS};\n\n\
+                 /** How long a pattern is, in beats, when a lane is given one that has nothing recorded (`PatternState::empty`). */\n\
+                 export const PATTERN_DEFAULT_LENGTH = {};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
                  /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */\n\
@@ -587,6 +589,7 @@ mod typescript {
                 default_entries(),
                 taper_entries(),
                 range_entries(&PATTERN_FIELDS, PatternField::range),
+                crate::app::model::PatternState::empty(120.0).length_beats,
                 waveform_names(),
                 scale_root_names(),
                 scale_kinds(),
