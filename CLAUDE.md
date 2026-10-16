@@ -883,11 +883,12 @@ velocity = 0
 | `bell.toml` | FM (`fm`, `fm_ratio` of ×3.5) with an envelope that takes the swing down while the note rings, so that the bell starts bright and ends as a plain tone |
 | `arp.toml` | a step sequencer on `detune` with the values of the notes over twelve (a depth of 0.25 makes a step of 1 twelve semitones): a minor seventh arpeggio from a held key, whatever key it is |
 | `pwm.toml` | a square whose `pulse` an LFO moves, three oscillators for each note, a short echo |
+| `epiano.toml` | an electric piano: FM at a ratio of one with an envelope on the swing (bright at the start of a note, mellow after it), the delay's Chorus preset, a little reverb |
 
-The five that make a sound with nothing installed (`SOUND_EXAMPLES` in `src/audio.rs`) are held by tests that render them through the real engine: each plays a chord that is heard (the loudest sample above 0.05) and is
+The six that make a sound with nothing installed (`SOUND_EXAMPLES` in `src/audio.rs`) are held by tests that render them through the real engine: each plays a chord that is heard (the loudest sample above 0.05) and is
 not loud (below 0.6); the arpeggio goes through its notes within 5 cents (it is within half a cent: the pitch is measured by autocorrelation, step by step) when its key is pressed after a pause that is not a whole number
 of steps, so that the key's restart of the sequence is what is heard; the bell is more than four times brighter in its first moments than at the end (it is seven times) and louder; the wind is quiet in its first moments and
-swells over its attack, and is still sounding a moment after the key goes up; and the delay preset that `pwm.toml` names is one that the delay has (the loader only logs a name that a plugin lacks, so a misspelling would load and
+swells over its attack, and is still sounding a moment after the key goes up; the electric piano is brighter in its first moments than later; and the delay presets that `pwm.toml` and `epiano.toml` name are ones that the delay has (the loader only logs a name that a plugin lacks, so a misspelling would load and
 sound like no preset). A saved sound of somebody's own (`tracer.toml`, `cool-sound.toml`) is not held to any of it. The page cannot open a session (it can save one under a name): an example is started with `tang serve examples/bell.toml`.
 
 ## Note remapping
@@ -2010,8 +2011,10 @@ Plugin loading is behind a trait. Three formats supported:
   that moves the right side's, a quarter of a cycle apart, by `mod_depth` milliseconds each way
   (a tape echo's wobble at 1 or 2 ms and 0.5 Hz, a chorus at 5 ms and 2 Hz; a modulator can move
   either, `mod_depth` over a range of 10 ms, where a cable to `time` has a range of 2 s). A change
-  of the depth is gone through over 50 ms. Four presets (Slapback, Tape Echo, Ping-Pong, Dub Echo;
-  Tape Echo has a wobble of 1.5 ms and Dub Echo of 0.8). A change of `time` (a knob, a
+  of the depth is gone through over 50 ms. Seven presets: four echoes (Slapback, Tape Echo, Ping-Pong, Dub Echo;
+  Tape Echo has a wobble of 1.5 ms and Dub Echo of 0.8) and three that are not, a short time that its own wobble swings: Chorus (20 ms, a wobble of 3.5 ms at 0.8 Hz, which swings the pitch of what
+  comes out by 30 cents each way), Flanger (3 ms with a feedback of 0.6 and a wobble of 2.5 ms at 0.25 Hz: a comb whose peaks sweep, about 10 dB of level over a 1 kHz sine) and Doubler (35 ms, a wobble of 1 ms at 0.3 Hz);
+  the effect's mix is the host's and starts at a half, which is what they want. A change of `time` (a knob, a
   modulator) is gone through by a one-pole of 10 ms and no faster than half a sample of delay for
   each sample that goes by, so a jump is a sweep in the pitch of the echoes, within an octave
   down and a fifth up, as on a tape echo, and never a click or a held sample; the delay's place
