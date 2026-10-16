@@ -34,7 +34,7 @@ source: src/tui/golden_tests.rs
 │                                                                                                                      │
 │                                                                                                                      │
 └ [o] hide  [O] wave/spectrum ─────────────────────────────────────────────────────────────────────────────────────────┘
- n  new instr  i  instrument  R  range  v  volume  a  add effect  m  modulate  g  group  d  delete  p  presets
+ n  new instr  i  replace  R  range  v  vol  M  mute  S  solo  a  add fx  m  modulate  g  group  d  delete  p  presets
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -67,7 +67,7 @@ beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 b......................................................................................................................b
 b......................................................................................................................b
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-gggcccccccccc.gggccccccccccc.gggcccccc.gggccccccc.gggccccccccccc.gggccccccccc.gggcccccc.gggccccccc.gggcccccccc
+gggcccccccccc.gggcccccccc.gggcccccc.gggcccc.gggccccc.gggccccc.gggccccccc.gggccccccccc.gggcccccc.gggccccccc.gggcccccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-

@@ -6158,3 +6158,106 @@ plugin = "builtin:reverb"
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mute and solo
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m_and_s_mute_and_solo_the_lane_that_the_cursor_is_in_and_the_tree_says_so() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('M'));
+    assert_eq!(h.commands(), ["SetMute inst=2 muted=true"]);
+    assert!(h.s.ctl.model.instruments[2].muted && h.s.ctl.dirty);
+    h.press(KeyCode::Char('S'));
+    assert_eq!(h.commands(), ["SetSolo inst=2 solo=true"]);
+    assert!(h.tree().iter().any(|label| label.starts_with("♪ Oscillator  [Built-in]") && label.ends_with("[mute] [solo]")), "{:?}", h.tree());
+    // The keys toggle: pressed again they bring it back.
+    h.press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+    assert_eq!(h.commands(), ["SetMute inst=2 muted=false", "SetSolo inst=2 solo=false"]);
+    assert!(h.tree().iter().all(|label| !label.contains("[mute]") && !label.contains("[solo]")), "{:?}", h.tree());
+    // And from anything of the lane's: its effect, its modulator, its pattern line.
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 }).press(KeyCode::Char('M'));
+    assert_eq!(h.commands(), ["SetMute inst=2 muted=true"]);
+    h.goto(TreeAddress::Modulator { inst: 2, index: 0 }).press(KeyCode::Char('S'));
+    assert_eq!(h.commands(), ["SetSolo inst=2 solo=true"]);
+}
+
+#[test]
+fn m_and_s_mute_and_solo_the_group_that_the_cursor_is_in_and_the_header_says_so() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('M'));
+    assert_eq!(h.commands(), ["SetGroupMute group=0 muted=true"]);
+    assert!(h.tree()[0].starts_with("▦ Pad") && h.tree()[0].ends_with("[mute]"), "{:?}", h.tree()[0]);
+    // From the group's bus effect and its modulator as well.
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 }).press(KeyCode::Char('S'));
+    assert_eq!(h.commands(), ["SetGroupSolo group=0 solo=true"]);
+    assert!(h.tree()[0].ends_with("[mute] [solo]"), "{:?}", h.tree()[0]);
+    h.goto(TreeAddress::GroupModulator { group: 0, index: 0 }).press(KeyCode::Char('M'));
+    assert_eq!(h.commands(), ["SetGroupMute group=0 muted=false"]);
+    // (A member of the group is a lane of its own: its flags are not the group's.)
+    h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('M'));
+    assert_eq!(h.commands(), ["SetMute inst=0 muted=true"]);
+    assert!(!h.s.ctl.model.groups[0].muted && h.s.ctl.model.groups[0].solo);
+}
+
+#[test]
+fn m_and_s_are_steps_of_the_history_and_a_browsers_mute_shows_in_the_tree() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(0));
+    h.press(KeyCode::Char('M'));
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("mute the lane of Oscillator"));
+    h.commands();
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetMute inst=0 muted=false"]);
+    assert!(!h.s.ctl.model.instruments[0].muted);
+    assert!(h.tree().iter().all(|label| !label.contains("[mute]")), "{:?}", h.tree());
+    // What a browser asks of the controller is in the tree with the next key, as every other change of it is.
+    let lane = h.s.ctl.model.instruments[0].node;
+    let group = h.s.ctl.model.groups[0].node;
+    let mut applied = vec![h.s.ctl.apply(Intent::SetSolo { node: lane, solo: true }).unwrap()];
+    applied.push(h.s.ctl.apply(Intent::SetMute { node: group, muted: true }).unwrap());
+    for one in &applied {
+        h.s.react_to(one);
+    }
+    assert!(h.tree()[0].ends_with("[mute]"), "{:?}", h.tree()[0]);
+    assert!(h.tree().iter().any(|label| label.starts_with("  ♪ Oscillator") && label.ends_with("[solo]")), "{:?}", h.tree());
+}
+
+#[test]
+fn m_and_s_are_for_the_chain_and_not_for_the_parameter_pane() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(2)).press(KeyCode::Enter);
+    assert!(h.s.focus_params);
+    h.press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert!(!h.s.ctl.model.instruments[2].muted && !h.s.ctl.model.instruments[2].solo);
+}
+
+#[test]
+fn m_and_s_are_the_session_tabs_and_do_nothing_on_the_others() {
+    let mut h = Harness::new(scene_group());
+    for tab in ['2', '3', '4'] {
+        h.press(KeyCode::Char(tab)).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+        assert_eq!(h.commands(), Vec::<String>::new(), "tab {tab}");
+    }
+    assert!(h.s.ctl.model.instruments.iter().all(|lane| !lane.muted && !lane.solo));
+}
+
+#[test]
+fn a_session_with_a_muted_lane_a_soloed_lane_and_a_muted_group_shows_it_in_the_tree_and_the_action_bar_has_the_keys() {
+    let mut h = Harness::new(
+        [
+            "[[group]]\nname = \"Pad\"\nmute = true\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\nmute = true\nsolo = true\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\nsolo = true\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\nrange = \"-B3\"\nmute = true\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\n",
+        ]
+        .concat(),
+    );
+    h.goto(TreeAddress::Instrument(2));
+    assert_golden("session_muted_and_soloed", &mut h);
+}

@@ -125,12 +125,15 @@ fn entry_key(entry: &TreeEntry) -> EntryKey {
 /// Build the action bar items for the current tree selection.
 fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> {
     match addr {
+        // (As long as a terminal of 120 columns shows: M and S are what made it too long, and "replace", "vol" and "add fx" are what it was shortened by.)
         Some(TreeAddress::Instrument(_)) => vec![
             ("n", "new instr"),
-            ("i", "instrument"),
+            ("i", "replace"),
             ("R", "range"),
-            ("v", "volume"),
-            ("a", "add effect"),
+            ("v", "vol"),
+            ("M", "mute"),
+            ("S", "solo"),
+            ("a", "add fx"),
             ("m", "modulate"),
             ("g", "group"),
             ("d", "delete"),
@@ -138,7 +141,7 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
         ],
         Some(TreeAddress::Effect { .. }) => vec![
             ("n", "new instr"),
-            ("a", "add effect"),
+            ("a", "add fx"),
             ("m", "modulate"),
             ("x", "mix"),
             ("d", "delete"),
@@ -155,7 +158,9 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
         Some(TreeAddress::Group(_)) => vec![
             ("a", "add fx"),
             ("m", "modulate"),
-            ("v", "volume"),
+            ("v", "vol"),
+            ("M", "mute"),
+            ("S", "solo"),
             ("R", "rename"),
             ("d", "delete group"),
         ],
@@ -873,6 +878,17 @@ impl State {
     /// Get the instrument index for the currently selected tree entry.
     fn selected_inst(&self) -> Option<usize> {
         self.selected_address()?.inst()
+    }
+
+    /// The lane or the group that the selected entry of the tree is of, with whether it is muted and whether it is soloed: what `M` and `S` ask the
+    /// intents for.
+    fn selected_lane_or_group(&self) -> Option<(NodeId, bool, bool)> {
+        match self.selected_address().copied()? {
+            TreeAddress::Group(group) | TreeAddress::GroupEffect { group, .. } | TreeAddress::GroupModulator { group, .. } => {
+                self.ctl.model.groups.get(group).map(|bus| (bus.node, bus.muted, bus.solo))
+            }
+            address => address.inst().and_then(|inst| self.ctl.model.instruments.get(inst)).map(|lane| (lane.node, lane.muted, lane.solo)),
+        }
     }
 
     fn open_target_selector(&mut self, inst: usize, mod_index: usize) {
@@ -2605,6 +2621,20 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
+        // 'M' / 'S' (chain focus) — mute or solo the lane or the group that the selected entry is of (the instrument,
+        // its effects, its modulators and its pattern are the lane's; a group's header, its bus effects and its
+        // modulators are the group's), as the page's M and S buttons do.
+        KeyCode::Char('M') if s.active_tab == 0 && !s.focus_params => {
+            if let Some((node, muted, _)) = s.selected_lane_or_group() {
+                s.apply(Intent::SetMute { node, muted: !muted });
+            }
+        }
+        KeyCode::Char('S') if s.active_tab == 0 && !s.focus_params => {
+            if let Some((node, _, solo)) = s.selected_lane_or_group() {
+                s.apply(Intent::SetSolo { node, solo: !solo });
+            }
+        }
+
         KeyCode::Char('d') if s.active_tab == 0 && !s.focus_params => {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
@@ -4141,6 +4171,16 @@ fn format_range(range: (u8, u8)) -> String {
 /// Render one instrument and its children (pattern, effects, lane mod rack).
 /// `prefix` is prepended to every label so the whole sub-tree can be nested
 /// under a group header.
+/// What the tree says at the end of a lane's or a group's line of whether it is muted and whether it is soloed: `  [mute]`, `  [solo]` or both.
+fn flags_label(muted: bool, solo: bool) -> String {
+    match (muted, solo) {
+        (false, false) => String::new(),
+        (true, false) => "  [mute]".to_string(),
+        (false, true) => "  [solo]".to_string(),
+        (true, true) => "  [mute] [solo]".to_string(),
+    }
+}
+
 fn push_instrument_entries(
     entries: &mut Vec<TreeEntry>,
     inst: &InstrumentNode,
@@ -4160,7 +4200,7 @@ fn push_instrument_entries(
         String::new()
     };
     entries.push(TreeEntry {
-        label: format!("{prefix}{plugin_label}{range_label}{transpose_label}"),
+        label: format!("{prefix}{plugin_label}{range_label}{transpose_label}{}", flags_label(inst.muted, inst.solo)),
         address: TreeAddress::Instrument(inst_idx),
         node: inst.node,
         color: None,
@@ -4255,7 +4295,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
             String::new()
         };
         entries.push(TreeEntry {
-            label: format!("\u{25a6} {name}{vol}"),
+            label: format!("\u{25a6} {name}{vol}{}", flags_label(group.muted, group.solo)),
             address: TreeAddress::Group(g_idx),
             node: group.node,
             color: Some(Color::Cyan),
@@ -4418,6 +4458,8 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  i          Replace instrument".into(),
         "  R          Set instrument key range / rename group".into(),
         "  v          Set instrument volume".into(),
+        "  M          Mute / unmute the lane or group (a mute wins over a solo)".into(),
+        "  S          Solo / unsolo it (while anything is soloed only it is heard)".into(),
         "  a          Add effect after selected".into(),
         "  d          Delete selected".into(),
         "  m          Add modulator (lane rack; group rack on a group node)".into(),

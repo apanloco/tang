@@ -34,7 +34,7 @@ source: src/tui/golden_tests.rs
 │                                                ││                                                                    │
 │                                                ││                                                                    │
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
- a  add fx  m  modulate  v  volume  R  rename  d  delete group
+ a  add fx  m  modulate  v  vol  M  mute  S  solo  R  rename  d  delete group
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -67,7 +67,7 @@ c................................................cb.............................
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-fffccccccc.fffccccccccc.fffccccccc.fffccccccc.fffccccccccccccc
+fffccccccc.fffccccccccc.fffcccc.fffccccc.fffccccc.fffccccccc.fffccccccccccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-
