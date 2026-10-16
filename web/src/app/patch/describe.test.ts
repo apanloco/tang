@@ -20,7 +20,7 @@ describe("a modulator in words", () => {
   });
 
   test("has the settings that its kind has, in the order they are shown", () => {
-    expect(settingsOf(lfo)).toEqual(["rate", "waveform"]);
+    expect(settingsOf(lfo)).toEqual(["rate", "waveform", "retrigger", "fade"]);
     expect(settingsOf(envelope)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(settingsOf(midi({ type: "cc", number: 74 }))).toEqual([]);
     expect(settingsOf(macro)).toEqual(["value"]);

@@ -3574,6 +3574,73 @@ describe("what a step sequencer puts out and does in the mock engine: its steps 
   });
 });
 
+describe("what an LFO puts out in the mock engine when a note starts it again and when it fades in", () => {
+  /** The tracer's LFO as a wave of `waveform` that goes round `rate` times a second, with this key. */
+  const keyed = (retrigger: boolean, fade: number, waveform: Waveform = "saw", rate = 1): Snapshot => {
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" && node.source.type === "lfo" ? { ...node, source: { ...node.source, waveform, rate, retrigger, fade } } : node));
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  };
+  const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+  const near = (value: number | undefined, expected: number): boolean => value !== undefined && Math.abs(value - expected) < 1e-5;
+
+  test("goes on through a note when a note does not start it again, and is at the start of its wave at the note when it does", async () => {
+    // A saw that goes round once a second is at twice the part of a second it is at, less 1: -0.4 at 5.3 s. A fifth of a second on it is 0 if it went on, and -0.6 if a note at 5.3 started it again.
+    for (const [retrigger, expected] of [[false, 0], [true, -0.6]] as const) {
+      let now = 5.3;
+      const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: keyed(retrigger, 0), clock: () => now }), { telemetry: ["modulation"] });
+      await until(() => near(outputOf(client), -0.4), `-0.4 at 5.3 (retrigger ${String(retrigger)})`);
+      client.noteOn(60, 100);
+      await quiet();
+      now = 5.5;
+      await until(() => near(outputOf(client), expected), `a fifth of a second after a note (retrigger ${String(retrigger)})`);
+    }
+  });
+
+  test("rests at full until a note, and then comes in over the fade, which every note starts again, whether or not it starts the wave again", async () => {
+    // A square that stays at +1 (a rate of next to nothing, so that the wave is not what is read), with a fade of two seconds.
+    let now = 5.3;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: keyed(false, 2, "square", 0.01), clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), 1), "full before a note");
+    client.noteOn(60, 100);
+    await quiet();
+    await until(() => near(outputOf(client), 0), "nothing at the note");
+    now = 6.3;
+    await until(() => near(outputOf(client), 0.5), "half way in, a second after");
+    now = 8;
+    await until(() => near(outputOf(client), 1), "all the way in, and no further");
+    client.noteOn(62, 100);
+    await quiet();
+    now = 8.5;
+    await until(() => near(outputOf(client), 0.25), "a quarter of the way in: the next note started the fade again");
+  });
+
+  test("fades the wave that a note started again: at the start of the wave, and nothing, at the note, and both go on from there", async () => {
+    let now = 5.3;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: keyed(true, 2), clock: () => now }), { telemetry: ["modulation"] });
+    client.noteOn(60, 100);
+    await quiet();
+    // A quarter of a second after the note a saw is at -0.5 and a fade of two seconds is an eighth of the way in.
+    now = 5.55;
+    await until(() => near(outputOf(client), -0.5 * 0.125), "-0.0625");
+  });
+
+  test("hears only the notes in the keys of its lane", async () => {
+    const snapshot = keyed(true, 0);
+    const nodes = snapshot.graph.nodes.map((node) => (node.kind === "instrument" ? { ...node, range: { low: 60, high: 72 } } : node));
+    let now = 5.3;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: { ...snapshot, graph: { ...snapshot.graph, nodes } }, clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), -0.4), "-0.4 at 5.3");
+    client.noteOn(40, 100);
+    await quiet();
+    now = 5.5;
+    await until(() => near(outputOf(client), 0), "it went on: the note is below the keys of the lane");
+    client.noteOn(64, 100);
+    await quiet();
+    now = 5.7;
+    await until(() => near(outputOf(client), -0.6), "a fifth of a second into its wave: the note is in the keys, and started it again at 5.5");
+  });
+});
+
 /** A transport to a mock server whose words to the client can be held back, and let through all at once. */
 function gated(server: MockServer): { transport: TransportFactory; hold: () => void; release: () => void } {
   let holding = false;

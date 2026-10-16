@@ -216,10 +216,12 @@ describe("the patch", () => {
     // (An LFO is called what it is, so its kind is not said twice.)
     expect(within(mod).getByText("LFO", { selector: ".tang-node__name" })).toBeTruthy();
     expect(mod.querySelector(".tang-node__badge")).toBeNull();
-    // Its settings are controls, not words: a knob for the rate and a choice for the waveform.
-    expect(controlsIn(mod)).toEqual(["Rate", "Wave"]);
+    // Its settings are controls, not words: a knob for the rate, a choice for the waveform, a choice for whether a note starts it again and a knob for the fade.
+    expect(controlsIn(mod)).toEqual(["Rate", "Wave", "Retrigger", "Fade"]);
     expect(within(mod).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuetext")).toBe("0.5 Hz");
     expect(within(mod).getByRole<HTMLSelectElement>("combobox", { name: "Wave" }).value).toBe("0");
+    expect(within(mod).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("0");
+    expect(within(mod).getByRole("slider", { name: "Fade" }).getAttribute("aria-valuetext")).toBe("none");
     expect(mod.querySelector(".tang-node__detail")).toBeNull();
     const bar = within(mod).getByRole("meter", { name: `${lfo.name} output` });
     expect(bar.getAttribute("aria-valuemin")).toBe("-1");
@@ -299,6 +301,32 @@ describe("the patch", () => {
     });
     await waitFor(() => {
       expect(requests().map((request) => request.intent)).toEqual([{ type: "setModulatorField", node: 90, field: "value", value: expect.closeTo(0.26, 9) as unknown }]);
+    });
+  });
+
+  test("gives an LFO a retrigger and a fade, which a person sets and no cable drives, as it has the rate that one drives", async () => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    snapshot.graph.nodes.push({ id: 90, parent: 1, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 3, retrigger: true, fade: 1.5 } });
+    const { requests, clock } = await rig(<PatchView />, { snapshot });
+    const keyed = await nodeOf(90);
+    expect(controlsIn(keyed)).toEqual(["Rate", "Wave", "Retrigger", "Fade"]);
+    expect(within(keyed).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("1");
+    expect(within(keyed).getByRole("slider", { name: "Fade" }).getAttribute("aria-valuetext")).toBe("1.5 s");
+    // A cable ends at the rate; no cable ends at the switch or at the fade, and no modulator is made for them by a button.
+    expect(keyed.querySelector('.react-flow__handle[data-handleid="rate"]')).not.toBeNull();
+    for (const handle of ["retrigger", "fade"]) expect(keyed.querySelector(`.react-flow__handle[data-handleid="${handle}"]`), handle).toBeNull();
+    expect(within(keyed).queryByRole("button", { name: /^Modulate (retrigger|fade)/ })).toBeNull();
+    // The fade, turned, is a setting of the LFO; so is the switch.
+    fireEvent.keyDown(within(keyed).getByRole("slider", { name: "Fade" }), { key: "ArrowUp" });
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent)).toEqual([{ type: "setModulatorField", node: 90, field: "fade", value: expect.closeTo(1.55, 9) as unknown }]);
+    });
+    fireEvent.change(within(keyed).getByRole("combobox", { name: "Retrigger" }), { target: { value: "0" } });
+    await waitFor(() => {
+      expect(requests().at(-1)?.intent).toEqual({ type: "setModulatorField", node: 90, field: "retrigger", value: 0 });
     });
   });
 

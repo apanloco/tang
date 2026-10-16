@@ -1370,7 +1370,8 @@ export class MockServer {
       if (control.kind !== "modulator") continue;
       // (A step sequencer that a note starts again is started by the notes that its lane takes, or that any member of its group does, as an envelope is.)
       const follows = control.source.type === "midiLearn" && (control.source.control?.type === "velocity" || control.source.control?.type === "key");
-      const restarts = control.source.type === "steps" && control.source.retrigger;
+      // (An LFO hears every note too: its wave starts again at one if it retriggers, and its fade, if it has one, starts at one whether it does or not.)
+      const restarts = (control.source.type === "steps" && control.source.retrigger) || control.source.type === "lfo";
       if (!follows && !restarts) continue;
       const owner = nodes.find((n) => n.id === control.parent);
       const remember = (heard: number): void => {
@@ -1512,9 +1513,13 @@ export class MockServer {
     if (node.kind !== "modulator") return 0;
     const { source } = node;
     switch (source.type) {
-      case "lfo":
-        // (The seed of the numbers is the node's id: the engine's is the order in which modulators came into it, which the page does not know.)
-        return shape(source.waveform, source.rate * seconds, node.id);
+      case "lfo": {
+        // (The seed of the numbers is the node's id: the engine's is the order in which modulators came into it, which the page does not know. The wave goes from the last note that started
+        // it again, if it retriggers, or from the start of the clock; what `#listened` has noted is of the notes the LFO heard, and the fade is the part of it that has gone by since the last.)
+        const noted = this.#restarted.get(node.id);
+        const wave = shape(source.waveform, source.rate * Math.max(seconds - (source.retrigger ? noted ?? 0 : 0), 0), node.id);
+        return source.fade > 0 && noted !== undefined ? wave * Math.min(Math.max(seconds - noted, 0) / source.fade, 1) : wave;
+      }
       case "envelope":
         return this.heldNotes.size > 0 ? source.sustain : 0;
       // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, the pitch bend wheel in the middle and a key at middle C. What follows the notes goes by the last

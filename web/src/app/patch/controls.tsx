@@ -498,7 +498,7 @@ const VALUES: Record<"value" | "glide" | "length" | "fade", { label: string; for
   value: { label: "Value", format: formatValue },
   glide: { label: "Glide", format: formatValue },
   length: { label: "Length", format: (value) => String(Math.round(value)) },
-  fade: { label: "Fade", format: seconds },
+  fade: { label: "Fade", format: (value) => (value > 0 ? seconds(value) : "none") },
 };
 
 /**
@@ -539,7 +539,7 @@ export const MacroValueControl = memo(function MacroValueControl({ node }: { nod
   return <ModulatorValueControl node={node} field="value" />;
 });
 
-/** Whether a note starts a step sequencer again at its first step: a choice of off and on. */
+/** Whether a note starts a step sequencer again at its first step, or an LFO again at the start of its wave: a choice of off and on. */
 export const RetriggerControl = memo(function RetriggerControl({ node }: { node: NodeId }) {
   const control = useDrive().modulatorField(node, "retrigger");
   const stored = useClientState((state) => modulatorFieldOf(state, node, "retrigger"));

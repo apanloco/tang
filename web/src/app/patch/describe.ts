@@ -28,7 +28,7 @@ export function kindOf(source: ModulatorSource): string {
 export function settingsOf(source: ModulatorSource): readonly ModulatorField[] {
   switch (source.type) {
     case "lfo":
-      return ["rate", "waveform"];
+      return ["rate", "waveform", "retrigger", "fade"];
     case "envelope":
       return ["attack", "decay", "sustain", "release"];
     case "midiLearn":
