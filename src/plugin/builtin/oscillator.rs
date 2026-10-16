@@ -95,6 +95,11 @@ pub struct Oscillator {
     fm: f32,
     fm_smoothed: f32,
     fm_ratio: usize,
+    /// The level of the sine an octave below the note, 0 to 1 (and the value that it is smoothed to, as the volume is), how many times as fast as the note the synced oscillator goes round, 1 to 8, and how far the pitches wander, 0 to 1.
+    sub: f32,
+    sub_smoothed: f32,
+    sync: f32,
+    drift: f32,
     /// Per-voice envelope: attack/decay/release in seconds, sustain 0.0–1.0.
     attack: f32,
     decay: f32,
@@ -117,6 +122,18 @@ struct Voice {
     phases: [f32; MAX_UNISON],
     /// The place in its cycle of the sine that swings the phase of each of them (the FM): it begins at 0 with the note, and goes round whether or not the FM is on.
     fm_phases: [f32; MAX_UNISON],
+    /// Where each of them is in the cycle of the oscillator that it is synced to (hard sync: the master's `phases` is the note's own cycle, and this starts again with it); the sound is read here. With a
+    /// sync of one it is the master's place, to the bit.
+    sync_phases: [f32; MAX_UNISON],
+    /// The place in its cycle of the sine an octave below the note (the sub).
+    sub_phase: f32,
+    /// How far each oscillator has wandered from the pitch of the note, -1 to 1 (the drift), the place it is going to, and how long it has been going there; and the numbers that it picks the places from.
+    drift: [f32; MAX_UNISON],
+    drift_target: [f32; MAX_UNISON],
+    drift_clock: f32,
+    drift_rng: u32,
+    /// What each oscillator's frequency is multiplied by for its drift (1 when there is none), made once a block.
+    drift_ratio: [f32; MAX_UNISON],
     /// Where the random numbers of each oscillator of the note are (xorshift32, never 0): they are the voice's, so that what it sounds like does not depend on which of the
     /// voices of a chord is summed first. Only the noise uses them.
     noise: [u32; MAX_UNISON],
@@ -132,22 +149,40 @@ impl Voice {
         Self {
             phases: std::array::from_fn(|u| (u as f32 * 0.618_034).fract()),
             fm_phases: [0.0; MAX_UNISON],
+            sync_phases: std::array::from_fn(|u| (u as f32 * 0.618_034).fract()),
+            sub_phase: 0.0,
+            drift: [0.0; MAX_UNISON],
+            drift_target: [0.0; MAX_UNISON],
+            // (So that the first block that finds the voice there gives it its places to go to.)
+            drift_clock: DRIFT_HOLD_SEC,
+            drift_rng: noise_seed(begun, MAX_UNISON),
+            drift_ratio: [1.0; MAX_UNISON],
             noise: std::array::from_fn(|u| noise_seed(begun, u)),
             amp: 0.0,
             state: VoiceState::Attack,
         }
     }
 
+    /// The next place for an oscillator of the note to drift to, from -1 up to (not including) 1 (the voice's own numbers, as the noise's are).
+    fn drift_place(&mut self) -> f32 {
+        next_unit(&mut self.drift_rng)
+    }
+
     /// The next number of the noise of oscillator `u` of the note, from -1 up to (not including) 1, all equally likely.
     fn noise(&mut self, u: usize) -> f32 {
-        let mut x = self.noise[u];
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.noise[u] = x;
-        // (The top 24 bits are all that a 32-bit float holds exactly.)
-        (x >> 8) as f32 * (2.0 / 16_777_216.0) - 1.0
+        next_unit(&mut self.noise[u])
     }
+}
+
+/// The next number of a stream (xorshift32: `state` is where it is, and is never 0), from -1 up to (not including) 1, all equally likely.
+fn next_unit(state: &mut u32) -> f32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    // (The top 24 bits are all that a 32-bit float holds exactly.)
+    (x >> 8) as f32 * (2.0 / 16_777_216.0) - 1.0
 }
 
 /// Where the numbers of oscillator `u` of the `begun`th voice start: a hash of the two (Chris Wellons's "lowbias32"), which is never 0 (a state of 0 would stay there).
@@ -161,8 +196,17 @@ fn noise_seed(begun: u32, u: usize) -> u32 {
     if x == 0 { 0x2545_F491 } else { x }
 }
 
-// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio
-pub const PARAM_COUNT: usize = 14;
+// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio, sub, sync, drift
+pub const PARAM_COUNT: usize = 17;
+
+/// The hard sync's `sync`: how many times as fast as the note the oscillator that is synced to it goes round, from one (which is no sync at all) to eight.
+const SYNC_MIN: f32 = 1.0;
+const SYNC_MAX: f32 = 8.0;
+/// The drift: how far it takes the pitch of an oscillator at the top, in cents each way, how long each one takes to go to the place that it has been given (a time constant) and how long it goes on before it is given
+/// another.
+const DRIFT_CENTS: f32 = 12.0;
+const DRIFT_TAU_SEC: f32 = 0.4;
+const DRIFT_HOLD_SEC: f32 = 0.8;
 
 /// What the frequency of the sine that swings the phase of a wave (the FM) is, as a multiple of the wave's own, for each place in the `fm_ratio` list: the whole numbers, which make
 /// harmonic sounds, and the family of 1.4 (1.4, 2.8, 5.6, and 3.5 between), whose partials are not harmonics: bells and metal. The labels are the numbers.
@@ -230,6 +274,10 @@ impl Oscillator {
             fm: 0.0,
             fm_smoothed: 0.0,
             fm_ratio: FM_DEFAULT_RATIO,
+            sub: 0.0,
+            sub_smoothed: 0.0,
+            sync: SYNC_MIN,
+            drift: 0.0,
             attack: DEFAULT_ATTACK_SEC,
             decay: DEFAULT_DECAY_SEC,
             sustain: DEFAULT_SUSTAIN,
@@ -312,6 +360,30 @@ impl Plugin for Oscillator {
         }
         let pulse = self.pulse;
         let fm_ratio = FM_RATIOS[self.fm_ratio.min(FM_RATIOS.len() - 1)];
+        let sync = self.sync;
+
+        // The drift, once a block: each oscillator of each voice goes to the place it was given, which is a number of its own voice's, and is given another every so often; what that comes to is
+        // a number to multiply its frequency by (1 for no drift, so that a sound with none is the sound there always was).
+        let block_seconds = block_size as f32 / self.sample_rate;
+        let drift_alpha = 1.0 - (-block_seconds / DRIFT_TAU_SEC).exp();
+        let drift_amount = self.drift * DRIFT_CENTS / 1200.0;
+        for voice in self.voices.values_mut() {
+            if self.drift > 0.0 {
+                voice.drift_clock += block_seconds;
+                if voice.drift_clock >= DRIFT_HOLD_SEC {
+                    voice.drift_clock -= DRIFT_HOLD_SEC;
+                    for u in 0..MAX_UNISON {
+                        voice.drift_target[u] = voice.drift_place();
+                    }
+                }
+                for u in 0..MAX_UNISON {
+                    voice.drift[u] += (voice.drift_target[u] - voice.drift[u]) * drift_alpha;
+                    voice.drift_ratio[u] = (drift_amount * voice.drift[u]).exp2();
+                }
+            } else {
+                voice.drift_ratio = [1.0; MAX_UNISON];
+            }
+        }
 
         for frame in 0..block_size {
             // The index is gone to as the volume is, and a swing that has gone to nothing is nothing, so that a sound with no FM is the sound that there always was.
@@ -320,6 +392,11 @@ impl Plugin for Oscillator {
                 self.fm_smoothed = 0.0;
             }
             let swing = self.fm_smoothed * FM_MAX_CYCLES;
+            self.sub_smoothed += (self.sub - self.sub_smoothed) * volume_alpha;
+            if self.sub == 0.0 && self.sub_smoothed < 1e-5 {
+                self.sub_smoothed = 0.0;
+            }
+            let sub_level = self.sub_smoothed;
 
             // Process MIDI events at this frame
             while event_idx < midi_events.len() && midi_events[event_idx].0 as usize <= frame {
@@ -384,26 +461,42 @@ impl Plugin for Oscillator {
 
                 let freq = Self::note_to_freq(note, self.detune);
                 for u in 0..voices {
+                    // (The sound is read where the synced oscillator is, which with a sync of one is where the note's cycle is.)
+                    let read = voice.sync_phases[u];
                     let raw = match self.waveform {
                         Waveform::Noise => voice.noise(u),
                         waveform if swing > 0.0 => {
                             // The FM: the wave is read where its phase is swung to by a sine of its own pitch's ratio.
-                            let phase = voice.phases[u] + swing * (TAU * voice.fm_phases[u]).sin();
+                            let phase = read + swing * (TAU * voice.fm_phases[u]).sin();
                             waveform.sample(phase - phase.floor(), pulse)
                         }
-                        waveform => waveform.sample(voice.phases[u], pulse),
+                        waveform => waveform.sample(read, pulse),
                     };
                     let heard = raw * voice.amp * VOICE_GAIN;
                     sample_l += heard * gains[u].0;
                     sample_r += heard * gains[u].1;
-                    let step = freq * ratios[u] / self.sample_rate;
+                    let step = freq * ratios[u] * voice.drift_ratio[u] / self.sample_rate;
                     voice.phases[u] += step;
+                    voice.sync_phases[u] += step * sync;
                     if voice.phases[u] >= 1.0 {
+                        // The note's cycle is over, and the synced oscillator starts again as far into its own as the note is past its end.
                         voice.phases[u] -= 1.0;
+                        let started = voice.phases[u] * sync;
+                        voice.sync_phases[u] = started - started.floor();
+                    } else if voice.sync_phases[u] >= 1.0 {
+                        voice.sync_phases[u] -= voice.sync_phases[u].floor();
                     }
                     voice.fm_phases[u] += step * fm_ratio;
                     voice.fm_phases[u] -= voice.fm_phases[u].floor();
                 }
+                // The sub: a sine an octave below the note, in the middle, which is its own and not one of the unison's (so that the unison does not bring it down).
+                if sub_level > 0.0 {
+                    let sub_heard = sub_level * (TAU * voice.sub_phase).sin() * voice.amp * VOICE_GAIN;
+                    sample_l += sub_heard;
+                    sample_r += sub_heard;
+                }
+                voice.sub_phase += freq * 0.5 / self.sample_rate;
+                voice.sub_phase -= voice.sub_phase.floor();
             }
 
             // Drop fully-released voices.
@@ -567,6 +660,33 @@ impl Plugin for Oscillator {
                 group: vec!["FM".into()],
                 ..Default::default()
             },
+            ParameterInfo {
+                index: 14,
+                name: "sub".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                group: vec!["Voice".into()],
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 15,
+                name: "sync".into(),
+                min: SYNC_MIN,
+                max: SYNC_MAX,
+                default: SYNC_MIN,
+                group: vec!["Voice".into()],
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 16,
+                name: "drift".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                group: vec!["Voice".into()],
+                ..Default::default()
+            },
         ]
     }
 
@@ -586,6 +706,9 @@ impl Plugin for Oscillator {
             11 => Some(self.pulse),
             12 => Some(self.fm),
             13 => Some(self.fm_ratio as f32),
+            14 => Some(self.sub),
+            15 => Some(self.sync),
+            16 => Some(self.drift),
             _ => None,
         }
     }
@@ -647,6 +770,18 @@ impl Plugin for Oscillator {
             13 => {
                 // (A place in the list: the nearest whole one, held to it.)
                 self.fm_ratio = (value.round() as i64).clamp(0, FM_RATIOS.len() as i64 - 1) as usize;
+                Ok(())
+            }
+            14 => {
+                self.sub = value.clamp(0.0, 1.0);
+                Ok(())
+            }
+            15 => {
+                self.sync = value.clamp(SYNC_MIN, SYNC_MAX);
+                Ok(())
+            }
+            16 => {
+                self.drift = value.clamp(0.0, 1.0);
                 Ok(())
             }
             _ => anyhow::bail!("no parameter with index {index}"),
@@ -732,7 +867,7 @@ mod tests {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio"]
+            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift"]
         );
         // The waveform parameter is an enum, and so is the unison (a choice of how many).
         assert!(params[0].labels.is_some() && params[8].labels.is_some());
@@ -1500,7 +1635,7 @@ mod tests {
         assert_eq!(osc.get_parameter(FM), Some(1.0), "held to its top");
         osc.set_parameter(FM, -1.0).unwrap();
         assert_eq!(osc.get_parameter(FM), Some(0.0), "and to its bottom");
-        assert!(osc.set_parameter(14, 0.0).is_err() && osc.get_parameter(14).is_none(), "no parameter after them");
+        assert!(osc.set_parameter(17, 0.0).is_err() && osc.get_parameter(17).is_none(), "no parameter after them");
     }
 
     #[test]
@@ -1660,6 +1795,326 @@ mod tests {
         assert_eq!(allocations, 0);
     }
 
+    // ---------------------------------------------------------------------------------------------------------------------------------
+    // The voice: a sub oscillator, hard sync and drift
+    // ---------------------------------------------------------------------------------------------------------------------------------
+
+    /// The parameters of the voice that come after the FM's.
+    const SUB: u32 = 14;
+    const SYNC: u32 = 15;
+    const DRIFT: u32 = 16;
+
+    /// A sine of 480 Hz (a hundred frames to a cycle) whose `sub` is `sub`: the left and right sides of 7200 frames, and the 4800 of each past the attack and the smoothing.
+    fn with_sub(sub: f32, edit: impl FnOnce(&mut Oscillator)) -> (Vec<f32>, Vec<f32>) {
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(SUB, sub).unwrap();
+        edit(&mut osc);
+        let (mut left, mut right) = (vec![0.0f32; 7200], vec![0.0f32; 7200]);
+        osc.process(&[(0, [0x90, 69, 100])], &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+        (left[2400..].to_vec(), right[2400..].to_vec())
+    }
+
+    #[test]
+    fn the_sub_is_a_sine_an_octave_below_the_note_at_the_level_that_is_set() {
+        // The note is 480 Hz and its voice is a sine of 0.25: the sub is a sine of 240 Hz of `sub` times that.
+        for sub in [0.0f32, 0.25, 0.5, 1.0] {
+            let (left, _) = with_sub(sub, |_| {});
+            assert!((magnitude(&left, 240.0) - 0.25 * sub).abs() < 0.01, "sub {sub}: {} Hz is {}", 240.0, magnitude(&left, 240.0));
+            assert!((magnitude(&left, 480.0) - 0.25).abs() < 0.01, "the note itself is as it was: {}", magnitude(&left, 480.0));
+        }
+    }
+
+    #[test]
+    fn the_sub_goes_where_the_note_goes_and_not_where_a_unison_spreads_it() {
+        // The detune moves it with the note (an octave above the 480 Hz makes the note 960 Hz and the sub 480). A unison of seven brings the oscillators down by the root of how many there are, which is not what the sub is.
+        let (left, _) = with_sub(1.0, |osc| {
+            let detune = osc.get_parameter(1).unwrap();
+            osc.set_parameter(1, detune + 12.0).unwrap();
+        });
+        assert!((magnitude(&left, 480.0) - 0.25).abs() < 0.015 && (magnitude(&left, 960.0) - 0.25).abs() < 0.015, "{} and {}", magnitude(&left, 480.0), magnitude(&left, 960.0));
+        let (left, right) = with_sub(1.0, |osc| {
+            osc.set_parameter(8, 6.0).unwrap();
+            osc.set_parameter(9, 0.0).unwrap();
+            osc.set_parameter(10, 1.0).unwrap();
+        });
+        assert!((magnitude(&left, 240.0) - 0.25).abs() < 0.01, "not brought down by the unison: {}", magnitude(&left, 240.0));
+        assert!((magnitude(&left, 240.0) - magnitude(&right, 240.0)).abs() < 1e-3, "in the middle, whatever the width");
+    }
+
+    #[test]
+    fn the_sub_does_not_drift_with_the_oscillators() {
+        // A second of a note whose oscillator drifts all the way: the sub is where one that does not drift is, to a hundredth of a cycle (a drift of 12 cents is more than half a cycle of 240 Hz in the second).
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(SUB, 1.0).unwrap();
+        osc.set_parameter(DRIFT, 1.0).unwrap();
+        render_in_blocks(&mut osc, &[(0, [0x90, 69, 100])], 1);
+        let (phase, expected) = (osc.voices[&69].sub_phase, (187.0 * 256.0 * 240.0 / 48_000.0f32).fract());
+        let apart = (phase - expected).abs();
+        assert!(apart.min(1.0 - apart) < 0.01, "the sub is at {phase} of its cycle, and one that does not drift is at {expected}");
+    }
+
+    #[test]
+    fn the_sub_is_gone_to_and_not_jumped_to() {
+        let note = [(0, [0x90, 69, 100])];
+        let blocks = |sub: f32| {
+            let mut osc = hundred_frame_cycle(Waveform::Sine);
+            render(&mut osc, &note, 1024);
+            osc.set_parameter(SUB, sub).unwrap();
+            render(&mut osc, &[], 1024)
+        };
+        let (steady, raised) = (blocks(0.0), blocks(1.0));
+        let first = steady[..4].iter().zip(&raised[..4]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(first < 0.02, "four frames in, the sound is {first} from the one with no sub (a jump to the whole sub is a click)");
+        assert!(steady[1000..].iter().zip(&raised[1000..]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs())) > 0.1, "and the sub is there by the end of the block");
+    }
+
+    /// The hundred frames of the cycle of the 480 Hz note that start at the frame `from`, where the sound goes up through zero (the frames after a negative one that are not).
+    fn rising_crossings(signal: &[f32], from: usize) -> usize {
+        (from..from + 100).filter(|&n| signal[n - 1] < 0.0 && signal[n] >= 0.0).count()
+    }
+
+    #[test]
+    fn a_saw_that_is_synced_goes_through_as_many_ramps_in_a_cycle_of_the_note_as_the_ratio_says() {
+        // The note's cycle is a hundred frames. The saw is made to start again at its beginning at every one of them, and goes round `sync` times as fast between: 3.3 is three ramps and a third of one that is cut,
+        // which does not reach 0, 3.7 is three and most of a fourth, which does. (With no sync, a saw of 2.2 times the pitch would have two ramps in some cycles and three in others.)
+        for (sync, ramps) in [(1.0f32, 1usize), (2.2, 2), (3.3, 3), (3.7, 4), (5.6, 6), (8.0, 8)] {
+            let mut osc = hundred_frame_cycle(Waveform::Saw);
+            osc.set_parameter(SYNC, sync).unwrap();
+            let out = render(&mut osc, &[(0, [0x90, 69, 100])], 6000);
+            for cycle in 10..30 {
+                assert_eq!(rising_crossings(&out, cycle * 100), ramps, "sync {sync}, cycle {cycle}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sync_of_one_is_no_sync_whatever_the_waveform() {
+        for (waveform, ..) in BEFORE {
+            let (plain_left, plain_right) = chord(&mut Oscillator::new(SAMPLE_RATE, waveform));
+            let mut osc = Oscillator::new(SAMPLE_RATE, waveform);
+            osc.set_parameter(SYNC, 1.0).unwrap();
+            let (left, right) = chord(&mut osc);
+            let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+            assert!(same(&left, &plain_left) && same(&right, &plain_right), "waveform {}", waveform.to_param());
+        }
+    }
+
+    #[test]
+    fn the_noise_has_no_cycle_to_sync() {
+        let (plain, _) = chord(&mut noise());
+        let mut synced = noise();
+        synced.set_parameter(SYNC, 5.0).unwrap();
+        let (left, _) = chord(&mut synced);
+        assert!(left.iter().zip(&plain).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+
+    /// `seconds` of the oscillator in blocks of 256 frames, as the audio thread has them (the drift moves once a block), the left side, with the events in the first.
+    fn render_in_blocks(osc: &mut Oscillator, events: &[(u64, [u8; 3])], seconds: usize) -> Vec<f32> {
+        let mut all = Vec::with_capacity(seconds * 48_000);
+        for block in 0..seconds * 48_000 / 256 {
+            let (mut left, mut right) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            osc.process(if block == 0 { events } else { &[] }, &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+            all.extend_from_slice(&left);
+        }
+        all
+    }
+
+    /// How far from 440 Hz, in cents, the pitch of a sine is that goes up through zero at the same places in `window` (a number of cycles: the crossings are found to a fraction of a frame).
+    fn cents_from_440(window: &[f32]) -> f32 {
+        let crossings: Vec<f32> = window.windows(2).enumerate().filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0).map(|(i, w)| i as f32 + (-w[0]) / (w[1] - w[0])).collect();
+        let heard = (crossings.len() - 1) as f32 * 48_000.0 / (crossings[crossings.len() - 1] - crossings[0]);
+        1200.0 * (heard / 440.0).log2()
+    }
+
+    /// The pitch of a 440 Hz sine, in cents, in each of the windows of 0.1 s that follow the first second.
+    fn drifting_cents(drift: f32, seconds: usize) -> Vec<f32> {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(DRIFT, drift).unwrap();
+        let out = render_in_blocks(&mut osc, &[(0, [0x90, 69, 100])], seconds);
+        (10..seconds * 10 - 1).map(|n| cents_from_440(&out[n * 4800..(n + 1) * 4800])).collect()
+    }
+
+    #[test]
+    fn a_drift_wanders_the_pitch_a_few_cents_and_none_is_none() {
+        let still = drifting_cents(0.0, 20);
+        assert!(still.iter().all(|c| c.abs() < 0.2), "no drift, no wander: {still:?}");
+        let wandering = drifting_cents(1.0, 20);
+        let (top, bottom) = (wandering.iter().cloned().fold(f32::MIN, f32::max), wandering.iter().cloned().fold(f32::MAX, f32::min));
+        assert!(top - bottom > 15.0, "it wanders: from {bottom} to {top} cents");
+        assert!(top < 13.0 && bottom > -13.0, "and not far: from {bottom} to {top} cents");
+        assert!(top.max(-bottom) > 9.0, "but to most of the twelve cents that the top of the knob is: from {bottom} to {top} cents");
+        // A half of the drift is half as far.
+        let half = drifting_cents(0.5, 20);
+        let spread = |x: &[f32]| x.iter().fold(0.0f32, |m, c| m.max(c.abs()));
+        assert!(spread(&half) < 0.75 * spread(&wandering) && spread(&half) > 0.25 * spread(&wandering), "{} and {}", spread(&half), spread(&wandering));
+    }
+
+    #[test]
+    fn the_same_notes_wander_the_same_way_in_two_runs() {
+        let (first, second) = (drifting_cents(1.0, 8), drifting_cents(1.0, 8));
+        assert!(first.iter().zip(&second).all(|(a, b)| (a - b).abs() < 0.05), "{first:?} and {second:?}");
+    }
+
+    #[test]
+    fn the_notes_of_a_chord_and_the_oscillators_of_a_unison_each_wander_on_their_own() {
+        // Two keys at once, each a unison of four: eight places that the pitches are on, block after block for four seconds, no two of which keep together (two can be at one place for a moment, by chance).
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(DRIFT, 1.0).unwrap();
+        osc.set_parameter(8, 3.0).unwrap();
+        let chord = [(0, [0x90, 69, 100]), (0, [0x90, 81, 100])];
+        let mut traces: Vec<Vec<f32>> = vec![Vec::new(); 8];
+        for block in 0..4 * 48_000 / 256 {
+            let (mut left, mut right) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            osc.process(if block == 0 { &chord[..] } else { &[] }, &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+            for (n, note) in [69u8, 81].iter().enumerate() {
+                for u in 0..4 {
+                    traces[n * 4 + u].push(osc.voices[note].drift[u]);
+                }
+            }
+        }
+        for (i, a) in traces.iter().enumerate() {
+            assert!(a.iter().any(|d| d.abs() > 0.2), "trace {i} wanders");
+            for (j, b) in traces.iter().enumerate().skip(i + 1) {
+                let apart = a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+                assert!(apart > 0.3, "traces {i} and {j} are never more than {apart} apart");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sub_that_is_turned_off_goes_to_nothing_and_not_to_a_number_that_never_gets_there() {
+        let note = [(0, [0x90, 69, 100])];
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(SUB, 1.0).unwrap();
+        render(&mut osc, &note, 4096);
+        assert!(osc.sub_smoothed > 0.9, "gone to: {}", osc.sub_smoothed);
+        osc.set_parameter(SUB, 0.0).unwrap();
+        // (A second of it is two hundred time constants: a number that only approached 0 would be 1e-87 by now, and denormal on the way.)
+        render(&mut osc, &[], 48_000);
+        assert_eq!(osc.sub_smoothed, 0.0);
+        let mut plain = hundred_frame_cycle(Waveform::Sine);
+        render(&mut plain, &note, 4096 + 48_000);
+        let (heard, steady) = (render(&mut osc, &[], 512), render(&mut plain, &[], 512));
+        assert!(heard.iter().zip(&steady).all(|(a, b)| (a - b).abs() < 1e-4), "the sound is the one that has no sub");
+    }
+
+    #[test]
+    fn the_synced_oscillator_is_as_far_into_its_cycle_as_the_note_is_into_its_own_times_the_ratio() {
+        // A note of 440 Hz is 109.09 frames to a cycle, so that the cycle ends between two frames: the synced oscillator begins again as far on as the note is past its end, and not at 0.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        osc.set_parameter(SYNC, 3.3).unwrap();
+        let mut worst = 0.0f32;
+        let mut wraps = 0;
+        let mut before = 0.0f32;
+        for frame in 0..3000 {
+            let (mut left, mut right) = ([0.0f32], [0.0f32]);
+            osc.process(if frame == 0 { &[(0, [0x90, 69, 100])][..] } else { &[] }, &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+            let voice = &osc.voices[&69];
+            let (master, slave) = (voice.phases[0], voice.sync_phases[0]);
+            let expected = (master * 3.3).fract();
+            let apart = (slave - expected).abs();
+            worst = worst.max(apart.min(1.0 - apart));
+            if master < before {
+                wraps += 1;
+            }
+            before = master;
+        }
+        assert!(wraps >= 27, "{wraps} cycles of the note");
+        assert!(worst < 1e-3, "the synced oscillator is {worst} of a cycle from where the note's is");
+    }
+
+    #[test]
+    fn the_drift_is_given_a_new_place_every_eight_tenths_of_a_second_and_goes_to_it_slowly() {
+        // Ten seconds in blocks of 256 frames: a new place to go to is given at the second block (the voice is not there at the first, which is the one that the note begins in) and then every 0.8 s, 13 in all,
+        // and the pitch goes to it with a time constant of 0.4 s (it is more than half of the way there a half second after, and no block moves it by more than the 0.03 of the whole run that the time constant allows).
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(DRIFT, 1.0).unwrap();
+        let (mut places, mut last_place, mut last_state) = (0, 0.0f32, 0.0f32);
+        let (mut steepest, mut asked) = (0.0f32, Vec::new());
+        for block in 0..10 * 48_000 / 256 {
+            let (mut left, mut right) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            osc.process(if block == 0 { &[(0, [0x90, 69, 100])][..] } else { &[] }, &[], &mut [&mut left[..], &mut right[..]]).unwrap();
+            let voice = &osc.voices[&69];
+            let (place, state) = (voice.drift_target[0], voice.drift[0]);
+            if place != last_place {
+                places += 1;
+                last_place = place;
+                asked.push((block, (place - state).abs()));
+            }
+            steepest = steepest.max((state - last_state).abs());
+            last_state = state;
+            if let Some(&(at, from)) = asked.last() {
+                if block == at + 94 && from > 0.5 {
+                    assert!((place - state).abs() < 0.5 * from, "a half second after, {} of {from} is left", (place - state).abs());
+                }
+            }
+        }
+        assert_eq!(places, 13);
+        assert!(steepest < 0.03, "{steepest} in a block");
+    }
+
+    #[test]
+    fn a_drift_that_is_turned_to_none_leaves_the_pitch_of_the_note() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(DRIFT, 1.0).unwrap();
+        let wandering = render_in_blocks(&mut osc, &[(0, [0x90, 69, 100])], 3);
+        assert!(cents_from_440(&wandering[wandering.len() - 4800..]).abs() > 1.0, "it was away from the note");
+        osc.set_parameter(DRIFT, 0.0).unwrap();
+        let after = render_in_blocks(&mut osc, &[], 1);
+        let cents = cents_from_440(&after[after.len() - 4800..]);
+        assert!(cents.abs() < 0.2, "{cents} cents from the pitch of the note");
+    }
+
+    #[test]
+    fn a_synced_saw_that_is_swung_a_little_goes_through_the_ramps_of_the_sync_all_the_same() {
+        let mut osc = hundred_frame_cycle(Waveform::Saw);
+        osc.set_parameter(SYNC, 3.3).unwrap();
+        osc.set_parameter(12, 0.02).unwrap();
+        let out = render(&mut osc, &[(0, [0x90, 69, 100])], 6000);
+        for cycle in 10..30 {
+            assert_eq!(rising_crossings(&out, cycle * 100), 3, "cycle {cycle}");
+        }
+    }
+
+    #[test]
+    fn the_phase_of_the_sub_is_kept_within_a_cycle() {
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(SUB, 1.0).unwrap();
+        render(&mut osc, &[(0, [0x90, 69, 100])], 48_000);
+        let phase = osc.voices[&69].sub_phase;
+        assert!((0.0..1.0).contains(&phase), "{phase}");
+    }
+
+    /// The numbers of a voice with a sub, a sync and a drift are made on the audio thread, which must not make a trip to the allocator.
+    #[test]
+    fn notes_with_a_sub_a_sync_and_a_drift_do_not_allocate() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        osc.set_parameter(SUB, 0.5).unwrap();
+        osc.set_parameter(SYNC, 3.0).unwrap();
+        osc.set_parameter(DRIFT, 1.0).unwrap();
+        osc.set_parameter(8, 6.0).unwrap();
+        let mut left = vec![0.0f32; 256];
+        let mut right = vec![0.0f32; 256];
+        let on: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x90, note, 100])).collect();
+        let off: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x80, note, 0])).collect();
+        let mut block = |osc: &mut Oscillator, events: &[(u64, [u8; 3])]| {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            osc.process(events, &[], &mut out).unwrap();
+        };
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..2 {
+                block(&mut osc, &on);
+                block(&mut osc, &[]);
+                block(&mut osc, &off);
+                for _ in 0..8 {
+                    block(&mut osc, &[]);
+                }
+            }
+        });
+        assert!(osc.voices.is_empty(), "the notes have ended");
+        assert_eq!(allocations, 0);
+    }
+
     /// What a parameter says of itself: name, unit, lowest, highest, default and steps.
     type Described<'a> = (&'a str, Option<&'a str>, f32, f32, f32, u32);
 
@@ -1670,7 +2125,7 @@ mod tests {
         let described: Vec<Described> = parameters[8..].iter().map(|p| (p.name.as_str(), p.unit.as_deref(), p.min, p.max, p.default, p.step_count)).collect();
         assert_eq!(
             described,
-            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15)]
+            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15), ("sub", None, 0.0, 1.0, 0.0, 0), ("sync", None, 1.0, 8.0, 1.0, 0), ("drift", None, 0.0, 1.0, 0.0, 0)]
         );
         // (A unison is a choice of one to seven voices, named by how many.)
         assert_eq!(parameters[8].labels.as_deref().map(|l| l.join(" ")), Some("1 2 3 4 5 6 7".to_string()));
@@ -1681,7 +2136,7 @@ mod tests {
             osc.set_parameter(index as u32, p.min - 100.0).unwrap();
             assert_eq!(osc.get_parameter(index as u32), Some(p.min), "{} held to its bottom", p.name);
         }
-        assert!(osc.set_parameter(14, 0.0).is_err() && osc.get_parameter(14).is_none());
+        assert!(osc.set_parameter(17, 0.0).is_err() && osc.get_parameter(17).is_none());
         // A unison is a whole number of voices: a value between two is the nearer.
         for (set, got) in [(2.4, 2.0), (2.6, 3.0), (0.4, 0.0), (5.6, 6.0)] {
             osc.set_parameter(8, set).unwrap();

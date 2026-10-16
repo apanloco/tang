@@ -220,6 +220,48 @@
           "stepCount": 15,
           "unit": null,
           "value": 1.0
+        },
+        {
+          "default": 0.0,
+          "group": [
+            "Voice"
+          ],
+          "index": 14,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "sub",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.0
+        },
+        {
+          "default": 1.0,
+          "group": [
+            "Voice"
+          ],
+          "index": 15,
+          "labels": null,
+          "max": 8.0,
+          "min": 1.0,
+          "name": "sync",
+          "stepCount": 0,
+          "unit": null,
+          "value": 1.0
+        },
+        {
+          "default": 0.0,
+          "group": [
+            "Voice"
+          ],
+          "index": 16,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "drift",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.0
         }
       ],
       "pinned": [],

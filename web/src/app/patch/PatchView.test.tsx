@@ -911,7 +911,7 @@ describe("the patch", () => {
       fireEvent.click(picker);
       expect(screen.getByRole("menu", { name: "Add a cable from LFO" })).toBeTruthy();
       expect(listed()).toEqual([
-        ["Oscillator", ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio"]],
+        ["Oscillator", ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift"]],
         ["Filter", ["resonance", "type", "drive"]],
       ]);
     });
@@ -943,7 +943,7 @@ describe("the patch", () => {
       expect(screen.queryByRole("menu")).toBeNull();
       expect(document.activeElement).toBe(picker);
       fireEvent.click(picker);
-      expect(listed()[0]).toEqual(["Oscillator", ["waveform", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio"]]);
+      expect(listed()[0]).toEqual(["Oscillator", ["waveform", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift"]]);
       // And the oscillator's detune knob has its port driven now.
       const knob = within(await nodeOf(oscillator.id)).getByRole("slider", { name: "detune" });
       expect(knob.closest(".tang-cell")?.querySelector(".tang-port--driven")).toBeTruthy();

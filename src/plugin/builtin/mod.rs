@@ -154,6 +154,9 @@ mod tests {
                 row("pulse", None, &[], 0),
                 row("fm", None, &["FM"], 0),
                 row("fm_ratio", None, &["FM"], 15),
+                row("sub", None, &["Voice"], 0),
+                row("sync", None, &["Voice"], 0),
+                row("drift", None, &["Voice"], 0),
             ]
         );
     }
