@@ -6218,7 +6218,7 @@ mod tests {
 
     #[test]
     fn a_smooth_lfo_stays_between_the_numbers_of_its_cycle_and_the_next_for_a_phase_outside_the_cycle() {
-        // (A phase is 0 to 1 for a rate that is above 0: a session file written by hand can have a rate that is not, which takes the phase below 0.)
+        // (A phase is 0 to 1 for a rate that is above 0: a rate below 0 takes it below 0, which a session file is refused for (f147) and the engine holds to all the same.)
         let (from, to) = (noise(5, 1), noise(5, 2));
         for phase in [-3.0, -0.5, -1.0e-6, 1.0 + 1.0e-6, 1.5, 7.0] {
             let out = LfoWaveform::Smooth.eval_cycle(phase, 5, 1);
