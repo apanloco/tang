@@ -186,6 +186,8 @@ describe("what an add is to the history", () => {
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "envelope" })).toBe("add an envelope");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "midiLearn" })).toBe("add a MIDI control");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "macro" })).toBe("add a macro");
+    expect(labelOf({ type: "addModulator", parent: lane0, kind: "velocity" })).toBe("add a velocity control");
+    expect(labelOf({ type: "addModulator", parent: lane0, kind: "key" })).toBe("add a key control");
     expect(labelOf({ type: "addModEdge", modulator: nodeOf("LFO"), to: { node: lane0, port: { type: "param", index: 1 } } })).toBe("draw a cable");
     expect(labelOf({ type: "addGroup", members: [] })).toBe("add a group");
     expect(labelOf({ type: "setLaneGroup", node: lane1, group: other })).toBe("put a lane in a group");
@@ -211,6 +213,9 @@ describe("what an add is to the history", () => {
       expect(labelOf(modulate(filter.id, param, "lfo"))).toBe("modulate resonance");
       expect(labelOf(modulate(filter.id, param, "envelope"))).toBe("modulate resonance");
       expect(labelOf(modulate(filter.id, param, "midiLearn"))).toBe("learn resonance");
+      // (A velocity or a key is not learned: no controller is moved for it.)
+      expect(labelOf(modulate(filter.id, param, "velocity"))).toBe("modulate resonance");
+      expect(labelOf(modulate(filter.id, param, "key"))).toBe("modulate resonance");
     });
 
     test("is named by the setting, for a setting of a modulator and the depth of a cable", () => {
@@ -315,6 +320,15 @@ describe("what a removal is to the history", () => {
       const knob: Node = { id: 9_001, parent: lane0.id, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.25 } };
       const withKnob = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, knob] } };
       expect(plan({ type: "removeNode", node: knob.id }, withKnob)).toEqual({ removed: { label: "remove a macro", intent: { type: "removeNode", node: knob.id }, at: 7 } });
+      // (A control that follows the notes is a MIDI control to the page's node, and is its own kind to a button.)
+      for (const [id, name, control, label] of [
+        [9_002, "Velocity", { type: "velocity" }, "remove a velocity control"],
+        [9_003, "Key", { type: "key" }, "remove a key control"],
+      ] as const) {
+        const notes: Node = { id, parent: lane0.id, name, kind: "modulator", source: { type: "midiLearn", control, learning: false } };
+        const withNotes = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, notes] } };
+        expect(plan({ type: "removeNode", node: notes.id }, withNotes)).toEqual({ removed: { label, intent: { type: "removeNode", node: notes.id }, at: 7 } });
+      }
     });
 
     test("is no step for a node that is not there, which is refused", () => {

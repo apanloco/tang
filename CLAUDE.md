@@ -490,7 +490,10 @@ envelope that dips below the base). The source types apply differently:
     `KEY_SPAN`; the page reads both). It rests at note 60 before any note.
 
   Velocity and key are not learned (no controller sends them as a control): they
-  are bound when they are made (`midi_velocity` / `midi_key` in a file). Like
+  are bound when they are made: `m` on a parameter in the TUI ("New velocity" /
+  "New key"), the page's "+" menu on a lane or group and the `~` menu of a knob
+  ("Velocity", "Key"; the intents `AddModulator` / `Modulate` with the kinds
+  `velocity` and `key`), or `midi_velocity` / `midi_key` in a file. Like
   every modulator they are block-rate and lane-global: a chord has its last
   note's. The notes they hear are the ones the lane's instrument is given: after
   the lane's range, remap and transpose, and a pattern's own notes. A group's
@@ -1110,8 +1113,10 @@ group-modulator params.
 ### Modulate popup
 
 Opened by `m` while focused on a parameter (the parameter-centric way to wire
-modulation). Lists: "New LFO", "New envelope", and each existing modulator in
-the relevant rack ("attach → …"). It works on:
+modulation). Lists: "New LFO", "New envelope", "New macro", "New velocity", "New key"
+(a velocity or a key follows the notes the lane plays: see "MIDI-learn modulator"),
+and each existing modulator in the relevant rack ("attach → …"; `NEW_MODULATORS`,
+`src/tui/mod.rs`, is the table of the new ones). It works on:
 - an **instrument/effect** param → operates on the instrument's **lane** rack;
 - a **group bus-effect** param → operates on the **group** rack;
 - a **modulator's own** param (its rate / ADSR stage / a target depth) →
@@ -2046,8 +2051,8 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   the cable is drawn round the node it ends at, with its slider on the run under what drives it (`cableRoute`); and a cable that ends at a depth is told by the cable whose depth it is (`ADSR → depth of LFO → Filter: cutoff`:
   `endLabel`, `cableWords` in `client/names.ts`, which the editor uses as well for what it says of a refusal). Step 37 put the TUI's `m` and `l` on the page: every knob (a parameter of a plugin that is
   shown as a knob, and the rate and the stages of a modulator), every row of the ⚙ panel and every row of a modulator's cables has a `~` button (`ModulateMenu`, `app/patch/ModulateMenu.tsx`: quiet until the pointer or the
-  focus is on the control, in the corner of its knob) with a menu of a new LFO, a new envelope, a new macro and a new MIDI control, under "New", and of the modulators that are there and can still drive it, under "Attach". A new
-  one is made for the control with its cable in one intent, `Modulate` (`Editor.modulate`: a MIDI control is armed to learn and its cable is at the whole range, as the TUI's `l` has it, the others at half depth; the canvas is
+  focus is on the control, in the corner of its knob) with a menu of a new LFO, a new envelope, a new macro, a new MIDI control, a new velocity and a new key (step 52), under "New", and of the modulators that are there and can still drive it, under "Attach". A new
+  one is made for the control with its cable in one intent, `Modulate` (`Editor.modulate`: a MIDI control is armed to learn and its cable is at the whole range, as the TUI's `l` has it, the others (a velocity and a key too) at half depth; the canvas is
   shown the node it made), and goes in the rack that reaches the control (the lane's for a lane's plugin, the group's for a bus effect, the modulator's own for its rate, a stage or the depth of its cables, where it is a
   sibling that drives it); one that is there gets a cable (`Editor.addCable`, the intent `AddModEdge`). What could drive a control is `driversOf` (`client/reach.ts`: `drivablesOf` read from the other side, tested against it
   over two fixtures), and the menu looks it up when it is opened (`MenuButton`'s `onOpen`), not when anything changes: there is a button on every knob. A control that is chosen from a list (a waveform, a parameter whose

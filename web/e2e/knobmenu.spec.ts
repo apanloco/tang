@@ -84,7 +84,7 @@ test("a new LFO for a knob is made with a cable to it in one change: the node, t
   await cell(filter, "resonance").hover();
   await modulate(filter, "resonance").click();
   await expect(page.getByRole("menu", { name: "Modulate resonance" })).toBeVisible();
-  expect(await items(page)).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "LFO"]);
+  expect(await items(page)).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "New velocity", "New key", "LFO"]);
   await page.getByRole("menuitem", { name: "New LFO" }).click();
 
   // The tracer's LFO and the new one are numbered, and the new one drives the resonance at half depth.
@@ -132,13 +132,13 @@ test("a modulator that is there is attached from the menu: a cable and no new no
   // (The tracer's LFO drives the cutoff, so for the cutoff the envelope is the one that is offered.)
   await cell(filter, "cutoff").hover();
   await modulate(filter, "cutoff").click();
-  expect(await items(page)).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "ADSR"]);
+  expect(await items(page)).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "New velocity", "New key", "ADSR"]);
   await page.keyboard.press("Escape");
   await expect(modulate(filter, "cutoff")).toBeFocused();
 
   await cell(filter, "resonance").hover();
   await modulate(filter, "resonance").click();
-  expect(await items(page)).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "LFO", "ADSR"]);
+  expect(await items(page)).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "New velocity", "New key", "LFO", "ADSR"]);
   await page.getByRole("menuitem", { name: "ADSR" }).click();
   await expect(cables(page)).toHaveCount(2);
   await expect(page.getByRole("slider", { name: "Depth of ADSR → Filter: resonance" })).toHaveValue("0.5");

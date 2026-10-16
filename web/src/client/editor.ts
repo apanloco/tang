@@ -7,6 +7,7 @@
 import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
+import { MODULATOR_LABELS } from "./modulatorKinds";
 import { cableWords, displayNames, endLabel } from "./names";
 import type { Names } from "./names";
 import { rangeLabel } from "./notes";
@@ -23,8 +24,6 @@ function quoted(text: string): string {
   const characters = Array.from(text);
   return JSON.stringify(characters.length > NOTICE_NAME ? `${characters.slice(0, NOTICE_NAME).join("")}…` : text);
 }
-
-const KINDS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control", macro: "a macro" };
 
 /**
  * How deep the cable of a control that learns starts, as the TUI's `l` gives it: the whole range, since a controller that is moved offsets the
@@ -93,7 +92,7 @@ export class Editor {
    */
   async addModulator(parent: NodeId, kind: ModulatorKind): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
-    if (!(await this.#attempt(`add ${KINDS[kind]} to ${this.#name(parent)}`, { type: "addModulator", parent, kind }))) return null;
+    if (!(await this.#attempt(`add ${MODULATOR_LABELS[kind]} to ${this.#name(parent)}`, { type: "addModulator", parent, kind }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === parent && !before.has(node.id));
     return this.#shown(added?.at(-1)?.id);
   }
@@ -304,7 +303,7 @@ export class Editor {
    */
   async modulate(node: NodeId, to: Port, kind: ModulatorKind): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((n) => n.id));
-    const what = `modulate ${endLabel(this.#graph ?? { nodes: [], edges: [] }, this.#names, { node, port: to })} with ${KINDS[kind]}`;
+    const what = `modulate ${endLabel(this.#graph ?? { nodes: [], edges: [] }, this.#names, { node, port: to })} with ${MODULATOR_LABELS[kind]}`;
     const intent: Intent = { type: "modulate", to: { node, port: to }, kind, depth: kind === "midiLearn" ? LEARN_DEPTH : null };
     if (!(await this.#attempt(what, intent))) return null;
     const made = this.#graph?.edges.findLast((e) => isModulation(e) && !before.has(e.from.node) && e.to.node === node && samePort(e.to.port, to));

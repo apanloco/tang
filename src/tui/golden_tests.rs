@@ -596,7 +596,7 @@ fn popup_lane_target_selector() {
 
 #[test]
 fn popup_modulate_parameter() {
-    // `m` on a focused parameter: new LFO / new envelope / attach to existing.
+    // `m` on a focused parameter: a new modulator of each kind / attach to existing.
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Effect { inst: 2, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m'));
@@ -2497,8 +2497,8 @@ fn the_modulate_popup_can_make_an_envelope_instead() {
 fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     let mut h = on_the_bass_filters_cutoff();
     h.press(KeyCode::Down); // the filter's resonance, which the bass's LFO does not drive
-    // (The popup lists a new LFO, a new envelope and a new macro before the modulators that are there.)
-    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
+    // (The popup lists a new LFO, a new envelope, a new macro, a new velocity and a new key before the modulators that are there.)
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 5).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"],
@@ -2514,7 +2514,7 @@ fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
 fn the_modulate_popup_does_not_attach_a_parameter_to_a_modulator_that_drives_it_already() {
     // (The controller refuses the second cable between the two, in the browser as here.)
     let mut h = on_the_bass_filters_cutoff();
-    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 5).press(KeyCode::Enter);
     assert!(h.commands().is_empty());
     assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the LFO's cable to the cutoff, and no more");
     assert_eq!(h.s.ctl.history_state().undo, None);
@@ -2602,10 +2602,10 @@ fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_
 
 #[test]
 fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_whichever_place_it_has_in_its_rack() {
-    // The envelope again: the popup lists a new LFO, a new envelope, a new macro, and then the three that are there.
+    // The envelope again: the popup lists a new LFO, a new envelope, a new macro, a new velocity and a new key, and then the three that are there.
     let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
     h.goto(TreeAddress::Instrument(0));
-    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 4).press(KeyCode::Enter);
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 6).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 3.000]"]
@@ -3768,6 +3768,60 @@ fn a_velocity_and_a_key_are_in_the_tree_with_what_they_drive() {
     let tree = h.tree();
     assert!(tree.iter().any(|line| line.contains("~ Velocity → Filter: cutoff (40%)")), "{tree:#?}");
     assert!(tree.iter().any(|line| line.contains("~ Key → Filter: cutoff (30%)")), "{tree:#?}");
+}
+
+#[test]
+fn the_modulate_popup_has_a_new_velocity_and_a_new_key_that_are_bound_at_once_with_a_cable_to_the_parameter_as_one_step() {
+    let mut h = on_the_bass_filters_cutoff();
+    h.press(KeyCode::Char('m'));
+    let popup = h.dump();
+    let at = |what: &str| popup.find(what).unwrap_or_else(|| panic!("no `{what}` in:\n{popup}"));
+    assert!(at("New LFO → cutoff") < at("New envelope → cutoff") && at("New envelope → cutoff") < at("New macro → cutoff"), "{popup}");
+    assert!(at("New macro → cutoff") < at("New velocity → cutoff") && at("New velocity → cutoff") < at("New key → cutoff"), "in this order: {popup}");
+    h.press_n(KeyCode::Down, 3).press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.instruments[2].modulators;
+    assert_eq!(rack.len(), 2);
+    assert!(matches!(rack[1].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false }), "{:?}", rack[1].source);
+    assert_eq!(rack[1].targets.len(), 1);
+    let commands = h.commands();
+    assert_eq!(commands[0], "InsertModulator inst=2 index=1 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }", "{commands:?}");
+    assert!(commands[1].starts_with("AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }") && commands[1].contains("depth=0.500"), "{commands:?}");
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the control and the cable to it are one thing");
+    assert!(h.tree().iter().any(|line| line.contains("~ Velocity → Filter: cutoff (50%)")), "{:#?}", h.tree());
+
+    // A key, from the popup of the same parameter again.
+    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 4).press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.instruments[2].modulators;
+    assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[2].source);
+    assert!(h.tree().iter().any(|line| line.contains("~ Key → Filter: cutoff (50%)")), "{:#?}", h.tree());
+}
+
+#[test]
+fn the_modulate_popup_on_a_bus_parameter_can_make_a_key_in_the_groups_rack() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 4).press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.groups[0].modulators;
+    assert_eq!(rack.len(), 3, "the two the pad has, and the key");
+    assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[2].source);
+    assert_eq!(rack[2].targets.len(), 1);
+    assert!(h.commands()[0].starts_with("InsertGroupModulator group=0 index=2 source=MidiLearn { source: Some(Key)"), "{:?}", h.commands());
+}
+
+#[test]
+fn the_popup_of_a_modulators_own_setting_can_make_a_key_to_drive_it() {
+    // The rate of the LFO of the first scene with three kinds of modulator, which is the third row of its pane (the type, the waveform, the rate).
+    let mut h = Harness::new(scene_three_kinds_of_modulator());
+    on_modulator_row(&mut h, TreeAddress::Modulator { inst: 0, index: 0 }, 2);
+    h.press(KeyCode::Char('m'));
+    let popup = h.dump();
+    assert!(popup.contains("New velocity →") && popup.contains("New key →"), "{popup}");
+    h.press_n(KeyCode::Down, 4).press(KeyCode::Enter);
+    let rack = &h.s.ctl.model.instruments[0].modulators;
+    assert_eq!(rack.len(), 4, "the three it has, and the key");
+    assert!(matches!(rack[3].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[3].source);
+    assert_eq!(rack[3].targets.len(), 1, "it drives the rate of the LFO");
+    assert!(h.commands()[1].contains("ModulatorRate"), "{:?}", h.commands());
 }
 
 #[test]
@@ -5572,7 +5626,7 @@ mod undo_and_redo {
     fn the_modulate_popup_with_a_modulator_that_is_there_is_a_step_of_a_cable() {
         let mut h = on_the_bass_filters_cutoff();
         h.press(KeyCode::Down); // the filter's resonance
-        h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 3).press(KeyCode::Enter);
+        h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 5).press(KeyCode::Enter);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("draw a cable"));
         ctrl_z(&mut h);
         assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the cable of the LFO that was there");

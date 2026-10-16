@@ -282,10 +282,12 @@ enum ModulateChoice {
 }
 
 /// The kinds of modulator the popup makes, in the order it lists them, and what each is called there.
-const NEW_MODULATORS: [(ModulatorKind, &str); 3] = [
+const NEW_MODULATORS: [(ModulatorKind, &str); 5] = [
     (ModulatorKind::Lfo, "New LFO"),
     (ModulatorKind::Envelope, "New envelope"),
     (ModulatorKind::Macro, "New macro"),
+    (ModulatorKind::Velocity, "New velocity"),
+    (ModulatorKind::Key, "New key"),
 ];
 
 /// The first choices of the popup for driving `param_name`: a new modulator of each kind, which `Existing` ones follow.
@@ -4448,7 +4450,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  Shift+←/→  Fine adjust (1%)".into(),
         "  Ctrl+←/→   Coarse adjust (10%)".into(),
         "  Enter      Type a value".into(),
-        "  m          Modulate this parameter (a new LFO, envelope or macro, or one that is there)".into(),
+        "  m          Modulate this parameter (a new LFO, envelope, macro, velocity or key, or one that is there)".into(),
         "  l          MIDI learn: bind the next CC / pitch-bend / aftertouch".into(),
         "  /          Search parameters".into(),
         "  Esc        Clear filter / back to chain".into(),

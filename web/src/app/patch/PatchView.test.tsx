@@ -425,7 +425,7 @@ describe("the patch", () => {
       await rig(<PatchView />);
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       const menu = screen.getByRole("menu", { name: "Add a modulator to Oscillator" });
-      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "Macro", "MIDI control"]);
+      expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "Macro", "MIDI control", "Velocity", "Key"]);
     });
 
     test("asks the server to add the kind that was chosen to that lane, and the node is on the canvas with its controls when it has", async () => {
@@ -445,9 +445,24 @@ describe("the patch", () => {
       });
     });
 
+    test.each([
+      ["Velocity", "velocity"],
+      ["Key", "key"],
+    ] as const)("asks for a control that follows the notes when %s is chosen, and the node on the canvas is bound at once and has no controls", async (item, kind) => {
+      const { requests } = await rig(<PatchView />);
+      fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: item }));
+      await waitFor(() => {
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind }]);
+      });
+      const added = await screen.findByRole("group", { name: item });
+      expect(controlsIn(added)).toEqual([]);
+      expect(added.textContent).toContain(kind === "velocity" ? "velocity of the last note" : "pitch of the last note");
+    });
+
     test("to a group asks for one in the group, whichever kind", async () => {
       const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      for (const [item, kind] of [["LFO", "lfo"], ["Macro", "macro"], ["MIDI control", "midiLearn"]] as const) {
+      for (const [item, kind] of [["LFO", "lfo"], ["Macro", "macro"], ["MIDI control", "midiLearn"], ["Velocity", "velocity"], ["Key", "key"]] as const) {
         fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Group 2" }));
         fireEvent.click(screen.getByRole("menuitem", { name: item }));
         await waitFor(() => {
@@ -455,7 +470,7 @@ describe("the patch", () => {
         });
       }
       await waitFor(() => {
-        expect(requests()).toHaveLength(3);
+        expect(requests()).toHaveLength(5);
       });
     });
 

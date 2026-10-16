@@ -1441,6 +1441,25 @@ rate = 3.0
     }
 
     #[test]
+    fn a_velocity_and_a_key_have_their_own_words_going_in_and_out() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        let lane0 = lane(&ctl);
+        for (kind, added, removed) in [
+            (ModulatorKind::Velocity, "add a velocity control", "remove a velocity control"),
+            (ModulatorKind::Key, "add a key control", "remove a key control"),
+        ] {
+            clock.advance(Duration::from_secs(5));
+            let node = ctl.apply(Intent::AddModulator { parent: lane0, kind }).map(|_| ctl.model.instruments[0].modulators.last().unwrap().node).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(added));
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(removed));
+            ctl.undo().unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(added), "undone, the control is back and so is the step that made it");
+        }
+    }
+
+    #[test]
     fn an_instrument_that_was_added_is_a_lane_that_undo_takes_out_and_redo_puts_back_under_its_id_and_what_was_done_to_it_is_done_again() {
         let (engine, mut ctl, clock) = controller_with_plugins();
         let lanes = ctl.model.instruments.len();
@@ -4731,6 +4750,26 @@ size = 0.5
             ],
         ));
         scripts.push((
+            "a velocity and a key are added with cables, one is taken out, and each goes back and comes again",
+            vec![
+                add_modulator(lane0, ModulatorKind::Velocity),
+                cable(fresh(0), lane0, detune),
+                add_modulator(lane0, ModulatorKind::Key),
+                cable(fresh(1), lane0, volume),
+                Op::Do(Intent::RemoveNode { node: fresh(0) }),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
             "an instrument is added and taken out as a lane, and put back with its id",
             vec![
                 add_instrument("builtin:osc"),
@@ -5031,6 +5070,21 @@ size = 0.5
                 undo(),
                 undo(),
                 redo(),
+                redo(),
+                redo(),
+                redo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "a velocity and a key are made for knobs, at half depth when none is asked, and a setting of a modulator can be driven by a key",
+            vec![
+                modulate(lane0, param_of(volume), ModulatorKind::Velocity, None),
+                modulate(lane0, param_of(pan), ModulatorKind::Key, Some(-0.5)),
+                modulate(lfo, Port::Rate, ModulatorKind::Key, None),
+                undo(),
+                undo(),
+                undo(),
                 redo(),
                 redo(),
                 redo(),

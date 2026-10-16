@@ -2974,6 +2974,124 @@ describe("what a MIDI control puts out and does in the mock engine, which has no
   });
 });
 
+describe("what a velocity and a key put out and do in the mock engine: they follow the notes that a lane plays, as the engine's do", () => {
+  /** The tracer with its LFO a control that follows the notes, and its lane given the keys and the transpose that are asked. */
+  const withNotes = (control: MidiControl, lane: { range?: { low: number; high: number }; transpose?: number } = {}): Snapshot => {
+    const nodes = tracerSnapshot.graph.nodes.map((node) => {
+      if (node.kind === "modulator") return { ...node, source: { type: "midiLearn" as const, control, learning: false } };
+      if (node.kind === "instrument") return { ...node, range: lane.range ?? node.range, transpose: lane.transpose ?? node.transpose };
+      return node;
+    });
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+  };
+  const cutoffOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 0 }, "effective");
+  const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+  const near = (value: number | undefined, expected: number): boolean => value !== undefined && Math.abs(value - expected) < 1e-5;
+  const velocity = { type: "velocity" } as const;
+  const key = { type: "key" } as const;
+
+  test.each([
+    [127, 1],
+    [64, 64 / 127],
+    [1, 1 / 127],
+  ])("puts out the velocity of a note, %s, as over 127, and sets the cutoff to the user's value and the velocity times the depth of the range above it", async (played, over) => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(velocity) }), { telemetry: ["modulation"] });
+    client.noteOn(60, played);
+    await until(() => near(outputOf(client), over), `an output of ${String(over)}`);
+    await until(() => near(cutoffOf(client), 0.5 + 0.4 * over), "the cutoff the velocity makes of it");
+  });
+
+  test.each([
+    [72, 72 / 127, 0.5 + 0.4 * (12 / 60)],
+    [60, 60 / 127, 0.5],
+    [30, 30 / 127, 0.5 - 0.4 * 0.5],
+    [0, 0, 0.1],
+    [127, 1, 0.9],
+  ])("puts out the number of a note, %s, as over 127, and moves the cutoff by its distance from middle C, five octaves being the whole of the depth either way", async (note, over, expected) => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(key) }), { telemetry: ["modulation"] });
+    // (A note that is not the one that the control rests at, so that what is waited for is a change.)
+    client.noteOn(note === 100 ? 101 : 100, 100);
+    await until(() => near(outputOf(client), (note === 100 ? 101 : 100) / 127), "the first note");
+    client.noteOn(note, 100);
+    await until(() => near(outputOf(client), over), `an output of ${String(over)}`);
+    await until(() => near(cutoffOf(client), expected), `a cutoff of ${String(expected)}`);
+  });
+
+  test("keeps what the last note said when the note ends, and does not take a note-on with no velocity for a note", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(velocity) }), { telemetry: ["modulation"] });
+    client.noteOn(60, 127);
+    await until(() => near(outputOf(client), 1), "the velocity");
+    client.noteOff(60);
+    client.noteOn(62, 0);
+    await quiet();
+    expect(outputOf(client)).toBe(1);
+  });
+
+  test.each([
+    ["a velocity", velocity, 100 / 127],
+    ["a key", key, 64 / 127],
+  ] as const)("hears only the notes in the keys of the lane, when it is %s", async (_name, control, heard) => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(control, { range: { low: 60, high: 71 } }) }), { telemetry: ["modulation"] });
+    const rest = control.type === "key" ? Math.fround(60 / 127) : 0;
+    client.noteOn(40, 120);
+    await quiet();
+    expect(outputOf(client)).toBe(rest);
+    client.noteOn(64, 100);
+    await until(() => near(outputOf(client), heard), "the note that is in the keys");
+  });
+
+  test("hears a key as the lane's transpose has made it, and a note that the transpose takes out of the keyboard not at all", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(key, { transpose: 12 }) }), { telemetry: ["modulation"] });
+    client.noteOn(60, 100);
+    await until(() => near(outputOf(client), 72 / 127), "the note and an octave");
+    client.noteOn(120, 100);
+    await quiet();
+    expect(near(outputOf(client), 72 / 127), "132 is no note: it is not heard").toBe(true);
+  });
+
+  test("does not hear a velocity change with the transpose: it is the note's, whatever its place", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(velocity, { transpose: 12 }) }), { telemetry: ["modulation"] });
+    client.noteOn(60, 100);
+    await until(() => near(outputOf(client), 100 / 127), "the velocity");
+  });
+
+  describe("of a group", () => {
+    /** The tracer with a group that has its lane in it (keys from 60 to 71, up an octave), and a control that follows the notes in the group's rack, which drives the cutoff. */
+    async function groupWith(control: MidiControl): Promise<{ client: Client; output: number }> {
+      const lane = tracerSnapshot.graph.nodes.find((n) => n.kind === "instrument");
+      if (!lane) throw new Error("the tracer has a lane");
+      const server = new MockServer({ telemetryPeriod: 2, snapshot: withNotes({ type: "cc", number: 1 }, { range: { low: 60, high: 71 }, transpose: 12 }) });
+      const client = await open(server, { telemetry: ["modulation"] });
+      await client.request({ type: "addGroup", members: [lane.id] });
+      const group = client.state.snapshot?.graph.nodes.find((n) => n.kind === "group");
+      if (!group) throw new Error("a group was made");
+      await client.request({ type: "addModulator", parent: group.id, kind: control.type === "key" ? "key" : "velocity" });
+      const made = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.parent === group.id).at(-1);
+      if (!made) throw new Error("the group has a control");
+      return { client, output: made.id };
+    }
+    const outputOfGroups = (client: Client, node: number): number | undefined => client.telemetry.value("modulation", node, { type: "modOut" }, "modOutput");
+
+    test("hears the notes in the keys of its members, as they are played, and not as the lane transposes them", async () => {
+      const { client, output } = await groupWith(key);
+      client.noteOn(40, 100);
+      await quiet();
+      expect(outputOfGroups(client, output)).toBe(Math.fround(60 / 127));
+      client.noteOn(64, 100);
+      await until(() => near(outputOfGroups(client, output), 64 / 127), "the note that a member takes, as it is played");
+    });
+
+    test("hears the velocity of the notes in the keys of its members", async () => {
+      const { client, output } = await groupWith(velocity);
+      client.noteOn(40, 127);
+      await quiet();
+      expect(outputOfGroups(client, output)).toBe(0);
+      client.noteOn(64, 90);
+      await until(() => near(outputOfGroups(client, output), 90 / 127), "the velocity of the note that a member takes");
+    });
+  });
+});
+
 describe("what a macro puts out and does in the mock engine: the number it is set to, which moves what it drives up from where the user set it", () => {
   const withMacro = (value: number): Snapshot => {
     // The tracer's LFO is a macro of this value: its cable to the cutoff (the user set it to 0.5) is at depth 0.4.

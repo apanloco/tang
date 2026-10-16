@@ -7,9 +7,10 @@
 //
 // What is added is taken out by undo and put back by redo under the ids it had (`Made`): every step that names the node or the cable goes on naming it.
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP, WAVEFORMS } from "../protocol";
-import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorField, ModulatorKind, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorField, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
 import { cablesThatGo, drivesRoundToItself, isModulation } from "./cables";
 import { cablesIntoLaneFromItsGroup } from "./membership";
+import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 
 /** What a change is of, for a change that goes on to be told from the rest: a string that says which parameter, gain, setting or cable. */
 export type Key = string;
@@ -155,9 +156,6 @@ export interface Removed {
  * something that cannot be undone yet (and what came before cannot be undone past it); or no change.
  */
 export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "barrier" | "nothing";
-
-/** What a button that adds a modulator says it adds (`ModulatorKind::label`). */
-const MODULATOR_LABELS: Record<ModulatorKind, string> = { lfo: "an LFO", envelope: "an envelope", midiLearn: "a MIDI control", macro: "a macro" };
 
 /**
  * The intent that takes out what `added`, an add that was carried out, made: the one node, or the one cable, as it is in `snapshot`; or null if it
@@ -376,7 +374,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const touching = edges.flatMap((e) => (isModulation(e) && (e.from.node === node.id || e.to.node === node.id) ? [e.id] : []));
       // Cables that drive each other's depths are not put back, as for a cable (`RemovedCable::still_driven` of the controller).
       if (drivesRoundToItself(edges, cablesThatGo(edges, touching))) return "barrier";
-      return { removed: { label: `remove ${MODULATOR_LABELS[node.source.type]}`, intent, at: now } };
+      return { removed: { label: `remove ${MODULATOR_LABELS[kindOf(node.source)]}`, intent, at: now } };
     }
     case "replaceInstrument": {
       // The instrument of a lane goes with the cables that drive it, and those that drive the depth of any of them (a tree of drivers: none is on a cycle, as for an effect), and comes

@@ -18,9 +18,9 @@ source: src/tui/golden_tests.rs
 │                             │New LFO → cutoff                                          │                             │
 │                             │New envelope → cutoff                                     │                             │
 │                             │New macro → cutoff                                        │                             │
+│                             │New velocity → cutoff                                     │                             │
+│                             │New key → cutoff                                          │                             │
 │                             │attach → LFO 0.2Hz triangle                               │                             │
-│                             │                                                          │                             │
-│                             │                                                          │                             │
 │                             │                                                          │                             │
 │                             │                                                          │                             │
 │                             │                                                          │                             │

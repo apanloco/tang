@@ -2053,7 +2053,7 @@ rate = 1.0
     }
 
     use crate::app::model::ModSourceSlot;
-    use crate::plugin::chain::LfoWaveform;
+    use crate::plugin::chain::{LfoWaveform, MidiBindSource};
 
     fn lane_lfo(ctl: &Controller, index: usize) -> (LfoWaveform, f32) {
         match &ctl.model.instruments[0].modulators[index].source {
@@ -2506,7 +2506,7 @@ value = 0.25
         let (engine, mut ctl) = controller();
         sent(&engine);
         let empty = node(&ctl, NodePath::Instrument(1));
-        for kind in [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro] {
+        for kind in [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro, ModulatorKind::Velocity, ModulatorKind::Key] {
             add(&mut ctl, empty, kind).unwrap();
         }
         let rack = &ctl.model.instruments[1].modulators;
@@ -2517,6 +2517,8 @@ value = 0.25
         ));
         assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
         assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "at rest: it moves nothing until it is turned");
+        assert!(matches!(rack[4].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false }), "bound at once: no controller is moved for it");
+        assert!(matches!(rack[5].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }));
         assert_eq!(
             sent(&engine),
             [
@@ -2524,9 +2526,12 @@ value = 0.25
                 "InsertModulator inst=1 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }".to_string(),
                 "InsertModulator inst=1 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
                 "InsertModulator inst=1 index=3 source=Macro { value: 0.0 }".to_string(),
+                "InsertModulator inst=1 index=4 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }".to_string(),
+                // (A key rests at middle C, where it adds nothing.)
+                format!("InsertModulator inst=1 index=5 source=MidiLearn {{ source: Some(Key), value: {:?}, learning: false }}", 60.0f32 / 127.0),
             ]
         );
-        assert_eq!(ctl.rev, 4);
+        assert_eq!(ctl.rev, 6);
         ctl.model.check_ids().unwrap();
     }
 
@@ -2588,7 +2593,16 @@ value = 0.25
         let (pan, _) = param(&ctl, NodePath::Instrument(0), "pan");
         let (attack, _) = param(&ctl, NodePath::Instrument(0), "attack");
         let osc = lane(&ctl);
-        for (param, kind) in [(detune, ModulatorKind::Lfo), (volume, ModulatorKind::Envelope), (pan, ModulatorKind::MidiLearn), (attack, ModulatorKind::Macro)] {
+        let (sustain, _) = param(&ctl, NodePath::Instrument(0), "sustain");
+        let (release, _) = param(&ctl, NodePath::Instrument(0), "release");
+        for (param, kind) in [
+            (detune, ModulatorKind::Lfo),
+            (volume, ModulatorKind::Envelope),
+            (pan, ModulatorKind::MidiLearn),
+            (attack, ModulatorKind::Macro),
+            (sustain, ModulatorKind::Velocity),
+            (release, ModulatorKind::Key),
+        ] {
             modulate(&mut ctl, osc, Port::Param { index: param }, kind, None).unwrap();
         }
         let rack = &ctl.model.instruments[0].modulators;
@@ -2596,7 +2610,11 @@ value = 0.25
         assert!(matches!(rack[1].source, ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)));
         assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
         assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "at rest, so that the cable moves nothing until the macro is turned");
-        assert_eq!(rack.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1, 1, 1]);
+        assert!(matches!(rack[4].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false }), "{:?}", rack[4].source);
+        assert!(matches!(rack[5].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[5].source);
+        assert_eq!(rack.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1, 1, 1, 1, 1]);
+        assert_eq!(rack[4].targets[0].depth, NEW_CABLE_DEPTH, "a cable starts at half depth, as an LFO's does: only a control that is learned starts at the whole of it");
+        assert_eq!(rack[5].targets[0].depth, NEW_CABLE_DEPTH);
         ctl.model.check_ids().unwrap();
     }
 

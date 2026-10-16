@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
 use crate::app::model::{EdgeId, ModSourceSlot, NodeId};
+use crate::plugin::chain::MidiBindSource;
 use crate::session::NodeUi;
 
 /// What a front-end asks of the controller, naming the node it concerns.
@@ -215,6 +216,10 @@ pub enum ModulatorKind {
     MidiLearn,
     /// A knob on the screen, at rest (0): a number that the person sets and nothing else moves, that drives every parameter with a cable from it.
     Macro,
+    /// The velocity of the last note the lane plays (the group's members', for a group's), bound when it is made.
+    Velocity,
+    /// The number of the last note the lane plays, bound when it is made.
+    Key,
 }
 
 impl ModulatorKind {
@@ -225,6 +230,8 @@ impl ModulatorKind {
             ModulatorKind::Envelope => ModSourceSlot::new_envelope(),
             ModulatorKind::MidiLearn => ModSourceSlot::new_midi_learn(),
             ModulatorKind::Macro => ModSourceSlot::new_macro(),
+            ModulatorKind::Velocity => ModSourceSlot::new_note_control(MidiBindSource::Velocity),
+            ModulatorKind::Key => ModSourceSlot::new_note_control(MidiBindSource::Key),
         }
     }
 
@@ -233,6 +240,8 @@ impl ModulatorKind {
         match source {
             ModSourceSlot::Lfo { .. } => ModulatorKind::Lfo,
             ModSourceSlot::Envelope { .. } => ModulatorKind::Envelope,
+            ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), .. } => ModulatorKind::Velocity,
+            ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), .. } => ModulatorKind::Key,
             ModSourceSlot::MidiLearn { .. } => ModulatorKind::MidiLearn,
             ModSourceSlot::Macro { .. } => ModulatorKind::Macro,
         }
@@ -245,6 +254,8 @@ impl ModulatorKind {
             ModulatorKind::Envelope => "an envelope",
             ModulatorKind::MidiLearn => "a MIDI control",
             ModulatorKind::Macro => "a macro",
+            ModulatorKind::Velocity => "a velocity control",
+            ModulatorKind::Key => "a key control",
         }
     }
 }
@@ -527,6 +538,20 @@ mod tests {
     }
 
     #[test]
+    fn a_velocity_and_a_key_are_made_bound_and_are_the_kinds_they_say() {
+        for (kind, bound, label) in [(ModulatorKind::Velocity, MidiBindSource::Velocity, "a velocity control"), (ModulatorKind::Key, MidiBindSource::Key, "a key control")] {
+            let source = kind.source();
+            assert!(matches!(source, ModSourceSlot::MidiLearn { source: Some(s), learning: false } if s == bound), "{kind:?}: {source:?}");
+            assert_eq!(ModulatorKind::of(&source), kind);
+            assert_eq!(kind.label(), label);
+        }
+        // The controls of a hardware controller are the kind that learns, whatever they are bound to.
+        for source in [Some(MidiBindSource::Cc(74)), Some(MidiBindSource::PitchBend), Some(MidiBindSource::Aftertouch), None] {
+            assert_eq!(ModulatorKind::of(&ModSourceSlot::MidiLearn { source, learning: source.is_none() }), ModulatorKind::MidiLearn, "{source:?}");
+        }
+    }
+
+    #[test]
     fn the_value_of_a_macro_runs_from_nothing_to_one() {
         assert_eq!(ModulatorField::Value.range(), (0.0, 1.0));
         assert_eq!(ModulatorField::Value.label(), "value");
@@ -708,8 +733,8 @@ mod tests {
 
     #[test]
     fn every_kind_of_modulator_has_its_own_name() {
-        let names: Vec<Value> = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro].iter().map(wire).collect();
-        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn"), json!("macro")]);
+        let names: Vec<Value> = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro, ModulatorKind::Velocity, ModulatorKind::Key].iter().map(wire).collect();
+        assert_eq!(names, [json!("lfo"), json!("envelope"), json!("midiLearn"), json!("macro"), json!("velocity"), json!("key")]);
         for name in names {
             assert!(serde_json::from_value::<ModulatorKind>(name).is_ok());
         }

@@ -60,6 +60,8 @@ const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
   { id: "envelope", label: "Envelope" },
   { id: "macro", label: "Macro" },
   { id: "midiLearn", label: "MIDI control" },
+  { id: "velocity", label: "Velocity" },
+  { id: "key", label: "Key" },
 ];
 
 /** The `id` of the button that adds a modulator to the lane or group `node`, which what takes a modulator out gives the focus to. */

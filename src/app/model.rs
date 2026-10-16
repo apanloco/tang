@@ -1190,6 +1190,11 @@ impl ModSourceSlot {
         ModSourceSlot::MidiLearn { source: None, learning: true }
     }
 
+    /// A control that follows the notes the lane plays (`MidiBindSource::Velocity` or `Key`): bound when it is made, since no controller is moved for it.
+    pub fn new_note_control(source: crate::plugin::chain::MidiBindSource) -> Self {
+        ModSourceSlot::MidiLearn { source: Some(source), learning: false }
+    }
+
     /// A macro at rest: it drives nothing until it is turned.
     pub fn new_macro() -> Self {
         ModSourceSlot::Macro { value: 0.0 }

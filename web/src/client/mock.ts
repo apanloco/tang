@@ -464,6 +464,9 @@ const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSou
   envelope: { name: "ADSR", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } },
   midiLearn: { name: "MIDI (learning…)", source: { type: "midiLearn", control: null, learning: true } },
   macro: { name: "Macro", source: { type: "macro", value: 0 } },
+  // (A control that follows the notes is bound when it is made: no controller is moved for it.)
+  velocity: { name: "Velocity", source: { type: "midiLearn", control: { type: "velocity" }, learning: false } },
+  key: { name: "Key", source: { type: "midiLearn", control: { type: "key" }, learning: false } },
 };
 
 /**
@@ -1050,6 +1053,8 @@ export class MockServer {
   /** The recordings that are going on, by the node of their lane: what the engine's pattern players hold, which the controller hears of when they are done. */
   readonly #recordings = new Map<NodeId, Recording>();
   #recordingTimer: ReturnType<typeof setInterval> | undefined;
+  /** The last note that each control that follows the notes has heard, by the node of the control (what the engine's controls hold): what it puts out is made of it. */
+  readonly #heard = new Map<NodeId, { note: number; velocity: number }>();
 
   constructor(options: MockOptions = {}) {
     this.#options = options;
@@ -1233,6 +1238,7 @@ export class MockServer {
       case "noteOn":
         connection.notes.add(message.note);
         this.#played(message.note);
+        this.#listened(message.note, message.velocity);
         break;
       case "noteOff":
         connection.notes.delete(message.note);
@@ -1316,6 +1322,28 @@ export class MockServer {
     this.#recordingTimer ??= setInterval(() => {
       this.settle();
     }, RECORDING_WATCH);
+  }
+
+  /**
+   * A note is played: each control that follows the notes (a velocity, a key) that hears it takes it, as the engine's do. A lane's hears the notes the lane takes (those in its keys), as its
+   * transpose has made them, and not one that the transpose takes off the keyboard; a group's hears the notes that any of its members takes, as they are played. A note-on with no velocity is a note-off.
+   * (The mock has no remap and no patterns, which the engine's controls hear the notes after.)
+   */
+  #listened(note: number, velocity: number): void {
+    if (!(velocity > 0)) return;
+    const { nodes } = this.#snapshot.graph;
+    const takes = (lane: Node): boolean => lane.kind === "instrument" && (lane.range === null || (note >= lane.range.low && note <= lane.range.high));
+    for (const control of nodes) {
+      if (control.kind !== "modulator" || control.source.type !== "midiLearn") continue;
+      if (control.source.control?.type !== "velocity" && control.source.control?.type !== "key") continue;
+      const owner = nodes.find((n) => n.id === control.parent);
+      if (owner?.kind === "instrument") {
+        const heard = note + owner.transpose;
+        if (takes(owner) && heard >= 0 && heard <= 127) this.#heard.set(control.id, { note: heard, velocity });
+      } else if (owner?.kind === "group" && nodes.some((n) => n.kind === "instrument" && n.parent === owner.id && takes(n))) {
+        this.#heard.set(control.id, { note, velocity });
+      }
+    }
   }
 
   /** A note is played: every recording that is going on takes it, if it is in the keys of its lane (a note of the count-in is recorded too, at the start of the pattern). */
@@ -1449,9 +1477,21 @@ export class MockServer {
         return shape(source.waveform, source.rate * seconds, node.id);
       case "envelope":
         return this.heldNotes.size > 0 ? source.sustain : 0;
-      // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, the pitch bend wheel in the middle and a key at middle C.)
-      case "midiLearn":
-        return source.control?.type === "pitchBend" ? 0.5 : source.control?.type === "key" ? KEY_CENTRE / 127 : 0;
+      // (The mock has no MIDI: a control rests, as the engine's does with nothing played or turned: nothing, the pitch bend wheel in the middle and a key at middle C. What follows the notes goes by the last
+      // that it heard.)
+      case "midiLearn": {
+        const heard = this.#heard.get(node.id);
+        switch (source.control?.type) {
+          case "pitchBend":
+            return 0.5;
+          case "velocity":
+            return heard ? heard.velocity / 127 : 0;
+          case "key":
+            return heard ? heard.note / 127 : KEY_CENTRE / 127;
+          default:
+            return 0;
+        }
+      }
       // (A macro puts out the number it is set to, and nothing moves it but a person.)
       case "macro":
         return source.value;
