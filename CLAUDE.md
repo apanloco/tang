@@ -1884,7 +1884,7 @@ Plugin loading is behind a trait. Three formats supported:
 
 - **Oscillator** (`builtin:osc`) — one polyphonic oscillator with a
   selectable waveform, per-voice ADSR amplitude envelope. Parameters:
-  `waveform` (enum: sine/triangle/square/saw), `detune` (±24 semitones / ±2
+  `waveform` (enum: sine/triangle/square/saw/noise), `detune` (±24 semitones / ±2
   octaves — wide so a modulator can sweep pitch dramatically; use small values
   or low modulator depth for subtle detuning), `volume`
   (0–1, smoothed ~5 ms), `attack`/`decay`/`release` (0–10 s), `sustain`
@@ -1905,6 +1905,15 @@ Plugin loading is behind a trait. Three formats supported:
   of the cycle a square is high: the offset of a pulse that is not a half (its mean) is taken out and it is scaled so that its higher side is at most 1,
   so that a half is the square it was and a narrow pulse does not carry a hum; the other waveforms have no use for it. A pulse is as naive as the
   waveforms are (no band-limiting: it aliases at high pitches, a narrow one more than a half, as the square and the saw do).
+  The `waveform` has a fifth value, `noise` (4, after the saw, so that the numbers that sessions saved for the four before it are what they were): white noise, a number from -1 to 1 for
+  every sample, all equally likely, with the level of a saw (the same RMS) and no pitch, so that `detune`, `pulse` and `spread` do nothing to it, and the envelope, `volume`, `pan`,
+  `unison` and `width` do what they do to a wave (the oscillators of a unison are noises of their own, spread across the channels, and the sum is brought down by the root of how many
+  there are). Each oscillator of each voice makes its numbers from a state of its own (`Voice::noise`: xorshift32, started from a hash of how many voices have begun and the
+  oscillator's place in the unison, `noise_seed`, which is never 0), and not from a stream that the voices share: the sum of a chord would then be dealt out in the order of the hash map,
+  and the same notes would sound a little different each run (`the_noise_of_a_chord_is_the_same_whatever_the_order_that_its_voices_are_summed_in`: its notes begin at frames of their
+  own, so that the voices are at different places of their attacks and a shared stream would show). Each key that is hit has noise of its own (a roll on one key is not the same burst
+  again; a key that is hit again while it sounds goes on with its voice), and a run that plays the same notes has the same numbers. Not here: a colour (pink and brown noise; a low-pass after
+  it does most of what they are for), and noise in the same lane as a wave (a second lane and a group sum them).
   TODO: the voices are in a hash map that is walked in an order that changes from one run to the next, so that the sum of a chord differs by a rounding
   from one run to another (the pinned test compares to a millionth); a fixed array of the 128 notes would have a fixed order, and would be faster.
   The old
