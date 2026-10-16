@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
+import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, NAME_LIMIT, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -1013,6 +1013,19 @@ export interface Told {
   restructured: boolean;
 }
 
+/**
+ * A recording that is going on, as the engine's pattern player of a lane has it: when it began (in seconds of the server's clock), the tempo it was counted in (the engine
+ * fixes the length of a beat when it begins), and how many notes have been played since.
+ */
+interface Recording {
+  startedAt: number;
+  bpm: number;
+  notes: number;
+}
+
+/** How often the server looks at the recordings that are going on, in milliseconds. */
+const RECORDING_WATCH = 50;
+
 export class MockServer {
   /** Everything the clients have sent, in order. */
   readonly received: ClientMessage[] = [];
@@ -1032,6 +1045,9 @@ export class MockServer {
   readonly #history = new History();
   /** What the clients were last told Undo and Redo would do. */
   #historyTold: HistoryState = { undo: null, redo: null };
+  /** The recordings that are going on, by the node of their lane: what the engine's pattern players hold, which the controller hears of when they are done. */
+  readonly #recordings = new Map<NodeId, Recording>();
+  #recordingTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: MockOptions = {}) {
     this.#options = options;
@@ -1175,6 +1191,8 @@ export class MockServer {
   receive(connection: MockConnection, text: string): void {
     const message = JSON.parse(text) as ClientMessage;
     this.received.push(message);
+    // (What has run out by now is done before anything is asked or played: a client that subscribes is given the session as it is.)
+    this.settle();
     if (!connection.authorized) {
       if (message.type === "auth" && message.token === this.token) connection.authorized = true;
       else connection.refuse("unauthorized", message.type === "auth" ? "the token is wrong" : "send the token first");
@@ -1212,6 +1230,7 @@ export class MockServer {
       }
       case "noteOn":
         connection.notes.add(message.note);
+        this.#played(message.note);
         break;
       case "noteOff":
         connection.notes.delete(message.note);
@@ -1224,6 +1243,8 @@ export class MockServer {
    * be done. Undo and Redo apply what the last step says, each intent of it a revision of its own, and are no steps themselves.
    */
   #carry(intent: Intent, tell: boolean): { rev: number; told: Told } | { error: WireError } {
+    // (What has run out by now is done first: an intent is about the session as it is.)
+    this.settle();
     if (intent.type === "undo" || intent.type === "redo") return this.#backAndForth(intent.type, tell);
     const plan = planOf(this.#snapshot, intent, this.now(), this.#catalog.entries);
     const before = this.#snapshot;
@@ -1235,7 +1256,95 @@ export class MockServer {
     // (A save as writes a file, which a save as after it does not write over.)
     if ("event" in outcome && outcome.event.type === "saved" && outcome.event.file !== null) this.#files.add(outcome.event.file);
     this.#keep(plan, made, before);
+    this.#followRecordings(intent, tell);
     return done;
+  }
+
+  // -- Recordings made up --
+
+  /**
+   * Do what the engine does with a recording that an intent started or ended (the controller's part of it is in `outcomeOf`). A recording that is started is counted in from now; one that is
+   * stopped in the count-in has recorded nothing, and the pattern is as it was; one that is stopped after it is done with what has been played. A start while it is going on, which the
+   * controller tells as it is, begins nothing again. (A pattern that is cleared ends the recording that is going on with it: `settle` lets go of a recording that has no pattern.)
+   */
+  #followRecordings(intent: Intent, tell: boolean): void {
+    if (intent.type !== "setRecording") return;
+    const going = this.#recordings.get(intent.node);
+    if (intent.recording) {
+      if (going !== undefined) return;
+      this.#recordings.set(intent.node, { startedAt: this.now(), bpm: this.#snapshot.meta.bpm, notes: 0 });
+      this.#watchRecordings();
+      return;
+    }
+    if (going === undefined) return;
+    this.#recordings.delete(intent.node);
+    if (this.now() - going.startedAt < (PATTERN_COUNT_IN_BEATS * 60) / going.bpm) return;
+    this.#finished(intent.node, going);
+    this.#resync(tell);
+  }
+
+  /**
+   * Do what the engine would have done by now: the recordings that have run their length (the count-in and the beats of the pattern, at the tempo they were counted in) are done, and the
+   * clients are given the session with the patterns they made. The server does it by a timer while a recording goes on, and before it answers anything.
+   */
+  settle(): void {
+    const now = this.now();
+    let changed = false;
+    for (const [node, recording] of [...this.#recordings]) {
+      const lane = this.#snapshot.graph.nodes.find((n) => n.id === node);
+      // (A lane that is taken out, or whose pattern is, is let go of: there is nothing to make the pattern of.)
+      if (lane?.kind !== "instrument" || lane.pattern === null) {
+        this.#recordings.delete(node);
+        continue;
+      }
+      if (now < recording.startedAt + ((PATTERN_COUNT_IN_BEATS + lane.pattern.lengthBeats) * 60) / recording.bpm) continue;
+      this.#recordings.delete(node);
+      this.#finished(node, recording);
+      changed = true;
+    }
+    if (changed) this.#resync(true);
+    if (this.#recordings.size === 0 && this.#recordingTimer !== undefined) {
+      clearInterval(this.#recordingTimer);
+      this.#recordingTimer = undefined;
+    }
+  }
+
+  /** Look at the recordings every `RECORDING_WATCH` milliseconds while there are any. */
+  #watchRecordings(): void {
+    this.#recordingTimer ??= setInterval(() => {
+      this.settle();
+    }, RECORDING_WATCH);
+  }
+
+  /** A note is played: every recording that is going on takes it, if it is in the keys of its lane (a note of the count-in is recorded too, at the start of the pattern). */
+  #played(note: number): void {
+    for (const [node, recording] of this.#recordings) {
+      const lane = this.#snapshot.graph.nodes.find((n) => n.id === node);
+      const range = lane?.kind === "instrument" ? lane.range : null;
+      if (range === null || (note >= range.low && note <= range.high)) recording.notes += 1;
+    }
+  }
+
+  /**
+   * A recording is done: the lane has the pattern it made, as the controller has it when it has folded in the engine's report (`finish_recording`): the notes it has, heard if it has any, at the
+   * tempo the session has now, and the settings and the length the lane's pattern has. The session is changed and the clients are not told yet (`resync`).
+   */
+  #finished(node: NodeId, recording: Recording): void {
+    const lane = this.#snapshot.graph.nodes.find((n) => n.id === node);
+    // (A recording is let go of when its pattern is taken out or its lane is: there is nothing to make it of otherwise.)
+    if (lane?.kind !== "instrument" || lane.pattern === null) return;
+    const pattern: PatternInfo = { ...lane.pattern, recording: false, enabled: recording.notes > 0, notes: recording.notes, bpm: this.#snapshot.meta.bpm };
+    const nodes = this.#snapshot.graph.nodes.map((n) => (n === lane ? { ...lane, pattern } : n));
+    this.#snapshot = { ...this.#snapshot, graph: { ...this.#snapshot.graph, nodes } };
+  }
+
+  /** Give the clients the session as it is, at a revision of its own (what the controller's `resync` does for what the engine reports): it is a change that is not saved. */
+  #resync(tell: boolean): void {
+    this.#snapshot = { ...this.#snapshot, rev: this.#snapshot.rev + 1, meta: { ...this.#snapshot.meta, dirty: true } };
+    if (!tell) return;
+    for (const connection of this.#connections) {
+      if (connection.subscribed) connection.tell({ type: "snapshot", snapshot: this.#snapshot });
+    }
   }
 
   /** The intents of the last step that can be undone, or of the last that was undone, carried out one after the other. */
