@@ -59,6 +59,9 @@ export const PATTERN_FIELD_RANGES: Record<PatternField, readonly [number, number
   transpose: [0, 1],
 };
 
+/** How many beats of the metronome a recording is counted in with, before it takes the length of the pattern (`COUNT_IN_BEATS`). */
+export const PATTERN_COUNT_IN_BEATS = 4;
+
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 

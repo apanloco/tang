@@ -2424,6 +2424,9 @@ impl NoteMap {
     }
 }
 
+/// How many beats of the metronome a recording is counted in with, before it takes the length of the pattern (the page tells it as `PATTERN_COUNT_IN_BEATS`).
+pub const COUNT_IN_BEATS: f32 = 4.0;
+
 /// Per-instrument pattern recorder and player.
 struct PatternPlayer {
     pattern: Pattern,
@@ -2508,7 +2511,7 @@ impl PatternPlayer {
             bpm: 120.0,
             pattern_tx: None,
             inst_index: 0,
-            count_in_beats: 4.0,
+            count_in_beats: COUNT_IN_BEATS,
             metronome_pos: 0,
             beat_length_samples: 0,
             click_phase: 0.0,
@@ -7698,6 +7701,32 @@ mod tests {
         let mut p = PatternPlayer::new(48000.0);
         p.set_length_beats(2.0);
         assert_eq!((p.length_beats, p.pattern.length_samples), (2.0, 0));
+    }
+
+    #[test]
+    fn a_recording_is_counted_in_for_count_in_beats_and_then_takes_the_length_of_the_pattern_at_the_tempo_there_is() {
+        let (mut graph, cmd_tx, _rr) = make_graph(1);
+        cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 120.0 }).unwrap();
+        cmd_tx.send(GraphCommand::SetPatternLength { inst: 0, beats: 2.0 }).unwrap();
+        cmd_tx.send(GraphCommand::SetPatternRecording { inst: 0, recording: true }).unwrap();
+        graph.drain_commands();
+        let player = &mut graph.instruments[0].pattern;
+        // (At 120 a minute and 48 kHz a beat is 24000 frames, which a thousand frames at a time come to exactly.)
+        let beat = 24_000;
+        let (mut recording_from, mut recording_to) = (None, None);
+        for block in 1..=200u64 {
+            player.process(&[], 1000, ScaleSetting::default());
+            let frames = block * 1000;
+            if player.recording && recording_from.is_none() {
+                recording_from = Some(frames);
+            }
+            if !player.recording && recording_from.is_some() && recording_to.is_none() {
+                recording_to = Some(frames);
+            }
+            assert_eq!(player.counting_in, recording_from.is_none(), "{frames} frames: it counts in until it records");
+        }
+        assert_eq!(recording_from, Some(COUNT_IN_BEATS as u64 * beat), "the count-in is COUNT_IN_BEATS beats long");
+        assert_eq!(recording_to, Some((COUNT_IN_BEATS as u64 + 2) * beat), "and the recording is the length of the pattern, 2 beats");
     }
 
     #[test]

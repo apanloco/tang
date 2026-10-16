@@ -416,6 +416,7 @@ mod typescript {
     use crate::app::intent::{Event, Gain, Intent, ModulatorField, PatternField, StampedEvent};
     use crate::app::layout::TelemetryLayout;
     use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN};
+    use crate::plugin::chain::COUNT_IN_BEATS;
     use crate::app::snapshot::Snapshot;
     use super::{ClientMessage, ServerMessage};
 
@@ -553,6 +554,8 @@ mod typescript {
                  export const MODULATOR_FIELD_SCALES: Record<ModulatorField, \"linear\" | \"log\"> = {{\n{}}};\n\n\
                  /** The lowest and the highest value of each setting of a pattern: what the controller clamps to (`PatternField::range`); a switch is 0 or 1. */\n\
                  export const PATTERN_FIELD_RANGES: Record<PatternField, readonly [number, number]> = {{\n{}}};\n\n\
+                 /** How many beats of the metronome a recording is counted in with, before it takes the length of the pattern (`COUNT_IN_BEATS`). */\n\
+                 export const PATTERN_COUNT_IN_BEATS = {COUNT_IN_BEATS};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
                  /** The slowest and the fastest tempo, in beats a minute: what the controller holds a tempo to (`BPM_MIN`, `BPM_MAX`). */\n\
