@@ -1804,9 +1804,12 @@ stays there: after a note the built-in filter put out a constant of 2e-38 to 5e-
 type and the cutoff; the bandpass and the notch, and the ladder and the MS-20 at cutoff 0.9,
 ran down to zero), the same for the 70 seconds it was watched, so that a scope never read
 exactly zero (f160: the browser test of the scope failed four runs of twelve on it, a side
-effect of f149's flush). The filter lets go of each of its states that is under `TAIL_FLOOR`
-(1e-20, −400 dB) at the end of every block, so that a tail runs down by its own arithmetic,
-far above the numbers it stops at, and then is zero
+effect of f149's flush: through the tracer's filter, with the flush 12 of 15 places of the LFO
+at which a key is let go left a tail that did not end in 8 seconds, and without it none did;
+a filter at a constant cutoff had stalled without it too, at the denormal numbers, 1e-45 to
+3e-42, for the 30 seconds it was watched). The filter lets go of each of its states that is
+under `TAIL_FLOOR` (1e-20, −400 dB) at the end of every block, so that a tail runs down by its
+own arithmetic, far above the numbers it stops at, and then is zero
 (`a_note_through_a_filter_of_each_type_and_cutoff_ends_in_silence_after_it_is_let_go`). The
 built-in delay and reverb, at their defaults, ran down to zero within 100 seconds (watched
 for ten minutes); a plugin of another make has what it has.
