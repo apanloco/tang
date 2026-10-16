@@ -9,7 +9,6 @@ import { Editor, refusal } from "../client/editor";
 import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
 import { NoteHolds } from "../client/holds";
-import type { NoteSink } from "../client/keyboard";
 import { Notices } from "../client/notices";
 import { Reveals } from "../client/reveals";
 
@@ -24,7 +23,7 @@ interface Services {
   /** What the page has added and wants shown: the canvas moves to it. */
   reveals: Reveals;
   /** Where the notes the page plays go: the client, with a count of who holds each note (the keys of the computer, a pointer on the piano). */
-  notes: NoteSink;
+  notes: NoteHolds;
 }
 
 const ServicesContext = createContext<Services | null>(null);
@@ -82,7 +81,7 @@ export function useEditor(): Editor {
 }
 
 /** Where a view that plays notes sends them: whoever else plays shares it, so that a note two of them hold ends when both let go. */
-export function useNotes(): NoteSink {
+export function useNotes(): NoteHolds {
   return useServices().notes;
 }
 

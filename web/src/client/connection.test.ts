@@ -2947,6 +2947,34 @@ describe("telemetry", () => {
     await until(() => (peak() ?? 1) < 0.001, "the meter to fall");
   });
 
+  test("a panic ends the notes of every client, not only those of the one that sent it, and the master's meter falls with them", async () => {
+    const time = clock();
+    const server = new MockServer({ ...fast, clock: time.now });
+    const client = await open(server, { telemetry: ["meters"] });
+    const other = await open(server);
+    const peak = (): number | undefined => client.telemetry.value("meters", MASTER, { type: "audioIn" }, "peak");
+    client.noteOn(60, 100);
+    other.noteOn(64, 100);
+    await until(() => server.heldNotes.size === 2, "both notes");
+    await until(() => (peak() ?? 0) > 0.3, "the meter to rise");
+    client.panic();
+    await until(() => server.heldNotes.size === 0, "the notes to end");
+    expect(server.received).toContainEqual({ type: "panic" });
+    time.set(2); // two seconds on, the peak has fallen by 80 dB
+    await until(() => (peak() ?? 1) < 0.001, "the meter to fall");
+  });
+
+  test("a panic is not sent before the server has said hello, as a note is not", async () => {
+    const server = new MockServer();
+    const client = connect(server);
+    client.panic();
+    client.noteOn(60);
+    await until(() => client.state.status === "open", "the session");
+    client.noteOn(62);
+    await until(() => server.heldNotes.has(62), "the note after hello");
+    expect(server.received.map((message) => message.type)).toEqual(["subscribe", "noteOn"]);
+  });
+
   test("notes end with the connection that held them", async () => {
     const server = new MockServer();
     const client = await open(server);

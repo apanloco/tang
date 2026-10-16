@@ -48,6 +48,9 @@ pub enum ClientMessage {
     /// A note, straight to the audio thread (it does not pass the controller).
     NoteOn { note: u8, velocity: u8 },
     NoteOff { note: u8 },
+    /// Let go of everything that sounds (`NoteInput::panic`): the pedal up, every note that is held ended, and all notes off and all sound off on every channel. Not only the
+    /// notes this client holds: a hung note is as likely to be a key of the terminal's or a hardware keyboard's, and it is what the button is for.
+    Panic,
 }
 
 /// What the server sends, as a text frame of JSON (telemetry goes as binary
@@ -240,6 +243,7 @@ mod message_tests {
             (ClientMessage::Probes { nodes: vec![] }, json!({"type": "probes", "nodes": []})),
             (ClientMessage::NoteOn { note: 60, velocity: 100 }, json!({"type": "noteOn", "note": 60, "velocity": 100})),
             (ClientMessage::NoteOff { note: 60 }, json!({"type": "noteOff", "note": 60})),
+            (ClientMessage::Panic, json!({"type": "panic"})),
         ]
     }
 

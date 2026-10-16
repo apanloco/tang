@@ -1,11 +1,12 @@
 // The choice of the piano's scale and the lock that drops the notes outside it. Both are the session's (the TUI sets them
 // too): a choice shows at once and until the answer is in, and after it what the session has, which is what was asked for
-// unless it was refused (and the page says why).
+// unless it was refused (and the page says why). And the panic, which is nobody's choice but a way out: it lets go of every note
+// that sounds, the page's and everyone else's, and changes nothing in the session.
 import { useRef, useState } from "react";
 
 import { SCALE_KINDS, SCALE_ROOTS } from "../../protocol";
 import type { PianoMeta } from "../../protocol";
-import { useEditor } from "../ClientProvider";
+import { useEditor, useNotes } from "../ClientProvider";
 
 /** A root and a kind of scale: what the two choices of the picker say, and what is asked for when one of them is changed. */
 interface Choice {
@@ -88,11 +89,29 @@ function LockButton({ locked }: { locked: boolean }) {
   );
 }
 
+/** Every note that sounds is let go of, whoever plays it: a note that hangs (a key whose release was lost, a plugin that did not hear it) is ended by this and nothing else. */
+function PanicButton() {
+  const notes = useNotes();
+  return (
+    <button
+      type="button"
+      className="tang-piano__panic"
+      title="Let go of every note that sounds, from any keyboard: the pedal goes up, every note that is held ends, and all notes off and all sound off go to every channel. It changes nothing in the session."
+      onClick={() => {
+        notes.panic();
+      }}
+    >
+      Panic
+    </button>
+  );
+}
+
 export function PianoBar({ piano }: { piano: PianoMeta }) {
   return (
     <div className="tang-piano__bar">
       <ScalePicker piano={piano} />
       <LockButton locked={piano.locked} />
+      <PanicButton />
     </div>
   );
 }

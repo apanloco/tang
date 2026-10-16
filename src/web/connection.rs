@@ -225,6 +225,16 @@ impl Connection {
                 self.held &= !(1u128 << note);
                 Flow::Continue
             }
+            // Never dropped for being too fast, as an end is not: it is what a person does when a note hangs, and every one of them is let go of, the server's and not only
+            // this connection's. What this connection held is let go of with the rest (closing it ends none of them a second time).
+            ClientMessage::Panic => {
+                let lost = self.notes.panic();
+                if lost > 0 {
+                    log::warn!("Panic: the channel to the audio thread was full, and {lost} messages were lost");
+                }
+                self.held = 0;
+                Flow::Continue
+            }
         }
     }
 
@@ -489,6 +499,25 @@ mod tests {
         rig.send(json!({"type": "noteOff", "note": 62}));
         rig.send(json!({"type": "noteOff", "note": 64}));
         assert_eq!(rig.played(), [(0, [0x80, 60, 0]), (0, [0x80, 62, 0]), (0, [0x80, 64, 0])]);
+    }
+
+    #[test]
+    fn a_panic_lets_go_of_every_note_the_server_holds_not_only_this_connections_and_is_not_held_back_by_the_rate() {
+        let mut rig = rig_with(open_policy(), Limits { burst: 2.0, per_second: 1.0 }, 64);
+        // Two notes are held by this connection (the burst), and one by something else (a key of the terminal, a hardware keyboard).
+        rig.send(json!({"type": "noteOn", "note": 60, "velocity": 100}));
+        rig.send(json!({"type": "noteOn", "note": 62, "velocity": 100}));
+        rig.held.note_on(72);
+        rig.played();
+        // The rate is spent, and a panic is sent all the same.
+        rig.send(json!({"type": "panic"}));
+        let played = rig.played();
+        assert_eq!(played.len(), 16 + 3 + 16 + 16, "pedal up on every channel, the three held notes ended, all notes off and all sound off on every channel");
+        assert_eq!(played[16..19], [(0, [0x80, 60, 0]), (0, [0x80, 62, 0]), (0, [0x80, 72, 0])], "the notes held, the lowest first");
+        assert!(rig.held.held().is_empty(), "and nothing is held after it");
+        // What the connection held is let go of: closing it ends no note a second time.
+        rig.conn.close();
+        assert!(rig.played().is_empty(), "the notes it had are ended already");
     }
 
     // -- Subscribing and telemetry --

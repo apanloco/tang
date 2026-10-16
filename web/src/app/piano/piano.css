@@ -62,6 +62,29 @@
   outline-offset: 1px;
 }
 
+/* The panic: a button like the lock, at the right end of the bar, that is red when it is meant (the pointer or the focus is on it). */
+.tang-piano__panic {
+  margin-left: auto;
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tang-piano__panic:hover,
+.tang-piano__panic:focus-visible {
+  border-color: var(--tang-danger);
+  color: var(--tang-danger);
+}
+
+.tang-piano__panic:focus-visible {
+  outline: 2px solid var(--tang-danger);
+  outline-offset: 1px;
+}
+
 /* The keys: white ones side by side, black ones over them at the boundaries (by how many white keys come before: `--after`). */
 .tang-piano__keys {
   --whites: 7;

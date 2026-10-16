@@ -594,6 +594,56 @@ describe("a pointer on the keys", () => {
   });
 });
 
+describe("the panic button", () => {
+  const connectOther = async (server: MockServer): Promise<Client> => {
+    const other = new Client({ transport: server.transport, reconnectDelay: () => 60_000 });
+    other.start();
+    await waitFor(() => {
+      expect(other.state.status).toBe("open");
+    });
+    return other;
+  };
+
+  test("is a button in the bar that sends a panic, and the notes that the server holds end, whoever holds them", async () => {
+    widthIs(630);
+    const { server } = await rig(<Page />);
+    const other = await connectOther(server);
+    const button = await screen.findByRole("button", { name: "Panic" });
+    other.noteOn(60);
+    await waitFor(() => {
+      expect(server.heldNotes.has(60)).toBe(true);
+    });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(server.received).toContainEqual({ type: "panic" });
+    });
+    expect(server.heldNotes.size).toBe(0);
+    other.stop();
+  });
+
+  test("lets go of the notes that the page holds too: the key that is let go of after it ends nothing, and can be played again", async () => {
+    widthIs(630);
+    const { server } = await rig(<Page />);
+    const button = await screen.findByRole("button", { name: "Panic" });
+    // Z is the C of note 48.
+    fireEvent.keyDown(document.body, { code: "KeyZ" });
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 48"]);
+    });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(server.received).toContainEqual({ type: "panic" });
+    });
+    fireEvent.keyUp(document.body, { code: "KeyZ" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(played(server)).toEqual(["on 48"]);
+    fireEvent.keyDown(document.body, { code: "KeyZ" });
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 48", "on 48"]);
+    });
+  });
+});
+
 describe("the keys that are held", () => {
   const connectOther = async (server: MockServer): Promise<Client> => {
     const other = new Client({ transport: server.transport, reconnectDelay: () => 60_000 });

@@ -3,13 +3,27 @@
 // go, so that letting go of the mouse does not end a note a key is still holding.
 import type { NoteSink } from "./keyboard";
 
+/** Where the notes go, and the panic that lets go of all of them: the client is one. */
+export interface PanicSink extends NoteSink {
+  panic(): void;
+}
+
 /** A sink of notes that counts how many players hold each note, and passes on only the first note-on and the last note-off. */
 export class NoteHolds implements NoteSink {
-  readonly #sink: NoteSink;
+  readonly #sink: PanicSink;
   readonly #holds = new Map<number, number>();
 
-  constructor(sink: NoteSink) {
+  constructor(sink: PanicSink) {
     this.#sink = sink;
+  }
+
+  /**
+   * Let go of everything: the sink is told to (the server ends every note it holds, this page's and the others'), and no player holds anything any more. A player that lets go after it ends
+   * nothing, and the next to take a note is the first, as it would be if the note had never been held.
+   */
+  panic(): void {
+    this.#holds.clear();
+    this.#sink.panic();
   }
 
   noteOn(note: number, velocity?: number): void {

@@ -1272,6 +1272,10 @@ export class MockServer {
       case "noteOff":
         connection.notes.delete(message.note);
         break;
+      // (The server's own notes, every connection's: what the real server lets go of is what its held-notes bits say, whoever set them.)
+      case "panic":
+        for (const each of this.#connections) each.notes.clear();
+        break;
     }
   }
 

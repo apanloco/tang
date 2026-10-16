@@ -339,6 +339,26 @@ depth = 0.5
     }
 
     #[tokio::test]
+    async fn a_panic_from_the_browser_reaches_the_engine_as_the_messages_that_let_go_of_everything_and_closing_the_tab_ends_nothing_again() {
+        let live = live();
+        let (mut a, _) = subscribed(&live).await;
+        tell(&mut a, json!({"type": "noteOn", "note": 64, "velocity": 90})).await;
+        assert_eq!(live.engine.midi_rx.recv_timeout(Duration::from_secs(5)).unwrap(), (0, [0x90, 64, 90]));
+        tell(&mut a, json!({"type": "panic"})).await;
+        let mut heard = Vec::new();
+        while heard.len() < 16 + 1 + 16 + 16 {
+            heard.push(live.engine.midi_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+        assert_eq!(heard[0], (0, [0xB0, 64, 0]), "the pedal goes up first");
+        assert_eq!(heard[16], (0, [0x80, 64, 0]), "then the note that is held");
+        assert_eq!(heard[17], (0, [0xB0, 123, 0]), "then all notes off");
+        assert_eq!(heard[33], (0, [0xB0, 120, 0]), "then all sound off");
+        // The tab is closed after it: the note was ended, and is not ended a second time.
+        drop(a);
+        assert!(live.engine.midi_rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing more was sent");
+    }
+
+    #[tokio::test]
     async fn a_recording_the_audio_thread_reports_reaches_the_browsers_as_a_snapshot() {
         let live = live();
         let (mut a, snapshot) = subscribed(&live).await;

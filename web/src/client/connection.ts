@@ -280,6 +280,11 @@ export class Client {
     if (this.#live) this.#send({ type: "noteOff", note });
   }
 
+  /** Let go of everything that sounds, whoever plays it: the server ends every note it holds, with the pedal and all notes off and all sound off on every channel. */
+  panic(): void {
+    if (this.#live) this.#send({ type: "panic" });
+  }
+
   /** The server has said hello and the connection is up. */
   get #live(): boolean {
     const { status } = this.store.getState();
