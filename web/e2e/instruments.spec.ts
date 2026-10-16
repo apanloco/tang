@@ -56,7 +56,14 @@ test("an instrument is put in a lane from its menu, another is added in a lane o
   // A lane of its own is on the canvas, called by a number now that there are two, with the buttons of a lane. It was added below
   // the first, which fills the screen: the canvas has moved to show it.
   await expect(lane("Oscillator 2")).toBeVisible();
-  await expect(lane("Oscillator 2")).toBeInViewport({ ratio: 1 });
+  // (All of it is in the window: the page is asked for the box, since the ratio of the viewport is a 32-bit number that is a hair short of 1 when the canvas is zoomed to a fraction.)
+  await expect
+    .poll(async () => {
+      const box = await lane("Oscillator 2").boundingBox();
+      const window = page.viewportSize();
+      return box !== null && window !== null && box.x >= 0 && box.y >= 0 && box.x + box.width <= window.width && box.y + box.height <= window.height;
+    })
+    .toBe(true);
   await expect(page.getByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add an effect to Oscillator 2" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add an instrument" })).toBeFocused();

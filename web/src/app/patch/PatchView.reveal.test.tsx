@@ -144,8 +144,8 @@ describe("showing a node the page added", () => {
   });
 
   test("judges a node against the view the canvas is moving to, and not against the one it is passing on the way", async () => {
-    // (The canvas looks at the first lane, all of it, and the lane that is added below is out of the view.)
-    canvas.view = { x: 60, y: -100, zoom: 1 };
+    // (The canvas looks at the first lane, all of it (it is 488 px tall, from 354: the instrument has its pattern under its controls), and the lane that is added below is out of the view.)
+    canvas.view = { x: 60, y: -250, zoom: 1 };
     vi.useFakeTimers({ toFake: ["Date"] });
     const { server, show, rectFor } = await open();
     addLane(server);
@@ -177,7 +177,7 @@ describe("showing a node the page added", () => {
   });
 
   test("judges a node against where the canvas is looking once the move has had its time: a person who moved it since is not moved back", async () => {
-    canvas.view = { x: 60, y: -100, zoom: 1 };
+    canvas.view = { x: 60, y: -250, zoom: 1 };
     vi.useFakeTimers({ toFake: ["Date"] });
     const { server, show, rectFor } = await open();
     addLane(server);

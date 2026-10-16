@@ -18,6 +18,7 @@ import {
   NODE_SCOPE_HEIGHT,
   NODE_WIDTH,
   nodeHeight,
+  PATTERN_HEIGHT,
   ROW_GAP,
   sameStructure,
   toFlow,
@@ -161,6 +162,16 @@ function tall(graph: Graph, id: NodeId): number {
   const cables = graph.edges.filter((edge) => edge.kind === "modulation" && edge.from.node === id).length;
   return nodeHeight(nodeOf(graph, id), 0, cables);
 }
+
+describe("the height of a node", () => {
+  test("is as much more for a lane as its pattern under its controls is, which no other node has: a lane and an effect with as many rows of controls differ by it", () => {
+    // (A lane has the volume, the keys and the group beside its knobs, an effect only its mix: one knob and three make a row of four each.)
+    expect(controlCount(nodeOf(twoLanes, 1), 1)).toBe(controlCount(nodeOf(twoLanes, 2), 3));
+    expect(nodeHeight(nodeOf(twoLanes, 1), 1) - nodeHeight(nodeOf(twoLanes, 2), 3)).toBe(PATTERN_HEIGHT);
+    // A group, and a modulator, have none (a group has two controls and no pattern).
+    expect(nodeHeight(nodeOf(grouped, 10), 0)).toBe(nodeHeight(nodeOf(twoLanes, 2), 3));
+  });
+});
 
 describe("the nodes on the canvas", () => {
   test("are one for each node of the session, named by its id, of its kind, all the same width, which can be moved and not taken out", () => {
@@ -1031,8 +1042,8 @@ describe("a layout that remembers where it put the nodes", () => {
 
   test("a row that comes to be over a short node of the row above and a taller one next to it is moved below both, one after the other", () => {
     const before = toFlow(twoLanes);
-    // (The first instrument grows by a row, and the effect after it by three: the row below is over the first at once, and over the second when it is below the first.)
-    const grown = grow(grow(twoLanes, 1, 5), 2, 12);
+    // (The first instrument grows, and the effect after it by much more: the row below is over the first at once, and over the second when it is below the first.)
+    const grown = grow(grow(twoLanes, 1, 5), 2, 24);
     const after = toFlow(grown, before.places);
     expect(overlapsIn(grown, after)).toBeNull();
     const bottomOf = (id: NodeId): number => at(after, id).position.y + nodeHeight(nodeOf(grown, id), at(after, id).data.knobs.length);
@@ -1619,6 +1630,22 @@ describe("a node that shows a scope", () => {
     expect(at(toFlow(tall, closed.places, new Set([1])), 3).position.y - at(closed, 3).position.y).toBe(NODE_SCOPE_HEIGHT);
   });
 
+  test("puts the group below a group that has nothing in it and shows a scope, when they would be over each other, in the layout and where the places are remembered", () => {
+    // (Two groups with nothing in them, so that they are as near as they can be whatever the lanes are: the second a row's gap below the first, which a scope on the first is in the way of.)
+    const groups: Graph = { nodes: [group(10), group(20), master], edges: [audio(10, MASTER), audio(20, MASTER)] };
+    const closed = toFlow(groups);
+    expect(at(closed, 20).position.y - at(closed, 10).position.y).toBe(nodeHeight(nodeOf(groups, 10), 0) + ROW_GAP);
+    expect(NODE_SCOPE_HEIGHT, "the scope is in the way, which is what this is about").toBeGreaterThan(ROW_GAP);
+    const wanted = at(closed, 10).position.y + nodeHeight(nodeOf(groups, 10), 0, 0, true) + ROW_GAP;
+    const fromNothing = toFlow(groups, undefined, new Set([10]));
+    const remembered = toFlow(groups, closed.places, new Set([10]));
+    for (const open of [fromNothing, remembered]) {
+      expect(overlapsIn(groups, open)).toBeNull();
+      expect(at(open, 10).position).toEqual(at(closed, 10).position);
+      expect(at(open, 20).position.y).toBe(wanted);
+    }
+  });
+
   test("puts the group below a group that shows a scope further down when they would be over each other, in the layout and where the places are remembered", () => {
     // (Two lanes of one row of controls each, so that the groups are as near as they can be: the second a row's gap below the first, which a scope on the first is in the way of.)
     const groups: Graph = {
@@ -1626,8 +1653,10 @@ describe("a node that shows a scope", () => {
       edges: [member(1, 10), member(2, 20), audio(10, MASTER), audio(20, MASTER)],
     };
     const closed = toFlow(groups);
-    expect(at(closed, 20).position.y - at(closed, 10).position.y).toBe(nodeHeight(nodeOf(groups, 10), 0) + ROW_GAP);
-    expect(NODE_SCOPE_HEIGHT, "the scope is in the way, which is what this is about").toBeGreaterThan(ROW_GAP);
+    // (A row is as tall as the tallest node in it, which is the lane: it has its pattern under its controls.)
+    const row = Math.max(nodeHeight(nodeOf(groups, 10), 0), nodeHeight(nodeOf(groups, 1), 1));
+    expect(at(closed, 20).position.y - at(closed, 10).position.y).toBe(row + ROW_GAP);
+    expect(nodeHeight(nodeOf(groups, 10), 0, 0, true), "the scope is in the way, which is what this is about").toBeGreaterThan(row);
     const wanted = at(closed, 10).position.y + nodeHeight(nodeOf(groups, 10), 0, 0, true) + ROW_GAP;
     const fromNothing = toFlow(groups, undefined, new Set([10]));
     const remembered = toFlow(groups, closed.places, new Set([10]));

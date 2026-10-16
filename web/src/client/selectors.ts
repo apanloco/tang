@@ -1,7 +1,7 @@
 // Reading the session in the client's store: the parts of it a view shows, found by the id of
 // the node they are of. Pure, on the state, so that a view can hand one to a store hook.
 import { WAVEFORMS } from "../protocol";
-import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, Preset } from "../protocol";
+import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, PatternInfo, Preset } from "../protocol";
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
 import { displayNames } from "./names";
@@ -102,6 +102,12 @@ export function sameParamList(a: ParamList | null, b: ParamList | null): boolean
 export function rangeOf(state: ClientState, id: NodeId): NoteRange | null | undefined {
   const node = nodeById(state, id);
   return node?.kind === "instrument" ? node.range : undefined;
+}
+
+/** The pattern of a lane: null while it has none, undefined if the node is not a lane (an empty lane is one). */
+export function patternOf(state: ClientState, id: NodeId): PatternInfo | null | undefined {
+  const node = nodeById(state, id);
+  return node?.kind === "instrument" ? node.pattern : undefined;
 }
 
 /** The group a lane is in and the groups there are, for the lane's choice of group: each by the name the canvas gives it. */

@@ -25,6 +25,7 @@ import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./descr
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
+import { PatternCell } from "./PatternCell";
 import type { CableRow, PatchNode } from "./toFlow";
 
 /**
@@ -402,6 +403,8 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         <RangeCell node={data.node} name={data.name} />
         <GroupCell node={data.node} name={data.name} />
       </div>
+      {/* (A node that is no lane has no pattern: the cell draws nothing for it.) */}
+      <PatternCell node={data.node} name={data.name} />
       {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
     </div>
   );

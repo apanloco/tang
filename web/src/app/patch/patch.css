@@ -252,6 +252,116 @@
   outline-offset: 1px;
 }
 
+/* The pattern of a lane, under its controls: record, clear and the length; the three switches; and a line that says what it is. It is as tall whatever it shows (`PATTERN_HEIGHT` in toFlow.ts). */
+.tang-pattern {
+  display: grid;
+  gap: var(--tang-space-2);
+  padding: var(--tang-space-2) var(--tang-space-3) var(--tang-space-3);
+  border-top: 1px solid var(--tang-border);
+}
+
+.tang-pattern__row {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  min-width: 0;
+  height: 22px;
+}
+
+.tang-pattern__button {
+  box-sizing: border-box;
+  height: 22px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 20px var(--tang-font);
+  cursor: pointer;
+}
+
+.tang-pattern__button:hover:not(:disabled) {
+  border-color: var(--tang-instrument);
+}
+
+.tang-pattern__button:focus-visible,
+.tang-pattern__field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-pattern__button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The record button: a red dot, and while a recording goes on, red all through, pulsing (a person who has looked away can see it). */
+.tang-pattern__record {
+  min-width: 70px;
+}
+
+.tang-pattern__record:not(.tang-pattern__record--going) {
+  color: var(--tang-danger);
+}
+
+.tang-pattern__record--going {
+  border-color: var(--tang-danger);
+  background: var(--tang-danger);
+  color: var(--tang-bg);
+  animation: tang-pattern-pulse 1s ease-in-out infinite;
+}
+
+@keyframes tang-pattern-pulse {
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tang-pattern__record--going {
+    animation: none;
+  }
+}
+
+/* A switch that is on is lit as a mode is. */
+.tang-pattern__switch[aria-pressed="true"] {
+  border-color: var(--tang-instrument);
+  color: var(--tang-instrument);
+}
+
+.tang-pattern__length {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+  margin-left: auto;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-pattern__field {
+  box-sizing: border-box;
+  width: 3em;
+  height: 22px;
+  padding: 0 var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-mono);
+  text-align: right;
+}
+
+.tang-pattern__line {
+  margin: 0;
+  height: 16px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
 /* Ports: where a cable starts or ends. */
 .tang-port {
   width: 10px;

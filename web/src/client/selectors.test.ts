@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
+import { cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameGroupChoices, sameParamList, sameRemoval, sameStages } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -388,6 +388,43 @@ describe("finding the keys of a lane", () => {
     expect(rangeOf(reach, 0)).toBeUndefined(); // a group
     expect(rangeOf(state, 424242)).toBeUndefined();
     expect(rangeOf(stateOf(null), oscillator.id)).toBeUndefined();
+  });
+});
+
+
+describe("the pattern of a lane", () => {
+  const pattern = { recording: false, enabled: true, looping: false, inKey: true, lengthBeats: 2, bpm: 90, notes: 1 };
+  const withPattern = (): Snapshot => {
+    const snapshot = structuredClone(tracerSnapshot);
+    const node = snapshot.graph.nodes.find((n) => n.id === oscillator.id);
+    if (node?.kind !== "instrument") throw new Error("no lane");
+    node.pattern = pattern;
+    return snapshot;
+  };
+
+  test("is none for a lane that has none, and what it is for one that has", () => {
+    expect(patternOf(state, oscillator.id)).toBeNull();
+    expect(patternOf(stateOf(withPattern()), oscillator.id)).toEqual(pattern);
+  });
+
+  test("is there for a lane that has no instrument", () => {
+    expect(patternOf(stateOf(reachFixture.snapshot), 14)).toBeNull();
+  });
+
+  test("is not there for what is not a lane, a node that is not there, or before there is a session", () => {
+    expect(patternOf(state, filter.id)).toBeUndefined();
+    expect(patternOf(state, lfo.id)).toBeUndefined();
+    expect(patternOf(state, MASTER)).toBeUndefined();
+    expect(patternOf(stateOf(reachFixture.snapshot), 0)).toBeUndefined(); // a group
+    expect(patternOf(state, 424242)).toBeUndefined();
+    expect(patternOf(stateOf(null), oscillator.id)).toBeUndefined();
+  });
+
+  test("is the same object while the pattern is: a view that selects it does not draw again for what is not its own", () => {
+    const first = patternOf(stateOf(withPattern()), oscillator.id);
+    expect(first).toEqual(pattern);
+    const snapshot = withPattern();
+    expect(patternOf(stateOf(snapshot), oscillator.id)).toBe(patternOf(stateOf(snapshot), oscillator.id));
   });
 });
 

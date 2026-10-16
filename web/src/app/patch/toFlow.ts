@@ -50,6 +50,8 @@ export const ENVELOPE_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + ENVELOPE_EXTRA;
 export const MASTER_HEIGHT = 228;
 /** A scope that an instrument, an effect or a group shows below its controls, with the choices of its view and its time: this much taller (measured in a browser: 157). */
 export const NODE_SCOPE_HEIGHT = 157;
+/** The pattern of a lane, under its controls (record, clear and its length, its three switches, the line that says what it is), as tall whatever it shows: a lane's node is this much taller (measured in a browser: 97, in both states of the record button). */
+export const PATTERN_HEIGHT = 97;
 /** A cable that a modulator's node lists is a row this tall (the style says so: `.tang-cable-row`)... */
 export const CABLE_ROW_HEIGHT = 20;
 /** ...and the list has this much room before it, as much as the rest of what is in the body of the node (`.tang-node__body`'s gap). */
@@ -221,7 +223,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false)
       return MASTER_HEIGHT;
     default: {
       const rows = Math.max(1, Math.ceil(controlCount(node, knobs) / CONTROLS_PER_ROW));
-      return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (scope ? NODE_SCOPE_HEIGHT : 0);
+      return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (node.kind === "instrument" ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
     }
   }
 }
