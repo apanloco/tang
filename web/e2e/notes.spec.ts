@@ -161,6 +161,6 @@ test("a key of the page's piano plays harder lower down, which a velocity contro
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(dotFor(resonanceFor(31)).x, 0);
   await pressAt(0.9);
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(dotFor(resonanceFor(116)).x, 0);
-  // (The two are about three pixels apart on the knob: a hard note is not a soft one.)
-  expect(Math.abs(dotFor(resonanceFor(116)).x - dotFor(resonanceFor(31)).x)).toBeGreaterThan(2);
+  // (The two dots are about 25 pixels apart on the knob, and the dot is looked for to half a pixel: a velocity of two steps more or less would be seen. A hard note is not a soft one.)
+  expect(Math.abs(dotFor(resonanceFor(116)).x - dotFor(resonanceFor(31)).x)).toBeGreaterThan(20);
 });
