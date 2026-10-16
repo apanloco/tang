@@ -359,8 +359,10 @@ An LFO's `rate` below 0 is refused in the same way, wherever the LFO is (a lane'
 session's modulator nested in an effect): `instrument[0].modulator[0].rate is below 0 (-1): an LFO cannot go
 round backwards` (`session::reject_backwards_lfos`; the phase of such an LFO counts down from 0 and its
 shapes leave the -1 to 1 that a cable's law assumes: a saw from -3 to -1, f147). Zero is an LFO that
-stands still, a rate above the knob's 50 Hz is the file's to say, and a modulator that is not an LFO (an
-envelope, a MIDI control, a macro) has no rate that is read.
+stands still, a rate above the knob's 50 Hz is the file's to say, a step sequencer's rate is refused in the same way
+(`a step sequencer cannot go round backwards`), and a modulator that is neither (an envelope, a MIDI control, a macro)
+has no rate that is read. The steps of a step sequencer are refused when the list is empty or has more than 16
+(`instrument[0].modulator[0].steps has 17 values: a step sequencer has 16 steps at most`, `session::reject_bad_steps`).
 
 ### Modulator fields
 
@@ -370,8 +372,8 @@ instrument itself or any of its effects — plus sibling modulators. Each target
 names the chain `slot` it lands on: `0` (default) = the instrument, `1..N` =
 the effects in order. In the TUI, modulators appear as the instrument's "mod
 rack" (magenta), and the target selector lists every parameter in the chain
-labelled by plugin (e.g. `Filter: cutoff`). Four source types are supported
-(LFO, ADSR envelope, MIDI learn, macro):
+labelled by plugin (e.g. `Filter: cutoff`). Five source types are supported
+(LFO, ADSR envelope, MIDI learn, macro, step sequencer):
 
 (Groups can also own modulators — same source types and cross-mod, but their
 targets span the whole group: any member instrument, the group's bus effects,
@@ -495,6 +497,42 @@ is `~ Macro 0.50 → Filter: cutoff (50%)` in the tree and `Macro` (its value, t
 TODO: no cable drives a macro's value (`ModulatorField::Value` has no port, and the pane's `m` on its row opens nothing): a MIDI control bound to a macro would turn it
 from a hardware knob, which is what a macro is for on a stage.
 
+**Step sequencer modulator** (sixteen bars that go by at a rate, and drive what they have cables to by the value of the bar they are at):
+
+```toml
+[[instrument.modulator]]
+type = "steps"
+steps = [0.0, 0.5, -0.25, 1.0]  # 1 to 16 values, each -1 … 1 (held to it when loaded); a step that is not given is 0; no list at all is a staircase
+length = 4                      # how many steps are in use, 1 … 16 (default: as many as `steps` has values, sixteen if none)
+rate = 8.0                      # steps a second (default 8: an LFO's default is 1, so `rate` is an option in the file's types and the loader says which)
+glide = 0.0                     # 0 … 1: the part of each step, at its end, that goes to the value of the next (default 0: hard steps)
+retrigger = true                # whether a note starts it again at its first step (default true)
+
+[[instrument.modulator.target]]
+param = "cutoff"
+depth = 0.5
+```
+
+A step sequencer goes through its first `length` steps at `rate` steps a second, and round again, and is the value of the step it is at (or, in the last `glide` of a
+step, on its way to the next one's; the last goes to the first, and not to a step that is not in use): `steps_output` in `plugin::chain`, which the page's `stepsOutput`
+(`client/steps.ts`) is pinned to by a table the engine writes (`fixtures/steps.json`). It drives as an LFO does, bipolar: `base + value * depth * range`. A new one
+(TUI `m`: "New step sequencer"; the page's "+" menu on a lane or a group and the `~` menu of a knob; `AddModulator` / `Modulate` with the kind `steps`) is a staircase from
+-1 to 0.875 in sixteen steps, at 8 Hz, with no glide, restarted by a note. Its rate can be driven by a cable (the rate has the port an LFO's has: `ModulatorField::Rate`);
+the glide, the length and the retrigger are a person's, and no cable ends at them. The steps past the length keep their values, so that a sequence that is shortened and
+lengthened again is as it was. With `retrigger` on any note-on with a velocity, on any channel, puts it at its first step (a lane's: the notes the lane takes; a group's: the
+notes of any of its members). Where it is, the step as the whole part of the number and how far into it as the fraction, is published for a playhead in a telemetry slot
+of its own after its output's (`ModulatorSlot::position`, `SlotKind::ModPosition`, `SetModulatorPosition`: `None` if the slots had run out, and then the page has no playhead).
+All sixteen values are one intent, `SetSteps { node, values }`, told as `StepsSet` (each held to -1..1; a list that is not sixteen long, a value that is not a number and a node
+that is no step sequencer are refused, with nothing changed), so that a stroke across the bars is one step of the history ("set steps", `Key::Steps`); the engine is given
+them with the length, the glide and the retrigger in one command (`SetModulatorSteps`, `controller::steps_command`) and the rate by the LFO's (`SetModulatorRate`). In the tree
+it is `~ Steps 16 8.0Hz → Filter: cutoff (50%)` (the steps in use, and the rate), and its pane, "Step sequencer", has the rate, the glide, the length, a retrigger row (off and on, a list), a row for each of the sixteen steps
+(`Left` / `Right` move one by 5% of its range, and `Enter` takes a number, held to -1 … 1) and the targets. The page draws it as a node with four controls and sixteen bars with a playhead
+(`ui/StepBars.tsx`, see "Web UI").
+TODO: the terminal's pane does not dim the steps past the length and has no playhead (the page has both): its rows are text, and the terminal does not read the telemetry.
+TODO: a step is held to a hundredth when it is painted on the page, which is a hundredth of the range of what it drives at depth 1 (a detune of ±24 semitones is 0.48 of a
+semitone, and 0.12 at depth 0.25: out of tune by twelve cents; the terminal's `Enter` takes a number to as many places as a person types): a sequencer for a melody wants a
+grid of semitones for what it drives, and a rate that follows the tempo (see `docs/web-ui.md`, step 57, "Limits").
+
 Modulators are applied once per audio buffer; the base value tracks the
 user's set value automatically. Target `depth` runs **−1.0 … 1.0**: negative
 depth flips the sign of the offset below, inverting the direction (an LFO in
@@ -550,6 +588,8 @@ TODO: a key control is centred on middle C and spans five octaves for everyone
 of the cable, and the centre cannot be moved.
 - **Macro** (unipolar, additive around the base, as a CC): `base + value * depth *
   range` — rest (0) = no change, full = +depth·range above the base.
+- **Step sequencer** (bipolar, additive around the base, as an LFO): `base + value *
+  depth * range`, where `value` is the step it is at, -1 to 1 (see "Step sequencer modulator").
 
 Envelope behavior: note-on retriggers from Attack phase (continuing from the
 current level — a quick retrigger does not restart from silence). Release
@@ -1007,7 +1047,7 @@ numeric `params` values (the index into the label list).
 | `v` | Set the output volume of the selected instrument or group (host-side gain, opens value popup) |
 | `M` / `S` | Mute / solo the lane or group the selected entry is of, as the intents `SetMute` and `SetSolo` do (see "Mute and solo"): the instrument, its effects, modulators and pattern are the lane's, a group's header, bus effects and modulators are the group's. They toggle, are steps of the history, and show at the end of the line as `[mute]`, `[solo]` or both (`▦ Pad  [mute]`, `♪ Oscillator  [Built-in]  [mute] [solo]`); the action bar of an instrument and of a group has them (and, so that the bar fits 120 columns, `replace`, `vol` and `add fx`) |
 | `a` | Add effect to the selected instrument, or — on a group/group-effect node — to the group's bus chain (opens effect selector popup). New effects default to 0.5 mix (half-wet); `builtin:filter` defaults to 1.0 (fully wet, since a half-wet filter barely filters) |
-| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO / envelope / macro) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod; a new modulator and its cable are one step of the history, and a modulator that drives the parameter already is not attached again) |
+| `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO / envelope / macro / velocity / key / step sequencer) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod; a new modulator and its cable are one step of the history, and a modulator that drives the parameter already is not attached again) |
 | `l` | Param focus: MIDI-learn the selected parameter — arms a MIDI modulator and binds the next incoming CC / pitch-bend / aftertouch to it (works on plugin params and modulator fields) |
 | `x` | Set the dry/wet mix of the selected effect or group bus effect (host-side blend, opens value popup) |
 | `g` | Assign the selected instrument to a submix group (new / existing / ungroup, opens popup) |
@@ -1164,8 +1204,10 @@ group-modulator params.
 ### Modulate popup
 
 Opened by `m` while focused on a parameter (the parameter-centric way to wire
-modulation). Lists: "New LFO", "New envelope", "New macro", "New velocity", "New key"
-(a velocity or a key follows the notes the lane plays: see "MIDI-learn modulator"),
+modulation). Lists: "New LFO", "New envelope", "New macro", "New velocity", "New key",
+"New step sequencer" (a velocity or a key follows the notes the lane plays: see
+"MIDI-learn modulator"; a step sequencer is last, so that what a person's fingers
+know does not move),
 and each existing modulator in the relevant rack ("attach → …"; `NEW_MODULATORS`,
 `src/tui/mod.rs`, is the table of the new ones). It works on:
 - an **instrument/effect** param → operates on the instrument's **lane** rack;
@@ -1318,8 +1360,10 @@ parameter's range, an enum rounded to a whole value), `SetGain` (instrument
 volume, effect and bus-effect mix, group volume and pan, each with its own
 range), `LoadPreset` (by preset id; the values the preset set are mirrored
 into the model), `SetModulatorField` (an LFO's rate and waveform, an envelope's
-stage or a macro's value, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
-waveform rounded to its index: sine, triangle, saw, square, random, smooth), `SetEdgeDepth` (a
+stage, a macro's value or a step sequencer's rate, glide, length and retrigger, in a lane's modulator or a group's, clamped to `ModulatorField::range`, a
+waveform rounded to its index: sine, triangle, saw, square, random, smooth, and a length and a retrigger to a whole number), `SetSteps { node, values }` (all sixteen steps of a
+step sequencer, each held to -1..1, told as `StepsSet` with what it has; refused for a list that is not sixteen long, a value that is not a number and a node that is no
+step sequencer), `SetEdgeDepth` (a
 modulation cable's depth, -1 to 1) and `SetRange { node, range }` (the notes a lane takes, both
 ends included, or every note for none; refused for a node that is no lane, a note above 127 and a low
 note above the high one; the TUI's `R` popup asks it too), `SetMute { node, muted }` and `SetSolo { node, solo }` (a lane or a group muted or soloed, see "Mute and solo"; refused
@@ -1358,7 +1402,7 @@ already, a link that leads nowhere included, unless it is the session's own (tha
 `session::save_new`), not by a look at the path first; the TUI's `Ctrl+Shift+S` asks it too, and so does the page's "Save as…"), `Undo` and `Redo` (the history, below); and eleven that change
 the structure: `RemoveEdge`
 (a cable, with the cables that drive its depth), `AddModulator { parent, kind }` (an LFO,
-an envelope, a macro at rest, an armed MIDI control, or (step 52) a velocity or a key control, bound at once, at the end of the rack of a lane, `parent` being the
+an envelope, a macro at rest, an armed MIDI control, or (step 52) a velocity or a key control, bound at once, or (step 57) a step sequencer (a staircase), at the end of the rack of a lane, `parent` being the
 lane's node, or of a group), `AddModEdge { modulator, to }` (a cable at depth
 `NEW_CABLE_DEPTH`, 0.5, to a plugin parameter or to a modulator's setting: where a cable to a
 parameter may end is `SessionModel::param_targets`, a lane's modulator reaching its lane's
@@ -1424,7 +1468,7 @@ pointing at the same plugins, as the audio thread does). What the TUI still edit
 step 50: `r`, `d` and `Ctrl+R` on a pattern and the rows of its pane ask `SetRecording`, `ClearPattern` and `SetPatternField` now, which are no step of the history.)
 
 **Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
-step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetMute` and `SetSolo` (in the words `mute the lane of Oscillator`,
+step for each change that has an inverse, `SetParam`, `SetGain`, `SetModulatorField`, `SetSteps` (all the steps of a step sequencer are one thing: a stroke across the bars is one step, "set steps"), `SetEdgeDepth`, `SetRange`, `SetMute` and `SetSolo` (in the words `mute the lane of Oscillator`,
 `unmute Pad`, `solo an empty lane`: never merged with the one before them, since a toggle that is merged with its opposite leaves a step that does nothing, and none for what changes nothing), `SetNodeUi`,
 `SetPinned`, `RenameGroup`, `SetScale`, `SetLocked`, `SetBpm`, `MoveEffect`, and what is added: `AddEffect` (a lane's or a bus's), `AddInstrument`,
 `AddModulator`, `AddModEdge`, `Modulate`, `AddGroup` (of lanes that are in no group) and `SetLaneGroup` (unless the lane's group drives it), made of the
@@ -1539,14 +1583,14 @@ leaves less for it to find. (Compiled with the `web` feature or in tests only.)
 The audio thread publishes what it is doing through `telemetry::Telemetry`
 (`src/telemetry.rs`, `docs/web-ui.md` §6): a fixed array of atomic cells, one
 *slot* each, that any thread can read. The model owns the `SlotAllocator` and
-gives a slot to each modulator (its output this buffer), to each modulator target
+gives a slot to each modulator (its output this buffer) and a second to each step sequencer (where it is: the step as the whole part of the number, how far into it as the fraction), to each modulator target
 (the value that what it drives was set to this buffer, after modulation: a plugin
 parameter, or a setting of a modulator, which the engine publishes as the last write to it) and two to each
 lane and group (a peak and a clip count; the master's are slots 0 and 1,
-`telemetry::MASTER`). They sit on the model's nodes (`ModulatorSlot.output`,
+`telemetry::MASTER`). They sit on the model's nodes (`ModulatorSlot.output`, `ModulatorSlot.position`,
 `ModTargetSlot.effective`, `InstrumentNode.meter`, `GroupNode.meter`) and reach
-the engine in the `ModTarget` or in `SetModulatorOutput` / `SetLaneMeter` /
-`SetGroupMeter`. A slot is never reused, and a session that runs out of them just
+the engine in the `ModTarget` or in `SetModulatorOutput` / `SetModulatorPosition` / `SetLaneMeter` /
+`SetGroupMeter` (`modulator_slot_commands` makes the first two, the output's first). A slot is never reused, and a session that runs out of them just
 has items without telemetry. The audio thread only stores (relaxed atomics, no
 allocation, no lock). Lanes, groups, modulators and targets are created through
 the loader or `Controller::{add_lane, add_group, add_modulator, add_target}`,
@@ -2010,7 +2054,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   model, the engine handles and the plugin catalog. Front-ends call
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
-  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetEdgeDepth`, `SetRange`, `SetMute`, `SetSolo`, `RemoveEdge`,
+  `SetGain`, `LoadPreset`, `SetModulatorField`, `SetSteps`, `SetEdgeDepth`, `SetRange`, `SetMute`, `SetSolo`, `RemoveEdge`,
   `AddModulator`, `AddModEdge`, `Modulate`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
   `SetNodeUi`, `SetPinned`, `SetBpm`, `SetRecording`, `ClearPattern`, `SetPatternField`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
   or a group), `Save`, `SaveAs`, `Undo` and `Redo` (see "Session state"). Effects are
@@ -2233,6 +2277,15 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   asked again on every connection: D47), which nodes show one is the viewer's own (`PatchView` holds the set, `scopes.ts` hands it to the nodes; it is not saved, not sent and not in the history), and the layout makes room for it
   (`toFlow(graph, remembered, scopes)`: `canScope`, `PatchNodeData.scope`, `NODE_SCOPE_HEIGHT`, 157 as a browser draws it; `useLayout(graph, scopes)`). The mock engine has eight rings and sounds like the notes that are held. A scope that is opened where it cannot be seen moves the canvas to the node, as a node that the page added does (`Reveals`, once the layout has the scope). The badge of a node
   (what kind of plugin it is) is under its name in the header, in small type, so that the name has what the buttons leave.
+  Step 57 added the step sequencer (see "Step sequencer modulator"): a node with its rate (a knob with a port, as an LFO's), its glide and its length (knobs with none: `ModulatorValueControl`), its
+  retrigger (a choice of off and on: `RetriggerControl`) and, above the trace of what it puts out, sixteen bars (`ui/StepBars.tsx`: a `role="slider"` for each step, a bar up from the middle for a value above nothing and
+  down for one below it, the steps past the length dimmed, a playhead on the step the engine says it is at that is written to the DOM on the frames and never rendered). A stroke across them paints them
+  (`client/stepbars.ts`: `columnAt`, `stepValueAt`, `paintTo`, `playheadStep`; a pointer that jumps bars sets the ones between along the line, a bar has the value at its height to a hundredth and nothing near the
+  middle), a key moves one (up and down by a fiftieth, the page keys by a tenth, Home and End to the ends; the arrows that go across move the focus from bar to bar, and one bar is in the tab order) and a double
+  click puts one back to nothing; a stroke is all the sixteen values a frame at a time (`Drive.steps`, a `Control` of a list: `Control` is generic, and takes which values it will send), shows what it has painted until the
+  server has answered and is one step of the history. It is made from the "+" menu of a lane or a group ("Step sequencer") and the `~` menu of a knob ("New step sequencer"), and its node is
+  `STEPS_NODE_HEIGHT` tall (an LFO's and the bars and the gap above them: 321 against 249 as a browser draws them). The mock engine has the same sequencer (`stepsPlace`, the engine's wrap at the length, which
+  puts out the position the playhead follows; a note starts it again when it is set to). `e2e/steps.spec.ts` runs the node, a stroke that is one Undo and its steps in the saved file, and a note that puts the playhead on the first step.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
