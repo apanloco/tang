@@ -5664,6 +5664,44 @@
                 "stepCount": 0,
                 "unit": null,
                 "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
               }
             ],
             "pinned": [],
@@ -6120,6 +6158,44 @@
                 "stepCount": 0,
                 "unit": null,
                 "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
               }
             ],
             "pinned": [],

@@ -604,7 +604,7 @@ mod tests {
         assert_eq!((plugin.id.as_str(), plugin.format.as_str(), plugin.is_instrument), ("builtin:osc", "Built-in", true));
         assert_eq!((plugin.presets.len(), plugin.current_preset.as_deref()), (0, None));
         let names: Vec<&str> = plugin.params.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift"]);
+        assert_eq!(names, ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend"]);
     }
 
     #[test]

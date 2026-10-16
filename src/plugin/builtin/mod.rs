@@ -169,6 +169,8 @@ mod tests {
                 row("sub", None, &["Voice"], 0),
                 row("sync", None, &["Voice"], 0),
                 row("drift", None, &["Voice"], 0),
+                row("velocity", None, &["Performance"], 0),
+                row("bend", None, &["Performance"], 8),
             ]
         );
     }

@@ -95,6 +95,14 @@ pub struct Oscillator {
     fm: f32,
     fm_smoothed: f32,
     fm_ratio: usize,
+    /// How much of the level of a note is its velocity (0 is none: every note is as loud as the next, as it has always been, and 1 is all of it), and the place in `BEND_RANGES`
+    /// of how far the pitch wheel bends a note.
+    velocity: f32,
+    bend_range: usize,
+    /// Where each MIDI channel's pitch wheel is, -1 to 1 (the master channel's, the first, bends every note; one of the others, the notes that began on that channel: MPE), and
+    /// whether the sustain pedal is down.
+    bend: [f32; 16],
+    pedal: bool,
     /// The level of the sine an octave below the note, 0 to 1 (and the value that it is smoothed to, as the volume is), how many times as fast as the note the synced oscillator goes round, 1 to 8, and how far the pitches wander, 0 to 1.
     sub: f32,
     sub_smoothed: f32,
@@ -134,6 +142,14 @@ struct Voice {
     drift_rng: u32,
     /// What each oscillator's frequency is multiplied by for its drift (1 when there is none), made once a block.
     drift_ratio: [f32; MAX_UNISON],
+    /// The MIDI channel that the note began on (the wheel of that channel bends it, as well as the master channel's), how hard it was hit, 0 to 1, and the part of that it sounds
+    /// at now (it goes to it over a few milliseconds when the key is hit again while it sounds), whether the key is down (a key that is up under the pedal is held by the pedal),
+    /// and whether it is let go of fast (all sound off).
+    channel: u8,
+    velocity: f32,
+    velocity_now: f32,
+    held: bool,
+    fast: bool,
     /// Where the random numbers of each oscillator of the note are (xorshift32, never 0): they are the voice's, so that what it sounds like does not depend on which of the
     /// voices of a chord is summed first. Only the noise uses them.
     noise: [u32; MAX_UNISON],
@@ -157,6 +173,11 @@ impl Voice {
             drift_clock: DRIFT_HOLD_SEC,
             drift_rng: noise_seed(begun, MAX_UNISON),
             drift_ratio: [1.0; MAX_UNISON],
+            channel: 0,
+            velocity: 1.0,
+            velocity_now: 1.0,
+            held: true,
+            fast: false,
             noise: std::array::from_fn(|u| noise_seed(begun, u)),
             amp: 0.0,
             state: VoiceState::Attack,
@@ -196,8 +217,16 @@ fn noise_seed(begun: u32, u: usize) -> u32 {
     if x == 0 { 0x2545_F491 } else { x }
 }
 
-// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio, sub, sync, drift
-pub const PARAM_COUNT: usize = 17;
+// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio, sub, sync, drift, velocity, bend
+pub const PARAM_COUNT: usize = 19;
+
+/// What the pitch wheel's full deflection is, in semitones each way, for each place in the `bend` list, and the place that the oscillator starts at (two semitones: what a
+/// keyboard's wheel is by default). The list is a choice and not a number so that the useful ranges (the 48 that an MPE controller's notes bend by) are a step apart.
+const BEND_RANGES: [f32; 9] = [0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 12.0, 24.0, 48.0];
+const BEND_DEFAULT: usize = 2;
+
+/// How long a note takes to be let go of by all sound off, whatever the release is set to.
+const FAST_RELEASE_SEC: f32 = 0.005;
 
 /// The hard sync's `sync`: how many times as fast as the note the oscillator that is synced to it goes round, from one (which is no sync at all) to eight.
 const SYNC_MIN: f32 = 1.0;
@@ -274,6 +303,10 @@ impl Oscillator {
             fm: 0.0,
             fm_smoothed: 0.0,
             fm_ratio: FM_DEFAULT_RATIO,
+            velocity: 0.0,
+            bend_range: BEND_DEFAULT,
+            bend: [0.0; 16],
+            pedal: false,
             sub: 0.0,
             sub_smoothed: 0.0,
             sync: SYNC_MIN,
@@ -335,6 +368,7 @@ impl Plugin for Oscillator {
         let decay_inc =
             (1.0 - self.sustain) / (self.decay.max(MIN_RAMP_SEC) * self.sample_rate);
         let release_inc = 1.0 / (self.release.max(MIN_RAMP_SEC) * self.sample_rate);
+        let fast_release_inc = 1.0 / (FAST_RELEASE_SEC * self.sample_rate);
         let volume_alpha = 1.0 - (-1.0 / (VOLUME_SMOOTH_SEC * self.sample_rate)).exp();
 
         // The oscillators of a unison, spread evenly from -1 to 1 (a single one is in the middle): each one's pitch is that many `spread`s from
@@ -402,23 +436,67 @@ impl Plugin for Oscillator {
             while event_idx < midi_events.len() && midi_events[event_idx].0 as usize <= frame {
                 let [status, note, velocity] = midi_events[event_idx].1;
                 let msg_type = status & 0xF0;
+                let channel = status & 0x0F;
                 match msg_type {
                     0x90 if velocity > 0 => {
                         // Note-on: attack from current amp (0 if new voice, or
                         // the partially-released level on retrigger — avoids a
-                        // click when re-hitting a still-decaying note).
+                        // click when re-hitting a still-decaying note). The key is
+                        // down, on this channel and as hard as it was hit.
+                        let hit = f32::from(velocity) / 127.0;
                         self.voices
                             .entry(note)
-                            .and_modify(|v| v.state = VoiceState::Attack)
+                            .and_modify(|v| {
+                                v.state = VoiceState::Attack;
+                                v.held = true;
+                                v.fast = false;
+                                v.channel = channel;
+                                v.velocity = hit;
+                            })
                             .or_insert_with(|| {
                                 self.voices_begun = self.voices_begun.wrapping_add(1);
-                                Voice::new(self.voices_begun)
+                                let mut voice = Voice::new(self.voices_begun);
+                                voice.channel = channel;
+                                voice.velocity = hit;
+                                voice.velocity_now = hit;
+                                voice
                             });
                     }
                     0x80 | 0x90 => {
+                        // The key is up; under the pedal the note goes on sounding until the pedal goes up.
                         if let Some(v) = self.voices.get_mut(&note) {
-                            v.state = VoiceState::Release;
+                            v.held = false;
+                            if !self.pedal {
+                                v.state = VoiceState::Release;
+                            }
                         }
+                    }
+                    // A controller: `note` is its number and `velocity` its value.
+                    0xB0 => match note {
+                        // The sustain pedal, down from 64 up. Going up lets go of the notes that only it was holding.
+                        64 => {
+                            let down = velocity >= 64;
+                            if self.pedal && !down {
+                                for v in self.voices.values_mut().filter(|v| !v.held) {
+                                    v.state = VoiceState::Release;
+                                }
+                            }
+                            self.pedal = down;
+                        }
+                        // All notes off (123) and all sound off (120): every note is let go of, the pedal's included; the first with the envelope's release, the second quickly.
+                        123 | 120 => {
+                            for v in self.voices.values_mut() {
+                                v.held = false;
+                                v.state = VoiceState::Release;
+                                v.fast |= note == 120;
+                            }
+                        }
+                        _ => {}
+                    },
+                    // The pitch wheel of a channel: `note` is the low 7 bits of a number from 0 to 16383 and `velocity` the high 7; the middle of it, 8192, is no bend.
+                    0xE0 => {
+                        let raw = i32::from(note) | (i32::from(velocity) << 7);
+                        self.bend[usize::from(channel)] = ((raw - 8192) as f32 / 8192.0).clamp(-1.0, 1.0);
                     }
                     _ => {}
                 }
@@ -452,14 +530,19 @@ impl Plugin for Oscillator {
                         voice.amp = self.sustain;
                     }
                     VoiceState::Release => {
-                        voice.amp -= release_inc;
+                        voice.amp -= if voice.fast { fast_release_inc } else { release_inc };
                         if voice.amp < 0.0 {
                             voice.amp = 0.0;
                         }
                     }
                 }
 
-                let freq = Self::note_to_freq(note, self.detune);
+                // The wheels that bend this note: the master channel's, and its own channel's if it is not the master.
+                let wheel = self.bend[0] + if voice.channel > 0 { self.bend[usize::from(voice.channel)] } else { 0.0 };
+                let freq = Self::note_to_freq(note, self.detune + wheel * BEND_RANGES[self.bend_range.min(BEND_RANGES.len() - 1)]);
+                // How loud it sounds: the envelope, and as much of the velocity as is asked for (none of it is 1 exactly).
+                voice.velocity_now += (voice.velocity - voice.velocity_now) * volume_alpha;
+                let level = voice.amp * ((1.0 - self.velocity) + self.velocity * voice.velocity_now);
                 for u in 0..voices {
                     // (The sound is read where the synced oscillator is, which with a sync of one is where the note's cycle is.)
                     let read = voice.sync_phases[u];
@@ -472,7 +555,7 @@ impl Plugin for Oscillator {
                         }
                         waveform => waveform.sample(read, pulse),
                     };
-                    let heard = raw * voice.amp * VOICE_GAIN;
+                    let heard = raw * level * VOICE_GAIN;
                     sample_l += heard * gains[u].0;
                     sample_r += heard * gains[u].1;
                     let step = freq * ratios[u] * voice.drift_ratio[u] / self.sample_rate;
@@ -491,7 +574,7 @@ impl Plugin for Oscillator {
                 }
                 // The sub: a sine an octave below the note, in the middle, which is its own and not one of the unison's (so that the unison does not bring it down).
                 if sub_level > 0.0 {
-                    let sub_heard = sub_level * (TAU * voice.sub_phase).sin() * voice.amp * VOICE_GAIN;
+                    let sub_heard = sub_level * (TAU * voice.sub_phase).sin() * level * VOICE_GAIN;
                     sample_l += sub_heard;
                     sample_r += sub_heard;
                 }
@@ -687,6 +770,26 @@ impl Plugin for Oscillator {
                 group: vec!["Voice".into()],
                 ..Default::default()
             },
+            ParameterInfo {
+                index: 17,
+                name: "velocity".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                group: vec!["Performance".into()],
+                ..Default::default()
+            },
+            ParameterInfo {
+                index: 18,
+                name: "bend".into(),
+                min: 0.0,
+                max: (BEND_RANGES.len() - 1) as f32,
+                default: BEND_DEFAULT as f32,
+                labels: Some(BEND_RANGES.iter().map(|range| if *range == 0.0 { "off".to_string() } else { format!("±{range}") }).collect()),
+                step_count: (BEND_RANGES.len() - 1) as u32,
+                group: vec!["Performance".into()],
+                ..Default::default()
+            },
         ]
     }
 
@@ -709,6 +812,8 @@ impl Plugin for Oscillator {
             14 => Some(self.sub),
             15 => Some(self.sync),
             16 => Some(self.drift),
+            17 => Some(self.velocity),
+            18 => Some(self.bend_range as f32),
             _ => None,
         }
     }
@@ -782,6 +887,14 @@ impl Plugin for Oscillator {
             }
             16 => {
                 self.drift = value.clamp(0.0, 1.0);
+                Ok(())
+            }
+            17 => {
+                self.velocity = value.clamp(0.0, 1.0);
+                Ok(())
+            }
+            18 => {
+                self.bend_range = (value.round() as i64).clamp(0, BEND_RANGES.len() as i64 - 1) as usize;
                 Ok(())
             }
             _ => anyhow::bail!("no parameter with index {index}"),
@@ -867,7 +980,7 @@ mod tests {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift"]
+            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend"]
         );
         // The waveform parameter is an enum, and so is the unison (a choice of how many).
         assert!(params[0].labels.is_some() && params[8].labels.is_some());
@@ -1635,7 +1748,7 @@ mod tests {
         assert_eq!(osc.get_parameter(FM), Some(1.0), "held to its top");
         osc.set_parameter(FM, -1.0).unwrap();
         assert_eq!(osc.get_parameter(FM), Some(0.0), "and to its bottom");
-        assert!(osc.set_parameter(17, 0.0).is_err() && osc.get_parameter(17).is_none(), "no parameter after them");
+        assert!(osc.set_parameter(19, 0.0).is_err() && osc.get_parameter(19).is_none(), "no parameter after them");
     }
 
     #[test]
@@ -2115,6 +2228,259 @@ mod tests {
         assert_eq!(allocations, 0);
     }
 
+    // ---------------------------------------------------------------------------------------------------------------------------------
+    // The keyboard: velocity, the pitch wheel, the sustain pedal and all notes off
+    // ---------------------------------------------------------------------------------------------------------------------------------
+
+    /// The parameters of the keyboard, by their places.
+    const VELOCITY: u32 = 17;
+    const BEND: u32 = 18;
+
+    fn note_on(note: u8, velocity: u8, channel: u8) -> (u64, [u8; 3]) {
+        (0, [0x90 | channel, note, velocity])
+    }
+
+    fn note_off(note: u8) -> (u64, [u8; 3]) {
+        (0, [0x80, note, 0])
+    }
+
+    /// The pitch wheel of a channel at `raw` (0 to 16383, 8192 the middle).
+    fn wheel(raw: u16, channel: u8) -> (u64, [u8; 3]) {
+        (0, [0xE0 | channel, (raw & 0x7F) as u8, (raw >> 7) as u8])
+    }
+
+    fn pedal(value: u8) -> (u64, [u8; 3]) {
+        (0, [0xB0, 64, value])
+    }
+
+    /// The loudest of the last `n` frames of `x`.
+    fn loudest_of_the_last(x: &[f32], n: usize) -> f32 {
+        x[x.len() - n..].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    }
+
+    /// The amplitude of the sine of 480 Hz that the key 69 makes when it is hit at `velocity` (it is 0.25 at full level), with a velocity of `sensitivity`.
+    fn level_of(sensitivity: f32, velocity: u8) -> f32 {
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(VELOCITY, sensitivity).unwrap();
+        let out = render(&mut osc, &[note_on(69, velocity, 0)], 7200);
+        magnitude(&out[2400..], 480.0)
+    }
+
+    #[test]
+    fn velocity_does_nothing_at_its_default() {
+        let (soft, loud) = (level_of(0.0, 20), level_of(0.0, 127));
+        assert!((soft - 0.25).abs() < 0.005 && (loud - 0.25).abs() < 0.005, "{soft} and {loud}");
+        // ... and bit for bit: two notes of different velocities are the same sound.
+        let (mut a, mut b) = (hundred_frame_cycle(Waveform::Saw), hundred_frame_cycle(Waveform::Saw));
+        assert_eq!(render(&mut a, &[note_on(69, 20, 0)], 2400), render(&mut b, &[note_on(69, 127, 0)], 2400));
+    }
+
+    #[test]
+    fn a_velocity_of_all_makes_the_level_the_velocity_over_127() {
+        for velocity in [1u8, 32, 64, 100, 127] {
+            let got = level_of(1.0, velocity);
+            let wanted = 0.25 * f32::from(velocity) / 127.0;
+            assert!((got - wanted).abs() < 0.003, "velocity {velocity}: {got} for {wanted}");
+        }
+    }
+
+    #[test]
+    fn half_a_velocity_is_half_way_between_none_of_it_and_all_of_it() {
+        let wanted = 0.25 * (0.5 + 0.5 * 64.0 / 127.0);
+        assert!((level_of(0.5, 64) - wanted).abs() < 0.003, "{} for {wanted}", level_of(0.5, 64));
+    }
+
+    #[test]
+    fn the_sub_is_as_loud_as_the_velocity_says_too() {
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(VELOCITY, 1.0).unwrap();
+        osc.set_parameter(SUB, 1.0).unwrap();
+        let out = render(&mut osc, &[note_on(69, 64, 0)], 7200);
+        let wanted = 0.25 * 64.0 / 127.0;
+        assert!((magnitude(&out[2400..], 480.0) - wanted).abs() < 0.003 && (magnitude(&out[2400..], 240.0) - wanted).abs() < 0.003);
+    }
+
+    #[test]
+    fn a_key_that_is_hit_again_goes_to_the_new_velocity_and_does_not_jump_to_it() {
+        let mut osc = hundred_frame_cycle(Waveform::Sine);
+        osc.set_parameter(VELOCITY, 1.0).unwrap();
+        render(&mut osc, &[note_on(69, 127, 0)], 4800);
+        let again = render(&mut osc, &[note_on(69, 32, 0)], 4800);
+        // The first cycle of it is still well over the level of the new velocity (0.0625: a jump to it would be that at once) ...
+        assert!(again[..100].iter().fold(0.0f32, |m, v| m.max(v.abs())) > 0.15);
+        // ... and it has gone to it after the smoothing of the volume (5 ms is 240 frames; 2400 are ten time constants).
+        assert!((magnitude(&again[2400..], 480.0) - 0.25 * 32.0 / 127.0).abs() < 0.004);
+    }
+
+    /// How far from the pitch of the key 69 (440 Hz, a sine) the sound is after `events`, in cents, with the wheel's range at the place `range` of the list.
+    fn bent_cents(range: f32, events: &[(u64, [u8; 3])]) -> f32 {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(BEND, range).unwrap();
+        let out = render(&mut osc, events, 9600);
+        cents_from_440(&out[4800..])
+    }
+
+    #[test]
+    fn the_wheel_bends_every_note_by_the_range_and_the_middle_bends_none() {
+        let key = note_on(69, 100, 0);
+        // A range of twelve semitones (the seventh place): the top of the wheel is all but the last step of it, and the bottom all of it.
+        assert!((bent_cents(6.0, &[key, wheel(16383, 0)]) - 1199.85).abs() < 1.0, "{}", bent_cents(6.0, &[key, wheel(16383, 0)]));
+        assert!((bent_cents(6.0, &[key, wheel(0, 0)]) + 1200.0).abs() < 1.0);
+        assert!(bent_cents(6.0, &[key, wheel(8192, 0)]).abs() < 0.5);
+        assert!(bent_cents(6.0, &[key]).abs() < 0.5);
+        // No range is no bend, and the range that it starts at is two semitones.
+        assert!(bent_cents(0.0, &[key, wheel(16383, 0)]).abs() < 0.5);
+        assert!((bent_cents(2.0, &[key, wheel(16383, 0)]) - 199.98).abs() < 0.5);
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        assert_eq!(osc.get_parameter(BEND), Some(2.0));
+        let out = render(&mut osc, &[key, wheel(16383, 0)], 9600);
+        assert!((cents_from_440(&out[4800..]) - 199.98).abs() < 0.5, "a wheel bends a sound that has not been told a range by two semitones");
+    }
+
+    #[test]
+    fn the_wheel_and_the_detune_add_up() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(1, 1.0).unwrap();
+        let out = render(&mut osc, &[note_on(69, 100, 0), wheel(16383, 0)], 9600);
+        assert!((cents_from_440(&out[4800..]) - 299.98).abs() < 0.6, "{}", cents_from_440(&out[4800..]));
+    }
+
+    #[test]
+    fn a_wheel_message_is_heard_at_its_frame_of_the_block() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(BEND, 6.0).unwrap();
+        let out = render(&mut osc, &[note_on(69, 100, 0), (4800, [0xE0, 0x7F, 0x7F])], 9600);
+        assert!(cents_from_440(&out[1000..4700]).abs() < 1.0, "before the message");
+        assert!((cents_from_440(&out[5200..9600]) - 1199.85).abs() < 1.5, "after it");
+    }
+
+    #[test]
+    fn a_member_channel_bends_the_notes_that_began_on_it_and_the_master_channel_bends_all_of_them() {
+        // Two keys an octave apart (440 Hz on the master channel and 880 Hz on the second), a range of twelve semitones.
+        let heard = |wheel_message: (u64, [u8; 3])| {
+            let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+            osc.set_parameter(BEND, 6.0).unwrap();
+            let out = render(&mut osc, &[note_on(69, 100, 0), note_on(81, 100, 1), wheel_message], 9600);
+            let settled = out[4800..].to_vec();
+            [440.0, 880.0, 1760.0].map(|hz| magnitude(&settled, hz))
+        };
+        // The wheel of the second channel at the top: the key on the master channel stays, the one on the second goes up an octave.
+        let on_the_member = heard(wheel(16383, 1));
+        assert!(on_the_member[0] > 0.2 && on_the_member[1] < 0.02 && on_the_member[2] > 0.2, "{on_the_member:?}");
+        // The wheel of the master channel: both go up an octave.
+        let on_the_master = heard(wheel(16383, 0));
+        assert!(on_the_master[0] < 0.02 && on_the_master[1] > 0.2 && on_the_master[2] > 0.2, "{on_the_master:?}");
+    }
+
+    #[test]
+    fn a_note_that_is_let_go_under_the_pedal_sounds_until_the_pedal_goes_up() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        let block = render(&mut osc, &[pedal(127), note_on(69, 100, 0), (2400, [0x80, 69, 0])], 9600);
+        assert!(loudest_of_the_last(&block, 480) > 0.2, "still sounding a tenth of a second after the key went up");
+        let block = render(&mut osc, &[pedal(0)], 4800);
+        assert!(loudest_of_the_last(&block, 480) < 1e-4 && osc.voices.is_empty(), "and let go of when the pedal goes up");
+    }
+
+    #[test]
+    fn a_note_that_was_let_go_before_the_pedal_went_down_is_not_held_by_it() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        // The key goes up at 2400 and the pedal down a hundred frames after, while the note dies away: it goes on dying.
+        let block = render(&mut osc, &[note_on(69, 100, 0), (2400, [0x80, 69, 0]), (2500, [0xB0, 64, 127])], 4800);
+        assert!(loudest_of_the_last(&block, 480) < 1e-4 && osc.voices.is_empty());
+    }
+
+    #[test]
+    fn a_pedal_that_goes_up_does_not_let_go_of_a_key_that_is_down() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        render(&mut osc, &[pedal(127), note_on(69, 100, 0)], 4800);
+        let block = render(&mut osc, &[pedal(0)], 4800);
+        assert!(loudest_of_the_last(&block, 480) > 0.2, "the key is down");
+        let block = render(&mut osc, &[note_off(69)], 4800);
+        assert!(loudest_of_the_last(&block, 480) < 1e-4 && osc.voices.is_empty(), "and it is let go of with the key");
+    }
+
+    #[test]
+    fn a_key_that_is_hit_again_under_the_pedal_is_a_key_that_is_down_again() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        // Hit, let go (held by the pedal) and hit again: it is a key that is down, and the pedal's going up does not let go of it.
+        let block = render(&mut osc, &[pedal(127), note_on(69, 100, 0), (1200, [0x80, 69, 0]), (2400, [0x90, 69, 100])], 4800);
+        assert!(loudest_of_the_last(&block, 480) > 0.2);
+        let block = render(&mut osc, &[pedal(0)], 4800);
+        assert!(loudest_of_the_last(&block, 480) > 0.2, "the pedal goes up and the key is down");
+        // Down again with the pedal, let go: held by the pedal, and let go of with it.
+        let block = render(&mut osc, &[pedal(127), note_off(69)], 4800);
+        assert!(loudest_of_the_last(&block, 480) > 0.2, "let go under the pedal");
+        let block = render(&mut osc, &[pedal(0)], 4800);
+        assert!(loudest_of_the_last(&block, 480) < 1e-4 && osc.voices.is_empty());
+    }
+
+    #[test]
+    fn a_pedal_is_down_from_64_up() {
+        for (value, held) in [(63u8, false), (64, true), (127, true), (0, false)] {
+            let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+            let block = render(&mut osc, &[pedal(value), note_on(69, 100, 0), (2400, [0x80, 69, 0])], 9600);
+            assert_eq!(loudest_of_the_last(&block, 480) > 0.2, held, "a pedal at {value}");
+        }
+    }
+
+    #[test]
+    fn all_notes_off_lets_go_of_every_note_under_the_pedal_too_and_all_sound_off_is_quicker() {
+        let keys = [pedal(127), note_on(60, 100, 0), note_on(64, 100, 0), note_on(67, 100, 0)];
+        let loudest = |x: &[f32]| x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        // The notes are let go of with the release of the envelope (12 ms): well on their way 5 ms after, and gone after a tenth of a second.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        render(&mut osc, &keys, 4800);
+        let block = render(&mut osc, &[(0, [0xB0, 123, 0])], 4800);
+        assert!(loudest(&block[200..300]) > 0.05, "the release of the envelope is not over at 4 to 6 ms: {}", loudest(&block[200..300]));
+        assert!(loudest_of_the_last(&block, 480) < 1e-4 && osc.voices.is_empty());
+        // All sound off is a release of 5 ms, whatever the envelope's: nothing is left after 300 frames.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        render(&mut osc, &keys, 4800);
+        let block = render(&mut osc, &[(0, [0xB0, 120, 0])], 4800);
+        assert!(loudest(&block[300..]) < 1e-3, "{}", loudest(&block[300..]));
+        assert!(osc.voices.is_empty());
+    }
+
+    #[test]
+    fn a_key_that_is_hit_again_after_all_sound_off_is_let_go_of_by_the_envelope_again() {
+        // All sound off, and the same key hit again 2 ms later, while the note is on its way down: it begins again, and when the key goes up (at 2400) it is let go of by the
+        // release of the envelope (12 ms, 576 frames): half of it is left 6 ms (288 frames) after, where the quick release of all sound off would have left nothing.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        render(&mut osc, &[note_on(69, 100, 0)], 4800);
+        let block = render(&mut osc, &[(0, [0xB0, 120, 0]), (100, [0x90, 69, 100]), (2400, [0x80, 69, 0])], 4800);
+        assert!(block[2400 + 280..2400 + 296].iter().fold(0.0f32, |m, v| m.max(v.abs())) > 0.05, "the release is the envelope's");
+    }
+
+    /// The numbers of a keyboard are made on the audio thread, which must not make a trip to the allocator.
+    #[test]
+    fn notes_with_velocity_a_wheel_a_pedal_and_all_notes_off_do_not_allocate() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+        osc.set_parameter(VELOCITY, 1.0).unwrap();
+        osc.set_parameter(BEND, 8.0).unwrap();
+        let mut left = vec![0.0f32; 256];
+        let mut right = vec![0.0f32; 256];
+        let on: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x90 | (note % 16), note, 1 + note])).collect();
+        let off: Vec<(u64, [u8; 3])> = (0..128u8).map(|note| (0, [0x80, note, 0])).collect();
+        let controls: Vec<(u64, [u8; 3])> = vec![pedal(127), wheel(12000, 0), wheel(4000, 3), (0, [0xB0, 74, 99]), pedal(0), (0, [0xB0, 123, 0]), (0, [0xB0, 120, 0])];
+        let mut block = |osc: &mut Oscillator, events: &[(u64, [u8; 3])]| {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            osc.process(events, &[], &mut out).unwrap();
+        };
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..2 {
+                block(&mut osc, &on);
+                block(&mut osc, &controls);
+                block(&mut osc, &on);
+                block(&mut osc, &off);
+                for _ in 0..8 {
+                    block(&mut osc, &[]);
+                }
+            }
+        });
+        assert!(osc.voices.is_empty(), "the notes have ended");
+        assert_eq!(allocations, 0);
+    }
+
     /// What a parameter says of itself: name, unit, lowest, highest, default and steps.
     type Described<'a> = (&'a str, Option<&'a str>, f32, f32, f32, u32);
 
@@ -2125,10 +2491,11 @@ mod tests {
         let described: Vec<Described> = parameters[8..].iter().map(|p| (p.name.as_str(), p.unit.as_deref(), p.min, p.max, p.default, p.step_count)).collect();
         assert_eq!(
             described,
-            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15), ("sub", None, 0.0, 1.0, 0.0, 0), ("sync", None, 1.0, 8.0, 1.0, 0), ("drift", None, 0.0, 1.0, 0.0, 0)]
+            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15), ("sub", None, 0.0, 1.0, 0.0, 0), ("sync", None, 1.0, 8.0, 1.0, 0), ("drift", None, 0.0, 1.0, 0.0, 0), ("velocity", None, 0.0, 1.0, 0.0, 0), ("bend", None, 0.0, 8.0, 2.0, 8)]
         );
-        // (A unison is a choice of one to seven voices, named by how many.)
+        // (A unison is a choice of one to seven voices, named by how many; the bend a choice of how far the wheel goes.)
         assert_eq!(parameters[8].labels.as_deref().map(|l| l.join(" ")), Some("1 2 3 4 5 6 7".to_string()));
+        assert_eq!(parameters[18].labels.as_deref().map(|l| l.join(" ")), Some("off ±1 ±2 ±3 ±5 ±7 ±12 ±24 ±48".to_string()));
         for (index, p) in parameters.iter().enumerate().skip(8) {
             assert_eq!(osc.get_parameter(index as u32), Some(p.default), "{}", p.name);
             osc.set_parameter(index as u32, p.max + 100.0).unwrap();
@@ -2136,11 +2503,13 @@ mod tests {
             osc.set_parameter(index as u32, p.min - 100.0).unwrap();
             assert_eq!(osc.get_parameter(index as u32), Some(p.min), "{} held to its bottom", p.name);
         }
-        assert!(osc.set_parameter(17, 0.0).is_err() && osc.get_parameter(17).is_none());
-        // A unison is a whole number of voices: a value between two is the nearer.
+        assert!(osc.set_parameter(19, 0.0).is_err() && osc.get_parameter(19).is_none());
+        // A unison is a whole number of voices, and a bend a place in its list: a value between two is the nearer.
         for (set, got) in [(2.4, 2.0), (2.6, 3.0), (0.4, 0.0), (5.6, 6.0)] {
             osc.set_parameter(8, set).unwrap();
             assert_eq!(osc.get_parameter(8), Some(got), "{set}");
+            osc.set_parameter(18, set).unwrap();
+            assert_eq!(osc.get_parameter(18), Some(got), "bend {set}");
         }
     }
 }

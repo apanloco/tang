@@ -5,24 +5,24 @@ source: src/tui/golden_tests.rs
 ── text ──
 (1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Oscillator ────────────────────────────────────────────────────────┐
-│♪ Oscillator  [Built-in]                        ││  waveform                 ◂ sine ▸                                 │
-│├ fx Filter  [Built-in]                         ││  detune                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
-│├ fx Reverb  [Built-in]                         ││  volume                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
-│╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Rever││  attack                   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
-│                                                ││  decay                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.10│
-│                                                ││  sustain                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
-│                                                ││  release                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.01│
-│                                                ││  pan                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
-│                                                ││  unison                   ◂ 1 ▸                                    │
-│                                                ││  spread                   ▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.15│
-│                                                ││  width                    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.50│
-│                                                ││  pulse                    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.50│
-│                                                ││  fm                       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
-│                                                ││  fm_ratio                 ◂ ×1 ▸                                   │
-│                                                ││  sub                      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
-│                                                ││  sync                     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     1.00│
-│                                                ││  drift                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
-│                                                ││                                                                    │
+│♪ Oscillator  [Built-in]                        ││  waveform                 ◂ sine ▸                                ┃│
+│├ fx Filter  [Built-in]                         ││  detune                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.0┃│
+│├ fx Reverb  [Built-in]                         ││  volume                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.0┃│
+│╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Rever││  attack                   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  decay                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.1┃│
+│                                                ││  sustain                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.0┃│
+│                                                ││  release                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  pan                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  unison                   ◂ 1 ▸                                   ┃│
+│                                                ││  spread                   ▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.1┃│
+│                                                ││  width                    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.5┃│
+│                                                ││  pulse                    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.5┃│
+│                                                ││  fm                       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  fm_ratio                 ◂ ×1 ▸                                  ┃│
+│                                                ││  sub                      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  sync                     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     1.0┃│
+│                                                ││  drift                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  velocity                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0││
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
 ┌ Scope: Oscillator   wave   Time: 21 ms   Peak: — ────────────────────────────────────────────────────────────────────┐
 │                                                                                                                      │
@@ -38,24 +38,24 @@ source: src/tui/golden_tests.rs
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-caaaaaaaaaaaaaaaaaaaaaaaa........................cbccccccccccccccccccccccccccccccccccc.................................b
-cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-cddddddddddddddddddddddddddddddddddddddddddddddddcb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+caaaaaaaaaaaaaaaaaaaaaaaa........................cbccccccccccccccccccccccccccccccccccc................................cb
+cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+cddddddddddddddddddddddddddddddddddddddddddddddddcb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................cb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................cb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb....................................b
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-c................................................cb....................................................................b
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 bbbbbbbbbaaaaaaaaaabbbaaaabbbbbbbbbaaaaabbbbbbbbbabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 b......................................................................................................................b

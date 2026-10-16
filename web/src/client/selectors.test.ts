@@ -222,7 +222,7 @@ describe("finding the parameters of a plugin to look through", () => {
     expect(paramListOf(state, oscillator.id)).toEqual({
       name: "Oscillator",
       format: "Built-in",
-      params: ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift"].map((name, index) => ({ index, name })),
+      params: ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend"].map((name, index) => ({ index, name })),
     });
     expect(paramListOf(state, filter.id)?.params).toEqual([
       { index: 0, name: "cutoff" },
@@ -302,7 +302,7 @@ describe("counting the parameters of a plugin", () => {
   const reach = stateOf(reachFixture.snapshot);
 
   test("is how many the plugin of an instrument or an effect has, whatever the effect is in", () => {
-    expect(paramCountOf(state, oscillator.id)).toBe(17);
+    expect(paramCountOf(state, oscillator.id)).toBe(19);
     expect(paramCountOf(state, filter.id)).toBe(4);
     expect(paramCountOf(reach, 3)).toBe(paramListOf(reach, 3)?.params.length);
   });
