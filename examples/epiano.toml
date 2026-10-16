@@ -2,11 +2,14 @@
 # sine of its own pitch: the tine), an envelope that takes the swing down as the note
 # rings, so that each note is bright at the start and mellow after it, and the delay's
 # Chorus preset (a short delay that its own modulation swings, half of the sound).
-# Play chords. On the page, try `fm` (the brightness at the start) and the envelope's decay.
+# It answers to how hard a key is hit, as far as the loudness goes (a MIDI keyboard's velocity: half
+# of the level is the velocity, the oscillator's `velocity`; the keys of the computer and of the
+# page hit at 100, and the volume is raised to make up for the half).
+# Play chords. On the page, try `fm` (the brightness at the start), the envelope's decay and `velocity`.
 
 [[instrument]]
 plugin = "builtin:osc"
-volume = 0.4
+volume = 0.45
 
 [instrument.params]
 waveform = 0.0 # sine
@@ -16,6 +19,7 @@ sustain = 0.25
 release = 0.35
 fm = 0.28
 fm_ratio = 1.0 # a place in the list: 1 is ×1
+velocity = 0.5 # half of the level is how hard the key is hit
 
 [[instrument.effect]]
 plugin = "builtin:delay"

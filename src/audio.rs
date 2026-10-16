@@ -988,8 +988,14 @@ mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
-    /// The left side of `session` as it sounds for `seconds` when the keys `keys` go down after `from` seconds and up `held` seconds after that.
+    /// The left side of `session` as it sounds for `seconds` when the keys `keys` go down after `from` seconds and up `held` seconds after that (at the velocity that the keys of
+    /// the page and of the terminal have, 100).
     fn play(session: &str, keys: &[u8], from: f32, held: f32, seconds: f32) -> Vec<f32> {
+        play_hit(session, keys, 100, from, held, seconds)
+    }
+
+    /// The same, with the keys hit at `velocity`.
+    fn play_hit(session: &str, keys: &[u8], velocity: u8, from: f32, held: f32, seconds: f32) -> Vec<f32> {
         let mut rig = rig(session, 256);
         let blocks = (seconds * 48_000.0 / 256.0) as usize;
         let press_at = (from * 48_000.0 / 256.0) as usize;
@@ -999,7 +1005,7 @@ mod tests {
         for cb in 0..blocks {
             if cb == press_at {
                 for &key in keys {
-                    rig.midi_tx.send((0, [0x90, key, 100])).unwrap();
+                    rig.midi_tx.send((0, [0x90, key, velocity])).unwrap();
                 }
             }
             if cb == release_at {
@@ -1132,6 +1138,24 @@ mod tests {
         for from in [1.0f32, 1.5, 2.0] {
             let cents = 1200.0 * (pitch_of(window(from), 48_000.0) / c3).log2();
             assert!(cents.abs() < 5.0, "{cents} cents from C3 at {from} s");
+        }
+    }
+
+    #[test]
+    fn the_epiano_example_is_softer_when_a_key_is_hit_softer_and_is_the_sound_it_was_at_the_velocity_of_the_computer_keys() {
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        let hit = |velocity: u8| play_hit(&example("epiano.toml"), &[60], velocity, 0.0, 3.0, 4.0);
+        let window = |out: &[f32], from: f32| out[(from * 48_000.0) as usize..((from + 0.1) * 48_000.0) as usize].to_vec();
+        let (soft, usual, hard) = (hit(40), hit(100), hit(120));
+        // Half of the level is the velocity: a key hit at 40 is 0.68 of one at 120 (the measure is 0.675), and it is no different in its brightness (the velocity is the level's only).
+        let ratio = rms(&window(&soft, 0.02)) / rms(&window(&hard, 0.02));
+        assert!(ratio > 0.6 && ratio < 0.75, "{ratio}");
+        assert!((brightness(&window(&soft, 0.02)) / brightness(&window(&hard, 0.02)) - 1.0).abs() < 0.03);
+        // At 100, which the keys of the computer and of the page hit at, it is the sound that the file made before it had a velocity (these are its numbers then, in four places of a note of 4 s).
+        for (from, rms_then, brightness_then) in [(0.02f32, 0.0396f32, 0.080f32), (0.3, 0.0321, 0.069), (1.0, 0.0127, 0.059), (2.0, 0.0059, 0.061)] {
+            let (r, b) = (rms(&window(&usual, from)), brightness(&window(&usual, from)));
+            assert!((r / rms_then - 1.0).abs() < 0.03, "at {from} s: {r} for {rms_then}");
+            assert!((b / brightness_then - 1.0).abs() < 0.03, "at {from} s: {b} for {brightness_then}");
         }
     }
 
