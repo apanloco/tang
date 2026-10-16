@@ -103,6 +103,18 @@
         {
           "id": "dub",
           "name": "Dub Echo"
+        },
+        {
+          "id": "chorus",
+          "name": "Chorus"
+        },
+        {
+          "id": "flanger",
+          "name": "Flanger"
+        },
+        {
+          "id": "doubler",
+          "name": "Doubler"
         }
       ]
     }

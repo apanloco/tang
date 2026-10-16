@@ -58,7 +58,7 @@ test("a delay from the page puts out the echoes and not the sound, one time afte
   // Its presets, in the menu of its node.
   await page.getByRole("button", { name: "Load a preset into Delay" }).click();
   const menu = page.getByRole("menu", { name: "Load a preset into Delay" });
-  await expect(menu.getByRole("menuitem")).toHaveText(["Slapback", "Tape Echo", "Ping-Pong", "Dub Echo"]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["Slapback", "Tape Echo", "Ping-Pong", "Dub Echo", "Chorus", "Flanger", "Doubler"]);
   await menu.getByRole("menuitem", { name: "Slapback" }).click();
   await expectKnobs(delay, { time: "0.09", feedback: "0.12", tone: "0.85", pingpong: "0", mod_rate: "0.5", mod_depth: "0" });
 
@@ -79,4 +79,12 @@ test("a delay from the page puts out the echoes and not the sound, one time afte
   expect(tape, "the tape echo comes after its time").toBeGreaterThan(340);
   expect(tape, "and well after the slapback").toBeGreaterThan(slapback + 150);
   expect(tape, "and is heard").toBeLessThan(2500);
+
+  // The presets that are not echoes: a chorus is a short delay that its own wobble swings, so that its first sound comes a few milliseconds after the key and not at the time of an echo.
+  await expect.poll(() => peakOf(scope), { message: "the tape echo has died away", timeout: 20_000 }).toBeLessThan(1e-4);
+  await page.getByRole("button", { name: "Load a preset into Delay" }).click();
+  await menu.getByRole("menuitem", { name: "Chorus" }).click();
+  await expectKnobs(delay, { time: "0.02", feedback: "0", tone: "1", pingpong: "0", mod_rate: "0.8", mod_depth: "3.5" });
+  const chorus = await firstHeard(page, scope, "z");
+  expect(chorus, "the chorus is heard well before a slapback's echo").toBeLessThan(slapback - 30);
 });

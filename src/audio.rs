@@ -981,7 +981,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 5] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml"];
+    const SOUND_EXAMPLES: [&str; 6] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1077,11 +1077,22 @@ mod tests {
     }
 
     #[test]
-    fn the_pwm_example_has_the_delay_preset_that_it_names() {
+    fn the_examples_have_the_delay_presets_that_they_name() {
         // (A preset that the plugin does not have is only logged by the loader, so a misspelled name would load and sound like no preset at all.)
-        let run = crate::app::testutil::load(&example("pwm.toml"));
-        let delay = &run.model.instruments[0].effects[1];
-        let time = delay.params.iter().find(|p| p.name == "time").unwrap().value;
-        assert_eq!((delay.name.as_str(), time), ("Delay", 0.09), "the preset's time, and not the delay's own");
+        for (name, effect, preset, time) in [("pwm.toml", 1, "Slapback", 0.09), ("epiano.toml", 0, "Chorus", 0.02)] {
+            let run = crate::app::testutil::load(&example(name));
+            let delay = &run.model.instruments[0].effects[effect];
+            let heard = delay.params.iter().find(|p| p.name == "time").unwrap().value;
+            assert_eq!((delay.name.as_str(), heard), ("Delay", time), "{name}: the time of {preset}, and not the delay's own");
+        }
+    }
+
+    #[test]
+    fn the_epiano_example_is_brightest_at_the_start_of_a_note_and_mellows_as_it_rings() {
+        let out = play(&example("epiano.toml"), &[60], 0.0, 3.0, 4.0);
+        let window = |from: f32| &out[(from * 48_000.0) as usize..((from + 0.1) * 48_000.0) as usize];
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        let (start, later) = (brightness(window(0.02)), brightness(window(1.0)));
+        assert!(start > 1.2 * later, "{start} and {later}");
     }
 }

@@ -60,6 +60,11 @@ pub const PRESETS: &[(&str, &str, [f32; PARAM_COUNT])] = &[
     ("tape",     "Tape Echo", [0.38, 0.50, 0.45, 0.0,  0.6, 1.5]),
     ("pingpong", "Ping-Pong", [0.30, 0.55, 0.70, 1.0,  0.5, 0.0]),
     ("dub",      "Dub Echo",  [0.45, 0.78, 0.30, 0.35, 0.3, 0.8]),
+    // The three that are not echoes: a short time that its own modulation swings, which is what a chorus, a flanger and a doubler are. (The effect's mix is the host's and
+    // starts at a half, which is what they want.)
+    ("chorus",   "Chorus",    [0.020, 0.0,  1.00, 0.0,  0.8, 3.5]),
+    ("flanger",  "Flanger",   [0.003, 0.60, 0.90, 0.0,  0.25, 2.5]),
+    ("doubler",  "Doubler",   [0.035, 0.0,  0.80, 0.0,  0.3, 1.0]),
 ];
 
 pub struct Delay {
@@ -683,7 +688,63 @@ mod tests {
         let (l, _) = run(&mut delay, &impulse(0.5, 6000), &impulse(0.5, 6000));
         let echoes = heard(&l);
         assert!(echoes.len() == 1 && echoes[0].0 == 4320 && (echoes[0].1 - 0.5).abs() < 1e-3, "{echoes:?}");
-        assert_eq!(delay.presets().iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["slapback", "tape", "pingpong", "dub"]);
+        assert_eq!(delay.presets().iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["slapback", "tape", "pingpong", "dub", "chorus", "flanger", "doubler"]);
         assert!(delay.load_preset("no such preset").is_err());
+    }
+
+    // -- The presets that are not echoes: the modulation of a short delay is a chorus, a flanger and a doubler --
+
+    /// A delay that has `id` loaded, and the sine of `hz` and 0.5 that it is run on for `seconds`: what it puts out on the left, and what the input was.
+    fn preset_on_a_sine(id: &str, hz: f32, seconds: f32) -> Vec<f32> {
+        let mut delay = Delay::new(SAMPLE_RATE);
+        delay.load_preset(id).unwrap();
+        let input: Vec<f32> = (0..(seconds * SAMPLE_RATE) as usize).map(|n| 0.5 * (std::f32::consts::TAU * hz * n as f32 / SAMPLE_RATE).sin()).collect();
+        run(&mut delay, &input, &input).0
+    }
+
+    /// The pitch of a sine in `window`, in cents from `hz`, from where it crosses zero going up (brought between two frames).
+    fn cents_from(window: &[f32], hz: f32) -> f32 {
+        let crossings: Vec<f32> = window.windows(2).enumerate().filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0).map(|(n, w)| n as f32 + (-w[0]) / (w[1] - w[0])).collect();
+        let cycles = (crossings.len() - 1) as f32;
+        let heard = cycles * SAMPLE_RATE / (crossings[crossings.len() - 1] - crossings[0]);
+        1200.0 * (heard / hz).log2()
+    }
+
+    #[test]
+    fn the_chorus_preset_moves_the_pitch_of_what_it_echoes_a_few_tens_of_cents_each_way() {
+        // 3.5 ms of swing at 0.8 Hz is 1.76% of the pitch at the most, 30 cents each way, and none on average.
+        let out = preset_on_a_sine("chorus", 440.0, 4.2);
+        let cents: Vec<f32> = (0..36).map(|n| cents_from(&out[9600 + n * 4800..9600 + (n + 1) * 4800], 440.0)).collect();
+        let (top, bottom) = (cents.iter().cloned().fold(f32::MIN, f32::max), cents.iter().cloned().fold(f32::MAX, f32::min));
+        assert!(top > 26.0 && top < 34.0 && bottom < -26.0 && bottom > -34.0, "from {bottom} to {top} cents");
+        assert!((cents.iter().sum::<f32>() / cents.len() as f32).abs() < 4.0, "{cents:?}");
+        // (A chorus has no feedback: one echo and not a train of them.)
+        let impulse_echoes = heard(&run(&mut { let mut d = Delay::new(SAMPLE_RATE); d.load_preset("chorus").unwrap(); d }, &impulse(0.5, 6000), &impulse(0.5, 6000)).0);
+        assert!(impulse_echoes.len() <= 12 && impulse_echoes.iter().all(|e| (850..1100).contains(&e.0)), "{impulse_echoes:?}");
+    }
+
+    #[test]
+    fn the_flanger_preset_sweeps_the_peaks_of_its_comb_over_a_tone_so_that_its_level_rises_and_falls() {
+        // 3 ms with a feedback of 0.6 is a comb with peaks at the multiples of 333 Hz, which 2.5 ms of swing at 0.25 Hz sweeps over a 1 kHz sine: the level of what comes out goes up and down.
+        let out = preset_on_a_sine("flanger", 1000.0, 5.0);
+        let levels: Vec<f32> = (0..40).map(|n| { let w = &out[12_000 + n * 4800..12_000 + (n + 1) * 4800]; (w.iter().map(|x| x * x).sum::<f32>() / w.len() as f32).sqrt() }).collect();
+        let (top, bottom) = (levels.iter().cloned().fold(f32::MIN, f32::max), levels.iter().cloned().fold(f32::MAX, f32::min));
+        assert!(20.0 * (top / bottom).log10() > 8.0, "the level goes from {bottom} to {top}");
+        // And the comb is of a short time with a feedback: on the left (the sine of the swing is at its 0 when the impulse comes) the first echo is 3 ms (144 frames) after it and a train follows at the same distance.
+        let mut delay = Delay::new(SAMPLE_RATE);
+        delay.load_preset("flanger").unwrap();
+        let echoes = heard(&run(&mut delay, &impulse(0.5, 3000), &impulse(0.5, 3000)).0);
+        let near = |frame: usize| echoes.iter().any(|e| e.0.abs_diff(frame) <= 6);
+        assert!(echoes[0].0.abs_diff(144) <= 4 && near(289) && near(434), "{:?}", &echoes[..echoes.len().min(8)]);
+    }
+
+    #[test]
+    fn the_doubler_preset_is_one_echo_about_35_ms_late() {
+        let mut delay = Delay::new(SAMPLE_RATE);
+        delay.load_preset("doubler").unwrap();
+        let (l, _) = run(&mut delay, &impulse(0.5, 6000), &impulse(0.5, 6000));
+        let echoes = heard(&l);
+        // 35 ms is 1680 frames (the sine of the modulation is at its 0 when the impulse is put in, so that the swing has not moved it yet); and one echo, with no feedback.
+        assert!(!echoes.is_empty() && echoes.iter().all(|e| (1675..1695).contains(&e.0)), "{echoes:?}");
     }
 }

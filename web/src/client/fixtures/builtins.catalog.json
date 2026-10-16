@@ -5,7 +5,7 @@
     "format": "Built-in",
     "isInstrument": false,
     "params": 6,
-    "presets": 4
+    "presets": 7
   },
   {
     "id": "builtin:filter",

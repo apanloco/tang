@@ -1,5 +1,57 @@
 {
   "builtin:delay": {
+    "chorus": [
+      {
+        "param": 0,
+        "value": 0.02
+      },
+      {
+        "param": 1,
+        "value": 0.0
+      },
+      {
+        "param": 2,
+        "value": 1.0
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.8
+      },
+      {
+        "param": 5,
+        "value": 3.5
+      }
+    ],
+    "doubler": [
+      {
+        "param": 0,
+        "value": 0.035
+      },
+      {
+        "param": 1,
+        "value": 0.0
+      },
+      {
+        "param": 2,
+        "value": 0.8
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.3
+      },
+      {
+        "param": 5,
+        "value": 1.0
+      }
+    ],
     "dub": [
       {
         "param": 0,
@@ -24,6 +76,32 @@
       {
         "param": 5,
         "value": 0.8
+      }
+    ],
+    "flanger": [
+      {
+        "param": 0,
+        "value": 0.003
+      },
+      {
+        "param": 1,
+        "value": 0.6
+      },
+      {
+        "param": 2,
+        "value": 0.9
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.25
+      },
+      {
+        "param": 5,
+        "value": 2.5
       }
     ],
     "pingpong": [
