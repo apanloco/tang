@@ -343,6 +343,53 @@ depth = 0.3
 "#
 }
 
+/// A delay with a lane LFO on four of its parameters, at depths that are 0.4%, 2.5%, 25.7% and minus 0.4%, and on the oscillator's at minus 0.04%
+/// and minus 25.3%, and a group whose bus has a delay that a group LFO drives at 0.4%: a depth that suits a parameter with a wide range (a time
+/// of up to two seconds).
+fn scene_small_depths() -> &'static str {
+    r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:delay"
+[[group.modulator]]
+rate = 0.5
+[[group.modulator.target]]
+bus = 0
+param = "time"
+depth = 0.004
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:delay"
+[[instrument.modulator]]
+rate = 0.5
+[[instrument.modulator.target]]
+slot = 1
+param = "time"
+depth = 0.004
+[[instrument.modulator.target]]
+slot = 1
+param = "feedback"
+depth = 0.025
+[[instrument.modulator.target]]
+slot = 1
+param = "tone"
+depth = 0.257
+[[instrument.modulator.target]]
+slot = 1
+param = "pingpong"
+depth = -0.004
+[[instrument.modulator.target]]
+param = "detune"
+depth = -0.0004
+[[instrument.modulator.target]]
+param = "volume"
+depth = -0.253
+"#
+}
+
 /// A group with a filter and a reverb on its bus, and a group LFO driving both.
 fn scene_bus_pair() -> &'static str {
     r#"
@@ -2135,6 +2182,20 @@ fn group_lfo_line(h: &Harness) -> &str {
 
 const MEMBER_LFO_LINE: &str =
     "  ~ LFO 0.5Hz sine → M0 Filter: cutoff (40%), M0 Reverb: damping (30%), M1 Filter: cutoff (20%)  (bus)";
+
+#[test]
+fn the_tree_says_a_depth_of_a_fraction_of_a_percent_as_it_is_in_a_lane_and_in_a_group() {
+    let h = Harness::new(scene_small_depths());
+    // (A depth under ten percent that is not a whole percentage has the decimal it needs, which the sign keeps; the rest are whole, and a depth
+    // within a twentieth of none is 0 and not -0.)
+    let lane_line = h.tree().into_iter().find(|l| l.contains("~ LFO") && !l.contains("(bus)")).expect("the lane's LFO is in the tree");
+    assert_eq!(
+        lane_line.trim_start(),
+        "╰ ~ LFO 0.5Hz sine → Delay: time (0.4%), Delay: feedback (2.5%), Delay: tone (26%), Delay: pingpong (-0.4%), Oscillator: detune (0%), Oscillator: volume (-25%)"
+    );
+    let bus_line = h.tree().into_iter().find(|l| l.contains("~ LFO") && l.contains("(bus)")).expect("the group's LFO is in the tree");
+    assert_eq!(bus_line, "  ~ LFO 0.5Hz sine → Bus Delay: time (0.4%)  (bus)");
+}
 
 #[test]
 fn a_member_effect_scene_labels_each_target_with_its_plugin() {

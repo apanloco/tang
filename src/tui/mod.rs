@@ -4168,6 +4168,19 @@ fn format_range(range: (u8, u8)) -> String {
     crate::session::format_range(range)
 }
 
+/// A modulation depth as the tree writes it: a percentage of the parameter's range, whole, and with the decimal that it needs when it is
+/// under 10% and not a whole percentage, so that the depth that suits a parameter with a wide range (0.4% of a delay's two seconds) is not
+/// written as 0%.
+fn depth_percent(depth: f32) -> String {
+    let percent = depth * 100.0;
+    if percent.abs() < 10.0 && (percent - percent.round()).abs() >= 0.05 {
+        format!("{percent:.1}%")
+    } else {
+        // (A whole percentage, or one that is within a twentieth of it: -0.04 is 0, and not -0.)
+        format!("{}%", percent.round() + 0.0)
+    }
+}
+
 /// Render one instrument and its children (pattern, effects, lane mod rack).
 /// `prefix` is prepended to every label so the whole sub-tree can be nested
 /// under a group header.
@@ -4266,7 +4279,7 @@ fn push_instrument_entries(
             let list = m
                 .targets
                 .iter()
-                .map(|t| format!("{} ({:.0}%)", target_disp(t), t.depth * 100.0))
+                .map(|t| format!("{} ({})", target_disp(t), depth_percent(t.depth)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(" \u{2192} {list}")
@@ -4364,7 +4377,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
                     let list = m
                         .targets
                         .iter()
-                        .map(|t| format!("{} ({:.0}%)", target_disp(t), t.depth * 100.0))
+                        .map(|t| format!("{} ({})", target_disp(t), depth_percent(t.depth)))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!(" \u{2192} {list}")
