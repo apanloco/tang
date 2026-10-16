@@ -190,6 +190,8 @@ impl Snapshot {
                 };
                 match (source, field) {
                     (ModulatorSource::Lfo { rate, .. }, ModulatorField::Rate) => *rate = *value,
+                    (ModulatorSource::Lfo { retrigger, .. }, ModulatorField::Retrigger) => *retrigger = *value != 0.0,
+                    (ModulatorSource::Lfo { fade, .. }, ModulatorField::Fade) => *fade = *value,
                     (ModulatorSource::Lfo { waveform, .. }, ModulatorField::Waveform) => {
                         let index = *value as usize;
                         let known = (*value >= 0.0 && value.fract() == 0.0).then(|| LfoWaveform::ALL.get(index)).flatten();
@@ -793,6 +795,60 @@ type = "envelope"
     }
 
     #[test]
+    fn an_lfos_retrigger_and_fade_are_changed_in_the_snapshot_as_they_are_in_the_session() {
+        let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\n", None);
+        let mut told = ctl.snapshot();
+        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let source = |told: &Snapshot| match &told.graph.nodes.iter().find(|n| n.id == lfo).unwrap().kind {
+            NodeKind::Modulator { source } => source.clone(),
+            other => panic!("{other:?}"),
+        };
+        for (intent, retrigger, fade) in [
+            (Intent::SetModulatorField { node: lfo, field: ModulatorField::Retrigger, value: 1.0 }, true, 0.0),
+            (Intent::SetModulatorField { node: lfo, field: ModulatorField::Fade, value: 0.75 }, true, 0.75),
+            (Intent::SetModulatorField { node: lfo, field: ModulatorField::Retrigger, value: 0.0 }, false, 0.75),
+        ] {
+            let applied = ctl.apply(intent.clone()).unwrap();
+            told.apply(&applied).unwrap_or_else(|error| panic!("{intent:?}: {error}"));
+            assert_eq!(told, ctl.snapshot(), "{intent:?}");
+            assert_eq!(source(&told), ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger, fade }, "{intent:?}");
+        }
+    }
+
+    #[test]
+    fn every_setting_that_a_kind_of_modulator_has_is_changed_in_the_snapshot_as_it_is_in_the_session() {
+        use crate::app::intent::IntentError;
+        // One modulator of each kind in a lane, and an LFO in a group (the snapshot has no rule of its own for where a modulator is).
+        let mut ctl = controller(
+            "[[group]]\n[[group.modulator]]\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.modulator]]\n[[instrument.modulator]]\ntype = \"envelope\"\n\
+             [[instrument.modulator]]\ntype = \"macro\"\n[[instrument.modulator]]\ntype = \"steps\"\n",
+            None,
+        );
+        let mut told = ctl.snapshot();
+        let nodes: Vec<_> = ctl.model.groups[0].modulators.iter().chain(&ctl.model.instruments[0].modulators).map(|m| m.node).collect();
+        assert_eq!(nodes.len(), 5);
+        let mut changed = 0;
+        for node in nodes {
+            for field in ModulatorField::ALL {
+                // The top of its range: a value that few of them have to begin with.
+                let intent = Intent::SetModulatorField { node, field, value: field.range().1 };
+                match ctl.apply(intent.clone()) {
+                    Ok(applied) => {
+                        told.apply(&applied).unwrap_or_else(|error| panic!("{intent:?}: {error}"));
+                        assert_eq!(told, ctl.snapshot(), "{intent:?}");
+                        changed += 1;
+                    }
+                    // (The kind has no such setting: an envelope has no rate.)
+                    Err(IntentError::Invalid(_)) => {}
+                    Err(other) => panic!("{intent:?}: {other:?}"),
+                }
+            }
+        }
+        // An LFO's four (in a group, and in the lane), an envelope's four, a macro's one and a step sequencer's four.
+        assert_eq!(changed, 4 + 4 + 4 + 1 + 4);
+    }
+
+    #[test]
     fn a_step_sequencer_that_is_changed_is_changed_in_the_snapshot_as_it_is_in_the_session() {
         let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n", None);
         let mut told = ctl.snapshot();
@@ -837,7 +893,8 @@ type = "envelope"
             (Event::StepsSet { node: NodeId(9_999), values: vec![0.0; 16] }, "there is no node 9999"),
             (Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Glide, value: 0.5 }, "does not apply"),
             (Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Length, value: 4.0 }, "does not apply"),
-            (Event::ModulatorFieldSet { node: lfo, field: ModulatorField::Retrigger, value: 1.0 }, "does not apply"),
+            // (A step sequencer has no fade, and an LFO has a retrigger as a step sequencer has.)
+            (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Fade, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Waveform, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Attack, value: 1.0 }, "does not apply"),
             (Event::ModulatorFieldSet { node: sequencer, field: ModulatorField::Value, value: 0.5 }, "does not apply"),

@@ -339,6 +339,23 @@ pub enum ModulatorField {
 }
 
 impl ModulatorField {
+    /// Every setting there is, for what goes through all of them (a table of the page's constants, a test of each: only tests do). One that is left out is a key missing in the `Record` of
+    /// the page's constants, which its typecheck refuses.
+    #[cfg(test)]
+    pub const ALL: [ModulatorField; 11] = [
+        ModulatorField::Rate,
+        ModulatorField::Waveform,
+        ModulatorField::Attack,
+        ModulatorField::Decay,
+        ModulatorField::Sustain,
+        ModulatorField::Release,
+        ModulatorField::Value,
+        ModulatorField::Glide,
+        ModulatorField::Length,
+        ModulatorField::Retrigger,
+        ModulatorField::Fade,
+    ];
+
     /// What it is called.
     pub fn label(self) -> &'static str {
         match self {

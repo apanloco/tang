@@ -424,22 +424,9 @@ mod typescript {
     use crate::app::snapshot::Snapshot;
     use super::{ClientMessage, ServerMessage};
 
-    /// Every gain and every modulator setting, to write the range of each. (One left out
+    /// Every gain, every modulator setting (`ModulatorField::ALL`) and every pattern setting, to write the range of each. (One left out
     /// is a key missing in the `Record` that is generated, which the web's typecheck refuses.)
     const GAINS: [Gain; 4] = [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan];
-    const MODULATOR_FIELDS: [ModulatorField; 11] = [
-        ModulatorField::Rate,
-        ModulatorField::Waveform,
-        ModulatorField::Attack,
-        ModulatorField::Decay,
-        ModulatorField::Sustain,
-        ModulatorField::Release,
-        ModulatorField::Value,
-        ModulatorField::Glide,
-        ModulatorField::Length,
-        ModulatorField::Retrigger,
-        ModulatorField::Fade,
-    ];
     const PATTERN_FIELDS: [PatternField; 4] = [PatternField::Length, PatternField::Enabled, PatternField::Looping, PatternField::Transpose];
 
     /// The entries of a TypeScript object that says `[min, max]` for each of `all`, by the
@@ -460,7 +447,7 @@ mod typescript {
     fn default_entries() -> String {
         use crate::app::model::ModSourceSlot;
         let (lfo, envelope, knob, steps) = (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro(), ModSourceSlot::new_steps());
-        MODULATOR_FIELDS
+        ModulatorField::ALL
             .iter()
             .map(|&field| {
                 let name = serde_json::to_value(field).unwrap();
@@ -478,7 +465,7 @@ mod typescript {
     /// The settings of a modulator whose value is a whole number, which the controller rounds it to (`ModulatorField::is_whole`), by the name they have on the wire, as the elements
     /// of a TypeScript array.
     fn whole_fields() -> String {
-        let names: Vec<String> = MODULATOR_FIELDS.iter().filter(|field| field.is_whole()).map(|&field| serde_json::to_string(&field).unwrap()).collect();
+        let names: Vec<String> = ModulatorField::ALL.iter().filter(|field| field.is_whole()).map(|&field| serde_json::to_string(&field).unwrap()).collect();
         names.join(", ")
     }
 
@@ -495,7 +482,7 @@ mod typescript {
     /// (`ModulatorField::taper`).
     fn taper_entries() -> String {
         use crate::app::intent::Taper;
-        MODULATOR_FIELDS
+        ModulatorField::ALL
             .iter()
             .map(|&field| {
                 let name = serde_json::to_value(field).unwrap();
@@ -625,7 +612,7 @@ mod typescript {
                 super::PROTOCOL,
                 super::FRAME_HEADER_LEN,
                 range_entries(&GAINS, Gain::range),
-                range_entries(&MODULATOR_FIELDS, ModulatorField::range),
+                range_entries(&ModulatorField::ALL, ModulatorField::range),
                 default_entries(),
                 taper_entries(),
                 whole_fields(),
@@ -699,7 +686,7 @@ mod typescript {
     fn the_range_of_a_modulator_setting_is_written_the_way_a_person_writes_the_number() {
         // (Not `0.009999999776482582`: an f32 is written as the shortest number that is it.)
         assert_eq!(
-            range_entries(&MODULATOR_FIELDS, ModulatorField::range),
+            range_entries(&ModulatorField::ALL, ModulatorField::range),
             "  rate: [0.01, 50],\n  waveform: [0, 5],\n  attack: [0.001, 10],\n  decay: [0.001, 10],\n  sustain: [0, 1],\n  release: [0.001, 10],\n  value: [0, 1],\n  glide: [0, 1],\n  length: [1, 16],\n  retrigger: [0, 1],\n  fade: [0, 5],\n"
         );
     }
