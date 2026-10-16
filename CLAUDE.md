@@ -869,6 +869,27 @@ velocity = 0
   not put back by undo), the length in beats, Play, Loop and In key, and a line that says what the pattern is. The count-in is `COUNT_IN_BEATS` (4) beats of the metronome,
   which the page reads as `PATTERN_COUNT_IN_BEATS`.
 
+### Example sessions
+
+`examples/` has sessions to start from, each a recipe for one thing that the built-in plugins do (the first three are the older ones):
+
+| Session | What it shows |
+|---------|---------------|
+| `basic.toml` | the built-in sine, and nothing else |
+| `split.toml` | two instruments on a split keyboard |
+| `echo.toml` | a filter into a ping-pong delay, with an LFO on the filter and one on the delay's time |
+| `supersaw.toml` | a saw with a unison of seven (`unison`, `spread`, `width`), a low-pass filter that a slow LFO moves, a reverb |
+| `wind.toml` | the oscillator's `noise` through a band-pass filter that two slow random LFOs move, into a big reverb (hold a key: it swells in over 2.5 s) |
+| `bell.toml` | FM (`fm`, `fm_ratio` of ×3.5) with an envelope that takes the swing down while the note rings, so that the bell starts bright and ends as a plain tone |
+| `arp.toml` | a step sequencer on `detune` with the values of the notes over twelve (a depth of 0.25 makes a step of 1 twelve semitones): a minor seventh arpeggio from a held key, whatever key it is |
+| `pwm.toml` | a square whose `pulse` an LFO moves, three oscillators for each note, a short echo |
+
+The five that make a sound with nothing installed (`SOUND_EXAMPLES` in `src/audio.rs`) are held by tests that render them through the real engine: each plays a chord that is heard (the loudest sample above 0.05) and is
+not loud (below 0.6); the arpeggio goes through its notes within 5 cents (it is within half a cent: the pitch is measured by autocorrelation, step by step) when its key is pressed after a pause that is not a whole number
+of steps, so that the key's restart of the sequence is what is heard; the bell is more than four times brighter in its first moments than at the end (it is seven times) and louder; the wind is quiet in its first moments and
+swells over its attack, and is still sounding a moment after the key goes up; and the delay preset that `pwm.toml` names is one that the delay has (the loader only logs a name that a plugin lacks, so a misspelling would load and
+sound like no preset). A saved sound of somebody's own (`tracer.toml`, `cool-sound.toml`) is not held to any of it. The page cannot open a session (it can save one under a name): an example is started with `tang serve examples/bell.toml`.
+
 ## Note remapping
 
 Some instrument plugins have bad samples on certain notes. Note remapping lets
