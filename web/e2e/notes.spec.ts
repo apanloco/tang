@@ -137,3 +137,30 @@ test("a velocity that the lane's menu adds has no knob, is a step of the history
   expect(modulatorsOf(await save(page, own.file)).filter((m) => m.includes("midi_velocity = true"))).toHaveLength(1);
   await other.close();
 });
+
+test("a key of the page's piano plays harder lower down, which a velocity control follows: near its top edge a note is soft, near its front edge hard", async ({ page, own }) => {
+  await open(page, own.url);
+  const filter = node(page, "Filter");
+  await choose(filter, "resonance", "New velocity");
+  await expect(node(page, "Velocity")).toBeVisible();
+  const dot = knobOf(filter, "resonance").locator(".tang-knob__dot");
+  await expect.poll(async () => (await dotAt(dot)).x).toBeCloseTo(dotFor(2).x, 1);
+
+  // Middle C of the piano, pressed a tenth of the way down its height and then nine tenths of the way: velocities of 31 and 116 (20 and 107 steps over the key).
+  const key = page.locator('[data-note="60"]');
+  const box = await key.boundingBox();
+  if (!box) throw new Error("the key is on the page");
+  const pressAt = async (fraction: number): Promise<void> => {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height * fraction);
+    await page.mouse.down();
+    await page.mouse.up();
+  };
+  const resonanceFor = (velocity: number): number => 2 + 0.5 * 9.5 * (velocity / 127);
+
+  await pressAt(0.1);
+  await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(dotFor(resonanceFor(31)).x, 0);
+  await pressAt(0.9);
+  await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(dotFor(resonanceFor(116)).x, 0);
+  // (The two are about three pixels apart on the knob: a hard note is not a soft one.)
+  expect(Math.abs(dotFor(resonanceFor(116)).x - dotFor(resonanceFor(31)).x)).toBeGreaterThan(2);
+});

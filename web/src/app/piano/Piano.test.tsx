@@ -383,6 +383,68 @@ describe("the scale picker, when the answers are slow", () => {
   });
 });
 
+/** The key `note` is a hundred pixels tall, from 100 down to 200 on the page (jsdom has no layout: this is where the pointer's place on a key is told from). */
+function keyIsTall(container: HTMLElement, note: number): HTMLElement {
+  const key = keyOf(container, note);
+  key.getBoundingClientRect = () => ({ top: 100, height: 100, bottom: 200, left: 0, right: 20, width: 20, x: 0, y: 100, toJSON: () => ({}) });
+  return key;
+}
+
+/** The velocities that went to the engine, in order. */
+const velocities = (server: MockServer): number[] => server.received.flatMap((message) => (message.type === "noteOn" ? [message.velocity] : []));
+
+describe("a pointer on the keys, as hard as where it is on them", () => {
+  test("is told on the keys: the lower on a key, the harder, and the keys of the computer at 100", async () => {
+    widthIs(630);
+    const { view } = await rig(<Page />);
+    const title = view.getByRole("group", { name: "Piano keys" }).getAttribute("title") ?? "";
+    expect(title).toContain("lower on a key");
+    expect(title).toContain("20 to 127");
+    expect(title).toContain("100");
+  });
+
+  test("plays a key softer near its top edge and harder near its front edge", async () => {
+    widthIs(630);
+    const { view, server } = await rig(<Page />);
+    const key = keyIsTall(view.container, 60);
+    fireEvent.pointerDown(key, { pointerId: 1, button: 0, clientY: 100 });
+    fireEvent.pointerUp(key, { pointerId: 1 });
+    fireEvent.pointerDown(key, { pointerId: 2, button: 0, clientY: 150 });
+    fireEvent.pointerUp(key, { pointerId: 2 });
+    fireEvent.pointerDown(key, { pointerId: 3, button: 0, clientY: 200 });
+    fireEvent.pointerUp(key, { pointerId: 3 });
+    await waitFor(() => {
+      expect(velocities(server)).toHaveLength(3);
+    });
+    expect(velocities(server)).toEqual([20, 74, 127]);
+  });
+
+  test("plays the key it moves on to as hard as it is where it comes onto it", async () => {
+    widthIs(630);
+    const { view, server } = await rig(<Page />);
+    const first = keyIsTall(view.container, 60);
+    keyIsTall(view.container, 62);
+    fireEvent.pointerDown(first, { pointerId: 1, button: 0, clientY: 100 });
+    pointerIsOver(view.container, 62);
+    fireEvent.pointerMove(view.container.querySelector<HTMLElement>(".tang-piano__keys") ?? first, { pointerId: 1, clientX: 30, clientY: 190 });
+    await waitFor(() => {
+      expect(velocities(server)).toHaveLength(2);
+    });
+    expect(velocities(server)).toEqual([20, 116]);
+  });
+
+  test("plays a key whose place cannot be told, as hard as the keys of the computer do", async () => {
+    widthIs(630);
+    const { view, server } = await rig(<Page />);
+    // (A key that has no height, as one that is not laid out: jsdom's own.)
+    fireEvent.pointerDown(keyOf(view.container, 60), { pointerId: 1, button: 0, clientY: 150 });
+    await waitFor(() => {
+      expect(velocities(server)).toHaveLength(1);
+    });
+    expect(velocities(server)).toEqual([100]);
+  });
+});
+
 describe("a pointer on the keys", () => {
   test("plays the key it goes down on, as hard as the keys of the computer do, until it goes up", async () => {
     widthIs(630);

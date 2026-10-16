@@ -1555,7 +1555,9 @@ in, and what is held is let go when the window loses the focus or the page is hi
 ends a closed connection's notes too). The notes go to the server as `noteOn` and `noteOff`: the
 one note path, so the Piano tab's Locked mode applies to them. The page also draws a piano under its
 canvas (step 24; `web/src/app/piano/`): its keys are played with the pointer (`client/pointerPiano.ts`:
-a glissando, a chord for several pointers), a note that a key and the pointer both hold ends when both
+a glissando, a chord for several pointers; the lower on a key the pointer is, the harder the note, a velocity
+from 20 at the key's top edge to 127 at its front edge (`velocityAt`; step 52), where the keys of the computer
+play at 100: what a velocity control follows), a note that a key and the pointer both hold ends when both
 let go (`client/holds.ts`, the provider's `useNotes`), and the keys light for the notes the server says
 are held, whoever holds them (the `held` telemetry channel).
 

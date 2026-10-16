@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { VELOCITY } from "./keyboard";
-import { PointerPiano } from "./pointerPiano";
+import { PointerPiano, SOFTEST, velocityAt } from "./pointerPiano";
 
 function rig() {
   const sent: string[] = [];
@@ -12,7 +12,51 @@ function rig() {
   return { piano, sent };
 }
 
+describe("how hard a pointer plays a key", () => {
+  test("is the softest at the top edge of the key, the hardest at its front edge, and goes evenly between them", () => {
+    expect(velocityAt(0)).toBe(SOFTEST);
+    expect(velocityAt(1)).toBe(127);
+    expect(velocityAt(0.5)).toBe(74);
+    expect(velocityAt(0.25)).toBe(47);
+    // (Whole numbers, as a note has: 20 and 107 steps over the key.)
+    for (const fraction of [0.1, 0.33, 0.6, 0.9]) expect(Number.isInteger(velocityAt(fraction)), String(fraction)).toBe(true);
+  });
+
+  test("never goes outside the velocities that a note can have, however far off the key the pointer is, and is the keys' own for a place that is not one", () => {
+    expect(velocityAt(-3)).toBe(SOFTEST);
+    expect(velocityAt(7)).toBe(127);
+    expect(velocityAt(Number.NaN)).toBe(VELOCITY);
+    expect(velocityAt(Number.POSITIVE_INFINITY)).toBe(127);
+    expect(SOFTEST).toBeGreaterThan(0);
+  });
+
+  test("is harder lower on the key, at every step", () => {
+    let last = 0;
+    for (let step = 0; step <= 100; step += 1) {
+      const velocity = velocityAt(step / 100);
+      expect(velocity).toBeGreaterThanOrEqual(last);
+      last = velocity;
+    }
+  });
+});
+
 describe("a pointer on the keys", () => {
+  test("plays a key as hard as it is asked to, and as hard as the keys of the computer do when it is not", () => {
+    const { piano, sent } = rig();
+    piano.press(1, 60, 33);
+    piano.press(2, 62);
+    expect(sent).toEqual(["on 60 @33", `on 62 @${String(VELOCITY)}`]);
+  });
+
+  test("plays the keys it moves on to as hard as it is asked to there", () => {
+    const { piano, sent } = rig();
+    piano.press(1, 60, 33);
+    piano.move(1, 62, 120);
+    piano.move(1, 64);
+    piano.release(1);
+    expect(sent).toEqual(["on 60 @33", "off 60", "on 62 @120", "off 62", `on 64 @${String(VELOCITY)}`, "off 64"]);
+  });
+
   test("plays the key it goes down on as hard as the keys of the computer do, and ends the note when it goes up", () => {
     const { piano, sent } = rig();
     piano.press(1, 60);

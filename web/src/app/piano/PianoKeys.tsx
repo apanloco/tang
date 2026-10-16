@@ -6,7 +6,7 @@ import type { CSSProperties, PointerEvent, RefObject } from "react";
 
 import { firstBlock, isWhite, keyboardLayout, keyLabel, octavesFor, roleOf } from "../../client/pianoLayout";
 import { noteName } from "../../client/notes";
-import { PointerPiano } from "../../client/pointerPiano";
+import { PointerPiano, velocityAt } from "../../client/pointerPiano";
 import type { PianoMeta } from "../../protocol";
 import { useClient, useFrames, useNotes } from "../ClientProvider";
 
@@ -28,14 +28,23 @@ function useWidth(element: RefObject<HTMLElement | null>): number {
   return width;
 }
 
-/** The note of the key under a point of the page, or none if what is there is not a key. */
-function noteAt(x: number, y: number): number | null {
-  return noteOfElement(document.elementFromPoint(x, y));
+/** The key under a point of the page, or none if what is there is not a key. */
+function keyAt(x: number, y: number): HTMLElement | null {
+  return keyOfElement(document.elementFromPoint(x, y));
 }
 
-function noteOfElement(element: EventTarget | null): number | null {
-  const key = element instanceof Element ? element.closest<HTMLElement>("[data-note]") : null;
-  return key?.dataset.note === undefined ? null : Number(key.dataset.note);
+function keyOfElement(element: EventTarget | null): HTMLElement | null {
+  return element instanceof Element ? element.closest<HTMLElement>("[data-note]") : null;
+}
+
+/** The note of a key, or none if there is no key. */
+const noteOf = (key: HTMLElement | null): number | null => (key?.dataset.note === undefined ? null : Number(key.dataset.note));
+
+/** How hard a pointer at `y` (of the page) plays `key`: the lower on the key, the harder; the keys' own for a key that is not laid out (it has no height to tell a place on). */
+function velocityOn(key: HTMLElement | null, y: number): number | undefined {
+  if (!key) return undefined;
+  const { top, height } = key.getBoundingClientRect();
+  return height > 0 ? velocityAt((y - top) / height) : undefined;
 }
 
 export function PianoKeys({ piano, octave }: { piano: PianoMeta; octave: number }) {
@@ -103,10 +112,13 @@ export function PianoKeys({ piano, octave }: { piano: PianoMeta; octave: number 
     } catch {
       // nothing to capture
     }
-    pointers.press(event.pointerId, noteOfElement(event.target));
+    const key = keyOfElement(event.target);
+    pointers.press(event.pointerId, noteOf(key), velocityOn(key, event.clientY));
   };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
-    if (pointers.isDown(event.pointerId)) pointers.move(event.pointerId, noteAt(event.clientX, event.clientY));
+    if (!pointers.isDown(event.pointerId)) return;
+    const key = keyAt(event.clientX, event.clientY);
+    pointers.move(event.pointerId, noteOf(key), velocityOn(key, event.clientY));
   };
 
   const key = (note: number, style?: CSSProperties) => (
@@ -132,6 +144,7 @@ export function PianoKeys({ piano, octave }: { piano: PianoMeta; octave: number 
       className="tang-piano__keys"
       role="group"
       aria-label="Piano keys"
+      title="Press lower on a key to play it harder (a velocity from 20 to 127: what a velocity control follows). The keys of the computer play at 100."
       data-locked={piano.locked ? "" : undefined}
       style={{ "--whites": layout.whites.length } as CSSProperties}
       onPointerDown={onPointerDown}
