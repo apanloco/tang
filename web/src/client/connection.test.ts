@@ -3079,6 +3079,24 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     await until(() => Math.abs((rate() ?? 0) - valueAt(fractionOf(set, low, high, "log") + 1 * 0.5, low, high, "log")) < 1e-4, "the rate with the second LFO at its top");
   });
 
+  test("is, for the rate of a step sequencer, the user's value and what the LFO adds to it by the knob's travel, as for the rate of an LFO", async () => {
+    const time = { seconds: 0.25 / MODULATOR_FIELD_DEFAULTS.rate };
+    const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
+    const client = await open(server, { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "steps" });
+    await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+    const nodes = client.state.snapshot?.graph.nodes ?? [];
+    const sequencer = nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
+    const second = nodes.filter((n) => n.kind === "modulator" && n.source.type === "lfo" && n.id !== lfo.id).at(-1);
+    await client.request({ type: "addModEdge", modulator: second?.id ?? -1, to: { node: sequencer?.id ?? -1, port: { type: "rate" } } });
+    const rate = (): number | undefined => client.telemetry.value("modulation", sequencer?.id ?? -1, { type: "rate" }, "effective");
+    const [low, high] = MODULATOR_FIELD_RANGES.rate;
+    const set = sequencer?.kind === "modulator" && sequencer.source.type === "steps" ? sequencer.source.rate : Number.NaN;
+    expect(set, "a new step sequencer goes at eight steps a second").toBe(8);
+    await until(() => Math.abs((rate() ?? 0) - valueAt(fractionOf(set, low, high, "log") + 1 * 0.5, low, high, "log")) < 1e-3, "the rate with the LFO at its top");
+  });
+
   test("is kept to the range for a setting that is turned by distances, a sustain, when the LFO would take it past the end, and for a setting on the knob, a rate, when it would take it past either", async () => {
     // A second LFO at its top (a sine, a quarter of a period in) drives the sustain of an envelope, 0.7 on 0 to 1, at depth 1: 0.7 + 1 x 1 is past the top.
     const time = { seconds: 0.25 / MODULATOR_FIELD_DEFAULTS.rate };

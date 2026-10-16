@@ -1612,7 +1612,7 @@ export class MockServer {
       const cable = edges.find((e) => isModulation(e) && e.id === port.edge);
       if (!cable || !isModulation(cable)) return 0;
       [base, range] = [cable.amount, DEPTH_RANGE];
-    } else if (port.type === "rate" && node.source.type === "lfo") {
+    } else if (port.type === "rate" && (node.source.type === "lfo" || node.source.type === "steps")) {
       [base, range] = [node.source.rate, MODULATOR_FIELD_RANGES.rate];
     } else if ((port.type === "attack" || port.type === "decay" || port.type === "sustain" || port.type === "release") && node.source.type === "envelope") {
       [base, range] = [node.source[port.type], MODULATOR_FIELD_RANGES[port.type]];
