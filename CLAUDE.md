@@ -386,6 +386,8 @@ or sibling group modulators. See "Group modulators" above.)
 type = "lfo"            # optional, "lfo" is the default
 waveform = "sine"       # sine, triangle, saw, square, random, smooth (default: sine)
 rate = 0.5              # Hz (default: 1.0; not below 0: a file with a negative rate is refused)
+retrigger = true        # a note starts it again at the start of its wave (default: false: it runs free)
+fade = 0.5              # seconds it takes to come in from nothing after a note, 0 to 5 (default: 0: none)
 
 [[instrument.modulator.target]]
 param = "cutoff"        # parameter name (resolved within `slot`'s plugin)
@@ -410,6 +412,9 @@ cycles are counted as the phase wraps (`Modulator::tick`), so that turning the r
 that goes round more than once in a buffer counts every cycle. The page's mock engine draws the same numbers from the same hash
 (`web/src/client/noise.ts`, pinned to the engine's by a table that the engine writes, `fixtures/noise.json`), with the node's
 id for the seed.
+
+**An LFO's key** (step 66, `docs/web-ui.md` D66): two settings that follow the notes, both off in a file that has neither (a session that was written before them is the sound it was, to the last bit: `a_note_changes_nothing_of_an_lfo_that_neither_retriggers_nor_fades`). With `retrigger = true` a note (a note-on with a velocity, on any channel: the notes of the lane after its range, its remap, its pattern and its transpose, or those of any member for a group's LFO, as a step sequencer's retrigger and an envelope hear them) puts the LFO at the start of its wave again: in the buffer that has the note it puts out what the wave is at its start, and it goes on from there at its rate (`a_note_starts_an_lfo_that_retriggers_again_at_the_start_of_its_wave`), and a `random` or `smooth` wave takes the next number, since a note is the start of a new cycle (`a_random_lfo_that_retriggers_takes_the_next_number_with_every_note`). With `fade = N` (seconds, 0 to 5, held to it when a file is loaded) what it puts out is multiplied by the part of N that has gone by since the last note (`age / fade`, at most 1), so that it comes in from nothing: it is at full until the first note, every note starts the fade again from nothing whether or not the wave starts again, and what is published (the node's trace, the dots of the knobs it drives) is the faded output (`an_lfo_with_a_fade_rests_at_full_until_a_note_and_then_comes_in_over_the_fade`, `a_note_starts_the_fade_again_whether_or_not_the_lfo_retriggers_and_the_wave_of_one_that_does_not_goes_on`). Both are applied once a buffer, as every modulator is: a note is heard at the start of the buffer that has it. In the engine they are `ModSource::Lfo { retrigger, fade, age }` (`ModSource::lfo` and `with_key` make one, and `GraphCommand::SetModulatorKey` sets both of a lane's or a group's LFO and leaves it where it is in its wave), in the model `ModSourceSlot::Lfo { retrigger, fade }`, and in the intents `ModulatorField::Retrigger` (the switch a step sequencer has too) and `ModulatorField::Fade` (`SetModulatorField`: held to 0 to 5, the switch rounded, a step of the history). No cable ends at either (they are a person's, as a step sequencer's glide and length are): no port, no telemetry slot, no cross-mod field. In the file they are `retrigger = true` and `fade = 0.5` on an `lfo` modulator, written only when they are not what they are without them; the key `retrigger` is a step sequencer's too and its default is the kind's (a note starts a step sequencer again unless the file says it does not, and does not start an LFO unless it says it does: `ModulatorConfig.retrigger` is an `Option<bool>` that the loader reads by kind). The LFO's pane has them after its rate (Type, Waveform, Rate, Retrigger, Fade, then the targets). The page has a choice `Retrigger` and a knob `Fade` (`none` at 0) after the rate and the wave on its node, and the mock engine puts out the same (the wave from the note that started it again, the fade from the last note).
+TODO: a retriggering LFO starts at the start of its wave and nowhere else (a start phase would do it), and its fade is a straight ramp. The mock engine's random LFO that retriggers takes the same number at every note where the engine's takes the next (by its code, `shape` of the cycles since the note: not tested). Neither is tempo-synced (see `docs/web-ui.md`, step 57, "Limits").
 
 Modulators always serialize under `[[instrument.modulator]]` (the instrument
 level), never under an effect. Older sessions that nested `[[...effect.
@@ -1107,7 +1112,7 @@ A step of `Left` / `Right` is a twentieth of the range of the row (a hundredth w
 for them the range is a ratio and a step multiplies by that fraction of it: a rate by 1.53 (1.09 with `Shift`, 2.34 with
 `Ctrl`), a time by 1.58 (1.10, 2.51), and `Left` divides by the same, so a step up and a step down of one size give back
 the value. It is the scale that the page's knobs turn them on (`ModulatorField::taper`, which the page reads from
-the generated constants). A sustain and the depth of a cable move by 0.05 (0.01, 0.10).
+the generated constants). A sustain and the depth of a cable move by 0.05 (0.01, 0.10), and an LFO's fade, which runs from 0 to 5 seconds, by a twentieth of that, 0.25 s (0.05, 0.5).
 TODO: the bar of a rate or a time is still linear (0.01 to 50 Hz in one scale) though a step on it is a ratio, and so is a drag
 on it with the mouse; a bar and a drag on the log scale would match a step and the page's knob.
 
