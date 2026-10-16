@@ -37,7 +37,7 @@ cargo build --release
 ./target/release/tang play examples/basic.toml
 ```
 
-`examples/basic.toml` loads the built-in sine instrument. Try `examples/split.toml` for a multi-instrument session, and the sounds that show what the built-in plugins do: `supersaw.toml`, `wind.toml`, `bell.toml`, `arp.toml` (hold a key), `pwm.toml`, `epiano.toml`, `sync-lead.toml`, `sub-bass.toml` and `echo.toml` (`tang serve examples/bell.toml` for the browser). Or run `tang` with no arguments to start with a new default session (saved under `~/.config/tang/sessions/` on the first `Ctrl+S`).
+`examples/basic.toml` loads the built-in sine instrument. Try `examples/split.toml` for a multi-instrument session, and the sounds that show what the built-in plugins do: `supersaw.toml`, `wind.toml`, `bell.toml`, `arp.toml` (hold a key), `pwm.toml`, `epiano.toml`, `sync-lead.toml`, `sub-bass.toml`, `fold.toml` and `echo.toml` (`tang serve examples/bell.toml` for the browser). Or run `tang` with no arguments to start with a new default session (saved under `~/.config/tang/sessions/` on the first `Ctrl+S`).
 
 ## Status
 
