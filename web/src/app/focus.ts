@@ -3,20 +3,34 @@
 // has been measured again, a few frames later: asking at once does nothing. So the focus is asked for
 // a frame at a time until it is had, or for a while.
 
+/** Which time of letting go of what is waiting this is (`cancelPendingFocus`): a request that was made before it is let go. */
+let epoch = 0;
+
 /** Focus the element with this `id`, now or as soon as it can be: a frame at a time, `tries` more times at most. */
-export function focusWhenPossible(id: string, tries = 30): void {
+export function focusWhenPossible(id: string, tries = 30, asked = epoch): void {
+  if (asked !== epoch) return;
   const target = document.getElementById(id);
   target?.focus();
   if (target && document.activeElement === target) return;
   if (tries > 0) {
     requestAnimationFrame(() => {
-      focusWhenPossible(id, tries - 1);
+      focusWhenPossible(id, tries - 1, asked);
     });
   }
 }
 
 /** Which request of `keepFocus` is the latest: an earlier one is let go. */
 let latestKeeping = 0;
+
+/**
+ * Let go of every request that is still waiting for a frame, of `focusWhenPossible` and of `keepFocus`. They count frames and not time, so that one can outlive the page it was
+ * made for, and take the focus for an element of the next page that has the same `id`: the tests are the only pages that are built again in the same window, and they
+ * call this after each (`src/test-setup.ts`).
+ */
+export function cancelPendingFocus(): void {
+  epoch += 1;
+  latestKeeping += 1;
+}
 
 /**
  * Keep the focus on the element with this `id` through a change of the page that moves the element in the page: a browser lets the focus of an

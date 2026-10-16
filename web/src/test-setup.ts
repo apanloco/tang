@@ -2,7 +2,14 @@
 // measures its nodes by, so the parts of the browser it asks are made up here: every element
 // is as big as its style says (or one pixel), an element that is observed for its size is
 // told at once what it is, and nothing is under any point. Without a window (the tests that need
-// none) it does nothing.
+// none) it does nothing. After each test, what is still waiting for a frame to give the focus back
+// to something is let go of: it would take the focus for an element of the next test's page.
+import { afterEach } from "vitest";
+
+import { cancelPendingFocus } from "./app/focus";
+
+afterEach(cancelPendingFocus);
+
 if (typeof window !== "undefined") {
   class ObserverOfSizes {
     constructor(private readonly callback: (entries: unknown[], observer: unknown) => void) {}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { focusWhenPossible, keepFocus } from "./focus";
+import { cancelPendingFocus, focusWhenPossible, keepFocus } from "./focus";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -116,6 +116,38 @@ describe("keeping the focus on something that the page moves", () => {
     keepFocus("kept4", 3);
     await frames(8);
     b.blur();
+    await frames(3);
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe("letting go of what is waiting for a frame", () => {
+  test("a request that is cancelled gives the focus to nothing, whatever it had left to try", async () => {
+    document.body.innerHTML = '<button id="b">b</button>';
+    keepFocus("b", 20);
+    expect(document.activeElement?.id).toBe("b");
+    (document.activeElement as HTMLElement).blur();
+    cancelPendingFocus();
+    await frames(3);
+    expect(document.activeElement).toBe(document.body);
+    focusWhenPossible("late", 30);
+    cancelPendingFocus();
+    document.body.insertAdjacentHTML("beforeend", '<button id="late">l</button>');
+    await frames(3);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  // The two tests that follow are one: the first leaves a request that has frames left to try, and the second is a page that has an element of the same name (as the
+  // next test of a page that is built again has) and that nothing is keeping the focus for. (A request that outlived its test took the focus for a button of the next one:
+  // `PatchView.order.test.tsx` failed once in a whole run, when the frames were slow enough for the twenty of one to go on past the test's own wait.)
+  test("(first) leaves a request that has frames to try", () => {
+    document.body.innerHTML = '<button id="stale">s</button>';
+    keepFocus("stale", 20);
+    expect(document.activeElement?.id).toBe("stale");
+  });
+
+  test("(second) a request of the test before does not take the focus for the page that this one has", async () => {
+    document.body.innerHTML = '<button id="stale">s</button>';
     await frames(3);
     expect(document.activeElement).toBe(document.body);
   });
