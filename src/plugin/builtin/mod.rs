@@ -8,6 +8,21 @@ use filter::Filter;
 use oscillator::{Oscillator, Waveform};
 use reverb::Reverb;
 
+/// Soft-clip a signal that feeds back on itself (a reverb's tail, a delay's echoes) so that it can't leave the [-1, 1] range the audio
+/// device expects. A feedback loop with a gain near 1 builds up energy under sustained input (steady-state gain ~= 1/(1 - feedback));
+/// left unbounded that clips harshly at the DAC and crackles. This is the identity below ±KNEE and a C1-smooth saturation above,
+/// asymptoting to ±1 — transparent at normal levels, gentle compression when hot.
+#[inline]
+fn soft_clip(x: f32) -> f32 {
+    const KNEE: f32 = 0.8;
+    let a = x.abs();
+    if a <= KNEE {
+        x
+    } else {
+        x.signum() * (KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh())
+    }
+}
+
 /// Load a built-in plugin by source string (e.g. `"builtin:osc"`).
 ///
 /// `osc` is the unified oscillator (pick the waveform via its `waveform`
@@ -170,6 +185,18 @@ mod tests {
                 assert!(p.group.iter().all(|g| !g.is_empty()), "{what}: a section has a name");
             }
         }
+    }
+
+    #[test]
+    fn soft_clip_transparent_then_bounded() {
+        // Transparent below the knee.
+        assert_eq!(soft_clip(0.5), 0.5);
+        assert_eq!(soft_clip(-0.5), -0.5);
+        // C0-continuous at the knee.
+        assert!((soft_clip(0.8) - 0.8).abs() < 1e-6);
+        // Bounded to (-1, 1) no matter how hot.
+        assert!((0.99..=1.0).contains(&soft_clip(100.0)));
+        assert!((-1.0..=-0.99).contains(&soft_clip(-100.0)));
     }
 
     #[test]
