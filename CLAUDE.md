@@ -521,14 +521,17 @@ step, on its way to the next one's; the last goes to the first, and not to a ste
 the glide, the length and the retrigger are a person's, and no cable ends at them. The steps past the length keep their values, so that a sequence that is shortened and
 lengthened again is as it was. With `retrigger` on any note-on with a velocity, on any channel, puts it at its first step (a lane's: the notes the lane takes; a group's: the
 notes of any of its members). Where it is, the step as the whole part of the number and how far into it as the fraction, is published for a playhead in a telemetry slot
-of its own after its output's (`ModulatorSlot::position`, `SlotKind::ModPosition`, `SetModulatorPosition`: `None` if the slots had run out, and then the page has no playhead).
+of its own after its output's (`ModulatorSlot::position`, `SlotKind::ModPosition`, `SetModulatorPosition`: `None` if the slots had run out, and then neither the page nor the terminal has a playhead). The step it is at is `step_at(length, position)` (`plugin::chain`:
+the whole part of the position brought round at the length, which `steps_output` is made from too), which the page's `playheadStep` is pinned to by the same fixture (`fixtures/steps.json`, its `steps` list).
 All sixteen values are one intent, `SetSteps { node, values }`, told as `StepsSet` (each held to -1..1; a list that is not sixteen long, a value that is not a number and a node
 that is no step sequencer are refused, with nothing changed), so that a stroke across the bars is one step of the history ("set steps", `Key::Steps`); the engine is given
 them with the length, the glide and the retrigger in one command (`SetModulatorSteps`, `controller::steps_command`) and the rate by the LFO's (`SetModulatorRate`). In the tree
 it is `~ Steps 16 8.0Hz → Filter: cutoff (50%)` (the steps in use, and the rate), and its pane, "Step sequencer", has the rate, the glide, the length, a retrigger row (off and on, a list), a row for each of the sixteen steps
 (`Left` / `Right` move one by 5% of its range, and `Enter` takes a number, held to -1 … 1) and the targets. The page draws it as a node with four controls and sixteen bars with a playhead
 (`ui/StepBars.tsx`, see "Web UI").
-TODO: the terminal's pane does not dim the steps past the length and has no playhead (the page has both): its rows are text, and the terminal does not read the telemetry.
+The terminal has both too: the step that the sequencer is at is marked in its pane (`Step 3 ▶`, magenta) and the steps past the length are dimmed (`RowLook` in `src/tui/mod.rs`;
+`State::selected_playhead` reads the position from the telemetry on every frame that is drawn, about ten a second, so a sequencer at 8 Hz is seen to hop about a step a frame). The row under the
+cursor keeps its look and is bold (a step past the length bold and dim, the step it is at magenta and bold); a sequencer whose telemetry slot ran out has no marker.
 TODO: a step is held to a hundredth when it is painted on the page, which is a hundredth of the range of what it drives at depth 1 (a detune of ±24 semitones is 0.48 of a
 semitone, and 0.12 at depth 0.25: out of tune by twelve cents; the terminal's `Enter` takes a number to as many places as a person types): a sequencer for a melody wants a
 grid of semitones for what it drives, and a rate that follows the tempo (see `docs/web-ui.md`, step 57, "Limits").
