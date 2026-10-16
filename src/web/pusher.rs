@@ -43,7 +43,7 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
         .iter()
         .map(|entry| match entry.kind {
             SlotKind::Clips => telemetry.count_index(entry.slot) as f32,
-            SlotKind::Peak | SlotKind::ModOutput | SlotKind::Effective => telemetry.load_index(entry.slot),
+            SlotKind::Peak | SlotKind::ModOutput | SlotKind::ModPosition | SlotKind::Effective => telemetry.load_index(entry.slot),
         })
         .collect();
     telemetry_frame(channel, layout.rev, &values)
@@ -121,7 +121,7 @@ mod tests {
     use crate::telemetry::Slot;
 
     /// A session with everything a layout has entries for: two lanes, one with a filter
-    /// and an LFO that drives its cutoff.
+    /// and an LFO that drives its cutoff, the other with a step sequencer.
     const SESSION: &str = r#"
 [[instrument]]
 plugin = "builtin:osc"
@@ -140,6 +140,9 @@ depth = 0.5
 
 [[instrument]]
 plugin = "builtin:osc"
+
+[[instrument.modulator]]
+type = "steps"
 "#;
 
     fn layout() -> TelemetryLayout {

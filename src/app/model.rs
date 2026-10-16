@@ -323,6 +323,11 @@ impl SessionModel {
         for (rack, modulators) in racks {
             for (m, modulator) in modulators.iter().enumerate() {
                 claim(modulator.output, format!("modulator {m} of {rack}"))?;
+                if matches!(modulator.source, ModSourceSlot::Steps { .. }) {
+                    claim(modulator.position, format!("the position of modulator {m} of {rack}"))?;
+                } else if modulator.position.is_some() {
+                    return Err(format!("modulator {m} of {rack} is not a step sequencer and has a position"));
+                }
                 for (t, target) in modulator.targets.iter().enumerate() {
                     let whose = format!("target {t} of modulator {m} of {rack}");
                     if target.edge.0 >= self.ids.next_edge {
@@ -1283,6 +1288,9 @@ pub struct ModulatorSlot {
     /// Where the audio thread publishes the modulator's output (telemetry);
     /// `None` if the slots had run out.
     pub output: Option<Slot>,
+    /// Where the audio thread publishes where a step sequencer is (telemetry): the whole part of the number is the step it is at, the fraction how far
+    /// into it. `None` for any other modulator, and for a step sequencer if the slots had run out.
+    pub position: Option<Slot>,
 }
 
 #[derive(Debug)]
@@ -1598,6 +1606,14 @@ pub fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
 }
 
 impl ModulatorSlot {
+    /// The telemetry slots of a modulator that is made with `source`: the one it puts its output in and, for a step sequencer, the one that says where it is, in that
+    /// order. Each is `None` if the allocator had run out of them: the modulator works all the same, and a page has nothing to draw from.
+    pub fn alloc_slots(slots: &mut SlotAllocator, source: &ModSourceSlot) -> (Option<Slot>, Option<Slot>) {
+        let output = slots.alloc();
+        let position = if matches!(source, ModSourceSlot::Steps { .. }) { slots.alloc() } else { None };
+        (output, position)
+    }
+
     /// The intent that makes row `row` what `f` makes of what it is now: a setting of the
     /// source (an LFO's rate, a stage of an envelope) or the depth of a target. `None` for
     /// a row that is not a number (the type, the waveform, a separator, a control's source).
@@ -1621,6 +1637,20 @@ impl ModulatorSlot {
             ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Separator => None,
         }
     }
+}
+
+/// The commands that tell the audio thread where the modulator at `index` of the rack at `location` puts its output and, for a step sequencer, where it is: one for each
+/// slot it has, the output's first.
+pub fn modulator_slot_commands(location: ModulatorLocation, index: usize, output: Option<Slot>, position: Option<Slot>) -> Vec<plugin::chain::GraphCommand> {
+    use plugin::chain::GraphCommand;
+    let mut commands = Vec::new();
+    if let Some(slot) = output {
+        commands.push(GraphCommand::SetModulatorOutput { location, index, slot });
+    }
+    if let Some(slot) = position {
+        commands.push(GraphCommand::SetModulatorPosition { location, index, slot });
+    }
+    commands
 }
 
 /// Map a modulator's param-pane row `pa` to a cross-mod target on that
@@ -3541,11 +3571,31 @@ param = "pan"
         assert!(model.remove_modulator_at(ModulatorLocation::Group(0), 0).is_none());
     }
 
+    #[test]
+    fn the_check_wants_a_position_slot_for_a_step_sequencer_and_for_no_other_modulator() {
+        let session = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n[[instrument.modulator]]\n";
+        let mut model = crate::app::testutil::load(session).model;
+        model.check_ids().unwrap();
+        let (output, position) = (model.instruments[0].modulators[0].output, model.instruments[0].modulators[0].position);
+        assert!(position.is_some());
+
+        model.instruments[0].modulators[0].position = None;
+        assert_eq!(model.check_ids().unwrap_err(), "the position of modulator 0 of lane 0 has no telemetry slot");
+
+        model.instruments[0].modulators[0].position = position;
+        model.instruments[0].modulators[1].position = position;
+        assert_eq!(model.check_ids().unwrap_err(), "modulator 1 of lane 0 is not a step sequencer and has a position");
+
+        model.instruments[0].modulators[1].position = None;
+        model.instruments[0].modulators[0].position = output;
+        assert!(model.check_ids().unwrap_err().ends_with("which another node has too"), "a position is not its modulator's output");
+    }
+
     /// A modulator to put in, told apart by its node, with one cable to the rate of the modulator at index 0.
     fn spare_modulator(node: u32) -> ModulatorSlot {
         let mut cable = spare_cable(900 + node);
         cable.kind = K::ModulatorRate { mod_index: 0 };
-        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0 }, targets: vec![cable], output: None }
+        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0 }, targets: vec![cable], output: None, position: None }
     }
 
     #[test]
@@ -3750,6 +3800,7 @@ param = "pan"
             source: ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate: 2.0 },
             targets,
             output: None,
+            position: None,
         }
     }
 
@@ -3759,6 +3810,7 @@ param = "pan"
             source: ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
             targets,
             output: None,
+            position: None,
         }
     }
 
@@ -3768,6 +3820,7 @@ param = "pan"
             source: ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false },
             targets,
             output: None,
+            position: None,
         }
     }
 
@@ -4620,7 +4673,7 @@ depth = 0.5
     }
 
     fn knob(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
-        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::Macro { value: 0.25 }, targets, output: None }
+        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::Macro { value: 0.25 }, targets, output: None, position: None }
     }
 
     #[test]
@@ -4648,7 +4701,7 @@ depth = 0.5
     }
 
     fn sequencer(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
-        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::new_steps(), targets, output: None }
+        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::new_steps(), targets, output: None, position: None }
     }
 
     #[test]

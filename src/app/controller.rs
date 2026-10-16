@@ -42,7 +42,7 @@ use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
     Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
-    PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph,
+    PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph, modulator_slot_commands,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -450,13 +450,13 @@ impl Controller {
                 GraphCommand::InsertGroupModulator { group, index, source: graph_source }
             }
         });
-        // Its output is published from now on.
-        let output = self.model.slots.alloc();
-        if let Some(slot) = output {
-            let _ = self.cmd_tx.send(GraphCommand::SetModulatorOutput { location: at, index, slot });
+        // Its output is published from now on, and where it is if it is a step sequencer.
+        let (output, position) = ModulatorSlot::alloc_slots(&mut self.model.slots, &source);
+        for command in modulator_slot_commands(at, index, output, position) {
+            let _ = self.cmd_tx.send(command);
         }
         let node = self.model.alloc_node();
-        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output });
+        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output, position });
         Some(index)
     }
 
@@ -3933,6 +3933,45 @@ plugin = "builtin:osc"
             ]
         );
         ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_step_sequencer_gets_a_position_slot_after_its_output_slot_and_another_modulator_gets_none() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        engine.drain();
+        ctl.add_modulator(ModulatorLocation::Lane(0), ModSourceSlot::new_steps());
+        ctl.add_modulator(ModulatorLocation::Group(0), ModSourceSlot::new_steps());
+        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
+        let slots = |m: &ModulatorSlot| (m.output.unwrap().index(), m.position.map(|slot| slot.index()));
+        let (lane, group, lfo) = (slots(&ctl.model.instruments[0].modulators[1]), slots(&ctl.model.groups[0].modulators[1]), slots(&ctl.model.instruments[0].modulators[2]));
+        assert_eq!((lane.1, group.1, lfo.1), (Some(lane.0 + 1), Some(group.0 + 1), None), "the position's slot is the one after the output's");
+        let (_commands, telemetry) = engine.drain();
+        assert_eq!(
+            telemetry,
+            [
+                format!("SetModulatorOutput Lane(0) index=1 slot={}", lane.0),
+                format!("SetModulatorPosition Lane(0) index=1 slot={}", lane.0 + 1),
+                format!("SetModulatorOutput Group(0) index=1 slot={}", group.0),
+                format!("SetModulatorPosition Group(0) index=1 slot={}", group.0 + 1),
+                format!("SetModulatorOutput Lane(0) index=2 slot={}", lfo.0),
+            ]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_step_sequencer_that_finds_one_slot_left_has_its_output_and_no_position() {
+        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
+        while ctl.model.slots.high_water() < crate::telemetry::CAPACITY - 1 {
+            ctl.model.slots.alloc();
+        }
+        engine.drain();
+        ctl.add_modulator(ModulatorLocation::Lane(0), ModSourceSlot::new_steps());
+        let added = &ctl.model.instruments[0].modulators[1];
+        assert_eq!((added.output.map(|slot| slot.index()), added.position), (Some(crate::telemetry::CAPACITY - 1), None));
+        let (commands, telemetry) = engine.drain();
+        assert_eq!(commands.len(), 1, "the modulator is made all the same: {commands:?}");
+        assert_eq!(telemetry, [format!("SetModulatorOutput Lane(0) index=1 slot={}", crate::telemetry::CAPACITY - 1)]);
     }
 
     #[test]

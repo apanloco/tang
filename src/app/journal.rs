@@ -31,7 +31,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
+use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
 use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
@@ -451,7 +451,7 @@ impl Controller {
             Inverse::Modulator { at, index, modulator, bases } => {
                 debug_assert_eq!(modulator.targets.len(), bases.len(), "a base for each cable");
                 let source = mod_source_slot_to_graph(&modulator.source);
-                let output = modulator.output;
+                let (output, position) = (modulator.output, modulator.position);
                 let cables: Vec<ModTarget> = modulator.targets.iter().zip(bases).map(|(slot, base)| cable_for_the_audio_thread(slot, base)).collect();
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
                 let Some(place) = self.model.insert_modulator_at(at, index, modulator) else { return };
@@ -459,9 +459,9 @@ impl Controller {
                     ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index: place, source },
                     ModulatorLocation::Group(group) => GraphCommand::InsertGroupModulator { group, index: place, source },
                 });
-                // It publishes what it puts out where it did, and its own cables come after it, in the order they had.
-                if let Some(slot) = output {
-                    let _ = self.cmd_tx.send(GraphCommand::SetModulatorOutput { location: at, index: place, slot });
+                // It publishes what it puts out (and where it is) where it did, and its own cables come after it, in the order they had.
+                for command in modulator_slot_commands(at, place, output, position) {
+                    let _ = self.cmd_tx.send(command);
                 }
                 for target in cables {
                     let _ = self.cmd_tx.send(match at {

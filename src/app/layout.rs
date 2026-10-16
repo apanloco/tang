@@ -63,6 +63,8 @@ pub enum SlotKind {
     ModOutput,
     /// The value a parameter was set to this buffer, modulation included.
     Effective,
+    /// Where a step sequencer is: the whole part of the number is the step it is at, the fraction how far into it.
+    ModPosition,
 }
 
 impl TelemetryLayout {
@@ -101,6 +103,9 @@ impl SessionModel {
             for modulator in rack {
                 if let Some(slot) = modulator.output {
                     modulation.push(entry(slot, modulator.node, Port::ModOut, SlotKind::ModOutput));
+                }
+                if let Some(slot) = modulator.position {
+                    modulation.push(entry(slot, modulator.node, Port::ModOut, SlotKind::ModPosition));
                 }
             }
         }
@@ -327,6 +332,35 @@ param = "detune"
         let added = after.modulation.last().unwrap();
         assert_eq!((added.kind, added.node, added.port), (SlotKind::Effective, ctl.model.instruments[0].node, Port::Param { index: 1 }));
         assert_eq!(Some(added.slot), ctl.model.instruments[0].modulators[0].targets[0].effective.map(|s| s.index()));
+    }
+
+    #[test]
+    fn a_step_sequencers_position_is_listed_right_after_its_output_and_no_other_modulator_has_one() {
+        let model = load(
+            "[[group]]\n[[group.modulator]]\ntype = \"steps\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n\
+             [[instrument.modulator]]\ntype = \"steps\"\n[[instrument.modulator]]\n",
+        )
+        .model;
+        let (group, lane_steps, lane_lfo) = (&model.groups[0].modulators[0], &model.instruments[0].modulators[0], &model.instruments[0].modulators[1]);
+        let at = |slot: Option<crate::telemetry::Slot>| slot.unwrap().index();
+        assert_eq!(
+            entries(&model.telemetry_layout().modulation),
+            [
+                (at(group.output), group.node, Port::ModOut, SlotKind::ModOutput),
+                (at(group.position), group.node, Port::ModOut, SlotKind::ModPosition),
+                (at(lane_steps.output), lane_steps.node, Port::ModOut, SlotKind::ModOutput),
+                (at(lane_steps.position), lane_steps.node, Port::ModOut, SlotKind::ModPosition),
+                (at(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_position_entry_is_written_as_mod_position() {
+        let layout = TelemetryLayout::new(Vec::new(), vec![LayoutEntry { slot: 7, node: NodeId(3), port: Port::ModOut, kind: SlotKind::ModPosition }]);
+        let json = serde_json::to_value(&layout).unwrap();
+        assert_eq!(json["modulation"], json!([{"slot": 7, "node": 3, "port": {"type": "modOut"}, "kind": "modPosition"}]));
     }
 
     #[test]

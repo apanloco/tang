@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { stepsFixture } from "./fixtures";
-import { stepsOutput } from "./steps";
+import { stepsOutput, stepsPlace } from "./steps";
 
 // What a step sequencer puts out (`plugin::chain::steps_output`): the page's law, pinned to the engine's by what the engine makes of a spread of cases (the fixture).
 describe("what a step sequencer puts out", () => {
@@ -56,5 +56,31 @@ describe("what a step sequencer puts out", () => {
     expect(stepsOutput(ends, 99, 16, 0), "which goes round").toBe(0.3);
     expect(stepsOutput(values, 3, Number.NaN, 0.5)).toBe(0.5);
     expect(stepsOutput(values, 3, -0.5, 0)).toBe(-1);
+  });
+});
+
+// Where a step sequencer is, as the engine publishes it for a playhead: the step it is at as the whole part of the number, how far into it as the fraction.
+describe("where a step sequencer is", () => {
+  test("goes round at the length: the whole part is the step, the fraction how far into it", () => {
+    expect(stepsPlace(3, 0, 16)).toBe(0);
+    expect(stepsPlace(3, 2.5, 16)).toBe(2.5);
+    expect(stepsPlace(3, 3, 16)).toBe(0);
+    expect(stepsPlace(3, 4.25, 16)).toBe(1.25);
+    expect(stepsPlace(3, -0.5, 16)).toBe(2.5);
+  });
+
+  test("counts a length of none as one and one of too many as all the steps, and a place that is not a number as the beginning", () => {
+    expect(stepsPlace(0, 2.5, 16)).toBe(0.5);
+    expect(stepsPlace(99, 17.5, 16)).toBe(1.5);
+    expect(stepsPlace(3, Number.NaN, 16)).toBe(0);
+    expect(stepsPlace(3, Number.POSITIVE_INFINITY, 16)).toBe(0);
+  });
+
+  test("is the place that the output of the step sequencer is worked out from", () => {
+    const values = Array.from({ length: 16 }, (_, step) => step / 10);
+    for (const position of [0, 0.5, 2.999, 3, 7.25, 15.5, 16.5, -1.5]) {
+      const place = stepsPlace(5, position, 16);
+      expect(stepsOutput(values, 5, position, 0), `at ${String(position)}`).toBe(values[Math.floor(place)]);
+    }
   });
 });

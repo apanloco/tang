@@ -346,6 +346,28 @@ describe("a request", () => {
     expect(MAX_STEPS).toBe(16);
   });
 
+  test("lists the position of a step sequencer that is added right after its output, in the slot after it, and no other modulator has one", async () => {
+    const client = await open(new MockServer());
+    const parent = nodeNamed(tracerSnapshot, "Oscillator").id;
+    await client.request({ type: "addModulator", parent, kind: "steps" });
+    await client.request({ type: "addModulator", parent, kind: "lfo" });
+    const modulation = client.state.snapshot?.telemetry.modulation ?? [];
+    const sequencer = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
+    const output = modulation.findIndex((entry) => entry.node === sequencer?.id && entry.kind === "modOutput");
+    expect(output).toBeGreaterThanOrEqual(0);
+    expect(modulation[output + 1]).toEqual({ slot: (modulation[output]?.slot ?? -2) + 1, node: sequencer?.id, port: { type: "modOut" }, kind: "modPosition" });
+    expect(modulation.filter((entry) => entry.kind === "modPosition")).toHaveLength(1);
+  });
+
+  test("takes the position of a step sequencer out of the layout with it", async () => {
+    const client = await open(new MockServer());
+    await client.request({ type: "addModulator", parent: nodeNamed(tracerSnapshot, "Oscillator").id, kind: "steps" });
+    const sequencer = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
+    expect(client.state.snapshot?.telemetry.modulation.filter((entry) => entry.node === sequencer?.id).map((entry) => entry.kind)).toEqual(["modOutput", "modPosition"]);
+    await client.request({ type: "removeNode", node: sequencer?.id ?? -1 });
+    expect(client.state.snapshot?.telemetry.modulation.filter((entry) => entry.node === sequencer?.id)).toEqual([]);
+  });
+
   test("that the server rejects fails with its code, and changes nothing", async () => {
     const server = new MockServer();
     const client = await open(server);
@@ -3370,14 +3392,53 @@ describe("what a macro puts out and does in the mock engine: the number it is se
 
 describe("what a step sequencer puts out and does in the mock engine: its steps at its rate, which move what it drives around where the user set it", () => {
   /** The tracer's LFO as a step sequencer of two steps, 0.5 and -0.5, that goes through one a second: its cable to the cutoff (which the user set to 0.5) is at depth 0.4. */
-  const withSequencer = (glide: number, retrigger: boolean): Snapshot => {
+  const withSequencer = (glide: number, retrigger: boolean, rate = 1): Snapshot => {
     const values = [0.5, -0.5, ...Array<number>(14).fill(0)];
-    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Steps", source: { type: "steps" as const, values, length: 2, rate: 1, glide, retrigger } } : node));
-    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } };
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Steps", source: { type: "steps" as const, values, length: 2, rate, glide, retrigger } } : node));
+    // (It has a place for its position, in the slot after the last that the session has, where the controller would put it.)
+    const slot = Math.max(...tracerSnapshot.telemetry.modulation.map((entry) => entry.slot)) + 1;
+    const position = { slot, node: lfo.id, port: { type: "modOut" as const }, kind: "modPosition" as const };
+    const modulation = [position, ...tracerSnapshot.telemetry.modulation];
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes }, telemetry: { ...tracerSnapshot.telemetry, modulation } };
   };
   const cutoffOf = (client: Client): number | undefined => client.telemetry.value("modulation", filter.id, { type: "param", index: 0 }, "effective");
   const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+  const positionOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modPosition");
   const near = (value: number | undefined, expected: number): boolean => value !== undefined && Math.abs(value - expected) < 1e-5;
+
+  test("says where it is: the step it is in as the whole part and how far into it as the fraction, at its rate, round at its length", async () => {
+    // Three steps a second, of two in use.
+    let now = 0.25;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withSequencer(0, false, 3), clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(positionOf(client), 0.75), "three quarters of the way into the first step");
+    now = 0.5;
+    await until(() => near(positionOf(client), 1.5), "half way into the second");
+    now = 0.75;
+    await until(() => near(positionOf(client), 0.25), "round again: its length is two, and 2.25 steps is a quarter of the way into the first");
+  });
+
+  test("is at the start of its first step at a note when it starts again at one, and goes on through the note when it does not", async () => {
+    // Four steps a second, of two in use: 5.3 s is 21.2 steps, which is 1.2 into the second round; a fifth of a second on is 22.0 (0, at the start of a round) without a note, and with one at 5.3, 0.8.
+    for (const [retrigger, expected] of [[false, 0], [true, 0.8]] as const) {
+      let now = 5.3;
+      const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withSequencer(0, retrigger, 4), clock: () => now }), { telemetry: ["modulation"] });
+      await until(() => near(positionOf(client), 1.2), `in the second step at 5.3 (retrigger ${String(retrigger)})`);
+      client.noteOn(60, 100);
+      await quiet();
+      now = 5.5;
+      await until(() => near(positionOf(client), expected), `a fifth of a second after a note (retrigger ${String(retrigger)})`);
+    }
+  });
+
+  test("has no place for what is not a step sequencer: a position that is listed for an LFO is 0", async () => {
+    const slot = Math.max(...tracerSnapshot.telemetry.modulation.map((entry) => entry.slot)) + 1;
+    const position = { slot, node: lfo.id, port: { type: "modOut" as const }, kind: "modPosition" as const };
+    const snapshot: Snapshot = { ...tracerSnapshot, telemetry: { ...tracerSnapshot.telemetry, modulation: [position, ...tracerSnapshot.telemetry.modulation] } };
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot, clock: () => 0.4 }), { telemetry: ["modulation"] });
+    // (The LFO is a little over half way up at 0.4 s, which is what tells that a frame has come: before it the numbers are what the page has to start from.)
+    await until(() => (client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput") ?? 0) > 0.5, "a frame has come");
+    expect(positionOf(client)).toBe(0);
+  });
 
   test("puts out the value of the step that the time is in, which sets the cutoff to the user's value and the value times the depth of the range above it", async () => {
     let now = 0.25;

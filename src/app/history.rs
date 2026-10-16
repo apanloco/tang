@@ -2989,6 +2989,62 @@ depth = 0.9
         assert!(commands[4].starts_with("InsertModTarget inst=0 mod=2 target=0 kind=ModulatorAttack { mod_index: 1 }"), "{commands:?}");
     }
 
+    /// A lane with a step sequencer and an LFO after it.
+    const SEQUENCER: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n[[instrument.modulator]]\n";
+
+    #[test]
+    fn a_step_sequencer_that_is_taken_out_is_put_back_publishing_its_output_and_its_position_where_it_did() {
+        let (engine, mut ctl, _clock) = controller_over(load(SEQUENCER).model);
+        let sequencer = &ctl.model.instruments[0].modulators[0];
+        let (node, output, position) = (sequencer.node, sequencer.output.unwrap(), sequencer.position.unwrap());
+        engine.drain();
+        ctl.apply(Intent::RemoveNode { node }).unwrap();
+        engine.drain();
+        ctl.undo().unwrap();
+        let (_commands, slots) = engine.drain();
+        assert_eq!(
+            slots,
+            [
+                format!("SetModulatorOutput Lane(0) index=0 slot={}", output.index()),
+                format!("SetModulatorPosition Lane(0) index=0 slot={}", position.index()),
+            ]
+        );
+        assert_eq!(ctl.model.instruments[0].modulators[0].position, Some(position));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_step_sequencer_that_is_added_is_taken_out_by_undo_and_made_again_by_redo_with_slots_of_its_own() {
+        let (engine, mut ctl, _clock) = controller_over(load(SEQUENCER).model);
+        let lane = ctl.model.instruments[0].node;
+        engine.drain();
+        ctl.apply(Intent::AddModulator { parent: lane, kind: ModulatorKind::Steps }).unwrap();
+        let first = &ctl.model.instruments[0].modulators[2];
+        let (first_output, first_position) = (first.output.unwrap().index(), first.position.unwrap().index());
+        assert_eq!(first_position, first_output + 1);
+        let (_commands, slots) = engine.drain();
+        assert_eq!(
+            slots,
+            [
+                format!("SetModulatorOutput Lane(0) index=2 slot={first_output}"),
+                format!("SetModulatorPosition Lane(0) index=2 slot={first_position}"),
+            ]
+        );
+        ctl.undo().unwrap();
+        engine.drain();
+        ctl.redo().unwrap();
+        let again = &ctl.model.instruments[0].modulators[2];
+        let (output, position) = (again.output.unwrap().index(), again.position.unwrap().index());
+        assert_eq!(position, output + 1);
+        assert!(output > first_position, "the slots of what was taken out are not given again");
+        let (_commands, slots) = engine.drain();
+        assert_eq!(
+            slots,
+            [format!("SetModulatorOutput Lane(0) index=2 slot={output}"), format!("SetModulatorPosition Lane(0) index=2 slot={position}")]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
     #[test]
     fn a_modulator_of_a_group_is_put_back_by_the_groups_commands_and_a_members_with_the_cable_of_the_group_to_it_after_it() {
         let (engine, mut ctl, _clock) = controller_over(load(GROUP_CABLES).model);
@@ -3057,9 +3113,9 @@ depth = 0.9
             // Something puts it there without the history (as a front-end that edits the model by itself could): the node, or another modulator with the cable.
             let other = ctl.model.alloc_node();
             let spare = if own_cable {
-                crate::app::model::ModulatorSlot { node: other, source: ModSourceSlot::new_lfo(), targets: vec![copy], output: None }
+                crate::app::model::ModulatorSlot { node: other, source: ModSourceSlot::new_lfo(), targets: vec![copy], output: None, position: None }
             } else {
-                crate::app::model::ModulatorSlot { node, source: ModSourceSlot::new_lfo(), targets: Vec::new(), output: None }
+                crate::app::model::ModulatorSlot { node, source: ModSourceSlot::new_lfo(), targets: Vec::new(), output: None, position: None }
             };
             ctl.model.insert_modulator_at(crate::plugin::chain::ModulatorLocation::Lane(0), 4, spare).unwrap();
             let before = picture(&ctl);

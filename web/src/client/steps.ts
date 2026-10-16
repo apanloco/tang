@@ -8,8 +8,7 @@
  */
 export function stepsOutput(values: readonly number[], length: number, position: number, glide: number): number {
   const steps = Math.min(Math.max(Math.trunc(length), 1), values.length);
-  const rest = position % steps;
-  const place = Number.isFinite(position) ? (rest < 0 ? rest + steps : rest) : 0;
+  const place = stepsPlace(length, position, values.length);
   const step = Math.min(Math.floor(place), steps - 1);
   const within = place - step;
   const here = values[step] ?? 0;
@@ -17,4 +16,14 @@ export function stepsOutput(values: readonly number[], length: number, position:
   if (mix <= 0 || within <= 1 - mix) return here;
   const next = values[(step + 1) % steps] ?? 0;
   return here + (next - here) * ((within - (1 - mix)) / mix);
+}
+
+/**
+ * Where a step sequencer of `count` steps is at `position`, as the engine publishes it for a playhead (`Modulator::position_out`): the step it is at as the whole part, how far into it as
+ * the fraction, from 0 up to `length`, which it goes round at. A length of none is one and one of more steps than there are is all of them; a place that is not a number is the beginning.
+ */
+export function stepsPlace(length: number, position: number, count: number): number {
+  const steps = Math.min(Math.max(Math.trunc(length), 1), count);
+  const rest = position % steps;
+  return Number.isFinite(position) ? (rest < 0 ? rest + steps : rest) : 0;
 }

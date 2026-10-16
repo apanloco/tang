@@ -2307,7 +2307,6 @@ pub enum GraphCommand {
         slot: Slot,
     },
     /// Publish where a step sequencer is (its position) each buffer into `slot`. The slot stays with the modulator when others around it come and go.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends it from the next commit on"))]
     SetModulatorPosition {
         location: ModulatorLocation,
         index: usize,

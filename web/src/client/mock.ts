@@ -46,7 +46,7 @@ import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
-import { stepsOutput } from "./steps";
+import { stepsOutput, stepsPlace } from "./steps";
 import { fractionOf, isLog, valueAt } from "./travel";
 
 export interface MockOptions {
@@ -311,7 +311,7 @@ function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: Read
   const aimedBefore = new Set(cables.map((e) => aimKey(e.to.node, e.to.port)));
   const aimedAfter = new Set(edges.map((e) => aimKey(e.to.node, e.to.port)));
   const leaves = (entry: LayoutEntry): boolean => {
-    if (entry.kind === "modOutput") return nodesGone.has(entry.node);
+    if (entry.kind === "modOutput" || entry.kind === "modPosition") return nodesGone.has(entry.node);
     const key = aimKey(entry.node, entry.port);
     return entry.kind === "effective" && aimedBefore.has(key) && !aimedAfter.has(key);
   };
@@ -504,9 +504,11 @@ function withModulator(snapshot: Snapshot, parent: NodeId, kind: ModulatorKind, 
   const added: Node = { id: counters.node(), parent, name, kind: "modulator", source };
   const before = new Set(nodes.slice(0, at).filter((n) => n.kind === "modulator").map((n) => n.id));
   const outputs = snapshot.telemetry.modulation;
-  const place = outputs.findLastIndex((entry) => entry.kind === "modOutput" && before.has(entry.node)) + 1;
+  const place = outputs.findLastIndex((entry) => (entry.kind === "modOutput" || entry.kind === "modPosition") && before.has(entry.node)) + 1;
   const entry: LayoutEntry = { slot: counters.slot(), node: added.id, port: { type: "modOut" }, kind: "modOutput" };
-  const modulation = [...outputs.slice(0, place), entry, ...outputs.slice(place)];
+  // (A step sequencer says where it is too, in the slot after its output's, right after it.)
+  const position: LayoutEntry[] = source.type === "steps" ? [{ slot: counters.slot(), node: added.id, port: { type: "modOut" }, kind: "modPosition" }] : [];
+  const modulation = [...outputs.slice(0, place), entry, ...position, ...outputs.slice(place)];
   const session: Snapshot = {
     ...snapshot,
     graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] },
@@ -1536,6 +1538,13 @@ export class MockServer {
     }
   }
 
+  /** Where a step sequencer is at `seconds`: the step as the whole part and how far into it as the fraction, from the last note that started it again, or the start of the clock (`#modulatorOutput`). */
+  #stepsPosition(node: Node | undefined, seconds: number): number {
+    if (node?.kind !== "modulator" || node.source.type !== "steps") return 0;
+    const { source } = node;
+    return stepsPlace(source.length, Math.max(seconds - (this.#restarted.get(node.id) ?? 0), 0) * source.rate, source.values.length);
+  }
+
   /** The values of a channel's list in the layout, as of `seconds`; `peaks` is the meters' state, kept from frame to frame. */
   frame(channel: TelemetryChannel, seconds: number, peaks: Map<number, number>, elapsed: number): ArrayBuffer {
     // (The held notes follow no layout: a value for each of the 128 notes, 1 for one that any connection holds.)
@@ -1577,6 +1586,8 @@ export class MockServer {
           return 0;
         case "modOutput":
           return outputOf(entry.node);
+        case "modPosition":
+          return this.#stepsPosition(nodes.find((n) => n.id === entry.node), seconds);
         case "effective":
           return this.#effective(entry, outputOf);
       }

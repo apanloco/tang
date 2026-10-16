@@ -4625,6 +4625,7 @@ mod tests {
                 effective: None,
             }],
             output: None,
+            position: None,
         };
         // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Targets separator, 4=first depth.
         assert_eq!(modulator_param_range(&m, 4), Some((-1.0, 1.0)));

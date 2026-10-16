@@ -7803,6 +7803,7 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
+              "16 10 modOut modPosition",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
@@ -7872,6 +7873,7 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
+              "16 10 modOut modPosition",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
@@ -8299,6 +8301,7 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
+              "16 10 modOut modPosition",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
@@ -8505,6 +8508,7 @@
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "15 10 modOut modOutput",
+              "16 10 modOut modPosition",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
@@ -8622,7 +8626,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "17 10 modOut modOutput",
+              "18 10 modOut modOutput",
+              "19 10 modOut modPosition",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
@@ -8683,7 +8688,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "17 10 modOut modOutput",
+              "18 10 modOut modOutput",
+              "19 10 modOut modPosition",
               "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"

@@ -14,7 +14,7 @@ use crossbeam_channel::Sender;
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
     BPM_MAX, BPM_MIN, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
-    ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph, tempo_of_patterns,
+    ParamSlot, PatternState, PluginSlot, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_slot_commands, tempo_of_patterns,
 };
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
 use crate::session::NodeUi;
@@ -682,9 +682,9 @@ fn load_lane_modulators(
                 source: mod_source_slot_to_graph(&source_slot),
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-        let output = alloc.slots.alloc();
-        if let Some(slot) = output {
-            send(cmd_tx, GraphCommand::SetModulatorOutput { location: ModulatorLocation::Lane(inst_idx), index: mod_idx, slot })?;
+        let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
+        for command in modulator_slot_commands(ModulatorLocation::Lane(inst_idx), mod_idx, output, position) {
+            send(cmd_tx, command)?;
         }
 
         let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
@@ -791,6 +791,7 @@ fn load_lane_modulators(
             source: source_slot,
             targets: loaded_targets,
             output,
+            position,
         });
 
         log::info!("Loaded lane modulator {mod_idx} for inst={inst_idx}: {desc}");
@@ -956,9 +957,9 @@ fn load_group_modulators(
                 source: mod_source_slot_to_graph(&source_slot),
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-        let output = alloc.slots.alloc();
-        if let Some(slot) = output {
-            send(cmd_tx, GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(g_idx), index: mod_idx, slot })?;
+        let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
+        for command in modulator_slot_commands(ModulatorLocation::Group(g_idx), mod_idx, output, position) {
+            send(cmd_tx, command)?;
         }
 
         let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
@@ -1126,6 +1127,7 @@ fn load_group_modulators(
             source: source_slot,
             targets: loaded_targets,
             output,
+            position,
         });
         log::info!("Loaded group modulator {mod_idx} for group={g_idx}: {desc}");
     }
@@ -1484,6 +1486,58 @@ mod tests {
         );
         let outputs: Vec<u32> = run.model.instruments[0].modulators.iter().map(|m| m.output.unwrap().index()).collect();
         assert_eq!(outputs, [4, 6, 7, 8, 9, 11]);
+    }
+
+    #[test]
+    fn a_step_sequencer_in_a_lane_is_told_where_to_publish_its_position_right_after_its_output() {
+        // Two step sequencers, the second with a cable, around an LFO.
+        let run = load(
+            "[[instrument]]\nplugin = \"builtin:osc\"\n\
+             [[instrument.modulator]]\ntype = \"steps\"\n\
+             [[instrument.modulator]]\n\
+             [[instrument.modulator]]\ntype = \"steps\"\n\
+             [[instrument.modulator.target]]\nparam = \"detune\"\ndepth = 0.5\n",
+        );
+        assert_eq!(
+            run.telemetry,
+            [
+                "SetLaneMeter inst=0 peak=2 clips=3",
+                "SetModulatorOutput Lane(0) index=0 slot=4",
+                "SetModulatorPosition Lane(0) index=0 slot=5",
+                "SetModulatorOutput Lane(0) index=1 slot=6",
+                "SetModulatorOutput Lane(0) index=2 slot=7",
+                "SetModulatorPosition Lane(0) index=2 slot=8",
+                // slot 9 is the second step sequencer's target
+            ]
+        );
+        let slots: Vec<(u32, Option<u32>)> =
+            run.model.instruments[0].modulators.iter().map(|m| (m.output.unwrap().index(), m.position.map(|slot| slot.index()))).collect();
+        assert_eq!(slots, [(4, Some(5)), (6, None), (7, Some(8))]);
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_step_sequencer_in_a_group_is_told_where_to_publish_its_position_right_after_its_output() {
+        let run = load(
+            "[[group]]\n[[group.modulator]]\ntype = \"steps\"\n[[group.modulator]]\n[[group.modulator]]\ntype = \"steps\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n",
+        );
+        let slots: Vec<(u32, Option<u32>)> =
+            run.model.groups[0].modulators.iter().map(|m| (m.output.unwrap().index(), m.position.map(|slot| slot.index()))).collect();
+        let [(first, Some(first_position)), (second, None), (third, Some(third_position))] = slots[..] else { panic!("{slots:?}") };
+        assert_eq!((first_position, third_position), (first + 1, third + 1));
+        let modulators: Vec<&String> = run.telemetry.iter().filter(|line| line.contains("Modulator")).collect();
+        assert_eq!(
+            modulators,
+            [
+                &format!("SetModulatorOutput Group(0) index=0 slot={first}"),
+                &format!("SetModulatorPosition Group(0) index=0 slot={first_position}"),
+                &format!("SetModulatorOutput Group(0) index=1 slot={second}"),
+                &format!("SetModulatorOutput Group(0) index=2 slot={third}"),
+                &format!("SetModulatorPosition Group(0) index=2 slot={third_position}"),
+            ]
+        );
+        run.model.check_ids().unwrap();
     }
 
     #[test]
