@@ -10,6 +10,7 @@ describe("the plugins a person can choose an effect from", () => {
   test("are the ones that are not instruments, each by the id the server knows it by, under the format it is of", () => {
     expect(effectItems(builtinCatalog)).toEqual([
       { id: "builtin:delay", label: "Delay", group: "Built-in" },
+      { id: "builtin:drive", label: "Drive", group: "Built-in" },
       { id: "builtin:filter", label: "Filter", group: "Built-in" },
       { id: "builtin:reverb", label: "Reverb", group: "Built-in" },
     ]);

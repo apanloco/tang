@@ -959,9 +959,11 @@ pub const DEFAULT_EFFECT_MIX: f32 = 0.5;
 /// Default dry/wet mix for a freshly added effect, by plugin. Filters and
 /// other tone-shaping inserts must be fully wet — at 50% the dry path passes
 /// the very frequencies the filter removes, so e.g. a highpass barely changes
-/// the sound. Blend effects (reverb) keep the half-wet default.
+/// the sound — and so must a drive, whose latency (the oversampling it makes
+/// its shapes with) would put the dry sound and the wet one out of step.
+/// Blend effects (reverb) keep the half-wet default.
 pub fn default_effect_mix(id: &str) -> f32 {
-    if id == "builtin:filter" {
+    if id == "builtin:filter" || id == "builtin:drive" {
         1.0
     } else {
         DEFAULT_EFFECT_MIX
@@ -4959,6 +4961,7 @@ depth = 0.5
     #[test]
     fn filters_default_fully_wet_everything_else_half_wet() {
         assert_eq!(default_effect_mix("builtin:filter"), 1.0);
+        assert_eq!(default_effect_mix("builtin:drive"), 1.0);
         assert_eq!(default_effect_mix("builtin:reverb"), DEFAULT_EFFECT_MIX);
         assert_eq!(default_effect_mix("lv2:http://calf.sourceforge.net/plugins/Reverb"), 0.5);
     }

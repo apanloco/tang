@@ -1,4 +1,5 @@
 mod delay;
+mod drive;
 mod filter;
 mod oscillator;
 mod reverb;
@@ -6,6 +7,7 @@ mod reverb;
 use super::{Plugin, PluginInfo};
 
 use delay::Delay;
+use drive::Drive;
 use filter::Filter;
 use oscillator::{Oscillator, Waveform};
 use reverb::Reverb;
@@ -45,12 +47,13 @@ pub fn load(
         "reverb" => Ok(Box::new(Reverb::new(sample_rate))),
         "filter" => Ok(Box::new(Filter::new(sample_rate))),
         "delay" => Ok(Box::new(Delay::new(sample_rate))),
+        "drive" => Ok(Box::new(Drive::new(sample_rate))),
         // Only in the tests: an effect with one audio output, which the chains (stereo) have no place for.
         #[cfg(test)]
         "mono-effect" => Ok(Box::new(crate::app::testutil::MonoEffect)),
         _ => anyhow::bail!(
             "Unknown built-in plugin: {name:?}\n\
-             Available built-ins: osc, reverb, filter, delay\n\
+             Available built-ins: osc, reverb, filter, delay, drive\n\
              Usage: builtin:osc"
         ),
     }
@@ -92,6 +95,15 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
             is_instrument: false,
             param_count: delay::PARAM_COUNT,
             preset_count: delay::PRESETS.len(),
+            path: "(built-in)".into(),
+            scan_ms: 0,
+        },
+        PluginInfo {
+            name: drive::NAME.into(),
+            id: drive::ID.into(),
+            is_instrument: false,
+            param_count: drive::PARAM_COUNT,
+            preset_count: drive::PRESETS.len(),
             path: "(built-in)".into(),
             scan_ms: 0,
         },
@@ -158,6 +170,15 @@ mod tests {
                 row("sync", None, &["Voice"], 0),
                 row("drift", None, &["Voice"], 0),
             ]
+        );
+    }
+
+    #[test]
+    fn the_drives_parameters_say_their_steps() {
+        // The type is a choice of four shapes; the rest are plain numbers, and none has a unit (the drive is a knob that is linear in decibels, which is not a number of them).
+        assert_eq!(
+            metadata("builtin:drive"),
+            [row("type", None, &[], 3), row("drive", None, &[], 0), row("tone", None, &[], 0), row("level", None, &[], 0)]
         );
     }
 

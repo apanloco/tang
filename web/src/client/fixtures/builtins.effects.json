@@ -119,6 +119,91 @@
       ]
     }
   },
+  "builtin:drive": {
+    "kind": "effect",
+    "mix": 1.0,
+    "name": "Drive",
+    "plugin": {
+      "currentPreset": null,
+      "format": "Built-in",
+      "id": "builtin:drive",
+      "isInstrument": false,
+      "params": [
+        {
+          "default": 0.0,
+          "group": [],
+          "index": 0,
+          "labels": [
+            "soft",
+            "hard",
+            "tube",
+            "fold"
+          ],
+          "max": 3.0,
+          "min": 0.0,
+          "name": "type",
+          "stepCount": 3,
+          "unit": null,
+          "value": 0.0
+        },
+        {
+          "default": 0.35,
+          "group": [],
+          "index": 1,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "drive",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.35
+        },
+        {
+          "default": 1.0,
+          "group": [],
+          "index": 2,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "tone",
+          "stepCount": 0,
+          "unit": null,
+          "value": 1.0
+        },
+        {
+          "default": 0.5,
+          "group": [],
+          "index": 3,
+          "labels": null,
+          "max": 1.0,
+          "min": 0.0,
+          "name": "level",
+          "stepCount": 0,
+          "unit": null,
+          "value": 0.5
+        }
+      ],
+      "pinned": [],
+      "presets": [
+        {
+          "id": "warm",
+          "name": "Warm"
+        },
+        {
+          "id": "crunch",
+          "name": "Crunch"
+        },
+        {
+          "id": "fuzz",
+          "name": "Fuzz"
+        },
+        {
+          "id": "fold",
+          "name": "Wavefolder"
+        }
+      ]
+    }
+  },
   "builtin:filter": {
     "kind": "effect",
     "mix": 1.0,
