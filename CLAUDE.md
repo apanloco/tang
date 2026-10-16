@@ -1736,6 +1736,19 @@ have `rtprio` privileges (typically via the `audio` group). Fails silently
 if privileges are missing. macOS and Windows handle real-time audio thread
 scheduling natively.
 
+**Denormals.** `audio::Renderer::render` has the floating point unit flush denormals to
+zero for the length of each block (`NoDenormals`, a guard: FTZ and DAZ in the MXCSR on
+x86_64, FZ in the FPCR on aarch64, nothing on another processor; the state it found is put
+back when the block is done): a number nearer to zero than the smallest normal 32-bit float
+(1.2e-38), in what a filter, a reverb or an envelope computes or what it computes with, is
+zero. The tails of these run down through the denormals (more than half the samples of the
+two seconds after a note through a filter that is shut were denormal, f149) and arithmetic
+on them takes many times as long on some processors (a hundred times on x86; not measured
+here). It covers the plugins' own code as well as the built-in ones, and it is a guard of
+the block and not a setting made once on a thread, since a host's callback is not always on a
+thread of its own and a plugin may change the unit. The null backend and the sound card's
+callback render through the same `Renderer::render`, so both have it.
+
 **Null backend.** `--audio-device none` (`audio::NULL_DEVICE`) opens no host and
 no device: a thread named `tang-null-audio` renders a block every
 `buffer / sample rate` seconds (5.3 ms at 256 frames and 48 kHz) with the same

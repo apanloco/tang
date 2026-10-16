@@ -106,6 +106,98 @@ fn promote_to_realtime() {
     log::info!("Windows: WASAPI handles real-time scheduling");
 }
 
+/// While one of these is alive, the thread's floating point unit takes the
+/// numbers nearer to zero than a normal 32-bit float can be (denormals, under
+/// 1.2e-38) as zero, in what it computes and in what it computes with, and
+/// the state it had is given back when this goes.
+///
+/// The tails of filters, reverbs and envelopes run down through the denormals,
+/// and arithmetic on them takes many times as long on some processors (a
+/// hundred times on x86): the tail of a filter that was shut made more than half
+/// the samples of its two seconds denormal. Inaudible and slow is what to flush,
+/// for the plugins the block runs as much as for the built-in ones. A guard is for the
+/// time of a block and not set once for the thread, since a host's callback is
+/// not always on a thread of its own and a plugin may change the unit.
+struct NoDenormals {
+    saved: fpu::State,
+    /// The state is the thread's: this is put back on the thread it was taken from.
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl NoDenormals {
+    fn new() -> Self {
+        NoDenormals { saved: fpu::flush_denormals(), _not_send: std::marker::PhantomData }
+    }
+}
+
+impl Drop for NoDenormals {
+    fn drop(&mut self) {
+        fpu::restore(self.saved);
+    }
+}
+
+/// The floating point control register of the thread, where the processor has one that this knows.
+#[cfg(target_arch = "x86_64")]
+mod fpu {
+    use std::arch::asm;
+
+    /// MXCSR: the unit's state.
+    pub type State = u32;
+
+    /// Flush to zero (bit 15: a result that is a denormal is zero) and denormals are zero (bit 6: an operand that is one is).
+    const FLUSH: State = (1 << 15) | (1 << 6);
+
+    /// Turn the flushing on, and say what the state was.
+    pub fn flush_denormals() -> State {
+        let mut saved: State = 0;
+        // SAFETY: `stmxcsr` stores this thread's MXCSR through the pointer, to a variable that is here.
+        unsafe { asm!("stmxcsr [{}]", in(reg) &mut saved, options(nostack, preserves_flags)) };
+        restore(saved | FLUSH);
+        saved
+    }
+
+    pub fn restore(state: State) {
+        // SAFETY: `ldmxcsr` loads this thread's MXCSR from the pointer, to a variable that is here. The bits are the ones
+        // `stmxcsr` gave with the flushing ones set, so none that is reserved is.
+        unsafe { asm!("ldmxcsr [{}]", in(reg) &state, options(nostack, readonly, preserves_flags)) };
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod fpu {
+    use std::arch::asm;
+
+    /// FPCR: the unit's control register.
+    pub type State = u64;
+
+    /// Flush to zero (bit 24: an operand that is a denormal is zero, and so is a result that is one).
+    const FLUSH: State = 1 << 24;
+
+    /// Turn the flushing on, and say what the state was.
+    pub fn flush_denormals() -> State {
+        let saved: State;
+        // SAFETY: reads this thread's FPCR.
+        unsafe { asm!("mrs {}, fpcr", out(reg) saved, options(nostack, preserves_flags)) };
+        restore(saved | FLUSH);
+        saved
+    }
+
+    pub fn restore(state: State) {
+        // SAFETY: writes this thread's FPCR with the value it had, and the flushing bit.
+        unsafe { asm!("msr fpcr, {}", in(reg) state, options(nostack, preserves_flags)) };
+    }
+}
+
+/// Where the unit's state is not known, nothing is flushed.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod fpu {
+    pub type State = ();
+
+    pub fn flush_denormals() -> State {}
+
+    pub fn restore(_: State) {}
+}
+
 /// What an audio callback does with the audio thread's end of the session, apart
 /// from where the samples go: take the MIDI that has arrived, render the graph into
 /// one buffer per channel, and interleave them into the output. The buffers are
@@ -135,6 +227,12 @@ impl Renderer {
     /// Fill `data`, interleaved (`frames * channels` samples), with the next block;
     /// `cb_num` is the number of the block, for the log. Silence if the graph fails.
     fn render(&mut self, data: &mut [f32], cb_num: u64) {
+        let _no_denormals = NoDenormals::new();
+        self.render_block(data, cb_num);
+    }
+
+    /// `render`, with the floating point unit as it is.
+    fn render_block(&mut self, data: &mut [f32], cb_num: u64) {
         let num_channels = self.num_channels;
 
         // Drain all pending MIDI events (reuse the pre-allocated vec)
@@ -550,6 +648,60 @@ mod tests {
         let mut data = vec![0.0f32; 64 * 2];
         rig.renderer.render(&mut data, 0);
         assert!(rig.midi_tx.is_empty(), "all of it, in one block");
+    }
+
+    // -- Denormals --
+
+    /// A note through a filter that is shut (its lowest cutoff) and let go at once: what it leaves
+    /// in the filter takes a long time to run down, through every number a 32-bit float can hold.
+    const SHUT_FILTER: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nrelease = 0.002\n\
+                               [[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = 0.0\n";
+
+    /// Render the note of `SHUT_FILTER` and the two seconds after it (the key is let go in the
+    /// fifth block) with `render`, and count the samples that are denormal: not zero, and nearer
+    /// to it than the smallest normal number.
+    fn denormals_in_the_tail(render: impl Fn(&mut Renderer, &mut [f32], u64)) -> usize {
+        let mut rig = rig(SHUT_FILTER, 256);
+        rig.midi_tx.send(NOTE_ON_A4).unwrap();
+        let mut data = vec![0.0f32; 256 * 2];
+        let mut denormals = 0;
+        for cb in 0..400 {
+            if cb == 4 {
+                rig.midi_tx.send((0, [0x80, 69, 0])).unwrap();
+            }
+            render(&mut rig.renderer, &mut data, cb);
+            denormals += data.iter().filter(|s| s.is_subnormal()).count();
+        }
+        denormals
+    }
+
+    #[test]
+    fn the_tail_of_a_shut_filter_goes_through_denormals_when_the_unit_is_left_as_it_is() {
+        // The witness of the test below: without it, that test would pass for a tail that never had one.
+        let denormals = denormals_in_the_tail(|renderer, data, cb| renderer.render_block(data, cb));
+        assert!(denormals > 0, "the tail has denormal samples, which are slow to compute with on some processors");
+    }
+
+    #[test]
+    fn a_rendered_block_has_no_denormals_in_it_even_in_the_tail_of_a_shut_filter() {
+        let denormals = denormals_in_the_tail(|renderer, data, cb| renderer.render(data, cb));
+        assert_eq!(denormals, 0, "denormals are flushed to zero while a block is rendered");
+    }
+
+    #[test]
+    fn a_guard_makes_a_denormal_a_zero_for_as_long_as_it_lives_and_gives_the_unit_back() {
+        // `black_box` at each product, so that the compiler does not make it itself or move it out of the guard.
+        let times = |a: f32, b: f32| std::hint::black_box(a) * std::hint::black_box(b);
+        let (smallest_normal, smallest_denormal) = (f32::MIN_POSITIVE, f32::from_bits(1));
+        assert!(times(smallest_normal, 0.5).is_subnormal(), "as the unit is: half of the smallest normal number is a denormal");
+        assert!(times(smallest_denormal, 1.0) > 0.0, "and a denormal is a number");
+        {
+            let _guard = NoDenormals::new();
+            assert_eq!(times(smallest_normal, 0.5), 0.0, "a result that is a denormal is zero");
+            assert_eq!(times(smallest_denormal, 1.0), 0.0, "and so is an operand");
+        }
+        assert!(times(smallest_normal, 0.5).is_subnormal(), "when the guard has gone, the unit is as it was");
+        assert!(times(smallest_denormal, 1.0) > 0.0);
     }
 
     // -- The null backend: `--audio-device none` --
