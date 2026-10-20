@@ -1250,7 +1250,7 @@ impl KeptLane {
     /// that the controller loads them again. (It is not put into a graph.)
     #[cfg(test)]
     pub fn empty() -> KeptLane {
-        KeptLane(Box::new(InstrumentLane::new(2, test_node())))
+        KeptLane(Box::new(InstrumentLane::new(test_node())))
     }
 
     /// How many plugins the lane holds: its instrument and its effects.
@@ -1307,7 +1307,7 @@ impl KeptGroup {
     /// that the controller loads them again. (It is not put into a graph.)
     #[cfg(test)]
     pub fn empty() -> KeptGroup {
-        KeptGroup(Box::new(Group::new(2, test_node())))
+        KeptGroup(Box::new(Group::new(test_node())))
     }
 
     /// How many plugins the group holds: its bus effects.
@@ -3270,7 +3270,10 @@ struct InstrumentLane {
     mix_values: Vec<f64>,
     /// The ids that the model gave the effects, one for each mix (not for each plugin: a lane that gave up its plugins, `KeptLane::take_plugins`, keeps the mixes and the ids).
     effect_nodes: Vec<NodeId>,
+    /// The ping-pong buffers of the chain as one piece (`process`, which only test builds have: the plan's nodes have the buffers of its pool).
+    #[cfg(test)]
     buf_a: Vec<Vec<f32>>,
+    #[cfg(test)]
     buf_b: Vec<Vec<f32>>,
     remapper: Option<NoteRemapper>,
     remapped_events: Vec<(u64, [u8; 3])>,
@@ -3313,7 +3316,7 @@ struct InstrumentLane {
 }
 
 impl InstrumentLane {
-    fn new(num_channels: usize, node: NodeId) -> Self {
+    fn new(node: NodeId) -> Self {
         InstrumentLane {
             node,
             range: None,
@@ -3323,8 +3326,10 @@ impl InstrumentLane {
             effects: Vec::new(),
             mix_values: Vec::new(),
             effect_nodes: Vec::new(),
-            buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
-            buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
+            #[cfg(test)]
+            buf_a: Vec::new(),
+            #[cfg(test)]
+            buf_b: Vec::new(),
             remapper: None,
             remapped_events: Vec::with_capacity(128),
             transposed_events: Vec::with_capacity(128),
@@ -3400,6 +3405,10 @@ impl InstrumentLane {
     /// Process this instrument + effect chain, writing output to `inst_out`.
     /// `inst_out` must have `num_channels` vecs, each with `frames` length.
     /// `scale` is the current piano scale for in-key pattern transposition, and `bpm` the tempo that the modulators that follow it go by.
+    ///
+    /// This is the lane as one piece, as the loop of `AudioGraph::process_legacy` ran it. The plan runs it as a row of nodes (`run_head`, `run_fx` and `run_tail` in `nodes.rs`,
+    /// which do what this does, cut where it was cut by what it did), and this stays, in test builds, as the specification that the oracle holds them to.
+    #[cfg(test)]
     fn process(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
@@ -3526,7 +3535,9 @@ impl InstrumentLane {
             return Ok(());
         }
 
-        // Resize effect ping-pong buffers
+        // Resize effect ping-pong buffers (a channel for each: `new` does not know how many there are)
+        self.buf_a.resize_with(num_channels, Vec::new);
+        self.buf_b.resize_with(num_channels, Vec::new);
         for buf in self.buf_a.iter_mut().chain(self.buf_b.iter_mut()) {
             buf.resize(frames, 0.0);
             buf.fill(0.0);
@@ -3631,8 +3642,10 @@ struct Group {
     /// Member-sum accumulator (num_channels vecs): what the loop that the kernel replaced summed the members into (the plan has the sum in a buffer of the pool now).
     #[cfg(test)]
     accum: Vec<Vec<f32>>,
-    /// Effect ping-pong scratch.
+    /// Effect ping-pong scratch of the group as one piece (`finish`, which only test builds have).
+    #[cfg(test)]
     buf_a: Vec<Vec<f32>>,
+    #[cfg(test)]
     buf_b: Vec<Vec<f32>>,
     /// Measures the group's output; `None` publishes nothing.
     meter: Option<Meter>,
@@ -3649,7 +3662,7 @@ struct Group {
 }
 
 impl Group {
-    fn new(num_channels: usize, node: NodeId) -> Self {
+    fn new(node: NodeId) -> Self {
         Group {
             node,
             effects: Vec::new(),
@@ -3659,9 +3672,11 @@ impl Group {
             pan: 0.0,
             modulators: Vec::new(),
             #[cfg(test)]
-            accum: (0..num_channels).map(|_| Vec::new()).collect(),
-            buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
-            buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
+            accum: Vec::new(),
+            #[cfg(test)]
+            buf_a: Vec::new(),
+            #[cfg(test)]
+            buf_b: Vec::new(),
             meter: None,
             taps: Vec::with_capacity(telemetry::PROBES),
             muted: false,
@@ -3685,7 +3700,10 @@ impl Group {
 
     /// Apply volume + the effect chain in place on `bus`, the sum of the members, leaving the
     /// processed bus signal there. Mirrors `InstrumentLane`'s effect loop.
-    // TODO: factor a shared effect-chain helper to remove this duplication.
+    ///
+    /// The group as one piece, as the loop of `AudioGraph::process_legacy` ran it; the plan runs a row of nodes (`run_head`, `run_fx` and `run_tail` in `nodes.rs`), and this stays,
+    /// in test builds, as the specification that the oracle holds them to.
+    #[cfg(test)]
     fn finish(&mut self, bus: &mut [Vec<f32>], num_channels: usize, frames: usize, telemetry: Option<&Telemetry>) -> anyhow::Result<()> {
         if (self.volume - 1.0).abs() >= f32::EPSILON {
             for ch in bus.iter_mut().take(num_channels) {
@@ -3699,6 +3717,8 @@ impl Group {
             store_taps(&self.taps, telemetry, TapStage::Output, bus);
             return Ok(());
         }
+        self.buf_a.resize_with(num_channels, Vec::new);
+        self.buf_b.resize_with(num_channels, Vec::new);
         for buf in self.buf_a.iter_mut().chain(self.buf_b.iter_mut()) {
             buf.resize(frames, 0.0);
             buf.fill(0.0);
@@ -4396,7 +4416,7 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::AddInstrument { range, node } => {
-                    let mut lane = InstrumentLane::new(self.num_channels, node);
+                    let mut lane = InstrumentLane::new(node);
                     lane.range = range;
                     lane.pattern.inst_index = self.instruments.len();
                     lane.pattern.pattern_tx = self.pattern_tx.clone();
@@ -4453,7 +4473,7 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::AddGroup { node } => {
-                    self.groups.push(Group::new(self.num_channels, node));
+                    self.groups.push(Group::new(node));
                 }
                 GraphCommand::SetLaneMeter { inst, slots } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
@@ -5703,7 +5723,7 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(num_channels, cmd_rx, return_tx);
         // Create one instrument lane (mimics old PluginChain behavior)
-        graph.instruments.push(InstrumentLane::new(num_channels, lane_node(0)));
+        graph.instruments.push(InstrumentLane::new(lane_node(0)));
         (graph, cmd_tx, return_rx)
     }
 
@@ -5890,6 +5910,236 @@ mod tests {
 
         assert!(out[0].iter().all(|&s| s == 0.6));
         assert!(out[1].iter().all(|&s| s == 0.6));
+    }
+
+    /// An effect that counts the blocks it is given (and copies its input), and an instrument that says how many buffers it was given for its outputs and plays a constant.
+    struct CountingEffect(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Plugin for CountingEffect {
+        fn name(&self) -> &str {
+            "Counting"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+
+        fn process(&mut self, _: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            for (out, inp) in audio_out.iter_mut().zip(audio_in.iter()) {
+                out.copy_from_slice(inp);
+            }
+            Ok(())
+        }
+
+        mock_plugin_boilerplate!();
+    }
+
+    /// An instrument with `outputs` outputs that writes 0.5 to every buffer it is given and says how many it was given.
+    struct CountingInstrument {
+        outputs: usize,
+        given: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Plugin for CountingInstrument {
+        fn name(&self) -> &str {
+            "CountingInstrument"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn audio_output_count(&self) -> usize {
+            self.outputs
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
+
+        fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            self.given.store(audio_out.len(), std::sync::atomic::Ordering::Relaxed);
+            for out in audio_out.iter_mut() {
+                out.fill(0.5);
+            }
+            Ok(())
+        }
+
+        mock_plugin_boilerplate!();
+    }
+
+    #[test]
+    fn the_effects_of_a_lane_that_has_no_instrument_do_not_run_and_the_lane_makes_silence() {
+        let blocks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        insert_effect(&cmd_tx, 0, Box::new(CountingEffect(blocks.clone())), 1.0);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 0, "no instrument: the effect has nothing to work on and does not run");
+        assert!(out.iter().flatten().all(|&s| s == 0.0));
+        // With an instrument it runs, a block each.
+        swap_instrument(&cmd_tx, ConstInstrument::new(1.0));
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(out[0].iter().all(|&s| s == 1.0));
+    }
+
+    #[test]
+    fn an_instrument_is_given_a_buffer_for_each_of_its_outputs_and_the_first_two_go_on_with_or_without_effects() {
+        for outputs in [1usize, 2, 4] {
+            for with_effect in [false, true] {
+                let given = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(99));
+                let (mut graph, cmd_tx, _rr) = make_graph(2);
+                swap_instrument(&cmd_tx, Box::new(CountingInstrument { outputs, given: given.clone() }));
+                if with_effect {
+                    insert_effect(&cmd_tx, 0, Box::new(PassthroughEffect), 1.0);
+                }
+                let mut out = make_output();
+                graph.process(&[], &mut out).unwrap();
+                assert_eq!(given.load(std::sync::atomic::Ordering::Relaxed), outputs, "{outputs} outputs, effect: {with_effect}");
+                assert!(out[0].iter().all(|&s| s == 0.5), "{outputs} outputs");
+                let second = if outputs == 1 { 0.0 } else { 0.5 };
+                assert!(out[1].iter().all(|&s| s == second), "{outputs} outputs: the second channel is the instrument's second output, or silence if it has none");
+            }
+        }
+    }
+
+    #[test]
+    fn an_instrument_that_has_as_many_outputs_as_the_chain_has_channels_renders_straight_into_the_output_of_the_lane() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(1.0));
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 1.0));
+        assert!(graph.instruments[0].inst_buf.iter().all(|buf| buf.is_empty()), "the lane's own buffers are for an instrument with more outputs than the chain has channels");
+        swap_instrument(&cmd_tx, ConstInstrument::with_outputs(0.5, 4));
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 0.5));
+        assert!(graph.instruments[0].inst_buf.iter().all(|buf| buf.len() == FRAMES), "and it has them then");
+    }
+
+    /// The blocks that a graph made: for each block, its channels of samples.
+    type Blocks = Vec<Vec<Vec<f32>>>;
+
+    /// `process` and `process_legacy` of two graphs that `setup` made alike, for blocks of notes given: the blocks that each made.
+    fn under_the_plan_and_under_the_loop(setup: impl Fn(&crossbeam_channel::Sender<GraphCommand>), notes: &[Vec<(u64, [u8; 3])>]) -> (Blocks, Blocks) {
+        let run = |legacy: bool| {
+            let (mut graph, cmd_tx, _rr) = make_graph(2);
+            setup(&cmd_tx);
+            notes
+                .iter()
+                .map(|midi| {
+                    let mut out = make_output();
+                    if legacy {
+                        graph.process_legacy(midi, &mut out).unwrap();
+                    } else {
+                        graph.process(midi, &mut out).unwrap();
+                    }
+                    out
+                })
+                .collect::<Vec<_>>()
+        };
+        (run(false), run(true))
+    }
+
+    #[test]
+    fn the_click_of_the_metronome_is_on_top_of_what_the_chain_made_under_the_fade_of_the_lane_and_the_same_under_the_plan_and_the_loop() {
+        let start_recording = |cmd_tx: &crossbeam_channel::Sender<GraphCommand>| cmd_tx.send(GraphCommand::SetPatternRecording { inst: 0, recording: true }).unwrap();
+        let blocks = [vec![note_on(60)], vec![], vec![], vec![]];
+        // An instrument through an effect that silences it: the click is not scaled by the chain, it is added after it, and a lane that has no instrument has it too.
+        let (plan, lp) = under_the_plan_and_under_the_loop(
+            |cmd_tx| {
+                swap_instrument(cmd_tx, ConstInstrument::new(1.0));
+                insert_effect(cmd_tx, 0, Box::new(ScaleEffect(0.0)), 1.0);
+                start_recording(cmd_tx);
+            },
+            &blocks,
+        );
+        assert_eq!(plan, lp, "a lane that counts in, through an effect");
+        assert!(plan[0][0].iter().any(|&s| s.abs() > 0.01), "the click is heard though the chain is silent");
+        let (plan, lp) = under_the_plan_and_under_the_loop(
+            |cmd_tx| {
+                insert_effect(cmd_tx, 0, Box::new(ScaleEffect(2.0)), 1.0);
+                start_recording(cmd_tx);
+            },
+            &blocks,
+        );
+        assert_eq!(plan, lp, "a lane that counts in and has no instrument");
+        assert!(plan[0][0].iter().any(|&s| s.abs() > 0.01), "the click is heard with no instrument, and not scaled by the effect that does not run");
+        // The fade of a mute is on the click as it is on the rest: a muted lane is silent, click included.
+        let (plan, lp) = under_the_plan_and_under_the_loop(
+            |cmd_tx| {
+                swap_instrument(cmd_tx, ConstInstrument::new(1.0));
+                start_recording(cmd_tx);
+                cmd_tx.send(GraphCommand::SetMute { inst: 0, muted: true }).unwrap();
+            },
+            &blocks,
+        );
+        assert_eq!(plan, lp, "a lane that counts in and is muted");
+        assert!(plan[1].iter().flatten().all(|&s| s == 0.0), "after the fade, silence");
+    }
+
+    #[test]
+    fn a_lane_with_a_volume_effects_and_a_mix_is_the_same_under_the_plan_and_the_loop() {
+        // The blend `dry * input + wet * output` and the volume before the chain, the order of the effects, and a mix of 1 (no blend) and under 1.
+        let (plan, lp) = under_the_plan_and_under_the_loop(
+            |cmd_tx| {
+                swap_instrument(cmd_tx, ConstInstrument::new(0.7));
+                cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 0.6 }).unwrap();
+                insert_effect(cmd_tx, 0, Box::new(ScaleEffect(0.3)), 0.35);
+                insert_effect(cmd_tx, 1, Box::new(ScaleEffect(1.7)), 1.0);
+                insert_effect(cmd_tx, 2, Box::new(ScaleEffect(0.9)), 0.0);
+            },
+            &[vec![note_on(60)], vec![], vec![note_off(60)], vec![]],
+        );
+        assert_eq!(plan, lp);
+        assert!(plan[0][0].iter().any(|&s| s.abs() > 0.01));
+    }
+
+    /// An effect that puts out `value` whatever it is given.
+    struct FixedEffect(f32);
+
+    impl Plugin for FixedEffect {
+        fn name(&self) -> &str {
+            "Fixed"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+
+        fn process(&mut self, _: &[(u64, [u8; 3])], _: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            for out in audio_out.iter_mut() {
+                out.fill(self.0);
+            }
+            Ok(())
+        }
+
+        mock_plugin_boilerplate!();
+    }
+
+    #[test]
+    fn a_mix_of_one_is_what_the_effect_put_out_and_not_a_blend_with_a_dry_sound_that_is_not_a_number() {
+        // Blended, the sound that went in would be `NaN * 0 + 0.25 * 1`, which is NaN: at a mix of 1 the plugin's own output is all there is.
+        let (plan, lp) = under_the_plan_and_under_the_loop(
+            |cmd_tx| {
+                swap_instrument(cmd_tx, ConstInstrument::new(f32::NAN));
+                insert_effect(cmd_tx, 0, Box::new(FixedEffect(0.25)), 1.0);
+            },
+            &[vec![note_on(60)], vec![]],
+        );
+        for (which, blocks) in [("plan", &plan), ("loop", &lp)] {
+            assert!(blocks.iter().flatten().flatten().all(|&s| s == 0.25), "{which}");
+        }
     }
 
     #[test]
@@ -6226,8 +6476,8 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
         // Two instrument lanes: both full range
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
 
         // Swap instruments into both lanes
         let inst_a = ConstInstrument::new(0.3);
@@ -6270,8 +6520,8 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.25));
         swap_instrument_at(&cmd_tx, 1, ConstInstrument::new(0.25));
 
@@ -6309,7 +6559,7 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
         cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
@@ -6338,9 +6588,9 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
         // Two instrument lanes with ranges: C0-B3 and C4-C8
-        let mut lane_low = InstrumentLane::new(2, test_node());
+        let mut lane_low = InstrumentLane::new(test_node());
         lane_low.range = Some((12, 59)); // C0-B3
-        let mut lane_high = InstrumentLane::new(2, test_node());
+        let mut lane_high = InstrumentLane::new(test_node());
         lane_high.range = Some((60, 96)); // C4-C8
 
         graph.instruments.push(lane_low);
@@ -6396,9 +6646,9 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        let mut lane_low = InstrumentLane::new(2, test_node());
+        let mut lane_low = InstrumentLane::new(test_node());
         lane_low.range = Some((0, 59));
-        let mut lane_high = InstrumentLane::new(2, test_node());
+        let mut lane_high = InstrumentLane::new(test_node());
         lane_high.range = Some((60, 127));
 
         graph.instruments.push(lane_low);
@@ -8172,7 +8422,7 @@ mod tests {
     /// into another's modulators.
     #[test]
     fn mpe_expression_routes_by_active_channel() {
-        let mut lane = InstrumentLane::new(2, test_node());
+        let mut lane = InstrumentLane::new(test_node());
         lane.range = Some((60, 72));
 
         // Note on 64 on member channel index 1, plus expression on various channels.
@@ -8206,7 +8456,7 @@ mod tests {
     /// expression (its channels become active) and global channel-1 messages.
     #[test]
     fn full_range_lane_receives_its_own_expression() {
-        let mut lane = InstrumentLane::new(2, test_node()); // range None → full range
+        let mut lane = InstrumentLane::new(test_node()); // range None → full range
         let events = [
             (0u64, [0x93, 60, 100]), // note on, ch idx 3
             (0u64, [0xd3, 77, 0]),   // pressure, ch idx 3 → own note → keep
@@ -9037,7 +9287,7 @@ mod tests {
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
         for (inst, &value) in values.iter().enumerate() {
-            graph.instruments.push(InstrumentLane::new(2, test_node()));
+            graph.instruments.push(InstrumentLane::new(test_node()));
             swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(value));
         }
         graph.drain_commands();
@@ -9162,8 +9412,8 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.25));
         swap_instrument_at(&cmd_tx, 1, ConstInstrument::new(0.5));
         // Both lanes in a group: 0.75, at a volume of 0.5 (0.375), through an effect that halves (0.1875) and one that halves at half mix (0.140625), and all the way to the right.
@@ -9218,7 +9468,7 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
-        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
         cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
@@ -12601,7 +12851,7 @@ mod tests {
                 }
                 _ => {
                     let (keep, kept) = crossbeam_channel::bounded(1);
-                    assert!(keep.send(KeptLane(Box::new(InstrumentLane::new(2, test_node())))).is_ok(), "it has room for one");
+                    assert!(keep.send(KeptLane(Box::new(InstrumentLane::new(test_node())))).is_ok(), "it has room for one");
                     holders.push(kept);
                     Some(keep)
                 }
@@ -12678,7 +12928,7 @@ mod tests {
         assert_eq!(graph.lanes()[4].volume, 0.7, "the lane that was put in is the last");
         let (keep, kept) = crossbeam_channel::bounded(1);
         cmd_tx.send(GraphCommand::RemoveInstrument { inst: 4, keep: Some(keep) }).unwrap();
-        cmd_tx.send(GraphCommand::InsertInstrument { index: 0, lane: kept.try_recv().unwrap_or_else(|_| KeptLane(Box::new(InstrumentLane::new(2, test_node())))) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertInstrument { index: 0, lane: kept.try_recv().unwrap_or_else(|_| KeptLane(Box::new(InstrumentLane::new(test_node())))) }).unwrap();
         graph.drain_commands();
         assert_eq!(places(&graph), [0, 1, 2, 3, 4]);
     }
@@ -12889,7 +13139,7 @@ mod tests {
                 }
                 _ => {
                     let (keep, kept) = crossbeam_channel::bounded(1);
-                    assert!(keep.send(KeptGroup(Box::new(Group::new(2, test_node())))).is_ok(), "it has room for one");
+                    assert!(keep.send(KeptGroup(Box::new(Group::new(test_node())))).is_ok(), "it has room for one");
                     holders.push(kept);
                     Some(keep)
                 }
