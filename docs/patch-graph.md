@@ -1,6 +1,6 @@
 # A patch graph for the session: audio and MIDI as cables
 
-**Status: a proposal. Nothing of it is built, and none of it will be started before you have decided what §9 and §11.7 ask.**
+**Status: §11 is the plan. You said go on 2026-10-20 (*"lets go e2! I like this. I like it all!"*), which takes the recommendations of §11.7 as they are. P0, the oracle and the boundary (§11.6), is built (step 70 of `docs/web-ui.md`); nothing else is.**
 Written 2026-10-20 at the end of step 67 of `docs/web-ui.md`, from the code as it is then. **§11, added later the same day, is the design without a time limit
 (you asked for the best way, whatever it costs to build) and replaces the recommendation of §4 and §9.1: the destination is a compiled graph, and the routing
 table of E1 is a detour.** §1 to §10 are what I proposed before that, kept because the model, the file, the page and the terminal parts of them carry over. It starts from what you said that day: *"something we need
@@ -389,7 +389,7 @@ they cannot today.
 ### 11.3 What "fast" is made of
 
 - **What costs is the plugins' DSP.** The graph adds, for each node and block, a virtual call and a few loops: a thousand nodes should be hundreds of
-  microseconds of a 5.3 ms block (an estimate; P0 measures it, and I will not claim it before). A lane with two effects makes about eleven passes over
+  microseconds of a 5.3 ms block (an estimate. P0 measured what today's engine costs, DSP and all: a session of 8 lanes of a unison of seven through four plugins and four modulators each, in two groups (78 plugins and modulators), is 363 µs a block of 256 frames when nothing sounds and 801 µs with a chord of six, 15% of the 5.33 ms; what a node costs over its DSP only a kernel with nodes that do nothing can show, and that is for P1 to measure before I claim it). A lane with two effects makes about eleven passes over
   its block today (four buffers zeroed, the volume, two copies, a blend for each effect whose mix is under 1, the fade, the sum); at 256 frames that is
   microseconds and not the problem, and the colouring and in-place work take most of it away.
 - **Where the speed is, in the order of what it saves.** (1) *Doing less*: a subgraph whose input is silent and whose tail has ended is not run, so that a
@@ -471,7 +471,14 @@ the new one grows under today's structure until it equals it, and is then taken 
   of each kind, mutes and solos, patterns, ranges, remaps, a scripted run of notes with expression), rendered by the engine as it is, at three block sizes,
   kept as hashes of the samples (a few as WAV, to listen to). The audio thread's engine behind a trait that `Renderer` drives, so that two engines can be run
   on the same input. A benchmark (ns a block of the stress scene, allocations, a histogram of how close a block comes to its deadline), so that §11.3 gets numbers.
-  *To try: nothing new.*
+  *To try: nothing new.* **Built** (step 70 of `docs/web-ui.md`, `src/oracle/`; the numbers are there): the trait (`audio::Engine`); 20 sessions and 300 generated ones with
+  scripts of notes and controllers, the generated ones also with edits made through the controller while they sound (a mute that changes, an effect moved or taken out, an
+  Undo), each at 64, 256 and 1024 frames, 960 renders, kept as a hash of the samples and of the telemetry for the platform they were made on (macOS on Apple silicon: Linux
+  and Windows are held to numbers, to 1%) and rendered through the callback's own `Renderer`; `oracle::agree`, which renders a scenario with two engines and names the first
+  sample that differs; the benchmark (median, p95, p99 and longest block against the time a block has, and the calls of the allocator), and WAV files to listen to. The corpus
+  is held to render the same bits twice (it did not: a hash map of the oscillator's voices and one in the note remapper, both fixed) and to ask the audio thread's allocator
+  for nothing outside the first block and the blocks that an edit was made before (it did: the pattern player's lists, fixed). Of 24 mutants of the engine, all are caught: 17 by the file-driven part of the corpus,
+  and 7 only by the edits (the step of a mute's fade is one of them), two of those by the whole corpus and not by the always-on part.
 - **P1, the kernel, with today's structure as coarse nodes.** The graph, the compile, the plan and the kernel, with the lane and the group as two coarse
   nodes that contain today's code unchanged, a plan that has exactly today's edges, and the old commands through an adapter. It must equal the oracle bit for
   bit at every block size; then the default engine changes. *To try: the same sounds.*
@@ -515,7 +522,7 @@ of throwing its engine half away.
 | 11 | one source for the computer's keys | the same. |
 | 12 | lists in the terminal | lists *and a patchbay matrix* (§11.4). |
 
-New, with my recommendation:
+New, with my recommendation (**all taken, 2026-10-20**: *"lets go e2! I like this. I like it all!"*):
 
 13. **The file.** The netlist as the model's form, with the sugar kept and round-tripped (§11.5). *Recommend yes.* The other way, the netlist only, makes every
     session of today a different file.

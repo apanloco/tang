@@ -331,7 +331,8 @@ TODO: a click that solos one lane and takes the others' solo off (the Shift or A
 console), and a button that takes every solo off: the buttons turn each one by itself, as the keys do.
 TODO: a muted lane (or one that is not heard for a solo) still renders its plugins every buffer, for
 what a held note and a tail are when it is brought back; one that has been silent for a while could
-stop, at the cost of that.
+stop, at the cost of that. (Measured by the oracle's benchmark: a session of 8 lanes with every lane muted and a chord held takes
+801 µs a block of 256 frames, as it does with them heard, and one that sounds nothing takes 363 µs.)
 
 ### Plugin slot fields
 
@@ -894,6 +895,9 @@ velocity = 0
   The pattern loops while the key is held and stops on release.
 - Press `r` again to overwrite with a new recording. Re-recording keeps the
   pattern's transpose mode.
+- The player's lists of held keys and of sounding voices have room for every key, so that the first
+  note that starts a pattern does not ask the audio thread's allocator for memory
+  (`the_first_notes_of_a_pattern_do_not_allocate`).
 - Press `Ctrl+R` to clear the pattern.
 - Press `b` to set the global BPM.
 - BPM is displayed in the status bar. Pattern indicators show in the chain tree:
@@ -967,7 +971,10 @@ pitch_bend_range = 2  # optional, default ±2 semitones
 
 - Normal (non-remapped) notes play on MIDI channel 1 as usual.
 - Each unique detune value is assigned its own MIDI channel (2–16). Notes that
-  share the same detune value share a channel.
+  share the same detune value share a channel. The channels are handed out in the order
+  of the notes that are remapped, lowest first (the detune of the lowest note has channel 2),
+  so that a session loads the same every time (it was the order of a hash map's, which
+  is another for each load: `remapper_hands_out_its_channels_in_the_order_of_the_notes_it_remaps`).
 - When a remapped note-on is received, Tang sends the rewritten note-on followed
   by a pitch bend message on that channel (bend after note-on — some plugins
   only apply pitch bend to already-sounding notes).
@@ -1810,7 +1817,10 @@ island of async, on a thread of its own):
   channels (send new plugin in, receive old plugin back for main-thread drop).
   The loader uses it to put the session's plugins into the audio thread, and
   `app::controller::Controller::poll` reaps the plugins handed back, in the TUI,
-  in `play` and in the headless loop of `serve`.
+  in `play` and in the headless loop of `serve`. What the callback's `audio::Renderer`
+  renders with is an `audio::Engine` (a trait: `num_channels` and `process(midi, out)`;
+  `AudioGraph` is the one there is), so that a second engine can be run beside it on the
+  same input and compared bit for bit (see "The oracle").
 - **MIDI thread(s)** (midir) — one per input device, all push into the MIDI channel.
 - **Main thread** — runs the TUI loop (`tui::event_loop`), which waits on a channel
   of the terminal's events, the web interface's requests when there is one
@@ -2158,6 +2168,66 @@ events through `process_event`, and checks two things: the rendered frame
 in `src/tui/snapshots/`) and the commands the TUI sent to the audio thread. After
 an intentional UI change run `INSTA_UPDATE=always cargo test golden` and review
 the snapshot diff.
+
+## The oracle
+
+`src/oracle/` (test builds only) writes down what the engine renders, so that a new engine can be held to it (P0 of `docs/patch-graph.md` §11.6, step 70 of `docs/web-ui.md`).
+A *scenario* is a session as text, a script of notes and controllers (`(frame, bytes)`, so that the same script is the same notes at every block size), edits, a block size and a
+rate. `oracle::Rig` loads it the way the program does (`load_session`, with a `Controller` round it over stub channels, the program's own bounded ones for what the engine reports,
+and the built-in plugin catalog) and drives it a block at a time through the audio callback's own `audio::Renderer` (the notes that came in, the denormals flushed, the engine behind
+the `Engine` trait, the channels interleaved): `block()` makes the edits that have their frame in the block, sends the notes at their place in it, and renders it (timed, and the
+allocator's calls counted); `poll()` lets `Controller::poll` see what the engine reported (a control that was learned, a pattern that was recorded), as the loops of the program do.
+`oracle::render` is all of a scenario: every sample, a hash of all 4,096 telemetry cells after each block, the allocations of each block and what became of the edits;
+`oracle::fingerprint` boils it down to two hashes and a few numbers (the peak, the rms, the rms of each eighth).
+
+The corpus is `src/oracle/sessions/*.toml` (the fifteen examples and the tracer scene as they were when the oracle was made, a copy, so that editing an example does not break
+it; and `cross`, `mix`, `solo` and `remap`, which the generator does not draw; each is played with a chord, the wheel, the pedal and all sound off) and 300 sessions that
+`oracle::generate` makes from a seed (xorshift64*, the same on every platform: one to four lanes, up to two groups, effects of the four built-in kinds, every kind of modulator with
+cables between them and to the group's members and bus, mutes, solos, ranges, transposes, remaps, patterns; a script of notes with MPE expression, controllers, a pedal, a key hit
+again, all notes off and all sound off; and four to ten edits), each at block sizes of 64, 256 and 1024 frames: 960 renders. 795 of the 900 generated renders are heard and 44
+clip; of the 2,043 edits, 1,769 are applied, 238 skipped (nothing to aim at) and 36 refused (the tests say how many must be).
+
+**Edits** (`oracle::edits`): what a front-end asks of the controller while the session sounds, which a file cannot show (a fade is made when a mute *changes*; an effect that is
+moved takes its mix and the cables of its lane's modulators along; an Undo hands a node back). An `Edit` names a place that wraps round what there is when it is made (the lane
+is a place among the lanes), `resolve` makes the `Intent` that a front-end would send from the model as it is, and `make` carries it out through `Controller::apply`, so it is in
+the history: a parameter, a mix, a volume, a pan; mute and solo; an effect added, moved or taken out, a lane's or a bus's; a modulator, with its cable or without; a range; a lane
+in a group; a lane or a group added or taken out; a preset; the tempo; Undo and Redo.
+
+- **The engine is deterministic** (`a_scenario_renders_the_same_bits_twice`): a render is the same bits every time, in every process. It was not: the oscillator's voices were
+  in a hash map that was walked in another order each run (fixed in `9c0eef4`), and the note remapper handed out its channels in a hash map's order (`51a9674`). A hash of the
+  samples is only worth something once this holds.
+- **It is what it was** (`the_renders_are_what_they_were`; the whole corpus in `the_whole_corpus_is_what_it_was_and_the_same_twice`, which is `#[ignore]`d: `cargo test --release
+  oracle -- --ignored`, about 40 s): `src/oracle/exact/<os>-<arch>.txt` has the hash of every render of the platform it was made on (macOS on Apple silicon is the one in the
+  repository), held to the bit, in a debug build and a release build alike (the 44 renders that a debug build makes are the same bits as the release build's: measured); `src/oracle/fingerprints.txt` has the numbers for every platform,
+  held to `oracle::TOLERANCE` (1%: another platform's libm differs in the last bit, and `a_last_bit_of_difference_in_the_rate_stays_within_the_tolerance` moves the sample rate by one
+  bit, which moves every phase step and coefficient by one, and finds the largest change of a number to be 0.035%). A platform that has no file of its own is held to the numbers
+  only; to give it one run `TANG_UPDATE_ORACLE=1 cargo test --release oracle -- --ignored` there. **A change that is meant to alter what the engine renders** runs the same command
+  (`TANG_UPDATE_ORACLE=1 cargo test oracle` writes the always-on part only), and says so, with the reason, in its commit. An update of the operating system that changes its libm
+  changes the hashes: the failure says whether the numbers are within the tolerance, which is then the libm's.
+- **The audio thread does not allocate** (`no_block_after_the_first_asks_the_allocator_for_memory`; all 960 in the ignored test): the first block takes the commands of the load, a
+  block that an edit was made before takes its commands (they build the graph, and may allocate), and no other block asks the allocator for memory. It found the pattern player's
+  lists (`57edbde`).
+- **Two engines agree** (`oracle::agree(scenario, make_a, make_b)`): the same scenario rendered by two engines (`oracle::legacy` is the `AudioGraph`; a `make` is a function of the
+  `Wiring`, the channels and cells an engine is built from) is compared bit for bit, the first sample that differs and its block named. This is how the compiled graph of P1 is
+  held to the graph, on every platform and with no file to be out of date.
+
+The tests that run every time render the sessions and the first 24 generated ones at 256 frames (44 renders, 12 s in a debug build): the determinism, the fixtures, that no block
+allocates, that every one of the 300 generated sessions loads, that the generator draws every feature that the table in `oracle::tests` lists (50 of them, each in at least about two
+fifths of the number it makes of it), that the sessions are heard, that the edits mostly apply and that an edit is made before the block that has its frame in it, and the tolerance;
+and the tests of the edits (what each makes of itself) and of the WAV header.
+
+**The benchmark** (`oracle::bench`: `cargo test --release oracle::bench -- --ignored --nocapture --test-threads=1`) times the callback's `Renderer` alone against the time a block has
+(frames over sample rate) for one oscillator and a chord, and for a session that is a lot for the engine (8 lanes of a unison of seven through a ladder filter, a delay, a reverb and a
+drive with four modulators each, two groups with a reverb and a filter on their buses: 78 plugins and modulators), idle, with a chord of six and with every lane muted, at 64, 256 and
+1024 frames, and counts the allocator's calls. On an Apple M4 Pro (release build, an ordinary thread): 0.6% of the time a block has for the oscillator; 6.8% idle, 15.0% with the
+chord and 15.0% with every lane muted for the large session (801 µs of the 5.33 ms at 256 frames): the cost goes with the block, a muted lane costs what a heard one does, and
+effects and modulators on silence cost 45% of a sounding session. The numbers and what they say are in `docs/web-ui.md`, step 70.
+
+**WAV files** (`oracle::wav`: `cargo test --release oracle::wav -- --ignored`): the sessions and the first eight generated ones, as the engine renders them, in
+`target/oracle-wav/` (32-bit float, stereo), to listen to.
+TODO: a recording of a pattern among the edits (`SetRecording` counts in four beats of the metronome first, so that a scenario would be two seconds longer for it); sessions that name
+a plugin that has to be installed (the adapters of CLAP, VST3 and LV2 are not in the corpus); exact files for Linux and Windows (their CI is held to the numbers); the cost of a node of
+a graph over the DSP in it, which only a kernel with nodes that do nothing can show (P1).
 
 ## Web UI
 
@@ -2573,7 +2643,9 @@ generated TypeScript is current.
   plan that a small real-time kernel runs over node state that outlives every plan; audio, events (with note ids and sample times) and control (modulation)
   as kinds of port; the lane, the group and the rack as templates of nodes; modules and the voices of track B on the same kernel; reached by growing the
   kernel under today's structure with the old engine as a bit-for-bit oracle, not by a routing table that would be thrown away. It contains the two ideas
-  at the end of this list (a keyboard as a node, audio input as a source)
+  at the end of this list (a keyboard as a node, audio input as a source). The user said go on 2026-10-20 ("lets go e2! I like this. I like it all!"), which takes the
+  recommendations of its §11.7 as the plan. **P0 (the oracle and the boundary) is built** (step 70 of `docs/web-ui.md`; see "The oracle"); P1, the kernel with today's
+  lane and group as two coarse nodes, bit for bit equal to the old engine, is next
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
