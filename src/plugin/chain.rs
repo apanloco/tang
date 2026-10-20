@@ -62,8 +62,16 @@ impl NoteRemapper {
 
         let mut table = HashMap::new();
 
+        // The entries in the order of the notes they remap: the channels are handed out in the order that the detune values are met, and a hash map's order is not the same
+        // from one map to the next, so that the same session loaded twice gave a note another channel (which the member channel of an MPE controller's note may share).
+        let mut entries: Vec<(u8, &String, &RemapTarget)> = Vec::with_capacity(remap.len());
+        for (source_name, target) in remap {
+            entries.push((session::parse_note_name(source_name)?, source_name, target));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+
         // First pass: collect all distinct detune values
-        for target in remap.values() {
+        for &(_, _, target) in &entries {
             if target.detune.abs() > pitch_bend_range {
                 anyhow::bail!(
                     "detune {:.1} exceeds pitch_bend_range ±{:.1}",
@@ -85,8 +93,7 @@ impl NoteRemapper {
         }
 
         // Second pass: build the lookup table
-        for (source_name, target) in remap {
-            let source_note = session::parse_note_name(source_name)?;
+        for &(source_note, _, target) in &entries {
             let target_note = session::parse_note_name(&target.note)?;
 
             let &(_, channel) = detune_channels
@@ -5928,6 +5935,22 @@ mod tests {
         let remap = make_remap(&[("C4", "B3", 1.0), ("D4", "C#4", -0.5)]);
         let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
         assert_ne!(remapper.table[&60].channel, remapper.table[&62].channel);
+    }
+
+    #[test]
+    fn remapper_hands_out_its_channels_in_the_order_of_the_notes_it_remaps() {
+        // (A hash map's order is not the same from one map to the next, so each remapper is made from a map of its own, as each load of a session is.)
+        // (A3 and A#3 are in the order of their numbers and not of their names, in which A#3 comes first.)
+        for _ in 0..32 {
+            let remap = make_remap(&[("E4", "F4", -0.5), ("C4", "D4", 0.866), ("A#3", "B3", 0.1), ("D4", "E4", 0.866), ("A3", "B3", 0.3)]);
+            let remapper = NoteRemapper::from_config(&remap, 2.0).unwrap();
+            let channel = |note: u8| remapper.table[&note].channel;
+            assert_eq!(
+                (channel(57), channel(58), channel(60), channel(62), channel(64)),
+                (1, 2, 3, 3, 4),
+                "the lowest note's detune has the first channel, a note with the same detune shares it, and the next detune has the next"
+            );
+        }
     }
 
     #[test]
