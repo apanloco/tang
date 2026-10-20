@@ -7,11 +7,17 @@
 
 mod arena;
 mod compile;
+mod exec;
 mod patch;
 
 pub use arena::{Arena, Key};
 pub use compile::{CompileError, Feed, Op, Plan, compile};
+pub use exec::{ChanBuf, Io, Kernel, Node, Nodes, Pool};
 pub use patch::{Cable, Id, NodeSpec, Patch, Port, PortSpec};
 
+#[cfg(test)]
+mod reference;
+#[cfg(test)]
+mod testnodes;
 #[cfg(test)]
 mod testutil;

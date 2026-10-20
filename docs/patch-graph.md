@@ -496,6 +496,13 @@ the new one grows under today's structure until it equals it, and is then taken 
      after them as they are); `AudioGraph::process` is then: the commands, a recompile if the topology changed (checked by a signature, so a knob drag compiles nothing), the pre-pass that is
      today's (what is heard, and the group modulators, which cross lanes and groups and stay in the adapter until P5 makes modulators nodes), `Plan::run`, and the post-pass. The old loop
      stays as a test-only `process_legacy`, and `oracle::agree` holds the new one to it over all 960 renders, edits included, before anything else is changed.
+  *Built so far* (steps 1 to 3, in `kernel/`): the arena (19 tests); `Patch`, `compile` and `Plan` (33 more); `Plan::run`, `Pool`, `Io`, `Kernel<N>` and the reference interpreter (17 more, among them the
+  kernel against the interpreter over 400 seeded random patches, with failing nodes and plan swaps, bit for bit) and `tests/no_allocation.rs` (5: a block asks the allocator for nothing, the first one
+  after a fit included, and a counter that is shown to count); every mutant of the three is caught (16 + 25 + 31, among them the five that make the executor allocate, by the allocation test alone).
+  *What the graph costs* (`cargo test --release -p kernel --test benchmark -- --ignored --nocapture`, Apple M4 Pro, rustc 1.99, nodes that do nothing, median of 2,000 blocks): the bookkeeping of a
+  block is 10 to 15 ns a node (0 frames); with stereo buffers, which have to be zeroed where a value begins and fed into the sums, 35 ns a node at 64 frames, 73 at 256 and 220 to 240 at 1,024 (it is
+  memory, and P3's aliasing of a single cable and P7's skipping of silence are what take it away). A chain of 1,000 nodes is 78 µs a block of 256 frames (1.5% of the 5.33 ms), a fan-in of 1,000 sources
+  55 µs, and a session's shape (64 lanes of four nodes, two groups: 259 nodes) 19 µs (0.35%).
   **The rule that decides what is bit for bit:** the input of a port is a sum that starts at +0.0 and adds the producers in *plan order*, also for one producer. It is today's mix (`mix_buf` and
   a group's `accum` are zeroed and the lanes are added in), `0.0 + -0.0` is `+0.0` and the oracle hashes the bits, so a single cable is not a copy: a later step that makes one (P3, when the
   chain of a lane is a row of nodes) names the change and its reason in the list the end of this section asks for. The sums are in a fixed order whatever runs where, which is what lets a render be the
