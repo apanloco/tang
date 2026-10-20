@@ -19,18 +19,21 @@
 //! - **Two engines agree**: `agree` renders a scenario with two engines and compares the bits, which is how the compiled graph of P1 is held to the graph, on every platform,
 //!   with no file to be out of date.
 
+mod bench;
 pub mod generate;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::alloc_guard::allocations_in;
 use crate::app::controller::Controller;
 use crate::app::load::load_session;
 use crate::app::testutil;
-use crate::audio::{Engine, Renderer};
+use crate::audio::{Engine, MidiEvent, Renderer};
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
@@ -172,10 +175,12 @@ pub fn whole() -> Vec<Scenario> {
     base.iter().flat_map(|scenario| BLOCKS.iter().map(|&block| scenario.at_block(block))).collect()
 }
 
-/// What a scenario rendered: the samples (interleaved) and a hash of what the engine had published to its telemetry at the end of each block.
+/// What a scenario rendered: the samples (interleaved), a hash of what the engine had published to its telemetry at the end of each block, and how many times the engine
+/// asked for memory in each.
 pub struct Render {
     pub samples: Vec<f32>,
     pub telemetry: Vec<u64>,
+    pub allocations: Vec<usize>,
 }
 
 /// FNV-1a over the bytes that are fed to it: a hash of bits, the same everywhere.
@@ -194,56 +199,116 @@ impl Fnv {
     }
 }
 
-/// Render `scenario` with the engine that `make` builds, the way the program does: the session is loaded onto the engine's channel by the loader, a controller is made around it,
-/// and each block takes the notes that came in, goes through the callback's `Renderer`, and lets the controller see what the engine reported (`Controller::poll`: a pattern
-/// that was recorded, a control that was learned).
-pub fn render(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Render {
-    let (mut handles, stub) = testutil::stub_engine_of(8192);
-    handles.sample_rate = scenario.rate;
-    handles.max_block_size = scenario.block;
-    let config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
-    let model = load_session(&config, Path::new("."), scenario.rate, scenario.block, &Runtime::default(), &handles.cmd_tx, &mut |_| {})
-        .unwrap_or_else(|e| panic!("{}: the session does not load: {e:#}", scenario.id));
-    let telemetry = handles.telemetry.clone();
-    let midi_tx = handles.midi_tx.clone();
-    let wiring = Wiring {
-        channels: 2,
-        cmd_rx: stub.cmd_rx.clone(),
-        return_tx: stub.return_tx.clone(),
-        pattern_tx: stub.pattern_tx.clone(),
-        learn_tx: stub.learn_tx.clone(),
-        telemetry: telemetry.clone(),
-        piano_filter: handles.piano_filter.clone(),
-    };
-    let mut ctl = Controller::new(model, handles, None);
-    let mut renderer = Renderer::new(make(wiring), stub.midi_rx.clone(), scenario.block);
+/// A scenario set up to be rendered a block at a time, the way the program renders: the session is loaded onto the engine's channel by the loader, a controller is made around it,
+/// and each block takes the notes that the script has in it, goes through the callback's `Renderer`, and (`poll`) lets the controller see what the engine reported (a pattern that
+/// was recorded, a control that was learned).
+pub struct Rig {
+    /// What a front-end has: it is applied to between blocks, as a browser's requests are.
+    pub ctl: Controller,
+    renderer: Renderer,
+    midi_tx: Sender<MidiEvent>,
+    telemetry: Arc<Telemetry>,
+    script: Vec<(u64, [u8; 3])>,
+    /// The first note of the script that has not been sent yet.
+    next: usize,
+    block: usize,
+    /// How many blocks have been rendered.
+    done: usize,
+    data: Vec<f32>,
+}
 
-    let block = scenario.block;
-    let blocks = scenario.frames.div_ceil(block as u64) as usize;
-    let mut data = vec![0.0f32; block * 2];
-    let mut samples = Vec::with_capacity(blocks * block * 2);
-    let mut slots = Vec::with_capacity(blocks);
-    let mut next = 0;
-    for b in 0..blocks {
-        let (start, end) = ((b * block) as u64, ((b + 1) * block) as u64);
-        // What is played in this block, at its place in it.
-        while next < scenario.script.len() && scenario.script[next].0 < end {
-            let (frame, bytes) = scenario.script[next];
-            midi_tx.send((frame.saturating_sub(start), bytes)).expect("room for the notes of a block");
-            next += 1;
+/// A block as it went: the samples (interleaved), how long the engine took (the callback's `Renderer`, nothing else) and how many times it asked for memory.
+pub struct Block<'a> {
+    pub samples: &'a [f32],
+    pub took: Duration,
+    pub allocations: usize,
+}
+
+impl Rig {
+    pub fn new(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Rig {
+        let (mut handles, stub) = testutil::stub_engine_of(8192);
+        handles.sample_rate = scenario.rate;
+        handles.max_block_size = scenario.block;
+        // The channels that the engine reports on are the program's own, bounded, and not the stub's unbounded ones (a send on an unbounded channel allocates when it needs room).
+        let (pattern_tx, pattern_rx) = crossbeam_channel::bounded(64);
+        let (learn_tx, learn_rx) = crossbeam_channel::bounded(64);
+        handles.pattern_rx = pattern_rx;
+        handles.learn_rx = learn_rx;
+        let config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
+        let model = load_session(&config, Path::new("."), scenario.rate, scenario.block, &Runtime::default(), &handles.cmd_tx, &mut |_| {})
+            .unwrap_or_else(|e| panic!("{}: the session does not load: {e:#}", scenario.id));
+        let telemetry = handles.telemetry.clone();
+        let midi_tx = handles.midi_tx.clone();
+        let wiring = Wiring {
+            channels: 2,
+            cmd_rx: stub.cmd_rx.clone(),
+            return_tx: stub.return_tx.clone(),
+            pattern_tx,
+            learn_tx,
+            telemetry: telemetry.clone(),
+            piano_filter: handles.piano_filter.clone(),
+        };
+        let ctl = Controller::new(model, handles, None);
+        let renderer = Renderer::new(make(wiring), stub.midi_rx.clone(), scenario.block);
+        Rig {
+            ctl,
+            renderer,
+            midi_tx,
+            telemetry,
+            script: scenario.script.clone(),
+            next: 0,
+            block: scenario.block,
+            done: 0,
+            data: vec![0.0; scenario.block * 2],
         }
-        renderer.render(&mut data, b as u64);
-        samples.extend_from_slice(&data);
+    }
+
+    /// Play what the script has in the next block, at its place in it, and render the block.
+    pub fn block(&mut self) -> Block<'_> {
+        let (start, end) = ((self.done * self.block) as u64, ((self.done + 1) * self.block) as u64);
+        while self.next < self.script.len() && self.script[self.next].0 < end {
+            let (frame, bytes) = self.script[self.next];
+            self.midi_tx.send((frame.saturating_sub(start), bytes)).expect("room for the notes of a block");
+            self.next += 1;
+        }
+        let cb = self.done as u64;
+        let before = Instant::now();
+        let ((), allocations) = allocations_in(|| self.renderer.render(&mut self.data, cb));
+        let took = before.elapsed();
+        self.done += 1;
+        Block { samples: &self.data, took, allocations }
+    }
+
+    /// Let the controller see what the engine reported.
+    pub fn poll(&mut self) {
+        self.ctl.poll();
+    }
+
+    /// A hash of every cell of the telemetry, as the engine left them.
+    pub fn telemetry_hash(&self) -> u64 {
         let mut hash = Fnv::new();
         for index in 0..telemetry::CAPACITY {
-            hash.feed(&telemetry.load_index(index).to_bits().to_le_bytes());
+            hash.feed(&self.telemetry.load_index(index).to_bits().to_le_bytes());
         }
-        slots.push(hash.0);
-        ctl.poll();
+        hash.0
     }
-    drop(renderer);
-    drop(ctl);
-    Render { samples, telemetry: slots }
+}
+
+/// Render `scenario` with the engine that `make` builds, all of it.
+pub fn render(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Render {
+    let mut rig = Rig::new(scenario, make);
+    let blocks = scenario.frames.div_ceil(scenario.block as u64) as usize;
+    let mut samples = Vec::with_capacity(blocks * scenario.block * 2);
+    let mut allocations = Vec::with_capacity(blocks);
+    let mut slots = Vec::with_capacity(blocks);
+    for _ in 0..blocks {
+        let block = rig.block();
+        samples.extend_from_slice(block.samples);
+        allocations.push(block.allocations);
+        slots.push(rig.telemetry_hash());
+        rig.poll();
+    }
+    Render { samples, telemetry: slots, allocations }
 }
 
 /// How many pieces the rms of a render is kept in.
@@ -306,6 +371,8 @@ pub struct Rendered {
     pub id: String,
     pub block: usize,
     pub fingerprint: Fingerprint,
+    /// How many times the engine asked for memory after its first block (which takes the commands that the session was loaded with).
+    pub late_allocations: usize,
 }
 
 pub fn render_all(scenarios: &[Scenario], make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Vec<Rendered> {
@@ -314,7 +381,8 @@ pub fn render_all(scenarios: &[Scenario], make: &dyn Fn(Wiring) -> Box<dyn Engin
         .map(|scenario| {
             let rendered = render(scenario, make);
             assert!(rendered.samples.iter().all(|s| s.is_finite()), "{}: a sample is not a number", scenario.id);
-            Rendered { id: scenario.id.clone(), block: scenario.block, fingerprint: fingerprint(&rendered) }
+            let late_allocations = rendered.allocations.iter().skip(1).sum();
+            Rendered { id: scenario.id.clone(), block: scenario.block, fingerprint: fingerprint(&rendered), late_allocations }
         })
         .collect()
 }
@@ -481,6 +549,12 @@ mod tests {
     }
 
     #[test]
+    fn no_block_after_the_first_asks_the_allocator_for_memory() {
+        let late: Vec<String> = always_on_renders().iter().filter(|r| r.late_allocations > 0).map(|r| format!("{}: {}", r.id, r.late_allocations)).collect();
+        assert!(late.is_empty(), "the audio thread asked for memory in these (the first block takes the commands of the load, and is let be):\n{}", late.join("\n"));
+    }
+
+    #[test]
     fn every_generated_session_loads() {
         for seed in 0..SEEDS {
             let text = generate::session(seed);
@@ -597,6 +671,8 @@ mod tests {
         let scenarios = whole();
         let renders = render_all(&scenarios, &legacy);
         check_against_the_fixtures(&renders, true);
+        let late: Vec<String> = renders.iter().filter(|r| r.late_allocations > 0).map(|r| format!("{}: {}", r.id, r.late_allocations)).collect();
+        assert!(late.is_empty(), "the audio thread asked for memory in these:\n{}", late.join("\n"));
         let twice: Vec<String> = scenarios.iter().filter_map(|scenario| agree(scenario, &legacy, &legacy)).collect();
         assert!(twice.is_empty(), "the engine is not deterministic:\n{}", twice.join("\n"));
         let generated: Vec<&Rendered> = renders.iter().filter(|r| r.id.starts_with("generated:")).collect();
