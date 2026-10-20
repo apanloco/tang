@@ -1,7 +1,9 @@
 # A patch graph for the session: audio and MIDI as cables
 
-**Status: a proposal. Nothing of it is built, and none of it will be started before you have decided what §9 asks.**
-Written 2026-10-20 at the end of step 67 of `docs/web-ui.md`, from the code as it is then. It starts from what you said that day: *"something we need
+**Status: a proposal. Nothing of it is built, and none of it will be started before you have decided what §9 and §11.7 ask.**
+Written 2026-10-20 at the end of step 67 of `docs/web-ui.md`, from the code as it is then. **§11, added later the same day, is the design without a time limit
+(you asked for the best way, whatever it costs to build) and replaces the recommendation of §4 and §9.1: the destination is a compiled graph, and the routing
+table of E1 is a detour.** §1 to §10 are what I proposed before that, kept because the model, the file, the page and the terminal parts of them carry over. It starts from what you said that day: *"something we need
 to think about sooner or later, is to have inputs and output, and have the connections modifyable. An example would be to connect two different osc to
 the same reverb. I also think we should treat midi this way. I.e more modular in general."* `docs/web-ui.md` §13 ("Sources as nodes") has your two
 earlier ideas (a keyboard as a node with MIDI cables, and audio input as a source), which this one contains. It is not track B (`docs/track-b.md`):
@@ -96,7 +98,8 @@ mute and solo, a meter, probe taps and modulators, and each has to become a prop
 name nodes and not positions. Every journal of the history (a lane, a group and an effect are put back whole from what the audio thread hands back)
 would be written again. The law of mute and solo, which the page pins to the engine over 4,096 cases, would be stated for a graph. The engine proper is
 the first 5,300 lines of `chain.rs`, with 7,900 of tests round it. **I would not start there**, and E1 does not close it off: the cables, ports, ids,
-intents, file and drawing that E1 needs are all that E2 would ask of the model and the page.
+intents, file and drawing that E1 needs are all that E2 would ask of the model and the page. *(That was written for a clock. §11 takes the clock out and
+reaches the opposite answer for the engine: build E2, by the path of §11.6, and skip E1's routing table, which would be thrown away.)*
 
 **What neither does at first**: feedback (a cycle is refused), and latency compensation. Two paths of different latency that are mixed again make a comb
 filter; the plugin trait has no latency report, so the host cannot make it up, and the Drive already has the problem in a smaller way. I would write it
@@ -220,7 +223,7 @@ C1 and C2 are independent of each other: the first is the audio the example is a
 
 ## 9. What I need from you
 
-Each has my recommendation and what changes if you choose otherwise.
+Each has my recommendation and what changes if you choose otherwise. *(§11.7 gives the twelve again for the design without a clock, with six more.)*
 
 1. **How far.** (a) E1 first, and decide on E2 when you have used it; (b) straight to E2. *I recommend (a):* it gives the example in two steps with
    everything else in the program as it is, and what it builds (cables, ports, ids, intents, file, drawing, Undo of cables) is what E2 needs from the model
@@ -272,3 +275,273 @@ Each has my recommendation and what changes if you choose otherwise.
 - **The size.** C1a touches the model, the engine, the file, the protocol, the page and the terminal, as `Modulate` did; it is the largest step since
   undo, and I would cut it into the engine and the model first (tested without a front-end), then the page, then the terminal, with the first commit of
   each a test that fails.
+
+## 11. The design without a clock
+
+*Added the same day, after you asked for the best design if it did not have to be quick to build: "the things that will lift this to new levels, without
+any time constraints on how fast its developed. What is the best way to solve it? My goal as a truly modular (but still fast) system."* Where this section
+disagrees with §4 and §9 it replaces them. The short answer: **the destination is E2, a compiled graph, and E1 (the routing table) is a detour.** Its engine
+half would be written, tested and thrown away, and the reason I gave against E2 in §4 was its price, which you took out of the question. What is left of that
+reason is its *risk*, and §11.6 answers it with an oracle and not with a smaller design.
+
+### 11.1 The design in one paragraph
+
+A **typed patch graph is the model, and the only structure**: nodes with typed ports, and cables with ids. It is **compiled on the main thread into an
+immutable plan** that a small real-time kernel runs, over **node state that lives in an arena and outlives every plan**. Audio, events (MIDI, and what comes
+after it) and control (modulation) are three kinds of port on one kind of node and one kind of cable. A lane, a group, a rack, a send and a split are
+*templates*: patterns of nodes and cables that the program makes and you can open, and that the engine knows nothing about. The same kernel runs the inside of
+a `Patch` node, once per voice, so that track B is this engine one level down and not a second one. It is modular because nothing in the engine knows what a
+lane is, and fast because the work of a block is a flat list of calls over buffers that were made before, with silent work skipped and independent
+branches able to run on more cores.
+
+What each thing in the session becomes:
+
+| Today | In the graph |
+|---|---|
+| a lane (`InstrumentLane`) | an *instrument rack*, a template: the instrument, its event nodes, its chain and a strip |
+| a group | a *bus*, a template: a sum (the fan-in of an input), its chain and a strip |
+| volume, pan, mute, solo, the lane's meter and taps | a `Strip` node; the compile gives each strip the gain it is heard at (the law of §9.8) |
+| range, remap, pattern, transpose (in that order, in `InstrumentLane::process`) | four event nodes in front of the instrument, fused into one pass by the compile |
+| the lane's and the group's modulators | modulator nodes with control outputs; where they sit is a layout, not a scope |
+| `NoteInput`'s sources | keyboard and device nodes with event outputs |
+| probes and meters | taps on ports and cables |
+| 68 `GraphCommand`s | commands that name nodes: set a value, install a plan, insert a node, remove one |
+| `Inverse::Lane`, `Group`, `Effect`, `Modulator` | one: the insertion of what the kernel handed back, and its cables |
+
+### 11.2 Six ideas
+
+**1. One model: typed ports, cables with ids, a compile step.**
+A port is *audio* (a block of `f32` for each of n channels), *events* (notes, expression, controllers, each with a sample time) or *control* (one value for the
+block, or one for each sample where the receiver can use it). A cable joins an output to an input of the same kind, and has what the three have in common today:
+an id that survives removals and comes back with Undo, and a gain (audio) or the depth and the law that modulation cables have (`add` around the value you set;
+`peak` for an envelope, whose peak is the value you set). An input that several cables end at sums them (audio), merges them by time (events) or adds their
+offsets (control): fan-in needs no mixer node. A parameter is a control input, and exists as a port when a cable ends at it or it is pinned (a plugin with
+2,000 parameters does not have 2,000 ports). `compile` checks the kinds and refuses a cycle that a feedback cable (one block of delay) does not cut; orders
+the nodes (ties by creation order, so that a render is reproducible); finds the latency of every path and puts a delay on the shorter ones; gives every cable a
+buffer by lifetime (graph colouring: a session of fifty nodes needs a handful); fuses what is always together (a dry/wet mix with its delayed dry, the event
+nodes of a lane); and makes a plan.
+
+```rust
+// the model, on the main thread: what is edited, saved and undone
+struct Patch { nodes: Map<NodeId, Node>, cables: Map<CableId, Cable> }
+// what compile() makes of it: immutable, Send, and nothing in it allocates when it runs
+struct Plan { ops: Vec<Op>, buffers: Layout, controls: Vec<ControlEdge>, latency: u32 }
+// what the audio thread owns: the state, which outlives every plan
+struct Kernel { nodes: Arena<Box<dyn Node>>, plan: Plan, pool: BufferPool }
+
+trait Node: Send {
+    fn ports(&self) -> &[PortSpec];            // audio (n channels) | events | control
+    fn process(&mut self, io: &mut Io<'_>);    // one block: inputs, outputs, events with their sample times
+    fn latency(&self) -> u32 { 0 }             // frames, so that the compile can compensate
+    fn tail(&self) -> Tail { Tail::Unknown }   // so that silence can be skipped
+    fn reset(&mut self);                       // a panic that ends a reverb's tail too
+    fn save(&self) -> Option<Vec<u8>>;         // a plugin's own state, which a session loses today
+    fn load(&mut self, state: &[u8]);
+}
+```
+
+**2. Edits that neither click nor restart anything.**
+The kernel owns the nodes in a generation-checked arena, and a plan only names slots. A change of structure sends a new plan, swapped in at a block boundary,
+and the old plan goes back to the main thread to be dropped (as plugins do now). A new cable ramps in and one that is taken out ramps out over one block (the
+fade of a mute, for every cable): reconnecting while a note rings does not click, and a reverb's tail is not cut by what happens around it. A node that is
+removed is handed back *with its state*, so that Undo puts back the very node. Commands name nodes: **61 of today's 68 `GraphCommand`s name a lane, a slot,
+a group, a member or an index** (counted), and the code that keeps positions in step when something comes or goes is **31 functions and 443 lines in
+`chain.rs` and, mirrored, 20 functions and 304 lines in `model.rs`** (counted: `shift_*`, `fixup_*`, `remap_*`, `adjust_*`, `update_*_base` and their
+helpers, outside the tests). With ids that code does not exist, and nor do its tests. Undo becomes a command pattern over a few primitives (add and remove a
+node, add and remove a cable, set a value, set an attribute, move), in transactions.
+
+**3. Events with a name for every note.**
+An event is a sample time and a kind: a note on (with an id, a key, a channel and a velocity), a note off (by id), an expression on a note (pressure, slide,
+tuning), a controller, a wheel, a transport message. MIDI, MPE included, is converted at the edge, and each hosted plugin gets what its format takes (CLAP and
+VST3 have note ids and per-note expression, and CLAP per-note parameter modulation; LV2 gets MPE channels; I have not tried any of them in this code). Sources
+and sinks are nodes: the computer's keys, each MIDI device (an unplugged one leaves its node and its cables, which reconnect when it comes back), a pattern, an
+arpeggiator, a MIDI output. *Timing:* live notes are stamped 0 today (`NoteInput::send`) and start with the next block, which is up to 5.3 ms of jitter at 256
+frames and 21 ms at 1,024; stamped on arrival against the audio clock and played one block later they have a constant latency and no jitter, and a note and a
+pattern share one clock. *No hanging notes:* a cable that is removed or re-routed sends a note-off for each note it was holding, so that an edit cannot leave
+one (the TODOs about undo and stuck notes in `CLAUDE.md`).
+
+**4. Modulation is control cables, and a clock is a node.**
+A modulator is a node (LFO, envelope, steps, macro, MIDI control, velocity, key, as now) whose output is a control port. The scope of a lane or a group goes: a
+modulator can drive any parameter in the session, a parameter of another modulator, or the depth of a cable (the cross-mod that exists, with its depth
+cables, is a port on the cable). Math nodes come with it: scale and offset, multiply (a VCA), slew, sample and hold, quantize to a scale, min and max, switch,
+random. The oscillator's `quantize` (D69) is then one such node that goes on *any* cable, and the parameter stays as the short way for the oscillator. A
+**transport node** (tempo, beat and bar position, start and stop; later a tap, MIDI clock or Link) is what tempo-synced things lock to: LFOs and step
+sequencers that are in phase with the beat, and patterns stored in beats (the TODO of step 67, and Open question 10 of `docs/web-ui.md`). Control is one value
+per block by default, as now; a port can ask for audio rate, which the builtin nodes (and track B) use, and a hosted plugin gets block values and smooths
+them itself.
+
+**5. Hosting that shows what a plugin has.**
+A port for every bus a plugin declares: the sidechain input (silence today), every output of a multi-output instrument (the chain keeps the first stereo pair
+of Pianoteq's sixteen and drops the rest), and events out for the plugins that are MIDI effects. The contract the graph needs and `Plugin` lacks: a *latency*
+(so that the compile can delay the dry path, which ends the comb filter that is why the Drive starts fully wet), a *tail* (so that silence can be skipped), a
+*reset* (so that a panic ends a reverb's tail too), a *state* to save and load (a sample loaded in a plugin's own window is not in a session today), and *events
+out*. A node is also the place where a process boundary could go: a plugin in a process of its own, behind the same contract, so that one that crashes does
+not take Tang with it. That is not in the plan; the contract does not stand in its way.
+
+**6. Modules, and voices on the same kernel.**
+A **module** is a subgraph with exposed ports and knobs, kept in a file and nested, and *flattened by the compile*, so that it costs nothing to run. The lane
+and the group are the first two. What you see today is what the templates make, and what you add is a cable. A **`Patch` node** is track B: an inner graph that
+the same compiler makes a plan of and the same kernel runs, once for each voice, with audio-rate control, and with the voices' state laid out so that the
+builtin nodes can process several at once (SIMD). The session graph stays stereo: polyphony lives where the voices are. A note's id carries its per-note
+expression into its voice, so that your Seaboard's pressure and slide reach one voice of a chord, which `CLAUDE.md` says plainly (under "MIDI routing") that
+they cannot today.
+
+### 11.3 What "fast" is made of
+
+- **What costs is the plugins' DSP.** The graph adds, for each node and block, a virtual call and a few loops: a thousand nodes should be hundreds of
+  microseconds of a 5.3 ms block (an estimate; P0 measures it, and I will not claim it before). A lane with two effects makes about eleven passes over
+  its block today (four buffers zeroed, the volume, two copies, a blend for each effect whose mix is under 1, the fade, the sum); at 256 frames that is
+  microseconds and not the problem, and the colouring and in-place work take most of it away.
+- **Where the speed is, in the order of what it saves.** (1) *Doing less*: a subgraph whose input is silent and whose tail has ended is not run, so that a
+  muted lane costs nothing (it costs all of it today: a TODO in `CLAUDE.md`). (2) *More cores*: the plan has the dependencies, a pool of real-time helper
+  threads runs what is ready, and the sums are in a fixed order, so that a render is the same bit for bit whatever the number of threads (a plugin can be pinned
+  to the audio thread; on macOS a helper should join the audio device's workgroup, which I would first check that the audio library lets us do). (3) *SIMD across
+  voices* in `Patch` nodes. (4) Tidy memory.
+- **The rules of the kernel.** No allocation, lock or system call on the audio thread; the work of a block is bounded by the size of the plan; a plan is data;
+  state outlives plans; the order is deterministic. The tests of these that exist (`alloc_guard`, the exact renders) become property tests over random graphs.
+- **What the canvas gets for free.** The kernel times each node (two clock reads a node per block: microseconds for a hundred), so each node can show how much
+  of the block it takes, and a session that is too heavy says which plugin it is.
+
+### 11.4 The page and the terminal
+
+**The page.** The handles are real: audio, event and control ports have shapes and colours of their own, and while a cable is dragged the ports that take it
+light (as `tang-port--takes` does for modulation); a drop on empty canvas opens a palette of the nodes that could take it ("insert a reverb here"); a cable
+carries its level (modulation cables brighten with their modulator today, and audio cables do the same with the signal) and can have a probe on it (the
+scope of step 46 moves from nodes to cables); a module collapses to a node and opens to its inside; the parts that are graph-shaped are laid out in layers, left
+to right, with the places you give kept (`ui`), and the strips stay for what the templates make. `toFlow` (725 lines) has to learn all of it, and the page's
+mock engine (`client/mock.ts`, 1,774 lines) has to learn the graph, pinned to the controller by the fixtures as it is now.
+
+**The terminal** cannot draw a graph and need not: a **patchbay matrix** for each kind of cable (audio, events, control), outputs down the side and inputs
+across the top, `Enter` on a crosspoint makes the cable or takes it out and `+` and `-` turn its gain; the lists of §7 stay for the cables of one node. A matrix
+is how text has always edited a graph (the ALSA and JACK patchbays). Both read and write the one model, and `tang --web` runs both on one controller as it does now.
+
+### 11.5 The file
+
+The netlist is the form that the model has: nodes and cables by name, what the page draws, in text.
+
+```toml
+[[node]]
+id = "keys"
+kind = "keyboard"
+source = "computer"
+
+[[node]]
+id = "osc1"
+plugin = "builtin:osc"
+
+[[node]]
+id = "osc2"
+plugin = "builtin:osc"
+
+[[node]]
+id = "verb"
+plugin = "builtin:reverb"
+
+[[cable]]                       # events: the keys to both oscillators
+from = "keys.events"
+to = ["osc1.events", "osc2.events"]
+
+[[cable]]                       # audio: both oscillators into one reverb, the first at 0.6
+from = "osc1.out"
+to = "verb.in"
+gain = 0.6
+
+[[cable]]
+from = "osc2.out"
+to = "verb.in"
+
+[[cable]]
+from = "verb.out"
+to = "master.in"
+```
+
+What is written today is the **sugar** (`[[instrument]]`, `[[group]]`, `group = 0`, `range`, the effects in a lane) and loads by being *lowered* to the nodes
+and cables of its template. A session that is still exactly what the templates make is saved as it was written, and one that has gone beyond them is saved with
+a netlist for the rest; both may be in one file. The netlist is also what makes a session something you can diff, merge, write by hand, generate, and reload
+while the program runs (a file watcher turns the difference into intents, which are steps of Undo and are told to every browser), and with no device the same
+kernel could render a session to a file (`tang render session.toml --seconds 30 out.wav`: the command does not exist yet), as the tests of the examples already render it in memory.
+
+### 11.6 The way there: the old engine is the specification
+
+The risk of a new engine is that it is not the old one. The program has the means to know: it has 48,800 lines of tests in the source files and 1,700 more in `tests/` (counted), the page's
+fixtures that pin its laws to the engine's (`audible.json` has 4,096 cases), and the audio tests of the examples. So the old engine is kept as the oracle, and
+the new one grows under today's structure until it equals it, and is then taken apart, step by step, with the oracle checking each step.
+
+- **P0, the oracle and the boundary.** A corpus: every example session and a few hundred sessions *generated* from a seed (lanes, groups, effects, modulators
+  of each kind, mutes and solos, patterns, ranges, remaps, a scripted run of notes with expression), rendered by the engine as it is, at three block sizes,
+  kept as hashes of the samples (a few as WAV, to listen to). The audio thread's engine behind a trait that `Renderer` drives, so that two engines can be run
+  on the same input. A benchmark (ns a block of the stress scene, allocations, a histogram of how close a block comes to its deadline), so that §11.3 gets numbers.
+  *To try: nothing new.*
+- **P1, the kernel, with today's structure as coarse nodes.** The graph, the compile, the plan and the kernel, with the lane and the group as two coarse
+  nodes that contain today's code unchanged, a plan that has exactly today's edges, and the old commands through an adapter. It must equal the oracle bit for
+  bit at every block size; then the default engine changes. *To try: the same sounds.*
+- **P2, ids for places.** Commands, the model and the history name nodes; the 51 fixup functions and their tests go; the lane and group accessors stay as
+  views, so that the tests of `src/app/` (about 22,600 lines against 9,300 of code, counted) keep guarding what they guard while the
+  inside is replaced.
+- **P3, take the lane apart, and draw audio cables.** The lane splits into instrument, effects and strip (volume, pan, mute, solo, meter), the oracle checking
+  every split; the compile finds the latencies and puts the delays; cables are drawn in the page, in the terminal's patchbay and in the file. *To try, and the
+  first thing you can see:* two oscillators into one reverb, a send, a sidechain, a multi-output instrument to separate effects.
+- **P4, events.** The event with its note id; keyboard, device, pattern, range, remap and transpose as nodes; MPE; time stamps; no hanging notes. *To try:* a
+  split, a layer, two keyboards into one synth, an arpeggiator between the keys and the synth.
+- **P5, control.** Parameters as ports, modulators as nodes (the racks become layout), math nodes, the transport. *To try:* one LFO on two lanes, the quantizer
+  on a cable, LFOs in phase with the beat.
+- **P6, modules and voices.** Modules and a library of them; the `Patch` node on the kernel (the kernels of `docs/track-b.md` §7, B0, first).
+- **P7, scale.** Skipping silence and tails, the multicore executor, the DSP meter on every node (and the sandbox, if you want it).
+
+*Bit for bit* where the order of the floating-point work is the same; where a chosen change alters it (a mix fused with its compensated dry, a sum in another
+order) the test names it, with the reason and a tolerance, in a list that is reviewed with the change. The page's fixtures are not regenerated until the new
+engine agrees with the old. Two more tests that the old engine cannot give, since it has no such graphs: a **reference interpreter** (slow and obviously right:
+a buffer of its own for every cable, the nodes in a plain order) that the kernel must equal over random graphs, which finds the bugs of colouring, latency,
+feedback cuts, fusion and parallel order; and a **click detector**: a sine rendered through random sequences of edits (cables added and taken out, nodes
+inserted and removed, plans swapped), asserting that the output has no jump beyond a bound.
+
+P0 to P2 change nothing you can see, and each makes the code smaller; the first new thing is P3. If you ever want a cable sooner, E1 stays possible, at the price
+of throwing its engine half away.
+
+### 11.7 §9 again, and what is new
+
+| # | §9 said | Now |
+|---|---|---|
+| 1 | E1 first | **E2, by the path of §11.6.** E1's page, file, intents and Undo carry over; its engine half is the detour. |
+| 2 | audio before MIDI | audio cables (P3), then events (P4): both stand on the kernel, so the order decides only what you see first. |
+| 3 | cables leave from the end of a lane | from any node's output: in a graph a tap is a cable. |
+| 4 | refuse cycles | refuse them, except through a feedback cable (one block of delay, drawn dashed, with the latency said). |
+| 5 | no latency compensation | in P3: it is a property of the compile, and the plugin contract gains `latency`. |
+| 6 | a cable into a group is a membership | there are no memberships: a bus is a node with fan-in, and the reach of a group's modulators goes with the scope of modulators. |
+| 7 | a sum, with a gain on each cable | the same. |
+| 8 | the law of mute and solo | the same law, stated for strips and paths; the compile gives each strip the gain it is heard at. |
+| 9 | old sessions unchanged | the same: the sugar stays, and round-trips (§11.5). |
+| 10 | the range on the lane, then the cable | a range node (a cable's own range is the same node, fused). |
+| 11 | one source for the computer's keys | the same. |
+| 12 | lists in the terminal | lists *and a patchbay matrix* (§11.4). |
+
+New, with my recommendation:
+
+13. **The file.** The netlist as the model's form, with the sugar kept and round-tripped (§11.5). *Recommend yes.* The other way, the netlist only, makes every
+    session of today a different file.
+14. **The event.** A richer event inside (note ids, expression), with MIDI at the edges. *Recommend yes:* it is what per-note expression needs, and a MIDI
+    event inside would have to be translated back out of for every format that has notes by id.
+15. **Polyphony.** Instances of the inner graph inside `Patch` nodes, the session graph stereo. *Recommend that.* The other way is poly cables through the whole
+    session (a cable of up to 16 channels, as in VCV Rack): faster for builtin nodes and a heavier model, and a hosted plugin cannot be part of it.
+16. **Cores.** Designed for from P1 (the order, the fixed sums), built last, a plugin pinnable to one thread. *Recommend that;* the alternative is one thread for ever.
+17. **Crates.** The kernel, the nodes and the host adapters in a crate of their own that has no interface in it, from P1. *Recommend yes:* it is how the
+    kernel is tested, benchmarked and fuzzed alone, with no interface to build.
+18. **Library or ours.** Our own kernel for the session graph (a library would not know hosting, events, latency, taps or ids), and FunDSP considered only for
+    the DSP inside `Patch` nodes, after the experiment that `docs/track-b.md` §8.6 asks for. *Recommend that.*
+
+### 11.8 Risks
+
+- **Too general to use.** A graph editor that lets you wire anything is harder than strips that cannot be wired wrongly. The templates must make today's session
+  with no cable drawn, the page must open on the strips, and the graph must be something you grow into.
+- **Compile correctness** (colouring, latency, feedback, fusion, parallel order): the reference interpreter and the click detector, and a plan that is checked
+  before it is sent.
+- **Events.** The note models of the three plugin formats differ, and the adapters are where the bugs will be; each gets tests with the real plugins on this
+  machine (Pianoteq, the ROLI ones), as the `#[ignore]`d tests do.
+- **Tails and swaps.** A node that is removed loses its tail, and one that is re-routed keeps it; the ramps hide a step and not a long reverb being cut. The page
+  has to say which it is (taking a reverb out is not the same as bypassing it).
+- **The size of the flip.** The engine is the smaller half: `src/app/` is about 9,300 lines of code and 22,600 of tests, and the page has its mock engine
+  (1,774 lines), `toFlow` (725) and 17 fixtures that pin them to the controller. The tests are the net, and the accessors that stay as views are how it
+  stays one net.
+- **The layout of an arbitrary graph** in the page: a layered layout for the graph-shaped parts, kept places, the strips for the templates.
+- **Real-time threads** (priority inversion, wake-up time, power): last, off by default until it is measured on this machine.
+- **Scope.** P5 to P7 are each a feature of their own. P0 to P3 first, because everything else stands on them.

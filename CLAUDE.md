@@ -2567,7 +2567,12 @@ generated TypeScript is current.
   different osc to the same reverb", MIDI treated the same way): the session as a patch of lanes, buses, keyboards and cables of three kinds (audio,
   MIDI, the modulation that exists). A proposal, with what the engine has and lacks, a staged path (audio cables as a routing table on the lanes and
   groups first, then MIDI sources, then nodes between, a general engine only if wanted) and the twelve decisions that are the user's, is
-  `docs/patch-graph.md`; nothing of it is started. It contains the two ideas at the end of this list (a keyboard as a node, audio input as a source)
+  `docs/patch-graph.md`; nothing of it is started. Its §11 is the design without a time limit (the user asked for the best way, whatever it costs to
+  build, for a modular system that is still fast), and it replaces the order of the staged path: a typed graph with ids, compiled on the main thread into a
+  plan that a small real-time kernel runs over node state that outlives every plan; audio, events (with note ids and sample times) and control (modulation)
+  as kinds of port; the lane, the group and the rack as templates of nodes; modules and the voices of track B on the same kernel; reached by growing the
+  kernel under today's structure with the old engine as a bit-for-bit oracle, not by a routing table that would be thrown away. It contains the two ideas
+  at the end of this list (a keyboard as a node, audio input as a source)
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
