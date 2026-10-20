@@ -6,8 +6,12 @@
 //! order is deterministic, and a sum is made in a fixed order, so that a render is the same bits whatever the platform's scheduling does.
 
 mod arena;
+mod compile;
+mod patch;
 
 pub use arena::{Arena, Key};
+pub use compile::{CompileError, Feed, Op, Plan, compile};
+pub use patch::{Cable, Id, NodeSpec, Patch, Port, PortSpec};
 
 #[cfg(test)]
 mod testutil;
