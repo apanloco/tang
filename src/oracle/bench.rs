@@ -42,6 +42,9 @@ pub fn stress_session(lanes: usize, muted: bool) -> String {
     out
 }
 
+/// How an engine is made from its wiring, for the table that times two of them.
+type Make = dyn Fn(Wiring) -> Box<dyn Engine>;
+
 /// What a scenario of the benchmark is: a session, and whether a chord is held from the start (a session with no notes shows what the engine does when nothing sounds).
 struct Case {
     name: &'static str,
@@ -156,7 +159,7 @@ mod tests {
         for case in cases() {
             for (block, blocks) in [(64, 4000), (256, 2000), (1024, 500)] {
                 // The engine as the program has it (the plan) and the loop it replaced, one after the other on the same session.
-                let engines: [(&str, &dyn Fn(Wiring) -> Box<dyn Engine>); 2] = [("loop", &legacy), ("plan", &engine)];
+                let engines: [(&str, &Make); 2] = [("loop", &legacy), ("plan", &engine)];
                 for (which, make) in engines {
                     let timing = measure(&case.session, case.notes, block, blocks, make);
                     let budget = Duration::from_secs_f64(block as f64 / f64::from(RATE));

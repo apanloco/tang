@@ -18,7 +18,8 @@ pub struct Ordered<T> {
     keys: Vec<Key>,
     /// Where the keys come from: an arena that holds nothing, so that a key is a slot and a generation.
     allocator: Arena<()>,
-    /// By the slot of a key: the place in `items` of the item that the key is of, or `NONE`.
+    /// By the slot of a key: the place in `items` of the item that the key is of. What it holds for a key that is gone, or for a slot that has not been used yet (`NONE`), is not read:
+    /// `position_of` asks the allocator first.
     place: Vec<u32>,
 }
 
@@ -56,7 +57,6 @@ impl<T> Ordered<T> {
         let key = self.keys.remove(at);
         let value = self.items.remove(at);
         self.allocator.remove(key);
-        self.place[key.index()] = NONE;
         self.renumber(at);
         value
     }
