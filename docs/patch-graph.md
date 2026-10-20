@@ -519,6 +519,15 @@ the new one grows under today's structure until it equals it, and is then taken 
 - **P2, ids for places.** Commands, the model and the history name nodes; the 51 fixup functions and their tests go; the lane and group accessors stay as
   views, so that the tests of `src/app/` (about 22,600 lines against 9,300 of code, counted) keep guarding what they guard while the
   inside is replaced.
+  **Narrowed, 2026-10-20, after reading every one of the fixups and every place that uses a position (P1 was done, and P2 was next).** The 51 functions exist for one thing:
+  keeping the *modulators'* references valid when structure changes (a target's chain slot, a group target's member ordinal, a sibling's index, the place of a cable whose depth another
+  cable drives). **P5 replaces every one of those references with a cable between ports** (a modulator is a node, a parameter is a port), so rewriting them to ids now would be written
+  twice: ids that are held by hand in a dozen kinds of reference, and then cables. What P3 and P4 need is less: stable ids for the nodes that audio and event cables will join, which are
+  the lanes, the groups, the effects and the bus effects (a lane's instrument is named by the lane's id, as the model has it). So P2 is that, in three steps: (1) `NodeId` and `EdgeId` move to a
+  module that the engine can use without reaching into the model; (2) the engine learns the model's ids: the commands that make a lane, a group, an effect or a bus effect carry the node's id,
+  the engine keeps it, and a check that the engine's ids are the model's after every edit (the oracle's edits run it, and so do the tests of `src/app/` that compare the two) holds them
+  together; (3) the plan names those ids and `Ordered`, which P1 made to give the plan keys, goes (an item that has an id needs none, and the plan finds it through a map made when the plan is). The
+  commands that address things that are there stay positional, and go over to ids family by family when a step needs one to (P3's cables are by id from the start); the fixups go with P5.
 - **P3, take the lane apart, and draw audio cables.** The lane splits into instrument, effects and strip (volume, pan, mute, solo, meter), the oracle checking
   every split; the compile finds the latencies and puts the delays; cables are drawn in the page, in the terminal's patchbay and in the file. *To try, and the
   first thing you can see:* two oscillators into one reverb, a send, a sidechain, a multi-output instrument to separate effects.
