@@ -12,6 +12,38 @@ use crate::plugin::chain::AudioGraph;
 /// Standard MIDI messages are 1–3 bytes; we use a fixed array to avoid heap allocation.
 pub type MidiEvent = (u64, [u8; 3]);
 
+/// What the audio callback renders with: everything between the notes that arrive and the samples that go out. `AudioGraph` is the one there is. It is a trait so that there can be
+/// another one (the compiled graph of `docs/patch-graph.md` §11) next to it, chosen at start, and so that the oracle of `crate::oracle` can run two of them on the same input and
+/// say whether they agree.
+pub trait Engine: Send {
+    /// How many channels `process` renders.
+    fn num_channels(&self) -> usize;
+
+    /// Render a block: `out` has a buffer for each channel, and its length is the length of the block. The events are the notes and controllers that arrived since the last block, each
+    /// with its frame in this one. What the controller has sent since the last block (commands, plugins coming and going) is taken first.
+    fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()>;
+}
+
+impl Engine for AudioGraph {
+    fn num_channels(&self) -> usize {
+        AudioGraph::num_channels(self)
+    }
+
+    fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+        AudioGraph::process(self, midi_events, out)
+    }
+}
+
+impl<E: Engine + ?Sized> Engine for Box<E> {
+    fn num_channels(&self) -> usize {
+        (**self).num_channels()
+    }
+
+    fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+        (**self).process(midi_events, out)
+    }
+}
+
 /// Select the best audio host for the current platform.
 /// On Linux, prefer JACK (PipeWire exposes a JACK interface) to avoid the
 /// ALSA compatibility layer which can destabilize PipeWire's global quantum.
@@ -209,7 +241,7 @@ mod fpu {
 /// one buffer per channel, and interleave them into the output. The buffers are
 /// made once and reused, so a block is rendered without allocating.
 struct Renderer {
-    graph: AudioGraph,
+    graph: Box<dyn Engine>,
     midi_rx: Receiver<MidiEvent>,
     /// The MIDI that arrived since the last block.
     midi_events: Vec<MidiEvent>,
@@ -219,10 +251,10 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(graph: AudioGraph, midi_rx: Receiver<MidiEvent>, buffer_size: usize) -> Self {
+    fn new(graph: impl Engine + 'static, midi_rx: Receiver<MidiEvent>, buffer_size: usize) -> Self {
         let num_channels = graph.num_channels();
         Renderer {
-            graph,
+            graph: Box::new(graph),
             midi_rx,
             midi_events: Vec::with_capacity(64),
             channel_bufs: (0..num_channels).map(|_| vec![0.0f32; buffer_size]).collect(),
@@ -412,7 +444,7 @@ impl AudioEngine {
     /// Build the audio engine but don't start playing yet.
     /// Call `play()` after queuing initial graph commands.
     pub fn build(
-        graph: AudioGraph,
+        graph: impl Engine + 'static,
         midi_rx: Receiver<MidiEvent>,
         device_name: Option<&str>,
         sample_rate: u32,
@@ -512,10 +544,85 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
         let graph = AudioGraph::new(2, cmd_rx, return_tx);
-        let mut renderer = Renderer::new(graph, midi_rx, buffer_size);
+        let renderer = Renderer::new(graph, midi_rx, buffer_size);
         load_onto(session, &cmd_tx);
-        renderer.graph.drain_commands();
         Rig { renderer, midi_tx, _return_rx: return_rx }
+    }
+
+    /// An engine that is not the graph: channel `c` is the constant `c + 1`, and it counts the blocks it has rendered.
+    struct Constants {
+        channels: usize,
+        blocks: usize,
+    }
+
+    impl Engine for Constants {
+        fn num_channels(&self) -> usize {
+            self.channels
+        }
+        fn process(&mut self, _: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+            self.blocks += 1;
+            for (c, channel) in out.iter_mut().enumerate() {
+                channel.fill(c as f32 + 1.0);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_renderer_drives_any_engine_and_interleaves_what_it_renders() {
+        let (_midi_tx, midi_rx) = crossbeam_channel::bounded(8);
+        let mut renderer = Renderer::new(Constants { channels: 2, blocks: 0 }, midi_rx, 4);
+        let mut data = vec![0.0f32; 4 * 2];
+        renderer.render(&mut data, 0);
+        assert_eq!(data, [1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0], "the channels of the engine, interleaved");
+        let (_midi_tx, midi_rx) = crossbeam_channel::bounded(8);
+        let renderer = Renderer::new(Constants { channels: 3, blocks: 0 }, midi_rx, 4);
+        assert_eq!(renderer.num_channels, 3, "as many channels as the engine says it has");
+    }
+
+    #[test]
+    fn a_boxed_engine_is_an_engine_and_renders_what_the_graph_renders_by_itself() {
+        // The graph driven directly, and the same graph behind a `Box<dyn Engine>` in a renderer, on the same chord: the same bits. (The effect has a mix of a half: a reverb puts out
+        // its tail only, and a file's effect is wet unless it says another mix, so that it would be silent for the few milliseconds that this renders.)
+        let session = "[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nunison = 2.0\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\nmix = 0.5\n";
+        let chord = [(0, [0x90, 48, 100]), (0, [0x90, 55, 90]), (0, [0x90, 60, 80])];
+        let make = || {
+            let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(64);
+            let (return_tx, _return_rx) = crossbeam_channel::bounded(16);
+            let graph = AudioGraph::new(2, cmd_rx, return_tx);
+            load_onto(session, &cmd_tx);
+            (graph, _return_rx)
+        };
+        let (mut direct, _keep_direct) = make();
+        let mut bufs = vec![vec![0.0f32; 64]; 2];
+        let mut by_hand = Vec::new();
+        for block in 0..8 {
+            let events: &[MidiEvent] = if block == 0 { &chord } else { &[] };
+            for buf in bufs.iter_mut() {
+                buf.fill(0.0);
+            }
+            direct.process(events, &mut bufs).unwrap();
+            for (left, right) in bufs[0].iter().zip(&bufs[1]) {
+                by_hand.extend([*left, *right]);
+            }
+        }
+        let (boxed, _keep_boxed) = make();
+        let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
+        let boxed: Box<dyn Engine> = Box::new(boxed);
+        let mut renderer = Renderer::new(boxed, midi_rx, 64);
+        let mut through_the_renderer = Vec::new();
+        let mut data = vec![0.0f32; 64 * 2];
+        for block in 0..8 {
+            if block == 0 {
+                for event in chord {
+                    midi_tx.send(event).unwrap();
+                }
+            }
+            renderer.render(&mut data, block);
+            through_the_renderer.extend_from_slice(&data);
+        }
+        assert!(by_hand.iter().any(|&s| s != 0.0), "the chord is heard");
+        assert!(by_hand == through_the_renderer, "the same bits");
     }
 
     #[test]
