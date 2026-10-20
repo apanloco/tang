@@ -981,7 +981,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 9] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml"];
+    const SOUND_EXAMPLES: [&str; 11] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1059,6 +1059,82 @@ mod tests {
             let wanted = c3 * 2.0f32.powf(semitones as f32 / 12.0);
             let cents = 1200.0 * (heard / wanted).log2();
             assert!(cents.abs() < 5.0, "step {step}: {heard} Hz for {wanted} Hz, {cents} cents off");
+        }
+    }
+
+    /// `session` with its tempo said to be `bpm` beats a minute: its own `bpm` line, if it has one, is replaced (a key of the top level goes before every table).
+    fn at_tempo(session: &str, bpm: f32) -> String {
+        let rest: Vec<&str> = session.lines().filter(|line| !line.trim_start().starts_with("bpm")).collect();
+        format!("bpm = {bpm:?}\n{}", rest.join("\n"))
+    }
+
+    #[test]
+    fn the_arp_example_goes_by_the_tempo_and_not_by_its_own_rate() {
+        // Its steps are an eighth-note triplet each: six a second at 120 beats a minute (which is the rate it keeps), three at 60 and nine at 180.
+        let c3 = 440.0 * 2.0f32.powf(-21.0 / 12.0);
+        for (bpm, per_second) in [(60.0f32, 3.0f32), (180.0, 9.0)] {
+            let out = play(&at_tempo(&example("arp.toml"), bpm), &[48], 0.4, 3.0, 3.4);
+            for (step, semitones) in [0, 3, 7, 10, 12, 10, 7, 3].into_iter().enumerate() {
+                // (A window of 75 ms, a tenth of the way into the step: it is over before the step is, at nine a second too.)
+                let start = ((0.4 + (step as f32 + 0.1) / per_second) * 48_000.0) as usize;
+                let heard = pitch_of(&out[start..start + 3600], 48_000.0);
+                let wanted = c3 * 2.0f32.powf(semitones as f32 / 12.0);
+                let cents = 1200.0 * (heard / wanted).log2();
+                assert!(cents.abs() < 5.0, "at {bpm} beats a minute, step {step}: {heard} Hz for {wanted} Hz, {cents} cents off");
+            }
+        }
+    }
+
+    /// The period of the signal in `series`, in its samples: from its autocorrelation with the mean taken out, the first peak between the lags `shortest` and `longest` that is nearly
+    /// as good as the best (the multiples of a period are as good as the period), brought between two samples.
+    fn period_in(series: &[f32], shortest: usize, longest: usize) -> f32 {
+        let mean = series.iter().sum::<f32>() / series.len() as f32;
+        let x: Vec<f32> = series.iter().map(|v| v - mean).collect();
+        let correlation: Vec<f32> = (shortest..=longest).map(|lag| x[..x.len() - longest].iter().zip(&x[lag..]).map(|(a, b)| a * b).sum()).collect();
+        let best = correlation.iter().cloned().fold(f32::MIN, f32::max);
+        let first = (1..correlation.len() - 1)
+            .find(|&i| correlation[i] > 0.8 * best && correlation[i] >= correlation[i - 1] && correlation[i] >= correlation[i + 1])
+            .expect("a period");
+        let (a, b, c) = (correlation[first - 1], correlation[first], correlation[first + 1]);
+        (shortest + first) as f32 + 0.5 * (a - c) / (a - 2.0 * b + c)
+    }
+
+    #[test]
+    fn the_wobble_example_goes_round_in_an_eighth_note_of_its_tempo_and_in_twice_as_long_at_half_of_it() {
+        // How long the filter takes to open and shut again, from the brightness of the sound (how much of it is in its changes) in a window of 40 ms every 5 ms, from a second in.
+        let seconds_a_cycle = |bpm: f32| {
+            let out = play(&at_tempo(&example("wobble.toml"), bpm), &[48], 0.0, 5.0, 4.5);
+            let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+            let series: Vec<f32> = (0..).map(|k| 48_000 + k * 240).take_while(|from| from + 1920 <= out.len()).map(|from| brightness(&out[from..from + 1920])).collect();
+            period_in(&series, 20, 250) * 240.0 / 48_000.0
+        };
+        let (fast, slow) = (seconds_a_cycle(140.0), seconds_a_cycle(70.0));
+        // An eighth note is half a beat: 0.2143 s at 140 beats a minute and 0.4286 s at 70.
+        assert!((fast - 0.5 * 60.0 / 140.0).abs() < 0.03 * fast, "a cycle takes {fast} s at 140 beats a minute");
+        assert!((slow / fast - 2.0).abs() < 0.04, "and {slow} s at 70: {} times as long", slow / fast);
+    }
+
+    #[test]
+    fn the_gate_example_opens_and_shuts_on_the_sixteenths_of_its_tempo_and_is_twice_as_slow_at_half_of_it() {
+        // Its sixteen steps, as the file says them: a step that is heard, and one that is not.
+        let heard = [true, false, true, true, false, true, false, true, true, false, false, true, false, true, true, false];
+        for (bpm, step_seconds) in [(120.0f32, 0.125f32), (60.0, 0.25)] {
+            let out = play(&at_tempo(&example("gate.toml"), bpm), &[48], 0.4, 5.0, 4.4);
+            // (The middle of each step: from three tenths of it to seven, which a block's lateness and the 5 ms that the volume is gone to over do not reach.)
+            let level = |step: usize| {
+                let from = 0.4 + step as f32 * step_seconds;
+                rms(&out[((from + 0.3 * step_seconds) * 48_000.0) as usize..((from + 0.7 * step_seconds) * 48_000.0) as usize])
+            };
+            let loudest = (0..16).map(level).fold(0.0f32, f32::max);
+            assert!(loudest > 0.02, "it is heard at {bpm} beats a minute: {loudest}");
+            for (step, open) in heard.into_iter().enumerate() {
+                // (The three oscillators of a note beat against each other, so the steps that are heard are not all as loud: from a half to the loudest, measured.)
+                if open {
+                    assert!(level(step) > 0.3 * loudest, "step {step} is heard at {bpm} beats a minute: {} of {loudest}", level(step));
+                } else {
+                    assert!(level(step) < 0.05 * loudest, "step {step} is not heard at {bpm} beats a minute: {} of {loudest}", level(step));
+                }
+            }
         }
     }
 
