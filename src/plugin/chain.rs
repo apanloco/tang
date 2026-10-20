@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
+use super::ordered::Ordered;
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
@@ -3745,9 +3746,9 @@ impl Group {
 ///
 /// Commands are drained at the top of every audio callback via try_recv loop.
 pub struct AudioGraph {
-    instruments: Vec<InstrumentLane>,
+    instruments: Ordered<InstrumentLane>,
     /// Submix buses. Lanes with `group == Some(i)` feed `groups[i]`.
-    groups: Vec<Group>,
+    groups: Ordered<Group>,
     /// Accumulation buffer for summing all instruments
     mix_buf: Vec<Vec<f32>>,
     /// Per-instrument scratch buffer (reused across instruments)
@@ -3793,8 +3794,8 @@ impl AudioGraph {
         return_tx: Sender<Box<dyn Plugin>>,
     ) -> Self {
         AudioGraph {
-            instruments: Vec::new(),
-            groups: Vec::new(),
+            instruments: Ordered::new(),
+            groups: Ordered::new(),
             mix_buf: (0..num_channels).map(|_| Vec::new()).collect(),
             lane_buf: (0..num_channels).map(|_| Vec::new()).collect(),
             num_channels,

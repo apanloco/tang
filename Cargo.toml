@@ -16,6 +16,7 @@ web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json", "dep:axum", 
 
 [dependencies]
 view = { path = "view" }
+kernel = { path = "kernel" }
 livi = { version = "0.7", optional = true }
 cpal = "0.15"
 midir = "0.10"
