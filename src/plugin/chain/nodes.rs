@@ -1,27 +1,22 @@
-//! The lane, the group and the output mix as nodes of a plan (P1 of `docs/patch-graph.md` §11.6).
+//! The lane, the group and the output mix as nodes of a plan (P1 and P2 of `docs/patch-graph.md` §11.6).
 //!
 //! `AudioGraph` still has its lanes and groups in vectors and its commands name places, so the plan is made of what is there: a node for each lane, each group and the output
 //! mix, a cable from each lane to its group (or to the mix if it has none) and from each group to the mix, and ranks that are the places (the lanes in order, then the groups,
 //! then the mix), so that the order of the plan, and so the order of every sum, is the order that the loop it replaced had: a group's bus is the lanes added in the order of their
 //! places, and the mix is the lanes that have no group and then the groups. The nodes run the code that was in the loop, as it was.
 //!
+//! A node of the plan is named by the id that the model gave it (`NodeId`, which the creating commands carry: a lane's, a group's), and the mix by `NodeId::MASTER`: the plan says
+//! the things that the model says. The places of the ids are made when the plan is (a sorted list that a block looks a node up in), since the vectors are still addressed by place.
+//!
 //! The plan is made again when the wiring is not the one it was made for. That is found by reading the wiring into a `Shape` before every block and comparing it with the one the
-//! plan was made for (a few comparisons of keys: a knob that is turned compiles nothing), so a lane that a test pushes into the vector is found as well as one that a command
+//! plan was made for (a few comparisons of ids: a knob that is turned compiles nothing), so a lane that a test pushes into the vector is found as well as one that a command
 //! puts there.
 
 use anyhow::Result;
 use crossbeam_channel::Sender;
-use kernel::{Io, Key, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec};
+use kernel::{Io, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec};
 
 use super::*;
-
-/// What a node of the plan is called: the key of a lane or a group (`Ordered`), or the mix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum NodeId {
-    Lane(Key),
-    Group(Key),
-    Master,
-}
 
 /// What every node is told of the block besides its buffers.
 pub(super) struct BlockCx<'a> {
@@ -107,37 +102,50 @@ impl Group {
     }
 }
 
+/// Where a node of the plan is kept: a lane or a group, at a place of its vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    Lane(usize),
+    Group(usize),
+}
+
 /// The nodes of the plan, by name: what `Plan::run` asks for a block of.
 struct Store<'a> {
-    lanes: &'a mut Ordered<InstrumentLane>,
-    groups: &'a mut Ordered<Group>,
+    lanes: &'a mut [InstrumentLane],
+    groups: &'a mut [Group],
     master: &'a mut Master,
+    /// Where each node was when the plan was made, in the order of the ids.
+    places: &'a [(NodeId, Place)],
 }
 
 impl<'a, 'cx> Nodes<NodeId, BlockCx<'cx>> for Store<'a> {
     fn process(&mut self, id: NodeId, io: &mut Io, cx: &mut BlockCx<'cx>) -> Result<()> {
-        match id {
-            NodeId::Lane(key) => match self.lanes.get_by_key_mut(key) {
-                Some((position, lane)) => lane.run_node(io, cx, position),
-                // A lane that is gone makes silence: the plan is made again before the next block.
-                None => Ok(()),
+        if id == NodeId::MASTER {
+            return self.master.run_node(io, cx);
+        }
+        let Ok(found) = self.places.binary_search_by_key(&id, |&(id, _)| id) else { return Ok(()) };
+        // A node that is not at its place any more (the lane that was there is gone: the plan is made again before the next block) makes silence, and is not taken for the one
+        // that is at its place now.
+        match self.places[found].1 {
+            Place::Lane(at) => match self.lanes.get_mut(at) {
+                Some(lane) if lane.node == id => lane.run_node(io, cx, at),
+                _ => Ok(()),
             },
-            NodeId::Group(key) => match self.groups.get_by_key_mut(key) {
-                Some((_, group)) => group.run_node(io, cx),
-                None => Ok(()),
+            Place::Group(at) => match self.groups.get_mut(at) {
+                Some(group) if group.node == id => group.run_node(io, cx),
+                _ => Ok(()),
             },
-            NodeId::Master => self.master.run_node(io, cx),
         }
     }
 }
 
-/// How the lanes and groups are wired, as far as the plan is concerned: for each lane its key and its group's (none if it has none, or if the group it names is not there),
-/// and the keys of the groups, in the order of their places.
+/// How the lanes and groups are wired, as far as the plan is concerned: for each lane its id and its group's (none if it has none, or if the group it names is not there), and the
+/// ids of the groups, in the order of their places.
 #[derive(Default, PartialEq)]
 struct Shape {
     channels: usize,
-    lanes: Vec<(Key, Option<Key>)>,
-    groups: Vec<Key>,
+    lanes: Vec<(NodeId, Option<NodeId>)>,
+    groups: Vec<NodeId>,
 }
 
 impl Shape {
@@ -149,12 +157,12 @@ impl Shape {
     }
 
     /// Read the wiring of `lanes` and `groups` into this, keeping the room it has.
-    fn read(&mut self, lanes: &Ordered<InstrumentLane>, groups: &Ordered<Group>, channels: usize) {
+    fn read(&mut self, lanes: &[InstrumentLane], groups: &[Group], channels: usize) {
         self.channels = channels;
         self.lanes.clear();
-        self.lanes.extend(lanes.iter().zip(lanes.keys()).map(|(lane, key)| (*key, lane.group.and_then(|g| groups.key_at(g)))));
+        self.lanes.extend(lanes.iter().map(|lane| (lane.node, lane.group.and_then(|g| groups.get(g)).map(|group| group.node))));
         self.groups.clear();
-        self.groups.extend_from_slice(groups.keys());
+        self.groups.extend(groups.iter().map(|group| group.node));
     }
 }
 
@@ -162,6 +170,8 @@ impl Shape {
 pub(super) struct Schedule {
     plan: Plan<NodeId>,
     pool: Pool,
+    /// Where the plan's nodes are kept, by id: made with the plan.
+    places: Vec<(NodeId, Place)>,
     /// The wiring that `plan` was made for, and room to read the wiring that there is now into.
     shape: Shape,
     now: Shape,
@@ -180,6 +190,7 @@ impl Schedule {
         Schedule {
             plan,
             pool: Pool::new(),
+            places: Vec::new(),
             shape: Shape::default(),
             now: Shape::default(),
             patch: Patch::new(),
@@ -191,7 +202,7 @@ impl Schedule {
 
     /// Make the plan the one for the lanes and groups as they are now (when they are not as they were, which asks the allocator for memory, as a command that inserts a lane
     /// does), and give the pool room for a block of `frames`.
-    pub(super) fn refresh(&mut self, lanes: &Ordered<InstrumentLane>, groups: &Ordered<Group>, channels: usize, frames: usize) {
+    pub(super) fn refresh(&mut self, lanes: &[InstrumentLane], groups: &[Group], channels: usize, frames: usize) {
         self.now.read(lanes, groups, channels);
         if self.now != self.shape {
             self.compile();
@@ -213,27 +224,32 @@ impl Schedule {
         let audio = PortSpec::audio(self.now.channels as u16);
         let lanes = self.now.lanes.len() as u32;
         self.patch.clear();
-        self.patch.add_node(NodeId::Master, NodeSpec::new(vec![audio], vec![], u32::MAX));
-        for (at, (key, _)) in self.now.lanes.iter().enumerate() {
-            self.patch.add_node(NodeId::Lane(*key), NodeSpec::new(vec![], vec![audio], at as u32));
+        self.patch.add_node(NodeId::MASTER, NodeSpec::new(vec![audio], vec![], u32::MAX));
+        for (at, (id, _)) in self.now.lanes.iter().enumerate() {
+            self.patch.add_node(*id, NodeSpec::new(vec![], vec![audio], at as u32));
         }
-        for (at, key) in self.now.groups.iter().enumerate() {
-            self.patch.add_node(NodeId::Group(*key), NodeSpec::new(vec![audio], vec![audio], lanes + at as u32));
+        for (at, id) in self.now.groups.iter().enumerate() {
+            self.patch.add_node(*id, NodeSpec::new(vec![audio], vec![audio], lanes + at as u32));
         }
-        for (key, group) in &self.now.lanes {
-            let to = group.map_or(NodeId::Master, NodeId::Group);
-            self.patch.connect(Port::new(NodeId::Lane(*key), 0), Port::new(to, 0));
+        for (id, group) in &self.now.lanes {
+            let to = group.unwrap_or(NodeId::MASTER);
+            self.patch.connect(Port::new(*id, 0), Port::new(to, 0));
         }
-        for key in &self.now.groups {
-            self.patch.connect(Port::new(NodeId::Group(*key), 0), Port::new(NodeId::Master, 0));
+        for id in &self.now.groups {
+            self.patch.connect(Port::new(*id, 0), Port::new(NodeId::MASTER, 0));
         }
         match kernel::compile(&self.patch) {
             Ok(plan) => {
                 self.pool.fit(&plan);
                 self.plan = plan;
+                self.places.clear();
+                self.places.extend(self.now.lanes.iter().enumerate().map(|(at, (id, _))| (*id, Place::Lane(at))));
+                self.places.extend(self.now.groups.iter().enumerate().map(|(at, id)| (*id, Place::Group(at))));
+                self.places.sort_unstable_by_key(|&(id, _)| id);
             }
             Err(error) => {
-                // The wiring is made of nodes and cables that go one way, so this is not a thing that happens: the plan that there was is kept.
+                // The wiring is made of nodes and cables that go one way, and every node has an id of its own (the model gives each one, and the controller sends it once), so this is
+                // not a thing that happens: the plan that there was is kept.
                 log::error!("the plan of the lanes and groups does not compile: {error}");
                 debug_assert!(false, "the plan of the lanes and groups does not compile: {error}");
             }
@@ -241,15 +257,8 @@ impl Schedule {
     }
 
     /// Run one block: the lanes, the groups and the mix.
-    pub(super) fn run(
-        &mut self,
-        lanes: &mut Ordered<InstrumentLane>,
-        groups: &mut Ordered<Group>,
-        master: &mut Master,
-        frames: usize,
-        cx: &mut BlockCx<'_>,
-    ) -> Result<()> {
-        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master }, cx)
+    pub(super) fn run(&mut self, lanes: &mut [InstrumentLane], groups: &mut [Group], master: &mut Master, frames: usize, cx: &mut BlockCx<'_>) -> Result<()> {
+        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, places: &self.places }, cx)
     }
 }
 
@@ -258,38 +267,33 @@ mod tests {
     use super::*;
     use crate::alloc_guard::allocations_in;
 
-    fn lanes(n: usize) -> Ordered<InstrumentLane> {
-        let mut lanes = Ordered::new();
-        for _ in 0..n {
-            lanes.push(InstrumentLane::new(2, super::test_node()));
-        }
-        lanes
+    fn lanes(n: usize) -> Vec<InstrumentLane> {
+        (0..n).map(|_| InstrumentLane::new(2, super::test_node())).collect()
     }
 
-    fn groups(n: usize) -> Ordered<Group> {
-        let mut groups = Ordered::new();
-        for _ in 0..n {
-            groups.push(Group::new(2, super::test_node()));
-        }
-        groups
+    fn groups(n: usize) -> Vec<Group> {
+        (0..n).map(|_| Group::new(2, super::test_node())).collect()
     }
 
     /// What a node is called, by where it is: `lane 1`, `group 0`, `mix`.
-    fn name(id: NodeId, lanes: &Ordered<InstrumentLane>, groups: &Ordered<Group>) -> String {
-        match id {
-            NodeId::Lane(key) => format!("lane {}", lanes.position_of(key).expect("a lane that is there")),
-            NodeId::Group(key) => format!("group {}", groups.position_of(key).expect("a group that is there")),
-            NodeId::Master => "mix".to_string(),
+    fn name(id: NodeId, lanes: &[InstrumentLane], groups: &[Group]) -> String {
+        if id == NodeId::MASTER {
+            return "mix".to_string();
+        }
+        match (lanes.iter().position(|lane| lane.node == id), groups.iter().position(|group| group.node == id)) {
+            (Some(at), None) => format!("lane {at}"),
+            (None, Some(at)) => format!("group {at}"),
+            other => panic!("a node that is one lane or one group, and not {other:?}"),
         }
     }
 
     /// The nodes of the plan in the order they run.
-    fn order(schedule: &Schedule, lanes: &Ordered<InstrumentLane>, groups: &Ordered<Group>) -> Vec<String> {
+    fn order(schedule: &Schedule, lanes: &[InstrumentLane], groups: &[Group]) -> Vec<String> {
         schedule.plan.order().map(|id| name(id, lanes, groups)).collect()
     }
 
     /// Every feed of the plan, `(from, to)`: the node that makes it, and the node whose input it is added to (the first op after it that reads the buffer it goes into).
-    fn feeds(schedule: &Schedule, lanes: &Ordered<InstrumentLane>, groups: &Ordered<Group>) -> Vec<(String, String)> {
+    fn feeds(schedule: &Schedule, lanes: &[InstrumentLane], groups: &[Group]) -> Vec<(String, String)> {
         let ops = schedule.plan.ops();
         let mut all = Vec::new();
         for (at, op) in ops.iter().enumerate() {
@@ -303,6 +307,15 @@ mod tests {
 
     fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
         list.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    /// A block of `frames` frames run through the plan as it is, with no notes and no telemetry.
+    fn run(schedule: &mut Schedule, lanes: &mut [InstrumentLane], groups: &mut [Group], frames: usize) -> Vec<Vec<f32>> {
+        let mut master = Master::new();
+        let mut out = vec![vec![1.0f32; frames]; 2];
+        let mut cx = BlockCx { midi: &[], audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        schedule.run(lanes, groups, &mut master, frames, &mut cx).unwrap();
+        out
     }
 
     #[test]
@@ -320,6 +333,15 @@ mod tests {
         let (lanes, groups) = (lanes(3), groups(2));
         schedule.refresh(&lanes, &groups, 2, 64);
         assert_eq!(order(&schedule, &lanes, &groups), ["lane 0", "lane 1", "lane 2", "group 0", "group 1", "mix"]);
+    }
+
+    #[test]
+    fn the_plan_names_its_nodes_by_the_ids_that_the_model_gave_them_and_the_mix_by_the_master() {
+        let mut schedule = Schedule::new();
+        let (lanes, groups) = (lanes(3), groups(2));
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let ids: Vec<NodeId> = lanes.iter().map(|lane| lane.node).chain(groups.iter().map(|group| group.node)).chain([NodeId::MASTER]).collect();
+        assert_eq!(schedule.plan.order().collect::<Vec<_>>(), ids);
     }
 
     #[test]
@@ -349,7 +371,7 @@ mod tests {
     fn the_plan_is_made_again_when_the_wiring_is_not_what_it_was_made_for_and_not_otherwise() {
         let mut schedule = Schedule::new();
         let (mut lanes, mut groups) = (lanes(3), groups(1));
-        let refresh = |schedule: &mut Schedule, lanes: &Ordered<InstrumentLane>, groups: &Ordered<Group>, channels, frames| {
+        let refresh = |schedule: &mut Schedule, lanes: &[InstrumentLane], groups: &[Group], channels, frames| {
             schedule.refresh(lanes, groups, channels, frames);
             schedule.compiles
         };
@@ -375,6 +397,10 @@ mod tests {
         groups.remove(1);
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 7, "a group that goes");
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 1, 64), 8, "buffers of another width");
+        lanes[1] = InstrumentLane::new(2, super::test_node());
+        assert_eq!(refresh(&mut schedule, &lanes, &groups, 1, 64), 9, "a lane that is another at the same place");
+        groups[0] = Group::new(2, super::test_node());
+        assert_eq!(refresh(&mut schedule, &lanes, &groups, 1, 64), 10, "a group that is another at the same place");
     }
 
     #[test]
@@ -390,7 +416,7 @@ mod tests {
         schedule.refresh(&lanes, &groups, 2, 64);
         let after = feeds(&schedule, &lanes, &groups);
         assert_eq!(after[..3], pairs(&[("lane 0", "group 0"), ("lane 1", "group 1"), ("lane 2", "mix")])[..]);
-        assert_eq!(schedule.plan.order().take(3).collect::<Vec<_>>(), lanes.keys().iter().map(|key| NodeId::Lane(*key)).collect::<Vec<_>>());
+        assert_eq!(schedule.plan.order().take(3).collect::<Vec<_>>(), lanes.iter().map(|lane| lane.node).collect::<Vec<_>>());
     }
 
     #[test]
@@ -403,11 +429,11 @@ mod tests {
         schedule.refresh(&lanes, &groups, 2, 64);
         let ops = schedule.plan.ops();
         let mix = ops.last().unwrap();
-        assert_eq!(mix.node, NodeId::Master);
+        assert_eq!(mix.node, NodeId::MASTER);
         let into_mix: Vec<String> = ops.iter().filter(|op| op.feeds.iter().any(|feed| feed.into == mix.inputs[0])).map(|op| name(op.node, &lanes, &groups)).collect();
         assert_eq!(into_mix, ["lane 1", "group 0"], "in the order they run");
-        let group = ops.iter().find(|op| matches!(op.node, NodeId::Group(_))).unwrap();
-        let into_group: Vec<String> = ops.iter().filter(|op| op.feeds.iter().any(|feed| feed.into == group.inputs[0] && !matches!(op.node, NodeId::Master))).map(|op| name(op.node, &lanes, &groups)).collect();
+        let group = ops.iter().find(|op| op.node == groups[0].node).unwrap();
+        let into_group: Vec<String> = ops.iter().filter(|op| op.feeds.iter().any(|feed| feed.into == group.inputs[0] && op.node != NodeId::MASTER)).map(|op| name(op.node, &lanes, &groups)).collect();
         assert_eq!(into_group, ["lane 0", "lane 2"]);
     }
 
@@ -446,10 +472,70 @@ mod tests {
         let (mut lanes, mut groups) = (lanes(2), groups(1));
         schedule.refresh(&lanes, &groups, 2, 8);
         lanes.remove(0);
-        let mut master = Master::new();
-        let mut out = vec![vec![1.0f32; 8]; 2];
-        let mut cx = BlockCx { midi: &[], audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
-        schedule.run(&mut lanes, &mut groups, &mut master, 8, &mut cx).unwrap();
+        let out = run(&mut schedule, &mut lanes, &mut groups, 8);
         assert!(out.iter().flatten().all(|&s| s == 0.0), "the lane that is left has no instrument, and the one that went is silence");
+    }
+
+    #[test]
+    fn a_lane_is_run_as_the_lane_it_is_and_not_as_the_one_that_was_at_its_place_when_the_plan_was_made() {
+        // `run_node` leaves the gain that the lane is heard at where it was asked to go: the lane that ran is the one that has it.
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(2), groups(0));
+        lanes[0].heard_goal = 0.25;
+        lanes[1].heard_goal = 0.5;
+        schedule.refresh(&lanes, &groups, 2, 8);
+        lanes.remove(0);
+        run(&mut schedule, &mut lanes, &mut groups, 8);
+        assert_eq!(lanes[0].heard_at, 1.0, "the plan was made for a lane at that place that is gone, and this is another: it did not run, as the one that went");
+        // Made again for the lane that is left, it runs.
+        schedule.refresh(&lanes, &groups, 2, 8);
+        run(&mut schedule, &mut lanes, &mut groups, 8);
+        assert_eq!(lanes[0].heard_at, 0.5);
+    }
+
+    #[test]
+    fn a_group_is_run_as_the_group_it_is_and_not_as_the_one_that_was_at_its_place_when_the_plan_was_made() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(0), groups(2));
+        groups[0].heard_goal = 0.25;
+        groups[1].heard_goal = 0.5;
+        schedule.refresh(&lanes, &groups, 2, 8);
+        groups.remove(0);
+        run(&mut schedule, &mut lanes, &mut groups, 8);
+        assert_eq!(groups[0].heard_at, 1.0, "the plan was made for a group at that place that is gone, and this is another: it did not run, as the one that went");
+        schedule.refresh(&lanes, &groups, 2, 8);
+        run(&mut schedule, &mut lanes, &mut groups, 8);
+        assert_eq!(groups[0].heard_at, 0.5);
+    }
+
+    #[test]
+    fn each_node_is_found_by_its_id_whatever_its_place_and_whatever_the_order_of_the_ids() {
+        // Ids that go the other way from the places, and groups among them: every lane and every group runs once, at the place it is at.
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(4), groups(2));
+        for (at, lane) in lanes.iter_mut().enumerate() {
+            lane.node = NodeId(90 - 10 * at as u32);
+            lane.heard_goal = 0.1 * (at + 1) as f32;
+        }
+        for (at, group) in groups.iter_mut().enumerate() {
+            group.node = NodeId(45 - 20 * at as u32);
+            group.heard_goal = 0.1 * (at + 6) as f32;
+        }
+        lanes[1].group = Some(0);
+        lanes[3].group = Some(1);
+        schedule.refresh(&lanes, &groups, 2, 8);
+        run(&mut schedule, &mut lanes, &mut groups, 8);
+        assert_eq!(lanes.iter().map(|lane| lane.heard_at).collect::<Vec<_>>(), [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(groups.iter().map(|group| group.heard_at).collect::<Vec<_>>(), [0.6, 0.7]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the plan of the lanes and groups does not compile")]
+    fn two_nodes_with_one_id_are_a_plan_that_does_not_compile() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(2), groups(0));
+        lanes[1].node = lanes[0].node;
+        schedule.refresh(&lanes, &groups, 2, 8);
     }
 }

@@ -6,7 +6,6 @@ pub mod clap;
 pub mod lv2;
 #[cfg(feature = "vst3")]
 pub mod vst3;
-mod ordered;
 
 #[derive(Clone, Default)]
 pub struct ParameterInfo {

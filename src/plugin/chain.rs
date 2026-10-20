@@ -5,7 +5,6 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
-use super::ordered::Ordered;
 use nodes::{BlockCx, Master, Schedule};
 use crate::ids::NodeId;
 use crate::piano_filter::PianoFilter;
@@ -3262,7 +3261,6 @@ fn store_taps(taps: &[Tap], telemetry: Option<&Telemetry>, stage: TapStage, bufs
 
 struct InstrumentLane {
     /// The id that the model gave the lane, which its instrument plugin is named by too. It comes with `AddInstrument` and goes where the lane goes.
-    #[allow(dead_code)] // the plan names the lane by it from the next step; the tests read it now
     node: NodeId,
     range: Option<(u8, u8)>,
     instrument: Option<Box<dyn Plugin>>,
@@ -3616,7 +3614,6 @@ impl InstrumentLane {
 /// (see `collect_group_mod_writes`).
 struct Group {
     /// The id that the model gave the group. It comes with `AddGroup` and goes where the group goes.
-    #[allow(dead_code)] // the plan names the group by it from the next step; the tests read it now
     node: NodeId,
     effects: Vec<Box<dyn Plugin>>,
     mix_values: Vec<f64>,
@@ -3793,9 +3790,9 @@ impl Group {
 ///
 /// Commands are drained at the top of every audio callback via try_recv loop.
 pub struct AudioGraph {
-    instruments: Ordered<InstrumentLane>,
+    instruments: Vec<InstrumentLane>,
     /// Submix buses. Lanes with `group == Some(i)` feed `groups[i]`.
-    groups: Ordered<Group>,
+    groups: Vec<Group>,
     /// Accumulation buffer for summing all instruments (the loop that the kernel replaced; the plan has the mix in a buffer of the pool now).
     #[cfg(test)]
     mix_buf: Vec<Vec<f32>>,
@@ -3845,8 +3842,8 @@ impl AudioGraph {
         return_tx: Sender<Box<dyn Plugin>>,
     ) -> Self {
         AudioGraph {
-            instruments: Ordered::new(),
-            groups: Ordered::new(),
+            instruments: Vec::new(),
+            groups: Vec::new(),
             #[cfg(test)]
             mix_buf: (0..num_channels).map(|_| Vec::new()).collect(),
             #[cfg(test)]
