@@ -18,29 +18,7 @@ use crate::session::NodeUi;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
-/// Names a node of the session (an instrument, an effect, a group, a bus effect
-/// or a modulator) for as long as it exists. The engine and the tree address
-/// nodes by position, which shifts when others come and go; a `NodeId` does not.
-/// Allocated by the model, never reused during a run, not saved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "web", derive(ts_rs::TS))]
-pub struct NodeId(pub u32);
-
-impl NodeId {
-    /// The master mix, where every ungrouped lane and every group ends up. It is a
-    /// node of the graph a client gets but not of the model: nothing is allocated
-    /// with this id, and `SessionModel::locate` does not find it.
-    pub const MASTER: NodeId = NodeId(u32::MAX);
-}
-
-/// Names a modulation edge, one target of one modulator, for as long as it
-/// exists: the cable a client draws from the modulator to what it drives. Edges
-/// come and go as targets are bound and removed, and a target is addressed by its
-/// position in its modulator, which shifts; an `EdgeId` does not. Allocated by the
-/// model, never reused during a run, not saved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "web", derive(ts_rs::TS))]
-pub struct EdgeId(pub u32);
+pub use crate::ids::{EdgeId, NodeId};
 
 /// The ids that were handed out for something: the nodes and the cables, each in the order they were made.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

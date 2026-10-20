@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod enumerate;
 mod held_notes;
+mod ids;
 mod midi;
 mod midi_monitor;
 mod note_input;
