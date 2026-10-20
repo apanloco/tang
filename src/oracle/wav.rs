@@ -62,7 +62,7 @@ mod tests {
         let mut scenarios = sessions();
         scenarios.extend(generated(0..8));
         for scenario in &scenarios {
-            let rendered = render(scenario, &legacy);
+            let rendered = render(scenario, &engine);
             let name = scenario.id.replace(':', "-");
             let path = dir.join(format!("{name}.wav"));
             std::fs::write(&path, wav_bytes(&rendered.samples, RATE as u32)).unwrap_or_else(|e| panic!("{}: {e}", path.display()));

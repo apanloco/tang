@@ -73,7 +73,7 @@ pub struct Timing {
     pub allocating_blocks: usize,
 }
 
-pub fn measure(session: &str, notes: bool, block: usize, blocks: usize) -> Timing {
+pub fn measure(session: &str, notes: bool, block: usize, blocks: usize, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Timing {
     let scenario = Scenario {
         id: format!("bench@{block}"),
         session: session.to_string(),
@@ -83,7 +83,7 @@ pub fn measure(session: &str, notes: bool, block: usize, blocks: usize) -> Timin
         script: if notes { held_chord() } else { Vec::new() },
         edits: Vec::new(),
     };
-    let mut rig = Rig::new(&scenario, &legacy);
+    let mut rig = Rig::new(&scenario, make);
     for _ in 0..WARM_UP {
         rig.block();
         rig.poll();
@@ -139,7 +139,7 @@ mod tests {
                 script: held_chord(),
                 edits: Vec::new(),
             };
-            let rendered = render(&scenario, &legacy);
+            let rendered = render(&scenario, &engine);
             let peak = rendered.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             if muted {
                 assert_eq!(peak, 0.0, "every lane is muted before anything is played");
@@ -152,25 +152,30 @@ mod tests {
     #[test]
     #[ignore = "a benchmark: cargo test --release oracle::bench -- --ignored --nocapture --test-threads=1"]
     fn the_engine_against_its_deadline() {
-        eprintln!("{:<48} {:>5} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8}", "session", "block", "median", "p95", "p99", "max", "of budget", "allocs");
+        eprintln!("{:<48} {:>6} {:>5} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8}", "session", "engine", "block", "median", "p95", "p99", "max", "of budget", "allocs");
         for case in cases() {
             for (block, blocks) in [(64, 4000), (256, 2000), (1024, 500)] {
-                let timing = measure(&case.session, case.notes, block, blocks);
-                let budget = Duration::from_secs_f64(block as f64 / f64::from(RATE));
-                let us = |d: Duration| d.as_secs_f64() * 1e6;
-                let (median, p95, p99, max) = (percentile(&timing.took, 50.0), percentile(&timing.took, 95.0), percentile(&timing.took, 99.0), *timing.took.last().unwrap());
-                eprintln!(
-                    "{:<48} {:>5} {:>7.0}µs {:>7.0}µs {:>7.0}µs {:>7.0}µs {:>8.1}% {:>8}",
-                    case.name,
-                    block,
-                    us(median),
-                    us(p95),
-                    us(p99),
-                    us(max),
-                    100.0 * median.as_secs_f64() / budget.as_secs_f64(),
-                    timing.allocations
-                );
-                assert_eq!(timing.allocating_blocks == 0, timing.allocations == 0);
+                // The engine as the program has it (the plan) and the loop it replaced, one after the other on the same session.
+                let engines: [(&str, &dyn Fn(Wiring) -> Box<dyn Engine>); 2] = [("loop", &legacy), ("plan", &engine)];
+                for (which, make) in engines {
+                    let timing = measure(&case.session, case.notes, block, blocks, make);
+                    let budget = Duration::from_secs_f64(block as f64 / f64::from(RATE));
+                    let us = |d: Duration| d.as_secs_f64() * 1e6;
+                    let (median, p95, p99, max) = (percentile(&timing.took, 50.0), percentile(&timing.took, 95.0), percentile(&timing.took, 99.0), *timing.took.last().unwrap());
+                    eprintln!(
+                        "{:<48} {:>6} {:>5} {:>7.0}µs {:>7.0}µs {:>7.0}µs {:>7.0}µs {:>8.1}% {:>8}",
+                        case.name,
+                        which,
+                        block,
+                        us(median),
+                        us(p95),
+                        us(p99),
+                        us(max),
+                        100.0 * median.as_secs_f64() / budget.as_secs_f64(),
+                        timing.allocations
+                    );
+                    assert_eq!(timing.allocating_blocks == 0, timing.allocations == 0);
+                }
             }
         }
     }

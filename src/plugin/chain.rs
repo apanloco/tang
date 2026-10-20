@@ -6,10 +6,13 @@ use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
 use super::ordered::Ordered;
+use nodes::{BlockCx, Master, Schedule};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
+
+mod nodes;
 
 /// How many audio channels every chain carries: stereo (CLAUDE.md, "Signal chain"). An effect has to have
 /// as many outputs; an instrument may have more, which are cut down to this many.
@@ -3281,6 +3284,9 @@ struct InstrumentLane {
     /// The gain the lane's output was heard at when the last buffer ended, 1 or 0: the next buffer goes from it to where the lane should be,
     /// over the buffer, so that a mute is not a step.
     heard_at: f32,
+    /// The gain the lane's output is to be heard at in the buffer that is being processed, 1 or 0 (what `heard_at` goes to): worked out for every lane before the lanes run,
+    /// from the mutes and solos of all of them and of the groups (see `AudioGraph::process`).
+    heard_goal: f32,
 }
 
 impl InstrumentLane {
@@ -3310,6 +3316,7 @@ impl InstrumentLane {
             muted: false,
             solo: false,
             heard_at: 1.0,
+            heard_goal: 1.0,
         }
     }
 
@@ -3592,7 +3599,8 @@ struct Group {
     /// chain (`GroupMember`), one of this group's bus effects (`GroupBus`), or
     /// a sibling group modulator (cross-mod).
     modulators: Vec<Modulator>,
-    /// Member-sum accumulator (num_channels vecs).
+    /// Member-sum accumulator (num_channels vecs): what the loop that the kernel replaced summed the members into (the plan has the sum in a buffer of the pool now).
+    #[cfg(test)]
     accum: Vec<Vec<f32>>,
     /// Effect ping-pong scratch.
     buf_a: Vec<Vec<f32>>,
@@ -3607,6 +3615,8 @@ struct Group {
     solo: bool,
     /// The gain the bus was heard at when the last buffer ended (see `InstrumentLane::heard_at`).
     heard_at: f32,
+    /// The gain the bus is to be heard at in the buffer that is being processed (see `InstrumentLane::heard_goal`).
+    heard_goal: f32,
 }
 
 impl Group {
@@ -3617,6 +3627,7 @@ impl Group {
             volume: 1.0,
             pan: 0.0,
             modulators: Vec::new(),
+            #[cfg(test)]
             accum: (0..num_channels).map(|_| Vec::new()).collect(),
             buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
             buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
@@ -3625,10 +3636,12 @@ impl Group {
             muted: false,
             solo: false,
             heard_at: 1.0,
+            heard_goal: 1.0,
         }
     }
 
-    /// Resize + zero the accumulator for a fresh buffer.
+    /// Resize + zero the accumulator for a fresh buffer (for the loop that the kernel replaced).
+    #[cfg(test)]
     fn begin(&mut self, frames: usize, num_channels: usize) {
         if self.accum.len() < num_channels {
             self.accum.resize_with(num_channels, Vec::new);
@@ -3639,20 +3652,20 @@ impl Group {
         }
     }
 
-    /// Apply volume + the effect chain in place on `accum`, leaving the
+    /// Apply volume + the effect chain in place on `bus`, the sum of the members, leaving the
     /// processed bus signal there. Mirrors `InstrumentLane`'s effect loop.
     // TODO: factor a shared effect-chain helper to remove this duplication.
-    fn finish(&mut self, num_channels: usize, frames: usize, telemetry: Option<&Telemetry>) -> anyhow::Result<()> {
+    fn finish(&mut self, bus: &mut [Vec<f32>], num_channels: usize, frames: usize, telemetry: Option<&Telemetry>) -> anyhow::Result<()> {
         if (self.volume - 1.0).abs() >= f32::EPSILON {
-            for ch in self.accum.iter_mut().take(num_channels) {
+            for ch in bus.iter_mut().take(num_channels) {
                 for s in ch.iter_mut() {
                     *s *= self.volume;
                 }
             }
         }
         if self.effects.is_empty() {
-            self.apply_pan(num_channels);
-            store_taps(&self.taps, telemetry, TapStage::Output, &self.accum);
+            self.apply_pan(bus, num_channels);
+            store_taps(&self.taps, telemetry, TapStage::Output, bus);
             return Ok(());
         }
         for buf in self.buf_a.iter_mut().chain(self.buf_b.iter_mut()) {
@@ -3660,8 +3673,8 @@ impl Group {
             buf.fill(0.0);
         }
         for ch in 0..num_channels {
-            if ch < self.accum.len() {
-                self.buf_a[ch].copy_from_slice(&self.accum[ch]);
+            if ch < bus.len() {
+                self.buf_a[ch].copy_from_slice(&bus[ch]);
             } else {
                 self.buf_a[ch].fill(0.0);
             }
@@ -3707,17 +3720,17 @@ impl Group {
             src_is_a = !src_is_a;
         }
         let final_buf = if src_is_a { &self.buf_a } else { &self.buf_b };
-        for (acc, fin) in self.accum.iter_mut().zip(final_buf.iter()).take(num_channels) {
+        for (acc, fin) in bus.iter_mut().zip(final_buf.iter()).take(num_channels) {
             acc.copy_from_slice(fin);
         }
-        self.apply_pan(num_channels);
-        store_taps(&self.taps, telemetry, TapStage::Output, &self.accum);
+        self.apply_pan(bus, num_channels);
+        store_taps(&self.taps, telemetry, TapStage::Output, bus);
         Ok(())
     }
 
     /// Balance-style stereo pan on the bus output (2-channel only): center
     /// leaves both channels untouched, panning attenuates the far channel.
-    fn apply_pan(&mut self, num_channels: usize) {
+    fn apply_pan(&self, bus: &mut [Vec<f32>], num_channels: usize) {
         if num_channels != 2 || self.pan.abs() < f32::EPSILON {
             return;
         }
@@ -3727,10 +3740,10 @@ impl Group {
         } else {
             (1.0, 1.0 + p)
         };
-        for s in self.accum[0].iter_mut() {
+        for s in bus[0].iter_mut() {
             *s *= left_gain;
         }
-        for s in self.accum[1].iter_mut() {
+        for s in bus[1].iter_mut() {
             *s *= right_gain;
         }
     }
@@ -3749,10 +3762,14 @@ pub struct AudioGraph {
     instruments: Ordered<InstrumentLane>,
     /// Submix buses. Lanes with `group == Some(i)` feed `groups[i]`.
     groups: Ordered<Group>,
-    /// Accumulation buffer for summing all instruments
+    /// Accumulation buffer for summing all instruments (the loop that the kernel replaced; the plan has the mix in a buffer of the pool now).
+    #[cfg(test)]
     mix_buf: Vec<Vec<f32>>,
-    /// Per-instrument scratch buffer (reused across instruments)
+    /// Per-instrument scratch buffer (reused across instruments), for the same.
+    #[cfg(test)]
     lane_buf: Vec<Vec<f32>>,
+    /// What runs the lanes and the groups each block: the plan that the kernel makes of how they are wired, and the buffers it runs over.
+    schedule: Schedule,
     num_channels: usize,
     command_rx: Receiver<GraphCommand>,
     return_tx: Sender<Box<dyn Plugin>>,
@@ -3778,8 +3795,8 @@ pub struct AudioGraph {
     group_cross_mod_scratch: Vec<CrossModWrite>,
     /// Where what the graph measures is published; `None` publishes nothing.
     telemetry: Option<Arc<Telemetry>>,
-    /// The meter of the output mix.
-    master_meter: Meter,
+    /// The output mix: its meter, and what it writes to the output.
+    master: Master,
     /// The seed that the next modulator to come in is given (`next_modulator_seed`).
     modulator_seeds: u32,
     /// The tempo, in beats a minute: what the modulators that follow it go by (`SetGlobalBpm`).
@@ -3796,8 +3813,11 @@ impl AudioGraph {
         AudioGraph {
             instruments: Ordered::new(),
             groups: Ordered::new(),
+            #[cfg(test)]
             mix_buf: (0..num_channels).map(|_| Vec::new()).collect(),
+            #[cfg(test)]
             lane_buf: (0..num_channels).map(|_| Vec::new()).collect(),
+            schedule: Schedule::new(),
             num_channels,
             command_rx,
             return_tx,
@@ -3811,7 +3831,7 @@ impl AudioGraph {
             group_member_mod_writes: Vec::with_capacity(32),
             group_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             telemetry: None,
-            master_meter: Meter::new(telemetry::MASTER),
+            master: Master::new(),
             modulator_seeds: 0,
             bpm: DEFAULT_BPM,
         }
@@ -5129,7 +5149,133 @@ impl AudioGraph {
 
     /// Process audio: drain commands, run all instruments, sum to output.
     /// Outputs silence if no instruments are loaded.
+    ///
+    /// The lanes, the groups and the output mix are the nodes of a plan that the kernel makes of how they are wired (`Schedule`), and `process` is: the commands; the plan,
+    /// made again if the wiring is not the one it was made for; what is heard (the mutes and solos of all of them, worked out before any of them runs); the group modulators,
+    /// which reach across lanes and groups and so are not nodes yet (P5); the plan, run; and what the group modulators drove in the members, published.
     pub fn process(
+        &mut self,
+        midi_events: &[(u64, [u8; 3])],
+        audio_out: &mut [Vec<f32>],
+    ) -> anyhow::Result<()> {
+        self.drain_commands();
+
+        let frames = audio_out.first().map(|b| b.len()).unwrap_or(0);
+
+        // How far a meter's peak falls over this buffer, if anything is measured.
+        let fall = self
+            .telemetry
+            .as_ref()
+            .map(|_| telemetry::peak_fall(frames as f32 / self.graph_sample_rate()));
+
+        // Current piano scale, read once per buffer (lock-free).
+        let scale = self
+            .piano_filter
+            .as_ref()
+            .map(|f| f.scale())
+            .unwrap_or_default();
+
+        // The plan for the lanes and groups as they are now, and room for this block.
+        self.schedule.refresh(&self.instruments, &self.groups, self.num_channels, frames);
+
+        // Whether anything is soloed: then only what is soloed is heard (and what a soloed lane or group needs to be: see below).
+        let any_solo = self.instruments.iter().any(|lane| lane.solo) || self.groups.iter().any(|group| group.solo);
+        // What each bus is heard at: a group that is not muted is heard when nothing is soloed, when it is, and when a lane in it is.
+        for gi in 0..self.groups.len() {
+            let member_solo = self.instruments.iter().any(|lane| lane.solo && lane.group == Some(gi));
+            let group = &mut self.groups[gi];
+            group.heard_goal = if !group.muted && (!any_solo || group.solo || member_solo) { 1.0 } else { 0.0 };
+        }
+        // What each lane is heard at: its own mute and solo (its group's mute is the bus's), and a soloed group's.
+        for lane in self.instruments.iter_mut() {
+            let group_solo = lane.group.and_then(|g| self.groups.get(g)).is_some_and(|g| g.solo);
+            lane.heard_goal = if !lane.muted && (!any_solo || lane.solo || group_solo) { 1.0 } else { 0.0 };
+        }
+
+        // Group-scoped modulators: tick each group's modulators (envelopes are
+        // triggered by the union of its members' ranges), resolve cross-mod,
+        // then apply their targets to member-instrument and bus-effect
+        // parameters now — before the lanes render, so members read the
+        // modulated values (bus effects read them later in group.finish). A
+        // lane modulator hitting the same parameter is applied later inside the
+        // lane's own process() and therefore wins.
+        if frames > 0 {
+            for gi in 0..self.groups.len() {
+                if self.groups[gi].modulators.is_empty() {
+                    continue;
+                }
+                build_group_midi(
+                    &self.instruments,
+                    gi,
+                    midi_events,
+                    &mut self.group_midi_scratch,
+                );
+                for m in &mut self.groups[gi].modulators {
+                    m.tick(frames, &self.group_midi_scratch, self.bpm);
+                }
+                apply_cross_mod(&mut self.groups[gi].modulators, &mut self.group_cross_mod_scratch, self.telemetry.as_deref());
+                if let Some(telemetry) = &self.telemetry {
+                    publish_outputs(&self.groups[gi].modulators, telemetry);
+                }
+                Self::drain_learned(
+                    self.learn_tx.as_ref(),
+                    &mut self.groups[gi].modulators,
+                    |_| ModulatorLocation::Group(gi),
+                );
+            }
+            // Group→member-modulator cross-mod: written first so member lanes
+            // pick up the modulated LFO/envelope fields when they tick below.
+            collect_group_member_mod_writes(
+                &self.groups,
+                &self.instruments,
+                &mut self.group_member_mod_writes,
+            );
+            apply_group_member_mod_writes(&self.group_member_mod_writes, &mut self.instruments);
+            collect_group_mod_writes(
+                &self.groups,
+                &self.instruments,
+                &mut self.group_mod_writes,
+                &mut self.group_member_drives,
+                &mut self.group_bus_drives,
+            );
+            if let Some(telemetry) = &self.telemetry {
+                publish_group_effective(&self.groups, &self.instruments, &self.group_mod_writes, telemetry);
+            }
+            apply_group_mod_writes(
+                &self.group_mod_writes,
+                &mut self.instruments,
+                &mut self.groups,
+            );
+        }
+
+        // Run the plan: each lane in order (its output fed to its group's bus, or to the mix), then each group (its bus fed to the mix), then the mix, which is copied to the
+        // output and measured.
+        {
+            let mut cx = BlockCx {
+                midi: midi_events,
+                audio_out,
+                num_channels: self.num_channels,
+                scale,
+                bpm: self.bpm,
+                telemetry: self.telemetry.as_deref(),
+                fall,
+                learn_tx: self.learn_tx.as_ref(),
+            };
+            self.schedule.run(&mut self.instruments, &mut self.groups, &mut self.master, frames, &mut cx)?;
+        }
+
+        // What the members' settings that a group's cable drives ended up as, now that the lanes have run.
+        if let Some(telemetry) = &self.telemetry {
+            publish_group_member_mod_effective(&self.groups, &self.instruments, telemetry);
+        }
+
+        Ok(())
+    }
+
+    /// The loop that `process` was before P1 of `docs/patch-graph.md` §11.6 put the engine on the kernel: every lane in order and then every group, summed by hand. It stays,
+    /// for tests only, as the specification that `crate::oracle::agree` holds the plan to (the same lanes and groups, the same commands, the same bits).
+    #[cfg(test)]
+    pub fn process_legacy(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
         audio_out: &mut [Vec<f32>],
@@ -5271,20 +5417,22 @@ impl AudioGraph {
 
         // Run each group's volume + effect chain, then fold into the master.
         for (gi, group) in self.groups.iter_mut().enumerate() {
-            group.finish(self.num_channels, frames, self.telemetry.as_deref())?;
+            let mut bus = std::mem::take(&mut group.accum);
+            group.finish(&mut bus, self.num_channels, frames, self.telemetry.as_deref())?;
             // What the bus is heard at: a group that is not muted is heard when nothing is soloed, when it is, and when a lane in it is.
             let member_solo = self.instruments.iter().any(|lane| lane.solo && lane.group == Some(gi));
             let heard = if !group.muted && (!any_solo || group.solo || member_solo) { 1.0 } else { 0.0 };
-            fade(&mut group.accum, self.num_channels, group.heard_at, heard);
+            fade(&mut bus, self.num_channels, group.heard_at, heard);
             group.heard_at = heard;
             if let (Some(telemetry), Some(fall), Some(meter)) = (&self.telemetry, fall, group.meter.as_mut()) {
-                meter.update(telemetry, &group.accum, fall);
+                meter.update(telemetry, &bus, fall);
             }
-            for (m, src) in self.mix_buf.iter_mut().zip(group.accum.iter()).take(self.num_channels) {
+            for (m, src) in self.mix_buf.iter_mut().zip(bus.iter()).take(self.num_channels) {
                 for (ms, s) in m.iter_mut().zip(src.iter()) {
                     *ms += *s;
                 }
             }
+            group.accum = bus;
         }
 
         // Copy mix_buf to audio_out
@@ -5297,12 +5445,13 @@ impl AudioGraph {
 
         // What reaches the output, measured and kept for a scope.
         if let (Some(telemetry), Some(fall)) = (&self.telemetry, fall) {
-            self.master_meter.update(telemetry, &self.mix_buf, fall);
+            self.master.meter.update(telemetry, &self.mix_buf, fall);
             telemetry.scope.push(&self.mix_buf);
         }
 
         Ok(())
     }
+
 }
 
 #[cfg(test)]
@@ -7627,6 +7776,41 @@ mod tests {
             ),
             _ => panic!("member modulator should be an LFO"),
         }
+    }
+
+    /// A lane's learned control is told with the place the lane is at, whichever place that is: a first lane and a third, in the order of the lanes.
+    #[test]
+    fn a_learned_control_is_told_with_the_place_of_the_lane_it_is_in() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (learn_tx, learn_rx) = crossbeam_channel::bounded(8);
+        graph.set_learn_tx(learn_tx);
+        for _ in 0..3 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        }
+        for inst in [0, 2] {
+            cmd_tx.send(GraphCommand::InsertModulator { inst, index: 0, source: ModSource::MidiLearn { source: None, value: 0.0, learning: true } }).unwrap();
+        }
+        let mut out = make_output();
+        graph.process(&[(0u64, [0xB0, 74, 127])], &mut out).unwrap();
+        let told: Vec<_> = learn_rx.try_iter().map(|n| (n.location, n.mod_index)).collect();
+        assert_eq!(told, [(ModulatorLocation::Lane(0), 0), (ModulatorLocation::Lane(2), 0)]);
+    }
+
+    /// The place that a learned control is told with is where its lane is when the block runs, after the commands: a lane that has been swapped to the third place says so.
+    #[test]
+    fn a_learned_control_is_told_with_the_place_its_lane_was_swapped_to() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (learn_tx, learn_rx) = crossbeam_channel::bounded(8);
+        graph.set_learn_tx(learn_tx);
+        for _ in 0..3 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        }
+        cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: ModSource::MidiLearn { source: None, value: 0.0, learning: true } }).unwrap();
+        cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 0, inst_b: 2 }).unwrap();
+        let mut out = make_output();
+        graph.process(&[(0u64, [0xB0, 74, 127])], &mut out).unwrap();
+        let told: Vec<_> = learn_rx.try_iter().map(|n| n.location).collect();
+        assert_eq!(told, [ModulatorLocation::Lane(2)]);
     }
 
     /// A MidiLearn modulator, once armed, captures the next CC, notifies the

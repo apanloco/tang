@@ -54,14 +54,37 @@ pub struct Wiring {
     pub piano_filter: Arc<PianoFilter>,
 }
 
-/// The engine as it is: an `AudioGraph`.
-pub fn legacy(wiring: Wiring) -> Box<dyn Engine> {
+/// An `AudioGraph` wired as `main` wires one.
+fn graph(wiring: Wiring) -> AudioGraph {
     let mut graph = AudioGraph::new(wiring.channels, wiring.cmd_rx, wiring.return_tx);
     graph.set_pattern_tx(wiring.pattern_tx);
     graph.set_learn_tx(wiring.learn_tx);
     graph.set_piano_filter(wiring.piano_filter);
     graph.set_telemetry(wiring.telemetry);
-    Box::new(graph)
+    graph
+}
+
+/// The engine as the program has it: an `AudioGraph`, whose lanes and groups are run by the plan that the kernel makes of them (P1 of `docs/patch-graph.md` §11.6).
+pub fn engine(wiring: Wiring) -> Box<dyn Engine> {
+    Box::new(graph(wiring))
+}
+
+/// The same `AudioGraph` run by the loop that the plan replaced (`AudioGraph::process_legacy`), which is what `agree` holds the plan to, on every platform and with no file to be
+/// out of date: the lanes and groups, the commands and the sums are the same, and only the thing that runs them is not.
+pub fn legacy(wiring: Wiring) -> Box<dyn Engine> {
+    struct Legacy(AudioGraph);
+
+    impl Engine for Legacy {
+        fn num_channels(&self) -> usize {
+            self.0.num_channels()
+        }
+
+        fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+            self.0.process_legacy(midi_events, out)
+        }
+    }
+
+    Box::new(Legacy(graph(wiring)))
 }
 
 /// The sample rate of the corpus.
@@ -563,13 +586,13 @@ mod tests {
     /// The always-on corpus, rendered once for the tests that look at it.
     fn always_on_renders() -> &'static [Rendered] {
         static RENDERS: OnceLock<Vec<Rendered>> = OnceLock::new();
-        RENDERS.get_or_init(|| render_all(&always_on(), &legacy))
+        RENDERS.get_or_init(|| render_all(&always_on(), &engine))
     }
 
     #[test]
     fn a_scenario_renders_the_same_bits_twice() {
         for scenario in always_on() {
-            if let Some(difference) = agree(&scenario, &legacy, &legacy) {
+            if let Some(difference) = agree(&scenario, &engine, &engine) {
                 panic!("the engine is not deterministic: {difference}");
             }
         }
@@ -578,6 +601,12 @@ mod tests {
     #[test]
     fn the_renders_are_what_they_were() {
         check_against_the_fixtures(always_on_renders(), false);
+    }
+
+    #[test]
+    fn the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit() {
+        let differences: Vec<String> = always_on().iter().filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        assert!(differences.is_empty(), "the engine on the plan is not the engine of the loop:\n{}", differences.join("\n"));
     }
 
     #[test]
@@ -614,7 +643,7 @@ mod tests {
                 edits: Vec::new(),
             };
             let muted = Scenario { edits: vec![(5_000, Edit::Mute { lane: 0, muted: true })], ..plain.clone() };
-            let (a, b) = (render(&plain, &legacy), render(&muted, &legacy));
+            let (a, b) = (render(&plain, &engine), render(&muted, &engine));
             let first = a.samples.iter().zip(&b.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the mute is heard");
             assert_eq!(first / 2 / block, 5_000 / block, "block {block}: the first frame that differs is {}", first / 2);
             assert_eq!(first / 2 % block, 0, "the mute is made at the start of its block, and is let go of over the block");
@@ -721,8 +750,8 @@ mod tests {
         // `powf` and `exp` do. (Measured: the largest of these distances is printed, and the tolerance has room over it.)
         let mut worst = (0.0f32, String::new());
         for scenario in sessions().iter().chain(generated(0..12).iter()) {
-            let stored = fingerprint(&render(scenario, &legacy));
-            let moved = fingerprint(&render(&scenario.at_rate(a_bit_above(RATE)), &legacy));
+            let stored = fingerprint(&render(scenario, &engine));
+            let moved = fingerprint(&render(&scenario.at_rate(a_bit_above(RATE)), &engine));
             let line = tolerant_line(&stored);
             let (relative, what) = distance(&line, &moved).expect("the same numbers");
             if relative > worst.0 {
@@ -735,13 +764,20 @@ mod tests {
 
     #[test]
     #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
+    fn the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced() {
+        let differences: Vec<String> = whole().iter().filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        assert!(differences.is_empty(), "{} of the {} renders differ:\n{}", differences.len(), whole().len(), differences.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
     fn the_whole_corpus_is_what_it_was_and_the_same_twice() {
         let scenarios = whole();
-        let renders = render_all(&scenarios, &legacy);
+        let renders = render_all(&scenarios, &engine);
         check_against_the_fixtures(&renders, true);
         let late: Vec<String> = renders.iter().filter(|r| r.late_allocations > 0).map(|r| format!("{}: {}", r.id, r.late_allocations)).collect();
         assert!(late.is_empty(), "the audio thread asked for memory in these:\n{}", late.join("\n"));
-        let twice: Vec<String> = scenarios.iter().filter_map(|scenario| agree(scenario, &legacy, &legacy)).collect();
+        let twice: Vec<String> = scenarios.iter().filter_map(|scenario| agree(scenario, &engine, &engine)).collect();
         assert!(twice.is_empty(), "the engine is not deterministic:\n{}", twice.join("\n"));
         let generated: Vec<&Rendered> = renders.iter().filter(|r| r.id.starts_with("generated:")).collect();
         let sounding = generated.iter().filter(|r| r.fingerprint.peak > 0.01).count();
