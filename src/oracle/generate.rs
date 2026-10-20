@@ -7,7 +7,10 @@
 
 use std::fmt::Write;
 
+use crate::app::intent::ModulatorKind;
 use crate::plugin::{ParameterInfo, builtin};
+
+use super::edits::Edit;
 
 /// A generator of numbers that is the same everywhere (xorshift64*).
 pub struct Rng(u64);
@@ -363,4 +366,49 @@ pub fn script(seed: u64, frames: u64) -> Vec<(u64, [u8; 3])> {
     }
     events.sort_by_key(|&(frame, _)| frame);
     events
+}
+
+/// What a person does to the session while it plays, for `seed`: four to ten edits (`Edit`: a knob turned, a mute, a solo, an effect added, moved or taken out, a modulator
+/// with its cable, a range, a lane put in a group, a lane or a group added or taken out, a preset, the tempo, Undo and Redo), each at a frame from a twelfth to the most of
+/// the way through, in the order of the frames. The places that they name are wrapped round what there is when they are made (`Edit::resolve`).
+pub fn edits(seed: u64, frames: u64) -> Vec<(u64, Edit)> {
+    // (A seed of its own, so that the notes and the session are what they were before there were edits.)
+    let mut rng = Rng::new(seed ^ 0xED17_5EED);
+    let kinds = [ModulatorKind::Lfo, ModulatorKind::Envelope, ModulatorKind::MidiLearn, ModulatorKind::Macro, ModulatorKind::Velocity, ModulatorKind::Key, ModulatorKind::Steps];
+    let mut out = Vec::new();
+    for _ in 0..(4 + rng.below(7)) {
+        let frame = (frames as f64 * rng.between(0.08, 0.85)) as u64;
+        let (lane, group) = (rng.below(8), rng.below(4));
+        let edit = match rng.below(100) {
+            0..=19 => Edit::Param { lane, slot: rng.below(5), param: rng.below(24), fraction: rng.unit() as f32 },
+            20..=27 => Edit::Mute { lane, muted: rng.chance(0.6) },
+            28..=32 => Edit::Solo { lane, solo: rng.chance(0.6) },
+            33..=36 => Edit::MuteGroup { group, muted: rng.chance(0.6) },
+            37..=39 => Edit::SoloGroup { group, solo: rng.chance(0.6) },
+            40..=45 => Edit::Volume { lane, value: rng.between(0.1, 1.5) as f32 },
+            46..=49 => Edit::Mix { lane, effect: rng.below(4), value: rng.unit() as f32 },
+            50..=52 => Edit::GroupVolume { group, value: rng.between(0.2, 1.4) as f32 },
+            53..=54 => Edit::GroupPan { group, value: rng.between(-1.0, 1.0) as f32 },
+            55..=60 => Edit::AddEffect { lane, plugin: rng.pick(&EFFECTS) },
+            61..=62 => Edit::AddBusEffect { group, plugin: rng.pick(&EFFECTS) },
+            63..=66 => Edit::MoveEffect { lane, effect: rng.below(4), to: rng.below(4) },
+            67..=70 => Edit::RemoveEffect { lane, effect: rng.below(4) },
+            71..=74 => Edit::AddModulator { lane, kind: *rng.pick(&kinds) },
+            75..=79 => Edit::Modulate { lane, slot: rng.below(5), param: rng.below(24), kind: *rng.pick(&kinds) },
+            80..=81 => Edit::RemoveModulator { lane, index: rng.below(4) },
+            82..=84 => Edit::Range { lane, range: if rng.chance(0.3) { None } else { Some(*rng.pick(&[(36, 71), (60, 127), (0, 59), (48, 84)])) } },
+            85..=87 => Edit::LaneGroup { lane, group: if rng.chance(0.3) { None } else { Some(group) } },
+            88 => Edit::AddGroup { lanes: vec![lane] },
+            89 => Edit::AddLane { plugin: "builtin:osc" },
+            90 => Edit::RemoveLane { lane },
+            91 => Edit::RemoveGroup { group },
+            92..=93 => Edit::Preset { lane, slot: rng.below(5), preset: rng.below(8) },
+            94 => Edit::Bpm { bpm: rng.between(60.0, 180.0) as f32 },
+            95..=98 => Edit::Undo,
+            _ => Edit::Redo,
+        };
+        out.push((frame, edit));
+    }
+    out.sort_by_key(|&(frame, _)| frame);
+    out
 }

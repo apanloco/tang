@@ -20,6 +20,7 @@
 //!   with no file to be out of date.
 
 mod bench;
+pub mod edits;
 pub mod generate;
 
 use std::collections::BTreeMap;
@@ -34,6 +35,7 @@ use crate::app::controller::Controller;
 use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
+use self::edits::{Counts, Edit};
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
@@ -87,6 +89,8 @@ pub struct Scenario {
     pub frames: u64,
     /// The notes and controllers, `(frame, bytes)` in the order they are played. A frame of the render, so that the same script means the same notes at every block size.
     pub script: Vec<(u64, [u8; 3])>,
+    /// What a front-end asks of the controller while it plays, `(frame, edit)` in the order they are made: each is made before the first block that has its frame in it.
+    pub edits: Vec<(u64, Edit)>,
 }
 
 impl Scenario {
@@ -143,6 +147,7 @@ pub fn sessions() -> Vec<Scenario> {
             rate: RATE,
             frames: SESSION_FRAMES,
             script: performance(),
+            edits: Vec::new(),
         })
         .collect()
 }
@@ -157,6 +162,7 @@ pub fn generated(seeds: std::ops::Range<u64>) -> Vec<Scenario> {
             rate: RATE,
             frames: GENERATED_FRAMES,
             script: generate::script(seed, GENERATED_FRAMES),
+            edits: generate::edits(seed, GENERATED_FRAMES),
         })
         .collect()
 }
@@ -181,6 +187,10 @@ pub struct Render {
     pub samples: Vec<f32>,
     pub telemetry: Vec<u64>,
     pub allocations: Vec<usize>,
+    /// What became of the scenario's edits.
+    pub edits: Counts,
+    /// The blocks that edits were made before, whose commands the engine took at their start.
+    pub edit_blocks: Vec<usize>,
 }
 
 /// FNV-1a over the bytes that are fed to it: a hash of bits, the same everywhere.
@@ -211,6 +221,11 @@ pub struct Rig {
     script: Vec<(u64, [u8; 3])>,
     /// The first note of the script that has not been sent yet.
     next: usize,
+    edits: Vec<(u64, Edit)>,
+    /// The first edit that has not been made yet.
+    next_edit: usize,
+    /// What became of the edits that have been.
+    pub made: Counts,
     block: usize,
     /// How many blocks have been rendered.
     done: usize,
@@ -248,7 +263,9 @@ impl Rig {
             telemetry: telemetry.clone(),
             piano_filter: handles.piano_filter.clone(),
         };
-        let ctl = Controller::new(model, handles, None);
+        let mut ctl = Controller::new(model, handles, None);
+        // (What a scan finds, and what an effect or an instrument that is asked for is looked up in.)
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
         let renderer = Renderer::new(make(wiring), stub.midi_rx.clone(), scenario.block);
         Rig {
             ctl,
@@ -257,15 +274,23 @@ impl Rig {
             telemetry,
             script: scenario.script.clone(),
             next: 0,
+            edits: scenario.edits.clone(),
+            next_edit: 0,
+            made: Counts::default(),
             block: scenario.block,
             done: 0,
             data: vec![0.0; scenario.block * 2],
         }
     }
 
-    /// Play what the script has in the next block, at its place in it, and render the block.
+    /// Make the edits that have their frame in the next block, play what the script has in it, at its place in it, and render the block.
     pub fn block(&mut self) -> Block<'_> {
         let (start, end) = ((self.done * self.block) as u64, ((self.done + 1) * self.block) as u64);
+        while self.next_edit < self.edits.len() && self.edits[self.next_edit].0 < end {
+            let outcome = self.edits[self.next_edit].1.make(&mut self.ctl);
+            self.made.add(outcome);
+            self.next_edit += 1;
+        }
         while self.next < self.script.len() && self.script[self.next].0 < end {
             let (frame, bytes) = self.script[self.next];
             self.midi_tx.send((frame.saturating_sub(start), bytes)).expect("room for the notes of a block");
@@ -301,14 +326,19 @@ pub fn render(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> 
     let mut samples = Vec::with_capacity(blocks * scenario.block * 2);
     let mut allocations = Vec::with_capacity(blocks);
     let mut slots = Vec::with_capacity(blocks);
-    for _ in 0..blocks {
+    let mut edit_blocks = Vec::new();
+    for b in 0..blocks {
+        let before = rig.made.total();
         let block = rig.block();
         samples.extend_from_slice(block.samples);
         allocations.push(block.allocations);
+        if rig.made.total() > before {
+            edit_blocks.push(b);
+        }
         slots.push(rig.telemetry_hash());
         rig.poll();
     }
-    Render { samples, telemetry: slots, allocations }
+    Render { samples, telemetry: slots, allocations, edits: rig.made, edit_blocks }
 }
 
 /// How many pieces the rms of a render is kept in.
@@ -373,6 +403,7 @@ pub struct Rendered {
     pub fingerprint: Fingerprint,
     /// How many times the engine asked for memory after its first block (which takes the commands that the session was loaded with).
     pub late_allocations: usize,
+    pub edits: Counts,
 }
 
 pub fn render_all(scenarios: &[Scenario], make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Vec<Rendered> {
@@ -381,8 +412,8 @@ pub fn render_all(scenarios: &[Scenario], make: &dyn Fn(Wiring) -> Box<dyn Engin
         .map(|scenario| {
             let rendered = render(scenario, make);
             assert!(rendered.samples.iter().all(|s| s.is_finite()), "{}: a sample is not a number", scenario.id);
-            let late_allocations = rendered.allocations.iter().skip(1).sum();
-            Rendered { id: scenario.id.clone(), block: scenario.block, fingerprint: fingerprint(&rendered), late_allocations }
+            let late_allocations = rendered.allocations.iter().enumerate().filter(|&(b, _)| b > 0 && !rendered.edit_blocks.contains(&b)).map(|(_, &n)| n).sum();
+            Rendered { id: scenario.id.clone(), block: scenario.block, fingerprint: fingerprint(&rendered), late_allocations, edits: rendered.edits }
         })
         .collect()
 }
@@ -555,6 +586,42 @@ mod tests {
     }
 
     #[test]
+    fn the_edits_of_the_generated_sessions_mostly_apply() {
+        let mut counts = Counts::default();
+        for r in always_on_renders().iter().filter(|r| r.id.starts_with("generated:")) {
+            counts.applied += r.edits.applied;
+            counts.skipped += r.edits.skipped;
+            counts.refused += r.edits.refused;
+        }
+        eprintln!("oracle: the edits of the first {SEEDS_ALWAYS_ON} generated sessions: {counts:?}");
+        assert!(counts.total() >= 4 * SEEDS_ALWAYS_ON as usize, "{counts:?}");
+        assert!(counts.applied * 10 >= counts.total() * 7, "most of the edits are made: {counts:?}");
+        assert!(counts.refused * 20 <= counts.total(), "the controller refuses few of them: {counts:?}");
+    }
+
+    #[test]
+    fn an_edit_is_made_before_the_block_that_has_its_frame_in_it() {
+        // A held note and a mute at frame 5000: the first block that is not as it would have been is the one that frame is in, at every block size.
+        for block in BLOCKS {
+            let plain = Scenario {
+                id: format!("edit@{block}"),
+                session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(),
+                block,
+                rate: RATE,
+                frames: 12_000,
+                script: vec![(0, [0x90, 60, 100])],
+                edits: Vec::new(),
+            };
+            let muted = Scenario { edits: vec![(5_000, Edit::Mute { lane: 0, muted: true })], ..plain.clone() };
+            let (a, b) = (render(&plain, &legacy), render(&muted, &legacy));
+            let first = a.samples.iter().zip(&b.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the mute is heard");
+            assert_eq!(first / 2 / block, 5_000 / block, "block {block}: the first frame that differs is {}", first / 2);
+            assert_eq!(first / 2 % block, 0, "the mute is made at the start of its block, and is let go of over the block");
+            assert_eq!(b.edits, Counts { applied: 1, skipped: 0, refused: 0 });
+        }
+    }
+
+    #[test]
     fn every_generated_session_loads() {
         for seed in 0..SEEDS {
             let text = generate::session(seed);
@@ -678,7 +745,14 @@ mod tests {
         let generated: Vec<&Rendered> = renders.iter().filter(|r| r.id.starts_with("generated:")).collect();
         let sounding = generated.iter().filter(|r| r.fingerprint.peak > 0.01).count();
         let clipping = generated.iter().filter(|r| r.fingerprint.peak > 1.0).count();
-        eprintln!("oracle: {} renders; of the generated, {sounding} of {} are heard and {clipping} clip", renders.len(), generated.len());
+        let mut edits = Counts::default();
+        for r in generated.iter().filter(|r| r.block == BLOCK) {
+            edits.applied += r.edits.applied;
+            edits.skipped += r.edits.skipped;
+            edits.refused += r.edits.refused;
+        }
+        eprintln!("oracle: {} renders; of the generated, {sounding} of {} are heard and {clipping} clip; their edits: {edits:?}", renders.len(), generated.len());
+        assert!(edits.applied * 10 >= edits.total() * 7 && edits.refused * 20 <= edits.total(), "{edits:?}");
         assert!(sounding * 10 >= generated.len() * 8, "{sounding} of {} generated renders are heard", generated.len());
         assert!(clipping > 0, "none of the generated renders clips");
     }

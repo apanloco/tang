@@ -81,6 +81,7 @@ pub fn measure(session: &str, notes: bool, block: usize, blocks: usize) -> Timin
         rate: RATE,
         frames: ((WARM_UP + blocks) * block) as u64,
         script: if notes { held_chord() } else { Vec::new() },
+        edits: Vec::new(),
     };
     let mut rig = Rig::new(&scenario, &legacy);
     for _ in 0..WARM_UP {
@@ -136,6 +137,7 @@ mod tests {
                 rate: RATE,
                 frames: 24_000,
                 script: held_chord(),
+                edits: Vec::new(),
             };
             let rendered = render(&scenario, &legacy);
             let peak = rendered.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
