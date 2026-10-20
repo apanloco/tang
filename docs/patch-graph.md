@@ -482,6 +482,24 @@ the new one grows under today's structure until it equals it, and is then taken 
 - **P1, the kernel, with today's structure as coarse nodes.** The graph, the compile, the plan and the kernel, with the lane and the group as two coarse
   nodes that contain today's code unchanged, a plan that has exactly today's edges, and the old commands through an adapter. It must equal the oracle bit for
   bit at every block size; then the default engine changes. *To try: the same sounds.*
+  **How P1 is cut** (decided 2026-10-20 after reading `AudioGraph::process` again; each step is a commit, with the oracle and the suite green after it):
+  1. `kernel/`, a workspace crate that has no interface and no knowledge of lanes: `Arena<T>` (a key is a slot and a generation, so a key of a node that is gone finds nothing and never
+     finds another node; a slot whose generation would wrap is retired and never used again), tested alone.
+  2. `Patch<I>`, `compile` and `Plan<I>`: nodes with audio ports and a *rank*, and cables. The order is the topological order that takes the least `(rank, insertion)` of the ready nodes at
+     every step, so that it is a function of the patch and of nothing else (a cycle is an error); every value (a node's output, the sum at an input) gets a buffer by lifetime, the
+     least number that fits (interval colouring, the lowest free buffer first, so that the same patch is laid out the same).
+  3. `Plan::run` over a `Pool` (and `Kernel<N>`, an arena with a plan, for the crate's own tests and benchmark), the reference interpreter (a buffer for every cable, in the plain order) that it is held to
+     bit for bit over seeded random graphs, a check that a block asks the allocator for nothing, and the benchmark of nodes that do nothing, which gives §11.3 its number.
+  4. CI runs the crate on the three platforms.
+  5. In `tang`: the lanes and groups move into arenas behind `Ordered<T>`, a container with the `Vec` API that the engine's code and tests already use (positions stay the engine's addresses until P2;
+     the keys are what the plan names); the lane, the group and the master become nodes that run today's code (`InstrumentLane::process` and `Group::finish` as they are, the fade and the meters
+     after them as they are); `AudioGraph::process` is then: the commands, a recompile if the topology changed (checked by a signature, so a knob drag compiles nothing), the pre-pass that is
+     today's (what is heard, and the group modulators, which cross lanes and groups and stay in the adapter until P5 makes modulators nodes), `Plan::run`, and the post-pass. The old loop
+     stays as a test-only `process_legacy`, and `oracle::agree` holds the new one to it over all 960 renders, edits included, before anything else is changed.
+  **The rule that decides what is bit for bit:** the input of a port is a sum that starts at +0.0 and adds the producers in *plan order*, also for one producer. It is today's mix (`mix_buf` and
+  a group's `accum` are zeroed and the lanes are added in), `0.0 + -0.0` is `+0.0` and the oracle hashes the bits, so a single cable is not a copy: a later step that makes one (P3, when the
+  chain of a lane is a row of nodes) names the change and its reason in the list the end of this section asks for. The sums are in a fixed order whatever runs where, which is what lets a render be the
+  same bits on any number of threads later (§11.3).
 - **P2, ids for places.** Commands, the model and the history name nodes; the 51 fixup functions and their tests go; the lane and group accessors stay as
   views, so that the tests of `src/app/` (about 22,600 lines against 9,300 of code, counted) keep guarding what they guard while the
   inside is replaced.
