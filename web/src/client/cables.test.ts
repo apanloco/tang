@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, EdgeId, Port } from "../protocol";
-import { cablesThatGo, drivesRoundToItself, isModulation } from "./cables";
+import { cablesThatGo, drivesRoundToItself, isAudioCable, isLink, isModulation } from "./cables";
 
 /** A cable that drives the depth of the cable `of`, or a parameter if there is none. */
 function cable(id: EdgeId, of: EdgeId | null): Edge {
@@ -11,10 +11,21 @@ function cable(id: EdgeId, of: EdgeId | null): Edge {
 
 const link: Edge = { kind: "audio", from: { node: 1, port: { type: "audioOut" } }, to: { node: 2, port: { type: "audioIn" } } };
 
+const member: Edge = { kind: "member", from: { node: 1, port: { type: "audioOut" } }, to: { node: 3, port: { type: "audioIn" } } };
+const send: Edge = { kind: "cable", id: 9, gain: 0.5, from: { node: 1, port: { type: "audioOut" } }, to: { node: 2, port: { type: "audioIn" } } };
+
 describe("a cable of modulation", () => {
   test("is told from the other edges of the graph", () => {
     expect(isModulation(cable(1, null))).toBe(true);
     expect(isModulation(link)).toBe(false);
+    expect(isModulation(send)).toBe(false);
+  });
+});
+
+describe("the three kinds of edge that are not a cable of modulation", () => {
+  test("are told from each other: a link of the audio path that a lane and a group have by themselves, a member link, and an audio cable that has been drawn", () => {
+    expect([isLink(link), isLink(member), isLink(send), isLink(cable(1, null))]).toEqual([true, true, false, false]);
+    expect([isAudioCable(link), isAudioCable(member), isAudioCable(send), isAudioCable(cable(1, null))]).toEqual([false, false, true, false]);
   });
 });
 

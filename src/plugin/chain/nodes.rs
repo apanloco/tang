@@ -436,9 +436,33 @@ impl CableTo {
     }
 }
 
+/// What the plan needs to know of a lane: its id, the place of the group that it is in, and the ids of its effects. The engine and the model both make it of what they have, the
+/// model to find out, before it asks the engine, whether a cable can be drawn.
+#[derive(Clone, Debug)]
+pub(crate) struct LaneWiring {
+    pub node: NodeId,
+    pub group: Option<usize>,
+    pub effects: Vec<NodeId>,
+}
+
+/// What the plan needs to know of a group: its id and the ids of its bus effects.
+#[derive(Clone, Debug)]
+pub(crate) struct GroupWiring {
+    pub node: NodeId,
+    pub effects: Vec<NodeId>,
+}
+
+/// The wiring of the lanes and the groups as the engine has them.
+fn wiring_of(lanes: &[InstrumentLane], groups: &[Group]) -> (Vec<LaneWiring>, Vec<GroupWiring>) {
+    (
+        lanes.iter().map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone() }).collect(),
+        groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone() }).collect(),
+    )
+}
+
 /// The rank of the node that a cable starts at: its owner's, a lane's place or the place of a group after the lanes. None if what `from` names is not in the wiring (or is not what
 /// it says: the id of a group is no instrument).
-fn start_rank(from: CableFrom, lanes: &[InstrumentLane], groups: &[Group]) -> Option<u32> {
+fn start_rank(from: CableFrom, lanes: &[LaneWiring], groups: &[GroupWiring]) -> Option<u32> {
     let lane_count = lanes.len() as u32;
     let in_a_group = |at: usize| lane_count + at as u32;
     match from {
@@ -446,16 +470,16 @@ fn start_rank(from: CableFrom, lanes: &[InstrumentLane], groups: &[Group]) -> Op
         CableFrom::Group(id) => groups.iter().position(|group| group.node == id).map(in_a_group),
         CableFrom::Effect(id) => lanes
             .iter()
-            .position(|lane| lane.effect_nodes.contains(&id))
+            .position(|lane| lane.effects.contains(&id))
             .map(|at| at as u32)
-            .or_else(|| groups.iter().position(|group| group.effect_nodes.contains(&id)).map(in_a_group)),
+            .or_else(|| groups.iter().position(|group| group.effects.contains(&id)).map(in_a_group)),
     }
 }
 
 /// Whether what a cable ends at is in the wiring.
-fn end_exists(to: CableTo, lanes: &[InstrumentLane], groups: &[Group]) -> bool {
+fn end_exists(to: CableTo, lanes: &[LaneWiring], groups: &[GroupWiring]) -> bool {
     match to {
-        CableTo::Effect(id) => lanes.iter().any(|lane| lane.effect_nodes.contains(&id)) || groups.iter().any(|group| group.effect_nodes.contains(&id)),
+        CableTo::Effect(id) => lanes.iter().any(|lane| lane.effects.contains(&id)) || groups.iter().any(|group| group.effects.contains(&id)),
         CableTo::GroupBus(id) => groups.iter().any(|group| group.node == id),
         CableTo::Master => true,
     }
@@ -479,8 +503,9 @@ fn heard_at(from: CableFrom, places: &[(Stage, Place)], lanes: &[InstrumentLane]
     }
 }
 
-/// Make `patch` the wiring of the lanes, the groups and the cables (see `Schedule::compile`). A cable with an end that is not in the wiring is left out.
-fn build_patch<'a>(patch: &mut Patch<Stage>, lanes: &[InstrumentLane], groups: &[Group], cables: impl Iterator<Item = &'a Cable> + Clone, channels: usize) {
+/// Make `patch` the wiring of the lanes, the groups and the cables, which are an id, a start and an end (see `Schedule::compile`). A cable with an end that is not in the wiring is
+/// left out.
+fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWiring], cables: impl Iterator<Item = (EdgeId, CableFrom, CableTo)> + Clone, channels: usize) {
     let audio = PortSpec::audio(channels as u16);
     let chain = PortSpec::single(channels as u16);
     let lane_count = lanes.len() as u32;
@@ -489,7 +514,7 @@ fn build_patch<'a>(patch: &mut Patch<Stage>, lanes: &[InstrumentLane], groups: &
     for (at, lane) in lanes.iter().enumerate() {
         let rank = at as u32;
         patch.add_node(Stage::Head(lane.node), NodeSpec::new(vec![], vec![audio], rank));
-        for effect in &lane.effect_nodes {
+        for effect in &lane.effects {
             patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
         }
         patch.add_node(Stage::Tail(lane.node), NodeSpec::new(vec![chain], vec![audio], rank));
@@ -498,14 +523,14 @@ fn build_patch<'a>(patch: &mut Patch<Stage>, lanes: &[InstrumentLane], groups: &
         let rank = lane_count + at as u32;
         // The head of a group takes the sum of its members, so it is an input that is a sum.
         patch.add_node(Stage::Head(group.node), NodeSpec::new(vec![audio], vec![audio], rank));
-        for effect in &group.effect_nodes {
+        for effect in &group.effects {
             patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
         }
         patch.add_node(Stage::Tail(group.node), NodeSpec::new(vec![chain], vec![audio], rank));
     }
     for lane in lanes {
         let mut from = Stage::Head(lane.node);
-        for effect in &lane.effect_nodes {
+        for effect in &lane.effects {
             patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
             from = Stage::Fx(*effect);
         }
@@ -515,24 +540,71 @@ fn build_patch<'a>(patch: &mut Patch<Stage>, lanes: &[InstrumentLane], groups: &
     }
     for group in groups {
         let mut from = Stage::Head(group.node);
-        for effect in &group.effect_nodes {
+        for effect in &group.effects {
             patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
             from = Stage::Fx(*effect);
         }
         patch.connect(Port::new(from, 0), Port::new(Stage::Tail(group.node), 0));
         patch.connect(Port::new(Stage::Tail(group.node), 0), Port::new(Stage::Master, 0));
     }
-    let cables = cables.filter_map(|cable| {
-        let rank = start_rank(cable.from, lanes, groups).filter(|_| end_exists(cable.to, lanes, groups))?;
-        Some((cable, rank))
+    let cables = cables.filter_map(|(id, from, to)| {
+        let rank = start_rank(from, lanes, groups).filter(|_| end_exists(to, lanes, groups))?;
+        Some((id, from, to, rank))
     });
-    for (cable, rank) in cables.clone() {
-        patch.add_node(Stage::Cable(cable.id), NodeSpec::new(vec![chain], vec![audio], rank));
+    for (id, _, _, rank) in cables.clone() {
+        patch.add_node(Stage::Cable(id), NodeSpec::new(vec![chain], vec![audio], rank));
     }
-    for (cable, _) in cables {
-        patch.connect(Port::new(cable.from.stage(), 0), Port::new(Stage::Cable(cable.id), 0));
-        patch.connect(Port::new(Stage::Cable(cable.id), 0), Port::new(cable.to.stage(), 0));
+    for (id, from, to, _) in cables {
+        patch.connect(Port::new(from.stage(), 0), Port::new(Stage::Cable(id), 0));
+        patch.connect(Port::new(Stage::Cable(id), 0), Port::new(to.stage(), 0));
     }
+}
+
+/// Why a cable cannot be drawn into a wiring.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CableProblem {
+    /// What it starts at is not in the wiring, or is not what it says.
+    NoStart,
+    /// What it ends at is not in the wiring.
+    NoEnd,
+    /// The audio would go round: the wiring with it does not compile, and the reason is the kernel's.
+    Loop(String),
+}
+
+impl std::fmt::Display for CableProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CableProblem::NoStart => f.write_str("what the cable starts at is not in the wiring"),
+            CableProblem::NoEnd => f.write_str("what the cable ends at is not in the wiring"),
+            CableProblem::Loop(reason) => write!(f, "the audio would go round ({reason})"),
+        }
+    }
+}
+
+/// Whether `cable` (an id, a start and an end) can be drawn into the wiring of `lanes` and `groups` that has the cables `others` already: both its ends are in it, and the audio
+/// goes one way through it with the cable (the wiring is compiled, on the side). The engine asks it of a cable that it is sent, and the model before it sends one.
+pub(crate) fn cable_problem(
+    lanes: &[LaneWiring],
+    groups: &[GroupWiring],
+    others: impl Iterator<Item = (EdgeId, CableFrom, CableTo)> + Clone,
+    cable: (EdgeId, CableFrom, CableTo),
+    channels: usize,
+) -> Option<CableProblem> {
+    if start_rank(cable.1, lanes, groups).is_none() {
+        return Some(CableProblem::NoStart);
+    }
+    if !end_exists(cable.2, lanes, groups) {
+        return Some(CableProblem::NoEnd);
+    }
+    wiring_loop(lanes, groups, others.filter(|other| other.0 != cable.0).chain(std::iter::once(cable)), channels).map(CableProblem::Loop)
+}
+
+/// Why the audio would go round in the wiring of `lanes` and `groups` with `cables` (compiled on the side), or None if it goes one way through it. A cable with an end that is not
+/// in the wiring is left out of it, as the plan leaves it out. The model asks it of a wiring that a change of the lanes' groups or of the order of a chain would make, before it makes it.
+pub(crate) fn wiring_loop(lanes: &[LaneWiring], groups: &[GroupWiring], cables: impl Iterator<Item = (EdgeId, CableFrom, CableTo)> + Clone, channels: usize) -> Option<String> {
+    let mut scratch = Patch::new();
+    build_patch(&mut scratch, lanes, groups, cables, channels);
+    kernel::compile(&scratch).err().map(|error| error.to_string())
 }
 
 /// The plan that the lanes, groups and mix are run by, the buffers it runs over, and what it was made for.
@@ -597,7 +669,8 @@ impl Schedule {
         {
             self.compiles += 1;
         }
-        build_patch(&mut self.patch, lanes, groups, self.cables.iter(), channels);
+        let (lane_wiring, group_wiring) = wiring_of(lanes, groups);
+        build_patch(&mut self.patch, &lane_wiring, &group_wiring, self.cables.iter().map(|cable| (cable.id, cable.from, cable.to)), channels);
         match kernel::compile(&self.patch) {
             Ok(plan) => {
                 self.pool.fit(&plan);
@@ -636,15 +709,10 @@ impl Schedule {
             log::warn!("cable {}: its level is not a number; not drawn", cable.id.0);
             return;
         }
-        if start_rank(cable.from, lanes, groups).is_none() || !end_exists(cable.to, lanes, groups) {
-            log::warn!("cable {}: an end of it is not in the graph; not drawn", cable.id.0);
-            return;
-        }
-        let others = self.cables.iter().filter(|other| other.id != cable.id);
-        let mut scratch = Patch::new();
-        build_patch(&mut scratch, lanes, groups, others.chain(std::iter::once(&cable)), channels);
-        if let Err(error) = kernel::compile(&scratch) {
-            log::warn!("cable {}: not drawn: {error}", cable.id.0);
+        let (lane_wiring, group_wiring) = wiring_of(lanes, groups);
+        let others = self.cables.iter().map(|other| (other.id, other.from, other.to));
+        if let Some(problem) = cable_problem(&lane_wiring, &group_wiring, others, (cable.id, cable.from, cable.to), channels) {
+            log::warn!("cable {}: {problem}; not drawn", cable.id.0);
             return;
         }
         match self.cables.binary_search_by_key(&cable.id, |other| other.id) {
@@ -675,6 +743,11 @@ impl Schedule {
         }
     }
 
+    /// Whether a cable that was told to go has gone down to nothing: it is to leave the plan now (`refresh` takes it out), at the end of the block it went down in.
+    pub(super) fn has_a_cable_that_is_gone(&self) -> bool {
+        self.cables.iter().any(|cable| cable.leaving && cable.at == 0.0)
+    }
+
     /// The level that each cable is to be at when this block ends: the level that was set, times what its owner is heard at (so that a cable goes with a mute or a solo), and 0
     /// for one that was told to go. After `refresh`, which has the places that the owners are found by, and after the lanes and groups know what they are heard at.
     pub(super) fn set_cable_goals(&mut self, lanes: &[InstrumentLane], groups: &[Group]) {
@@ -687,6 +760,18 @@ impl Schedule {
     #[cfg(test)]
     pub(super) fn cable_ids(&self) -> Vec<EdgeId> {
         self.cables.iter().map(|cable| cable.id).collect()
+    }
+
+    /// How many times the plan has been made, for a test to see which block makes it.
+    #[cfg(test)]
+    pub(super) fn plans_made(&self) -> usize {
+        self.compiles
+    }
+
+    /// The cables that are drawn, in order: those that have not been told to go.
+    #[cfg(test)]
+    pub(super) fn cable_facts(&self) -> Vec<super::CableFacts> {
+        self.cables.iter().filter(|cable| !cable.leaving).map(|cable| super::CableFacts { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain }).collect()
     }
 
     /// The nodes of the plan in the order they run.
@@ -947,6 +1032,7 @@ mod tests {
         schedule.remove_cable(EdgeId(7));
         schedule.refresh(&lanes, &groups, 2, 64);
         assert_eq!(schedule.cable_ids(), [EdgeId(7)]);
+        assert!(schedule.cable_facts().is_empty(), "it is in the plan, for the buffer it goes down in, and it is not a cable that the engine has");
         assert_eq!(schedule.compiles, made + 1);
         schedule.set_cable_goals(&lanes, &groups);
         run(&mut schedule, &mut lanes, &mut groups, 64);

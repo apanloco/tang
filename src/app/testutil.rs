@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::app::controller::EngineHandles;
 use crate::app::load::{Progress, load_session};
-use crate::app::model::SessionModel;
+use crate::app::model::{NodeId, SessionModel};
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
@@ -171,6 +171,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetPatternInKey { inst, in_key } => format!("SetPatternInKey inst={inst} in_key={in_key}"),
         C::SetPatternRecording { inst, recording } => format!("SetPatternRecording inst={inst} recording={recording}"),
         C::ClearPattern { inst } => format!("ClearPattern inst={inst}"),
+        C::AddCable { id, from, to, gain } => format!("AddCable id={} from={from:?} to={to:?} gain={gain:.3}", id.0),
+        C::RemoveCable { id } => format!("RemoveCable id={}", id.0),
+        C::SetCableGain { id, gain } => format!("SetCableGain id={} gain={gain:.3}", id.0),
         C::SetProbe { target, ring } => format!("SetProbe ring={ring} {target:?}"),
         C::ClearProbes => "ClearProbes".to_string(),
         _ => "<other>".to_string(),
@@ -832,6 +835,48 @@ plugin = "builtin:reverb"
 rate = 6.0
 "#;
 
+/// A session to draw audio cables in (P3c of `docs/patch-graph.md` §11.6): group 0 has a reverb on its bus; lane 0, in the group, has a filter and then a delay; lane 1,
+/// in no group, has a drive.
+pub const SENDS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:delay"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:drive"
+"#;
+
+/// The nodes of `SENDS`: the two lanes, the three effects of the lanes (lane 0's filter and delay, lane 1's drive), the group and its bus effect.
+#[derive(Clone, Copy, Debug)]
+pub struct Sends {
+    pub lane: [NodeId; 2],
+    pub fx: [NodeId; 3],
+    pub group: NodeId,
+    pub bus: NodeId,
+}
+
+impl Sends {
+    /// The nodes of a model that was loaded from `SENDS`.
+    pub fn of(model: &SessionModel) -> Sends {
+        Sends {
+            lane: [model.instruments[0].node, model.instruments[1].node],
+            fx: [model.instruments[0].effects[0].node, model.instruments[0].effects[1].node, model.instruments[1].effects[0].node],
+            group: model.groups[0].node,
+            bus: model.groups[0].effects[0].node,
+        }
+    }
+}
+
 /// What taking things out of the chains has to keep right, with a cable of every kind that can end at a
 /// plugin: a group (a filter and a reverb on its bus) of two lanes, and a lane in none. The first lane has a
 /// filter and a reverb of its own, and a modulator that drives both (and its own detune), and another that
@@ -1215,7 +1260,7 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
     let edges = list(&wire["graph"]["edges"]);
     let audio: Vec<String> = edges
         .iter()
-        .filter(|e| text(&e["kind"]) != "modulation")
+        .filter(|e| matches!(text(&e["kind"]).as_str(), "audio" | "member"))
         .map(|e| format!("{}>{} {}", e["from"]["node"], e["to"]["node"], text(&e["kind"])))
         .collect();
     let cables: Vec<String> = edges
@@ -1266,6 +1311,11 @@ pub fn model_lanes(model: &SessionModel) -> Vec<LaneFacts> {
 }
 
 /// What each group is as the model has it, in the terms `AudioGraph::groups` uses.
+/// What the model says the audio cables are, as the engine's `AudioGraph::audio_cables` says it: in the order of the ids.
+pub fn model_audio_cables(model: &SessionModel) -> Vec<crate::plugin::chain::CableFacts> {
+    model.cables.iter().map(|cable| crate::plugin::chain::CableFacts { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain }).collect()
+}
+
 pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {
     model
         .groups

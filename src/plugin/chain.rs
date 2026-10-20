@@ -6,6 +6,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
 use nodes::{BlockCx, Cable, Master, Schedule};
+pub(crate) use nodes::{cable_problem, wiring_loop, CableProblem, GroupWiring, LaneWiring};
 use crate::ids::{EdgeId, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
@@ -376,6 +377,26 @@ pub struct LaneFacts {
     pub effects: usize,
     pub modulators: usize,
     pub pattern_index: usize,
+}
+
+/// What an audio cable is, for tests: its id, its ends and the level that was set.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct CableFacts {
+    pub id: EdgeId,
+    pub from: CableFrom,
+    pub to: CableTo,
+    pub gain: f32,
+}
+
+/// What the engine has of the model's nodes and cables, for the oracle (and the tests of the controller) to hold to the model: the ids that it has for its lanes, its groups, their
+/// effects and its audio cables are the model's.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct Facts {
+    pub lanes: Vec<LaneFacts>,
+    pub groups: Vec<GroupFacts>,
+    pub cables: Vec<CableFacts>,
 }
 
 /// What a group is, for a test to compare with the model's: the node it is, the names and the nodes of its bus effects, how many
@@ -2621,7 +2642,6 @@ pub enum GraphCommand {
     /// Draw an audio cable `id` from `from` to `to` at level `gain` (a send level: 1 is what comes out of `from`, as it is). It comes in over one buffer, from nothing, and it is
     /// heard at what the lane or the group that `from` is of is heard at. Nothing is changed (and the cable is not made) if an end is not in the graph or if it would make the
     /// audio go round (a cycle); a cable that is there under `id` is drawn again at the new ends and level, from where it was.
-    #[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
     AddCable {
         id: EdgeId,
         from: CableFrom,
@@ -2629,12 +2649,10 @@ pub enum GraphCommand {
         gain: f32,
     },
     /// Take the audio cable `id` out: it goes down to nothing over one buffer and is then gone.
-    #[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
     RemoveCable {
         id: EdgeId,
     },
     /// Set the level of the audio cable `id` (not a number is left as it was): it goes there over one buffer.
-    #[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
     SetCableGain {
         id: EdgeId,
         gain: f32,
@@ -2668,7 +2686,6 @@ pub struct Pattern {
 
 /// Where an audio cable starts: an output of the graph, named by the model's id of the node that has it (P3b of `docs/patch-graph.md` §11.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
 pub enum CableFrom {
     /// What a lane's instrument puts out, after the lane's volume and before its chain (the id is the lane's). It is heard at what the lane is heard at.
     Instrument(NodeId),
@@ -2680,7 +2697,6 @@ pub enum CableFrom {
 
 /// Where an audio cable ends: an input of the graph, which it is added to (what is there already is not taken out).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
 pub enum CableTo {
     /// What an effect takes in, added to what its chain gives it (an effect of a lane's chain or of a group's bus).
     Effect(NodeId),
@@ -4026,6 +4042,18 @@ impl AudioGraph {
                 pattern_index: lane.pattern.inst_index,
             })
             .collect()
+    }
+
+    /// The audio cables that are drawn (one that has been told to go is not), in the order of their ids, for a test to compare with the model's.
+    #[cfg(test)]
+    pub fn audio_cables(&self) -> Vec<CableFacts> {
+        self.schedule.cable_facts()
+    }
+
+    /// What the engine has of the model's nodes and cables.
+    #[cfg(test)]
+    pub fn facts(&self) -> Facts {
+        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables() }
     }
 
     /// The names of the effects of each lane, in the order of its chain, for a test to compare with the model's.
@@ -5385,6 +5413,12 @@ impl AudioGraph {
             publish_group_member_mod_effective(&self.groups, &self.instruments, telemetry);
         }
 
+        // A cable that was told to go has gone down to nothing over this block: it leaves the plan now, so that the block that took the command is the one that makes the plan again
+        // (and asks for memory, as every command that changes the wiring does) and the blocks after it have nothing to make.
+        if self.schedule.has_a_cable_that_is_gone() {
+            self.schedule.refresh(&self.instruments, &self.groups, self.num_channels, frames);
+        }
+
         Ok(())
     }
 
@@ -6376,6 +6410,26 @@ mod tests {
         assert!(stream[3][0][0] < 2.0 && stream[3][0][FRAMES - 1] == 1.0, "it goes out over the buffer that it is taken out in");
         assert!(stream[4].iter().flatten().chain(stream[5].iter().flatten()).all(|&s| s == 1.0));
         assert!(graph.schedule.cable_ids().is_empty(), "and it is gone");
+    }
+
+    #[test]
+    fn a_cable_that_is_taken_out_leaves_the_plan_in_the_block_it_goes_down_in_and_the_block_after_makes_no_plan() {
+        // The block that takes a command is the one that asks for memory when the command changes the wiring: a cable that goes down over its block and is dropped from the plan
+        // at the start of the next would make that block the one that does (the oracle holds every other block to asking for none).
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.0));
+        another_lane(&mut graph, &cmd_tx, 1.0);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(PassthroughEffect));
+        blocks_of(&mut graph, 1, &[note_on(60)]);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 2, &[]);
+        let made = graph.schedule.plans_made();
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(1) }).unwrap();
+        blocks_of(&mut graph, 1, &[]);
+        assert!(graph.schedule.cable_ids().is_empty(), "it is gone when the block it went down in is over");
+        assert_eq!(graph.schedule.plans_made(), made + 1, "and the plan is made again in that block");
+        blocks_of(&mut graph, 2, &[]);
+        assert_eq!(graph.schedule.plans_made(), made + 1, "the blocks after it have nothing to make");
     }
 
     #[test]

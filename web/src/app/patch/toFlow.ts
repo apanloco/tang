@@ -663,15 +663,16 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle: handleOf(edge.from.port), targetHandle: handleOf(edge.to.port), deletable: false };
     if (edge.kind === "modulation") {
       edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: cableWords(graph, names, edge) }, zIndex: 10 });
-    } else {
+    } else if (edge.kind !== "cable") {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
+    // (An audio cable that has been drawn between two places is not drawn on the canvas yet: P3d.)
   }
   return { nodes, edges, places, arranged };
 }
 
-/** A cable as the canvas depends on it: where it goes, and not how deep (which is a value). */
-const cableStructure = (edge: Edge): string => JSON.stringify(edge.kind === "modulation" ? { ...edge, amount: 0 } : edge);
+/** A cable as the canvas depends on it: where it goes, and not how deep or at what level (which are values). */
+const cableStructure = (edge: Edge): string => JSON.stringify(edge.kind === "modulation" ? { ...edge, amount: 0 } : edge.kind === "cable" ? { ...edge, gain: 0 } : edge);
 
 /**
  * Whether two graphs are laid out the same: the same nodes, in the same places in the

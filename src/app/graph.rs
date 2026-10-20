@@ -219,6 +219,9 @@ pub enum EdgeKind {
     /// A modulator driving a parameter or a modulator field: a modulation target.
     /// `amount` is its depth, -1 to 1.
     Modulation { id: EdgeId, amount: f32 },
+    /// An audio cable that a person drew: a send from an output of audio (an instrument's, an effect's, a group's) to an input of audio (an effect's, a group's bus, the
+    /// master's), at the level `gain`. It is added to what the input has already, so the links of the audio path stay as they are.
+    Cable { id: EdgeId, gain: f32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -250,6 +253,22 @@ pub enum Port {
     Release,
     /// The depth of a modulation edge that starts at this modulator.
     Depth { edge: EdgeId },
+}
+
+impl crate::app::model::AudioCable {
+    /// The port that the cable starts at and the one it ends at, as the graph says them: an output of audio of what it starts at, an input of audio of what it ends at (the
+    /// master's for the mix).
+    pub fn endpoints(&self) -> (Endpoint, Endpoint) {
+        use crate::plugin::chain::{CableFrom, CableTo};
+        let from = match self.from {
+            CableFrom::Instrument(node) | CableFrom::Effect(node) | CableFrom::Group(node) => node,
+        };
+        let to = match self.to {
+            CableTo::Effect(node) | CableTo::GroupBus(node) => node,
+            CableTo::Master => NodeId::MASTER,
+        };
+        (Endpoint { node: from, port: Port::AudioOut }, Endpoint { node: to, port: Port::AudioIn })
+    }
 }
 
 impl FieldTarget {
@@ -350,8 +369,17 @@ impl SessionModel {
         for node in &mut nodes {
             node.ui = self.ui.get(&node.id).copied();
         }
+        self.audio_cable_edges(&mut edges);
         self.modulation_edges(&mut edges);
         Graph { nodes, edges }
+    }
+
+    /// One edge for each audio cable, in the order of their ids.
+    fn audio_cable_edges(&self, edges: &mut Vec<Edge>) {
+        edges.extend(self.cables.iter().map(|cable| {
+            let (from, to) = cable.endpoints();
+            Edge { from, to, kind: EdgeKind::Cable { id: cable.id, gain: cable.gain } }
+        }));
     }
 
     /// One edge for each modulation target that still has something to drive: the
@@ -552,6 +580,49 @@ mod tests {
 
     fn modulation(modulator: NodeId, to: Endpoint, id: EdgeId, amount: f32) -> Edge {
         Edge { from: at(modulator, Port::ModOut), to, kind: EdgeKind::Modulation { id, amount } }
+    }
+
+    fn cable_edge(from: Endpoint, to: Endpoint, id: u32, gain: f32) -> Edge {
+        Edge { from, to, kind: EdgeKind::Cable { id: EdgeId(id), gain } }
+    }
+
+    #[test]
+    fn an_audio_cable_is_an_edge_from_an_output_to_an_input_with_its_id_and_level_after_the_links_of_the_audio_path() {
+        use crate::app::model::AudioCable;
+        use crate::plugin::chain::{CableFrom, CableTo};
+        let mut model = load(GROUPS).model;
+        let (lane, group) = (model.instruments[0].node, model.groups[0].node);
+        let bus = model.groups[0].effects[0].node;
+        let fx = model.instruments[0].effects.first().map_or(bus, |fx| fx.node);
+        let path = model.graph().edges;
+        for (id, from, to, gain) in [
+            (9, CableFrom::Group(group), CableTo::Master, 0.5),
+            (4, CableFrom::Instrument(lane), CableTo::Effect(bus), 1.0),
+            (6, CableFrom::Effect(bus), CableTo::GroupBus(group), 0.25),
+            (7, CableFrom::Effect(fx), CableTo::Effect(bus), 2.0),
+        ] {
+            model.insert_audio_cable(AudioCable { id: EdgeId(id), from, to, gain });
+        }
+        let edges = model.graph().edges;
+        // (The scene has modulation edges, which come after the audio ones, cables included.)
+        let links = path.iter().take_while(|edge| !matches!(edge.kind, EdgeKind::Modulation { .. })).count();
+        assert!(links < path.len(), "the scene has modulation edges");
+        assert_eq!(edges[..links], path[..links], "the links of the audio path are as they were");
+        assert_eq!(edges[links + 4..], path[links..], "and so are the modulation edges, after the cables");
+        assert_eq!(
+            edges[links..links + 4],
+            [
+                cable_edge(out(lane), into(bus), 4, 1.0),
+                cable_edge(out(bus), into(group), 6, 0.25),
+                cable_edge(out(fx), into(bus), 7, 2.0),
+                cable_edge(out(group), into(NodeId::MASTER), 9, 0.5),
+            ],
+            "in the order of their ids, each from the output of what it starts at to the input of what it ends at"
+        );
+        assert_eq!(
+            serde_json::to_value(&edges[links]).unwrap(),
+            json!({"from": {"node": lane.0, "port": {"type": "audioOut"}}, "to": {"node": bus.0, "port": {"type": "audioIn"}}, "kind": "cable", "id": 4, "gain": 1.0})
+        );
     }
 
     fn node(graph: &Graph, id: NodeId) -> &Node {
@@ -1469,6 +1540,10 @@ depth = 0.2
                 EdgeKind::Member => {
                     assert!(matches!(node(graph, e.to.node).kind, NodeKind::Group { .. }), "{what}: members go to groups");
                     assert_eq!((e.from.port, e.to.port), (Port::AudioOut, Port::AudioIn), "{what}");
+                }
+                EdgeKind::Cable { id, .. } => {
+                    assert_eq!((e.from.port, e.to.port), (Port::AudioOut, Port::AudioIn), "{what}");
+                    assert!(!modulation_ids.contains(&id), "{what}: a cable has an id of its own");
                 }
             }
         }

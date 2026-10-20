@@ -260,6 +260,10 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "undo":
     case "redo":
       return "nothing";
+    // (The controller keeps a step for an audio cable that is drawn, taken out or turned; the mock engine has none, and refuses them: P3d.)
+    case "addCable":
+    case "setCableGain":
+      return "nothing";
     case "setParam": {
       const node = nodeOf(intent.node);
       const plugin = node && (node.kind === "instrument" || node.kind === "effect") ? node.plugin : null;

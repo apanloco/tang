@@ -291,6 +291,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
         piano: None,
         master_ui: None,
         bpm: None,
+        cables: vec![],
     };
 
     log::info!("New session (will save to {} on Ctrl+S)", path.display());

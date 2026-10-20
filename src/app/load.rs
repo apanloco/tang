@@ -13,11 +13,11 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    BPM_MAX, BPM_MIN, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
     ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_slot_commands, sync_from_name,
     sync_name, tempo_of_patterns,
 };
-use crate::plugin::chain::{GraphCommand, ModulatorLocation};
+use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
 use crate::session::NodeUi;
 use crate::telemetry::SlotAllocator;
 use crate::{plugin, session};
@@ -629,7 +629,65 @@ pub fn load_session(
     if config.bpm.is_some() || instruments.iter().any(|lane| lane.pattern.is_some()) {
         let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm });
     }
-    Ok(SessionModel { instruments, groups, ids, slots, ui, bpm })
+    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, cables: Vec::new() };
+    // The audio cables come last: every lane, group and effect that one of them is at is there by now.
+    load_cables(&config.cables, &mut model, cmd_tx)?;
+    Ok(model)
+}
+
+/// Draw the session's audio cables, in the order of the file: each end is a place of the file (`instrument[0].effect[1]`, `group[0]`, `master`), found among the nodes of the model, and the
+/// cable gets the next id of the series that the modulation cables have. A place that is not in the session, a start or an end that is not what a cable can start or end at, a cable
+/// between two places that another one is between already and a cable that would make the audio go round refuse the session, with the cable's place in the file (`cable[2].to: …`): a
+/// cable that is left out would change the sound without a word. A level is held to what an intent holds it to.
+fn load_cables(config: &[session::CableConfig], model: &mut SessionModel, cmd_tx: &Sender<GraphCommand>) -> anyhow::Result<()> {
+    for (i, cable) in config.iter().enumerate() {
+        let from = cable_start(cable.from, model).map_err(|why| anyhow::anyhow!("cable[{i}].from: {why}"))?;
+        let to = cable_end(cable.to, model).map_err(|why| anyhow::anyhow!("cable[{i}].to: {why}"))?;
+        if model.cables.iter().any(|drawn| (drawn.from, drawn.to) == (from, to)) {
+            anyhow::bail!("cable[{i}]: there is a cable from {} to {} already", cable.from, cable.to);
+        }
+        if let Some(problem) = model.cable_problem(from, to) {
+            let words = match problem {
+                CableProblem::Loop(_) => "that cable would make the audio go round: it would feed what it comes from".to_string(),
+                other => other.to_string(),
+            };
+            anyhow::bail!("cable[{i}]: {words}");
+        }
+        let gain = cable.gain.clamp(0.0, CABLE_GAIN_MAX);
+        let id = model.alloc_edge();
+        model.insert_audio_cable(AudioCable { id, from, to, gain });
+        send(cmd_tx, GraphCommand::AddCable { id, from, to, gain })?;
+    }
+    Ok(())
+}
+
+/// The node that a cable starts at, if the place is one that a cable can start at and it is in the model.
+fn cable_start(place: session::CablePlace, model: &SessionModel) -> Result<CableFrom, String> {
+    use session::CablePlace as Place;
+    let missing = || format!("{place} is not in the session");
+    match place {
+        Place::Instrument(lane) => Ok(CableFrom::Instrument(model.instruments.get(lane).ok_or_else(missing)?.node)),
+        Place::Effect { instrument, effect } => Ok(CableFrom::Effect(model.instruments.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::Group(group) => Ok(CableFrom::Group(model.groups.get(group).ok_or_else(missing)?.node)),
+        Place::BusEffect { group, effect } => Ok(CableFrom::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::Master => Err("master has no output of audio".to_string()),
+    }
+}
+
+/// The node that a cable ends at, if the place is one that a cable can end at and it is in the model.
+fn cable_end(place: session::CablePlace, model: &SessionModel) -> Result<CableTo, String> {
+    use session::CablePlace as Place;
+    let missing = || format!("{place} is not in the session");
+    match place {
+        Place::Instrument(lane) => {
+            model.instruments.get(lane).ok_or_else(missing)?;
+            Err(format!("{place} has no input of audio: a cable ends at an effect, a group or master"))
+        }
+        Place::Effect { instrument, effect } => Ok(CableTo::Effect(model.instruments.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::Group(group) => Ok(CableTo::GroupBus(model.groups.get(group).ok_or_else(missing)?.node)),
+        Place::BusEffect { group, effect } => Ok(CableTo::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::Master => Ok(CableTo::Master),
+    }
 }
 
 /// Load modulators from a plugin's config and send the commands to the audio thread.
@@ -2350,6 +2408,147 @@ mod_rate = 7
                 "SetGlobalBpm bpm=100.0",
             ]
         );
+    }
+
+    // -- audio cables (P3c of docs/patch-graph.md §11.6) --
+
+    /// `SENDS` with the cables `cables` after it.
+    fn sends_with(cables: &str) -> String {
+        format!("{}\n{cables}", crate::app::testutil::SENDS)
+    }
+
+    fn cable_commands(run: &Run) -> Vec<String> {
+        run.commands.iter().filter(|command| command.contains("Cable")).cloned().collect()
+    }
+
+    #[test]
+    fn the_cables_of_a_file_are_drawn_between_the_ends_it_names_in_the_order_of_the_file_under_the_ids_that_come_next() {
+        let run = load(&sends_with(
+            r#"
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0]"
+
+[[cable]]
+from = "instrument[0].effect[1]"
+to = "group[0]"
+gain = 0.5
+
+[[cable]]
+from = "group[0]"
+to = "instrument[1].effect[0]"
+gain = 1.5
+
+[[cable]]
+from = "group[0].effect[0]"
+to = "master"
+"#,
+        ));
+        let n = crate::app::testutil::Sends::of(&run.model);
+        use crate::plugin::chain::{CableFrom as F, CableTo as T};
+        assert_eq!(
+            run.model.cables.iter().map(|cable| (cable.id.0, cable.from, cable.to, cable.gain)).collect::<Vec<_>>(),
+            [
+                (0, F::Instrument(n.lane[1]), T::Effect(n.fx[0]), 1.0),
+                (1, F::Effect(n.fx[1]), T::GroupBus(n.group), 0.5),
+                (2, F::Group(n.group), T::Effect(n.fx[2]), 1.5),
+                (3, F::Effect(n.bus), T::Master, 1.0),
+            ]
+        );
+        run.model.check_ids().unwrap();
+        // The audio thread is told each, after every lane and group is there, in the order of the file.
+        assert_eq!(
+            cable_commands(&run),
+            [
+                format!("AddCable id=0 from=Instrument({:?}) to=Effect({:?}) gain=1.000", n.lane[1], n.fx[0]),
+                format!("AddCable id=1 from=Effect({:?}) to=GroupBus({:?}) gain=0.500", n.fx[1], n.group),
+                format!("AddCable id=2 from=Group({:?}) to=Effect({:?}) gain=1.500", n.group, n.fx[2]),
+                format!("AddCable id=3 from=Effect({:?}) to=Master gain=1.000", n.bus),
+            ]
+        );
+        let last_lane_or_group = run.commands.iter().rposition(|command| command.starts_with("InsertEffect") || command.starts_with("InsertGroupEffect") || command.starts_with("AddInstrument")).unwrap();
+        let first_cable = run.commands.iter().position(|command| command.starts_with("AddCable")).unwrap();
+        assert!(first_cable > last_lane_or_group, "{:#?}", run.commands);
+    }
+
+    #[test]
+    fn a_session_with_no_cables_sends_no_cable_command_and_its_ids_are_as_they_were() {
+        let run = load(crate::app::testutil::SENDS);
+        assert!(run.model.cables.is_empty());
+        assert!(cable_commands(&run).is_empty());
+    }
+
+    #[test]
+    fn the_cables_take_the_ids_after_the_modulation_cables_of_the_file() {
+        let run = load(&format!(
+            "{}{}",
+            GROUPS,
+            "\n[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\n[[cable]]\nfrom = \"instrument[1]\"\nto = \"master\"\n"
+        ));
+        let modulation: Vec<u32> = run.model.groups.iter().flat_map(|g| g.modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge.0))).chain(run.model.instruments.iter().flat_map(|l| l.modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge.0)))).collect();
+        let audio: Vec<u32> = run.model.cables.iter().map(|cable| cable.id.0).collect();
+        assert_eq!(audio.len(), 2);
+        assert!(modulation.iter().all(|id| !audio.contains(id)), "{modulation:?} {audio:?}");
+        assert!(audio[0] > *modulation.iter().max().unwrap(), "after every modulation cable of the file: {modulation:?} {audio:?}");
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_level_of_a_cable_in_a_file_is_held_to_nothing_and_twice_that() {
+        let run = load(&sends_with(
+            "[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\ngain = 9.0\n[[cable]]\nfrom = \"instrument[1]\"\nto = \"master\"\ngain = -1.0\n",
+        ));
+        assert_eq!(run.model.cables.iter().map(|cable| cable.gain).collect::<Vec<_>>(), [2.0, 0.0]);
+        assert_eq!(cable_commands(&run).iter().map(|command| command.rsplit(' ').next().unwrap().to_string()).collect::<Vec<_>>(), ["gain=2.000", "gain=0.000"]);
+    }
+
+    #[test]
+    fn a_cable_that_the_session_cannot_have_refuses_the_session_with_the_place_of_the_cable() {
+        for (cable, why) in [
+            ("from = \"instrument[5]\"\nto = \"master\"", "cable[0].from: instrument[5] is not in the session"),
+            ("from = \"instrument[0].effect[7]\"\nto = \"master\"", "cable[0].from: instrument[0].effect[7] is not in the session"),
+            ("from = \"group[3]\"\nto = \"master\"", "cable[0].from: group[3] is not in the session"),
+            ("from = \"group[0].effect[1]\"\nto = \"master\"", "cable[0].from: group[0].effect[1] is not in the session"),
+            ("from = \"master\"\nto = \"instrument[0].effect[0]\"", "cable[0].from: master has no output of audio"),
+            ("from = \"instrument[0]\"\nto = \"instrument[1]\"", "cable[0].to: instrument[1] has no input of audio"),
+            ("from = \"instrument[0]\"\nto = \"group[9]\"", "cable[0].to: group[9] is not in the session"),
+            ("from = \"instrument[0].effect[1]\"\nto = \"instrument[0].effect[0]\"", "cable[0]: that cable would make the audio go round"),
+            ("from = \"group[0]\"\nto = \"instrument[0].effect[0]\"", "cable[0]: that cable would make the audio go round"),
+        ] {
+            let error = try_load(&sends_with(&format!("[[cable]]\n{cable}\n"))).expect_err(cable).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{cable}");
+        }
+        // The second cable is the one that is named, and a cable between the same two places twice is refused.
+        let error = try_load(&sends_with("[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\n[[cable]]\nfrom = \"instrument[9]\"\nto = \"master\"\n")).unwrap_err().to_string();
+        assert!(error.contains("cable[1].from: instrument[9] is not in the session"), "{error}");
+        let error = try_load(&sends_with("[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\n[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\n")).unwrap_err().to_string();
+        assert!(error.contains("cable[1]") && error.contains("already"), "{error}");
+    }
+
+    #[test]
+    fn a_cable_through_a_chain_of_cables_that_comes_back_is_a_loop_and_is_refused_where_it_closes() {
+        let error = try_load(&sends_with(
+            "[[cable]]\nfrom = \"instrument[0].effect[0]\"\nto = \"instrument[1].effect[0]\"\n[[cable]]\nfrom = \"instrument[1].effect[0]\"\nto = \"instrument[0].effect[1]\"\n[[cable]]\nfrom = \"instrument[0].effect[1]\"\nto = \"instrument[0].effect[0]\"\n",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cable[2]") && error.contains("go round"), "{error}");
+    }
+
+    #[test]
+    fn what_a_session_with_cables_is_saved_as_is_loaded_as_the_same_cables_and_the_same_file() {
+        let text = sends_with(
+            "[[cable]]\nfrom = \"instrument[1]\"\nto = \"instrument[0].effect[0]\"\n[[cable]]\nfrom = \"instrument[0].effect[1]\"\nto = \"group[0]\"\ngain = 0.5\n[[cable]]\nfrom = \"group[0].effect[0]\"\nto = \"master\"\ngain = 1.5\n[[cable]]\nfrom = \"group[0]\"\nto = \"instrument[1].effect[0]\"\ngain = 0.75\n",
+        );
+        let model = load(&text).model;
+        let (instruments, groups, cables) = crate::app::save::to_save(&model);
+        let saved = session::to_toml(&instruments, &groups, &cables, None, model.master_ui(), model.bpm_to_save()).unwrap();
+        assert_eq!(saved.matches("[[cable]]").count(), 4, "{saved}");
+        assert!(saved.contains("from = \"group[0]\""), "a cable that starts at a group says which: {saved}");
+        let again = load(&saved).model;
+        assert_eq!(again.cables, model.cables, "the cables are the same, under the same ids");
+        let (instruments, groups, cables) = crate::app::save::to_save(&again);
+        assert_eq!(session::to_toml(&instruments, &groups, &cables, None, again.master_ui(), again.bpm_to_save()).unwrap(), saved, "and the file is the same");
     }
 
     /// Every `SetGlobalBpm` that a session sent the audio thread, as the tempo it says.

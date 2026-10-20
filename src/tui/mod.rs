@@ -1530,6 +1530,8 @@ impl State {
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 // (The pane shows the steps of a step sequencer from the model on every frame: the tree's line has no room for them.)
                 intent::Event::StepsSet { .. } => {}
+                // (The terminal does not draw audio cables yet: the patchbay is P3e.)
+                intent::Event::CableGainSet { .. } => {}
                 intent::Event::ParamSet { .. }
                 | intent::Event::GainSet { .. }
                 | intent::Event::PresetLoaded { .. }

@@ -4,6 +4,12 @@ import type { Edge, EdgeId } from "../protocol";
 /** A cable of modulation (the graph has other edges: the audio path). */
 export const isModulation = (e: Edge): e is Edge & { kind: "modulation"; id: EdgeId } => e.kind === "modulation";
 
+/** A link of the audio path that a lane and a group have by themselves: down a chain, and from a lane into its group or the mix. */
+export const isLink = (e: Edge): e is Edge & { kind: "audio" | "member" } => e.kind === "audio" || e.kind === "member";
+
+/** An audio cable that has been drawn between two places (a send), with the id it shares with the cables of modulation and its level. */
+export const isAudioCable = (e: Edge): e is Edge & { kind: "cable"; id: EdgeId; gain: number } => e.kind === "cable";
+
 /**
  * The cables that go when those of `start` do: they, and, in turn, the ones that drive the depth of a cable that
  * goes (what is left pointing at a cable that is not there would drive whichever one is put there next).

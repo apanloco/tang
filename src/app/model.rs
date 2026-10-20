@@ -11,9 +11,9 @@
 //! Nothing here knows about the terminal: the TUI imports it today, and the
 //! controller and the web projection planned in `docs/web-ui.md` build on it.
 
-use crate::app::intent::{Intent, ModulatorField};
+use crate::app::intent::{Intent, IntentError, ModulatorField};
 use crate::plugin;
-use crate::plugin::chain::{CrossModField, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
+use crate::plugin::chain::{CableFrom, CableProblem, CableTo, CrossModField, GroupWiring, LaneWiring, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
 use crate::session::NodeUi;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
@@ -152,6 +152,9 @@ pub struct SessionModel {
     /// The tempo that patterns are recorded at, in beats a minute: that of the first recorded pattern of a session that is loaded
     /// (`DEFAULT_BPM` if it has none).
     pub bpm: f32,
+    /// The audio cables that have been drawn (P3c of `docs/patch-graph.md` §11.6), in the order of their ids: sends from one place of the audio to another, besides the
+    /// way that a lane and a group are wired by themselves.
+    pub cables: Vec<AudioCable>,
 }
 
 impl Default for SessionModel {
@@ -163,9 +166,27 @@ impl Default for SessionModel {
             slots: SlotAllocator::default(),
             ui: BTreeMap::new(),
             bpm: DEFAULT_BPM,
+            cables: Vec::new(),
         }
     }
 }
+
+/// An audio cable that a session has: a send from one place of the audio to another (P3c of `docs/patch-graph.md` §11.6). Its id is from the series that the modulation
+/// cables' are, so that no two edges of the graph a client gets have one id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AudioCable {
+    pub id: EdgeId,
+    pub from: CableFrom,
+    pub to: CableTo,
+    /// The send level, `0..=CABLE_GAIN_MAX`: 1 is what comes out of `from`, as it is.
+    pub gain: f32,
+}
+
+/// The highest send level an intent can set (+6 dB).
+pub const CABLE_GAIN_MAX: f32 = 2.0;
+
+/// The level that a cable is drawn at when nothing says another: what comes out of its start, as it is.
+pub const NEW_CABLE_GAIN: f32 = 1.0;
 
 /// The tempo a session comes to when its file says none: that of the first of its lanes that has a recorded pattern, else `DEFAULT_BPM`, held
 /// to the tempos there can be.
@@ -174,6 +195,149 @@ pub fn tempo_of_patterns(lanes: &[InstrumentNode]) -> f32 {
 }
 
 impl SessionModel {
+    /// The wiring of the lanes and the groups, as the plan of the audio thread is made of it.
+    pub fn wiring(&self) -> (Vec<LaneWiring>, Vec<GroupWiring>) {
+        (
+            self.instruments
+                .iter()
+                .map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effects.iter().map(|effect| effect.node).collect() })
+                .collect(),
+            self.groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effects.iter().map(|effect| effect.node).collect() }).collect(),
+        )
+    }
+
+    /// Why a cable from `from` to `to` cannot be drawn: an end that is not there, or a loop (the audio would go round). None if it can. (The plan is compiled on the side with it, as
+    /// the audio thread does when it is sent one, so that what is refused here is what it would refuse, and the controller can say why.)
+    pub fn cable_problem(&self, from: CableFrom, to: CableTo) -> Option<CableProblem> {
+        let (lanes, groups) = self.wiring();
+        let others = self.cables.iter().map(|cable| (cable.id, cable.from, cable.to));
+        // (An id that no cable has: the cable is not there yet.)
+        crate::plugin::chain::cable_problem(&lanes, &groups, others, (EdgeId(u32::MAX), from, to), crate::plugin::chain::CHAIN_CHANNELS)
+    }
+
+    /// Why the audio would go round if lane `inst` were in group `group` (or in none), with the cables there are: the reason, or None if it would not (or if the lane or
+    /// the group is not there, which is for the caller to say). Nothing is changed.
+    pub fn loop_if_lane_goes_to(&self, inst: usize, group: Option<usize>) -> Option<String> {
+        let (mut lanes, groups) = self.wiring();
+        lanes.get_mut(inst)?.group = group.filter(|group| *group < groups.len());
+        self.wiring_loop(&lanes, &groups)
+    }
+
+    /// Why the audio would go round if the effect `node` (of a lane's chain or of a group's bus) were at place `index` of its chain, the effects between moving one place the
+    /// other way, with the cables there are: the reason, or None if it would not (or if the node is no effect, or the chain has no such place). Nothing is changed.
+    pub fn loop_if_effect_goes_to(&self, node: NodeId, index: usize) -> Option<String> {
+        let (mut lanes, mut groups) = self.wiring();
+        let chain = match self.locate(node)? {
+            NodePath::Effect { inst, .. } => &mut lanes.get_mut(inst)?.effects,
+            NodePath::GroupEffect { group, .. } => &mut groups.get_mut(group)?.effects,
+            _ => return None,
+        };
+        let from = chain.iter().position(|effect| *effect == node)?;
+        if index >= chain.len() {
+            return None;
+        }
+        let effect = chain.remove(from);
+        chain.insert(index, effect);
+        self.wiring_loop(&lanes, &groups)
+    }
+
+    /// Why the wiring `lanes` and `groups`, with the cables there are, does not compile: the audio goes round in it.
+    fn wiring_loop(&self, lanes: &[LaneWiring], groups: &[GroupWiring]) -> Option<String> {
+        let cables = self.cables.iter().map(|cable| (cable.id, cable.from, cable.to));
+        crate::plugin::chain::wiring_loop(lanes, groups, cables, crate::plugin::chain::CHAIN_CHANNELS)
+    }
+
+    /// The audio cable `id`, if there is one.
+    pub fn audio_cable(&self, id: EdgeId) -> Option<&AudioCable> {
+        self.cables.binary_search_by_key(&id, |cable| cable.id).ok().map(|at| &self.cables[at])
+    }
+
+    /// The audio cable `id`, to change.
+    pub fn audio_cable_mut(&mut self, id: EdgeId) -> Option<&mut AudioCable> {
+        self.cables.binary_search_by_key(&id, |cable| cable.id).ok().map(|at| &mut self.cables[at])
+    }
+
+    /// Put a cable among the cables, in the order of the ids (one that is there under the id is replaced): the place it went to.
+    pub fn insert_audio_cable(&mut self, cable: AudioCable) -> usize {
+        match self.cables.binary_search_by_key(&cable.id, |other| other.id) {
+            Ok(at) => {
+                self.cables[at] = cable;
+                at
+            }
+            Err(at) => {
+                self.cables.insert(at, cable);
+                at
+            }
+        }
+    }
+
+    /// Take the audio cable `id` out: the place it had and what it was. None if there is no such cable.
+    pub fn remove_audio_cable(&mut self, id: EdgeId) -> Option<(usize, AudioCable)> {
+        let at = self.cables.binary_search_by_key(&id, |cable| cable.id).ok()?;
+        Some((at, self.cables.remove(at)))
+    }
+
+    /// The audio cables that start or end at any of `nodes` (a lane, an effect of a lane or of a bus, a group), in the order of their ids: what goes with them when they are taken out.
+    pub fn audio_cables_at(&self, nodes: &[NodeId]) -> Vec<EdgeId> {
+        let starts = |cable: &AudioCable| match cable.from {
+            CableFrom::Instrument(id) | CableFrom::Effect(id) | CableFrom::Group(id) => nodes.contains(&id),
+        };
+        let ends = |cable: &AudioCable| match cable.to {
+            CableTo::Effect(id) | CableTo::GroupBus(id) => nodes.contains(&id),
+            CableTo::Master => false,
+        };
+        self.cables.iter().filter(|cable| starts(cable) || ends(cable)).map(|cable| cable.id).collect()
+    }
+
+    /// The nodes that have the audio of lane `inst`: its instrument's, which is the lane's, and each of its effects.
+    pub fn audio_nodes_of_lane(&self, inst: usize) -> Vec<NodeId> {
+        self.instruments.get(inst).map_or_else(Vec::new, |lane| std::iter::once(lane.node).chain(lane.effects.iter().map(|effect| effect.node)).collect())
+    }
+
+    /// The nodes that have the audio of group `group`: its own, which is its bus and its output, and each of its bus effects.
+    pub fn audio_nodes_of_group(&self, group: usize) -> Vec<NodeId> {
+        self.groups.get(group).map_or_else(Vec::new, |bus| std::iter::once(bus.node).chain(bus.effects.iter().map(|effect| effect.node)).collect())
+    }
+
+    /// Whether a cable, of either kind, has the id: the modulation cables and the audio cables are one series.
+    pub fn edge_in_use(&self, id: EdgeId) -> bool {
+        self.locate_edge(id).is_some() || self.audio_cable(id).is_some()
+    }
+
+    /// The ends that a cable from the port `from` to the port `to` of the graph has: an instrument's, an effect's or a group's `AudioOut` to an effect's, a group's or the master's
+    /// `AudioIn`. The reason, if they are not that: a node that is not there is not found, and a port or a node of another kind is invalid.
+    pub fn cable_ends(&self, from: crate::app::graph::Endpoint, to: crate::app::graph::Endpoint) -> Result<(CableFrom, CableTo), IntentError> {
+        use crate::app::graph::Port;
+        let invalid = |why: &str| IntentError::Invalid(why.to_string());
+        if from.port != Port::AudioOut {
+            return Err(invalid("an audio cable starts at an output of audio"));
+        }
+        if to.port != Port::AudioIn {
+            return Err(invalid("an audio cable ends at an input of audio"));
+        }
+        let start = if from.node == NodeId::MASTER {
+            return Err(invalid("the mix has no output of audio"));
+        } else {
+            match self.locate(from.node).ok_or(IntentError::NotFound(from.node))? {
+                NodePath::Instrument(_) => CableFrom::Instrument(from.node),
+                NodePath::Effect { .. } | NodePath::GroupEffect { .. } => CableFrom::Effect(from.node),
+                NodePath::Group(_) => CableFrom::Group(from.node),
+                NodePath::Modulator { .. } => return Err(invalid("a modulator has no output of audio")),
+            }
+        };
+        let end = if to.node == NodeId::MASTER {
+            CableTo::Master
+        } else {
+            match self.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+                NodePath::Effect { .. } | NodePath::GroupEffect { .. } => CableTo::Effect(to.node),
+                NodePath::Group(_) => CableTo::GroupBus(to.node),
+                NodePath::Instrument(_) => return Err(invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix")),
+                NodePath::Modulator { .. } => return Err(invalid("a modulator has no input of audio")),
+            }
+        };
+        Ok((start, end))
+    }
+
     /// The `bpm` that a save writes: none when a load would come to this tempo anyway (`tempo_of_patterns`), so that the files of sessions that never
     /// set one are as they were.
     pub fn bpm_to_save(&self) -> Option<f32> {
@@ -316,6 +480,21 @@ impl SessionModel {
                     }
                     claim(target.effective, whose)?;
                 }
+            }
+        }
+        // The audio cables: their ids are from the series that the modulation cables have, and each is at nodes that are there, and none makes the audio go round.
+        let (lanes, groups) = self.wiring();
+        let drawn = || self.cables.iter().map(|cable| (cable.id, cable.from, cable.to));
+        for cable in &self.cables {
+            let whose = format!("audio cable {:?}", cable.id);
+            if cable.id.0 >= self.ids.next_edge {
+                return Err(format!("{whose} was never allocated"));
+            }
+            if !edges.insert(cable.id) {
+                return Err(format!("{whose} has an id which another edge has too"));
+            }
+            if let Some(problem) = crate::plugin::chain::cable_problem(&lanes, &groups, drawn(), (cable.id, cable.from, cable.to), crate::plugin::chain::CHAIN_CHANNELS) {
+                return Err(format!("{whose}: {problem}"));
             }
         }
         Ok(())
@@ -2166,7 +2345,7 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{LONG_CHAINS, load};
+    use crate::app::testutil::{LONG_CHAINS, SENDS, Sends, load};
     use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModSource, ModTargetKind as K};
 
     #[test]
@@ -2380,6 +2559,41 @@ param = "detune"
     }
 
     #[test]
+    fn check_ids_notices_audio_cables_that_are_shared_strangers_or_at_what_is_not_there_or_make_the_audio_go_round() {
+        let with_cables = || {
+            let (mut model, n) = the_sends();
+            model.ids.alloc_edge();
+            model.ids.alloc_edge();
+            model.insert_audio_cable(cable(0, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])));
+            model.insert_audio_cable(cable(1, CableFrom::Effect(n.fx[0]), CableTo::Master));
+            (model, n)
+        };
+        let (model, _) = with_cables();
+        model.check_ids().unwrap();
+        // An id that nothing handed out.
+        let (mut model, n) = with_cables();
+        model.insert_audio_cable(cable(9_999, CableFrom::Instrument(n.lane[0]), CableTo::Master));
+        assert!(model.check_ids().unwrap_err().contains("never allocated"));
+        // An id that a modulation cable has.
+        let mut model = load(crate::app::testutil::GROUPS).model;
+        let taken = model.groups[0].modulators[0].targets[0].edge;
+        let node = model.instruments[0].node;
+        model.insert_audio_cable(cable(taken.0, CableFrom::Instrument(node), CableTo::Master));
+        assert!(model.check_ids().unwrap_err().contains("another edge has too"));
+        // An end that is not there.
+        let (mut model, _) = with_cables();
+        model.cables[0].from = CableFrom::Instrument(NodeId(900));
+        assert!(model.check_ids().unwrap_err().contains("what the cable starts at is not in the wiring"));
+        let (mut model, _) = with_cables();
+        model.cables[1].to = CableTo::GroupBus(NodeId(901));
+        assert!(model.check_ids().unwrap_err().contains("what the cable ends at is not in the wiring"));
+        // A loop (only a model that was changed behind the controller's back has one).
+        let (mut model, n) = with_cables();
+        model.cables[1] = cable(1, CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[0]));
+        assert!(model.check_ids().unwrap_err().contains("go round"));
+    }
+
+    #[test]
     fn check_ids_notices_duplicates_strangers_and_a_mismatched_instrument() {
         let fresh = || load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").model;
 
@@ -2504,6 +2718,238 @@ type = "envelope"
         // It is the rack itself, not a copy.
         model.modulators_mut(ModulatorLocation::Group(0)).unwrap().pop();
         assert_eq!((model.instruments[0].modulators.len(), model.groups[0].modulators.len()), (2, 0));
+    }
+
+    // -- audio cables (P3c of docs/patch-graph.md §11.6) --
+
+    fn the_sends() -> (SessionModel, Sends) {
+        let model = load(SENDS).model;
+        let nodes = Sends::of(&model);
+        (model, nodes)
+    }
+
+    fn cable(id: u32, from: CableFrom, to: CableTo) -> AudioCable {
+        AudioCable { id: EdgeId(id), from, to, gain: 1.0 }
+    }
+
+    #[test]
+    fn the_wiring_is_the_lanes_with_their_groups_and_effects_and_the_groups_with_their_bus_effects() {
+        let (model, n) = the_sends();
+        let (lanes, groups) = model.wiring();
+        assert_eq!(lanes.iter().map(|lane| (lane.node, lane.group, lane.effects.clone())).collect::<Vec<_>>(), [(n.lane[0], Some(0), vec![n.fx[0], n.fx[1]]), (n.lane[1], None, vec![n.fx[2]])]);
+        assert_eq!(groups.iter().map(|group| (group.node, group.effects.clone())).collect::<Vec<_>>(), [(n.group, vec![n.bus])]);
+    }
+
+    #[test]
+    fn a_cable_is_drawn_from_an_instrument_an_effect_or_a_group_to_an_effect_a_bus_or_the_mix() {
+        let (model, n) = the_sends();
+        let drawn = [
+            (CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])),
+            (CableFrom::Instrument(n.lane[0]), CableTo::Effect(n.fx[2])),
+            (CableFrom::Effect(n.fx[2]), CableTo::Effect(n.bus)),
+            (CableFrom::Effect(n.bus), CableTo::Effect(n.fx[2])),
+            (CableFrom::Effect(n.fx[0]), CableTo::GroupBus(n.group)),
+            (CableFrom::Group(n.group), CableTo::Effect(n.fx[2])),
+            (CableFrom::Instrument(n.lane[0]), CableTo::Master),
+            (CableFrom::Effect(n.fx[1]), CableTo::Master),
+            (CableFrom::Instrument(n.lane[0]), CableTo::Effect(n.fx[1])),
+        ];
+        for (from, to) in drawn {
+            assert_eq!(model.cable_problem(from, to), None, "{from:?} to {to:?}");
+        }
+    }
+
+    #[test]
+    fn a_cable_is_not_drawn_from_or_to_what_is_not_there_or_is_not_what_it_says() {
+        let (model, n) = the_sends();
+        assert_eq!(model.cable_problem(CableFrom::Instrument(NodeId(900)), CableTo::Master), Some(CableProblem::NoStart));
+        assert_eq!(model.cable_problem(CableFrom::Instrument(n.group), CableTo::Master), Some(CableProblem::NoStart), "a group is no instrument");
+        assert_eq!(model.cable_problem(CableFrom::Instrument(n.fx[0]), CableTo::Master), Some(CableProblem::NoStart), "an effect is no instrument");
+        assert_eq!(model.cable_problem(CableFrom::Group(n.lane[0]), CableTo::Master), Some(CableProblem::NoStart), "a lane is no group");
+        assert_eq!(model.cable_problem(CableFrom::Effect(n.lane[0]), CableTo::Master), Some(CableProblem::NoStart), "a lane is no effect");
+        assert_eq!(model.cable_problem(CableFrom::Instrument(n.lane[0]), CableTo::Effect(NodeId(901))), Some(CableProblem::NoEnd));
+        assert_eq!(model.cable_problem(CableFrom::Instrument(n.lane[0]), CableTo::Effect(n.lane[1])), Some(CableProblem::NoEnd), "a lane has no input");
+        assert_eq!(model.cable_problem(CableFrom::Instrument(n.lane[0]), CableTo::GroupBus(n.lane[1])), Some(CableProblem::NoEnd), "a lane is no group");
+        assert_eq!(model.cable_problem(CableFrom::Instrument(n.lane[0]), CableTo::GroupBus(n.bus)), Some(CableProblem::NoEnd), "an effect is no group");
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_is_not_drawn() {
+        let (mut model, n) = the_sends();
+        let loops = |model: &SessionModel, from: CableFrom, to: CableTo| matches!(model.cable_problem(from, to), Some(CableProblem::Loop(_)));
+        // Back along a chain, and into itself.
+        assert!(loops(&model, CableFrom::Effect(n.fx[1]), CableTo::Effect(n.fx[0])));
+        assert!(loops(&model, CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[0])));
+        // A group's output into the chain of one of its members, and the bus into a member.
+        assert!(loops(&model, CableFrom::Group(n.group), CableTo::Effect(n.fx[0])));
+        assert!(loops(&model, CableFrom::Effect(n.bus), CableTo::Effect(n.fx[1])));
+        assert!(!loops(&model, CableFrom::Group(n.group), CableTo::Effect(n.fx[2])), "the lane that is in no group is not one of its members");
+        // Two cables that are no loop by themselves and are one together.
+        model.insert_audio_cable(cable(1, CableFrom::Effect(n.fx[2]), CableTo::Effect(n.fx[0])));
+        assert!(loops(&model, CableFrom::Effect(n.fx[1]), CableTo::Effect(n.fx[2])), "lane 1's effect feeds lane 0's, and lane 0's last effect would feed lane 1's");
+        assert!(!loops(&model, CableFrom::Effect(n.fx[1]), CableTo::Master));
+    }
+
+    #[test]
+    fn the_cables_are_kept_in_the_order_of_their_ids_and_are_taken_out_by_id_with_the_place_they_had() {
+        let (mut model, n) = the_sends();
+        let (a, b, c) = (cable(5, CableFrom::Instrument(n.lane[0]), CableTo::Master), cable(3, CableFrom::Instrument(n.lane[1]), CableTo::Master), cable(9, CableFrom::Effect(n.fx[0]), CableTo::Master));
+        assert_eq!([model.insert_audio_cable(a), model.insert_audio_cable(b), model.insert_audio_cable(c)], [0, 0, 2]);
+        assert_eq!(model.cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [3, 5, 9]);
+        assert_eq!(model.audio_cable(EdgeId(5)), Some(&a));
+        assert_eq!(model.audio_cable(EdgeId(4)), None);
+        assert_eq!(model.remove_audio_cable(EdgeId(5)), Some((1, a)));
+        assert_eq!(model.remove_audio_cable(EdgeId(5)), None, "it is not there any more");
+        assert_eq!(model.insert_audio_cable(a), 1, "it goes back where it was");
+        assert_eq!(model.cables, [b, a, c]);
+        // A cable that is put in under the id of one that is there takes its place, and does not go beside it: no two cables have one id.
+        let again = AudioCable { gain: 0.5, ..a };
+        assert_eq!(model.insert_audio_cable(again), 1);
+        assert_eq!(model.cables, [b, again, c]);
+    }
+
+    #[test]
+    fn the_cables_at_a_node_are_those_that_start_or_end_there() {
+        let (mut model, n) = the_sends();
+        for (id, from, to) in [
+            (1, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])),
+            (2, CableFrom::Effect(n.fx[0]), CableTo::Master),
+            (3, CableFrom::Group(n.group), CableTo::Effect(n.fx[2])),
+            (4, CableFrom::Instrument(n.lane[0]), CableTo::GroupBus(n.group)),
+            (5, CableFrom::Effect(n.bus), CableTo::Master),
+            (6, CableFrom::Effect(n.fx[2]), CableTo::Effect(n.bus)),
+        ] {
+            model.insert_audio_cable(cable(id, from, to));
+        }
+        let at = |node: NodeId| model.audio_cables_at(&[node]).iter().map(|edge| edge.0).collect::<Vec<_>>();
+        assert_eq!(at(n.lane[0]), [4], "a lane: what its instrument sends");
+        assert_eq!(at(n.lane[1]), [1]);
+        assert_eq!(at(n.fx[0]), [1, 2], "an effect: what it sends and what it takes");
+        assert_eq!(at(n.fx[1]), Vec::<u32>::new());
+        assert_eq!(at(n.fx[2]), [3, 6]);
+        assert_eq!(at(n.group), [3, 4], "a group: what it sends and what its bus takes");
+        assert_eq!(at(n.bus), [5, 6]);
+        assert_eq!(at(NodeId::MASTER), Vec::<u32>::new(), "the mix is no node that goes");
+    }
+
+    #[test]
+    fn a_lane_is_not_put_in_a_group_when_a_cable_from_the_group_leads_back_into_the_lane() {
+        let (mut model, n) = the_sends();
+        // Lane 1 is in no group. A cable from the group's output into lane 1's effect is no loop, until the lane is a member of the group.
+        model.insert_audio_cable(cable(1, CableFrom::Group(n.group), CableTo::Effect(n.fx[2])));
+        assert!(model.loop_if_lane_goes_to(1, Some(0)).is_some(), "its own output would feed the group that feeds it");
+        assert_eq!(model.loop_if_lane_goes_to(1, None), None, "the lane stays out of the group");
+        assert_eq!(model.loop_if_lane_goes_to(0, None), None, "lane 0 leaves the group");
+        assert_eq!(model.loop_if_lane_goes_to(0, Some(0)), None, "lane 0 is in it already");
+        // The same through a bus effect, and through a cable that leaves the lane's chain.
+        model.remove_audio_cable(EdgeId(1));
+        model.insert_audio_cable(cable(2, CableFrom::Effect(n.bus), CableTo::Effect(n.fx[2])));
+        assert!(model.loop_if_lane_goes_to(1, Some(0)).is_some());
+        model.remove_audio_cable(EdgeId(2));
+        model.insert_audio_cable(cable(3, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.bus)));
+        assert_eq!(model.loop_if_lane_goes_to(1, Some(0)), None, "a cable from the lane into an effect of the bus is no loop: the lane is upstream of both");
+        // A lane or a group that is not there changes nothing.
+        assert_eq!(model.loop_if_lane_goes_to(9, Some(0)), None);
+        assert_eq!(model.loop_if_lane_goes_to(1, Some(9)), None);
+    }
+
+    #[test]
+    fn an_effect_is_not_moved_to_a_place_where_the_audio_would_go_round() {
+        let (mut model, n) = the_sends();
+        // Lane 0's chain is fx0 and then fx1. fx0 feeds lane 1's effect, which feeds fx1: no loop while fx0 is first.
+        model.insert_audio_cable(cable(1, CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[2])));
+        model.insert_audio_cable(cable(2, CableFrom::Effect(n.fx[2]), CableTo::Effect(n.fx[1])));
+        assert!(model.loop_if_effect_goes_to(n.fx[1], 0).is_some(), "fx1 would feed fx0, which feeds fx1 by the cables");
+        assert!(model.loop_if_effect_goes_to(n.fx[0], 1).is_some(), "the same two effects, the same swap");
+        assert_eq!(model.loop_if_effect_goes_to(n.fx[0], 0), None, "to where it is");
+        // Without the second cable the swap is fine.
+        model.remove_audio_cable(EdgeId(2));
+        assert_eq!(model.loop_if_effect_goes_to(n.fx[1], 0), None);
+        // A bus effect is moved on its bus, and what is not an effect, or is not there, has no place to go to.
+        assert_eq!(model.loop_if_effect_goes_to(n.bus, 0), None);
+        assert_eq!(model.loop_if_effect_goes_to(n.lane[0], 0), None);
+        assert_eq!(model.loop_if_effect_goes_to(NodeId(900), 0), None);
+        assert_eq!(model.loop_if_effect_goes_to(n.fx[1], 7), None, "a place the chain has not");
+    }
+
+    #[test]
+    fn an_effect_of_a_bus_is_not_moved_to_a_place_where_the_audio_would_go_round() {
+        let mut model = load(
+            r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:delay"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:drive"
+"#,
+        )
+        .model;
+        let (first, second, lane_fx) = (model.groups[0].effects[0].node, model.groups[0].effects[1].node, model.instruments[0].effects[0].node);
+        model.insert_audio_cable(cable(1, CableFrom::Effect(first), CableTo::Effect(lane_fx)));
+        model.insert_audio_cable(cable(2, CableFrom::Effect(lane_fx), CableTo::Effect(second)));
+        assert!(model.loop_if_effect_goes_to(second, 0).is_some());
+        assert!(model.loop_if_effect_goes_to(first, 1).is_some());
+    }
+
+    #[test]
+    fn what_goes_with_a_lane_or_a_group_is_the_cables_at_its_node_and_at_each_of_its_effects_once() {
+        let (mut model, n) = the_sends();
+        for (id, from, to) in [
+            (1, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])),
+            (2, CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[1])),
+            (3, CableFrom::Group(n.group), CableTo::Effect(n.fx[2])),
+            (4, CableFrom::Instrument(n.lane[0]), CableTo::GroupBus(n.group)),
+            (5, CableFrom::Effect(n.bus), CableTo::Master),
+            (6, CableFrom::Effect(n.fx[2]), CableTo::Effect(n.bus)),
+        ] {
+            model.insert_audio_cable(cable(id, from, to));
+        }
+        assert_eq!(model.audio_nodes_of_lane(0), [n.lane[0], n.fx[0], n.fx[1]]);
+        assert_eq!(model.audio_nodes_of_lane(1), [n.lane[1], n.fx[2]]);
+        assert_eq!(model.audio_nodes_of_group(0), [n.group, n.bus]);
+        assert_eq!((model.audio_nodes_of_lane(9), model.audio_nodes_of_group(9)), (vec![], vec![]));
+        let ids = |nodes: Vec<NodeId>| model.audio_cables_at(&nodes).iter().map(|edge| edge.0).collect::<Vec<_>>();
+        // (Cable 2 is between two effects of lane 0, and is one cable and not two.)
+        assert_eq!(ids(model.audio_nodes_of_lane(0)), [1, 2, 4]);
+        assert_eq!(ids(model.audio_nodes_of_lane(1)), [1, 3, 6]);
+        assert_eq!(ids(model.audio_nodes_of_group(0)), [3, 4, 5, 6]);
+        assert_eq!(ids(vec![]), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn a_cable_of_either_kind_has_its_id_in_use_and_no_other_does() {
+        let (mut model, n) = the_sends();
+        model.insert_audio_cable(cable(7, CableFrom::Instrument(n.lane[0]), CableTo::Master));
+        assert!(model.edge_in_use(EdgeId(7)));
+        assert!(!model.edge_in_use(EdgeId(8)));
+        let modulated = load(crate::app::testutil::GROUPS).model;
+        let modulation = modulated.groups[0].modulators[0].targets[0].edge;
+        assert!(modulated.edge_in_use(modulation), "a modulation cable's id is in use");
+        assert!(!modulated.edge_in_use(EdgeId(9_999)));
+    }
+
+    #[test]
+    fn the_ends_of_a_cable_are_found_from_the_ports_of_the_graph() {
+        use crate::app::graph::{Endpoint, Port};
+        let (model, n) = the_sends();
+        let (out, into) = (|node| Endpoint { node, port: Port::AudioOut }, |node| Endpoint { node, port: Port::AudioIn });
+        assert_eq!(model.cable_ends(out(n.lane[1]), into(n.fx[0])), Ok((CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0]))));
+        assert_eq!(model.cable_ends(out(n.fx[0]), into(n.bus)), Ok((CableFrom::Effect(n.fx[0]), CableTo::Effect(n.bus))));
+        assert_eq!(model.cable_ends(out(n.group), into(n.group)), Ok((CableFrom::Group(n.group), CableTo::GroupBus(n.group))));
+        assert_eq!(model.cable_ends(out(n.bus), into(NodeId::MASTER)), Ok((CableFrom::Effect(n.bus), CableTo::Master)));
+        // The wrong port, a node that cannot have that port, and a node that is not there.
+        assert!(matches!(model.cable_ends(into(n.lane[1]), into(n.fx[0])), Err(IntentError::Invalid(_))));
+        assert!(matches!(model.cable_ends(out(n.lane[1]), out(n.fx[0])), Err(IntentError::Invalid(_))));
+        assert!(matches!(model.cable_ends(out(n.lane[1]), into(n.lane[0])), Err(IntentError::Invalid(_))), "a lane has no input");
+        assert!(matches!(model.cable_ends(out(NodeId::MASTER), into(n.fx[0])), Err(IntentError::Invalid(_))), "the mix has no output");
+        assert_eq!(model.cable_ends(out(NodeId(900)), into(n.fx[0])), Err(IntentError::NotFound(NodeId(900))));
+        assert_eq!(model.cable_ends(out(n.lane[0]), into(NodeId(901))), Err(IntentError::NotFound(NodeId(901))));
+        assert!(matches!(model.cable_ends(out(n.lane[0]), Endpoint { node: n.fx[0], port: Port::Rate }), Err(IntentError::Invalid(_))));
     }
 
     #[test]

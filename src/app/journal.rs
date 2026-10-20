@@ -31,7 +31,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
+use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
 use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
@@ -60,6 +60,9 @@ pub(super) enum Inverse {
     /// The preset that a plugin (by its node: a lane's instrument or one of its effects) had before another was loaded, and the rows that the load overwrote (`rows_a_preset_changes`):
     /// undo has the audio thread load the preset again, if it has one by that name, and gives the rows back what they had.
     Preset { node: NodeId, preset: Option<String>, rows: Vec<RowBefore> },
+    /// An audio cable, which goes back among the audio cables under the id it had, with the ends and the level it had. (It is taken out before the nodes that it starts and
+    /// ends at, and so is put back after them.)
+    AudioCable(AudioCable),
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
@@ -327,6 +330,11 @@ impl Controller {
         for inverse in &journal.inverses {
             match inverse {
                 Inverse::Cable(cable) => self.refuse_a_cable_that_is_there(&cable.slot)?,
+                Inverse::AudioCable(cable) => {
+                    if self.model.edge_in_use(cable.id) {
+                        return Err(IntentError::Invalid(format!("cable {} is there already", cable.id.0)));
+                    }
+                }
                 Inverse::Effect { slot, .. } => {
                     if self.model.locate(slot.node).is_some() {
                         return Err(IntentError::Invalid(format!("node {} is there already", slot.node.0)));
@@ -430,9 +438,10 @@ impl Controller {
     }
 
     fn refuse_a_cable_that_is_there(&self, cable: &ModTargetSlot) -> Result<(), IntentError> {
-        match self.model.locate_edge(cable.edge) {
-            Some(_) => Err(IntentError::Invalid(format!("cable {} is there already", cable.edge.0))),
-            None => Ok(()),
+        if self.model.edge_in_use(cable.edge) {
+            Err(IntentError::Invalid(format!("cable {} is there already", cable.edge.0)))
+        } else {
+            Ok(())
         }
     }
 
@@ -447,6 +456,16 @@ impl Controller {
                     ModulatorLocation::Lane(inst) => GraphCommand::InsertModTarget { inst, mod_index, target_index: place, target },
                     ModulatorLocation::Group(group) => GraphCommand::InsertGroupModTarget { group, mod_index, target_index: place, target },
                 });
+            }
+            Inverse::AudioCable(cable) => {
+                // (Its ends are back, if the nodes it was at were taken out with it: they were put back before it, as it was taken out before them. A cable that the wiring
+                // cannot take now, because the session was changed without the history, is not put back.)
+                if let Some(problem) = self.model.cable_problem(cable.from, cable.to) {
+                    log::warn!("cable {} was not put back: {problem}", cable.id.0);
+                    return;
+                }
+                self.model.insert_audio_cable(cable);
+                let _ = self.cmd_tx.send(GraphCommand::AddCable { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain });
             }
             Inverse::Modulator { at, index, modulator, bases } => {
                 debug_assert_eq!(modulator.targets.len(), bases.len(), "a base for each cable");

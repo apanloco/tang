@@ -949,6 +949,79 @@ async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_t
     assert!(!cables_of(told).iter().any(|(_, to, port)| *to == lfo && port["type"] == "rate"), "{:?}", cables_of(told));
 }
 
+/// The audio cables of a snapshot message (the edges of kind `cable`), in the order of its graph.
+fn audio_cables_of(snapshot: &Value) -> Vec<Value> {
+    snapshot["snapshot"]["graph"]["edges"].as_array().unwrap().iter().filter(|e| e["kind"] == "cable").cloned().collect()
+}
+
+#[tokio::test]
+async fn a_browser_draws_a_send_and_hears_it_in_the_meter_and_the_saved_file_has_it_and_a_program_started_on_it_draws_and_plays_it() {
+    // One sine, at a level of 0.2: a steady tone, so that what a cable that sends it to the mix adds is a number that can be told.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("sends.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\n").unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    assert!(audio_cables_of(&snapshot).is_empty());
+    let lane = id_of(&snapshot, "Oscillator");
+
+    tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    let dry = peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.02).await;
+    let dry = peak_until(&mut client, &tang, at, SOON, "the note, steady", |peak| (peak - dry).abs() < 0.01 * dry).await;
+    assert!((0.03..0.08).contains(&dry), "a sine at a level of 0.2 peaks at a quarter of it, the oscillator's own level: {dry}");
+
+    // The lane's instrument into the mix, as it is: what the lane puts out is in the mix twice. Told as a snapshot, since a cable came.
+    let master = json!({"node": MASTER, "port": {"type": "audioIn"}});
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addCable", "from": {"node": lane, "port": {"type": "audioOut"}}, "to": master, "gain": null}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a cable is told as a snapshot");
+    let cables = audio_cables_of(told);
+    assert_eq!(cables.len(), 1, "{cables:?}");
+    assert_eq!((cables[0]["from"]["node"].clone(), cables[0]["to"]["node"].clone(), cables[0]["gain"].clone()), (json!(lane), json!(MASTER), json!(1.0)), "{cables:?}");
+    let edge = cables[0]["id"].as_u64().unwrap();
+    peak_until(&mut client, &tang, at, SOON, "the lane twice in the mix", |peak| (peak - 2.0 * dry).abs() < 0.1 * dry).await;
+
+    // Its level is an event, and the mix follows it: half of the send is a half more.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setCableGain", "edge": edge, "gain": 0.5}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    assert!(said.iter().any(|m| m["type"] == "event" && m["event"]["type"] == "cableGainSet" && m["event"]["edge"] == edge && m["event"]["gain"] == 0.5), "{said:?}");
+    peak_until(&mut client, &tang, at, SOON, "half of the send", |peak| (peak - 1.5 * dry).abs() < 0.1 * dry).await;
+
+    // A cable is not drawn twice, nor a depth set on it: refused, in the controller's words.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "addCable", "from": {"node": lane, "port": {"type": "audioOut"}}, "to": master, "gain": 1.0}})).await;
+    assert_eq!(answer(&mut client, 3).await["error"]["message"], "there is a cable between those two already");
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "setEdgeDepth", "edge": edge, "depth": 0.5}})).await;
+    assert_eq!(answer(&mut client, 4).await["error"]["message"], "an audio cable has a level, and no depth");
+
+    // Taken out, the lane is in the mix once; undone, the cable is back at the level it had.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "removeEdge", "edge": edge}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the lane once", |peak| (peak - dry).abs() < 0.1 * dry).await;
+    tell(&mut client, json!({"type": "request", "reqId": 6, "intent": {"type": "undo"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 6).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("an undo that puts a cable back is told as a snapshot");
+    assert_eq!(audio_cables_of(told).iter().map(|c| (c["id"].clone(), c["gain"].clone())).collect::<Vec<_>>(), [(json!(edge), json!(0.5))], "back under its id, at its level");
+    peak_until(&mut client, &tang, at, SOON, "half of the send again", |peak| (peak - 1.5 * dry).abs() < 0.1 * dry).await;
+
+    // What is saved has the cable in the file, and a program that is started on it draws it and plays it.
+    tell(&mut client, json!({"type": "request", "reqId": 7, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 7).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\ngain = 0.5\n"), "{saved}");
+    drop(client);
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, at, snapshot) = listening(&again).await;
+    let cables = audio_cables_of(&snapshot);
+    assert_eq!(cables.len(), 1, "{cables:?}");
+    assert_eq!((cables[0]["from"]["node"].clone(), cables[0]["to"]["node"].clone(), cables[0]["gain"].clone()), (json!(id_of(&snapshot, "Oscillator")), json!(MASTER), json!(0.5)));
+    tell(&mut browser, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    peak_until(&mut browser, &again, at, SOON, "the note with the send that the file has", |peak| (peak - 1.5 * dry).abs() < 0.1 * dry).await;
+}
+
 /// The names of the nodes of a snapshot message, in the order of its graph.
 fn node_names(snapshot: &Value) -> Vec<&str> {
     snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect()

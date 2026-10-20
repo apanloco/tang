@@ -83,7 +83,7 @@ pub fn legacy(wiring: Wiring) -> Box<dyn Engine> {
             self.0.process_legacy(midi_events, out)
         }
 
-        fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+        fn facts(&self) -> Option<crate::plugin::chain::Facts> {
             Engine::facts(&self.0)
         }
     }
@@ -135,6 +135,12 @@ impl Scenario {
     pub fn at_rate(&self, rate: f32) -> Scenario {
         Scenario { rate, ..self.clone() }
     }
+
+    /// Whether it has audio cables, in its file or drawn by its edits. The loop that the plan replaced (`AudioGraph::process_legacy`) is from before there were any and does not
+    /// draw them, so a scenario that has some is not held to it.
+    pub fn has_cables(&self) -> bool {
+        self.session.contains("[[cable]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddCable { .. }))
+    }
 }
 
 /// What a session of `sessions/` is played with: a chord (C3, E3 and G3) from a tenth of a second, the pitch wheel up a quarter of its range and back, the pedal down while the
@@ -180,6 +186,63 @@ pub fn sessions() -> Vec<Scenario> {
         .collect()
 }
 
+/// A session to draw cables in while it plays: a group with a reverb on its bus and a filter on lane 0, which is in it, and a delay on lane 1, which is in none. The places of its
+/// cable edits (`Edit::AddCable`): the outputs are lane 0's instrument and its filter, lane 1's instrument and its delay, the group, and the reverb on its bus; the inputs are the
+/// filter, the delay, the group's bus, the reverb, and the mix.
+const CABLED: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.3
+[instrument.params]
+waveform = 3.0
+[[instrument.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+transpose = 7
+[[instrument.effect]]
+plugin = "builtin:delay"
+mix = 0.4
+"#;
+
+/// What is done to the cables of `CABLED` while it plays: a cable is drawn and its level turned, its lane is muted and unmuted (the send goes with the mute and comes back), a
+/// second cable is drawn, the first is taken out and undone, the lane that has them is taken out, put back by Undo, taken out again by Redo and put back again. Each is made
+/// (`Counts` says so: none is skipped or refused).
+const CABLE_EDITS: [(u64, Edit); 11] = [
+    (8_000, Edit::AddCable { from: 2, to: 3, gain: 0.5 }),
+    (12_000, Edit::CableGain { cable: 0, gain: 1.0 }),
+    (16_000, Edit::Mute { lane: 1, muted: true }),
+    (20_000, Edit::Mute { lane: 1, muted: false }),
+    (22_000, Edit::AddCable { from: 4, to: 1, gain: 0.3 }),
+    (26_000, Edit::RemoveCable { cable: 0 }),
+    (28_000, Edit::Undo),
+    (30_000, Edit::RemoveLane { lane: 1 }),
+    (34_000, Edit::Undo),
+    (38_000, Edit::Redo),
+    (40_000, Edit::Undo),
+];
+
+/// The scenarios that edit the cables of a session while it plays.
+pub fn edited() -> Vec<Scenario> {
+    vec![Scenario {
+        id: format!("edited:cables@{BLOCK}"),
+        session: CABLED.to_string(),
+        block: BLOCK,
+        rate: RATE,
+        frames: SESSION_FRAMES,
+        script: performance(),
+        edits: CABLE_EDITS.to_vec(),
+    }]
+}
+
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
 pub fn generated(seeds: std::ops::Range<u64>) -> Vec<Scenario> {
     seeds
@@ -195,16 +258,18 @@ pub fn generated(seeds: std::ops::Range<u64>) -> Vec<Scenario> {
         .collect()
 }
 
-/// The scenarios that the tests that run every time render: every session of `sessions/` and the first generated ones, at the usual block.
+/// The scenarios that the tests that run every time render: every session of `sessions/`, the ones that edit cables and the first generated ones, at the usual block.
 pub fn always_on() -> Vec<Scenario> {
     let mut scenarios = sessions();
+    scenarios.extend(edited());
     scenarios.extend(generated(0..SEEDS_ALWAYS_ON));
     scenarios
 }
 
-/// The whole corpus: every session of `sessions/` and every generated one, at each block size.
+/// The whole corpus: every session of `sessions/`, the ones that edit cables and every generated one, at each block size.
 pub fn whole() -> Vec<Scenario> {
     let mut base = sessions();
+    base.extend(edited());
     base.extend(generated(0..SEEDS));
     base.iter().flat_map(|scenario| BLOCKS.iter().map(|&block| scenario.at_block(block))).collect()
 }
@@ -340,9 +405,10 @@ impl Rig {
     /// The engine has the lanes and the groups that the model has, and calls each, and each effect of each, by the id that the model gave it: what the edits that were made have
     /// done to the one they have done to the other (an engine that says nothing of its lanes is not held to it).
     fn assert_the_engine_has_the_nodes_of_the_model(&self, what: &str) {
-        if let Some((lanes, groups)) = self.renderer.engine().facts() {
-            assert_eq!(lanes, testutil::model_lanes(&self.ctl.model), "{what}: the lanes of the engine are not those of the model");
-            assert_eq!(groups, testutil::model_groups(&self.ctl.model), "{what}: the groups of the engine are not those of the model");
+        if let Some(facts) = self.renderer.engine().facts() {
+            assert_eq!(facts.lanes, testutil::model_lanes(&self.ctl.model), "{what}: the lanes of the engine are not those of the model");
+            assert_eq!(facts.groups, testutil::model_groups(&self.ctl.model), "{what}: the groups of the engine are not those of the model");
+            assert_eq!(facts.cables, testutil::model_audio_cables(&self.ctl.model), "{what}: the audio cables of the engine are not those of the model");
         }
     }
 
@@ -619,7 +685,7 @@ mod tests {
 
     #[test]
     fn the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit() {
-        let differences: Vec<String> = always_on().iter().filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        let differences: Vec<String> = always_on().iter().filter(|scenario| !scenario.has_cables()).filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
         assert!(differences.is_empty(), "the engine on the plan is not the engine of the loop:\n{}", differences.join("\n"));
     }
 
@@ -641,6 +707,27 @@ mod tests {
         assert!(counts.total() >= 4 * SEEDS_ALWAYS_ON as usize, "{counts:?}");
         assert!(counts.applied * 10 >= counts.total() * 7, "most of the edits are made: {counts:?}");
         assert!(counts.refused * 20 <= counts.total(), "the controller refuses few of them: {counts:?}");
+    }
+
+    #[test]
+    fn the_edits_of_the_cable_scenarios_are_all_made_and_a_cable_is_heard_when_it_is_drawn() {
+        for r in always_on_renders().iter().filter(|r| r.id.starts_with("edited:")) {
+            assert_eq!(r.edits, Counts { applied: CABLE_EDITS.len(), skipped: 0, refused: 0 }, "{}", r.id);
+            assert!(r.fingerprint.peak > 0.01, "{} is heard", r.id);
+        }
+        // The first cable of the scenario (lane 1's instrument into the reverb on the bus) is heard: without the edits the render is another, and it is the same until the block
+        // that has the edit (the reverb puts out its tail only, and a tail takes a while to begin: it is not at the first frame of the cable).
+        let scenario = edited().remove(0);
+        let drawn = render(&scenario, &engine);
+        let plain = render(&Scenario { edits: Vec::new(), ..scenario }, &engine);
+        let first = drawn.samples.iter().zip(&plain.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cable is heard");
+        assert!(first / 2 >= 8_000 - 8_000 % BLOCK, "nothing is different before the block that has the edit: the first frame that differs is {}", first / 2);
+    }
+
+    #[test]
+    fn the_scenarios_that_have_cables_are_those_that_the_loop_the_plan_replaced_is_not_held_to() {
+        let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cables()).map(|scenario| scenario.id.clone()).collect();
+        assert_eq!(with, ["session:patched@256", "session:sends@256", "edited:cables@256"]);
     }
 
     #[test]
@@ -779,7 +866,7 @@ mod tests {
     #[test]
     #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
     fn the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced() {
-        let differences: Vec<String> = whole().iter().filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        let differences: Vec<String> = whole().iter().filter(|scenario| !scenario.has_cables()).filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
         assert!(differences.is_empty(), "{} of the {} renders differ:\n{}", differences.len(), whole().len(), differences.join("\n"));
     }
 

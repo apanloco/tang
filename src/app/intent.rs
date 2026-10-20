@@ -44,11 +44,12 @@ pub enum Intent {
     /// setting that is not its kind's: an LFO has no attack.
     SetModulatorField { node: NodeId, field: ModulatorField, value: f32 },
     /// Set how deep a modulation cable pulls, -1 to 1 (a negative depth pulls the
-    /// other way). The controller clamps it.
+    /// other way). The controller clamps it. An audio cable has a level and no depth (`SetCableGain`): it is refused.
     SetEdgeDepth { edge: EdgeId, depth: f32 },
-    /// Take a modulation cable out: the modulator stays, no longer driving what the cable led
-    /// to. The cables that drive the depth of this one go with it (and theirs, in turn), since
-    /// what they drove is gone.
+    /// Take a cable out. A modulation cable: the modulator stays, no longer driving what the cable led
+    /// to; the cables that drive the depth of this one go with it (and theirs, in turn), since
+    /// what they drove is gone. An audio cable: the nodes stay, and the audio no longer goes from one to the other
+    /// by it (it goes down to nothing over one buffer).
     RemoveEdge { edge: EdgeId },
     /// Add a modulator to a lane or to a group, after the ones it has: `parent` is the node of the
     /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
@@ -75,6 +76,18 @@ pub enum Intent {
     /// and no id is used), for what `AddModEdge` refuses of a cable to `to` from a modulator that is not there yet, for a group (it
     /// has no parameter) and for a depth that is not a number.
     Modulate { to: Endpoint, kind: ModulatorKind, depth: Option<f32> },
+    /// Draw an audio cable, a send, from the output of audio `from` to the input of audio `to` (P3c of `docs/patch-graph.md` §11.6): `from` is the `audioOut` port of
+    /// a lane (what its instrument puts out, after its volume and before its chain), of an effect of a lane's chain or of a group's bus (after its mix) or of a group (after its
+    /// effects, its pan and its fade), and `to` the `audioIn` port of an effect (added to what its chain gives it), of a group (its bus: added to its members) or of the master
+    /// (`NodeId::MASTER`: the mix). It is in addition to the way the audio goes by itself, down a lane's chain and into its group or the mix. What comes out of `from` goes to `to`
+    /// at `gain` (0 to 2, clamped; 1, as it is, if none is given; `SetCableGain` changes it), is heard at what its lane or its group is heard at (muting a lane mutes its sends),
+    /// and comes in over one buffer. The cable has an id from the series that the modulation cables have. Refused, with nothing changed (nothing is made, and no id is used), for a port
+    /// that is not an output of audio (`from`) or an input of audio (`to`), a node that is not there or has no such port (a modulator, the master as a start, a lane as an end), a
+    /// cable between the two ports that is there already, a cable that would make the audio go round, and a level that is not a number.
+    AddCable { from: Endpoint, to: Endpoint, gain: Option<f32> },
+    /// Set the level of an audio cable, 0 to 2 (`CABLE_GAIN_MAX`): the controller clamps it. The cable goes to the new level over one buffer. Refused, with nothing changed, for a
+    /// level that is not a number, a cable that is not there and one that is a modulation cable (which has a depth: `SetEdgeDepth`).
+    SetCableGain { edge: EdgeId, gain: f32 },
     /// Put a plugin at the end of the effect chain of a lane or of a group's bus: `parent` is the node of the lane
     /// (its instrument's, which an empty lane has too) or of the group, and `plugin` the `id` of an entry of the
     /// catalog the server told (`ServerMessage::Catalog`): it is loaded by the server, which loads only what its own
@@ -498,6 +511,8 @@ pub enum Event {
     ModulatorFieldSet { node: NodeId, field: ModulatorField, value: f32 },
     /// A cable now pulls `depth` (after clamping).
     EdgeDepthSet { edge: EdgeId, depth: f32 },
+    /// An audio cable now has the level `gain` (after clamping).
+    CableGainSet { edge: EdgeId, gain: f32 },
     /// The session is written: it has nothing unsaved now. `file` is the name of the file it was
     /// written to (not its path), if the session has one.
     Saved { file: Option<String> },
@@ -782,6 +797,19 @@ mod tests {
                 Intent::AddModEdge { modulator: NodeId(4), to: Endpoint { node: NodeId(1), port: Port::Param { index: 3 } } },
                 json!({"type": "addModEdge", "modulator": 4, "to": {"node": 1, "port": {"type": "param", "index": 3}}}),
             ),
+            (
+                Intent::AddCable {
+                    from: Endpoint { node: NodeId(2), port: Port::AudioOut },
+                    to: Endpoint { node: NodeId(5), port: Port::AudioIn },
+                    gain: Some(0.5),
+                },
+                json!({"type": "addCable", "from": {"node": 2, "port": {"type": "audioOut"}}, "to": {"node": 5, "port": {"type": "audioIn"}}, "gain": 0.5}),
+            ),
+            (
+                Intent::AddCable { from: Endpoint { node: NodeId(2), port: Port::AudioOut }, to: Endpoint { node: NodeId::MASTER, port: Port::AudioIn }, gain: None },
+                json!({"type": "addCable", "from": {"node": 2, "port": {"type": "audioOut"}}, "to": {"node": NodeId::MASTER.0, "port": {"type": "audioIn"}}, "gain": null}),
+            ),
+            (Intent::SetCableGain { edge: EdgeId(9), gain: 1.5 }, json!({"type": "setCableGain", "edge": 9, "gain": 1.5})),
         ]
     }
 
@@ -844,6 +872,7 @@ mod tests {
                 Event::GroupRenamed { node: NodeId(7), name: "Pad".to_string() },
                 json!({"type": "groupRenamed", "node": 7, "name": "Pad"}),
             ),
+            (Event::CableGainSet { edge: EdgeId(9), gain: 1.5 }, json!({"type": "cableGainSet", "edge": 9, "gain": 1.5})),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
         ]

@@ -10,7 +10,7 @@
 use crate::app::controller::Controller;
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Gain, Intent, ModulatorKind};
-use crate::app::model::{ParamKind, PluginSlot};
+use crate::app::model::{NodeId, ParamKind, PluginSlot};
 
 /// A request that a front-end makes.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +45,13 @@ pub enum Edit {
     /// A preset of the plugin at `slot` of a lane, by its place among the plugin's.
     Preset { lane: usize, slot: usize, preset: usize },
     Bpm { bpm: f32 },
+    /// An audio cable at `gain`, from a place among the outputs of the session (each lane's instrument and effects, then each group and its bus effects) to a place among its
+    /// inputs (each lane's effects, each group's bus and its bus effects, and the mix last), both wrapped round the ones there are.
+    AddCable { from: usize, to: usize, gain: f32 },
+    /// The level of a cable, by its place among the cables that there are.
+    CableGain { cable: usize, gain: f32 },
+    /// A cable, by its place among the cables that there are, taken out.
+    RemoveCable { cable: usize },
     Undo,
     Redo,
 }
@@ -100,6 +107,22 @@ fn plugin_at(lane: &crate::app::model::InstrumentNode, slot: usize) -> Option<&P
 fn param_at(plugin: &PluginSlot, place: usize) -> Option<&crate::app::model::ParamSlot> {
     let params: Vec<&crate::app::model::ParamSlot> = plugin.params.iter().filter(|p| !matches!(p.kind, ParamKind::Separator)).collect();
     (!params.is_empty()).then(|| params[place % params.len()])
+}
+
+/// The outputs of audio that a cable can start at, in the order of the model: each lane's instrument and then its effects, then each group and then its bus effects.
+fn cable_starts(model: &crate::app::model::SessionModel) -> Vec<Endpoint> {
+    let out = |node| Endpoint { node, port: Port::AudioOut };
+    let lanes = model.instruments.iter().flat_map(|lane| std::iter::once(out(lane.node)).chain(lane.effects.iter().map(|effect| out(effect.node))));
+    let groups = model.groups.iter().flat_map(|group| std::iter::once(out(group.node)).chain(group.effects.iter().map(|effect| out(effect.node))));
+    lanes.chain(groups).collect()
+}
+
+/// The inputs of audio that a cable can end at, in the order of the model: each lane's effects, each group's bus and then its bus effects, and the mix.
+fn cable_ends(model: &crate::app::model::SessionModel) -> Vec<Endpoint> {
+    let into = |node| Endpoint { node, port: Port::AudioIn };
+    let lanes = model.instruments.iter().flat_map(|lane| lane.effects.iter().map(|effect| into(effect.node)));
+    let groups = model.groups.iter().flat_map(|group| std::iter::once(into(group.node)).chain(group.effects.iter().map(|effect| into(effect.node))));
+    lanes.chain(groups).chain(std::iter::once(into(NodeId::MASTER))).collect()
 }
 
 impl Edit {
@@ -180,6 +203,24 @@ impl Edit {
                 Intent::LoadPreset { node: plugin.node, preset: plugin.presets[preset % plugin.presets.len()].id.clone() }
             }
             Edit::Bpm { bpm } => Intent::SetBpm { bpm: *bpm },
+            Edit::AddCable { from, to, gain } => {
+                let (starts, ends) = (cable_starts(model), cable_ends(model));
+                Intent::AddCable { from: starts[from % starts.len()], to: ends[to % ends.len()], gain: Some(*gain) }
+            }
+            Edit::CableGain { cable, gain } => {
+                let cables = &model.cables;
+                if cables.is_empty() {
+                    return None;
+                }
+                Intent::SetCableGain { edge: cables[cable % cables.len()].id, gain: *gain }
+            }
+            Edit::RemoveCable { cable } => {
+                let cables = &model.cables;
+                if cables.is_empty() {
+                    return None;
+                }
+                Intent::RemoveEdge { edge: cables[cable % cables.len()].id }
+            }
             Edit::Undo => Intent::Undo,
             Edit::Redo => Intent::Redo,
         })
@@ -295,6 +336,47 @@ plugin = "builtin:osc"
             counts.add(outcome);
         }
         assert_eq!((counts.applied, counts.skipped, counts.refused, counts.total()), (2, 1, 1, 4));
+    }
+
+    #[test]
+    fn a_cable_goes_from_a_place_among_the_outputs_to_a_place_among_the_inputs_both_wrapped_round() {
+        let ctl = controller(TWO_LANES);
+        let (lane0, lane1, bus) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node, ctl.model.groups[0].node);
+        let (reverb, filter) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[1].node);
+        let out = |node| Endpoint { node, port: Port::AudioOut };
+        let into = |node| Endpoint { node, port: Port::AudioIn };
+        // The outputs: lane 0's instrument, its reverb and its filter, lane 1's instrument, then the group. The inputs: the reverb and the filter, the group's bus, the mix.
+        let at = |from: usize, to: usize| Edit::AddCable { from, to, gain: 0.5 }.resolve(&ctl);
+        assert_eq!(at(0, 0), Some(Intent::AddCable { from: out(lane0), to: into(reverb), gain: Some(0.5) }));
+        assert_eq!(at(2, 1), Some(Intent::AddCable { from: out(filter), to: into(filter), gain: Some(0.5) }));
+        assert_eq!(at(3, 2), Some(Intent::AddCable { from: out(lane1), to: into(bus), gain: Some(0.5) }));
+        assert_eq!(at(4, 3), Some(Intent::AddCable { from: out(bus), to: into(NodeId::MASTER), gain: Some(0.5) }));
+        assert_eq!(at(5, 4), Some(Intent::AddCable { from: out(lane0), to: into(reverb), gain: Some(0.5) }), "5 is 0 of 5 outputs, and 4 is 0 of 4 inputs");
+    }
+
+    #[test]
+    fn the_level_and_the_removal_of_a_cable_name_it_by_its_place_among_the_cables_and_skip_when_there_is_none() {
+        let mut ctl = controller(TWO_LANES);
+        assert_eq!(Edit::CableGain { cable: 0, gain: 0.5 }.make(&mut ctl), Outcome::Skipped);
+        assert_eq!(Edit::RemoveCable { cable: 0 }.make(&mut ctl), Outcome::Skipped);
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Applied, "the second lane's instrument to the mix");
+        assert_eq!(Edit::AddCable { from: 0, to: 3, gain: 0.5 }.make(&mut ctl), Outcome::Applied);
+        let (first, second) = (ctl.model.cables[0].id, ctl.model.cables[1].id);
+        assert_eq!(Edit::CableGain { cable: 1, gain: 1.5 }.resolve(&ctl), Some(Intent::SetCableGain { edge: second, gain: 1.5 }));
+        assert_eq!(Edit::CableGain { cable: 2, gain: 1.5 }.resolve(&ctl), Some(Intent::SetCableGain { edge: first, gain: 1.5 }), "2 is 0 of 2");
+        assert_eq!(Edit::RemoveCable { cable: 3 }.resolve(&ctl), Some(Intent::RemoveEdge { edge: second }));
+        assert_eq!(Edit::RemoveCable { cable: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [second]);
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_or_that_is_there_is_refused_as_a_front_ends_request_would_be() {
+        let mut ctl = controller(TWO_LANES);
+        // The filter into the reverb, which is before it: a loop. The same cable twice.
+        assert_eq!(Edit::AddCable { from: 2, to: 0, gain: 1.0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(ctl.model.cables.len(), 1);
     }
 
     #[test]

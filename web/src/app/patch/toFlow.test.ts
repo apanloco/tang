@@ -1699,6 +1699,20 @@ describe("a node that shows a scope", () => {
   });
 });
 
+describe("an audio cable that has been drawn between two places", () => {
+  test("is not drawn on the canvas yet, and changes nothing of what is", () => {
+    const base = tracerSnapshot.graph;
+    const oscillator = base.nodes.find((n) => n.kind === "instrument");
+    if (!oscillator) throw new Error("no instrument");
+    const send: Edge = { kind: "cable", id: 31, gain: 0.5, from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } } };
+    const without = toFlow(base);
+    const with_ = toFlow({ nodes: base.nodes, edges: [...base.edges, send] });
+    expect(with_.edges).toEqual(without.edges);
+    expect(with_.nodes).toEqual(without.nodes);
+    expect([...with_.places]).toEqual([...without.places]);
+  });
+});
+
 describe("whether two graphs are laid out the same", () => {
   const base = tracerSnapshot.graph;
 
@@ -1734,6 +1748,14 @@ describe("whether two graphs are laid out the same", () => {
   test("they are when only an unrelated part of an unchanged node is a new object", () => {
     const copy: Graph = { nodes: base.nodes.map((node) => ({ ...node })), edges: [...base.edges] };
     expect(sameStructure(base, copy)).toBe(true);
+  });
+
+  test("they are when only the level of an audio cable differs, and are not when its ends do", () => {
+    const send = (gain: number, to: NodeId): Edge => ({ kind: "cable", id: 31, gain, from: { node: 1, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } } });
+    const withSend = (gain: number, to: NodeId): Graph => ({ nodes: base.nodes, edges: [...base.edges, send(gain, to)] });
+    expect(sameStructure(withSend(0.5, MASTER), withSend(1.5, MASTER))).toBe(true);
+    expect(sameStructure(withSend(0.5, MASTER), withSend(0.5, 2))).toBe(false);
+    expect(sameStructure(withSend(0.5, MASTER), base)).toBe(false);
   });
 
   test("they are not when a node is placed, moved or given back to the layout, and they are when a place is the same in another object", () => {

@@ -5,6 +5,7 @@
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
 import type { CatalogEntry, Event, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
+import { isLink } from "./cables";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
@@ -165,7 +166,7 @@ export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
   return {
     nodes: nodes.map((n) => `${String(n.id)} ${n.parent === null ? "-" : String(n.parent)} ${n.name}`),
-    audio: edges.flatMap((e) => (e.kind === "modulation" ? [] : [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`])),
+    audio: edges.flatMap((e) => (isLink(e) ? [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`] : [])),
     cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
     meters: snapshot.telemetry.meters.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
     modulation: snapshot.telemetry.modulation.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),

@@ -36,7 +36,7 @@ import type { Transport, TransportEvents, TransportFactory } from "./connection"
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { sessionFileName } from "./filenames";
 import { audibleOf, heardOf } from "./audible";
-import { cablesThatGo, isModulation } from "./cables";
+import { cablesThatGo, isLink, isModulation } from "./cables";
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
@@ -343,11 +343,11 @@ function removeEffectOutcome(snapshot: Snapshot, effect: Node): Outcome {
   const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === effect.id).map((e) => e.id);
   const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([effect.id]));
   const { edges } = taken.graph;
-  const into = edges.findIndex((e) => e.kind !== "modulation" && e.to.node === effect.id && e.to.port.type === "audioIn");
-  const out = edges.findIndex((e) => e.kind !== "modulation" && e.from.node === effect.id && e.from.port.type === "audioOut");
+  const into = edges.findIndex((e) => isLink(e) && e.to.node === effect.id && e.to.port.type === "audioIn");
+  const out = edges.findIndex((e) => isLink(e) && e.from.node === effect.id && e.from.port.type === "audioOut");
   const incoming = edges[into];
   const outgoing = edges[out];
-  if (!incoming || incoming.kind === "modulation" || !outgoing || outgoing.kind === "modulation") return invalid("that has no audio path to close up");
+  if (!incoming || !isLink(incoming) || !outgoing || !isLink(outgoing)) return invalid("that has no audio path to close up");
   const joined: Edge = { from: incoming.from, to: outgoing.to, kind: outgoing.kind };
   const closed = edges.flatMap((e, i) => (i === into ? [joined] : i === out ? [] : [e]));
   return { restructured: { ...taken, graph: { ...taken.graph, edges: closed } } };
@@ -379,9 +379,9 @@ function moveEffectOutcome(snapshot: Snapshot, node: NodeId, index: number): Out
 
   // The links of the chain, from the owner through the effects to where it ends: where they are in the list, and what the last one is.
   const joined = new Set<NodeId>([...(owner ? [owner.id] : []), ...chain.map((n) => n.id)]);
-  const slots = edges.flatMap((e, i) => (e.kind !== "modulation" && joined.has(e.from.node) ? [i] : []));
+  const slots = edges.flatMap((e, i) => (isLink(e) && joined.has(e.from.node) ? [i] : []));
   const out = edges[slots.at(-1) ?? -1];
-  if (!owner || slots.length !== chain.length + 1 || !out || out.kind === "modulation") return invalid("that has no audio path to reorder");
+  if (!owner || slots.length !== chain.length + 1 || !out || !isLink(out)) return invalid("that has no audio path to reorder");
   const path = [owner.id, ...moved.map((n) => n.id)];
   const links = path.map((leaves, i): Edge => {
     const next = path[i + 1];
@@ -416,7 +416,7 @@ function removeLaneOutcome(snapshot: Snapshot, lane: Node): Outcome {
   // (The cables of the lane's own modulators end inside the lane, so the cables that end there are the lane's own and its group's.)
   const touching = edges.filter(isModulation).filter((e) => inside.has(e.to.node)).map((e) => e.id);
   const taken = without(snapshot, cablesThatGo(edges, touching), inside);
-  return { restructured: { ...taken, graph: { ...taken.graph, edges: taken.graph.edges.filter((e) => e.kind === "modulation" || !inside.has(e.from.node)) } } };
+  return { restructured: { ...taken, graph: { ...taken.graph, edges: taken.graph.edges.filter((e) => !isLink(e) || !inside.has(e.from.node)) } } };
 }
 
 /**
@@ -446,7 +446,7 @@ function removeGroupOutcome(snapshot: Snapshot, group: Node): Outcome {
       graph: {
         nodes: taken.graph.nodes.map((n) => renumbered(members.has(n.id) ? { ...n, parent: null } : n)),
         edges: taken.graph.edges.flatMap((e): Edge[] => {
-          if (e.kind === "modulation") return [e];
+          if (!isLink(e)) return [e];
           if (inside.has(e.from.node)) return [];
           return e.to.node === group.id ? [{ from: e.from, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" }] : [e];
         }),
@@ -567,9 +567,9 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
   const end = lastEffect >= 0 ? nodes[lastEffect] : owner;
   const at = nodes.indexOf(end ?? owner) + 1;
   const added: Node = { id: counters.node(), parent, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix };
-  const out = edges.findIndex((e) => e.kind !== "modulation" && e.from.node === (end ?? owner).id && e.from.port.type === "audioOut");
+  const out = edges.findIndex((e) => isLink(e) && e.from.node === (end ?? owner).id && e.from.port.type === "audioOut");
   const leaving = edges[out];
-  if (!leaving || leaving.kind === "modulation") return invalid("that has no audio path to put an effect in");
+  if (!leaving || !isLink(leaving)) return invalid("that has no audio path to put an effect in");
   const into: Edge = { from: leaving.from, to: { node: added.id, port: { type: "audioIn" } }, kind: "audio" };
   const onwards: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: leaving.to, kind: leaving.kind };
   return {
@@ -752,7 +752,7 @@ function lanePutIn(snapshot: Snapshot, lane: NodeId, group: NodeId | null): Snap
   // The lane's node is a member of the group, and the last link of its chain, the one that leaves the chain, goes into the group (or the master).
   const chain = new Set<NodeId>([lane, ...nodes.filter((n) => n.parent === lane && n.kind === "effect").map((n) => n.id)]);
   const edges = taken.graph.edges.map((e): Edge => {
-    if (e.kind === "modulation" || !chain.has(e.from.node) || chain.has(e.to.node)) return e;
+    if (!isLink(e) || !chain.has(e.from.node) || chain.has(e.to.node)) return e;
     return { from: e.from, to: { node: group ?? master.id, port: { type: "audioIn" } }, kind: group === null ? "audio" : "member" };
   });
   return { ...taken, graph: { nodes: taken.graph.nodes.map((n) => (n.id === lane ? { ...n, parent: group } : n)), edges } };
@@ -802,7 +802,7 @@ function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counter
   };
   const firstLane = nodes.findIndex((n) => n.kind === "instrument");
   const atNode = firstLane >= 0 ? firstLane : nodes.indexOf(master);
-  const firstLink = edges.findIndex((e) => e.kind !== "modulation" && inLane(e.from.node));
+  const firstLink = edges.findIndex((e) => isLink(e) && inLane(e.from.node));
   const firstCable = edges.findIndex(isModulation);
   const atEdge = firstLink >= 0 ? firstLink : firstCable >= 0 ? firstCable : edges.length;
   const link: Edge = { from: { node: id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
@@ -915,6 +915,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
   if (intent.type === "moveEffect") return moveEffectOutcome(snapshot, intent.node, intent.index);
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
+  // (The controller draws audio cables and the mock engine does not yet: the page draws them in P3d, and teaches the mock as it does.)
+  if (intent.type === "addCable" || intent.type === "setCableGain") return invalid("the mock engine has no audio cables yet");
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
   if (!node) return noNode(intent.node);

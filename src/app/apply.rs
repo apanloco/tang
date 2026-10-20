@@ -9,7 +9,10 @@ use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, env
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NodeId, NodePath, ParamKind, ParamSlot, PatternState, PluginSlot, STEP_MAX, STEP_MIN, sync_beats};
+use crate::app::model::{
+    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NEW_CABLE_GAIN, NodeId, NodePath, ParamKind, ParamSlot, PatternState,
+    PluginSlot, STEP_MAX, STEP_MIN, sync_beats,
+};
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, MAX_STEPS, ModulatorLocation};
 use crate::scale::ScaleSetting;
@@ -70,6 +73,7 @@ impl Controller {
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
             Intent::SetSteps { node, values } => Done::Event(self.set_steps(node, values)?),
             Intent::SetEdgeDepth { edge, depth } => Done::Event(self.set_edge_depth(edge, depth)?),
+            Intent::SetCableGain { edge, gain } => Done::Event(self.set_cable_gain(edge, gain)?),
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
             Intent::SetMute { node, muted } => Done::Event(self.set_mute(node, muted)?),
             Intent::SetSolo { node, solo } => Done::Event(self.set_solo(node, solo)?),
@@ -88,6 +92,7 @@ impl Controller {
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::Modulate { to, kind, depth } => self.modulate_intent(to, kind, depth)?,
+            Intent::AddCable { from, to, gain } => self.add_cable_intent(from, to, gain)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::MoveEffect { node, index } => self.move_effect_intent(node, index)?,
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
@@ -286,6 +291,7 @@ impl Controller {
                 _ => return Err(invalid("that node is not a group")),
             },
         };
+        refuse_a_loop(self.model.loop_if_lane_goes_to(inst, group), "putting that lane in that group")?;
         self.set_lane_group(inst, group);
         Ok(Done::Restructured)
     }
@@ -575,6 +581,9 @@ impl Controller {
     }
 
     fn set_edge_depth(&mut self, edge: EdgeId, depth: f32) -> Result<Event, IntentError> {
+        if self.model.audio_cable(edge).is_some() {
+            return Err(invalid("an audio cable has a level, and no depth"));
+        }
         let (at, mod_index, target_index) = self.model.locate_edge(edge).ok_or(IntentError::EdgeNotFound(edge))?;
         if !depth.is_finite() {
             return Err(invalid(format!("{depth} is not a value for the depth of a cable")));
@@ -589,6 +598,30 @@ impl Controller {
         target.depth = depth;
         let _ = self.cmd_tx.send(depth_command(at, mod_index, target_index, depth));
         Ok(Event::EdgeDepthSet { edge, depth })
+    }
+
+    /// The level of an audio cable, in the model and in the audio thread (which goes to it over a buffer).
+    fn set_cable_gain(&mut self, edge: EdgeId, gain: f32) -> Result<Event, IntentError> {
+        if self.model.audio_cable(edge).is_none() {
+            return Err(if self.model.locate_edge(edge).is_some() { invalid("a modulation cable has a depth, and no level") } else { IntentError::EdgeNotFound(edge) });
+        }
+        if !gain.is_finite() {
+            return Err(invalid(format!("{gain} is not a value for the level of a cable")));
+        }
+        let gain = gain.clamp(0.0, CABLE_GAIN_MAX);
+        if let Some(cable) = self.model.audio_cable_mut(edge) {
+            cable.gain = gain;
+        }
+        let _ = self.cmd_tx.send(GraphCommand::SetCableGain { id: edge, gain });
+        Ok(Event::CableGainSet { edge, gain })
+    }
+
+    /// An audio cable from the output `from` to the input `to` of the graph (`Intent::AddCable`): the ports say what the ends are (`SessionModel::cable_ends`), and
+    /// everything that can be refused is looked at before anything is made.
+    fn add_cable_intent(&mut self, from: Endpoint, to: Endpoint, gain: Option<f32>) -> Result<Done, IntentError> {
+        let (start, end) = self.model.cable_ends(from, to)?;
+        self.add_audio_cable(start, end, gain.unwrap_or(NEW_CABLE_GAIN))?;
+        Ok(Done::Restructured)
     }
 
     fn remove_edge_intent(&mut self, edge: EdgeId) -> Result<Done, IntentError> {
@@ -779,10 +812,12 @@ impl Controller {
         match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
             NodePath::Effect { inst, index: from } => {
                 let to = place_to_move_to(from, self.model.instruments[inst].effects.len(), index)?;
+                refuse_a_loop(self.model.loop_if_effect_goes_to(node, to), "moving that effect there")?;
                 self.move_effect(inst, from, to);
             }
             NodePath::GroupEffect { group, index: from } => {
                 let to = place_to_move_to(from, self.model.groups[group].effects.len(), index)?;
+                refuse_a_loop(self.model.loop_if_effect_goes_to(node, to), "moving that effect there")?;
                 self.move_bus_effect(group, from, to);
             }
             NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } => return Err(invalid("only an effect can be moved")),
@@ -918,12 +953,24 @@ fn invalid(why: impl Into<String>) -> IntentError {
     IntentError::Invalid(why.into())
 }
 
+/// Refused, in words, if `reason` says that the audio would go round with the cables there are when `what` is done (`SessionModel::loop_if_lane_goes_to`,
+/// `loop_if_effect_goes_to`): the reason is the kernel's, which names its nodes and is for the log.
+fn refuse_a_loop(reason: Option<String>, what: &str) -> Result<(), IntentError> {
+    match reason {
+        None => Ok(()),
+        Some(reason) => {
+            log::debug!("{what} would make the audio go round: {reason}");
+            Err(invalid(format!("{what} would make the audio go round, by the cables there are")))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::graph::{Graph, NodeKind};
-    use crate::app::testutil::{self, StubEngine, described, load};
-    use crate::plugin::chain::{ModTargetKind, ModulatorLocation};
+    use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load};
+    use crate::plugin::chain::{CableFrom, CableTo, ModTargetKind, ModulatorLocation};
     use crate::session::NodeUi;
 
     /// A group with a bus filter and an LFO, a member with a reverb, and a lane
@@ -1269,7 +1316,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller();
         let instrument = lane(&ctl);
         range(&mut ctl, instrument, 40, 90).unwrap();
-        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None, None).unwrap();
+        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], None, None, None).unwrap();
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
@@ -1349,8 +1396,8 @@ plugin = "builtin:reverb"
         ctl.apply(Intent::SetMute { node: instrument, muted: true }).unwrap();
         ctl.apply(Intent::SetSolo { node: group, solo: true }).unwrap();
         let saved = |ctl: &Controller| {
-            let (instruments, groups) = crate::app::save::to_save(&ctl.model);
-            crate::session::to_toml(&instruments, &groups, None, None, None).unwrap()
+            let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
         };
         let text = saved(&ctl);
         assert_eq!((text.matches("mute = true").count(), text.matches("solo = true").count()), (1, 1), "{text}");
@@ -3008,6 +3055,226 @@ type = "steps"
         assert_eq!(ctl.apply(Intent::RemoveEdge { edge }).unwrap_err(), IntentError::EdgeNotFound(edge));
         assert!(sent(&engine).is_empty());
         assert_eq!(ctl.rev, 1, "a refusal is not a revision");
+    }
+
+    // -- audio cables (P3c of docs/patch-graph.md §11.6) --
+
+    fn sends() -> (StubEngine, Controller, Sends) {
+        let (handles, engine) = testutil::stub_engine();
+        let model = load(SENDS).model;
+        let nodes = Sends::of(&model);
+        (engine, Controller::new(model, handles, None), nodes)
+    }
+
+    fn out(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::AudioOut }
+    }
+
+    fn into(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::AudioIn }
+    }
+
+    fn draw(ctl: &mut Controller, from: Endpoint, to: Endpoint, gain: Option<f32>) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::AddCable { from, to, gain })
+    }
+
+    #[test]
+    fn add_cable_draws_a_send_in_the_model_and_the_engine_and_says_the_structure_changed() {
+        let (engine, mut ctl, n) = sends();
+        let applied = draw(&mut ctl, out(n.lane[1]), into(n.fx[0]), Some(0.5)).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        let cable = ctl.model.cables[0];
+        assert_eq!((cable.from, cable.to, cable.gain), (CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0]), 0.5));
+        assert_eq!(sent(&engine), [format!("AddCable id={} from=Instrument({:?}) to=Effect({:?}) gain=0.500", cable.id.0, n.lane[1], n.fx[0])]);
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_cable_has_a_start_and_an_end_of_every_kind() {
+        let (engine, mut ctl, n) = sends();
+        let drawn = [
+            (out(n.lane[1]), into(n.fx[0]), CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])),
+            (out(n.fx[2]), into(n.bus), CableFrom::Effect(n.fx[2]), CableTo::Effect(n.bus)),
+            (out(n.bus), into(NodeId::MASTER), CableFrom::Effect(n.bus), CableTo::Master),
+            (out(n.fx[0]), into(n.group), CableFrom::Effect(n.fx[0]), CableTo::GroupBus(n.group)),
+            (out(n.group), into(NodeId::MASTER), CableFrom::Group(n.group), CableTo::Master),
+            (out(n.lane[0]), into(NodeId::MASTER), CableFrom::Instrument(n.lane[0]), CableTo::Master),
+        ];
+        for (from, to, start, end) in drawn {
+            draw(&mut ctl, from, to, None).unwrap();
+            let cable = ctl.model.cables.last().unwrap();
+            assert_eq!((cable.from, cable.to), (start, end), "{from:?} to {to:?}");
+        }
+        assert_eq!(ctl.model.cables.len(), 6);
+        assert_eq!(sent(&engine).len(), 6);
+    }
+
+    #[test]
+    fn a_cable_starts_at_unity_and_its_level_is_held_to_nothing_and_twice_that() {
+        let (_engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), None).unwrap();
+        draw(&mut ctl, out(n.lane[1]), into(NodeId::MASTER), Some(9.0)).unwrap();
+        draw(&mut ctl, out(n.fx[0]), into(NodeId::MASTER), Some(-1.0)).unwrap();
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.gain).collect::<Vec<_>>(), [1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn a_cable_that_is_refused_changes_nothing_and_uses_no_id() {
+        let (engine, mut ctl, n) = sends();
+        let refused = [
+            (into(n.lane[0]), into(n.fx[0]), None, "starts at an output"),
+            (out(n.lane[0]), out(n.fx[0]), None, "ends at an input"),
+            (Endpoint { node: n.lane[0], port: Port::Param { index: 0 } }, into(n.fx[0]), None, "starts at an output"),
+            (out(n.lane[0]), Endpoint { node: n.fx[0], port: Port::Rate }, None, "ends at an input"),
+            (out(NodeId::MASTER), into(n.fx[0]), None, "the mix has no output"),
+            (out(n.lane[0]), into(n.lane[1]), None, "a lane has no input"),
+            (out(n.lane[0]), into(n.fx[0]), Some(f32::NAN), "not a value"),
+            (out(n.fx[1]), into(n.fx[0]), None, "go round"),
+            (out(n.fx[0]), into(n.fx[0]), None, "go round"),
+            (out(n.group), into(n.fx[0]), None, "go round"),
+        ];
+        for (from, to, gain, why) in refused {
+            let error = draw(&mut ctl, from, to, gain).unwrap_err();
+            assert!(error.to_string().contains(why), "{from:?} to {to:?}: {error}");
+        }
+        assert_eq!(draw(&mut ctl, out(NodeId(900)), into(n.fx[0]), None), Err(IntentError::NotFound(NodeId(900))));
+        assert_eq!(draw(&mut ctl, out(n.lane[0]), into(NodeId(901)), None), Err(IntentError::NotFound(NodeId(901))));
+        assert!(sent(&engine).is_empty(), "nothing was sent");
+        assert_eq!((ctl.rev, ctl.dirty, ctl.model.cables.len()), (0, false, 0));
+        // No id was used up by any of them: the first cable that is drawn has the first id.
+        draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), None).unwrap();
+        assert_eq!(ctl.model.cables[0].id, EdgeId(0));
+    }
+
+    #[test]
+    fn a_cable_that_is_there_is_not_drawn_again_between_the_same_two_ports() {
+        let (engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), None).unwrap();
+        sent(&engine);
+        let error = draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), Some(0.5)).unwrap_err();
+        assert!(error.to_string().contains("already"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.cables.len(), 1);
+        // Another end, or another start, is another cable.
+        draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), None).unwrap();
+        draw(&mut ctl, out(n.lane[1]), into(n.fx[2]), None).unwrap();
+        assert_eq!(ctl.model.cables.len(), 3);
+    }
+
+    fn level(ctl: &Controller, edge: EdgeId) -> f32 {
+        ctl.model.audio_cable(edge).unwrap().gain
+    }
+
+    #[test]
+    fn set_cable_gain_sets_the_level_in_the_model_and_the_engine_and_tells_it() {
+        let (engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), None).unwrap();
+        let edge = ctl.model.cables[0].id;
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetCableGain { edge, gain: 0.25 }).unwrap();
+        assert_eq!(applied, Applied::of(2, vec![Event::CableGainSet { edge, gain: 0.25 }]));
+        assert_eq!(level(&ctl, edge), 0.25);
+        assert_eq!(sent(&engine), [format!("SetCableGain id={} gain=0.250", edge.0)]);
+    }
+
+    #[test]
+    fn set_cable_gain_clamps_to_nothing_and_twice_that_and_refuses_what_is_not_a_cable_or_a_number() {
+        let (engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), None).unwrap();
+        let edge = ctl.model.cables[0].id;
+        let gain_of = |applied: Applied| match applied.events[0] {
+            Event::CableGainSet { gain, .. } => gain,
+            ref other => panic!("{other:?}"),
+        };
+        assert_eq!(gain_of(ctl.apply(Intent::SetCableGain { edge, gain: 9.0 }).unwrap()), 2.0);
+        assert_eq!(gain_of(ctl.apply(Intent::SetCableGain { edge, gain: -9.0 }).unwrap()), 0.0);
+        sent(&engine);
+        let rev = ctl.rev;
+        for gain in [f32::NAN, f32::INFINITY] {
+            let error = ctl.apply(Intent::SetCableGain { edge, gain }).unwrap_err();
+            assert!(error.to_string().contains("not a value"), "{gain}: {error}");
+        }
+        assert_eq!(ctl.apply(Intent::SetCableGain { edge: EdgeId(9_999), gain: 0.5 }).unwrap_err(), IntentError::EdgeNotFound(EdgeId(9_999)));
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, level(&ctl, edge)), (rev, 0.0));
+    }
+
+    #[test]
+    fn a_modulation_cable_has_a_depth_and_an_audio_cable_a_level_and_neither_takes_the_others_intent() {
+        let (_engine, mut ctl) = modulated();
+        let (depth_edge, had) = (lane_edge(&ctl, 0, 0), depth(&ctl, 0, 0));
+        let error = ctl.apply(Intent::SetCableGain { edge: depth_edge, gain: 0.5 }).unwrap_err();
+        assert!(error.to_string().contains("depth"), "{error}");
+        assert_eq!(depth(&ctl, 0, 0), had, "what it had");
+        let (_engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), None).unwrap();
+        let edge = ctl.model.cables[0].id;
+        let error = ctl.apply(Intent::SetEdgeDepth { edge, depth: 0.5 }).unwrap_err();
+        assert!(error.to_string().contains("level"), "{error}");
+        assert_eq!(level(&ctl, edge), 1.0);
+    }
+
+    #[test]
+    fn remove_edge_takes_an_audio_cable_out_of_the_model_and_the_engine_and_gives_nothing_back() {
+        let (engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.lane[0]), into(n.fx[2]), None).unwrap();
+        draw(&mut ctl, out(n.lane[1]), into(NodeId::MASTER), Some(0.5)).unwrap();
+        let (first, second) = (ctl.model.cables[0].id, ctl.model.cables[1].id);
+        sent(&engine);
+        let applied = ctl.apply(Intent::RemoveEdge { edge: first }).unwrap();
+        assert_eq!(applied, Applied::restructured(3));
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", first.0)]);
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [second], "the other is as it was");
+        assert_eq!(level(&ctl, second), 0.5);
+        // It is not there the second time.
+        assert_eq!(ctl.apply(Intent::RemoveEdge { edge: first }).unwrap_err(), IntentError::EdgeNotFound(first));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.rev, 3, "a refusal is not a revision");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_is_not_put_in_a_group_that_would_make_the_audio_go_round_and_nothing_changes() {
+        let (engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.group), into(n.fx[2]), None).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        let error = ctl.apply(Intent::SetLaneGroup { node: n.lane[1], group: Some(n.group) }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.instruments[1].group), (rev, None));
+        // A lane that may go in does, and taking one out is not looked at.
+        ctl.apply(Intent::SetLaneGroup { node: n.lane[0], group: None }).unwrap();
+        assert_eq!(ctl.model.instruments[0].group, None);
+    }
+
+    #[test]
+    fn an_effect_is_not_moved_to_where_the_audio_would_go_round_and_nothing_changes() {
+        let (engine, mut ctl, n) = sends();
+        draw(&mut ctl, out(n.fx[0]), into(n.fx[2]), None).unwrap();
+        draw(&mut ctl, out(n.fx[2]), into(n.fx[1]), None).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        let error = ctl.apply(Intent::MoveEffect { node: n.fx[1], index: 0 }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.instruments[0].effects[0].node), (rev, n.fx[0]));
+    }
+
+    #[test]
+    fn a_bus_effect_is_not_moved_to_where_the_audio_would_go_round_and_nothing_changes() {
+        let (engine, mut ctl) = chains();
+        let (filter, reverb) = (ctl.model.groups[0].effects[0].node, ctl.model.groups[0].effects[1].node);
+        // The filter sends into the reverb that is after it, which is no loop; with the filter after the reverb the audio would go round.
+        draw(&mut ctl, out(filter), into(reverb), None).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        let error = ctl.apply(Intent::MoveEffect { node: filter, index: 1 }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.groups[0].effects[0].node), (rev, filter));
     }
 
     fn add(ctl: &mut Controller, parent: NodeId, kind: ModulatorKind) -> Result<Applied, IntentError> {
@@ -4672,8 +4939,8 @@ type = "midi"
         let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
         let (sustain, _) = param(&ctl, NodePath::Instrument(0), "sustain");
         let saved = |ctl: &Controller| {
-            let (instruments, groups) = crate::app::save::to_save(&ctl.model);
-            crate::session::to_toml(&instruments, &groups, None, None, None).unwrap()
+            let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
         };
         assert!(!saved(&ctl).contains("pinned"), "{}", saved(&ctl));
         pin(&mut ctl, osc, &[sustain, detune]).unwrap();

@@ -23,10 +23,10 @@ pub trait Engine: Send {
     /// with its frame in this one. What the controller has sent since the last block (commands, plugins coming and going) is taken first.
     fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()>;
 
-    /// What the lanes and the groups are, for the oracle to hold to the model (the ids that the engine has for them are the model's): `None` for an engine that has no such
+    /// What the lanes, the groups and the audio cables are, for the oracle to hold to the model (the ids that the engine has for them are the model's): `None` for an engine that has no such
     /// things to say.
     #[cfg(test)]
-    fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+    fn facts(&self) -> Option<crate::plugin::chain::Facts> {
         None
     }
 }
@@ -41,8 +41,8 @@ impl Engine for AudioGraph {
     }
 
     #[cfg(test)]
-    fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
-        Some((self.lanes(), self.groups()))
+    fn facts(&self) -> Option<crate::plugin::chain::Facts> {
+        Some(AudioGraph::facts(self))
     }
 }
 
@@ -52,7 +52,7 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
     }
 
     #[cfg(test)]
-    fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+    fn facts(&self) -> Option<crate::plugin::chain::Facts> {
         (**self).facts()
     }
 

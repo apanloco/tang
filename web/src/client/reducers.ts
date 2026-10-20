@@ -44,6 +44,7 @@ function pianoAfter(piano: PianoMeta, event: Extract<StampedEvent, { type: "scal
 /** The graph after the event, with only what it changed replaced; or the reason it cannot be. */
 function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Graph | string {
   if (event.type === "edgeDepthSet") return withDepth(graph, event.edge, event.depth);
+  if (event.type === "cableGainSet") return withCableGain(graph, event.edge, event.gain);
   const node = graph.nodes.find((n) => n.id === event.node);
   if (!node) return `there is no node ${event.node}`;
   const changed = changeNode(node, event);
@@ -52,7 +53,7 @@ function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" 
 }
 
 /** The node the event is about, as it is after it; or the reason it cannot be. */
-function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Node | string {
+function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "cableGainSet" | "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Node | string {
   switch (event.type) {
     case "paramSet": {
       const plugin = pluginOf(node);
@@ -182,4 +183,10 @@ function withSetting(node: Node, field: ModulatorField, value: number): Node | s
 function withDepth(graph: Graph, edge: number, depth: number): Graph | string {
   if (!graph.edges.some((e) => e.kind === "modulation" && e.id === edge)) return `there is no cable ${edge}`;
   return { ...graph, edges: graph.edges.map((e) => (e.kind === "modulation" && e.id === edge ? { ...e, amount: depth } : e)) };
+}
+
+/** The graph with the audio cable `edge` at the level `gain`; a reason if there is no such cable. */
+function withCableGain(graph: Graph, edge: number, gain: number): Graph | string {
+  if (!graph.edges.some((e) => e.kind === "cable" && e.id === edge)) return `there is no audio cable ${edge}`;
+  return { ...graph, edges: graph.edges.map((e) => (e.kind === "cable" && e.id === edge ? { ...e, gain } : e)) };
 }

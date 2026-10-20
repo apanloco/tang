@@ -45,6 +45,8 @@ pub enum Key {
     Steps(NodeId),
     /// The depth of a cable.
     Depth(EdgeId),
+    /// The level of an audio cable.
+    Level(EdgeId),
     /// The tempo of the session.
     Tempo,
 }
@@ -294,7 +296,7 @@ impl Controller {
         if let Some(node) = made.nodes.iter().find(|node| self.model.locate(**node).is_some()) {
             return Err(IntentError::Invalid(format!("node {} is there already", node.0)));
         }
-        if let Some(edge) = made.edges.iter().find(|edge| self.model.locate_edge(**edge).is_some()) {
+        if let Some(edge) = made.edges.iter().find(|edge| self.model.edge_in_use(**edge)) {
             return Err(IntentError::Invalid(format!("cable {} is there already", edge.0)));
         }
         self.model.ids.reuse(&made.nodes, &made.edges);
@@ -368,6 +370,10 @@ impl Controller {
                 Some(old) => step("set the depth of a cable".to_string(), Intent::SetEdgeDepth { edge: *edge, depth: old }, Some(Key::Depth(*edge))),
                 None => Plan::Nothing,
             },
+            Intent::SetCableGain { edge, .. } => match self.model.audio_cable(*edge) {
+                Some(cable) => step("set the level of an audio cable".to_string(), Intent::SetCableGain { edge: *edge, gain: cable.gain }, Some(Key::Level(*edge))),
+                None => Plan::Nothing,
+            },
             Intent::SetRange { node, .. } => match self.model.locate(*node) {
                 Some(NodePath::Instrument(inst)) => {
                     let old = self.model.instruments[inst].range.map(|(low, high)| NoteRange { low, high });
@@ -421,6 +427,7 @@ impl Controller {
             Intent::AddInstrument { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name} as an instrument"))),
             Intent::AddModulator { kind, .. } => added(format!("add {}", kind.label())),
             Intent::AddModEdge { .. } => added("draw a cable".to_string()),
+            Intent::AddCable { .. } => added("draw an audio cable".to_string()),
             // A modulator and its cable: the words of the TUI's `m` and `l` (a target that cannot be named is refused with the rest, and no step is kept for it).
             Intent::Modulate { to, kind, .. } => {
                 let name = match to.port {
@@ -457,7 +464,10 @@ impl Controller {
                 }
             }
             // (A cable that is not there is refused, and the plan is not looked at.)
-            Intent::RemoveEdge { .. } => Plan::Removed { label: "remove a cable".to_string(), intent: intent.clone(), at: now },
+            Intent::RemoveEdge { edge } => {
+                let label = if self.model.audio_cable(*edge).is_some() { "remove an audio cable" } else { "remove a cable" };
+                Plan::Removed { label: label.to_string(), intent: intent.clone(), at: now }
+            }
             Intent::RemoveNode { node } => match self.model.locate(*node) {
                 // A modulator goes with its own cables and those that address it, and comes back with them (a step of the words of the button that adds one).
                 Some(NodePath::Modulator { at, index }) => {
@@ -540,6 +550,8 @@ impl Controller {
         match (added, made.nodes.as_slice(), made.edges.as_slice()) {
             (Intent::AddModEdge { .. }, [], [edge]) if self.model.locate_edge(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
             (Intent::AddModEdge { .. }, ..) => None,
+            (Intent::AddCable { .. }, [], [edge]) if self.model.audio_cable(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
+            (Intent::AddCable { .. }, ..) => None,
             // (The modulator is taken out with its cable, which is the one thing that was made besides it.)
             (Intent::Modulate { .. }, [node], [_]) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
             (Intent::Modulate { .. }, ..) => None,
@@ -611,7 +623,8 @@ mod tests {
     use crate::app::graph::{Endpoint, NoteRange, Port};
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
     use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel};
-    use crate::app::testutil::{self, StubEngine, described, load, wire};
+    use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
+    use crate::plugin::chain::{CableFrom, CableTo};
     use crate::session::NodeUi;
 
     const T0: fn() -> Instant = Instant::now;
@@ -2281,8 +2294,8 @@ depth = 0.4
 
     /// What `Ctrl+S` would write.
     fn written(ctl: &Controller) -> String {
-        let (instruments, groups) = crate::app::save::to_save(&ctl.model);
-        crate::session::to_toml(&instruments, &groups, None, None, None).unwrap()
+        let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
+        crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
     }
 
     fn cable_edge(ctl: &Controller, modulator: usize, cable: usize) -> EdgeId {
@@ -3325,7 +3338,11 @@ plugin = "builtin:reverb"
     /// What is on the audio thread and in the model, as every place that says so tells it: the modulators (`modulators_as_they_are`) and the chains, which
     /// say where each plugin is in memory, so that a plugin that was taken out and put back is told from one that was loaded again.
     fn everything_as_it_is(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Everything {
-        (modulators_as_they_are(ctl, graph), graph.chain_dump(), format!("{:?}\n{:?}\n{:?}\n{:?}", graph.lanes(), graph.instrument_dump(), graph.remappers(), graph.groups()))
+        (
+            modulators_as_they_are(ctl, graph),
+            graph.chain_dump(),
+            format!("{:?}\n{:?}\n{:?}\n{:?}\n{:?}", graph.lanes(), graph.instrument_dump(), graph.remappers(), graph.groups(), graph.audio_cables()),
+        )
     }
 
     fn assert_same_everything(now: &Everything, then: &Everything, what: &str) {
@@ -3449,6 +3466,285 @@ plugin = "builtin:reverb"
         assert_eq!(commands.len(), 2, "{commands:?}");
         assert!(commands[0].starts_with("InsertGroupEffect group=0 index=1 plugin=Filter mix="), "{commands:?}");
         assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 1,"), "{commands:?}");
+    }
+
+    // -- audio cables (P3c of docs/patch-graph.md §11.6) --
+
+    fn out(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::AudioOut }
+    }
+
+    fn into(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::AudioIn }
+    }
+
+    fn draw(ctl: &mut Controller, from: Endpoint, to: Endpoint, gain: f32) -> EdgeId {
+        ctl.apply(Intent::AddCable { from, to, gain: Some(gain) }).unwrap();
+        ctl.model.cables.iter().map(|cable| cable.id).max().unwrap()
+    }
+
+    #[test]
+    fn an_audio_cable_that_was_drawn_is_taken_out_by_undo_and_put_back_by_redo_under_the_id_and_at_the_level_it_had() {
+        let (engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        sent(&engine);
+        let id = draw(&mut ctl, out(n.lane[1]), into(n.fx[0]), 0.25);
+        assert_eq!(ctl.last_made().edges, [id]);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("draw an audio cable"), None));
+        let drawn = format!("AddCable id={} from=Instrument({:?}) to=Effect({:?}) gain=0.250", id.0, n.lane[1], n.fx[0]);
+        assert_eq!(sent(&engine), std::slice::from_ref(&drawn));
+
+        let undone = ctl.undo().unwrap();
+        assert!(undone.restructured);
+        assert!(ctl.model.cables.is_empty());
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", id.0)]);
+        assert_eq!((undo_label(&ctl), redo_label(&ctl).as_deref()), (None, Some("draw an audio cable")));
+
+        let redone = ctl.redo().unwrap();
+        assert!(redone.restructured);
+        assert_eq!(ctl.model.cables.iter().map(|cable| (cable.id, cable.gain)).collect::<Vec<_>>(), [(id, 0.25)], "the cable that comes back has the id and the level it had");
+        assert_eq!(sent(&engine), [drawn]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_audio_cable_that_was_taken_out_is_put_back_by_undo_as_it_was_and_taken_out_again_by_redo() {
+        let (engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let first = draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), 0.5);
+        let second = draw(&mut ctl, out(n.fx[2]), into(n.bus), 2.0);
+        let third = draw(&mut ctl, out(n.lane[1]), into(n.fx[0]), 1.0);
+        let before = ctl.model.cables.clone();
+        sent(&engine);
+        ctl.apply(Intent::RemoveEdge { edge: second }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove an audio cable"));
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", second.0)]);
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [first, third]);
+        let undone = ctl.undo().unwrap();
+        assert!(undone.restructured);
+        assert_eq!(ctl.model.cables, before, "the cable is back among the cables, as it was");
+        assert_eq!(sent(&engine), [format!("AddCable id={} from=Effect({:?}) to=Effect({:?}) gain=2.000", second.0, n.fx[2], n.bus)]);
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [first, third]);
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", second.0)]);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.cables, before);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_level_of_a_cable_is_a_step_that_a_drag_makes_one_of_and_undo_gives_the_level_it_had() {
+        let (engine, mut ctl, clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let edge = draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), 0.5);
+        let other = draw(&mut ctl, out(n.lane[1]), into(NodeId::MASTER), 0.5);
+        sent(&engine);
+        let level = |ctl: &Controller, edge| ctl.model.audio_cable(edge).unwrap().gain;
+        // A drag: three changes a moment apart are one step, which puts back what the first found.
+        for gain in [0.6, 0.7, 0.8] {
+            ctl.apply(Intent::SetCableGain { edge, gain }).unwrap();
+            clock.advance(ms(100));
+        }
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set the level of an audio cable"));
+        ctl.undo().unwrap();
+        assert_eq!(level(&ctl, edge), 0.5);
+        assert_eq!(sent(&engine).last().unwrap(), &format!("SetCableGain id={} gain=0.500", edge.0));
+        assert_eq!(undo_label(&ctl).as_deref(), Some("draw an audio cable"), "that was the one step");
+        ctl.redo().unwrap();
+        assert_eq!(level(&ctl, edge), 0.8, "and redo does the last of the changes");
+        // The level of another cable is a step of its own, and so is a change a long while after.
+        ctl.apply(Intent::SetCableGain { edge: other, gain: 1.5 }).unwrap();
+        clock.advance(ms(100));
+        ctl.apply(Intent::SetCableGain { edge, gain: 0.9 }).unwrap();
+        clock.advance(SAME_STEP + ms(1));
+        ctl.apply(Intent::SetCableGain { edge, gain: 1.0 }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!((level(&ctl, edge), level(&ctl, other)), (0.9, 1.5));
+        ctl.undo().unwrap();
+        assert_eq!((level(&ctl, edge), level(&ctl, other)), (0.8, 1.5));
+        ctl.undo().unwrap();
+        assert_eq!((level(&ctl, edge), level(&ctl, other)), (0.8, 0.5));
+    }
+
+    #[test]
+    fn a_set_level_that_changes_nothing_or_is_refused_leaves_no_step() {
+        let (_engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let edge = draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), 0.5);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        ctl.apply(Intent::SetCableGain { edge, gain: f32::NAN }).unwrap_err();
+        ctl.apply(Intent::SetCableGain { edge: EdgeId(999), gain: 0.5 }).unwrap_err();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("lock the piano to its scale"));
+        // (The plan is no step either: a cable that is not there has no level to put back, whichever cable there is.)
+        assert!(matches!(ctl.plan_history(&Intent::SetCableGain { edge: EdgeId(999), gain: 0.5 }), Plan::Nothing));
+        assert!(matches!(ctl.plan_history(&Intent::SetCableGain { edge, gain: 0.7 }), Plan::Step(_)));
+    }
+
+    /// Cables that make a wiring of every kind of end in `SENDS`, with the levels they are drawn at.
+    fn draw_the_sends(ctl: &mut Controller) -> Vec<EdgeId> {
+        let n = Sends::of(&ctl.model);
+        [
+            (out(n.lane[0]), into(NodeId::MASTER), 0.5),
+            (out(n.lane[1]), into(n.fx[0]), 1.0),
+            (out(n.fx[0]), into(n.group), 0.25),
+            (out(n.fx[1]), into(n.fx[2]), 2.0),
+            (out(n.group), into(n.fx[2]), 0.75),
+            (out(n.bus), into(NodeId::MASTER), 1.5),
+        ]
+        .into_iter()
+        .map(|(from, to, gain)| draw(ctl, from, to, gain))
+        .collect()
+    }
+
+    #[test]
+    fn what_goes_with_a_node_that_has_audio_cables_comes_back_with_them_by_undo_in_the_model_the_picture_and_on_the_audio_thread() {
+        // Each of what can be taken out, in a controller of its own: the lanes, the group, the effects of the lanes and the bus effect.
+        let nodes = |ctl: &Controller| -> Vec<(String, NodeId)> {
+            let n = Sends::of(&ctl.model);
+            vec![
+                ("lane 0".to_string(), n.lane[0]),
+                ("lane 1".to_string(), n.lane[1]),
+                ("the group".to_string(), n.group),
+                ("lane 0's filter".to_string(), n.fx[0]),
+                ("lane 0's delay".to_string(), n.fx[1]),
+                ("lane 1's drive".to_string(), n.fx[2]),
+                ("the group's reverb".to_string(), n.bus),
+            ]
+        };
+        let count = nodes(&controller_over_an_audio_thread(SENDS).0).len();
+        for at in 0..count {
+            let (mut ctl, mut graph) = controller_over_an_audio_thread(SENDS);
+            draw_the_sends(&mut ctl);
+            graph.drain_commands();
+            let (what, node) = nodes(&ctl).swap_remove(at);
+            let before = everything_as_it_is(&ctl, &graph);
+            let cables_before = ctl.model.cables.clone();
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            graph.drain_commands();
+            let taken = everything_as_it_is(&ctl, &graph);
+            assert!(ctl.model.cables.len() < cables_before.len(), "{what}: cables went with it");
+            assert_eq!(graph.audio_cables(), testutil::model_audio_cables(&ctl.model), "{what}: taken out");
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_eq!(ctl.model.cables, cables_before, "{what}: the cables are back, as they were");
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("{what} put back"));
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &taken, &format!("{what} taken out again"));
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_eq!(ctl.model.cables, cables_before, "{what}: and back again");
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("{what} put back again"));
+            ctl.model.check_ids().unwrap();
+            // The audio thread can make a plan of it, and the cables are heard at what they were (a loop would assert).
+            let mut block = vec![vec![0.0f32; 64]; 2];
+            graph.process(&[], &mut block).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_effect_is_taken_out_after_the_audio_cables_at_it_and_put_back_before_them() {
+        let (engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let into_filter = draw(&mut ctl, out(n.lane[1]), into(n.fx[0]), 1.0);
+        let from_filter = draw(&mut ctl, out(n.fx[0]), into(NodeId::MASTER), 0.5);
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: n.fx[0] }).unwrap();
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", into_filter.0), format!("RemoveCable id={}", from_filter.0), "RemoveEffect inst=0 index=0 keep".to_string()]);
+        ctl.undo().unwrap();
+        let commands = sent(&engine);
+        // The effect goes in first and then the cables, the last that went first.
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert!(commands[0].starts_with("InsertEffect inst=0 index=0 plugin=Filter mix="), "{commands:?}");
+        assert_eq!(commands[1], format!("AddCable id={} from=Effect({:?}) to=Master gain=0.500", from_filter.0, n.fx[0]));
+        assert_eq!(commands[2], format!("AddCable id={} from=Instrument({:?}) to=Effect({:?}) gain=1.000", into_filter.0, n.lane[1], n.fx[0]));
+    }
+
+    #[test]
+    fn an_audio_cable_whose_id_is_in_use_is_refused_with_the_reason_and_the_step_is_dropped() {
+        let (_engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let id = draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), 1.0);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        ctl.apply(Intent::RemoveEdge { edge: id }).unwrap();
+        // Something draws a cable under that id without the history.
+        ctl.model.insert_audio_cable(crate::app::model::AudioCable { id, from: CableFrom::Instrument(n.lane[1]), to: CableTo::Master, gain: 1.0 });
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("cable {} is there already", id.0)));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None));
+    }
+
+    #[test]
+    fn a_cable_that_is_drawn_again_by_redo_where_its_id_is_in_use_is_refused() {
+        let (_engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let id = draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), 1.0);
+        ctl.undo().unwrap();
+        ctl.model.insert_audio_cable(crate::app::model::AudioCable { id, from: CableFrom::Instrument(n.lane[1]), to: CableTo::Master, gain: 1.0 });
+        assert_eq!(ctl.redo().unwrap_err(), IntentError::Invalid(format!("cable {} is there already", id.0)));
+    }
+
+    #[test]
+    fn an_audio_cable_that_was_taken_out_by_the_controller_and_not_by_an_intent_leaves_nothing_to_put_back_and_forgets_the_history() {
+        let (engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        let edge = draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), 0.5);
+        assert!(undo_label(&ctl).is_some(), "there is something to forget");
+        sent(&engine);
+        assert!(ctl.remove_edge(edge));
+        assert!(ctl.journal.is_none(), "nothing is written down unless an intent is being carried out");
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", edge.0)]);
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None });
+        // One that is not there changes nothing, the history included.
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        assert!(!ctl.remove_edge(edge));
+        assert_eq!(undo_label(&ctl).as_deref(), Some("lock the piano to its scale"));
+    }
+
+    #[test]
+    fn a_cable_that_the_wiring_cannot_take_when_its_removal_is_undone_is_not_put_back_and_the_rest_of_the_undo_is_done() {
+        let (engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        // The delay sends into the drive, and the cable is taken out.
+        let cable = draw(&mut ctl, out(n.fx[1]), into(n.fx[2]), 1.0);
+        ctl.apply(Intent::RemoveEdge { edge: cable }).unwrap();
+        // Something draws a cable from the drive back to the filter, which is before the delay, without the history: the first cable would now close the circle.
+        let back = EdgeId(900);
+        ctl.model.insert_audio_cable(crate::app::model::AudioCable { id: back, from: CableFrom::Effect(n.fx[2]), to: CableTo::Effect(n.fx[0]), gain: 1.0 });
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [back], "the cable that cannot be had is not put back");
+        assert!(sent(&engine).is_empty(), "and the audio thread is told nothing of it");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("draw an audio cable"), Some("remove an audio cable")), "the step is undone all the same");
+    }
+
+    #[test]
+    fn a_cable_of_modulation_whose_id_an_audio_cable_has_is_refused_when_its_removal_is_undone_with_the_reason_and_the_step_is_dropped() {
+        let (_engine, mut ctl, clock) = controller_over(load(CABLES).model);
+        set_detune(&mut ctl, 1.0);
+        clock.advance(Duration::from_secs(5));
+        let volume = cable_edge(&ctl, 0, 1);
+        ctl.apply(Intent::RemoveEdge { edge: volume }).unwrap();
+        // Something draws an audio cable under that id without the history.
+        let lane = ctl.model.instruments[0].node;
+        ctl.model.insert_audio_cable(crate::app::model::AudioCable { id: volume, from: CableFrom::Instrument(lane), to: CableTo::Master, gain: 1.0 });
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("cable {} is there already", volume.0)));
+        assert_eq!(picture(&ctl), before);
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("set detune"), None), "the step is gone, the one before it is the next");
+    }
+
+    #[test]
+    fn a_group_made_of_lanes_and_a_lane_put_in_a_group_are_steps_that_the_cables_do_not_disturb() {
+        let (_engine, mut ctl, _clock) = controller_over(load(SENDS).model);
+        let n = Sends::of(&ctl.model);
+        draw(&mut ctl, out(n.lane[1]), into(n.fx[0]), 1.0);
+        ctl.apply(Intent::SetLaneGroup { node: n.lane[1], group: Some(n.group) }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("put a lane in a group"));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[1].group, None);
+        assert_eq!(ctl.model.cables.len(), 1, "the cable is where it was");
     }
 
     #[test]

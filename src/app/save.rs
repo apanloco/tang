@@ -6,16 +6,16 @@
 //! a session.
 
 use crate::app::model::{ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel, sync_name};
-use crate::plugin::chain::MidiBindSource;
+use crate::plugin::chain::{CableFrom, CableTo, MidiBindSource};
 use crate::session::{
-    NodeUi, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveModSource, SaveModTarget, SaveModulator,
+    CablePlace, NodeUi, SaveCable, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveModSource, SaveModTarget, SaveModulator,
     SavePattern,
 };
 use std::collections::BTreeMap;
 
 /// The lanes and groups of a session as `session::save` writes them, with where each node is drawn. The piano
 /// scale is not part of the model; it goes to `save` separately, and the master's place is `SessionModel::master_ui`.
-pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>) {
+pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>, Vec<SaveCable>) {
     let ui = &model.ui;
     let save_groups = model
         .groups
@@ -63,7 +63,39 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
             }),
         })
         .collect();
-    (save_instruments, save_groups)
+    (save_instruments, save_groups, cables_to_save(model))
+}
+
+/// The audio cables of a session as the file names their places: by the place of a lane, a group or an effect among those of the session, in the order of the cables' ids.
+fn cables_to_save(model: &SessionModel) -> Vec<SaveCable> {
+    let effect_place = |node: NodeId| -> Option<CablePlace> {
+        model
+            .instruments
+            .iter()
+            .enumerate()
+            .find_map(|(instrument, lane)| lane.effects.iter().position(|effect| effect.node == node).map(|effect| CablePlace::Effect { instrument, effect }))
+            .or_else(|| model.groups.iter().enumerate().find_map(|(group, bus)| bus.effects.iter().position(|effect| effect.node == node).map(|effect| CablePlace::BusEffect { group, effect })))
+    };
+    let lane_place = |node: NodeId| model.instruments.iter().position(|lane| lane.node == node).map(CablePlace::Instrument);
+    let group_place = |node: NodeId| model.groups.iter().position(|group| group.node == node).map(CablePlace::Group);
+    model
+        .cables
+        .iter()
+        .filter_map(|cable| {
+            let from = match cable.from {
+                CableFrom::Instrument(node) => lane_place(node),
+                CableFrom::Effect(node) => effect_place(node),
+                CableFrom::Group(node) => group_place(node),
+            };
+            let to = match cable.to {
+                CableTo::Effect(node) => effect_place(node),
+                CableTo::GroupBus(node) => group_place(node),
+                CableTo::Master => Some(CablePlace::Master),
+            };
+            // (A cable with an end that is not in the session is not written: the controller takes a cable out with what it is at, so this is not met.)
+            Some(SaveCable { from: from?, to: to?, gain: cable.gain })
+        })
+        .collect()
 }
 
 /// The parameters whose value differs from the baseline the loader recorded (the
@@ -183,8 +215,8 @@ velocity = 100
 
     /// The file a save of this model writes.
     fn saved(model: &SessionModel) -> String {
-        let (instruments, groups) = to_save(model);
-        session::to_toml(&instruments, &groups, None, model.master_ui(), model.bpm_to_save()).unwrap()
+        let (instruments, groups, cables) = to_save(model);
+        session::to_toml(&instruments, &groups, &cables, None, model.master_ui(), model.bpm_to_save()).unwrap()
     }
 
     #[test]

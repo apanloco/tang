@@ -41,7 +41,7 @@ use crate::app::journal::{Inverse, Journal, Kept, Replaced};
 use crate::app::intent::{Applied, IntentError, ModulatorField};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
+    AudioCable, CABLE_GAIN_MAX, Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
     PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph, modulator_slot_commands,
 };
 use crate::app::save::to_save;
@@ -52,7 +52,7 @@ use crate::midi_monitor::MidiMonitor;
 use crate::note_input::NoteInput;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{
-    CHAIN_CHANNELS, GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
+    CHAIN_CHANNELS, CableFrom, CableProblem, CableTo, GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
 };
 use crate::plugin::{self, Plugin, Runtime};
 use crate::session::{self, PianoConfig};
@@ -632,6 +632,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
+        self.take_out_audio_cables_at(&[effect]);
         // The very plugin is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
         let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep });
@@ -646,7 +647,9 @@ impl Controller {
     /// and of its group's following their plugins to the new slots. False, sending nothing, if either place is not in the chain,
     /// or they are the same.
     pub fn move_effect(&mut self, inst: usize, from: usize, to: usize) -> bool {
-        if !self.model.move_effect(inst, from, to) {
+        let Some(effect) = self.model.instruments.get(inst).and_then(|lane| lane.effects.get(from)) else { return false };
+        // (With the cables there are, the audio may go round when the chain is in another order.)
+        if self.model.loop_if_effect_goes_to(effect.node, to).is_some() || !self.model.move_effect(inst, from, to) {
             return false;
         }
         self.forget_the_history_unless_an_intent_asks();
@@ -659,7 +662,8 @@ impl Controller {
     /// (`SessionModel::move_bus_effect`), the group's cables to the bus effects following their plugins to the new
     /// places. False, sending nothing, if either place is not on the bus, or they are the same.
     pub fn move_bus_effect(&mut self, group: usize, from: usize, to: usize) -> bool {
-        if !self.model.move_bus_effect(group, from, to) {
+        let Some(effect) = self.model.groups.get(group).and_then(|bus| bus.effects.get(from)) else { return false };
+        if self.model.loop_if_effect_goes_to(effect.node, to).is_some() || !self.model.move_bus_effect(group, from, to) {
             return false;
         }
         self.forget_the_history_unless_an_intent_asks();
@@ -678,6 +682,7 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
+        self.take_out_audio_cables_at(&[effect]);
         let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index, keep });
         if let Some(slot) = self.model.remove_bus_effect(group, index) {
@@ -701,6 +706,9 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
+        // The audio cables at its instrument and at each of its effects go with it.
+        let nodes = self.model.audio_nodes_of_lane(inst);
+        self.take_out_audio_cables_at(&nodes);
         // The whole lane is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
         let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst, keep });
@@ -728,6 +736,9 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             driven.extend(self.take_out(edge).into_iter().flatten());
         }
+        // The audio cables at its bus, its output and each of its bus effects go with it.
+        let nodes = self.model.audio_nodes_of_group(group);
+        self.take_out_audio_cables_at(&nodes);
         // The whole group is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
         let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveGroup { group, keep });
@@ -748,6 +759,10 @@ impl Controller {
     pub fn set_lane_group(&mut self, inst: usize, group: Option<usize>) -> bool {
         let Some(lane) = self.model.instruments.get(inst) else { return false };
         if group.is_some_and(|g| g >= self.model.groups.len()) {
+            return false;
+        }
+        // (The audio cables are by node, so they stay where they are: but with the lane in another group the audio may go round by them.)
+        if self.model.loop_if_lane_goes_to(inst, group).is_some() {
             return false;
         }
         let mut driven: Vec<Driven> = Vec::new();
@@ -815,6 +830,11 @@ impl Controller {
     /// were driving has the value the user set again, unless another cable drives it
     /// (`give_back`). False, sending nothing, if there is no such cable.
     pub fn remove_edge(&mut self, edge: EdgeId) -> bool {
+        // An audio cable drives nothing: it goes, and nothing is given back.
+        if self.model.audio_cable(edge).is_some() {
+            self.forget_the_history_unless_an_intent_asks();
+            return self.take_out_audio_cable(edge);
+        }
         let Some(driven) = self.take_out(edge) else { return false };
         self.forget_the_history_unless_an_intent_asks();
         self.give_back(driven);
@@ -837,6 +857,50 @@ impl Controller {
             self.took_out(if removed.still_driven { Inverse::NoWayBack } else { Inverse::Cable(removed) });
         }
         Some(driven)
+    }
+
+    /// Draw an audio cable from `from` to `to` at `gain` (held to nothing and `CABLE_GAIN_MAX`), in the model and on the audio thread, under an id of the series that the
+    /// modulation cables have: the cable's. Refused, with nothing changed and no id used, for a level that is not a number, a cable between the two ends that is there already,
+    /// and a cable that the wiring cannot take (`SessionModel::cable_problem`: an end that is not there, or a loop: the wiring is compiled on the side, as the audio thread
+    /// does it, so that what is refused here is what it would refuse).
+    pub fn add_audio_cable(&mut self, from: CableFrom, to: CableTo, gain: f32) -> Result<EdgeId, IntentError> {
+        if !gain.is_finite() {
+            return Err(IntentError::Invalid(format!("{gain} is not a value for the level of a cable")));
+        }
+        if self.model.cables.iter().any(|cable| (cable.from, cable.to) == (from, to)) {
+            return Err(IntentError::Invalid("there is a cable between those two already".to_string()));
+        }
+        if let Some(problem) = self.model.cable_problem(from, to) {
+            return Err(match problem {
+                CableProblem::NoStart => IntentError::Invalid("what the cable starts at is not there".to_string()),
+                CableProblem::NoEnd => IntentError::Invalid("what the cable ends at is not there".to_string()),
+                CableProblem::Loop(reason) => {
+                    log::debug!("a cable that would make the audio go round: {reason}");
+                    IntentError::Invalid("that cable would make the audio go round: it would feed what it comes from".to_string())
+                }
+            });
+        }
+        let gain = gain.clamp(0.0, CABLE_GAIN_MAX);
+        let id = self.model.alloc_edge();
+        self.model.insert_audio_cable(AudioCable { id, from, to, gain });
+        let _ = self.cmd_tx.send(GraphCommand::AddCable { id, from, to, gain });
+        Ok(id)
+    }
+
+    /// Take the audio cable `id` out of the model and off the audio thread (which lets it go down to nothing over a buffer), and write it down for the history, as what
+    /// puts it back. False, sending nothing, if there is no such cable.
+    fn take_out_audio_cable(&mut self, id: EdgeId) -> bool {
+        let Some((_, cable)) = self.model.remove_audio_cable(id) else { return false };
+        let _ = self.cmd_tx.send(GraphCommand::RemoveCable { id });
+        self.took_out(Inverse::AudioCable(cable));
+        true
+    }
+
+    /// Take out the audio cables that start or end at any of `nodes`: what goes with the lane, the group or the effect that has them, before it goes.
+    fn take_out_audio_cables_at(&mut self, nodes: &[NodeId]) {
+        for id in self.model.audio_cables_at(nodes) {
+            self.take_out_audio_cable(id);
+        }
     }
 
     /// Give what the user set back to what cables that are gone were driving. A cable writes into a
@@ -1008,14 +1072,14 @@ impl Controller {
     /// Write the session, with the Piano tab's scale and mode, to `path`, as `mode` says. Does
     /// not touch `session_path`: callers decide what a failed save means for it.
     pub(super) fn save_to(&mut self, path: &Path, mode: FileMode) -> anyhow::Result<()> {
-        let (instruments, groups) = to_save(&self.model);
+        let (instruments, groups, cables) = to_save(&self.model);
         let piano = PianoConfig {
             scale: Some(self.piano_filter.scale().short()),
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
         match mode {
-            FileMode::Replace => session::save(path, &instruments, &groups, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
-            FileMode::CreateNew => session::save_new(path, &instruments, &groups, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
+            FileMode::Replace => session::save(path, &instruments, &groups, &cables, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
+            FileMode::CreateNew => session::save_new(path, &instruments, &groups, &cables, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
         }
         self.dirty = false;
         log::info!("Session saved to {}", path.display());
@@ -1133,7 +1197,7 @@ mod tests {
 
     use super::*;
     use crate::app::testutil::{self, DropProbe, StubEngine, load, model_groups, model_lanes, recording};
-    use crate::plugin::chain::{AudioGraph, GraphCommand, MidiBindSource, ModulatorLocation};
+    use crate::plugin::chain::{AudioGraph, CableFrom, CableTo, GraphCommand, MidiBindSource, ModulatorLocation};
 
     fn controller() -> (StubEngine, Controller) {
         let (handles, engine) = testutil::stub_engine();
@@ -1698,6 +1762,51 @@ plugin = "builtin:reverb"
         let value = told.telemetry.modulation.iter().find(|e| e.kind == crate::app::layout::SlotKind::Effective && e.node == filter && e.port == Port::Param { index: param });
         assert_eq!(value.map(|e| e.slot), Some(slot));
         assert!(mirror.copy().meta.dirty);
+    }
+
+    #[test]
+    fn an_audio_cable_drawn_by_an_intent_is_in_the_snapshot_the_subscribers_are_given_and_its_level_is_told_as_an_event() {
+        use crate::app::graph::{EdgeKind, Endpoint, Port};
+        let (_engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        let mirror = Mirror::join(&mut ctl);
+        let (from, to) = (Endpoint { node: n.lane[1], port: Port::AudioOut }, Endpoint { node: n.fx[0], port: Port::AudioIn });
+        let applied = ctl.apply(Intent::AddCable { from, to, gain: Some(0.5) }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        let told = mirror.copy();
+        let edge = told.graph.edges.iter().find(|e| matches!(e.kind, EdgeKind::Cable { .. })).expect("the cable is in the picture");
+        assert_eq!((edge.from, edge.to), (from, to));
+        let EdgeKind::Cable { id, gain } = edge.kind else { unreachable!() };
+        assert_eq!(gain, 0.5);
+        assert!(told.meta.dirty);
+        // Its level is an event that the copy applies, and no snapshot follows it.
+        let applied = ctl.apply(Intent::SetCableGain { edge: id, gain: 1.5 }).unwrap();
+        assert_eq!(applied, Applied::of(3, vec![Event::CableGainSet { edge: id, gain: 1.5 }]));
+        assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2), Heard::Applied(3)]);
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        // Taking it out is a change of structure, and the cable is gone from the picture.
+        ctl.apply(Intent::RemoveEdge { edge: id }).unwrap();
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert!(!mirror.copy().graph.edges.iter().any(|e| matches!(e.kind, EdgeKind::Cable { .. })));
+    }
+
+    #[test]
+    fn the_level_of_one_of_two_audio_cables_is_applied_by_a_copy_to_that_cable_and_to_no_other() {
+        use crate::app::graph::{EdgeKind, Endpoint, Port};
+        let (_engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        let mirror = Mirror::join(&mut ctl);
+        let master = Endpoint { node: NodeId::MASTER, port: Port::AudioIn };
+        for lane in n.lane {
+            ctl.apply(Intent::AddCable { from: Endpoint { node: lane, port: Port::AudioOut }, to: master, gain: Some(0.5) }).unwrap();
+        }
+        let (first, second) = (ctl.model.cables[0].id, ctl.model.cables[1].id);
+        ctl.apply(Intent::SetCableGain { edge: second, gain: 1.5 }).unwrap();
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        let levels: Vec<_> = mirror.copy().graph.edges.iter().filter_map(|e| if let EdgeKind::Cable { id, gain } = e.kind { Some((id, gain)) } else { None }).collect();
+        assert_eq!(levels, [(first, 0.5), (second, 1.5)]);
     }
 
     #[test]
@@ -3510,7 +3619,7 @@ group = 1
         ctl.put_instrument(0, "builtin:osc").unwrap();
         assert!(ctl.model.instruments[0].remap.is_empty());
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0, "a plugin of its own has the usual range until it is told otherwise");
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None, None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], None, None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 
@@ -3522,7 +3631,7 @@ group = 1
         assert!(ctl.clear_instrument(0));
         assert!(ctl.model.instruments[0].remap.is_empty(), "the audio thread drops the remapper with the plugin");
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0);
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], None, None, None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], None, None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 
@@ -3900,6 +4009,182 @@ plugin = "builtin:osc"
                 }
             }
         }
+    }
+
+    // -- audio cables go with what they start or end at --
+
+    /// The cables drawn in `SENDS` for the tests of what goes with a node, with the ids they get (0 to 5): the first lane's instrument to the master, lane 1's instrument to lane 0's
+    /// filter, the filter to the group's bus, the delay to lane 1's drive, the group's output to the drive, and the bus effect to the master.
+    fn the_sends_with_cables() -> (crate::plugin::chain::AudioGraph, Controller, testutil::Sends) {
+        use crate::app::graph::{Endpoint, Port};
+        let (mut graph, mut ctl) = controller_on_a_real_graph(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        let (out, into) = (|node| Endpoint { node, port: Port::AudioOut }, |node| Endpoint { node, port: Port::AudioIn });
+        for (from, to) in [
+            (out(n.lane[0]), into(NodeId::MASTER)),
+            (out(n.lane[1]), into(n.fx[0])),
+            (out(n.fx[0]), into(n.group)),
+            (out(n.fx[1]), into(n.fx[2])),
+            (out(n.group), into(n.fx[2])),
+            (out(n.bus), into(NodeId::MASTER)),
+        ] {
+            ctl.apply(Intent::AddCable { from, to, gain: Some(0.5) }).unwrap();
+        }
+        graph.drain_commands();
+        (graph, ctl, n)
+    }
+
+    /// The ids of the audio cables that the model has.
+    fn model_cable_ids(ctl: &Controller) -> Vec<u32> {
+        ctl.model.cables.iter().map(|cable| cable.id.0).collect()
+    }
+
+    #[test]
+    fn the_cables_of_the_sends_scene_are_the_ones_the_tests_of_what_goes_with_a_node_count_on() {
+        let (graph, ctl, n) = the_sends_with_cables();
+        assert_eq!(model_cable_ids(&ctl), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(graph.audio_cables(), testutil::model_audio_cables(&ctl.model));
+        assert_eq!(ctl.model.audio_cables_at(&[n.fx[0]]).iter().map(|id| id.0).collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[test]
+    fn an_effect_that_is_taken_out_takes_the_audio_cables_at_it_out_first() {
+        let (engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        for (from, to) in [(CableFrom::Effect(n.fx[0]), CableTo::Master), (CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])), (CableFrom::Instrument(n.lane[0]), CableTo::Master)] {
+            ctl.add_audio_cable(from, to, 1.0).unwrap();
+        }
+        sent(&engine);
+        // Lane 0's filter: the cable it sends and the cable it takes go (ids 0 and 1), and the cable of the lane's instrument stays.
+        assert!(ctl.remove_effect(0, 0));
+        assert_eq!(sent(&engine), ["RemoveCable id=0", "RemoveCable id=1", "RemoveEffect inst=0 index=0"]);
+        assert_eq!(model_cable_ids(&ctl), [2]);
+    }
+
+    #[test]
+    fn a_bus_effect_that_is_taken_out_takes_the_audio_cables_at_it_out_first() {
+        let (engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        ctl.add_audio_cable(CableFrom::Effect(n.bus), CableTo::Master, 1.0).unwrap();
+        ctl.add_audio_cable(CableFrom::Effect(n.fx[2]), CableTo::Effect(n.bus), 1.0).unwrap();
+        ctl.add_audio_cable(CableFrom::Instrument(n.lane[1]), CableTo::Master, 1.0).unwrap();
+        sent(&engine);
+        assert!(ctl.remove_bus_effect(0, 0));
+        assert_eq!(sent(&engine), ["RemoveCable id=0", "RemoveCable id=1", "RemoveGroupEffect group=0 index=0"]);
+        assert_eq!(model_cable_ids(&ctl), [2]);
+    }
+
+    #[test]
+    fn a_lane_that_is_taken_out_takes_the_audio_cables_at_its_instrument_and_at_each_of_its_effects() {
+        let (mut graph, mut ctl, _n) = the_sends_with_cables();
+        // Lane 0 and its filter and delay: its own instrument's cable (0), the cable into the filter (1), the filter's (2) and the delay's (3).
+        assert!(ctl.remove_lane(0));
+        assert_eq!(model_cable_ids(&ctl), [4, 5]);
+        graph.drain_commands();
+        assert_eq!(graph.audio_cables(), testutil::model_audio_cables(&ctl.model));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_group_that_is_taken_out_takes_the_audio_cables_at_its_bus_its_output_and_its_bus_effects() {
+        let (mut graph, mut ctl, _n) = the_sends_with_cables();
+        // The cable into the group's bus (2), the cable from its output (4) and the bus effect's (5).
+        assert!(ctl.remove_group(0));
+        assert_eq!(model_cable_ids(&ctl), [0, 1, 3]);
+        graph.drain_commands();
+        assert_eq!(graph.audio_cables(), testutil::model_audio_cables(&ctl.model));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn what_has_the_audio_cables_of_a_session_leaves_the_model_and_the_audio_thread_with_the_same_cables_whatever_is_taken_out() {
+        // Every one of what can be taken out, on its own, each from the same start.
+        let places = |ctl: &Controller| (ctl.model.instruments.len(), ctl.model.groups.len());
+        let (lanes, groups) = places(&the_sends_with_cables().1);
+        type Removal = Box<dyn Fn(&mut Controller) -> bool>;
+        let mut removals: Vec<(String, Removal)> = Vec::new();
+        for lane in 0..lanes {
+            removals.push((format!("lane {lane}"), Box::new(move |ctl| ctl.remove_lane(lane))));
+        }
+        for group in 0..groups {
+            removals.push((format!("group {group}"), Box::new(move |ctl| ctl.remove_group(group))));
+        }
+        removals.push(("lane 0's filter".to_string(), Box::new(|ctl| ctl.remove_effect(0, 0))));
+        removals.push(("lane 0's delay".to_string(), Box::new(|ctl| ctl.remove_effect(0, 1))));
+        removals.push(("lane 1's drive".to_string(), Box::new(|ctl| ctl.remove_effect(1, 0))));
+        removals.push(("the group's reverb".to_string(), Box::new(|ctl| ctl.remove_bus_effect(0, 0))));
+        for (what, remove) in &removals {
+            let (mut graph, mut ctl, _n) = the_sends_with_cables();
+            assert!(remove(&mut ctl), "{what}");
+            graph.drain_commands();
+            assert_eq!(graph.audio_cables(), testutil::model_audio_cables(&ctl.model), "taking out {what}");
+            assert!(ctl.model.cables.len() < 6, "taking out {what} takes cables with it");
+            ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+            // And what is left is a wiring that the audio thread could still make a plan of: a block is rendered (a loop would assert).
+            let mut out = vec![vec![0.0f32; 64]; 2];
+            graph.process(&[], &mut out).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_audio_cable_that_is_taken_out_by_the_method_goes_and_one_that_is_not_there_does_not() {
+        let (engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        let id = ctl.add_audio_cable(CableFrom::Instrument(n.lane[0]), CableTo::Master, 1.0).unwrap();
+        sent(&engine);
+        assert!(ctl.remove_edge(id));
+        assert_eq!(sent(&engine), ["RemoveCable id=0"]);
+        assert!(ctl.model.cables.is_empty());
+        assert!(!ctl.remove_edge(id));
+        assert!(sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn a_lane_is_not_put_in_a_group_by_the_method_when_the_audio_would_go_round() {
+        let (engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        ctl.add_audio_cable(CableFrom::Group(n.group), CableTo::Effect(n.fx[2]), 1.0).unwrap();
+        sent(&engine);
+        assert!(!ctl.set_lane_group(1, Some(0)), "the group feeds the lane's drive");
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.instruments[1].group, None);
+        // What is no loop is done.
+        assert!(ctl.set_lane_group(0, None));
+        assert!(!sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn an_effect_is_not_moved_by_the_method_when_the_audio_would_go_round() {
+        let (engine, mut ctl) = controller_for(testutil::SENDS);
+        let n = testutil::Sends::of(&ctl.model);
+        ctl.add_audio_cable(CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[2]), 1.0).unwrap();
+        ctl.add_audio_cable(CableFrom::Effect(n.fx[2]), CableTo::Effect(n.fx[1]), 1.0).unwrap();
+        sent(&engine);
+        assert!(!ctl.move_effect(0, 0, 1), "the delay would feed the filter, which feeds the drive, which feeds the delay");
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.instruments[0].effects[0].node, n.fx[0]);
+        // The same on a bus, with a cable that goes out of the bus and one that comes back (the bus effects are the group's, so the loop is through a lane).
+        let (engine, mut ctl) = controller_for(
+            r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:delay"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:drive"
+"#,
+        );
+        let (first, second, lane_fx) = (ctl.model.groups[0].effects[0].node, ctl.model.groups[0].effects[1].node, ctl.model.instruments[0].effects[0].node);
+        ctl.add_audio_cable(CableFrom::Effect(first), CableTo::Effect(lane_fx), 1.0).unwrap();
+        ctl.add_audio_cable(CableFrom::Effect(lane_fx), CableTo::Effect(second), 1.0).unwrap();
+        sent(&engine);
+        assert!(!ctl.move_bus_effect(0, 1, 0));
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.groups[0].effects[0].node, first);
     }
 
     #[test]

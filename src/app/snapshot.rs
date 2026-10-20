@@ -243,6 +243,18 @@ impl Snapshot {
                     .ok_or_else(|| DoesNotFit(format!("there is no cable {}", edge.0)))?;
                 *amount = *depth;
             }
+            Event::CableGainSet { edge, gain } => {
+                let level = self
+                    .graph
+                    .edges
+                    .iter_mut()
+                    .find_map(|e| match &mut e.kind {
+                        EdgeKind::Cable { id, gain } if id == edge => Some(gain),
+                        _ => None,
+                    })
+                    .ok_or_else(|| DoesNotFit(format!("there is no audio cable {}", edge.0)))?;
+                *level = *gain;
+            }
             Event::ScaleSet { scale, root, kind, notes } => {
                 let piano = &mut self.meta.piano;
                 piano.scale.clone_from(scale);
@@ -969,6 +981,7 @@ type = "envelope"
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: 1.5 }, "1.5 is not a waveform"),
             (Event::ModulatorFieldSet { node: n.lane_lfo, field: ModulatorField::Waveform, value: -1.0 }, "-1 is not a waveform"),
             (Event::EdgeDepthSet { edge: EdgeId(9_999), depth: 0.5 }, "there is no cable 9999"),
+            (Event::CableGainSet { edge: EdgeId(9_999), gain: 0.5 }, "there is no audio cable 9999"),
             (Event::NodeUiSet { node: ghost, ui: Some(NodeUi { x: 1.0, y: 2.0 }) }, "there is no node 9999"),
             (Event::PinnedSet { node: ghost, params: vec![] }, "there is no node 9999"),
             (Event::PinnedSet { node: n.empty, params: vec![] }, "has no plugin"),

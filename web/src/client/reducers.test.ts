@@ -26,6 +26,22 @@ function applied(snapshot: Snapshot, event: StampedEvent): Snapshot {
   return result.snapshot;
 }
 
+/** The id of an audio cable that `withSend` draws, from the oscillator to the filter: the id that a cable of modulation could have, in the series they share. */
+const SEND = 31;
+
+/** The tracer with an audio cable drawn from the oscillator to the filter (a send), at a level of 0.5. */
+function withSend(): Snapshot {
+  const cable: Edge = { kind: "cable", id: SEND, gain: 0.5, from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: filter.id, port: { type: "audioIn" } } };
+  return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, edges: [...tracerSnapshot.graph.edges, cable] } };
+}
+
+/** The level of the audio cable `edge`. */
+function gainOf(snapshot: Snapshot, edge: number): number {
+  const cable = snapshot.graph.edges.find((e) => e.kind === "cable" && e.id === edge);
+  if (cable?.kind !== "cable") throw new Error(`no audio cable ${edge}`);
+  return cable.gain;
+}
+
 /** The tracer with a group node (and a bus effect in it) added, for the gains that are about groups. */
 function withGroup(): { snapshot: Snapshot; group: Node } {
   const group: Node = { id: 40, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false };
@@ -128,15 +144,18 @@ describe("any event", () => {
     ["pinned parameters set", { rev: 1, type: "pinnedSet", node: filter.id, params: [1] }],
     ["a modulator field set", { rev: 1, type: "modulatorFieldSet", node: lfo.id, field: "rate", value: 4 }],
     ["an edge depth set", { rev: 1, type: "edgeDepthSet", edge: CABLE, depth: -0.5 }],
+    ["an audio cable's level set", { rev: 1, type: "cableGainSet", edge: SEND, gain: 0.25 }],
   ];
 
   test.each(events)("%s leaves the session with changes that are not saved, and nothing else of its meta changed", (_, event) => {
+    const tracerSnapshot = withSend();
     expect(tracerSnapshot.meta.dirty).toBe(false);
     const after = applied(tracerSnapshot, event);
     expect(after.meta).toEqual({ ...tracerSnapshot.meta, dirty: true });
   });
 
   test.each(events)("%s shares the meta of a session that was not saved already", (_, event) => {
+    const tracerSnapshot = withSend();
     const dirty = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, dirty: true } };
     expect(applied(dirty, event).meta).toBe(dirty.meta);
   });
@@ -785,6 +804,33 @@ describe("an edge depth set", () => {
 
   test("is refused for a cable that is not there, and says so", () => {
     expect(applyEvent(tracerSnapshot, { rev: 1, type: "edgeDepthSet", edge: 99, depth: 0.5 })).toEqual({ ok: false, reason: "there is no cable 99" });
+  });
+});
+
+describe("a cable gain set", () => {
+  test("sets the level of that audio cable", () => {
+    const snapshot = withSend();
+    const after = applied(snapshot, { rev: 1, type: "cableGainSet", edge: SEND, gain: 1.5 });
+    expect(gainOf(after, SEND)).toBe(1.5);
+    expect(gainOf(snapshot, SEND)).toBe(0.5);
+  });
+
+  test("changes only that cable, shares the nodes and the other edges, and leaves a cable of modulation with the id it has alone", () => {
+    const snapshot = withSend();
+    const other: Edge = { kind: "cable", id: 32, gain: 1, from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } } };
+    const both = { ...snapshot, graph: { ...snapshot.graph, edges: [...snapshot.graph.edges, other] } };
+    const after = applied(both, { rev: 1, type: "cableGainSet", edge: SEND, gain: 0 });
+    expect(after.graph.nodes).toBe(both.graph.nodes);
+    expect(after.graph.edges.at(-1)).toBe(other);
+    expect([gainOf(after, SEND), gainOf(after, 32)]).toEqual([0, 1]);
+    expect(amountOf(after, CABLE)).toBe(amountOf(both, CABLE));
+  });
+
+  test("is refused for an audio cable that is not there, and for a cable of modulation, and says so", () => {
+    const snapshot = withSend();
+    expect(applyEvent(snapshot, { rev: 1, type: "cableGainSet", edge: 99, gain: 0.5 })).toEqual({ ok: false, reason: "there is no audio cable 99" });
+    expect(applyEvent(snapshot, { rev: 1, type: "cableGainSet", edge: CABLE, gain: 0.5 })).toEqual({ ok: false, reason: `there is no audio cable ${CABLE}` });
+    expect(applyEvent(snapshot, { rev: 1, type: "edgeDepthSet", edge: SEND, depth: 0.5 })).toEqual({ ok: false, reason: `there is no cable ${SEND}` });
   });
 });
 
