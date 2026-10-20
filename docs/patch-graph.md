@@ -552,15 +552,38 @@ the new one grows under today's structure until it equals it, and is then taken 
     nodes costs what the old chain did and gives its bits exactly (the old chain does not make `0.0 + -0.0` of anything between its stages; the sum at a group's bus and at the mix
     stays a sum, since the old engine added into zeroed buffers there). An input that is `single` and has two cables is a sum, so P3b needs no other rule. The reference interpreter
     knows it, and the executor is held to it over the random patches.
-  - **P3b, audio cables in the engine.** Commands that add and take out a cable between two ports by id (`AddCable`, `RemoveCable`), with a gain on each cable (a send level; 1.0 is no
-    multiplication, so that the bits of what is not drawn do not move); a cable that comes or goes ramps over one block, as a mute does; a cycle is refused (the command fails and nothing
-    changes: the compile is made on the side first); fan-in is the sum in plan order, and the order of the plan decides it (§11.3). The engine has the cables and nothing sends them yet.
-    Tests of the engine alone: two lanes into one effect equal the two renders added, a send, a cable that comes and goes does not click (the click detector of §11.6 is made here), the
-    plan is the same after the same edits in another order.
+    *Built* (2026-10-20, step 73 of `docs/web-ui.md`, in three commits). (1) The kernel's `PortSpec::single` (`889d3d5`): the compile gives an input that has one cable, the only one that leaves its output,
+    that output's buffer (the output lives to the op that reads it; nothing is zeroed, fed or copied, and a negative zero stays one), the reference interpreter has the rule, the random patches draw
+    half of their inputs `single` from a generator of their own, and the test nodes follow a negative zero end to end, so that a sum that should not be one shows (14 mutants, all caught). (2) The
+    lane and the group as rows of nodes in the plan: `Stage::{Head, Fx, Tail, Master}` named by the model's ids, the stages of a chain `single` inputs, the group's bus and the mix sums, ranks the
+    places (every node of a lane has the lane's), the plan's shape a list of ids that has the effects in it, and node bodies that are the old code cut where it was cut by what it did (`run_head`,
+    `run_fx`, `run_tail`); `InstrumentLane::process` and `Group::finish` stay in test builds as the specification. The whole corpus (960 renders, edits included) is the bits of that specification
+    and the stored hashes of the old engine; five tests hold what the corpus does not draw (the metronome's click, the effects of a lane that has no instrument, an instrument of one output and
+    one of more than the chain has channels, a mix of 1, a volume with effects); and 39 mutants of the nodes, the plan and the shape are all caught but one that is no fault (the volume applied
+    to the outputs of an instrument that are dropped anyway). The plan costs what the loop did (815 µs the loop and 819 µs the plan, a block of 256 frames of the stress session with a chord of
+    six; no block allocates). (3) The docs. *One decision on the way (D73):* an instrument is given a buffer for each of its outputs and no more, also with no effects and a volume of 1 (the old
+    fast path gave it the chain's whole width, the slow path its own), which changes nothing for the stereo instruments that the corpus has.
+  - **P3b, audio cables in the engine.** Commands that add and take out a cable between two ports by id (`AddCable`, `RemoveCable`, `SetCableGain`), with a gain on each cable (a send
+    level); a cable is a node of the plan of its own (`Stage::Cable(id)`: a gate that multiplies by the gain and by what its source's owner is heard at, the lane's or the group's, since a
+    muted lane's sends are muted with it), so that it ramps over one block when it comes (from nothing), when it goes (the node stays for one block of ramping out) and when its gain
+    changes, as a mute does, and fan-in at the destination is the sum in plan order (§11.3); a cycle is refused (the command fails and nothing changes: the plan is compiled on the side
+    first). An output that has a cable and a chain link has two cables, so the chain link is a sum of one there (the kernel's rule for a `single` input), which is new behaviour and cannot be
+    in a session that has no cable. The ends that a cable can have are named by the model's ids: the output of an instrument (a lane's head: its sound after the volume, a tap before the
+    chain), of an effect, of a group's tail; the input of an effect, of a group's bus, of the master. The engine has the cables and nothing sends them yet. Tests of the engine alone: two
+    lanes into one effect equal the two renders added, a send, a cable that comes and goes does not click (the click detector of §11.6 is made here), the plan is the same after the same
+    edits in another order, a cycle is refused, a cable whose end goes with a lane or an effect goes too.
   - **P3c, the model, the intents, the history, the file.** The model has audio cables (`EdgeId`s, a gain, undo that puts them back as they were, the graph a client gets has them as edges
-    that can be taken out); the form that they take beside the lane, the group and `group = n` is a decision that I write into this document before building it (the sugar must stay what
-    it is, and round-trip: §11.5). Mute and solo for routed audio: the law of §9.8, written for a graph, in the engine and in the page's copy of it (`audible.ts`), pinned by the same
-    kind of fixture. The saved file has `[[cable]]` for what the sugar cannot say.
+    that can be taken out). *The form that they take beside the lane, the group and `group = n`* is my decision to make before building it, and it is this (overrule it before P3c starts): the
+    templates stay, and a session has, besides them, **extra cables** (`SessionModel.cables`: an id, an output, an input and a gain) and, for the end of each lane and group, **a route**: by
+    default to its group's bus, or to the master (today's `group = n`), or none (the template's own cable cut, so that a lane can be heard only through the reverb that another lane has). The
+    cables of the templates that are not at a lane's or group's end (instrument to the first effect, effect to effect) are not edited: an effect is taken out or moved to change them. This is
+    the netlist of §11.5 with the sugar kept: every extra cable and every route is a cable of the netlist, the file writes `[[cable]]` tables for them (`from = "instrument[0]"`, `to =
+    "instrument[1].effect[0]"`, `"group[0]"`, `"master"`, `gain`) and `route = "none"` on a lane or group, and a session without any is the file it was. Cycles are refused when the cable is
+    drawn. *Mute and solo for routed audio* (the law of §9.8 written for a graph, in the engine and in the page's copy of it, `audible.ts`, pinned by the same kind of fixture): a muted
+    lane or group is not heard, its sends included (the gate of each cable it owns is its heard gain), and mute wins; while something is soloed, a lane or group that is not soloed, and not
+    in a soloed group, does not put its own sound into its chain (a *head gate*; it is 1 whenever nothing is soloed, and a lane that has no cable ending in it has none), and what it
+    carries out is heard only if it receives, through a cable, what an audible node sends: so that soloing the lane that sends to a reverb on another lane lets the reverb be heard, with
+    only what the soloed lane sent. (A lane that nothing sends to is exactly as it is today: its tail is faded, and what is in its effects goes on.)
   - **P3d, the page.** Handles for audio ports on every node that has them, a cable dragged from an output to an input that takes it (the ports that take it light), its gain on the
     cable, its removal, undo; `toFlow` and the mock engine learn it, pinned by the fixtures. *The first thing you can see:* two oscillators into one reverb.
   - **P3e, the terminal's patchbay**: a matrix of outputs against inputs for the audio cables, `Enter` on a crosspoint, `+` and `-` for the gain; `tang --web` shows both.

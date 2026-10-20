@@ -2243,13 +2243,20 @@ plugins or MIDI. The engine's lanes, groups and output mix are run by it (see "T
 
 - **`Arena<T>`**: where the state of nodes lives. A `Key` is a slot and a generation: the key of a value that is gone finds nothing and never finds the value that came to its slot
   later, and a slot at the last generation is retired. `remove` hands the value back with its state, so that undo can put back the very node.
-- **`Patch<I>`**: nodes (`NodeSpec`: audio ports, each of some channels, and a `rank`) and cables (an output port to an input port). An id is whatever the caller has (an arena key in the program).
+- **`Patch<I>`**: nodes (`NodeSpec`: audio ports, each of some channels, and a `rank`) and cables (an output port to an input port). An id is whatever the caller has (the engine's is `Stage`: a part of a lane, a group or an effect, named by the model's id). An input is a sum (`PortSpec::audio`) or `single` (`PortSpec::single`, below).
 - **`compile(&Patch) -> Plan`**: the order is the topological order that takes the least `(rank, insertion)` of the ready nodes at every step, so it is a function of the patch and of
   nothing else; a cycle, two nodes of one id, a cable at a node or a port that is not there and a cable between ports of different widths are errors that say where. Every output and every
   sum at an input is a value that is alive from where it begins to the op that reads it, and values that are not alive together share a buffer (the fewest that fit, the lowest free one first).
   A buffer is zeroed where a value begins in it, and the `feeds` of an op add each of its outputs into the sums that its cables end at, in the order of the cables.
 - **The sum rule.** The input of a port is a sum that starts at +0.0 and adds its producers in plan order, also for one cable: `0.0 + -0.0` is `+0.0`, today's mix does that, and the oracle
   hashes bits. The sums are in a fixed order whatever runs where, which is what lets a render be the same bits on any number of threads later.
+- **A single input** (`PortSpec::single`, P3a): an input that has exactly one cable, which is the only cable that leaves its output, *is that output's buffer*: the output lives to the op that
+  reads it, the cable has no feed, nothing is zeroed, added or copied, the bits are the output's own (a negative zero stays one) and the node may work in place on what it was given (it is the
+  only reader). With no cable it is silence, and with two or more cables, or a cable from an output that has others, it is a sum as any input is. It is what the stages of a chain are (the
+  old chain does not make `0.0 + -0.0` of anything between its stages); the group's bus and the mix stay sums, since the old engine added into zeroed buffers there. The reference
+  interpreter has the rule, and the random patches draw half of their inputs `single` (from a generator of their own, so that their shapes did not change); the test nodes follow a
+  negative zero end to end (a source makes one as it is, and a node of one input and one output can be a plain copy), so that a sum that should not be, or a buffer that is shared
+  wrongly, is seen.
 - **`Plan::run(pool, frames, nodes, cx)`**: over a `Pool` that is fitted to the plan (`fit`) and given room (`reserve`), both on a thread that may allocate. The buffers of an op are moved
   into an `Io` and back (a node that works in place hands its input on with `Io::forward`), nothing is allocated (`kernel/tests/no_allocation.rs` counts the allocator's calls, the first block
   after a fit included), and a node that fails stops the block with its error and leaves the buffers where they belong. `Nodes<I, C>` is how the executor reaches nodes (an `Arena<N>` is one,
@@ -2265,21 +2272,29 @@ lane's id, as the model has it), and each lane and each group an id for every ef
 swap of two lanes, a lane or a group that undo hands back and puts in again, an effect that is put in, moved or taken out (an effect that is turned away for its channels keeps none).
 The loader, the controller and the journal send the model's ids (the loader makes an effect's node before it sends the effect), and what holds the engine's to the model's: `LaneFacts`
 and `GroupFacts` (`AudioGraph::lanes` / `groups`, test builds) have them, so every test of `src/app/` that compares the engine with the model compares them, and the oracle compares
-them after every block of every render (`Engine::facts`, see "The oracle"). The plan names those ids: a node for each lane and each group by its id, and the output mix by
-`NodeId::MASTER`, a cable from each lane to its group (to the mix if it has none, or if the group it names is not there) and from each group to the mix, and ranks that are the places
-(the lanes in order, then the groups, then the mix), so that the order of every sum is the order of the loop that the plan replaced: a group's bus is its members added in the order
-of their places, and the mix is the lanes that have no group and then the groups. Two nodes with one id are a plan that does not compile (the kernel's `DuplicateNode`: logged, and an
-assertion in a debug build). The vectors are still addressed by place, so the plan is made with a list of where each id is (`Place`, sorted by id: a block finds a node by a binary
-search, and takes a lane or a group that is not at its place any more, because the one that was has gone since the plan was made, for no node: silence, never the one that is there
-now). `Schedule` (the plan, its pool, what it was made for) reads the wiring into a `Shape` before every block (the ids of the lanes and of the group each is in, and the ids of the
-groups, in the order of the places) and compares it with the one the plan was made for, so that a plan is made again only when the wiring changed (a lane or a group that comes, goes,
-is another at its place, changes place or group), whoever changed it, and a knob that is turned compiles nothing and allocates nothing. `AudioGraph::process` is: the commands; the
+them after every block of every render (`Engine::facts`, see "The oracle"). The plan names those ids, and a lane is a **row of nodes** (P3a, `Stage`): a *head* (`Stage::Head(lane id)`: the events through the range, the remap, the pattern and the
+transpose, the modulators, the instrument, the volume and the tap after it), a node for each *effect* of its chain (`Stage::Fx(effect id)`: the plugin, the blend by the mix, the tap),
+and a *tail* (`Stage::Tail(lane id)`: the metronome's click on top of what the chain made, the fade of a mute or a solo, the meter, the learned controls); a group is the same (its
+head takes the sum of its members, a sum input, and applies the volume; its tail has the pan, the tap after it, the fade and the meter); the output mix is `Stage::Master`. The stages
+of a chain are `single` inputs, each the buffer that the stage before made; a lane's tail is a cable to its group's head (to the mix if it has none, or if the group it names is not
+there) and a group's tail is a cable to the mix, and ranks are the places (the lanes in order, then the groups, then the mix; every node of a lane has the lane's rank), so that the order
+of every sum is the order of the loop that the plan replaced: a group's bus is its members added in the order of their places, and the mix is the lanes that have no group and then the
+groups. A lane with no instrument runs none of its effects (they make silence, as before), and its tail still adds the click. An instrument is given a buffer for each of its outputs and
+no more (the old chain gave the chain's whole width to an instrument that had no effects and a volume of 1), writes into the first of the output's buffers, and, if it has more
+outputs than the chain has channels (Pianoteq has sixteen), into the lane's own `inst_buf` from which the first two go on. Two nodes with one id are a plan that does not compile (the
+kernel's `DuplicateNode`: logged, and an assertion in a debug build). The vectors are still addressed by place, so the plan is made with a list of where each stage is (`Place`, sorted
+by stage: a block finds a node by a binary search, and takes a node that is not at its place any more, because the one that was has gone since the plan was made, for no node: silence,
+never the one that is there now). `Schedule` (the plan, its pool, what it was made for) reads the wiring into a `Shape` before every block (a list of numbers: for each lane its id, its group's and its effects' ids,
+for each group its id and its bus effects' ids, in the order of the places) and compares it with the one the plan was made for, so that a plan is made again only when the wiring
+changed (a lane, a group or an effect that comes, goes, is another at its place, changes place, or a lane that changes group), whoever changed it, and a knob or a mix that is turned
+compiles nothing and allocates nothing. `AudioGraph::process` is: the commands; the
 plan (`refresh`); what is heard (`heard_goal` of every lane and group, from the mutes and solos of all of them, worked out before any runs); the group modulators (they reach across
-lanes and groups, so they are not nodes until P5); `Plan::run`; and what the group modulators drove in the members, published. The nodes run the code that was in the loop, as it was: a
-lane's `process`, then its fade, meter and learned controls (its output is a buffer of the pool that the plan adds into the bus of its group or into the mix); a group's `finish` on its
-bus in place, then its fade and meter, handed on with `Io::forward`; the mix copied to the output, measured, and given to the scope. The old loop is `AudioGraph::process_legacy`
-(`#[cfg(test)]`, with the `accum`, `mix_buf` and `lane_buf` that only it uses), and the oracle holds the plan to it bit for bit. The plan costs what the loop did: 816 µs a block of 256
-frames for the stress session with a chord of six, 815 µs the loop (release, Apple M4 Pro, `oracle::bench` times both; measured again after P2: see `docs/web-ui.md`, step 72).
+lanes and groups, so they are not nodes until P5); `Plan::run`; and what the group modulators drove in the members, published. The nodes run the code that was in the loop, cut where it was cut by what it did
+(`run_head`, `run_fx` and `run_tail` of the lane and of the group, in `nodes.rs`: a tail hands its buffer on with `Io::forward`, and the plan adds a lane's into the bus of its group or into
+the mix); the mix is copied to the output, measured, and given to the scope. The old loop is `AudioGraph::process_legacy` (`#[cfg(test)]`, with `InstrumentLane::process` and
+`Group::finish`, which are the lane and the group as one piece, and the `accum`, `mix_buf`, `lane_buf`, `buf_a` and `buf_b` that only they use: the specification, kept as it was), and the
+oracle holds the plan to it bit for bit. The plan costs what the loop did: 819 µs a block of 256
+frames for the stress session with a chord of six, 815 µs the loop (release, Apple M4 Pro, `oracle::bench` times both; measured again after P3a: see `docs/web-ui.md`, step 73).
 TODO: the plan is compiled and the pool fitted on the audio thread, in `Schedule::refresh`, when the wiring has changed (a block that an edit was made before may allocate, as the first
 may); the main thread can make the plan now that the nodes have the model's ids, and the audio thread would find each id's place when the plan is installed (the list that `Place` makes
 is that), but nothing needs it before P3's cables, which are by id. The commands that address a lane, an effect or a group still name places, and the 51 functions that keep a
@@ -2704,7 +2719,7 @@ has no plugin format, sound card or interface in it (see "The kernel").
   kernel under today's structure with the old engine as a bit-for-bit oracle, not by a routing table that would be thrown away. It contains the two ideas
   at the end of this list (a keyboard as a node, audio input as a source). The user said go on 2026-10-20 ("lets go e2! I like this. I like it all!"), which takes the
   recommendations of its §11.7 as the plan. **P0 (the oracle and the boundary) is built** (step 70 of `docs/web-ui.md`; see "The oracle"); **P1 (the kernel,
-  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); **P2 (ids for places, narrowed to the nodes that cables will join: the engine has the model's ids for its lanes, groups and effects, and the plan names them) is built** (step 72); P3 (take the lane apart, and draw audio cables) is next
+  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); **P2 (ids for places, narrowed to the nodes that cables will join: the engine has the model's ids for its lanes, groups and effects, and the plan names them) is built** (step 72); **P3a (the lane and the group as rows of nodes in the plan, and the kernel's input that is its cable's own buffer) is built** (step 73); P3b (audio cables in the engine, then the model, the page and the terminal for them: P3 of `docs/patch-graph.md` §11.6) is next
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
