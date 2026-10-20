@@ -877,6 +877,71 @@ impl Sends {
     }
 }
 
+/// A session with audio cables that can make the audio go round when a lane changes group or an effect moves, and an empty lane, a lane's modulator and a bus of three effects (P3d: the
+/// fixture of what audio cables come to, `web/src/client/fixtures/audioCables.json`). Group 0 ("Pad") has a filter, a reverb and a delay on its bus, and lane 0 in it; lane 0 has a filter,
+/// a delay and an LFO that drives the filter; lane 1, in no group, has a drive; lane 2 is empty. The audio cables, in the order of the file (their ids come after the LFO's cable's, 0):
+/// 1 from lane 1's instrument to lane 0's filter; 2 from lane 0's filter to its delay, beside the link that the chain has; 3 from the group's output to lane 1's drive (lane 1 in the group
+/// would feed itself); 4 from the bus filter to the bus reverb, beside the link that the bus has; 5 from lane 0's delay to the group's bus; 6 from the bus reverb to the mix.
+pub const PATCHED: &str = r#"
+[[group]]
+name = "Pad"
+[[group.effect]]
+plugin = "builtin:filter"
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.effect]]
+plugin = "builtin:delay"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:delay"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:drive"
+
+[[instrument]]
+
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0]"
+gain = 0.5
+
+[[cable]]
+from = "instrument[0].effect[0]"
+to = "instrument[0].effect[1]"
+gain = 0.75
+
+[[cable]]
+from = "group[0]"
+to = "instrument[1].effect[0]"
+gain = 1.5
+
+[[cable]]
+from = "group[0].effect[0]"
+to = "group[0].effect[1]"
+
+[[cable]]
+from = "instrument[0].effect[1]"
+to = "group[0]"
+
+[[cable]]
+from = "group[0].effect[1]"
+to = "master"
+gain = 0.5
+"#;
+
 /// What taking things out of the chains has to keep right, with a cable of every kind that can end at a
 /// plugin: a group (a filter and a reverb on its bus) of two lanes, and a lane in none. The first lane has a
 /// filter and a reverb of its own, and a modulator that drives both (and its own detune), and another that
@@ -1238,8 +1303,9 @@ impl plugin::Plugin for DropProbe {
 }
 
 /// What a session comes to, for the fixtures of what the intents of groups and the history do: the nodes (their id, their parent and their name), the
-/// audio path, the modulation cables, and the two lists of the layout of the telemetry (without its fingerprint), each entry as a
-/// line of text the web client's tests make of its own copy by the same rules (`shapeOf` in `web/src/client/fixtures.ts`).
+/// audio path, the modulation cables, the audio cables that have been drawn between two places (`sends`, a list only when there are some), and the two lists of the layout of
+/// the telemetry (without its fingerprint), each entry as a line of text the web client's tests make of its own copy by the same rules (`shapeOf` in
+/// `web/src/client/fixtures.ts`).
 pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
     use serde_json::Value;
     let wire: Value = self::wire(snapshot);
@@ -1268,16 +1334,26 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
         .filter(|e| text(&e["kind"]) == "modulation")
         .map(|e| format!("#{} {}>{} {} @{}", e["id"], e["from"]["node"], e["to"]["node"], port(&e["to"]["port"]), number(&e["amount"])))
         .collect();
+    // The audio cables that have been drawn between two places (sends): a line each, and no list at all for a session that has none, so that the fixtures of the sessions that have none are as they were.
+    let sends: Vec<String> = edges
+        .iter()
+        .filter(|e| text(&e["kind"]) == "cable")
+        .map(|e| format!("#{} {}>{} @{}", e["id"], e["from"]["node"], e["to"]["node"], number(&e["gain"])))
+        .collect();
     let slots = |entries: &Value| -> Vec<String> {
         list(entries).iter().map(|e| format!("{} {} {} {}", e["slot"], e["node"], port(&e["port"]), text(&e["kind"]))).collect()
     };
-    serde_json::json!({
+    let mut shape = serde_json::json!({
         "nodes": nodes,
         "audio": audio,
         "cables": cables,
         "meters": slots(&wire["telemetry"]["meters"]),
         "modulation": slots(&wire["telemetry"]["modulation"]),
-    })
+    });
+    if !sends.is_empty() {
+        shape["sends"] = serde_json::json!(sends);
+    }
+    shape
 }
 
 /// A value as the wire says it: what its JSON says, with the 32-bit numbers in the fewest digits that tell them. (`serde_json::to_value` writes

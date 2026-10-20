@@ -35,7 +35,8 @@ export class Counters {
     const { graph, telemetry } = snapshot;
     // (The master is a node of the graph and not of the model: its id is not one the model has handed out.)
     this.#node = 1 + Math.max(-1, ...graph.nodes.filter((n) => n.kind !== "master").map((n) => n.id));
-    this.#edge = 1 + Math.max(-1, ...graph.edges.flatMap((e) => (e.kind === "modulation" ? [e.id] : [])));
+    // (A cable of modulation and an audio cable have ids of one series.)
+    this.#edge = 1 + Math.max(-1, ...graph.edges.flatMap((e) => (e.kind === "modulation" || e.kind === "cable" ? [e.id] : [])));
     this.#slot = 1 + Math.max(-1, ...[...telemetry.meters, ...telemetry.modulation].map((entry) => entry.slot));
   }
 

@@ -38,6 +38,7 @@ export type { Waveform } from "./generated/Waveform";
 export type { WireError } from "./generated/WireError";
 export {
   BPM_RANGE,
+  CABLE_GAIN_RANGE,
   DEPTH_RANGE,
   FRAME_HEADER_LEN,
   GAIN_RANGES,
@@ -51,6 +52,7 @@ export {
   MODULATOR_FIELD_SCALES,
   MODULATOR_WHOLE_FIELDS,
   NAME_LIMIT,
+  NEW_CABLE_GAIN,
   NEW_STEPS,
   NODE_UI_LIMIT,
   NODE_UI_PARTS,

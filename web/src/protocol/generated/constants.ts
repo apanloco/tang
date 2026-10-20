@@ -90,6 +90,10 @@ export const KEY_SPAN = 60;
 /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */
 export const DEPTH_RANGE: readonly [number, number] = [-1, 1];
 
+/** The lowest and the highest level of an audio cable, and the level a cable that is drawn without one starts at (`CABLE_GAIN_MAX`, `NEW_CABLE_GAIN`). */
+export const CABLE_GAIN_RANGE: readonly [number, number] = [0, 2];
+export const NEW_CABLE_GAIN = 1;
+
 /** How many steps a step sequencer has, the bars of its node (`MAX_STEPS`), and the lowest and the highest value of a step (`STEP_MIN`, `STEP_MAX`). */
 export const MAX_STEPS = 16;
 export const STEP_RANGE: readonly [number, number] = [-1, 1];

@@ -3277,6 +3277,125 @@ type = "steps"
         assert_eq!((ctl.rev, ctl.model.groups[0].effects[0].node), (rev, filter));
     }
 
+    /// `testutil::PATCHED` (a bus of two effects, three lanes, a modulator and six audio cables, some of which make a loop of what a lane or an effect is put at) over the stub engine.
+    fn patched() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load(testutil::PATCHED).model, handles, None))
+    }
+
+    /// The session of `patched()` and what the controller makes of the intents about audio cables, as the web client's tests read it
+    /// (`web/src/client/fixtures/audioCables.json`): they pin the mock engine's to the controller's, intent by intent. Every start is tried with every end (the master, a node that
+    /// is not there and a modulator among them), the ports that are not audio's, levels, the level and the depth of each kind of cable, the cables taken out, every node that has
+    /// cables taken out, every lane put in a group and out of it and every effect moved to every place of its chain (the cables there are make some of those go round). A refusal is
+    /// the controller's words; a cable that is drawn and a level that is set give the audio cables that the session has after it (`sends`: nothing else changes, and the test of the
+    /// client says so), and the rest what the session comes to (`testutil::shape_of`). `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_audio_cables_come_to_is_current() {
+        let (_engine, ctl) = patched();
+        let before = ctl.snapshot();
+        let m = &ctl.model;
+        let lanes = [m.instruments[0].node, m.instruments[1].node, m.instruments[2].node];
+        let fx = [m.instruments[0].effects[0].node, m.instruments[0].effects[1].node, m.instruments[1].effects[0].node];
+        let (group, bus) = (m.groups[0].node, [m.groups[0].effects[0].node, m.groups[0].effects[1].node, m.groups[0].effects[2].node]);
+        let lfo = m.instruments[0].modulators[0].node;
+        let modulation = m.instruments[0].modulators[0].targets[0].edge;
+        let cables: Vec<EdgeId> = m.cables.iter().map(|cable| cable.id).collect();
+        assert_eq!(cables.len(), 6);
+        let ghost = NodeId(9_999);
+        let everything = [lanes[0], lanes[1], lanes[2], fx[0], fx[1], fx[2], group, bus[0], bus[1], bus[2], lfo, NodeId::MASTER, ghost];
+
+        let mut intents: Vec<Intent> = Vec::new();
+        for from in everything {
+            for to in everything {
+                intents.push(Intent::AddCable { from: out(from), to: into(to), gain: None });
+            }
+        }
+        // A start that is not an output of audio and an end that is not an input of audio.
+        for port in [Port::AudioIn, Port::ModOut, Port::Param { index: 0 }, Port::Rate] {
+            intents.push(Intent::AddCable { from: Endpoint { node: lanes[1], port }, to: into(fx[1]), gain: None });
+        }
+        for port in [Port::AudioOut, Port::ModOut, Port::Param { index: 0 }, Port::Depth { edge: modulation }] {
+            intents.push(Intent::AddCable { from: out(lanes[1]), to: Endpoint { node: fx[1], port }, gain: None });
+        }
+        // Levels: held to nothing and to twice.
+        for gain in [0.0, 0.25, 1.0, 2.0, 2.5, 9.0, -1.0] {
+            intents.push(Intent::AddCable { from: out(lanes[1]), to: into(fx[1]), gain: Some(gain) });
+        }
+        // The level of each cable, of a cable of modulation and of one that is not there; the depth of the first two audio cables and of the cable of modulation.
+        for edge in cables.iter().copied().chain([modulation, EdgeId(9_999)]) {
+            for gain in [0.0, 0.25, 2.0, 9.0, -3.0] {
+                intents.push(Intent::SetCableGain { edge, gain });
+            }
+        }
+        for edge in [cables[0], cables[1], modulation] {
+            intents.push(Intent::SetEdgeDepth { edge, depth: 0.5 });
+        }
+        for edge in cables.iter().copied().chain([modulation, EdgeId(9_999)]) {
+            intents.push(Intent::RemoveEdge { edge });
+        }
+        // Every node taken out (the cables at it go).
+        for node in everything {
+            intents.push(Intent::RemoveNode { node });
+        }
+        // Every lane in the group and out of it; every effect to every place of its chain.
+        for lane in lanes {
+            for group in [None, Some(group)] {
+                intents.push(Intent::SetLaneGroup { node: lane, group });
+            }
+        }
+        for (node, places) in [(fx[0], 2), (fx[1], 2), (fx[2], 1), (bus[0], 3), (bus[1], 3), (bus[2], 3)] {
+            for index in 0..places {
+                intents.push(Intent::MoveEffect { node, index });
+            }
+        }
+
+        let mut rows = Vec::new();
+        for intent in intents {
+            let (_engine, mut fresh) = patched();
+            let what = testutil::wire(&intent);
+            let row = match fresh.apply(intent.clone()) {
+                Err(error) => serde_json::json!({ "intent": what, "error": error.to_string() }),
+                Ok(applied) => {
+                    let after = testutil::shape_of(&fresh.snapshot());
+                    match intent {
+                        // (A cable that is drawn changes the structure, and a level is an event: nothing but the audio cables is not what it was.)
+                        Intent::AddCable { .. } => {
+                            assert!(applied.restructured, "{intent:?}");
+                            serde_json::json!({ "intent": what, "sends": after.get("sends").cloned().unwrap_or(serde_json::json!([])) })
+                        }
+                        Intent::SetCableGain { .. } => {
+                            assert!(matches!(applied.events.as_slice(), [Event::CableGainSet { .. }]), "{intent:?}");
+                            serde_json::json!({ "intent": what, "sends": after.get("sends").cloned().unwrap_or(serde_json::json!([])) })
+                        }
+                        _ => {
+                            // (The depth of a cable of modulation is the one thing here that is an event and no change of structure.)
+                            assert_eq!(applied.restructured, !matches!(intent, Intent::SetEdgeDepth { .. }), "{intent:?}");
+                            serde_json::json!({ "intent": what, "after": after })
+                        }
+                    }
+                }
+            };
+            rows.push(row);
+        }
+        let mut snapshot = testutil::wire(&before);
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/audioCables.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what audio cables come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     fn add(ctl: &mut Controller, parent: NodeId, kind: ModulatorKind) -> Result<Applied, IntentError> {
         ctl.apply(Intent::AddModulator { parent, kind })
     }

@@ -1265,6 +1265,8 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
         for (const list of ["nodes", "audio", "cables", "meters", "modulation"] as const) {
           if (JSON.stringify(shape[list]) !== JSON.stringify(row.shape[list])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list])}, not ${JSON.stringify(row.shape[list])}`);
         }
+        // (The audio cables that have been drawn between two places: a list only for a session that has some.)
+        if (JSON.stringify(shape.sends ?? []) !== JSON.stringify(row.shape.sends ?? [])) wrong.push(`${what}: the audio cables are ${JSON.stringify(shape.sends ?? [])}, not ${JSON.stringify(row.shape.sends ?? [])}`);
       }
     }
     if (canonical(server.history) !== canonical(row.history)) wrong.push(`${what}: history ${canonical(server.history)}, not ${canonical(row.history)}`);
@@ -1298,6 +1300,8 @@ describe("the mock engine's history", () => {
       "addInstrument",
       "addModulator",
       "addModEdge",
+      "addCable",
+      "setCableGain",
       "modulate",
       "addGroup",
       "setLaneGroup",

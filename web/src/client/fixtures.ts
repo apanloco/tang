@@ -14,6 +14,7 @@ import filenames from "./fixtures/filenames.json";
 import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
 import audible from "./fixtures/audible.json";
+import audioCables from "./fixtures/audioCables.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
@@ -101,6 +102,19 @@ export const groupsFixture = groups as unknown as {
 };
 
 /**
+ * A session with audio cables that make the audio go round when a lane is put in a group or an effect is moved (a bus of two effects, a lane of two effects with an LFO, a lane of one
+ * effect in no group, an empty lane, and six audio cables between them: `testutil::PATCHED`), and what the controller makes of the intents about audio cables: every start tried with every
+ * end (the master, a node that is not there and a modulator among them), the ports that are not audio's, levels, the level and the depth of each kind of cable, the cables taken out,
+ * every node taken out, every lane put in the group and out of it and every effect moved to every place of its chain. For one that is refused its words; for a cable that is drawn and a
+ * level that is set the audio cables the session has after it (`sends`, in the lines of `shapeOf`: nothing else changes); for the others what the session comes to (`shapeOf`). Written by the
+ * controller (`the_web_clients_fixture_of_what_audio_cables_come_to_is_current`).
+ */
+export const audioCablesFixture = audioCables as unknown as {
+  snapshot: Snapshot;
+  rows: ({ intent: Intent } & ({ error: string } | { sends: string[] } | { after: Shape }))[];
+};
+
+/**
  * One op of a script of the history fixture: time going by (in milliseconds), or an intent and what the controller made of it: its words if it
  * was refused, else the events it made, whether it changed the structure and, if it did, what the session comes to then (`shapeOf`).
  */
@@ -150,6 +164,8 @@ export interface Shape {
   nodes: string[];
   audio: string[];
   cables: string[];
+  /** The audio cables that have been drawn between two places, a line each (`#id from>to @level`); none at all for a session that has none, as the controller's fixtures write it. */
+  sends?: string[];
   meters: string[];
   modulation: string[];
 }
@@ -159,15 +175,17 @@ const portKey = (port: Port): string => `${port.type}${"index" in port ? String(
 /**
  * What a session comes to, as the fixtures write it (`shape_of` in `app/testutil.rs`, by the same rules): a line for each node (its id, its
  * parent, its name), each link of the audio path (the node it leaves, the node it goes to, its kind), each cable (its id, the node it leaves
- * and the one it goes to, the port, its depth) and each entry of the two lists of the layout of the telemetry (the slot, the node, the port,
- * the kind); the fingerprint of the layout is not part of it.
+ * and the one it goes to, the port, its depth), each audio cable that has been drawn between two places (its id, the nodes, its level: `sends`, a list only when there are some) and each
+ * entry of the two lists of the layout of the telemetry (the slot, the node, the port, the kind); the fingerprint of the layout is not part of it.
  */
 export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
+  const sends = edges.flatMap((e) => (e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} @${String(e.gain)}`] : []));
   return {
     nodes: nodes.map((n) => `${String(n.id)} ${n.parent === null ? "-" : String(n.parent)} ${n.name}`),
     audio: edges.flatMap((e) => (isLink(e) ? [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`] : [])),
     cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
+    ...(sends.length > 0 ? { sends } : {}),
     meters: snapshot.telemetry.meters.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
     modulation: snapshot.telemetry.modulation.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
   };

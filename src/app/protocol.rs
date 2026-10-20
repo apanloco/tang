@@ -419,7 +419,7 @@ mod typescript {
     use crate::app::graph::{Graph, Waveform};
     use crate::app::intent::{Event, Gain, Intent, ModulatorField, PatternField, StampedEvent};
     use crate::app::layout::TelemetryLayout;
-    use crate::app::model::{BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, STEP_MAX, STEP_MIN};
+    use crate::app::model::{BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, NEW_CABLE_GAIN, STEP_MAX, STEP_MIN};
     use crate::plugin::chain::{COUNT_IN_BEATS, KEY_CENTRE, KEY_SPAN, MAX_STEPS};
     use crate::app::snapshot::Snapshot;
     use super::{ClientMessage, ServerMessage};
@@ -591,6 +591,9 @@ mod typescript {
                  export const KEY_SPAN = {KEY_SPAN};\n\n\
                  /** The lowest and the highest depth of a modulation cable (`DEPTH_MIN`, `DEPTH_MAX`). */\n\
                  export const DEPTH_RANGE: readonly [number, number] = [{DEPTH_MIN}, {DEPTH_MAX}];\n\n\
+                 /** The lowest and the highest level of an audio cable, and the level a cable that is drawn without one starts at (`CABLE_GAIN_MAX`, `NEW_CABLE_GAIN`). */\n\
+                 export const CABLE_GAIN_RANGE: readonly [number, number] = [0, {CABLE_GAIN_MAX}];\n\
+                 export const NEW_CABLE_GAIN = {NEW_CABLE_GAIN};\n\n\
                  /** How many steps a step sequencer has, the bars of its node (`MAX_STEPS`), and the lowest and the highest value of a step (`STEP_MIN`, `STEP_MAX`). */\n\
                  export const MAX_STEPS = {MAX_STEPS};\n\
                  export const STEP_RANGE: readonly [number, number] = [{STEP_MIN}, {STEP_MAX}];\n\n\

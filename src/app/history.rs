@@ -5971,7 +5971,173 @@ size = 0.5
         // And one for the instruments: a lane with a note remap, and the cables of its group and its own to its instrument, and a lane that has none.
         let (_engine, instruments, _clock) = controller_over(load(INSTRUMENTS).model);
         let (member_lane, empty_lane) = (node(&instruments, NodePath::Instrument(0)), node(&instruments, NodePath::Instrument(2)));
+        // And two for the audio cables: `SENDS`, which has none, and `PATCHED`, which has six that make some moves go round (the ids go on from the last cable there is).
+        let (_engine, sends, _clock) = controller_over(load(SENDS).model);
+        let s = Sends::of(&sends.model);
+        let (_engine, patched, _clock) = controller_over(load(testutil::PATCHED).model);
+        let (p_lane, p_fx, p_group) = (
+            [node(&patched, NodePath::Instrument(0)), node(&patched, NodePath::Instrument(1)), node(&patched, NodePath::Instrument(2))],
+            [node(&patched, NodePath::Effect { inst: 0, index: 0 }), node(&patched, NodePath::Effect { inst: 0, index: 1 }), node(&patched, NodePath::Effect { inst: 1, index: 0 })],
+            node(&patched, NodePath::Group(0)),
+        );
+        let p_bus = [node(&patched, NodePath::GroupEffect { group: 0, index: 0 }), node(&patched, NodePath::GroupEffect { group: 0, index: 1 }), node(&patched, NodePath::GroupEffect { group: 0, index: 2 })];
+        let p_cables: Vec<EdgeId> = patched.model.cables.iter().map(|cable| cable.id).collect();
+        assert_eq!(p_cables.len(), 6);
+        let draw_cable = |from: NodeId, to: NodeId, gain: Option<f32>| Op::Do(Intent::AddCable { from: Endpoint { node: from, port: Port::AudioOut }, to: Endpoint { node: to, port: Port::AudioIn }, gain });
+        let level = |edge: EdgeId, gain: f32| Op::Do(Intent::SetCableGain { edge, gain });
+        let take_out = |edge: EdgeId| Op::Do(Intent::RemoveEdge { edge });
+        let lock = || Op::Do(Intent::SetLocked { locked: true });
+        let mix = NodeId::MASTER;
+        let (c0, c1) = (EdgeId(0), EdgeId(1));
         let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![
+            (
+                "an audio cable that is drawn is taken out by undo and drawn again by redo under its id and at its level, and what was done before it is still to be undone",
+                SENDS,
+                vec![lock(), draw_cable(s.lane[1], s.fx[0], Some(0.5)), draw_cable(s.fx[2], mix, None), draw_cable(s.group, s.fx[2], Some(9.0)), undo(), undo(), undo(), undo(), redo(), redo(), redo(), redo(), undo()],
+            ),
+            (
+                "the level of an audio cable is a step that a drag makes one of, put back to the level it found, and a level that is held says what it was held to",
+                SENDS,
+                vec![
+                    draw_cable(s.lane[1], s.fx[0], Some(0.5)),
+                    level(c0, 0.6),
+                    Op::Wait(16),
+                    level(c0, 0.7),
+                    Op::Wait(16),
+                    level(c0, 0.8),
+                    pause(),
+                    level(c0, 9.0),
+                    pause(),
+                    level(c0, -1.0),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "an audio cable that is taken out is put back by undo as it was, at its place among the others, and taken out again by redo",
+                SENDS,
+                vec![
+                    lock(),
+                    draw_cable(s.lane[1], s.fx[0], Some(0.5)),
+                    draw_cable(s.fx[2], mix, Some(0.25)),
+                    draw_cable(s.group, s.fx[2], Some(2.0)),
+                    take_out(c1),
+                    undo(),
+                    redo(),
+                    take_out(c0),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                ],
+            ),
+            (
+                "an audio cable that is refused is no step, and the history is as it was: a loop, a cable between the same two again, ends that are not, a mix with an output and a lane with an input",
+                SENDS,
+                vec![
+                    lock(),
+                    draw_cable(s.lane[1], s.fx[0], None),
+                    draw_cable(s.fx[1], s.fx[0], None),
+                    draw_cable(s.fx[0], s.fx[0], None),
+                    draw_cable(s.lane[1], s.fx[0], Some(2.0)),
+                    draw_cable(s.lane[0], s.lane[1], None),
+                    draw_cable(mix, s.fx[0], None),
+                    draw_cable(NodeId(9_999), s.fx[0], None),
+                    draw_cable(s.lane[0], NodeId(9_999), None),
+                    Op::Do(Intent::AddCable { from: Endpoint { node: s.lane[0], port: Port::AudioIn }, to: Endpoint { node: s.fx[0], port: Port::AudioIn }, gain: None }),
+                    Op::Do(Intent::AddCable { from: Endpoint { node: s.lane[0], port: Port::AudioOut }, to: Endpoint { node: s.fx[0], port: Port::ModOut }, gain: None }),
+                    level(EdgeId(9_999), 0.5),
+                    take_out(EdgeId(9_999)),
+                    Op::Do(Intent::SetEdgeDepth { edge: c0, depth: 0.5 }),
+                    undo(),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "the audio cables at an effect that is taken out come back with it, in the order they had, by undo, and go again by redo",
+                SENDS,
+                vec![
+                    lock(),
+                    draw_cable(s.lane[1], s.fx[0], Some(0.5)),
+                    draw_cable(s.fx[0], mix, Some(0.25)),
+                    draw_cable(s.group, s.fx[2], None),
+                    Op::Do(Intent::RemoveNode { node: s.fx[0] }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "the audio cables at a lane, a group and the effect of a bus that are taken out come back with them by undo, each time, whole",
+                SENDS,
+                vec![
+                    draw_cable(s.lane[1], s.fx[0], Some(0.5)),
+                    draw_cable(s.fx[1], s.group, Some(1.5)),
+                    draw_cable(s.group, s.fx[2], None),
+                    draw_cable(s.bus, mix, Some(0.75)),
+                    Op::Do(Intent::RemoveNode { node: s.lane[0] }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s.group }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s.bus }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "an audio cable of the session's own is put back by undo with its level and its place among the others, and the effects that have some come back with them",
+                testutil::PATCHED,
+                vec![
+                    take_out(p_cables[2]),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: p_fx[1] }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: p_bus[0] }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: p_lane[0] }),
+                    undo(),
+                    redo(),
+                    undo(),
+                ],
+            ),
+            (
+                "a lane that is put in a group, and an effect that is moved, where the audio cables there are would make it go round, are refused and leave the history as it was; the others are steps",
+                testutil::PATCHED,
+                vec![
+                    lock(),
+                    Op::Do(Intent::SetLaneGroup { node: p_lane[1], group: Some(p_group) }),
+                    Op::Do(Intent::SetLaneGroup { node: p_lane[2], group: Some(p_group) }),
+                    Op::Do(Intent::MoveEffect { node: p_fx[0], index: 1 }),
+                    Op::Do(Intent::MoveEffect { node: p_fx[1], index: 0 }),
+                    Op::Do(Intent::MoveEffect { node: p_bus[0], index: 2 }),
+                    Op::Do(Intent::MoveEffect { node: p_bus[2], index: 0 }),
+                    Op::Do(Intent::MoveEffect { node: p_bus[1], index: 2 }),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
             (
                 "cables that drive each other's depths are not put back, and what came before them is forgotten",
                 testutil::CABLES_THAT_DRIVE_EACH_OTHER,

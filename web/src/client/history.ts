@@ -8,7 +8,7 @@
 // What is added is taken out by undo and put back by redo under the ids it had (`Made`): every step that names the node or the cable goes on naming it.
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP, WAVEFORMS } from "../protocol";
 import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorField, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
-import { cablesThatGo, drivesRoundToItself, isModulation } from "./cables";
+import { cablesThatGo, drivesRoundToItself, isAudioCable, isModulation } from "./cables";
 import { cablesIntoLaneFromItsGroup } from "./membership";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 
@@ -162,6 +162,12 @@ export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "b
  * made something that cannot be named, or what it made is not there. As `takes_out` of the controller.
  */
 export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent | null {
+  // An audio cable is one cable and no node.
+  if (added.type === "addCable") {
+    const [edge, ...more] = made.edges;
+    if (edge === undefined || more.length > 0 || made.nodes.length > 0) return null;
+    return snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === edge) ? { type: "removeEdge", edge } : null;
+  }
   if (added.type === "addModEdge") {
     const [edge, ...more] = made.edges;
     if (edge === undefined || more.length > 0 || made.nodes.length > 0) return null;
@@ -260,10 +266,14 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "undo":
     case "redo":
       return "nothing";
-    // (The controller keeps a step for an audio cable that is drawn, taken out or turned; the mock engine has none, and refuses them: P3d.)
+    // An audio cable that is drawn is an add (a refusal leaves no step: the step is made once it is carried out), and its level a step that a drag makes one of, put back to the level it found.
     case "addCable":
-    case "setCableGain":
-      return "nothing";
+      return added("draw an audio cable");
+    case "setCableGain": {
+      const cable = snapshot.graph.edges.find((e) => isAudioCable(e) && e.id === intent.edge);
+      if (cable?.kind !== "cable") return "nothing";
+      return step("set the level of an audio cable", { type: "setCableGain", edge: intent.edge, gain: cable.gain }, `level:${String(intent.edge)}`);
+    }
     case "setParam": {
       const node = nodeOf(intent.node);
       const plugin = node && (node.kind === "instrument" || node.kind === "effect") ? node.plugin : null;
@@ -378,6 +388,8 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       return step(intent.group === null ? "take a lane out of its group" : "put a lane in a group", { type: "setLaneGroup", node: intent.node, group: lane.parent }, null);
     }
     case "removeEdge": {
+      // An audio cable goes alone, and comes back as it was.
+      if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === intent.edge)) return { removed: { label: "remove an audio cable", intent, at: now } };
       if (!snapshot.graph.edges.some((e) => isModulation(e) && e.id === intent.edge)) return "nothing";
       // Cables that drive each other's depths are not put back (`RemovedCable::still_driven` of the controller).
       if (drivesRoundToItself(snapshot.graph.edges, cablesThatGo(snapshot.graph.edges, [intent.edge]))) return "barrier";

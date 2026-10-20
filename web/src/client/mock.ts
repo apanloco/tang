@@ -5,12 +5,13 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NAME_LIMIT, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE } from "../protocol";
+import { BPM_RANGE, CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NAME_LIMIT, NEW_CABLE_GAIN, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
   Edge,
   EdgeId,
+  Endpoint,
   Event,
   Intent,
   LayoutEntry,
@@ -36,7 +37,7 @@ import type { Transport, TransportEvents, TransportFactory } from "./connection"
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { sessionFileName } from "./filenames";
 import { audibleOf, heardOf } from "./audible";
-import { cablesThatGo, isLink, isModulation } from "./cables";
+import { cablesThatGo, isAudioCable, isLink, isModulation } from "./cables";
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
@@ -49,6 +50,7 @@ import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
 import { rateAt } from "./tempo";
 import { fractionOf, isLog, valueAt } from "./travel";
+import { cableEnds, cableLoops, effectLoops, laneLoops } from "./wiring";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -138,11 +140,60 @@ function stepsOutcome(node: Node, values: readonly number[]): Outcome {
 
 /** The depth of a cable: clamped, and only of a cable that is there. */
 function depthOutcome(snapshot: Snapshot, edge: number, depth: number): Outcome {
+  if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === edge)) return invalid("an audio cable has a level, and no depth");
   if (!snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge)) {
     return { error: { code: "notFound", message: `there is no cable ${edge}` } };
   }
   if (!holds(depth)) return invalid(`${shown(depth)} is not a value for the depth of a cable`);
   return { event: { type: "edgeDepthSet", edge, depth: clamp(depth, DEPTH_RANGE[0], DEPTH_RANGE[1]) } };
+}
+
+/**
+ * The level of an audio cable: held to what the controller holds it to, and only of an audio cable that is there (a cable of modulation has a depth, in words that say so). As `set_cable_gain`
+ * of the controller, in its order: the cable, the number, the clamp.
+ */
+function cableGainOutcome(snapshot: Snapshot, edge: EdgeId, gain: number): Outcome {
+  if (!snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === edge)) {
+    if (snapshot.graph.edges.some((e) => isModulation(e) && e.id === edge)) return invalid("a modulation cable has a depth, and no level");
+    return { error: { code: "notFound", message: `there is no cable ${edge}` } };
+  }
+  if (!holds(gain)) return invalid(`${shown(gain)} is not a value for the level of a cable`);
+  return { event: { type: "cableGainSet", edge, gain: clamp(gain, CABLE_GAIN_RANGE[0], CABLE_GAIN_RANGE[1]) } };
+}
+
+/**
+ * `edges` with the audio cable `added` among them, where the graph lists the cables that have been drawn between two places: after the links of the audio path (which the nodes have by
+ * themselves) and before the cables of modulation, in the order of their ids.
+ */
+function withAudioCable(edges: readonly Edge[], added: Edge & { kind: "cable" }): Edge[] {
+  const modulation = edges.findIndex(isModulation);
+  const end = modulation < 0 ? edges.length : modulation;
+  let at = edges.findIndex(isAudioCable);
+  if (at < 0) at = end;
+  while (at < end && (edges[at] as Edge & { kind: "cable" }).id < added.id) at += 1;
+  return [...edges.slice(0, at), added, ...edges.slice(at)];
+}
+
+/**
+ * An audio cable drawn from the output of one place to the input of another, as the controller does it (`add_cable_intent`, `Controller::add_audio_cable`): what the ends are is read from
+ * the ports (`cableEnds`), and then the level (a number the controller can hold; none is `NEW_CABLE_GAIN`), a cable between the two already, and a loop are refused, in that order, before an id is
+ * used. The level is held to what a cable can have.
+ */
+function addCableOutcome(snapshot: Snapshot, from: Endpoint, to: Endpoint, gain: number | null, counters: Counters): Outcome {
+  const ends = cableEnds(snapshot.graph, from, to);
+  if ("error" in ends) return ends;
+  const level = gain ?? NEW_CABLE_GAIN;
+  if (!holds(level)) return invalid(`${shown(level)} is not a value for the level of a cable`);
+  if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.from.node === from.node && e.to.node === to.node)) return invalid("there is a cable between those two already");
+  if (cableLoops(snapshot.graph, ends)) return invalid("that cable would make the audio go round: it would feed what it comes from");
+  const added: Edge & { kind: "cable" } = {
+    from: { node: from.node, port: { type: "audioOut" } },
+    to: { node: to.node, port: { type: "audioIn" } },
+    kind: "cable",
+    id: counters.edge(),
+    gain: clamp(level, CABLE_GAIN_RANGE[0], CABLE_GAIN_RANGE[1]),
+  };
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges: withAudioCable(snapshot.graph.edges, added) } } };
 }
 
 /** A place on a node, as one key: a parameter, a setting of a modulator, the depth of one of its cables (the layout names a value once for each). */
@@ -301,14 +352,15 @@ function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters:
 }
 
 /**
- * The session without the cables `going` and the nodes `nodesGone`. The layout of the telemetry follows: the
+ * The session without the cables `going` and the nodes `nodesGone`, and the audio cables that start or end at one of those. The layout of the telemetry follows: the
  * outputs of the modulators that go leave it, and so does the slot of the value a cable drove, unless another
  * cable still drives it (the layout names one slot for a parameter, whichever cables are left), and the meters of
  * a lane or a group that goes.
  */
 function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: ReadonlySet<NodeId>): Snapshot {
   const cables = snapshot.graph.edges;
-  const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)));
+  // (The audio cables at a node that goes go with it, as the controller takes them out first: `take_out_audio_cables_at`.)
+  const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)) && !(isAudioCable(e) && (nodesGone.has(e.from.node) || nodesGone.has(e.to.node))));
   const aimedBefore = new Set(cables.map((e) => aimKey(e.to.node, e.to.port)));
   const aimedAfter = new Set(edges.map((e) => aimKey(e.to.node, e.to.port)));
   const leaves = (entry: LayoutEntry): boolean => {
@@ -328,6 +380,10 @@ function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: Read
 
 /** A cable taken out of the session, and with it the cables that drive the depth of one that goes (and theirs in turn). */
 function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
+  // (An audio cable goes alone: no cable drives its level, and it has no slot of the telemetry.)
+  if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === edge)) {
+    return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges: snapshot.graph.edges.filter((e) => !(isAudioCable(e) && e.id === edge)) } } };
+  }
   if (!snapshot.graph.edges.some((e) => isModulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
   return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, [edge]), new Set()) };
 }
@@ -372,6 +428,7 @@ function moveEffectOutcome(snapshot: Snapshot, node: NodeId, index: number): Out
   if (!Number.isInteger(index) || index < 0 || index >= chain.length) return invalid(`the chain has no place ${String(index)}`);
   const from = chain.indexOf(found);
   if (index === from) return invalid("that effect is at that place already");
+  if (effectLoops(snapshot.graph, node, index)) return invalid("moving that effect there would make the audio go round, by the cables there are");
   const owner = nodes.find((n) => n.id === found.parent);
   const moved = [...chain];
   moved.splice(from, 1);
@@ -773,6 +830,7 @@ function setLaneGroupOutcome(snapshot: Snapshot, node: NodeId, group: NodeId | n
     if (!target) return noNode(group);
     if (target.kind !== "group") return invalid("that node is not a group");
   }
+  if (laneLoops(snapshot.graph, node, group)) return invalid("putting that lane in that group would make the audio go round, by the cables there are");
   return { restructured: lanePutIn(snapshot, node, group) };
 }
 
@@ -915,8 +973,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
   if (intent.type === "moveEffect") return moveEffectOutcome(snapshot, intent.node, intent.index);
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
-  // (The controller draws audio cables and the mock engine does not yet: the page draws them in P3d, and teaches the mock as it does.)
-  if (intent.type === "addCable" || intent.type === "setCableGain") return invalid("the mock engine has no audio cables yet");
+  if (intent.type === "addCable") return addCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
+  if (intent.type === "setCableGain") return cableGainOutcome(snapshot, intent.edge, intent.gain);
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
   if (!node) return noNode(intent.node);

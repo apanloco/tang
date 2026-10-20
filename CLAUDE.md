@@ -392,7 +392,12 @@ gain = 0.4
   oscillators into one reverb, `patched`: a cable of every kind of start and end) and a scenario that edits them while it plays (`edited:cables`: `Edit::{AddCable, CableGain, RemoveCable}`, a lane taken out and put back
   by Undo with its cables); the loop that the plan replaced (`process_legacy`) has no cables, so a scenario that has some is not held to it (`Scenario::has_cables`).
 - **The terminal** does not show them yet: it keeps them through a load, an edit and a save, and a front-end that asks for one gets it (P3e is the terminal's patchbay). **The page** keeps them in its snapshot, does not
-  draw them (P3d), applies a level that is told (`cableGainSet`) and leaves them out of the canvas and of its layout's idea of what changed (`toFlow`, `sameStructure`); the mock engine refuses the two intents.
+  draw them (P3d), applies a level that is told (`cableGainSet`) and leaves them out of the canvas and of its layout's idea of what changed (`toFlow`, `sameStructure`). **The page's mock engine** does what the controller does with them (step 76): the intents `addCable`,
+  `setCableGain` and `removeEdge` of an audio cable, in the controller's words and order of refusals, the cables that go with a node that is taken out, the loops refused in `setLaneGroup` and `moveEffect`, and the
+  history ("draw an audio cable", "set the level of an audio cable", "remove an audio cable"). `web/src/client/wiring.ts` is the plan's wiring read from the graph a client has (`wiringOf`, the head and the tail of
+  a lane and of a group as the stages of `build_patch`; `cableEnds`, `cableLoops`, `laneLoops`, `effectLoops`, and `cableTakers`: the nodes that a cable from an output can be drawn to now, for the canvas), pinned to
+  the controller by `fixtures/audioCables.json` (every start tried with every end, the levels, the removals, every lane put in the group, every effect moved: 268 rows; `testutil::PATCHED` is its session) and by
+  the audio cable scripts of `fixtures/history.json`. The ids of both kinds of cable are one series in the mock's `Counters`, as in the model.
 TODO: no cable for the audio between two nodes of a lane's chain (a chain's links are the template's, and an effect is taken out or moved to change them), no route to cut the way out of a lane or a group
 (`route = "none"`) and no solo law for what a cable carries into a lane that is not heard: P3c-2.
 TODO: a cable has no latency of its own (an effect that has one, the Drive's 23 frames, makes the sum at the end of a cable comb with a path that has none: P3f), and no meter (a light that shows what a cable carries).
