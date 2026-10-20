@@ -65,6 +65,36 @@ jobs:
       - name: Test (web)
         run: cargo test ${{ matrix.features }} --features web
 
+  # The kernel of the patch graph (kernel/, docs/patch-graph.md section 11) has no plugin
+  # format, sound card or interface in it, so it builds and tests alone, on the three
+  # platforms, in debug and in release (its tests hold the executor to a reference
+  # interpreter bit for bit, and count the allocator's calls).
+  kernel:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy -p kernel --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p kernel
+
+      - name: Test (release)
+        run: cargo test -p kernel --release
+
   # The TypeScript in web/src/protocol/generated/ is generated from the protocol
   # types (docs/web-ui.md section 7) and committed. This fails when what is
   # committed is not what the types generate now; the failure says how to

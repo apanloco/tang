@@ -2229,6 +2229,31 @@ TODO: a recording of a pattern among the edits (`SetRecording` counts in four be
 a plugin that has to be installed (the adapters of CLAP, VST3 and LV2 are not in the corpus); exact files for Linux and Windows (their CI is held to the numbers); the cost of a node of
 a graph over the DSP in it, which only a kernel with nodes that do nothing can show (P1).
 
+## The kernel
+
+`kernel/` is a workspace crate (P1 of `docs/patch-graph.md` §11.6): the machinery of the patch graph, with no interface in it and no knowledge of lanes, plugins or MIDI.
+The engine does not run on it yet (steps 1 to 4 of P1 are the crate and its CI job; step 5 puts today's lanes and groups on it, held to the oracle).
+
+- **`Arena<T>`**: where the state of nodes lives. A `Key` is a slot and a generation: the key of a value that is gone finds nothing and never finds the value that came to its slot
+  later, and a slot at the last generation is retired. `remove` hands the value back with its state, so that undo can put back the very node.
+- **`Patch<I>`**: nodes (`NodeSpec`: audio ports, each of some channels, and a `rank`) and cables (an output port to an input port). An id is whatever the caller has (an arena key in the program).
+- **`compile(&Patch) -> Plan`**: the order is the topological order that takes the least `(rank, insertion)` of the ready nodes at every step, so it is a function of the patch and of
+  nothing else; a cycle, two nodes of one id, a cable at a node or a port that is not there and a cable between ports of different widths are errors that say where. Every output and every
+  sum at an input is a value that is alive from where it begins to the op that reads it, and values that are not alive together share a buffer (the fewest that fit, the lowest free one first).
+  A buffer is zeroed where a value begins in it, and the `feeds` of an op add each of its outputs into the sums that its cables end at, in the order of the cables.
+- **The sum rule.** The input of a port is a sum that starts at +0.0 and adds its producers in plan order, also for one cable: `0.0 + -0.0` is `+0.0`, today's mix does that, and the oracle
+  hashes bits. The sums are in a fixed order whatever runs where, which is what lets a render be the same bits on any number of threads later.
+- **`Plan::run(pool, frames, nodes, cx)`**: over a `Pool` that is fitted to the plan (`fit`) and given room (`reserve`), both on a thread that may allocate. The buffers of an op are moved
+  into an `Io` and back (a node that works in place hands its input on with `Io::forward`), nothing is allocated (`kernel/tests/no_allocation.rs` counts the allocator's calls, the first block
+  after a fit included), and a node that fails stops the block with its error and leaves the buffers where they belong. `Nodes<I, C>` is how the executor reaches nodes (an `Arena<N>` is one,
+  for `N: Node<C>`); `C` is whatever the program tells every node of the block. `Kernel<N>` is an arena with its plan, for the crate's tests and benchmark.
+- **Tests.** `testutil::random_patch` draws patches from a seed (the same on every platform); the order, the colouring (the fewest buffers that fit, over 5,000 patches), the zeroing and the
+  feeds are checked against what the patch says, independently of the compile. `reference::run_reference` (a buffer of its own for every output, the sum made at the input) is what the
+  executor is held to over 400 random patches, bit for bit, with nodes that fail and plans that are swapped in the middle. `kernel/tests/benchmark.rs` (ignored) is what the graph costs over nodes
+  that do nothing: 10 to 15 ns a node of bookkeeping, 73 ns at 256 frames of stereo, and a chain of a thousand nodes is 78 µs a block of 256 frames (Apple M4 Pro).
+TODO: the plan is compiled and the pool fitted on the thread that applies the commands (the audio thread, once the engine is on the kernel); P2 moves both to the main thread, which has the
+model, and the audio thread only swaps. Not in the crate yet: latency compensation and feedback cables (P3), events (P4), control ports (P5), a skip of silent work and more cores (P7).
+
 ## Web UI
 
 A browser front-end to the same Tang process (local or LAN). Audio, plugins
@@ -2628,7 +2653,9 @@ CI runs clippy + tests on all three platforms:
 Each of them then also runs clippy (`--all-targets`) and the tests with `--features
 web` added, which includes `tests/serve.rs`, the real binary on `--audio-device
 none` (the Ctrl+C test is Unix only). The job `typescript` checks that the
-generated TypeScript is current.
+generated TypeScript is current. The job `kernel` builds and tests the workspace crate
+`kernel/` alone (clippy, the tests in debug and in release) on the three platforms: it
+has no plugin format, sound card or interface in it (see "The kernel").
 
 ## Future ideas
 
