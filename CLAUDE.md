@@ -2207,9 +2207,11 @@ in a group; a lane or a group added or taken out; a preset; the tempo; Undo and 
 - **The audio thread does not allocate** (`no_block_after_the_first_asks_the_allocator_for_memory`; all 960 in the ignored test): the first block takes the commands of the load, a
   block that an edit was made before takes its commands (they build the graph, and may allocate), and no other block asks the allocator for memory. It found the pattern player's
   lists (`57edbde`).
-- **Two engines agree** (`oracle::agree(scenario, make_a, make_b)`): the same scenario rendered by two engines (`oracle::legacy` is the `AudioGraph`; a `make` is a function of the
-  `Wiring`, the channels and cells an engine is built from) is compared bit for bit, the first sample that differs and its block named. This is how the compiled graph of P1 is
-  held to the graph, on every platform and with no file to be out of date.
+- **Two engines agree** (`oracle::agree(scenario, make_a, make_b)`): the same scenario rendered by two engines (`oracle::engine` is the `AudioGraph` as the program has it, whose lanes and
+  groups are run by the kernel's plan; `oracle::legacy` is the same `AudioGraph` run by the loop that the plan replaced, `AudioGraph::process_legacy`, kept in test builds for this; a `make`
+  is a function of the `Wiring`, the channels and cells an engine is built from) is compared bit for bit, the first sample that differs and its block named. This is how the plan of P1
+  was held to the loop, on every platform and with no file to be out of date: the always-on corpus in every run (`the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit`) and all 960
+  renders in the ignored test (`the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced`).
 
 The tests that run every time render the sessions and the first 24 generated ones at 256 frames (44 renders, 12 s in a debug build): the determinism, the fixtures, that no block
 allocates, that every one of the 300 generated sessions loads, that the generator draws every feature that the table in `oracle::tests` lists (50 of them, each in at least about two
@@ -2231,8 +2233,8 @@ a graph over the DSP in it, which only a kernel with nodes that do nothing can s
 
 ## The kernel
 
-`kernel/` is a workspace crate (P1 of `docs/patch-graph.md` §11.6): the machinery of the patch graph, with no interface in it and no knowledge of lanes, plugins or MIDI.
-The engine does not run on it yet (steps 1 to 4 of P1 are the crate and its CI job; step 5 puts today's lanes and groups on it, held to the oracle).
+`kernel/` is a workspace crate (P1 of `docs/patch-graph.md` §11.6, step 71 of `docs/web-ui.md`): the machinery of the patch graph, with no interface in it and no knowledge of lanes,
+plugins or MIDI. The engine's lanes, groups and output mix are run by it (see "The engine on the kernel", below).
 
 - **`Arena<T>`**: where the state of nodes lives. A `Key` is a slot and a generation: the key of a value that is gone finds nothing and never finds the value that came to its slot
   later, and a slot at the last generation is retired. `remove` hands the value back with its state, so that undo can put back the very node.
@@ -2251,8 +2253,23 @@ The engine does not run on it yet (steps 1 to 4 of P1 are the crate and its CI j
   feeds are checked against what the patch says, independently of the compile. `reference::run_reference` (a buffer of its own for every output, the sum made at the input) is what the
   executor is held to over 400 random patches, bit for bit, with nodes that fail and plans that are swapped in the middle. `kernel/tests/benchmark.rs` (ignored) is what the graph costs over nodes
   that do nothing: 10 to 15 ns a node of bookkeeping, 73 ns at 256 frames of stereo, and a chain of a thousand nodes is 78 µs a block of 256 frames (Apple M4 Pro).
-TODO: the plan is compiled and the pool fitted on the thread that applies the commands (the audio thread, once the engine is on the kernel); P2 moves both to the main thread, which has the
-model, and the audio thread only swaps. Not in the crate yet: latency compensation and feedback cables (P3), events (P4), control ports (P5), a skip of silent work and more cores (P7).
+**The engine on the kernel** (`src/plugin/chain/nodes.rs`, `src/plugin/ordered.rs`). `AudioGraph`'s lanes and groups are `Ordered<T>`: vectors with the `Vec` API and the slice's that the
+engine's code and tests use, and a generation-checked `Key` for each item (from `kernel::Arena<()>`, used as an allocator) that stays with it while the others come and go and change
+places. The commands still name places (P2 puts the items in the arena and the commands name keys). The plan names keys: a node for each lane (`NodeId::Lane(key)`), each group
+(`NodeId::Group(key)`) and the output mix (`NodeId::Master`), a cable from each lane to its group (to the mix if it has none, or if the group it names is not there) and from each group
+to the mix, and ranks that are the places (the lanes in order, then the groups, then the mix), so that the order of every sum is the order of the loop that the plan replaced: a group's
+bus is its members added in the order of their places, and the mix is the lanes that have no group and then the groups. `Schedule` (the plan, its pool, what it was made for) reads
+the wiring into a `Shape` before every block and compares it with the one the plan was made for, so that a plan is made again only when the wiring changed (a lane or a group that comes,
+goes, changes place or group), whoever changed it, and a knob that is turned compiles nothing and allocates nothing. `AudioGraph::process` is: the commands; the plan (`refresh`); what is
+heard (`heard_goal` of every lane and group, from the mutes and solos of all of them, worked out before any runs); the group modulators (they reach across lanes and groups, so they are
+not nodes until P5); `Plan::run`; and what the group modulators drove in the members, published. The nodes run the code that was in the loop, as it was: a lane's `process`, then its fade,
+meter and learned controls (its output is a buffer of the pool that the plan adds into the bus of its group or into the mix); a group's `finish` on its bus in place, then its fade and
+meter, handed on with `Io::forward`; the mix copied to the output, measured, and given to the scope. The old loop is `AudioGraph::process_legacy` (`#[cfg(test)]`, with the `accum`, `mix_buf`
+and `lane_buf` that only it uses), and the oracle holds the plan to it bit for bit. The plan costs what the loop did: 816 µs a block of 256 frames for the stress session with a chord of
+six, 815 µs the loop (release, Apple M4 Pro, `oracle::bench` times both).
+TODO: the plan is compiled and the pool fitted on the audio thread, in `Schedule::refresh`, when the wiring has changed (a block that an edit was made before may allocate, as the first
+may); P2 moves both to the main thread, which has the model and, with ids, can say what changed, and the audio thread only swaps. Not in the crate yet: latency compensation and feedback
+cables (P3), events (P4), control ports (P5), a skip of silent work and more cores (P7).
 
 ## Web UI
 
@@ -2671,8 +2688,8 @@ has no plugin format, sound card or interface in it (see "The kernel").
   as kinds of port; the lane, the group and the rack as templates of nodes; modules and the voices of track B on the same kernel; reached by growing the
   kernel under today's structure with the old engine as a bit-for-bit oracle, not by a routing table that would be thrown away. It contains the two ideas
   at the end of this list (a keyboard as a node, audio input as a source). The user said go on 2026-10-20 ("lets go e2! I like this. I like it all!"), which takes the
-  recommendations of its §11.7 as the plan. **P0 (the oracle and the boundary) is built** (step 70 of `docs/web-ui.md`; see "The oracle"); P1, the kernel with today's
-  lane and group as two coarse nodes, bit for bit equal to the old engine, is next
+  recommendations of its §11.7 as the plan. **P0 (the oracle and the boundary) is built** (step 70 of `docs/web-ui.md`; see "The oracle"); **P1 (the kernel,
+  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); P2 (ids for places) is next
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon

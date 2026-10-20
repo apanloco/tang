@@ -1,6 +1,6 @@
 # A patch graph for the session: audio and MIDI as cables
 
-**Status: §11 is the plan. You said go on 2026-10-20 (*"lets go e2! I like this. I like it all!"*), which takes the recommendations of §11.7 as they are. P0, the oracle and the boundary (§11.6), is built (step 70 of `docs/web-ui.md`); nothing else is.**
+**Status: §11 is the plan. You said go on 2026-10-20 (*"lets go e2! I like this. I like it all!"*), which takes the recommendations of §11.7 as they are. P0, the oracle and the boundary (§11.6), is built (step 70 of `docs/web-ui.md`), and so is P1, the kernel, with today's lanes and groups running on it bit for bit (step 71); nothing else is.**
 Written 2026-10-20 at the end of step 67 of `docs/web-ui.md`, from the code as it is then. **§11, added later the same day, is the design without a time limit
 (you asked for the best way, whatever it costs to build) and replaces the recommendation of §4 and §9.1: the destination is a compiled graph, and the routing
 table of E1 is a detour.** §1 to §10 are what I proposed before that, kept because the model, the file, the page and the terminal parts of them carry over. It starts from what you said that day: *"something we need
@@ -491,11 +491,15 @@ the new one grows under today's structure until it equals it, and is then taken 
   3. `Plan::run` over a `Pool` (and `Kernel<N>`, an arena with a plan, for the crate's own tests and benchmark), the reference interpreter (a buffer for every cable, in the plain order) that it is held to
      bit for bit over seeded random graphs, a check that a block asks the allocator for nothing, and the benchmark of nodes that do nothing, which gives §11.3 its number.
   4. CI runs the crate on the three platforms.
-  5. In `tang`: the lanes and groups move into arenas behind `Ordered<T>`, a container with the `Vec` API that the engine's code and tests already use (positions stay the engine's addresses until P2;
-     the keys are what the plan names); the lane, the group and the master become nodes that run today's code (`InstrumentLane::process` and `Group::finish` as they are, the fade and the meters
-     after them as they are); `AudioGraph::process` is then: the commands, a recompile if the topology changed (checked by a signature, so a knob drag compiles nothing), the pre-pass that is
-     today's (what is heard, and the group modulators, which cross lanes and groups and stay in the adapter until P5 makes modulators nodes), `Plan::run`, and the post-pass. The old loop
-     stays as a test-only `process_legacy`, and `oracle::agree` holds the new one to it over all 960 renders, edits included, before anything else is changed.
+  5. In `tang`: the lanes and groups stay in their vectors, which become `Ordered<T>` (`src/plugin/ordered.rs`): the `Vec` API and a slice's that the engine's code and tests already use, and for
+     each item a key from the arena's allocator that stays with it while the others come and go and change places (the plan names keys; the commands still name places until P2). (This changed
+     from what step 1 above said, which was to put the lanes and groups into the arena itself: with the items in the arena every one of the 136 places in the engine's code that uses the vectors (counted), the tests that push lanes into them,
+     and the helpers that take slices of lanes and groups would have had to change in the same commit as the engine's loop, and the oracle could not have told which of the two was wrong. They go into the
+     arena in P2, where the commands name keys and the position code goes.) The lane, the group and the mix become nodes that run today's code (`InstrumentLane::process`, `Group::finish` on its bus in
+     place, the fade and the meters after them, as they are); `AudioGraph::process` is then: the commands, a plan made again if the wiring changed (found by reading it into a `Shape` before every
+     block and comparing it with the one the plan was made for, so a knob that is turned compiles nothing and a lane that a test pushes into the vector is found as well as one that a command
+     puts there), what is heard (the mutes and solos of all, worked out before any of them runs), the group modulators, which cross lanes and groups and stay in the adapter until P5 makes modulators
+     nodes, `Plan::run`, and what the group modulators drove in the members, published. The old loop stays as a test-only `process_legacy`, and `oracle::agree` holds the plan to it.
   *Built so far* (steps 1 to 3, in `kernel/`): the arena (19 tests); `Patch`, `compile` and `Plan` (33 more); `Plan::run`, `Pool`, `Io`, `Kernel<N>` and the reference interpreter (17 more, among them the
   kernel against the interpreter over 400 seeded random patches, with failing nodes and plan swaps, bit for bit) and `tests/no_allocation.rs` (5: a block asks the allocator for nothing, the first one
   after a fit included, and a counter that is shown to count); every mutant of the three is caught (16 + 25 + 31, among them the five that make the executor allocate, by the allocation test alone).
@@ -503,6 +507,11 @@ the new one grows under today's structure until it equals it, and is then taken 
   block is 10 to 15 ns a node (0 frames); with stereo buffers, which have to be zeroed where a value begins and fed into the sums, 35 ns a node at 64 frames, 73 at 256 and 220 to 240 at 1,024 (it is
   memory, and P3's aliasing of a single cable and P7's skipping of silence are what take it away). A chain of 1,000 nodes is 78 µs a block of 256 frames (1.5% of the 5.33 ms), a fan-in of 1,000 sources
   55 µs, and a session's shape (64 lanes of four nodes, two groups: 259 nodes) 19 µs (0.35%).
+  *Built* (step 5, `src/plugin/chain/nodes.rs`, `src/plugin/ordered.rs`): the engine is run by the plan. `oracle::agree` holds it to `process_legacy` bit for bit over the always-on corpus in every test run and
+  over all 960 renders, edits included, at 64, 256 and 1,024 frames, in the ignored test; the stored hashes of P0, which the old engine made, hold for the plan too (960 of 960 to the bit on macOS on Apple
+  silicon). It cost what the loop did (release, M4 Pro, medians of `oracle::bench`, which times both now): the stress session with a chord of six at 256 frames 815 µs the loop and 816 µs the plan, nothing played
+  366 and 366, one oscillator and a chord 28 and 28, and no block of either asks the allocator for memory. 36 mutants of the nodes, the schedule and `process` and 18 of `Ordered` are all caught. What the oracle found on the way: the
+  allocation check said that after the plan was made in the first block, every session asked the allocator once in its second (the scratch that the wiring is read into had no room: it was swapped, and is copied).
   **The rule that decides what is bit for bit:** the input of a port is a sum that starts at +0.0 and adds the producers in *plan order*, also for one producer. It is today's mix (`mix_buf` and
   a group's `accum` are zeroed and the lanes are added in), `0.0 + -0.0` is `+0.0` and the oracle hashes the bits, so a single cable is not a copy: a later step that makes one (P3, when the
   chain of a lane is a row of nodes) names the change and its reason in the list the end of this section asks for. The sums are in a fixed order whatever runs where, which is what lets a render be the
