@@ -572,7 +572,28 @@ the new one grows under today's structure until it equals it, and is then taken 
     chain), of an effect, of a group's tail; the input of an effect, of a group's bus, of the master. The engine has the cables and nothing sends them yet. Tests of the engine alone: two
     lanes into one effect equal the two renders added, a send, a cable that comes and goes does not click (the click detector of §11.6 is made here), the plan is the same after the same
     edits in another order, a cycle is refused, a cable whose end goes with a lane or an effect goes too.
-  - **P3c, the model, the intents, the history, the file.** The model has audio cables (`EdgeId`s, a gain, undo that puts them back as they were, the graph a client gets has them as edges
+    *Built* (2026-10-20, step 74 of `docs/web-ui.md`, in two commits). `GraphCommand::{AddCable, RemoveCable, SetCableGain}` and the ends `CableFrom::{Instrument, Effect, Group}` and
+    `CableTo::{Effect, GroupBus, Master}`, named by the model's ids; `Stage::Cable(EdgeId)` is a node with one input and one output that has the rank of the node that owns its start, and its body is
+    `fade(input, at, goal)` of the code that lets a muted lane go (so a cable comes in from nothing, goes down to nothing and is turned over one buffer); the goal is the level that was set times what
+    the owner of its start is heard at, worked out in `process` between the heard goals and the plan (`Schedule::set_cable_goals`, which finds the owner by the place that the plan has for it), so that
+    nothing depends on whether the cable runs before or after its owner's tail; the output of a group has been let in or out already and is not gated again. The cables are kept by id and put in the
+    patch in that order by `build_patch`, which `compile` and the check for a loop both use, so that the plan is a function of the wiring and not of the order of the commands; `AddCable` refuses (with
+    a log line) an end that is not there, the id of a group for an instrument and the other way round, a level that is not a number, and a cable that makes the wiring not compile (a loop: made on the
+    side first); a cable that is drawn again under its id goes on from where it was; `RemoveCable` brings one that is heard down over a buffer and one that is not heard goes at once; a cable whose
+    end goes (a lane, a group or an effect taken out) is taken out when the plan is made again, and the shape that the plan was made for has the cables, their ends and their ids in it. 21 tests (16
+    of the engine in `plugin::chain`, 5 of the plan in `plugin::chain::nodes`) by exact arithmetic on levels of powers of two, one of them 400 random wirings held to an evaluation that has no plan in it, 39 mutants of the cable, the plan's construction, the shape, the goals
+    and the ends (all caught but one that is no fault: a cable to a lane's id as a group's bus is refused by the compile if the check for the end did not). A cable costs 0.45 µs a block of 256 frames,
+    and an engine with none costs what it did (815 µs the loop and 817 µs the plan for the stress session with a chord of six). Nothing sends the commands until P3c; the commands and the two enums
+    carry `cfg_attr(not(test), expect(dead_code, ...))`, which P3c takes off.
+  - **P3c, the model, the intents, the history, the file.** **Cut in two (2026-10-20, when P3b was built), with P3d between them:** *P3c-1* is cables as sends: the model
+    (`SessionModel.cables`: `AudioCable { id, from: CableFrom, to: CableTo, gain }`, the ids from the allocator that the modulation cables use), the graph a client gets (a new edge
+    kind, `cable`, with its id and level; the derived `audio` and `member` edges stay as they are, and the ends are ports: an instrument's, an effect's and a group's `AudioOut` for a
+    start, an effect's and a group's and the master's `AudioIn` for an end, the group's two being its output after its pan and fade and its bus), the intents `AddCable { from, to, gain }`
+    and `SetCableGain { edge, gain }` and `RemoveEdge`, which takes an audio cable out too, the refusals by the controller before the engine (an end that is not there, a loop: found by
+    compiling the wiring of the model, with `build_patch` over a description that the model and the engine both make), the cables that go with a lane, an effect or a group that is taken
+    out (written down in the journal and put back by undo), the history (draw, set the level, take out), and the file (`[[cable]]` tables). *P3c-2* is what is left: the route of the end
+    of a lane and a group (`route = "none"`) and the solo law with its head gate. P3d is between them because cables as sends are what two oscillators into one reverb needs; the route
+    and the solo law make it a patchbay. *The whole of P3c in one:* The model has audio cables (`EdgeId`s, a gain, undo that puts them back as they were, the graph a client gets has them as edges
     that can be taken out). *The form that they take beside the lane, the group and `group = n`* is my decision to make before building it, and it is this (overrule it before P3c starts): the
     templates stay, and a session has, besides them, **extra cables** (`SessionModel.cables`: an id, an output, an input and a gain) and, for the end of each lane and group, **a route**: by
     default to its group's bus, or to the master (today's `group = n`), or none (the template's own cable cut, so that a lane can be heard only through the reverb that another lane has). The

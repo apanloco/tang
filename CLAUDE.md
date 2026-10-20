@@ -2287,14 +2287,26 @@ by stage: a block finds a node by a binary search, and takes a node that is not 
 never the one that is there now). `Schedule` (the plan, its pool, what it was made for) reads the wiring into a `Shape` before every block (a list of numbers: for each lane its id, its group's and its effects' ids,
 for each group its id and its bus effects' ids, in the order of the places) and compares it with the one the plan was made for, so that a plan is made again only when the wiring
 changed (a lane, a group or an effect that comes, goes, is another at its place, changes place, or a lane that changes group), whoever changed it, and a knob or a mix that is turned
-compiles nothing and allocates nothing. `AudioGraph::process` is: the commands; the
+compiles nothing and allocates nothing.
+**Audio cables** (P3b; nothing sends them yet, that is P3c): `GraphCommand::{AddCable { id, from, to, gain }, RemoveCable { id }, SetCableGain { id, gain }}` by `EdgeId`, from the instrument of a lane
+(`CableFrom::Instrument`: what it puts out after the lane's volume and before its chain), an effect (`Effect`: after its mix, a lane's or a bus's) or a group (`Group`: after its pan and fade) to an effect
+(`CableTo::Effect`: added to what its chain gives it), the bus of a group (`GroupBus`) or the mix (`Master`), all named by the model's ids. A cable is a node of the plan (`Stage::Cable`, with the rank of the
+node that owns its start) whose body is `fade` from the level it was at (`at`, 0 for a cable that has just been drawn) to the level it is going to (`goal`), the code that lets a muted lane go: it comes in,
+goes down and is turned over one buffer, with no click. `goal` is the level that was set times what its owner is heard at (`Schedule::set_cable_goals`, between the heard goals and the plan: a mute or a
+solo takes a cable with it, a lane in a muted group keeps its sends, and the output of a group has been let in or out already and is not gated again), and 0 for a cable that was told to go. The cables are
+kept by id and put in the patch in that order (`build_patch`, which `compile` and the check for a loop both use), so that the plan and the sound are a function of the wiring and not of the order of the
+commands; the shape has them in it. `AddCable` refuses with a log line an end that is not there (the id of a group for an instrument, and the other way round), a level that is not a number and a cable that
+makes the wiring not compile, a loop (compiled on the side first); a cable that is drawn again under its id goes on from where it was; `RemoveCable` brings one that is heard down over a buffer and takes
+it out when the next begins; a cable whose lane, effect or group goes, goes with it. At an output that has a cable and the chain link, the link is a sum of one (the kernel's rule for a `single` input).
+A cable costs 0.45 µs a block of 256 frames (`docs/web-ui.md`, step 74). The commands and the two enums carry `cfg_attr(not(test), expect(dead_code, ...))` until P3c sends them.
+`AudioGraph::process` is: the commands; the
 plan (`refresh`); what is heard (`heard_goal` of every lane and group, from the mutes and solos of all of them, worked out before any runs); the group modulators (they reach across
 lanes and groups, so they are not nodes until P5); `Plan::run`; and what the group modulators drove in the members, published. The nodes run the code that was in the loop, cut where it was cut by what it did
 (`run_head`, `run_fx` and `run_tail` of the lane and of the group, in `nodes.rs`: a tail hands its buffer on with `Io::forward`, and the plan adds a lane's into the bus of its group or into
 the mix); the mix is copied to the output, measured, and given to the scope. The old loop is `AudioGraph::process_legacy` (`#[cfg(test)]`, with `InstrumentLane::process` and
 `Group::finish`, which are the lane and the group as one piece, and the `accum`, `mix_buf`, `lane_buf`, `buf_a` and `buf_b` that only they use: the specification, kept as it was), and the
-oracle holds the plan to it bit for bit. The plan costs what the loop did: 819 µs a block of 256
-frames for the stress session with a chord of six, 815 µs the loop (release, Apple M4 Pro, `oracle::bench` times both; measured again after P3a: see `docs/web-ui.md`, step 73).
+oracle holds the plan to it bit for bit. The plan costs what the loop did: 817 µs a block of 256
+frames for the stress session with a chord of six, 814 µs the loop (release, Apple M4 Pro, `oracle::bench` times both; measured again after P3b: see `docs/web-ui.md`, step 74).
 TODO: the plan is compiled and the pool fitted on the audio thread, in `Schedule::refresh`, when the wiring has changed (a block that an edit was made before may allocate, as the first
 may); the main thread can make the plan now that the nodes have the model's ids, and the audio thread would find each id's place when the plan is installed (the list that `Place` makes
 is that), but nothing needs it before P3's cables, which are by id. The commands that address a lane, an effect or a group still name places, and the 51 functions that keep a
@@ -2719,7 +2731,7 @@ has no plugin format, sound card or interface in it (see "The kernel").
   kernel under today's structure with the old engine as a bit-for-bit oracle, not by a routing table that would be thrown away. It contains the two ideas
   at the end of this list (a keyboard as a node, audio input as a source). The user said go on 2026-10-20 ("lets go e2! I like this. I like it all!"), which takes the
   recommendations of its §11.7 as the plan. **P0 (the oracle and the boundary) is built** (step 70 of `docs/web-ui.md`; see "The oracle"); **P1 (the kernel,
-  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); **P2 (ids for places, narrowed to the nodes that cables will join: the engine has the model's ids for its lanes, groups and effects, and the plan names them) is built** (step 72); **P3a (the lane and the group as rows of nodes in the plan, and the kernel's input that is its cable's own buffer) is built** (step 73); P3b (audio cables in the engine, then the model, the page and the terminal for them: P3 of `docs/patch-graph.md` §11.6) is next
+  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); **P2 (ids for places, narrowed to the nodes that cables will join: the engine has the model's ids for its lanes, groups and effects, and the plan names them) is built** (step 72); **P3a (the lane and the group as rows of nodes in the plan, and the kernel's input that is its cable's own buffer) is built** (step 73); **P3b (audio cables in the engine: a cable is a node of the plan that comes, goes and is turned over a buffer, goes with the mute of its lane and is not drawn if it would close a loop; nothing sends them yet) is built** (step 74); P3c-1 (cables as sends: the model, the intents, the history and the file), then P3d (the page) and the rest of P3 (`docs/patch-graph.md` §11.6) are next
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
