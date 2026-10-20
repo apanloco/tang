@@ -22,6 +22,7 @@
 mod bench;
 pub mod edits;
 pub mod generate;
+mod wav;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
