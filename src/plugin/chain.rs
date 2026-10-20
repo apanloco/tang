@@ -2764,8 +2764,9 @@ impl PatternPlayer {
             sample_rate,
             base_note: None,
             trigger_note: None,
-            held_notes: Vec::new(),
-            active_voices: Vec::new(),
+            // (Room for every key, so that the first note of a pattern does not ask the audio thread's allocator for any.)
+            held_notes: Vec::with_capacity(128),
+            active_voices: Vec::with_capacity(128),
             output_events: Vec::with_capacity(256),
             recording_events: Vec::new(),
             length_beats: 4.0,
@@ -8713,6 +8714,22 @@ mod tests {
         graph.drain_commands();
         // The held key starts the pattern; 40 buffers of 64 frames loop it twice.
         let allocations = allocations_while_processing(&mut graph, &[note_on(62)], 40);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn the_first_notes_of_a_pattern_do_not_allocate() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.5));
+        let on = |note| PatternEvent { frame: 0, status: 0x90, note, velocity: 100 };
+        let off = |note| PatternEvent { frame: 500, status: 0x80, note, velocity: 0 };
+        let pattern = Pattern { events: vec![on(60), on(64), on(67), off(60), off(64), off(67)], length_samples: 1000 };
+        cmd_tx.send(GraphCommand::SetPattern { inst: 0, pattern, base_note: Some(60), in_key: false }).unwrap();
+        graph.drain_commands();
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        // The buffer with the key that starts the pattern, which starts three voices of it, is the first that the lists of held keys and of voices have anything in.
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| graph.process(&[note_on(62), note_on(65)], &mut out).unwrap());
         assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 
