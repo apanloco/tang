@@ -12,6 +12,8 @@ mod held_notes;
 mod midi;
 mod midi_monitor;
 mod note_input;
+#[cfg(test)]
+mod oracle;
 mod piano;
 mod piano_filter;
 mod plugin;

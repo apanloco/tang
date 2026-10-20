@@ -240,7 +240,7 @@ mod fpu {
 /// from where the samples go: take the MIDI that has arrived, render the graph into
 /// one buffer per channel, and interleave them into the output. The buffers are
 /// made once and reused, so a block is rendered without allocating.
-struct Renderer {
+pub(crate) struct Renderer {
     graph: Box<dyn Engine>,
     midi_rx: Receiver<MidiEvent>,
     /// The MIDI that arrived since the last block.
@@ -251,7 +251,7 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(graph: impl Engine + 'static, midi_rx: Receiver<MidiEvent>, buffer_size: usize) -> Self {
+    pub(crate) fn new(graph: impl Engine + 'static, midi_rx: Receiver<MidiEvent>, buffer_size: usize) -> Self {
         let num_channels = graph.num_channels();
         Renderer {
             graph: Box::new(graph),
@@ -264,7 +264,7 @@ impl Renderer {
 
     /// Fill `data`, interleaved (`frames * channels` samples), with the next block;
     /// `cb_num` is the number of the block, for the log. Silence if the graph fails.
-    fn render(&mut self, data: &mut [f32], cb_num: u64) {
+    pub(crate) fn render(&mut self, data: &mut [f32], cb_num: u64) {
         let _no_denormals = NoDenormals::new();
         self.render_block(data, cb_num);
     }
