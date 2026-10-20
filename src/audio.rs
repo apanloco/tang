@@ -1035,7 +1035,8 @@ mod tests {
     }
 
     /// The frequency of the periodic signal in `window`, from its autocorrelation: the first of the lags between 40 and 1000 Hz that is nearly as good as the best (the multiples of a
-    /// period are as good as the period itself), brought between two samples.
+    /// period are as good as the period itself), brought between two samples. It is biased for a wave that is not a sine: a triangle at F3 reads 5.6 cents low (measured), so a test that asks
+    /// for less than that of one wants `pitch_by_crossings`, which reads a wave that is centred to 0.01 cent.
     fn pitch_of(window: &[f32], sample_rate: f32) -> f32 {
         let (shortest, longest) = ((sample_rate / 1000.0) as usize, (sample_rate / 40.0) as usize);
         let correlation: Vec<f32> = (shortest..=longest).map(|lag| window[..window.len() - longest].iter().zip(&window[lag..]).map(|(a, b)| a * b).sum()).collect();
