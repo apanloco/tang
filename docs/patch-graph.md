@@ -605,6 +605,18 @@ the new one grows under today's structure until it equals it, and is then taken 
     in a soloed group, does not put its own sound into its chain (a *head gate*; it is 1 whenever nothing is soloed, and a lane that has no cable ending in it has none), and what it
     carries out is heard only if it receives, through a cable, what an audible node sends: so that soloing the lane that sends to a reverb on another lane lets the reverb be heard, with
     only what the soloed lane sent. (A lane that nothing sends to is exactly as it is today: its tail is faded, and what is in its effects goes on.)
+    *P3c-1 built* (2026-10-20, step 75 of `docs/web-ui.md`, in two commits). `SessionModel.cables` (`AudioCable { id, from: CableFrom, to: CableTo, gain }`, in the order of the ids, which are the
+    modulation cables' series), `SessionModel::wiring` / `cable_problem` / `loop_if_lane_goes_to` / `loop_if_effect_goes_to` (the lanes and groups as `LaneWiring` / `GroupWiring`, which the engine's `compile`
+    and the model both make, and `plugin::chain::cable_problem` / `wiring_loop`, which compile the wiring with the cable on the side with the kernel: what the model refuses is what the audio thread would refuse);
+    the graph has `EdgeKind::Cable { id, gain }` after the links and before the modulation cables; `Intent::{AddCable, SetCableGain}`, `Event::CableGainSet`, `RemoveEdge` for an audio cable, and `SetLaneGroup` and
+    `MoveEffect` refused when they would close a loop; the cables at a lane (its instrument and its effects), a group (its bus, its output and its bus effects) and an effect go first when it is taken out (`Inverse::AudioCable`,
+    put back after the node, under their ids); the steps "draw an audio cable", "set the level of an audio cable" (`Key::Level`) and "remove an audio cable"; `[[cable]]` tables (`CablePlace`: `instrument[0]`,
+    `instrument[0].effect[1]`, `group[0]`, `group[0].effect[0]`, `master`; `load_cables` refuses the places that are not there, a start that is the master, an end that is a lane, a cable twice and a loop, with the cable's
+    place; `cables_to_save` writes them after the groups). The oracle has the engine's cables held to the model's after every block (`Facts`, `CableFacts`), the sessions `sends` and `patched` and the scenario
+    `edited:cables`, and it found that a cable that is taken out left the plan at the start of the block after the command (a block with no command that made the plan): it leaves it at the end of its own block now. The
+    page keeps the cables in its snapshot and leaves them out of the canvas (P3d draws them). Rust 2057 tests (2241 with `web`), a run of the real program through a WebSocket that hears a send double the
+    master's meter, turns it, takes it out, undoes that, saves it and plays it from the file, and mutants of every part. *Decisions (D75):* one cable between two places (the level goes to 2); the level 0 to 2; a cable
+    starts after the lane's volume; one series of ids; a session with a cable that cannot be had is refused; the cables go with their nodes; `[[cable]]` is a list of its own, in the order of the ids.
   - **P3d, the page.** Handles for audio ports on every node that has them, a cable dragged from an output to an input that takes it (the ports that take it light), its gain on the
     cable, its removal, undo; `toFlow` and the mock engine learn it, pinned by the fixtures. *The first thing you can see:* two oscillators into one reverb.
   - **P3e, the terminal's patchbay**: a matrix of outputs against inputs for the audio cables, `Enter` on a crosspoint, `+` and `-` for the gain; `tang --web` shows both.
