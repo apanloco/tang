@@ -55,9 +55,15 @@ test("every bar and every dot is alive: each of the 32 LFOs' bars has a value, a
   // And so do the dots: they are written, so they are not where they started. Not in one short
   // interval (a sine at its peak hardly moves in an eighth of a second, so how many of the 64 had moved
   // was chance: 54 where it wanted 55 now and then): a dot is alive if it is ever somewhere else than
-  // where it started, in half a second. Except one that sits at an end of its knob, where half of
+  // where it started, in two seconds. Except one that sits at an end of its knob, where half of
   // what an LFO does is clamped away (the stress scene has a volume at 1): it may stay for as long as
   // the LFO is in that half. Nearly all of them move, and the ones that do not are at an end.
+  // A knob that is near an end is at it as long, and the look cannot tell: the attack (0.004 s), the decay
+  // (0.1 s) and the release (0.012 s) are at the bottom of 0 to 10 s, and their LFOs, which go by the page's
+  // clock from the start of the page, are under it for half of every cycle (1.25 s to 1.29 s at the slowest, 0.4 Hz;
+  // the release's, 0.55 Hz, goes under at 0.91 s). The first look is at 0.71 to 0.85 s in eight runs and a
+  // machine that is busy is later, so half a second that began there saw the release stand still (f146: dot 5,
+  // the release of the first lane). Two seconds is longer than any of those halves.
   const dots = page.locator('.tang-knob__dot[visibility="visible"]');
   const look = () =>
     dots.evaluateAll((all) =>
@@ -70,7 +76,7 @@ test("every bar and every dot is alive: each of the 32 LFOs' bars has a value, a
     );
   const started = await look();
   const moved = new Set<number>();
-  for (let sample = 0; sample < 5; sample++) {
+  for (let sample = 0; sample < 20; sample++) {
     await page.waitForTimeout(100);
     (await look()).forEach((dot, i) => {
       if (dot.place !== started[i]?.place) moved.add(i);
