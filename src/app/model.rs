@@ -4707,6 +4707,39 @@ depth = 0.5
         }
     }
 
+    /// What every note length comes to at some tempos, as the web client's tests read it (`web/src/client/fixtures/sync.json`): they pin the page's `rateAt` to the
+    /// engine's `rate_at_tempo`. A row is a place in the list, its name, a tempo and the rate (cycles or steps a second) that the engine goes at then.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_note_length_comes_to_is_current() {
+        #[derive(serde::Serialize)]
+        struct Row {
+            place: usize,
+            name: &'static str,
+            bpm: f32,
+            rate: f32,
+        }
+        let mut rows = Vec::new();
+        for place in 1..=SYNC_DIVISIONS.len() {
+            for bpm in [BPM_MIN, 90.0, DEFAULT_BPM, 133.0, BPM_MAX] {
+                rows.push(Row { place, name: sync_name(place), bpm, rate: crate::plugin::chain::rate_at_tempo(bpm, sync_beats(place)) });
+            }
+        }
+        // (The numbers are written as the wire writes them: the 32 bits, in the fewest digits.)
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "rows": crate::app::testutil::wire(&rows) })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/sync.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the note lengths come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     #[test]
     fn what_a_modulator_that_follows_the_tempo_goes_at_is_what_its_note_length_and_the_tempo_make() {
         let at = |place: usize, bpm: f32| crate::plugin::chain::rate_at_tempo(bpm, sync_beats(place));

@@ -94,6 +94,12 @@
   line-height: 1.2;
 }
 
+/* The note length that a modulator follows the tempo by, in its header before the button that takes it out: it keeps the width its chosen name needs, and the node's name is cut instead. */
+.tang-node__sync {
+  display: flex;
+  flex: none;
+}
+
 /* The buttons that add to a lane or a group, side by side at the end of its header. */
 .tang-node__actions {
   display: flex;

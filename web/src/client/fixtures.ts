@@ -20,6 +20,7 @@ import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
 import steps from "./fixtures/steps.json";
+import sync from "./fixtures/sync.json";
 import tracer from "./fixtures/tracer.snapshot.json";
 
 export const tracerSnapshot = tracer as unknown as Snapshot;
@@ -124,6 +125,12 @@ export const historyFixture = history as unknown as { snapshot: Snapshot; script
  * the controller (`the_web_clients_fixture_of_file_names_is_current`, `session::plain_file_name`).
  */
 export const filenamesFixture = filenames;
+
+/**
+ * The rate, in cycles or steps a second, that the engine goes at for each of the note lengths that a modulator can follow the tempo by, at five tempos (`plugin::chain::rate_at_tempo`): a row
+ * is the place in the list, its name, the tempo and the rate, each as the 64-bit number that the engine's 32-bit one widens to. Written by the model (`the_web_clients_fixture_of_what_a_note_length_comes_to_is_current`).
+ */
+export const syncFixture = sync;
 
 /**
  * The numbers that the engine's `noise` makes for a spread of seeds and cycles (the random numbers of a random LFO, `plugin::chain::noise`), the ends of the 32 bits among them: each as the

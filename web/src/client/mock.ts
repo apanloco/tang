@@ -47,6 +47,7 @@ import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
+import { rateAt } from "./tempo";
 import { fractionOf, isLog, valueAt } from "./travel";
 
 export interface MockOptions {
@@ -1517,7 +1518,9 @@ export class MockServer {
         // (The seed of the numbers is the node's id: the engine's is the order in which modulators came into it, which the page does not know. The wave goes from the last note that started
         // it again, if it retriggers, or from the start of the clock; what `#listened` has noted is of the notes the LFO heard, and the fade is the part of it that has gone by since the last.)
         const noted = this.#restarted.get(node.id);
-        const wave = shape(source.waveform, source.rate * Math.max(seconds - (source.retrigger ? noted ?? 0 : 0), 0), node.id);
+        // (It goes at the tempo's rate if it follows the tempo, as the engine's does: its own is kept for when it is free. The mock's wave is the clock's times the rate, so that a rate that
+        // changes, or a tempo, moves it to where that rate has it from the start, where the engine's goes on from where it was.)
+        const wave = shape(source.waveform, rateAt(source.rate, source.sync, this.#snapshot.meta.bpm) * Math.max(seconds - (source.retrigger ? noted ?? 0 : 0), 0), node.id);
         return source.fade > 0 && noted !== undefined ? wave * Math.min(Math.max(seconds - noted, 0) / source.fade, 1) : wave;
       }
       case "envelope":
@@ -1543,7 +1546,7 @@ export class MockServer {
       // (A step sequencer goes through its steps at its rate from the last note that started it again, or from the start of the clock: the engine's goes by the buffer, which this does not.
       // What `#listened` has noted is of the notes that started it, which only a step sequencer that retriggers is.)
       case "steps":
-        return stepsOutput(source.values, source.length, Math.max(seconds - (this.#restarted.get(node.id) ?? 0), 0) * source.rate, source.glide);
+        return stepsOutput(source.values, source.length, Math.max(seconds - (this.#restarted.get(node.id) ?? 0), 0) * rateAt(source.rate, source.sync, this.#snapshot.meta.bpm), source.glide);
     }
   }
 
@@ -1551,7 +1554,7 @@ export class MockServer {
   #stepsPosition(node: Node | undefined, seconds: number): number {
     if (node?.kind !== "modulator" || node.source.type !== "steps") return 0;
     const { source } = node;
-    return stepsPlace(source.length, Math.max(seconds - (this.#restarted.get(node.id) ?? 0), 0) * source.rate, source.values.length);
+    return stepsPlace(source.length, Math.max(seconds - (this.#restarted.get(node.id) ?? 0), 0) * rateAt(source.rate, source.sync, this.#snapshot.meta.bpm), source.values.length);
   }
 
   /** The values of a channel's list in the layout, as of `seconds`; `peaks` is the meters' state, kept from frame to frame. */

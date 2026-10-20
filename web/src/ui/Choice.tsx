@@ -9,12 +9,16 @@ export interface ChoiceProps {
   /** The index of the one that was chosen; without it the choice only shows. */
   onChange?: (index: number) => void;
   disabled?: boolean;
+  /** A choice that sits in a line with other things (the header of a node), where there is no room for its label over it: the label is not drawn, and is still its name. */
+  inline?: boolean;
+  /** What the pointer says about it, for a choice whose name is not enough. */
+  title?: string;
 }
 
 /** A parameter that is one of a few named values (a waveform, a filter's type). */
-export function Choice({ label, labels, value, onChange, disabled = false }: ChoiceProps) {
+export function Choice({ label, labels, value, onChange, disabled = false, inline = false, title }: ChoiceProps) {
   return (
-    <label className="tang-choice">
+    <label className={inline ? "tang-choice tang-choice--inline" : "tang-choice"} title={title}>
       <span className="tang-choice__label">{label}</span>
       <select
         className="tang-choice__select"

@@ -27,6 +27,14 @@ describe("a modulator in words", () => {
     expect(settingsOf(steps)).toEqual(["rate", "glide", "length", "retrigger"]);
   });
 
+  test("has no cell for the note length that a modulator follows the tempo by: it is chosen in the node's header, and a fifth cell would make the grid a row taller than the layout assumes", () => {
+    for (const source of [lfo, envelope, macro, steps, midi(null)]) {
+      expect((settingsOf(source) as readonly string[]).includes("sync"), source.type).toBe(false);
+      // (At most the four cells of a row: the layout counts one row of controls for a modulator.)
+      expect(settingsOf(source).length, source.type).toBeLessThanOrEqual(4);
+    }
+  });
+
   test("says what a MIDI control is bound to, or that it is not", () => {
     expect(controlDetail(midi({ type: "cc", number: 74 }))).toBe("CC 74");
     expect(controlDetail(midi({ type: "pitchBend" }))).toBe("pitch bend");

@@ -30,3 +30,23 @@
 .tang-choice__select:disabled {
   opacity: 0.7;
 }
+
+/* A choice in a line with other things: its label is not drawn (it is still the select's name), and it is as wide as its chosen name needs, up to a limit that cuts the longest. */
+.tang-choice--inline {
+  flex-direction: row;
+  min-width: 0;
+}
+
+.tang-choice--inline .tang-choice__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tang-choice--inline .tang-choice__select {
+  width: auto;
+  max-width: 112px;
+}

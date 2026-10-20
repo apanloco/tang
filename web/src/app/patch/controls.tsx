@@ -10,6 +10,7 @@ import type { Modulation } from "../../client/modulation";
 import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
+import { rateAt } from "../../client/tempo";
 import { cableDepthOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
 import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
@@ -23,6 +24,7 @@ import { StepBars } from "../../ui/StepBars";
 import { useClient, useClientSelection, useClientState, useDrive, useEditor, useFrames } from "../ClientProvider";
 import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
+import type { SettingField } from "./describe";
 import { ModulateMenu } from "./ModulateMenu";
 import { depthHandle, handleOf, paramHandle } from "./toFlow";
 
@@ -456,6 +458,10 @@ const NUMBERS: Record<PortedField, { label: string; format: (value: number) => s
  * A number of a modulator: an LFO's rate, a stage of an envelope. A modulator can drive it as it drives a parameter (a cable to the
  * rate, to a stage), and it shows that as a parameter's knob does: the ring from where the cable can take it (the last cable's alone:
  * the engine writes a setting once for each cable and the last stands) and the dot where the engine says it is.
+ *
+ * The rate of a modulator that follows the tempo (its `sync` is a note length) is not what it goes by: the knob shows the rate that the tempo makes of the note length
+ * (`rateAt`, as the engine's), moves as the tempo does, and cannot be turned, until the modulator is free again and it is the rate that it kept. No cable
+ * drives it then (the engine goes by the tempo), so it has no ring and no dot.
  */
 export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node, field }: { node: NodeId; field: PortedField }) {
   const client = useClient();
@@ -463,6 +469,8 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   const control = useDrive().modulatorField(node, field);
   const stored = useClientState((state) => modulatorFieldOf(state, node, field));
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const sync = useClientState((state) => (field === "rate" ? modulatorFieldOf(state, node, "sync") : undefined));
+  const bpm = useClientState((state) => state.snapshot?.meta.bpm);
   const modulations = useClientSelection((state) => (state.snapshot ? modulationsAt(state.snapshot.graph, node, { type: field }) : []), sameModulations);
   const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, { type: field }, "effective"), [client, node, field]);
   const shown = pending ?? stored;
@@ -471,23 +479,24 @@ export const ModulatorFieldControl = memo(function ModulatorFieldControl({ node,
   const ring = useMemo(() => (shown !== undefined ? settingExtent(shown, min, max, modulations, scale) : undefined), [shown, min, max, modulations, scale]);
   if (shown === undefined) return null;
   const { label, format } = NUMBERS[field];
+  const following = sync !== undefined && sync > 0 && bpm !== undefined;
   return (
     <Knob
       label={label}
-      value={shown}
+      value={following ? rateAt(shown, sync, bpm) : shown}
       min={min}
       max={max}
       scale={scale}
       defaultValue={MODULATOR_FIELD_DEFAULTS[field]}
       format={format}
-      modulation={ring}
+      {...(following ? {} : { modulation: ring, readEffective })}
       onChange={(value) => {
         control.set(value);
       }}
       onCommit={() => {
         control.commit();
       }}
-      readEffective={readEffective}
+      disabled={following}
       frames={frames}
     />
   );
@@ -562,7 +571,11 @@ export const RetriggerControl = memo(function RetriggerControl({ node }: { node:
 /** What the places of a modulator's `sync` are called: none (`free`), and then each note length (`SYNC_DIVISIONS`), as the screens and a session file name them. */
 const SYNC_NAMES: readonly string[] = [SYNC_FREE, ...SYNC_DIVISIONS.map((division) => division.name)];
 
-/** The note length that an LFO or a step sequencer follows the tempo by, in place of its rate: free, or one of the note lengths, chosen. */
+/**
+ * The note length that an LFO or a step sequencer follows the tempo by, in place of its rate: free, or one of the note lengths, chosen. It is in the header of the node, in
+ * a line with the name and the button that takes the node out: a cell of the grid has room for four controls in a row (the layout counts one row) and for names of a few
+ * letters (`1/16 triplet` is cut in one). Nothing for a node that has no rate to follow the tempo by.
+ */
 export const SyncControl = memo(function SyncControl({ node }: { node: NodeId }) {
   const control = useDrive().modulatorField(node, "sync");
   const stored = useClientState((state) => modulatorFieldOf(state, node, "sync"));
@@ -570,15 +583,19 @@ export const SyncControl = memo(function SyncControl({ node }: { node: NodeId })
   const shown = pending ?? stored;
   if (shown === undefined) return null;
   return (
-    <Choice
-      label="Sync"
-      labels={SYNC_NAMES}
-      value={shown}
-      onChange={(chosen) => {
-        control.set(chosen);
-        control.commit();
-      }}
-    />
+    <span className="tang-node__sync nodrag nopan nowheel">
+      <Choice
+        inline
+        label="Sync"
+        title="Follow the tempo: how long a cycle is (a step, for a step sequencer), as a note length, in place of the rate"
+        labels={SYNC_NAMES}
+        value={shown}
+        onChange={(chosen) => {
+          control.set(chosen);
+          control.commit();
+        }}
+      />
+    </span>
   );
 });
 
@@ -693,7 +710,7 @@ export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; g
  * A setting of a modulator, in a cell of the node's grid: a choice for the waveform, which no cable ends at, and for the rest a
  * knob with a place on its top edge where a cable from another modulator ends (`driven`: one does).
  */
-export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, field, driven }: { node: NodeId; field: ModulatorField; driven: boolean }) {
+export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, field, driven }: { node: NodeId; field: SettingField; driven: boolean }) {
   if (field === "waveform") {
     return (
       <div className="tang-cell">
@@ -713,13 +730,6 @@ export const ModulatorSettingCell = memo(function ModulatorSettingCell({ node, f
     return (
       <div className="tang-cell">
         <RetriggerControl node={node} />
-      </div>
-    );
-  }
-  if (field === "sync") {
-    return (
-      <div className="tang-cell">
-        <SyncControl node={node} />
       </div>
     );
   }

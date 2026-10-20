@@ -217,7 +217,15 @@ describe("the patch", () => {
     expect(within(mod).getByText("LFO", { selector: ".tang-node__name" })).toBeTruthy();
     expect(mod.querySelector(".tang-node__badge")).toBeNull();
     // Its settings are controls, not words: a knob for the rate, a choice for the waveform, a choice for whether a note starts it again and a knob for the fade.
-    expect(controlsIn(mod)).toEqual(["Rate", "Wave", "Retrigger", "Fade"]);
+    expect(controlsIn(mod)).toEqual(["Sync", "Rate", "Wave", "Retrigger", "Fade"]);
+    // (The note length it follows the tempo by is chosen in the header, in a line with the name, and is not a cell of the grid: a fifth would make a second row.)
+    const sync = within(mod).getByRole("combobox", { name: "Sync" });
+    expect(mod.querySelector(".tang-node__header")?.contains(sync)).toBe(true);
+    expect(mod.querySelectorAll(".tang-node__controls > .tang-cell")).toHaveLength(4);
+    // (A choice in a line with the name and the button that takes the node out, which the canvas leaves alone when it is used and not drags the node by, and says what it is for.)
+    expect(sync.closest("label")?.classList.contains("tang-choice--inline")).toBe(true);
+    expect(sync.closest(".nodrag")).not.toBeNull();
+    expect(sync.closest("label")?.getAttribute("title")).toMatch(/tempo/);
     expect(within(mod).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuetext")).toBe("0.5 Hz");
     expect(within(mod).getByRole<HTMLSelectElement>("combobox", { name: "Wave" }).value).toBe("0");
     expect(within(mod).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("0");
@@ -309,13 +317,13 @@ describe("the patch", () => {
     snapshot.graph.nodes.push({ id: 90, parent: 1, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 3, retrigger: true, fade: 1.5, sync: 0 } });
     const { requests, clock } = await rig(<PatchView />, { snapshot });
     const keyed = await nodeOf(90);
-    expect(controlsIn(keyed)).toEqual(["Rate", "Wave", "Retrigger", "Fade"]);
+    expect(controlsIn(keyed)).toEqual(["Sync", "Rate", "Wave", "Retrigger", "Fade"]);
     expect(within(keyed).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("1");
     expect(within(keyed).getByRole("slider", { name: "Fade" }).getAttribute("aria-valuetext")).toBe("1.5 s");
-    // A cable ends at the rate; no cable ends at the switch or at the fade, and no modulator is made for them by a button.
+    // A cable ends at the rate; no cable ends at the switch, at the note length or at the fade, and no modulator is made for them by a button.
     expect(keyed.querySelector('.react-flow__handle[data-handleid="rate"]')).not.toBeNull();
-    for (const handle of ["retrigger", "fade"]) expect(keyed.querySelector(`.react-flow__handle[data-handleid="${handle}"]`), handle).toBeNull();
-    expect(within(keyed).queryByRole("button", { name: /^Modulate (retrigger|fade)/ })).toBeNull();
+    for (const handle of ["retrigger", "fade", "sync"]) expect(keyed.querySelector(`.react-flow__handle[data-handleid="${handle}"]`), handle).toBeNull();
+    expect(within(keyed).queryByRole("button", { name: /^Modulate (retrigger|fade|sync)/ })).toBeNull();
     // The fade, turned, is a setting of the LFO; so is the switch.
     fireEvent.keyDown(within(keyed).getByRole("slider", { name: "Fade" }), { key: "ArrowUp" });
     act(() => {
@@ -328,6 +336,17 @@ describe("the patch", () => {
     await waitFor(() => {
       expect(requests().at(-1)?.intent).toEqual({ type: "setModulatorField", node: 90, field: "retrigger", value: 0 });
     });
+    // The note length that it follows the tempo by is chosen from a list; once it is, the knob of the rate shows what the tempo makes of it (an eighth note at the tracer's 120
+    // beats a minute is 4 Hz) and cannot be turned.
+    expect(within(keyed).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuetext")).toBe("3 Hz");
+    fireEvent.change(within(keyed).getByRole("combobox", { name: "Sync" }), { target: { value: "11" } });
+    await waitFor(() => {
+      expect(requests().at(-1)?.intent).toEqual({ type: "setModulatorField", node: 90, field: "sync", value: 11 });
+    });
+    await waitFor(() => {
+      expect(within(keyed).getByRole("slider", { name: "Rate" }).getAttribute("aria-valuetext")).toBe("4 Hz");
+    });
+    expect(within(keyed).getByRole("slider", { name: "Rate" }).getAttribute("aria-disabled")).toBe("true");
   });
 
   test("gives a step sequencer its rate, which a cable can drive, and its glide, its length and its retrigger, which a person sets, and says nothing of its kind twice", async () => {
@@ -336,7 +355,9 @@ describe("the patch", () => {
     snapshot.graph.nodes.push({ id: 90, parent: 1, name: "Steps", kind: "modulator", source: { type: "steps", values, length: 4, rate: 6, glide: 0.25, retrigger: false, sync: 0 } });
     const { requests, clock } = await rig(<PatchView />, { snapshot });
     const sequencer = await nodeOf(90);
-    expect(controlsIn(sequencer)).toEqual(["Rate", "Glide", "Length", "Retrigger"]);
+    expect(controlsIn(sequencer)).toEqual(["Sync", "Rate", "Glide", "Length", "Retrigger"]);
+    expect(sequencer.querySelector(".tang-node__header")?.contains(within(sequencer).getByRole("combobox", { name: "Sync" }))).toBe(true);
+    expect(sequencer.querySelectorAll(".tang-node__controls > .tang-cell")).toHaveLength(4);
     expect(Array.from(sequencer.querySelectorAll('.tang-knob__dial[role="slider"]')).map((control) => control.getAttribute("aria-valuetext"))).toEqual(["6 Hz", "0.25", "4"]);
     expect(within(sequencer).getByRole<HTMLSelectElement>("combobox", { name: "Retrigger" }).value).toBe("0");
     // (Its name is its kind: no badge says it again.)
@@ -521,7 +542,7 @@ describe("the patch", () => {
       expect(added.textContent).toContain(kind === "velocity" ? "velocity of the last note" : "pitch of the last note");
     });
 
-    test("asks for a step sequencer when Step sequencer is chosen, and the node on the canvas has its four controls and its sixteen bars", async () => {
+    test("asks for a step sequencer when Step sequencer is chosen, and the node on the canvas has its four controls, the choice of a note length in its header and its sixteen bars", async () => {
       const { requests } = await rig(<PatchView />);
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Step sequencer" }));
@@ -529,7 +550,7 @@ describe("the patch", () => {
         expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind: "steps" }]);
       });
       const added = await screen.findByRole("group", { name: "Steps" });
-      expect(controlsIn(added)).toEqual(["Rate", "Glide", "Length", "Retrigger"]);
+      expect(controlsIn(added)).toEqual(["Sync", "Rate", "Glide", "Length", "Retrigger"]);
       const bars = within(within(added).getByRole("group", { name: "Steps of Steps" })).getAllByRole("slider");
       expect(bars).toHaveLength(16);
       // (A staircase, all in use.)

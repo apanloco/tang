@@ -51,4 +51,22 @@ describe("a choice of named values", () => {
     render(<Choice label="Waveform" labels={["sine", "saw"]} value={0} />);
     expect(screen.getByText("Waveform")).toBeTruthy();
   });
+
+  test("one that is inline is in a line with what is by it, and keeps its label as its name; one that is not stands over its label", () => {
+    const lengths = ["free", "1/8", "1/16 triplet"];
+    const { rerender } = render(<Choice label="Sync" labels={lengths} value={0} />);
+    expect(screen.getByRole("combobox", { name: "Sync" }).closest("label")?.classList.contains("tang-choice--inline")).toBe(false);
+    rerender(<Choice inline label="Sync" labels={lengths} value={0} />);
+    const select = screen.getByRole<HTMLSelectElement>("combobox", { name: "Sync" });
+    expect(select.closest("label")?.classList.contains("tang-choice--inline")).toBe(true);
+    // (It is still a choice: it says what is chosen.)
+    expect(select.selectedOptions[0]?.textContent).toBe("free");
+  });
+
+  test("tells the pointer what it is when it is given something to say, and nothing when it is not", () => {
+    const { rerender } = render(<Choice label="Sync" labels={["free", "1/8"]} value={0} title="Follow the tempo" />);
+    expect(screen.getByRole("combobox", { name: "Sync" }).closest("label")?.getAttribute("title")).toBe("Follow the tempo");
+    rerender(<Choice label="Sync" labels={["free", "1/8"]} value={0} />);
+    expect(screen.getByRole("combobox", { name: "Sync" }).closest("label")?.hasAttribute("title")).toBe(false);
+  });
 });

@@ -20,7 +20,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell, StepsControl } from "./controls";
+import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
@@ -482,6 +482,8 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   return (
     <div className="tang-node tang-node--modulator">
       <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}>
+        {/* (The note length that an LFO or a step sequencer follows the tempo by: no other kind has one, and the control is nothing for it.) */}
+        <SyncControl node={data.node} />
         <RemoveNodeButton node={data.node} name={data.name} parent={node?.parent ?? null} focusTo={addModulatorId} />
       </Header>
       {settings.length > 0 ? (

@@ -681,6 +681,66 @@ describe("the note length that an LFO or a step sequencer follows the tempo by",
   });
 });
 
+describe("the rate of a modulator that follows the tempo", () => {
+  /** The tracer, with its LFO following the tempo by the place `sync` in the list of note lengths (an eighth note is 11), at `bpm` beats a minute. Its own rate is 0.5. */
+  const following = (sync: number, bpm = 120): Snapshot => {
+    const snapshot: Snapshot = structuredClone(tracerSnapshot);
+    snapshot.graph.nodes = snapshot.graph.nodes.map((node) => (node.id === lfo.id && node.kind === "modulator" && node.source.type === "lfo" ? { ...node, source: { ...node.source, sync } } : node));
+    snapshot.meta.bpm = bpm;
+    return snapshot;
+  };
+  const rate = () => slider("Rate");
+
+  test("is the knob of the rate that the tempo makes of the note length, and cannot be turned: an eighth note at 120 beats a minute is 4 Hz, and a knob that is dragged sends nothing", async () => {
+    const { requests, clock } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: following(11) });
+    expect(rate().getAttribute("aria-valuenow")).toBe("4");
+    expect(rate().getAttribute("aria-valuetext")).toBe("4 Hz");
+    expect(rate().getAttribute("aria-disabled")).toBe("true");
+    drag(rate(), 50);
+    act(() => {
+      clock.tick(16);
+    });
+    await settle();
+    expect(requests()).toEqual([]);
+    expect(rate().getAttribute("aria-valuenow")).toBe("4");
+  });
+
+  test("goes by the tempo as it changes: half the tempo, half the rate", async () => {
+    const { server } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: following(11) });
+    act(() => {
+      server.apply({ type: "setBpm", bpm: 60 });
+    });
+    await waitFor(() => {
+      expect(rate().getAttribute("aria-valuenow")).toBe("2");
+    });
+  });
+
+  test("is the knob of its own rate, which it kept, as soon as it is free again, and can be turned", async () => {
+    const { server, requests, clock } = await rig(<ModulatorFieldControl node={lfo.id} field="rate" />, { snapshot: following(11) });
+    act(() => {
+      server.apply({ type: "setModulatorField", node: lfo.id, field: "sync", value: 0 });
+    });
+    await waitFor(() => {
+      expect(rate().getAttribute("aria-valuenow")).toBe("0.5");
+    });
+    expect(rate().getAttribute("aria-disabled")).toBeNull();
+    drag(rate(), 50);
+    act(() => {
+      clock.tick(16);
+    });
+    await waitFor(() => {
+      expect(requests()).toHaveLength(1);
+    });
+    expect(requests()[0]?.intent).toMatchObject({ type: "setModulatorField", node: lfo.id, field: "rate" });
+  });
+
+  test("is an ordinary knob for a modulator that is free, at its own rate", async () => {
+    await rig(<ModulatorFieldControl node={lfo.id} field="rate" />);
+    expect(rate().getAttribute("aria-valuenow")).toBe("0.5");
+    expect(rate().getAttribute("aria-disabled")).toBeNull();
+  });
+});
+
 describe("the bars of a step sequencer", () => {
   /** The bars of a node (they have no layout in jsdom: a box 160 wide and 64 tall is what they are told to be in), and what they show. */
   const barsOf = (name = "Steps of Steps") => {

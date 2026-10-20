@@ -24,8 +24,14 @@ export function kindOf(source: ModulatorSource): string {
   }
 }
 
+/**
+ * A setting that is a cell of its node's grid of controls. The note length that an LFO or a step sequencer follows the tempo by is not: it is a choice in the node's header
+ * (`SyncControl`), since a fifth control would make the grid a second row taller than the layout assumes, and its names (`1/16 triplet`) are longer than a cell has room for.
+ */
+export type SettingField = Exclude<ModulatorField, "sync">;
+
 /** The settings a source has, in the order its node shows them as controls. */
-export function settingsOf(source: ModulatorSource): readonly ModulatorField[] {
+export function settingsOf(source: ModulatorSource): readonly SettingField[] {
   switch (source.type) {
     case "lfo":
       return ["rate", "waveform", "retrigger", "fade"];

@@ -3641,6 +3641,63 @@ describe("what an LFO puts out in the mock engine when a note starts it again an
   });
 });
 
+describe("what an LFO and a step sequencer put out in the mock engine when they follow the tempo", () => {
+  /** The tracer's LFO as a saw that goes round once a second of its own, and follows the tempo by the place `sync` in the list of note lengths (0 for none), at `bpm` beats a minute. */
+  const lfoAt = (sync: number, bpm = 120): Snapshot => {
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" && node.source.type === "lfo" ? { ...node, source: { ...node.source, waveform: "saw" as const, rate: 1, sync } } : node));
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes }, meta: { ...tracerSnapshot.meta, bpm } };
+  };
+  /** The tracer's LFO as a step sequencer of two steps, 0.5 and -0.5, at one step a second of its own, that follows the tempo by `sync`, with a slot for where it is. */
+  const sequencerAt = (sync: number, bpm = 120): Snapshot => {
+    const values = [0.5, -0.5, ...Array<number>(14).fill(0)];
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "modulator" ? { ...node, name: "Steps", source: { type: "steps" as const, values, length: 2, rate: 1, glide: 0, retrigger: false, sync } } : node));
+    const slot = Math.max(...tracerSnapshot.telemetry.modulation.map((entry) => entry.slot)) + 1;
+    const position = { slot, node: lfo.id, port: { type: "modOut" as const }, kind: "modPosition" as const };
+    return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes }, telemetry: { ...tracerSnapshot.telemetry, modulation: [position, ...tracerSnapshot.telemetry.modulation] }, meta: { ...tracerSnapshot.meta, bpm } };
+  };
+  const outputOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modOutput");
+  const positionOf = (client: Client): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "modOut" }, "modPosition");
+  const near = (value: number | undefined, expected: number): boolean => value !== undefined && Math.abs(value - expected) < 1e-5;
+
+  test("goes at the tempo's rate and not its own: a quarter note at 120 beats a minute is two cycles a second, where its own rate is one", async () => {
+    // A saw is at twice the part of a cycle it is at, less 1: at 0.3 s that is 0.6 cycles at 2 a second (0.2) and 0.3 at its own one (-0.4).
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: lfoAt(8), clock: () => 0.3 }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), 0.2), "0.2 at 0.3 s, which is two cycles a second");
+  });
+
+  test("goes at its own rate when it is free, and again when it is made free: the rate it kept", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: lfoAt(8), clock: () => 0.3 }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), 0.2), "following the tempo");
+    await client.request({ type: "setModulatorField", node: lfo.id, field: "sync", value: 0 });
+    await until(() => near(outputOf(client), -0.4), "at its own one cycle a second");
+  });
+
+  test("follows the tempo when it is set: half the tempo, half the rate", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: lfoAt(8), clock: () => 0.3 }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), 0.2), "at 120 beats a minute");
+    await client.request({ type: "setBpm", bpm: 60 });
+    await until(() => near(outputOf(client), -0.4), "at 60 a quarter note is one cycle a second");
+  });
+
+  test("is as it was for an LFO that is free, whatever the tempo", async () => {
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: lfoAt(0, 300), clock: () => 0.3 }), { telemetry: ["modulation"] });
+    await until(() => near(outputOf(client), -0.4), "its own rate, at any tempo");
+  });
+
+  test("a step sequencer that follows the tempo goes through a step in its note length: an eighth note at 120 beats a minute is four steps a second, and its place is where that puts it", async () => {
+    // At 0.375 s that is 1.5 steps (half way into the second step), where its own rate of one a second would have it at 0.375.
+    let now = 0.375;
+    const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: sequencerAt(11), clock: () => now }), { telemetry: ["modulation"] });
+    await until(() => near(positionOf(client), 1.5), "half way into the second step");
+    expect(near(outputOf(client), -0.5)).toBe(true);
+    now = 0.625;
+    await until(() => near(positionOf(client), 0.5), "2.5 steps, round again at its length of two: half way into the first");
+    await client.request({ type: "setBpm", bpm: 60 });
+    now = 0.75;
+    await until(() => near(positionOf(client), 1.5), "at 60 beats a minute it is two steps a second: 1.5 steps");
+  });
+});
+
 /** A transport to a mock server whose words to the client can be held back, and let through all at once. */
 function gated(server: MockServer): { transport: TransportFactory; hold: () => void; release: () => void } {
   let holding = false;
