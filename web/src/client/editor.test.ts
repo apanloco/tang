@@ -1282,6 +1282,90 @@ describe("taking a cable out", () => {
   });
 });
 
+describe("drawing an audio cable", () => {
+  const audioCables = (client: Client): Edge[] => (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "cable");
+
+  test("asks for one from the output of a node to the input of another, at the level a new cable has when none is given, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addAudioCable(oscillator.id, MASTER)).toBe(true);
+    // (The tracer's cable of modulation has the first id, and an audio cable has the next: they are one series.)
+    expect(audioCables(client)).toEqual([{ kind: "cable", id: 1, gain: 1, from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } } }]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("asks for the level it is given, which the server holds to the levels there can be", async () => {
+    const { client, editor } = await open();
+    expect(await editor.addAudioCable(oscillator.id, filter.id, 0.25)).toBe(true);
+    expect(await editor.addAudioCable(filter.id, MASTER, 9)).toBe(true);
+    expect(audioCables(client).map((e) => (e.kind === "cable" ? [e.id, e.gain] : []))).toEqual([
+      [1, 0.25],
+      [2, 2],
+    ]);
+  });
+
+  test("says what could not be done, in the names of the canvas and the controller's words, when it is refused, and changes nothing", async () => {
+    const { client, notices, editor } = await open();
+    // (The board keeps the last few notices only: each is read when it is said.)
+    const refused = async (call: Promise<boolean>): Promise<string | undefined> => {
+      expect(await call).toBe(false);
+      return said(notices).at(-1);
+    };
+    expect(await refused(editor.addAudioCable(oscillator.id, oscillator.id))).toBe(
+      "Could not draw an audio cable from Oscillator to Oscillator: a lane has no input of audio: a cable ends at an effect, a group or the mix",
+    );
+    expect(await refused(editor.addAudioCable(filter.id, filter.id))).toBe("Could not draw an audio cable from Filter to Filter: that cable would make the audio go round: it would feed what it comes from");
+    expect(await refused(editor.addAudioCable(oscillator.id, 99))).toBe("Could not draw an audio cable from Oscillator to that node: there is no node 99");
+    expect(await refused(editor.addAudioCable(MASTER, filter.id))).toBe("Could not draw an audio cable from Master to Filter: the mix has no output of audio");
+    expect(await refused(editor.addAudioCable(lfo.id, filter.id))).toBe("Could not draw an audio cable from LFO to Filter: a modulator has no output of audio");
+    expect(audioCables(client)).toEqual([]);
+  });
+
+  test("does not send a level that is not a number, which the wire would write as none and draw at the level a new cable has: it says so", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addAudioCable(oscillator.id, filter.id, Number.NaN)).toBe(false);
+    expect(await editor.addAudioCable(oscillator.id, filter.id, Number.POSITIVE_INFINITY)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not draw an audio cable from Oscillator to Filter: NaN is not a value for the level of a cable",
+      "Could not draw an audio cable from Oscillator to Filter: Infinity is not a value for the level of a cable",
+    ]);
+    expect(audioCables(client)).toEqual([]);
+  });
+
+  test("is refused when there is a cable between the two already, and the one that is there stays", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addAudioCable(oscillator.id, MASTER, 0.5)).toBe(true);
+    expect(await editor.addAudioCable(oscillator.id, MASTER, 0.75)).toBe(false);
+    expect(said(notices)).toEqual(["Could not draw an audio cable from Oscillator to Master: there is a cable between those two already"]);
+    expect(audioCables(client)).toHaveLength(1);
+  });
+
+  test("says what could not be done when the connection is gone", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.addAudioCable(oscillator.id, MASTER)).toBe(false);
+    expect(said(notices)).toEqual(["Could not draw an audio cable from Oscillator to Master: Not connected to the server."]);
+  });
+});
+
+describe("taking an audio cable out", () => {
+  test("takes it out, and says nothing; the cable of modulation that the session has stays", async () => {
+    const { client, notices, editor } = await open();
+    await editor.addAudioCable(oscillator.id, MASTER);
+    expect(await editor.removeCable(1)).toBe(true);
+    expect(client.state.snapshot?.graph.edges.filter((e) => e.kind === "cable")).toEqual([]);
+    expect(client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation")).toHaveLength(1);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("names the audio cable it could not take out, by what it joins, when the connection is gone", async () => {
+    const { client, notices, editor } = await open();
+    await editor.addAudioCable(oscillator.id, filter.id);
+    client.stop();
+    expect(await editor.removeCable(1)).toBe(false);
+    expect(said(notices)).toEqual(["Could not take out the cable Oscillator → Filter: Not connected to the server."]);
+  });
+});
+
 describe("saving", () => {
   const noFile = (): MockOptions => ({ snapshot: { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, file: null } } });
 

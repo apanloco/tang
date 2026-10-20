@@ -308,6 +308,22 @@ export class Editor {
   }
 
   /**
+   * Draw an audio cable from the output of the node `from` (a lane's instrument, an effect or a group) to the input of the node `to` (an effect, the bus of a group or the master),
+   * at the level `gain` (held to the levels a cable can have), or at the level a new cable has when there is none. The audio of `from` goes there as well as where it went. True if it
+   * was drawn (the page says why if it was not: a lane has no input, a cable between the two is there already, the audio would go round).
+   */
+  addAudioCable(from: NodeId, to: NodeId, gain: number | null = null): Promise<boolean> {
+    const ends = { from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } } } as const;
+    const what = `draw an audio cable from ${this.#words(ends).replaceAll(" → ", " to ")}`;
+    // (A number that is not a number cannot be sent: it is written as none, which is a cable at the level a new one has, and not the one that was asked for.)
+    if (gain !== null && !Number.isFinite(gain)) {
+      this.#notices.say(`Could not ${what}: ${String(gain)} is not a value for the level of a cable`);
+      return Promise.resolve(false);
+    }
+    return this.#attempt(what, { type: "addCable", from: ends.from, to: ends.to, gain });
+  }
+
+  /**
    * Make a modulator of `kind` for what the port `to` of the node `node` is, and draw a cable from it to the port, as one change that is one step
    * of the history (`Modulate`): a parameter of the plugin in it (by the plugin's own index), or a setting of a modulator (its rate, a stage of its
    * envelope), or the depth of one of its cables. The modulator goes in the rack that reaches the port: the lane's for a lane's instrument or an
@@ -420,9 +436,9 @@ export class Editor {
     return cableWords(this.#graph ?? { nodes: [], edges: [] }, this.#names, cable);
   }
 
-  /** A cable in words, as the canvas labels it; "that cable" if it is not in the session. */
+  /** A cable in words, as the canvas labels it (a cable of modulation or an audio cable: their ids are one series); "that cable" if it is not in the session. */
   #cable(edge: EdgeId): string {
-    const found = this.#graph?.edges.find((e) => e.kind === "modulation" && e.id === edge);
+    const found = this.#graph?.edges.find((e) => (e.kind === "modulation" || e.kind === "cable") && e.id === edge);
     return found ? `the cable ${this.#words(found)}` : "that cable";
   }
 

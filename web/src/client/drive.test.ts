@@ -365,6 +365,10 @@ describe("the controls of a session", () => {
     expect(drive.modulatorField(2, "rate")).not.toBe(drive.modulatorField(3, "rate"));
     expect(drive.cableDepth(7)).toBe(drive.cableDepth(7));
     expect(drive.cableDepth(7)).not.toBe(drive.cableDepth(8));
+    expect(drive.cableGain(7)).toBe(drive.cableGain(7));
+    expect(drive.cableGain(7)).not.toBe(drive.cableGain(8));
+    // (The level of an audio cable is not the depth of a cable of modulation that has the same number: they are one series of ids, and two things.)
+    expect(drive.cableGain(7)).not.toBe(drive.cableDepth(7));
     // (Not the control of a parameter or a gain that has the same numbers.)
     expect(drive.modulatorField(2, "rate")).not.toBe(drive.param(2, 0));
     expect(drive.cableDepth(2)).not.toBe(drive.gain(2, "volume"));
@@ -380,6 +384,16 @@ describe("the controls of a session", () => {
       { type: "setModulatorField", node: 5, field: "sustain", value: 0.25 },
       { type: "setEdgeDepth", edge: 9, depth: -0.75 },
     ]);
+  });
+
+  test("send the level of an audio cable as setCableGain, the latest once for a frame, and not a number that is none", () => {
+    const { drive, calls, clock } = setup();
+    const level = drive.cableGain(4);
+    level.set(0.5);
+    level.set(1.25);
+    level.set(Number.NaN);
+    clock.tick(16);
+    expect(calls.map((call) => call.intent)).toEqual([{ type: "setCableGain", edge: 4, gain: 1.25 }]);
   });
 
   test("are one for each step sequencer, and not the control of a setting that has the same number", () => {

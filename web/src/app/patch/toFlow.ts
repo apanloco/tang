@@ -99,17 +99,17 @@ export interface CableRow {
 
 export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
 
-export type PatchEdgeKind = "audio" | "modulation";
+export type PatchEdgeKind = "audio" | "modulation" | "send";
 
 export interface PatchEdgeData extends Record<string, unknown> {
   /**
-   * The id of a modulation cable, by which the cable reads how deep it goes (a value, which is
+   * The id of a modulation cable, by which the cable reads how deep it goes, or of an audio cable (a `send`), by which it reads how loud it is (a value, which is
    * turned at the pace of the frames, and so not part of what the canvas is laid out by).
    */
   cable?: EdgeId;
   /** The modulator that drives the cable, whose list the focus goes to when the cable is taken out. */
   modulator?: NodeId;
-  /** What the cable is, in words: `LFO → Filter: cutoff`. */
+  /** What the cable is, in words: `LFO → Filter: cutoff`, `Oscillator → Reverb`. */
   label?: string;
 }
 
@@ -663,10 +663,12 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle: handleOf(edge.from.port), targetHandle: handleOf(edge.to.port), deletable: false };
     if (edge.kind === "modulation") {
       edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: cableWords(graph, names, edge) }, zIndex: 10 });
-    } else if (edge.kind !== "cable") {
+    } else if (edge.kind === "cable") {
+      // (An audio cable that has been drawn between two places: over the links of the audio path and under the cables of modulation. It moves no node.)
+      edges.push({ ...common, id: `send:${String(edge.id)}`, type: "send", data: { cable: edge.id, label: cableWords(graph, names, edge) }, zIndex: 5 });
+    } else {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
-    // (An audio cable that has been drawn between two places is not drawn on the canvas yet: P3d.)
   }
   return { nodes, edges, places, arranged };
 }

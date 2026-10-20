@@ -274,6 +274,12 @@ export function cableDepthOf(state: ClientState, id: EdgeId): number | undefined
   return cable?.kind === "modulation" ? cable.amount : undefined;
 }
 
+/** How loud the audio cable with this id is (its level, 0 to 2), if there is one: the ids of the two kinds of cable are one series, and a cable of modulation has a depth and no level. */
+export function cableGainOf(state: ClientState, id: EdgeId): number | undefined {
+  const cable = state.snapshot?.graph.edges.find((edge) => edge.kind === "cable" && edge.id === id);
+  return cable?.kind === "cable" ? cable.gain : undefined;
+}
+
 /** The modulator the modulation cable with this id starts at, if there is one: the node that the depth of the cable is a setting of (the layout of the telemetry names its value there). */
 export function cableSourceOf(state: ClientState, id: EdgeId): NodeId | undefined {
   const cable = state.snapshot?.graph.edges.find((edge) => edge.kind === "modulation" && edge.id === id);

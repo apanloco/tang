@@ -156,6 +156,11 @@ export class Drive {
     return this.#numeric(`depth:${String(edge)}`, (depth) => ({ type: "setEdgeDepth", edge, depth }));
   }
 
+  /** The control of how loud an audio cable is: its level, 0 to 2, which the server holds it to. */
+  cableGain(edge: EdgeId): Control {
+    return this.#numeric(`level:${String(edge)}`, (gain) => ({ type: "setCableGain", edge, gain }));
+  }
+
   /** The control of all the steps of the step sequencer in `node`: a stroke across its bars sets them all at once, a frame at a time. */
   steps(node: NodeId): Control<readonly number[]> {
     return this.#control(

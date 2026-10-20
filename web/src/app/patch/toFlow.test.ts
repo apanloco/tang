@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
-import { MASTER, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, tracerSnapshot } from "../../client/fixtures";
 import { DEFAULT_KNOBS } from "../../client/pinning";
 import {
   CABLE_GAP,
@@ -1700,16 +1700,55 @@ describe("a node that shows a scope", () => {
 });
 
 describe("an audio cable that has been drawn between two places", () => {
-  test("is not drawn on the canvas yet, and changes nothing of what is", () => {
-    const base = tracerSnapshot.graph;
-    const oscillator = base.nodes.find((n) => n.kind === "instrument");
-    if (!oscillator) throw new Error("no instrument");
-    const send: Edge = { kind: "cable", id: 31, gain: 0.5, from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } } };
-    const without = toFlow(base);
-    const with_ = toFlow({ nodes: base.nodes, edges: [...base.edges, send] });
-    expect(with_.edges).toEqual(without.edges);
+  // The session of the audio cables fixture: group 0 (Pad) with Filter 1, Reverb 2 and Delay 3 on its bus; lane 4 in it with Filter 5 and Delay 6; lane 8 with Drive 9; empty lane 10.
+  // The cables: 1 from lane 8 to Filter 5, 2 from Filter 5 to Delay 6, 3 from the group's output to Drive 9, 4 from Filter 1 to Reverb 2, 5 from Delay 6 to the group's bus, 6 from Reverb 2 to the mix.
+  const patched = audioCablesFixture.snapshot.graph;
+  const withoutCables: Graph = { nodes: patched.nodes, edges: patched.edges.filter((e) => e.kind !== "cable") };
+
+  test("is an edge of its own from the output of its start to the input of its end, with the id of the cable and its words, in the order of the graph", () => {
+    const sends = toFlow(patched).edges.filter((edge) => edge.type === "send");
+    expect(sends.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle])).toEqual([
+      ["send:1", "8", "audioOut", "5", "audioIn"],
+      ["send:2", "5", "audioOut", "6", "audioIn"],
+      ["send:3", "0", "audioOut", "9", "audioIn"],
+      ["send:4", "1", "audioOut", "2", "audioIn"],
+      ["send:5", "6", "audioOut", "0", "audioIn"],
+      ["send:6", "2", "audioOut", String(MASTER), "audioIn"],
+    ]);
+    // (Told by the names the canvas gives the nodes, the numbers of the ones that share a name among them. How loud it is is a value, which the cable reads for itself.)
+    expect(sends.map((edge) => edge.data)).toEqual([
+      { cable: 1, label: "Oscillator 2 → Filter 2" },
+      { cable: 2, label: "Filter 2 → Delay 2" },
+      { cable: 3, label: "Pad → Drive" },
+      { cable: 4, label: "Filter 1 → Reverb" },
+      { cable: 5, label: "Delay 2 → Pad" },
+      { cable: 6, label: "Reverb → Master" },
+    ]);
+    expect(sends.every((edge) => edge.deletable === false)).toBe(true);
+  });
+
+  test("is listed after the links of the audio path and before the cables of modulation, over the one and under the other", () => {
+    const kinds = toFlow(patched).edges.map((edge) => edge.type);
+    expect(kinds).toEqual([...Array<string>(10).fill("audio"), ...Array<string>(6).fill("send"), "modulation"]);
+    const edges = toFlow(patched).edges;
+    const zOf = (type: string): number => edges.find((edge) => edge.type === type)?.zIndex ?? 0;
+    expect(zOf("send")).toBeGreaterThan(zOf("audio"));
+    expect(zOf("send")).toBeLessThan(zOf("modulation"));
+  });
+
+  test("changes nothing of where the nodes are, nor of the places that the layout remembers", () => {
+    const without = toFlow(withoutCables);
+    const with_ = toFlow(patched);
     expect(with_.nodes).toEqual(without.nodes);
     expect([...with_.places]).toEqual([...without.places]);
+    expect(with_.arranged).toBe(without.arranged);
+    // (And the audio path is what it was.)
+    expect(with_.edges.filter((edge) => edge.type === "audio")).toEqual(without.edges.filter((edge) => edge.type === "audio"));
+  });
+
+  test("is not there in a graph that has none", () => {
+    expect(toFlow(withoutCables).edges.filter((edge) => edge.type === "send")).toHaveLength(0);
+    expect(toFlow(tracerSnapshot.graph).edges.filter((edge) => edge.type === "send")).toHaveLength(0);
   });
 });
 

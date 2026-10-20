@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
-import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
+import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
+import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -189,6 +189,26 @@ describe("the settings of a modulator and the depths of its cables", () => {
     // The audio edges have no id of the kind: the number that is the id of a cable is not theirs.
     expect(tracerSnapshot.graph.edges.filter((edge) => edge.kind !== "modulation")).not.toHaveLength(0);
     expect(cableDepthOf(state, 1)).toBeUndefined();
+  });
+});
+
+describe("finding the level of an audio cable", () => {
+  const withSends = stateOf(audioCablesFixture.snapshot);
+
+  test("by its id, and none for an id that is no audio cable's: a cable of modulation's, one that is not there, or a session that is not there", () => {
+    expect(cableGainOf(withSends, 1)).toBe(0.5);
+    expect(cableGainOf(withSends, 2)).toBe(0.75);
+    expect(cableGainOf(withSends, 3)).toBe(1.5);
+    expect(cableGainOf(withSends, 4)).toBe(1);
+    expect(cableGainOf(withSends, 0)).toBeUndefined(); // the LFO's cable
+    expect(cableGainOf(withSends, 12345)).toBeUndefined();
+    expect(cableGainOf(stateOf(null), 1)).toBeUndefined();
+    expect(cableGainOf(state, 0)).toBeUndefined();
+  });
+
+  test("and the depth of a cable is not found for an audio cable", () => {
+    expect(cableDepthOf(withSends, 1)).toBeUndefined();
+    expect(cableDepthOf(withSends, 0)).toBe(0.5);
   });
 });
 
