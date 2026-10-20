@@ -48,6 +48,8 @@ pub(super) enum Stage {
     Fx(NodeId),
     /// The end of a lane (its id): the metronome's click, the fade of a mute and a solo, the meter, the learned controls. Or of a group (its id): the pan, the fade, the meter.
     Tail(NodeId),
+    /// An audio cable that a person drew (its id): the node that its level is made by.
+    Cable(EdgeId),
     /// The output mix.
     Master,
 }
@@ -262,6 +264,36 @@ impl Group {
     }
 }
 
+/// An audio cable that has been drawn, as the engine has it (P3b of `docs/patch-graph.md` §11.6): where it starts and ends, the level that was set, and where its level is.
+pub(super) struct Cable {
+    id: EdgeId,
+    from: CableFrom,
+    to: CableTo,
+    /// The level that was set.
+    gain: f32,
+    /// The level it was at when the last buffer ended: 0 for a cable that has just been drawn, so that it comes in over a buffer.
+    at: f32,
+    /// The level it is to be at when this buffer ends: `gain` times what its owner is heard at, and 0 for a cable that has been told to go.
+    goal: f32,
+    /// Told to go: it goes down to nothing over one buffer, and is then taken out.
+    leaving: bool,
+}
+
+impl Cable {
+    pub(super) fn new(id: EdgeId, from: CableFrom, to: CableTo, gain: f32) -> Cable {
+        Cable { id, from, to, gain, at: 0.0, goal: 0.0, leaving: false }
+    }
+
+    /// The cable as a node: what it is given is let through at the level that it is going to, from the level it was at, over the buffer (so that it comes, goes and is turned
+    /// without a click, as a mute is: `fade`), and handed on.
+    fn run_node(&mut self, io: &mut Io, num_channels: usize) -> Result<()> {
+        fade(&mut io.inputs_mut()[0], num_channels, self.at, self.goal);
+        self.at = self.goal;
+        io.forward(0, 0);
+        Ok(())
+    }
+}
+
 /// Where a node of the plan is kept: a lane or a group at a place of its vector, or an effect at a place of the chain of one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
@@ -269,6 +301,7 @@ enum Place {
     LaneFx(usize, usize),
     Group(usize),
     GroupFx(usize, usize),
+    Cable(usize),
 }
 
 /// The nodes of the plan, by name: what `Plan::run` asks for a block of.
@@ -276,6 +309,7 @@ struct Store<'a> {
     lanes: &'a mut [InstrumentLane],
     groups: &'a mut [Group],
     master: &'a mut Master,
+    cables: &'a mut [Cable],
     /// Where each node was when the plan was made, in the order of the stages.
     places: &'a [(Stage, Place)],
 }
@@ -313,6 +347,10 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
                 Some(group) if group.effect_nodes.get(index) == Some(&id) => group.run_fx(index, io, cx),
                 _ => Ok(()),
             },
+            (Stage::Cable(id), Place::Cable(at)) => match self.cables.get_mut(at) {
+                Some(cable) if cable.id == id => cable.run_node(io, cx.num_channels),
+                _ => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -331,6 +369,13 @@ const LANE: u64 = 1 << 32;
 const GROUP_OF: u64 = 2 << 32;
 const GROUP: u64 = 3 << 32;
 const EFFECT: u64 = 4 << 32;
+const CABLE: u64 = 5 << 32;
+const FROM_INSTRUMENT: u64 = 6 << 32;
+const FROM_EFFECT: u64 = 7 << 32;
+const FROM_GROUP: u64 = 8 << 32;
+const TO_EFFECT: u64 = 9 << 32;
+const TO_BUS: u64 = 10 << 32;
+const TO_MASTER: u64 = 11 << 32;
 const NO_GROUP: u64 = u32::MAX as u64;
 
 impl Shape {
@@ -340,8 +385,8 @@ impl Shape {
         self.list.clone_from(&other.list);
     }
 
-    /// Read the wiring of `lanes` and `groups` into this, keeping the room it has.
-    fn read(&mut self, lanes: &[InstrumentLane], groups: &[Group], channels: usize) {
+    /// Read the wiring of `lanes`, `groups` and `cables` into this, keeping the room it has.
+    fn read(&mut self, lanes: &[InstrumentLane], groups: &[Group], cables: &[Cable], channels: usize) {
         self.channels = channels;
         self.list.clear();
         for lane in lanes {
@@ -353,6 +398,140 @@ impl Shape {
             self.list.push(GROUP | u64::from(group.node.0));
             self.list.extend(group.effect_nodes.iter().map(|effect| EFFECT | u64::from(effect.0)));
         }
+        for cable in cables {
+            self.list.push(CABLE | u64::from(cable.id.0));
+            self.list.push(match cable.from {
+                CableFrom::Instrument(id) => FROM_INSTRUMENT | u64::from(id.0),
+                CableFrom::Effect(id) => FROM_EFFECT | u64::from(id.0),
+                CableFrom::Group(id) => FROM_GROUP | u64::from(id.0),
+            });
+            self.list.push(match cable.to {
+                CableTo::Effect(id) => TO_EFFECT | u64::from(id.0),
+                CableTo::GroupBus(id) => TO_BUS | u64::from(id.0),
+                CableTo::Master => TO_MASTER,
+            });
+        }
+    }
+}
+
+impl CableFrom {
+    /// The node of the plan that the cable starts at (its output 0).
+    fn stage(self) -> Stage {
+        match self {
+            CableFrom::Instrument(id) => Stage::Head(id),
+            CableFrom::Effect(id) => Stage::Fx(id),
+            CableFrom::Group(id) => Stage::Tail(id),
+        }
+    }
+}
+
+impl CableTo {
+    /// The node of the plan that the cable ends at (its input 0).
+    fn stage(self) -> Stage {
+        match self {
+            CableTo::Effect(id) => Stage::Fx(id),
+            CableTo::GroupBus(id) => Stage::Head(id),
+            CableTo::Master => Stage::Master,
+        }
+    }
+}
+
+/// The rank of the node that a cable starts at: its owner's, a lane's place or the place of a group after the lanes. None if what `from` names is not in the wiring (or is not what
+/// it says: the id of a group is no instrument).
+fn start_rank(from: CableFrom, lanes: &[InstrumentLane], groups: &[Group]) -> Option<u32> {
+    let lane_count = lanes.len() as u32;
+    let in_a_group = |at: usize| lane_count + at as u32;
+    match from {
+        CableFrom::Instrument(id) => lanes.iter().position(|lane| lane.node == id).map(|at| at as u32),
+        CableFrom::Group(id) => groups.iter().position(|group| group.node == id).map(in_a_group),
+        CableFrom::Effect(id) => lanes
+            .iter()
+            .position(|lane| lane.effect_nodes.contains(&id))
+            .map(|at| at as u32)
+            .or_else(|| groups.iter().position(|group| group.effect_nodes.contains(&id)).map(in_a_group)),
+    }
+}
+
+/// Whether what a cable ends at is in the wiring.
+fn end_exists(to: CableTo, lanes: &[InstrumentLane], groups: &[Group]) -> bool {
+    match to {
+        CableTo::Effect(id) => lanes.iter().any(|lane| lane.effect_nodes.contains(&id)) || groups.iter().any(|group| group.effect_nodes.contains(&id)),
+        CableTo::GroupBus(id) => groups.iter().any(|group| group.node == id),
+        CableTo::Master => true,
+    }
+}
+
+/// What the owner of a cable's start is heard at in this block (1 or 0), found by the place that the plan has for the node, and a node that is not at its place is heard at
+/// nothing, as it makes silence. The output of a group has been let in or out already, so a cable from it is not gated again.
+fn heard_at(from: CableFrom, places: &[(Stage, Place)], lanes: &[InstrumentLane], groups: &[Group]) -> f32 {
+    let find = |stage: Stage| places.binary_search_by_key(&stage, |&(stage, _)| stage).ok().map(|found| places[found].1);
+    match from {
+        CableFrom::Group(_) => 1.0,
+        CableFrom::Instrument(id) => match find(Stage::Head(id)) {
+            Some(Place::Lane(at)) => lanes.get(at).filter(|lane| lane.node == id).map_or(0.0, |lane| lane.heard_goal),
+            _ => 0.0,
+        },
+        CableFrom::Effect(id) => match find(Stage::Fx(id)) {
+            Some(Place::LaneFx(at, index)) => lanes.get(at).filter(|lane| lane.effect_nodes.get(index) == Some(&id)).map_or(0.0, |lane| lane.heard_goal),
+            Some(Place::GroupFx(at, index)) => groups.get(at).filter(|group| group.effect_nodes.get(index) == Some(&id)).map_or(0.0, |group| group.heard_goal),
+            _ => 0.0,
+        },
+    }
+}
+
+/// Make `patch` the wiring of the lanes, the groups and the cables (see `Schedule::compile`). A cable with an end that is not in the wiring is left out.
+fn build_patch<'a>(patch: &mut Patch<Stage>, lanes: &[InstrumentLane], groups: &[Group], cables: impl Iterator<Item = &'a Cable> + Clone, channels: usize) {
+    let audio = PortSpec::audio(channels as u16);
+    let chain = PortSpec::single(channels as u16);
+    let lane_count = lanes.len() as u32;
+    patch.clear();
+    patch.add_node(Stage::Master, NodeSpec::new(vec![audio], vec![], u32::MAX));
+    for (at, lane) in lanes.iter().enumerate() {
+        let rank = at as u32;
+        patch.add_node(Stage::Head(lane.node), NodeSpec::new(vec![], vec![audio], rank));
+        for effect in &lane.effect_nodes {
+            patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
+        }
+        patch.add_node(Stage::Tail(lane.node), NodeSpec::new(vec![chain], vec![audio], rank));
+    }
+    for (at, group) in groups.iter().enumerate() {
+        let rank = lane_count + at as u32;
+        // The head of a group takes the sum of its members, so it is an input that is a sum.
+        patch.add_node(Stage::Head(group.node), NodeSpec::new(vec![audio], vec![audio], rank));
+        for effect in &group.effect_nodes {
+            patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
+        }
+        patch.add_node(Stage::Tail(group.node), NodeSpec::new(vec![chain], vec![audio], rank));
+    }
+    for lane in lanes {
+        let mut from = Stage::Head(lane.node);
+        for effect in &lane.effect_nodes {
+            patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
+            from = Stage::Fx(*effect);
+        }
+        patch.connect(Port::new(from, 0), Port::new(Stage::Tail(lane.node), 0));
+        let to = lane.group.and_then(|g| groups.get(g)).map_or(Stage::Master, |group| Stage::Head(group.node));
+        patch.connect(Port::new(Stage::Tail(lane.node), 0), Port::new(to, 0));
+    }
+    for group in groups {
+        let mut from = Stage::Head(group.node);
+        for effect in &group.effect_nodes {
+            patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
+            from = Stage::Fx(*effect);
+        }
+        patch.connect(Port::new(from, 0), Port::new(Stage::Tail(group.node), 0));
+        patch.connect(Port::new(Stage::Tail(group.node), 0), Port::new(Stage::Master, 0));
+    }
+    let cables = cables.filter_map(|cable| {
+        let rank = start_rank(cable.from, lanes, groups).filter(|_| end_exists(cable.to, lanes, groups))?;
+        Some((cable, rank))
+    });
+    for (cable, rank) in cables.clone() {
+        patch.add_node(Stage::Cable(cable.id), NodeSpec::new(vec![chain], vec![audio], rank));
+    }
+    for (cable, _) in cables {
+        patch.connect(Port::new(cable.from.stage(), 0), Port::new(Stage::Cable(cable.id), 0));
+        patch.connect(Port::new(Stage::Cable(cable.id), 0), Port::new(cable.to.stage(), 0));
     }
 }
 
@@ -367,6 +546,8 @@ pub(super) struct Schedule {
     now: Shape,
     /// The patch that is made again and compiled when the wiring changes, kept so that its room is.
     patch: Patch<Stage>,
+    /// The audio cables that have been drawn, by id (P3b).
+    cables: Vec<Cable>,
     /// How many frames of a block the pool has room for.
     room: usize,
     /// How many times a plan has been made, for the tests to see that a block that finds the wiring as it was makes none.
@@ -384,6 +565,7 @@ impl Schedule {
             shape: Shape::default(),
             now: Shape::default(),
             patch: Patch::new(),
+            cables: Vec::new(),
             room: 0,
             #[cfg(test)]
             compiles: 0,
@@ -393,9 +575,13 @@ impl Schedule {
     /// Make the plan the one for the lanes and groups as they are now (when they are not as they were, which asks the allocator for memory, as a command that inserts a lane
     /// does), and give the pool room for a block of `frames`.
     pub(super) fn refresh(&mut self, lanes: &[InstrumentLane], groups: &[Group], channels: usize, frames: usize) {
-        self.now.read(lanes, groups, channels);
+        // A cable that was told to go, and has gone down to nothing, is taken out.
+        self.cables.retain(|cable| !(cable.leaving && cable.at == 0.0));
+        self.now.read(lanes, groups, &self.cables, channels);
         if self.now != self.shape {
             self.compile(lanes, groups, channels);
+            // The cables that had an end that has gone are gone, so the wiring is read again: what the plan was made for.
+            self.now.read(lanes, groups, &self.cables, channels);
             // Copied, not swapped: both keep their room, so that reading the wiring of the next block asks for none.
             self.shape.copy_from(&self.now);
         }
@@ -405,57 +591,20 @@ impl Schedule {
         }
     }
 
-    /// The plan for the lanes and groups: the mix, a row of nodes for each lane and each group, and the cables.
+    /// The plan for the lanes and groups: the mix, a row of nodes for each lane and each group, a node for each audio cable that has both its ends, and the cables.
     fn compile(&mut self, lanes: &[InstrumentLane], groups: &[Group], channels: usize) {
         #[cfg(test)]
         {
             self.compiles += 1;
         }
-        let audio = PortSpec::audio(channels as u16);
-        let chain = PortSpec::single(channels as u16);
-        let lane_count = lanes.len() as u32;
-        self.patch.clear();
-        self.patch.add_node(Stage::Master, NodeSpec::new(vec![audio], vec![], u32::MAX));
-        for (at, lane) in lanes.iter().enumerate() {
-            let rank = at as u32;
-            self.patch.add_node(Stage::Head(lane.node), NodeSpec::new(vec![], vec![audio], rank));
-            for effect in &lane.effect_nodes {
-                self.patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
-            }
-            self.patch.add_node(Stage::Tail(lane.node), NodeSpec::new(vec![chain], vec![audio], rank));
-        }
-        for (at, group) in groups.iter().enumerate() {
-            let rank = lane_count + at as u32;
-            // The head of a group takes the sum of its members, so it is an input that is a sum.
-            self.patch.add_node(Stage::Head(group.node), NodeSpec::new(vec![audio], vec![audio], rank));
-            for effect in &group.effect_nodes {
-                self.patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
-            }
-            self.patch.add_node(Stage::Tail(group.node), NodeSpec::new(vec![chain], vec![audio], rank));
-        }
-        for lane in lanes {
-            let mut from = Stage::Head(lane.node);
-            for effect in &lane.effect_nodes {
-                self.patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
-                from = Stage::Fx(*effect);
-            }
-            self.patch.connect(Port::new(from, 0), Port::new(Stage::Tail(lane.node), 0));
-            let to = lane.group.and_then(|g| groups.get(g)).map_or(Stage::Master, |group| Stage::Head(group.node));
-            self.patch.connect(Port::new(Stage::Tail(lane.node), 0), Port::new(to, 0));
-        }
-        for group in groups {
-            let mut from = Stage::Head(group.node);
-            for effect in &group.effect_nodes {
-                self.patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
-                from = Stage::Fx(*effect);
-            }
-            self.patch.connect(Port::new(from, 0), Port::new(Stage::Tail(group.node), 0));
-            self.patch.connect(Port::new(Stage::Tail(group.node), 0), Port::new(Stage::Master, 0));
-        }
+        build_patch(&mut self.patch, lanes, groups, self.cables.iter(), channels);
         match kernel::compile(&self.patch) {
             Ok(plan) => {
                 self.pool.fit(&plan);
                 self.plan = plan;
+                // A cable that has an end that is not in the wiring (a lane, a group or an effect that went) goes with it.
+                let patch = &self.patch;
+                self.cables.retain(|cable| patch.nodes().iter().any(|(stage, _)| *stage == Stage::Cable(cable.id)));
                 self.places.clear();
                 for (at, lane) in lanes.iter().enumerate() {
                     self.places.push((Stage::Head(lane.node), Place::Lane(at)));
@@ -467,6 +616,7 @@ impl Schedule {
                     self.places.push((Stage::Tail(group.node), Place::Group(at)));
                     self.places.extend(group.effect_nodes.iter().enumerate().map(|(index, effect)| (Stage::Fx(*effect), Place::GroupFx(at, index))));
                 }
+                self.places.extend(self.cables.iter().enumerate().map(|(at, cable)| (Stage::Cable(cable.id), Place::Cable(at))));
                 self.places.sort_unstable_by_key(|&(stage, _)| stage);
             }
             Err(error) => {
@@ -478,9 +628,76 @@ impl Schedule {
         }
     }
 
+    /// Draw a cable (see `GraphCommand::AddCable`): it is put among the cables by its id, so that the plan is the same whatever the order the cables were drawn in, if both its
+    /// ends are in the wiring and the audio goes one way through the wiring with it (made on the side: a cable that would make it go round is not drawn, and nothing changes). A
+    /// cable that is there under the id is drawn again at the new ends and the new level, from where it was.
+    pub(super) fn add_cable(&mut self, cable: Cable, lanes: &[InstrumentLane], groups: &[Group], channels: usize) {
+        if !cable.gain.is_finite() {
+            log::warn!("cable {}: its level is not a number; not drawn", cable.id.0);
+            return;
+        }
+        if start_rank(cable.from, lanes, groups).is_none() || !end_exists(cable.to, lanes, groups) {
+            log::warn!("cable {}: an end of it is not in the graph; not drawn", cable.id.0);
+            return;
+        }
+        let others = self.cables.iter().filter(|other| other.id != cable.id);
+        let mut scratch = Patch::new();
+        build_patch(&mut scratch, lanes, groups, others.chain(std::iter::once(&cable)), channels);
+        if let Err(error) = kernel::compile(&scratch) {
+            log::warn!("cable {}: not drawn: {error}", cable.id.0);
+            return;
+        }
+        match self.cables.binary_search_by_key(&cable.id, |other| other.id) {
+            Ok(at) => {
+                let drawn = &mut self.cables[at];
+                (drawn.from, drawn.to, drawn.gain, drawn.leaving) = (cable.from, cable.to, cable.gain, false);
+            }
+            Err(at) => self.cables.insert(at, cable),
+        }
+    }
+
+    /// Take a cable out (see `GraphCommand::RemoveCable`): one that is heard goes down to nothing over a buffer and is taken out when the next one begins; one that is not heard
+    /// goes at once.
+    pub(super) fn remove_cable(&mut self, id: EdgeId) {
+        if let Ok(at) = self.cables.binary_search_by_key(&id, |cable| cable.id) {
+            if self.cables[at].at == 0.0 {
+                self.cables.remove(at);
+            } else {
+                self.cables[at].leaving = true;
+            }
+        }
+    }
+
+    /// Set the level of a cable (see `GraphCommand::SetCableGain`): what is not a number leaves it as it was.
+    pub(super) fn set_cable_gain(&mut self, id: EdgeId, gain: f32) {
+        if let (Ok(at), true) = (self.cables.binary_search_by_key(&id, |cable| cable.id), gain.is_finite()) {
+            self.cables[at].gain = gain;
+        }
+    }
+
+    /// The level that each cable is to be at when this block ends: the level that was set, times what its owner is heard at (so that a cable goes with a mute or a solo), and 0
+    /// for one that was told to go. After `refresh`, which has the places that the owners are found by, and after the lanes and groups know what they are heard at.
+    pub(super) fn set_cable_goals(&mut self, lanes: &[InstrumentLane], groups: &[Group]) {
+        for cable in &mut self.cables {
+            cable.goal = if cable.leaving { 0.0 } else { cable.gain * heard_at(cable.from, &self.places, lanes, groups) };
+        }
+    }
+
+    /// The ids of the cables that there are, in order.
+    #[cfg(test)]
+    pub(super) fn cable_ids(&self) -> Vec<EdgeId> {
+        self.cables.iter().map(|cable| cable.id).collect()
+    }
+
+    /// The nodes of the plan in the order they run.
+    #[cfg(test)]
+    pub(super) fn stages(&self) -> Vec<Stage> {
+        self.plan.order().collect()
+    }
+
     /// Run one block: the lanes, the groups and the mix.
     pub(super) fn run(&mut self, lanes: &mut [InstrumentLane], groups: &mut [Group], master: &mut Master, frames: usize, cx: &mut BlockCx<'_>) -> Result<()> {
-        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, places: &self.places }, cx)
+        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, cables: &mut self.cables, places: &self.places }, cx)
     }
 }
 
@@ -528,6 +745,7 @@ mod tests {
         };
         match stage {
             Stage::Master => "mix".to_string(),
+            Stage::Cable(id) => format!("cable {}", id.0),
             Stage::Head(id) => format!("{} head", owner(id)),
             Stage::Tail(id) => format!("{} tail", owner(id)),
             Stage::Fx(id) => {
@@ -663,6 +881,130 @@ mod tests {
             }
         }
         assert_eq!(rank(Stage::Master), u32::MAX);
+    }
+
+    /// A cable of level 1 from `from` to `to`, drawn into the schedule as the engine does it.
+    fn draw(schedule: &mut Schedule, id: u32, from: CableFrom, to: CableTo, lanes: &[InstrumentLane], groups: &[Group]) {
+        schedule.add_cable(Cable::new(EdgeId(id), from, to, 1.0), lanes, groups, 2);
+    }
+
+    #[test]
+    fn a_cable_is_a_node_of_the_plan_that_runs_between_its_ends_and_the_chain_link_at_its_start_and_at_its_end_is_fed() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(2), groups(0));
+        with_effects(&mut lanes[0], 1);
+        with_effects(&mut lanes[1], 1);
+        let (sender, fx) = (lanes[1].node, lanes[0].effect_nodes[0]);
+        draw(&mut schedule, 7, CableFrom::Instrument(sender), CableTo::Effect(fx), &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let order = order(&schedule, &lanes, &groups);
+        let at = |name: &str| order.iter().position(|node| node == name).unwrap_or_else(|| panic!("{name} is not in {order:?}"));
+        assert!(at("lane 1 head") < at("cable 7") && at("cable 7") < at("lane 0 fx 0"), "{order:?}");
+        // The head of the sender has two cables leaving it now, and the effect two entering it: each is a sum that is fed, where a chain link of one cable is the buffer itself.
+        let feeds = feeds(&schedule, &lanes, &groups);
+        for (from, to) in [("lane 1 head", "cable 7"), ("cable 7", "lane 0 fx 0"), ("lane 1 head", "lane 1 fx 0"), ("lane 0 head", "lane 0 fx 0")] {
+            assert!(feeds.contains(&(from.to_string(), to.to_string())), "{from} to {to} is not fed in {feeds:?}");
+        }
+        assert!(!feeds.contains(&("lane 0 fx 0".to_string(), "lane 0 tail".to_string())), "a link that nothing else joins is still the buffer itself");
+    }
+
+    #[test]
+    fn a_cable_has_the_rank_of_the_node_that_owns_its_start() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(3), groups(2));
+        with_effects(&mut lanes[1], 1);
+        let mut groups = groups;
+        with_bus_effects(&mut groups[1], 1);
+        let (lane_effect, bus_effect) = (lanes[1].effect_nodes[0], groups[1].effect_nodes[0]);
+        draw(&mut schedule, 1, CableFrom::Instrument(lanes[2].node), CableTo::Master, &lanes, &groups);
+        draw(&mut schedule, 2, CableFrom::Effect(lane_effect), CableTo::Master, &lanes, &groups);
+        draw(&mut schedule, 3, CableFrom::Effect(bus_effect), CableTo::Master, &lanes, &groups);
+        draw(&mut schedule, 4, CableFrom::Group(groups[0].node), CableTo::GroupBus(groups[1].node), &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let rank = |id: u32| schedule.patch.nodes().iter().find(|(stage, _)| *stage == Stage::Cable(EdgeId(id))).map(|(_, spec)| spec.rank).expect("a cable node");
+        // The lanes are 0 to 2 and the groups 3 and 4: the instrument of lane 2, an effect of lane 1, an effect of the bus of group 1, the output of group 0.
+        assert_eq!([rank(1), rank(2), rank(3), rank(4)], [2, 1, 4, 3]);
+    }
+
+    #[test]
+    fn a_cable_that_comes_or_goes_makes_the_plan_again_and_a_level_that_is_set_does_not() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(2), groups(0));
+        with_effects(&mut lanes[0], 1);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let made = schedule.compiles;
+        let (sender, fx) = (lanes[1].node, lanes[0].effect_nodes[0]);
+        draw(&mut schedule, 7, CableFrom::Instrument(sender), CableTo::Effect(fx), &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1, "a cable that is drawn");
+        schedule.refresh(&lanes, &groups, 2, 64);
+        schedule.set_cable_gain(EdgeId(7), 0.5);
+        schedule.set_cable_goals(&lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1, "nothing is made again for a block that has the same wiring, and not for a level");
+        // A buffer in which it has a level, and then it is told to go: it is there for the buffer in which it goes down, and gone from the next.
+        run(&mut schedule, &mut lanes, &mut groups, 64);
+        schedule.remove_cable(EdgeId(7));
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.cable_ids(), [EdgeId(7)]);
+        assert_eq!(schedule.compiles, made + 1);
+        schedule.set_cable_goals(&lanes, &groups);
+        run(&mut schedule, &mut lanes, &mut groups, 64);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert!(schedule.cable_ids().is_empty());
+        assert_eq!(schedule.compiles, made + 2, "the cable that has gone");
+        // One that was never heard goes at once.
+        draw(&mut schedule, 8, CableFrom::Instrument(sender), CableTo::Effect(fx), &lanes, &groups);
+        schedule.remove_cable(EdgeId(8));
+        assert!(schedule.cable_ids().is_empty());
+    }
+
+    #[test]
+    fn a_cable_is_not_drawn_to_or_from_a_node_that_is_not_there_and_goes_with_the_lane_or_the_effect_that_it_ends_at() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(2), groups(1));
+        with_effects(&mut lanes[0], 1);
+        let (sender, fx) = (lanes[1].node, lanes[0].effect_nodes[0]);
+        draw(&mut schedule, 1, CableFrom::Instrument(NodeId(70_000)), CableTo::Master, &lanes, &groups);
+        draw(&mut schedule, 2, CableFrom::Instrument(sender), CableTo::Effect(NodeId(70_001)), &lanes, &groups);
+        draw(&mut schedule, 3, CableFrom::Instrument(groups[0].node), CableTo::Master, &lanes, &groups);
+        draw(&mut schedule, 4, CableFrom::Group(sender), CableTo::Master, &lanes, &groups);
+        draw(&mut schedule, 5, CableFrom::Instrument(sender), CableTo::GroupBus(lanes[0].node), &lanes, &groups);
+        draw(&mut schedule, 6, CableFrom::Effect(sender), CableTo::Master, &lanes, &groups);
+        assert!(schedule.cable_ids().is_empty(), "no end that is not there, and no id of a lane for a group or of a group for an instrument");
+        draw(&mut schedule, 7, CableFrom::Instrument(sender), CableTo::Effect(fx), &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.cable_ids(), [EdgeId(7)]);
+        // The lane that it starts at goes (the plan is made again for the lanes that are there): and the cable goes.
+        let (mut lanes, groups) = (lanes, groups);
+        lanes.remove(1);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert!(schedule.cable_ids().is_empty());
+        // The wiring that the plan was made for is the one without it: the next block makes no plan again.
+        let made = schedule.compiles;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made);
+    }
+
+    #[test]
+    fn a_cable_that_is_drawn_again_at_other_ends_is_in_a_plan_that_has_them() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(2), groups(0));
+        with_effects(&mut lanes[0], 1);
+        let (sender, fx) = (lanes[1].node, lanes[0].effect_nodes[0]);
+        draw(&mut schedule, 7, CableFrom::Instrument(sender), CableTo::Effect(fx), &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert!(feeds(&schedule, &lanes, &groups).contains(&("cable 7".to_string(), "lane 0 fx 0".to_string())));
+        let made = schedule.compiles;
+        draw(&mut schedule, 7, CableFrom::Instrument(sender), CableTo::Master, &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.cable_ids(), [EdgeId(7)]);
+        assert_eq!(schedule.compiles, made + 1, "other ends are another wiring");
+        assert!(feeds(&schedule, &lanes, &groups).contains(&("cable 7".to_string(), "mix".to_string())));
+        // The same ends again: nothing is made again.
+        draw(&mut schedule, 7, CableFrom::Instrument(sender), CableTo::Master, &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1);
     }
 
     #[test]

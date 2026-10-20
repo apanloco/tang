@@ -5,8 +5,8 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 
 use super::Plugin;
-use nodes::{BlockCx, Master, Schedule};
-use crate::ids::NodeId;
+use nodes::{BlockCx, Cable, Master, Schedule};
+use crate::ids::{EdgeId, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
@@ -2618,6 +2618,27 @@ pub enum GraphCommand {
         inst: usize,
         semitones: i8,
     },
+    /// Draw an audio cable `id` from `from` to `to` at level `gain` (a send level: 1 is what comes out of `from`, as it is). It comes in over one buffer, from nothing, and it is
+    /// heard at what the lane or the group that `from` is of is heard at. Nothing is changed (and the cable is not made) if an end is not in the graph or if it would make the
+    /// audio go round (a cycle); a cable that is there under `id` is drawn again at the new ends and level, from where it was.
+    #[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
+    AddCable {
+        id: EdgeId,
+        from: CableFrom,
+        to: CableTo,
+        gain: f32,
+    },
+    /// Take the audio cable `id` out: it goes down to nothing over one buffer and is then gone.
+    #[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
+    RemoveCable {
+        id: EdgeId,
+    },
+    /// Set the level of the audio cable `id` (not a number is left as it was): it goes there over one buffer.
+    #[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
+    SetCableGain {
+        id: EdgeId,
+        gain: f32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -2643,6 +2664,30 @@ pub struct Pattern {
     pub events: Vec<PatternEvent>,
     /// Total length of the pattern in samples.
     pub length_samples: u64,
+}
+
+/// Where an audio cable starts: an output of the graph, named by the model's id of the node that has it (P3b of `docs/patch-graph.md` §11.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
+pub enum CableFrom {
+    /// What a lane's instrument puts out, after the lane's volume and before its chain (the id is the lane's). It is heard at what the lane is heard at.
+    Instrument(NodeId),
+    /// What an effect puts out, after its mix: an effect of a lane's chain or of a group's bus. It is heard at what its lane or its group is heard at.
+    Effect(NodeId),
+    /// What a group puts out: its bus after its effects, its pan and its fade (the id is the group's). It has been let in or out already, so it is not gated again.
+    Group(NodeId),
+}
+
+/// Where an audio cable ends: an input of the graph, which it is added to (what is there already is not taken out).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "nothing sends audio cables until P3c: the model, the intents and the file (docs/patch-graph.md §11.6)"))]
+pub enum CableTo {
+    /// What an effect takes in, added to what its chain gives it (an effect of a lane's chain or of a group's bus).
+    Effect(NodeId),
+    /// A group's bus, added to the lanes that are members of the group (the id is the group's).
+    GroupBus(NodeId),
+    /// The output mix.
+    Master,
 }
 
 /// Which modulator rack a modulator lives in: an instrument lane's or a
@@ -5184,6 +5229,11 @@ impl AudioGraph {
                         lane.transpose = semitones;
                     }
                 }
+                GraphCommand::AddCable { id, from, to, gain } => {
+                    self.schedule.add_cable(Cable::new(id, from, to, gain), &self.instruments, &self.groups, self.num_channels);
+                }
+                GraphCommand::RemoveCable { id } => self.schedule.remove_cable(id),
+                GraphCommand::SetCableGain { id, gain } => self.schedule.set_cable_gain(id, gain),
             }
         }
     }
@@ -5255,6 +5305,8 @@ impl AudioGraph {
             let group_solo = lane.group.and_then(|g| self.groups.get(g)).is_some_and(|g| g.solo);
             lane.heard_goal = if !lane.muted && (!any_solo || lane.solo || group_solo) { 1.0 } else { 0.0 };
         }
+        // What each audio cable is to be at: what its owner is heard at, times the level that was set.
+        self.schedule.set_cable_goals(&self.instruments, &self.groups);
 
         // Group-scoped modulators: tick each group's modulators (envelopes are
         // triggered by the union of its members' ranges), resolve cross-mod,
@@ -6139,6 +6191,610 @@ mod tests {
         );
         for (which, blocks) in [("plan", &plan), ("loop", &lp)] {
             assert!(blocks.iter().flatten().flatten().all(|&s| s == 0.25), "{which}");
+        }
+    }
+
+    // -- audio cables (P3b of docs/patch-graph.md §11.6) --
+
+    /// Another lane after the ones that there are, which plays `level` for as long as a note is held: its place is its id's (`lane_node`).
+    fn another_lane(graph: &mut AudioGraph, cmd_tx: &crossbeam_channel::Sender<GraphCommand>, level: f32) -> usize {
+        let at = graph.instruments.len();
+        graph.instruments.push(InstrumentLane::new(lane_node(at)));
+        swap_instrument_at(cmd_tx, at, ConstInstrument::new(level));
+        at
+    }
+
+    /// An effect put at `index` of lane `inst`'s chain, with the id that its place gives it (`effect_node`): that id.
+    fn effect_of(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, inst: usize, index: usize, effect: Box<dyn Plugin>) -> NodeId {
+        let node = effect_node(inst, index);
+        cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect, mix: 1.0, node }).unwrap();
+        node
+    }
+
+    fn draw(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, id: u32, from: CableFrom, to: CableTo, gain: f32) {
+        cmd_tx.send(GraphCommand::AddCable { id: EdgeId(id), from, to, gain }).unwrap();
+    }
+
+    /// `blocks` buffers in a row, with `notes` in the first.
+    fn blocks_of(graph: &mut AudioGraph, blocks: usize, notes: &[(u64, [u8; 3])]) -> Vec<Vec<Vec<f32>>> {
+        (0..blocks)
+            .map(|at| {
+                let mut out = make_output();
+                graph.process(if at == 0 { notes } else { &[] }, &mut out).unwrap();
+                out
+            })
+            .collect()
+    }
+
+    /// A lane `0` that plays 0.25 into an effect that doubles it, and a lane `1` that plays 0.5: the lane that sends, and the effect that it sends to.
+    fn a_lane_that_has_a_doubling_effect_and_a_lane_that_sends() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, NodeId) {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        (graph, cmd_tx, fx)
+    }
+
+    #[test]
+    fn a_cable_from_one_lane_to_the_effect_of_another_adds_its_sound_to_what_the_chain_gives_the_effect() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        let blocks = blocks_of(&mut graph, 3, &[note_on(60)]);
+        // The first buffer has the cable coming in from nothing, over the buffer: the lane that has the effect makes 0.5 + what comes in, doubled, and the sender its own 0.5.
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            assert_eq!(s, 1.0 + (i + 1) as f32 / FRAMES as f32, "sample {i} of the buffer that the cable comes in over");
+        }
+        // After it, (0.25 + 0.5) doubled, and the 0.5 of the sender.
+        for out in &blocks[1..] {
+            assert!(out.iter().flatten().all(|&s| s == 2.0), "{:?}", out[0][0]);
+        }
+    }
+
+    #[test]
+    fn the_level_of_a_cable_is_a_send_and_goes_to_a_level_that_is_set_over_a_buffer() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 0.5);
+        let blocks = blocks_of(&mut graph, 3, &[note_on(60)]);
+        // (0.25 + 0.5 * 0.5) doubled, and the 0.5 of the sender.
+        assert!(blocks[2].iter().flatten().all(|&s| s == 1.5));
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: 0.25 }).unwrap();
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        let ramp = &blocks[0][0];
+        assert!(ramp[0] < 1.5 && ramp.windows(2).all(|w| w[1] < w[0]), "it goes down over the buffer, a step at a time");
+        assert_eq!(*ramp.last().unwrap(), 1.25);
+        assert!(blocks[1].iter().flatten().all(|&s| s == 1.25), "(0.25 + 0.5 * 0.25) doubled, and the 0.5");
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: f32::NAN }).unwrap();
+        let blocks = blocks_of(&mut graph, 2, &[]);
+        assert!(blocks.iter().flatten().flatten().all(|&s| s == 1.25), "a level that is not a number is left as it was");
+    }
+
+    #[test]
+    fn a_cable_from_an_instrument_has_what_it_puts_out_before_the_chain_and_one_from_an_effect_has_it_after() {
+        let master_with = |from: &dyn Fn(NodeId) -> CableFrom| {
+            let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+            let quadrupler = effect_of(&cmd_tx, 1, 0, Box::new(ScaleEffect(4.0)));
+            draw(&cmd_tx, 1, from(quadrupler), CableTo::Effect(fx), 1.0);
+            blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap()
+        };
+        // The sender's instrument makes 0.5, its effect makes 2.0 of it and is what the lane puts out. From the instrument: (0.25 + 0.5) doubled, and 2.0. From the effect: (0.25 + 2.0) doubled, and 2.0.
+        let before = master_with(&|_| CableFrom::Instrument(lane_node(1)));
+        assert!(before.iter().flatten().all(|&s| s == 3.5));
+        let after = master_with(&|quadrupler| CableFrom::Effect(quadrupler));
+        assert!(after.iter().flatten().all(|&s| s == 6.5));
+    }
+
+    #[test]
+    fn a_cable_can_end_at_the_mix_and_at_the_bus_of_a_group() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Master, 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.25), "0.25 and 0.5, and the 0.5 that the cable adds to the mix");
+
+        // The same sound to the bus of a group that the first lane is a member of: the bus is that lane and the cable, and the group's output goes to the mix.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::GroupBus(group_node(0)), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.25), "(0.25 + 0.5) from the group, and the 0.5 of the lane that is in no group");
+
+        // What comes in at the bus is what the members are: it has the volume of the group and goes through its effects, which a cable to the end of the group would not.
+        cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(3.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.625), "(0.25 + 0.5) halved and tripled, 1.125, and the 0.5 of the lane that is in no group: {:?}", out[0][0]);
+    }
+
+    #[test]
+    fn a_cable_is_heard_at_what_its_lane_is_heard_at_and_goes_with_its_mute() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::SetMute { inst: 1, muted: true }).unwrap();
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        // The lane is let go of over the buffer, and so is its cable, by the same ramp: the sender's 0.5 * h and the lane that has the effect, (0.25 + 0.5 * h) doubled.
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = 1.0 - (i + 1) as f32 / FRAMES as f32;
+            assert_eq!(s, 0.5 + 1.5 * h, "sample {i}");
+        }
+        for out in &blocks[1..] {
+            assert!(out.iter().flatten().all(|&s| s == 0.5), "silent: the lane that has the effect makes 0.25 doubled and nothing comes from the lane that is muted");
+        }
+        // Unmuted, it comes back over a buffer.
+        cmd_tx.send(GraphCommand::SetMute { inst: 1, muted: false }).unwrap();
+        let blocks = blocks_of(&mut graph, 2, &[]);
+        assert!(blocks[0][0][0] > 0.5 && blocks[0][0][0] < 1.0 && *blocks[0][0].last().unwrap() == 2.0);
+        assert!(blocks[1].iter().flatten().all(|&s| s == 2.0));
+    }
+
+    #[test]
+    fn a_cable_from_a_group_is_not_gated_a_second_time_by_what_the_group_is_heard_at() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[1].group = Some(0);
+        draw(&cmd_tx, 1, CableFrom::Group(group_node(0)), CableTo::Effect(fx), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 2.0), "(0.25 + 0.5) doubled, and the group's 0.5 to the mix");
+        cmd_tx.send(GraphCommand::SetGroupMute { group: 0, muted: true }).unwrap();
+        let blocks = blocks_of(&mut graph, 2, &[]);
+        // The group's own output goes down by one ramp, h, and the cable carries that (a second ramp on it would be h * h): 0.5 * h from the group to the mix, and (0.25 + 0.5 * h) doubled.
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = 1.0 - (i + 1) as f32 / FRAMES as f32;
+            assert_eq!(s, 0.5 + 1.5 * h, "sample {i}");
+        }
+        assert!(blocks[1].iter().flatten().all(|&s| s == 0.5));
+    }
+
+    #[test]
+    fn a_cable_that_comes_or_goes_does_so_over_a_buffer_and_makes_no_click() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.0));
+        another_lane(&mut graph, &cmd_tx, 1.0);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(PassthroughEffect));
+        let mut stream = blocks_of(&mut graph, 1, &[note_on(60)]);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        stream.extend(blocks_of(&mut graph, 2, &[]));
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(1) }).unwrap();
+        stream.extend(blocks_of(&mut graph, 3, &[]));
+        // The sender's 1.0 is there all the time, and the cable is what is on top of it: nothing, up to 1 over the buffer it comes in over, 1, down to nothing over the one it goes in, nothing.
+        let step = 1.0 / FRAMES as f32;
+        let levels: Vec<f32> = stream.iter().flat_map(|out| out[0].iter().copied()).collect();
+        assert_eq!(levels.len(), 6 * FRAMES);
+        let biggest = levels.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0f32, f32::max);
+        assert!(biggest <= step, "the biggest step is {biggest}, a click; the ramp makes {step}");
+        assert!(stream[1][0][0] > 1.0 && stream[1][0][FRAMES - 1] == 2.0, "it comes in over the buffer it is drawn in");
+        assert!(stream[2].iter().flatten().all(|&s| s == 2.0));
+        assert!(stream[3][0][0] < 2.0 && stream[3][0][FRAMES - 1] == 1.0, "it goes out over the buffer that it is taken out in");
+        assert!(stream[4].iter().flatten().chain(stream[5].iter().flatten()).all(|&s| s == 1.0));
+        assert!(graph.schedule.cable_ids().is_empty(), "and it is gone");
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_is_not_drawn() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let a = effect_of(&cmd_tx, 0, 0, Box::new(PassthroughEffect));
+        let b = effect_of(&cmd_tx, 1, 0, Box::new(PassthroughEffect));
+        draw(&cmd_tx, 1, CableFrom::Effect(a), CableTo::Effect(b), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Effect(b), CableTo::Effect(a), 1.0);
+        draw(&cmd_tx, 3, CableFrom::Effect(a), CableTo::Effect(a), 1.0);
+        // The lane's own first stage into its own effect is not a loop, and is drawn: the effect takes the instrument twice.
+        draw(&cmd_tx, 4, CableFrom::Instrument(lane_node(0)), CableTo::Effect(a), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert_eq!(graph.schedule.cable_ids(), [EdgeId(1), EdgeId(4)]);
+        // Lane 1 (0.5, then what lane 0's effect makes of 0.25 twice, 0.5) and lane 0 (0.5): the audio went one way.
+        assert!(out.iter().flatten().all(|&s| s == 1.5), "{:?}", out[0][0]);
+
+        // A group's output into the chain of one of its own members is a loop too.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(PassthroughEffect));
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        draw(&cmd_tx, 1, CableFrom::Group(group_node(0)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        assert!(graph.schedule.cable_ids().is_empty());
+    }
+
+    #[test]
+    fn the_plan_and_the_sound_do_not_depend_on_the_order_that_the_cables_were_drawn_in() {
+        let render = |order: [u32; 3]| {
+            let (mut graph, cmd_tx, _rr) = make_graph(2);
+            swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+            another_lane(&mut graph, &cmd_tx, 0.5);
+            another_lane(&mut graph, &cmd_tx, 0.125);
+            let fx0 = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+            let fx1 = effect_of(&cmd_tx, 1, 0, Box::new(ScaleEffect(3.0)));
+            let fx2 = effect_of(&cmd_tx, 2, 0, Box::new(PassthroughEffect));
+            let cables = [
+                (CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx0), 0.5),
+                (CableFrom::Instrument(lane_node(2)), CableTo::Effect(fx0), 0.25),
+                (CableFrom::Effect(fx1), CableTo::Effect(fx2), 1.0),
+            ];
+            for id in order {
+                let (from, to, gain) = cables[id as usize - 1];
+                draw(&cmd_tx, id, from, to, gain);
+            }
+            let blocks = blocks_of(&mut graph, 4, &[note_on(60)]);
+            (graph.schedule.stages(), blocks.iter().flatten().flatten().map(|s| s.to_bits()).collect::<Vec<u32>>())
+        };
+        let (plan, bits) = render([1, 2, 3]);
+        for order in [[3, 1, 2], [2, 3, 1], [3, 2, 1]] {
+            let (other_plan, other_bits) = render(order);
+            assert_eq!(other_plan, plan, "the plan, drawn in the order {order:?}");
+            assert_eq!(other_bits, bits, "the sound, drawn in the order {order:?}");
+        }
+    }
+
+    #[test]
+    fn a_cable_goes_when_the_effect_it_ends_at_goes_and_when_the_lane_it_starts_at_goes() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        assert_eq!(graph.schedule.cable_ids(), [EdgeId(1)]);
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
+        let out = blocks_of(&mut graph, 2, &[]).pop().unwrap();
+        assert!(graph.schedule.cable_ids().is_empty());
+        assert!(out.iter().flatten().all(|&s| s == 0.75), "0.25 and 0.5: no effect, and nothing sent");
+
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::RemoveInstrument { inst: 1, keep: None }).unwrap();
+        let out = blocks_of(&mut graph, 2, &[]).pop().unwrap();
+        assert!(graph.schedule.cable_ids().is_empty());
+        assert!(out.iter().flatten().all(|&s| s == 0.5), "the lane that has the effect, 0.25 doubled");
+    }
+
+    #[test]
+    fn a_cable_is_not_drawn_to_or_from_a_node_that_is_not_there_and_a_cable_that_is_drawn_again_goes_on_from_where_it_was() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(NodeId(999)), CableTo::Effect(fx), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Instrument(lane_node(1)), CableTo::Effect(NodeId(998)), 1.0);
+        draw(&cmd_tx, 3, CableFrom::Instrument(lane_node(1)), CableTo::GroupBus(NodeId(997)), 1.0);
+        draw(&cmd_tx, 5, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), f32::NAN);
+        blocks_of(&mut graph, 1, &[note_on(60)]);
+        assert!(graph.schedule.cable_ids().is_empty(), "no end that is not there, and no level that is not a number");
+        // Drawn again under the id it has: the level is set and it goes on from where it was, with no ramp from nothing.
+        draw(&cmd_tx, 4, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 2, &[]);
+        draw(&cmd_tx, 4, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 0.5);
+        let blocks = blocks_of(&mut graph, 2, &[]);
+        assert_eq!(graph.schedule.cable_ids(), [EdgeId(4)]);
+        assert!(blocks[0][0][0] < 2.0 && blocks[0][0][0] > 1.5, "from 1 to a half over the buffer, and not from nothing");
+        assert!(blocks[1].iter().flatten().all(|&s| s == 1.5));
+        // Told to go and drawn again before the buffer: it does not go, and is at the level it is drawn at by the end of the buffer.
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(4) }).unwrap();
+        draw(&cmd_tx, 4, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        assert_eq!(graph.schedule.cable_ids(), [EdgeId(4)]);
+        assert!(blocks[0][0][0] > 1.5 && *blocks[0][0].last().unwrap() == 2.0, "from a half to 1, and not down to nothing");
+        assert!(blocks[2].iter().flatten().all(|&s| s == 2.0));
+    }
+
+    #[test]
+    fn the_effects_of_a_lane_and_the_bus_effects_of_a_group_are_heard_at_what_their_owner_is_heard_at() {
+        // From an effect of a lane that is muted: the cable goes with the lane.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        let quadrupler = effect_of(&cmd_tx, 1, 0, Box::new(ScaleEffect(4.0)));
+        draw(&cmd_tx, 1, CableFrom::Effect(quadrupler), CableTo::Effect(fx), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 6.5), "(0.25 + 2.0) doubled, and the sender's 2.0");
+        cmd_tx.send(GraphCommand::SetMute { inst: 1, muted: true }).unwrap();
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.5), "silent, with the lane: 0.25 doubled");
+
+        // From a bus effect of a group that is muted: the cable goes with the group, by one ramp (the group's own output is 1.5 * h to the mix).
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[1].group = Some(0);
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(3.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        draw(&cmd_tx, 1, CableFrom::Effect(bus_effect_node(0, 0)), CableTo::Effect(fx), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 5.0), "(0.25 + 1.5) doubled, and the group's 1.5");
+        cmd_tx.send(GraphCommand::SetGroupMute { group: 0, muted: true }).unwrap();
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = 1.0 - (i + 1) as f32 / FRAMES as f32;
+            assert_eq!(s, 0.5 + 4.5 * h, "sample {i}");
+        }
+        assert!(blocks[2].iter().flatten().all(|&s| s == 0.5));
+    }
+
+    #[test]
+    fn a_cable_can_end_at_an_effect_of_the_bus_of_a_group() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[1].group = Some(0);
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(3.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(0)), CableTo::Effect(bus_effect_node(0, 0)), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        // The bus takes the lane that is its member, 0.5, and the 0.25 of the other lane, and the effect triples them; the other lane's own 0.25 goes to the mix too.
+        assert!(out.iter().flatten().all(|&s| s == 3.0 * 0.75 + 0.25), "{:?}", out[0][0]);
+    }
+
+    #[test]
+    fn a_lane_can_send_to_more_than_one_place_and_a_place_can_take_more_than_one_cable() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        another_lane(&mut graph, &cmd_tx, 0.125);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Instrument(lane_node(1)), CableTo::Master, 0.5);
+        draw(&cmd_tx, 3, CableFrom::Instrument(lane_node(2)), CableTo::Effect(fx), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        // The lane that has the effect: (0.25 + 0.5 + 0.125) doubled = 1.75; the senders' own 0.5 and 0.125; and the half of 0.5 that goes to the mix.
+        assert!(out.iter().flatten().all(|&s| s == 1.75 + 0.5 + 0.125 + 0.25), "{:?}", out[0][0]);
+    }
+
+    #[test]
+    fn a_session_with_cables_asks_the_allocator_for_nothing_once_it_is_running() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[1].group = Some(0);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 0.5);
+        draw(&cmd_tx, 2, CableFrom::Group(group_node(0)), CableTo::Master, 0.25);
+        draw(&cmd_tx, 3, CableFrom::Effect(fx), CableTo::GroupBus(group_node(0)), 0.5);
+        assert_eq!(allocations_while_processing(&mut graph, &[note_on(60)], 16), 0, "the audio thread asked the allocator for memory");
+        assert_eq!(graph.schedule.cable_ids().len(), 3);
+    }
+
+    // -- random wirings of cables, against an evaluation that has no plan in it --
+
+    /// An effect of a random wiring: what it does to the sound that comes in, as a number that can be worked out on its own.
+    #[derive(Clone, Copy, Debug)]
+    enum Fx {
+        Scale(f32),
+        Offset(f32),
+    }
+
+    impl Fx {
+        fn apply(self, input: f32) -> f32 {
+            match self {
+                Fx::Scale(by) => input * by,
+                Fx::Offset(by) => input + by,
+            }
+        }
+        fn plugin(self) -> Box<dyn Plugin> {
+            match self {
+                Fx::Scale(by) => Box::new(ScaleEffect(by)),
+                Fx::Offset(by) => Box::new(OffsetEffect(by)),
+            }
+        }
+    }
+
+    /// The places that audio goes through in a random wiring, named by where they are.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    enum Spot {
+        Head(usize),
+        LaneFx(usize, usize),
+        Tail(usize),
+        GroupHead(usize),
+        GroupFx(usize, usize),
+        GroupTail(usize),
+        Master,
+    }
+
+    /// What goes into a place: a link of a chain (the place before, whole) or a cable (what its owner sends, at the level of the cable).
+    struct Input {
+        from: Spot,
+        gain: f32,
+        cable: bool,
+    }
+
+    /// A random wiring, described plainly, and what it adds up to: no plan, no buffers, one number for each place. Every sound in it is a constant and every number a power of two or a
+    /// sum of a few of them, so that the sums are the same in every order.
+    #[derive(Debug)]
+    struct RandomWiring {
+        levels: Vec<f32>,
+        lane_effects: Vec<Vec<Fx>>,
+        lane_group: Vec<Option<usize>>,
+        lane_muted: Vec<bool>,
+        group_volumes: Vec<f32>,
+        group_effects: Vec<Vec<Fx>>,
+        group_muted: Vec<bool>,
+        /// The cables that were drawn and not refused: from, to, level.
+        cables: Vec<(Spot, Spot, f32)>,
+    }
+
+    impl RandomWiring {
+        fn inputs_of(&self, spot: Spot) -> Vec<Input> {
+            let link = |from: Spot| Input { from, gain: 1.0, cable: false };
+            let mut inputs: Vec<Input> = Vec::new();
+            match spot {
+                Spot::Head(_) => {}
+                Spot::LaneFx(lane, index) => inputs.push(link(if index == 0 { Spot::Head(lane) } else { Spot::LaneFx(lane, index - 1) })),
+                Spot::Tail(lane) => inputs.push(link(match self.lane_effects[lane].len() {
+                    0 => Spot::Head(lane),
+                    n => Spot::LaneFx(lane, n - 1),
+                })),
+                Spot::GroupHead(group) => {
+                    inputs.extend((0..self.levels.len()).filter(|&lane| self.lane_group[lane] == Some(group)).map(|lane| link(Spot::Tail(lane))));
+                }
+                Spot::GroupFx(group, index) => inputs.push(link(if index == 0 { Spot::GroupHead(group) } else { Spot::GroupFx(group, index - 1) })),
+                Spot::GroupTail(group) => inputs.push(link(match self.group_effects[group].len() {
+                    0 => Spot::GroupHead(group),
+                    n => Spot::GroupFx(group, n - 1),
+                })),
+                Spot::Master => {
+                    inputs.extend((0..self.levels.len()).filter(|&lane| self.lane_group[lane].is_none()).map(|lane| link(Spot::Tail(lane))));
+                    inputs.extend((0..self.group_volumes.len()).map(|group| link(Spot::GroupTail(group))));
+                }
+            }
+            inputs.extend(self.cables.iter().filter(|(_, to, _)| *to == spot).map(|&(from, _, gain)| Input { from, gain, cable: true }));
+            inputs
+        }
+
+        /// Whether `spot` is made, by what is wired, of what is at `source` (itself included).
+        fn depends_on(&self, spot: Spot, source: Spot) -> bool {
+            spot == source || self.inputs_of(spot).iter().any(|input| self.depends_on(input.from, source))
+        }
+
+        /// What a cable from `from` carries: what is at `from`, unless the lane or the group that owns it is muted (the output of a group has been let in or out already).
+        fn sent(&self, from: Spot) -> f32 {
+            let heard = match from {
+                Spot::Head(lane) | Spot::LaneFx(lane, _) => !self.lane_muted[lane],
+                Spot::GroupFx(group, _) => !self.group_muted[group],
+                _ => true,
+            };
+            if heard {
+                self.value(from)
+            } else {
+                0.0
+            }
+        }
+
+        fn value(&self, spot: Spot) -> f32 {
+            let sum: f32 = self.inputs_of(spot).iter().map(|input| if input.cable { self.sent(input.from) * input.gain } else { self.value(input.from) }).sum();
+            match spot {
+                Spot::Head(lane) => self.levels[lane],
+                Spot::LaneFx(lane, index) => self.lane_effects[lane][index].apply(sum),
+                Spot::Tail(lane) => if self.lane_muted[lane] { 0.0 } else { sum },
+                Spot::GroupHead(group) => sum * self.group_volumes[group],
+                Spot::GroupFx(group, index) => self.group_effects[group][index].apply(sum),
+                Spot::GroupTail(group) => if self.group_muted[group] { 0.0 } else { sum },
+                Spot::Master => sum,
+            }
+        }
+    }
+
+    /// The cable ends of the engine that a place is, as a start and as an end (none for a place that cannot be one).
+    fn cable_from_of(spot: Spot) -> CableFrom {
+        match spot {
+            Spot::Head(lane) => CableFrom::Instrument(lane_node(lane)),
+            Spot::LaneFx(lane, index) => CableFrom::Effect(effect_node(lane, index)),
+            Spot::GroupFx(group, index) => CableFrom::Effect(bus_effect_node(group, index)),
+            Spot::GroupTail(group) => CableFrom::Group(group_node(group)),
+            other => panic!("{other:?} is no start"),
+        }
+    }
+
+    fn cable_to_of(spot: Spot) -> CableTo {
+        match spot {
+            Spot::LaneFx(lane, index) => CableTo::Effect(effect_node(lane, index)),
+            Spot::GroupFx(group, index) => CableTo::Effect(bus_effect_node(group, index)),
+            Spot::GroupHead(group) => CableTo::GroupBus(group_node(group)),
+            Spot::Master => CableTo::Master,
+            other => panic!("{other:?} is no end"),
+        }
+    }
+
+    #[test]
+    fn random_wirings_of_cables_make_the_sound_that_an_evaluation_without_a_plan_says_and_refuse_the_cables_that_close_a_loop() {
+        // What the wirings drew, so that a generator that stopped drawing a kind of cable would not leave the test passing on nothing.
+        let mut drew = [0usize; 6];
+        for seed in 1..=400u64 {
+            let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut pick = move |n: usize| -> usize {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
+            };
+            let effects = [Fx::Scale(0.5), Fx::Scale(2.0), Fx::Scale(1.0), Fx::Offset(0.125), Fx::Offset(0.25)];
+            let (lane_count, group_count) = (1 + pick(4), pick(3));
+            let mut wiring = RandomWiring {
+                levels: (0..lane_count).map(|_| [0.0625, 0.125, 0.25, 0.5][pick(4)]).collect(),
+                lane_effects: (0..lane_count).map(|_| (0..pick(3)).map(|_| effects[pick(5)]).collect()).collect(),
+                lane_group: (0..lane_count).map(|_| if group_count > 0 && pick(2) == 0 { Some(pick(group_count)) } else { None }).collect(),
+                lane_muted: (0..lane_count).map(|_| pick(7) == 0).collect(),
+                group_volumes: (0..group_count).map(|_| [0.5, 1.0][pick(2)]).collect(),
+                group_effects: (0..group_count).map(|_| (0..pick(2)).map(|_| effects[pick(5)]).collect()).collect(),
+                group_muted: (0..group_count).map(|_| pick(7) == 0).collect(),
+                cables: Vec::new(),
+            };
+
+            // The engine, as the wiring says.
+            let (mut graph, cmd_tx, _rr) = make_graph(2);
+            swap_instrument(&cmd_tx, ConstInstrument::new(wiring.levels[0]));
+            for lane in 1..lane_count {
+                another_lane(&mut graph, &cmd_tx, wiring.levels[lane]);
+            }
+            for group in 0..group_count {
+                graph.groups.push(Group::new(group_node(group)));
+                cmd_tx.send(GraphCommand::SetGroupVolume { group, value: wiring.group_volumes[group] }).unwrap();
+            }
+            for lane in 0..lane_count {
+                graph.instruments[lane].group = wiring.lane_group[lane];
+                for (index, fx) in wiring.lane_effects[lane].iter().enumerate() {
+                    effect_of(&cmd_tx, lane, index, fx.plugin());
+                }
+            }
+            for group in 0..group_count {
+                for (index, fx) in wiring.group_effects[group].iter().enumerate() {
+                    cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: fx.plugin(), mix: 1.0, node: bus_effect_node(group, index) }).unwrap();
+                }
+            }
+            for lane in (0..lane_count).filter(|&lane| wiring.lane_muted[lane]) {
+                cmd_tx.send(GraphCommand::SetMute { inst: lane, muted: true }).unwrap();
+            }
+            for group in (0..group_count).filter(|&group| wiring.group_muted[group]) {
+                cmd_tx.send(GraphCommand::SetGroupMute { group, muted: true }).unwrap();
+            }
+
+            // The cables, drawn one after the other: the evaluation refuses one that the wiring has a path for already, from its end to its start.
+            let starts: Vec<Spot> = (0..lane_count)
+                .flat_map(|lane| std::iter::once(Spot::Head(lane)).chain((0..wiring.lane_effects[lane].len()).map(move |index| Spot::LaneFx(lane, index))))
+                .chain((0..group_count).flat_map(|group| (0..wiring.group_effects[group].len()).map(move |index| Spot::GroupFx(group, index))))
+                .chain((0..group_count).map(Spot::GroupTail))
+                .collect();
+            let ends: Vec<Spot> = (0..lane_count)
+                .flat_map(|lane| (0..wiring.lane_effects[lane].len()).map(move |index| Spot::LaneFx(lane, index)))
+                .chain((0..group_count).flat_map(|group| (0..wiring.group_effects[group].len()).map(move |index| Spot::GroupFx(group, index))))
+                .chain((0..group_count).map(Spot::GroupHead))
+                .chain(std::iter::once(Spot::Master))
+                .collect();
+            let mut accepted = Vec::new();
+            let requested = pick(8);
+            for id in 1..=requested as u32 {
+                let (from, to, gain) = (starts[pick(starts.len())], ends[pick(ends.len())], [0.25, 0.5, 1.0, 2.0][pick(4)]);
+                draw(&cmd_tx, id, cable_from_of(from), cable_to_of(to), gain);
+                if !wiring.depends_on(from, to) {
+                    wiring.cables.push((from, to, gain));
+                    accepted.push(EdgeId(id));
+                }
+            }
+
+            let owner_muted = |from: Spot| match from {
+                Spot::Head(lane) | Spot::LaneFx(lane, _) => wiring.lane_muted[lane],
+                Spot::GroupFx(group, _) => wiring.group_muted[group],
+                _ => false,
+            };
+            drew[0] += usize::from(accepted.len() >= 2);
+            drew[1] += usize::from(accepted.len() < requested);
+            drew[2] += usize::from(wiring.cables.iter().any(|&(from, _, _)| owner_muted(from)));
+            drew[3] += usize::from(wiring.cables.iter().any(|&(_, to, _)| to == Spot::Master));
+            drew[4] += usize::from(wiring.cables.iter().any(|&(_, to, _)| matches!(to, Spot::GroupHead(_) | Spot::GroupFx(..))));
+            drew[5] += usize::from(wiring.cables.iter().any(|&(from, _, _)| matches!(from, Spot::GroupTail(_))));
+            let out = blocks_of(&mut graph, 5, &[note_on(60)]).pop().unwrap();
+            assert_eq!(graph.schedule.cable_ids(), accepted, "the cables that were drawn, seed {seed}: {wiring:?}");
+            let expected = wiring.value(Spot::Master);
+            assert!(out.iter().flatten().all(|&s| s == expected), "seed {seed}: the mix is {} and the evaluation says {expected}: {wiring:?}", out[0][0]);
+        }
+        // (Measured over the 400: 269, 185, 76, 205, 163 and 89.)
+        for (what, drawn, at_least) in [
+            ("two cables or more", drew[0], 180),
+            ("a cable that closes a loop, and is refused", drew[1], 120),
+            ("a cable from a lane or a group that is muted", drew[2], 50),
+            ("a cable to the mix", drew[3], 135),
+            ("a cable to a group", drew[4], 105),
+            ("a cable from a group", drew[5], 58),
+        ] {
+            assert!(drawn >= at_least, "{drawn} of the 400 wirings have {what}, and {at_least} are asked for");
         }
     }
 
