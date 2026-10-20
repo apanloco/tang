@@ -471,17 +471,17 @@ impl Controller {
                 }
             }
             Inverse::Effect { at, index, slot, kept: Kept::InHand(effect) } => {
-                let mix = f64::from(slot.mix);
+                let (mix, node) = (f64::from(slot.mix), slot.node);
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same. A chain that is not there takes nothing, and
                 // the plugin is dropped here.)
                 match at {
                     ChainAt::Lane(inst) => {
                         let Some(place) = self.model.insert_effect_at(inst, index, slot) else { return };
-                        let _ = self.cmd_tx.send(GraphCommand::InsertEffect { inst, index: place, effect, mix });
+                        let _ = self.cmd_tx.send(GraphCommand::InsertEffect { inst, index: place, effect, mix, node });
                     }
                     ChainAt::Bus(group) => {
                         let Some(place) = self.model.insert_bus_effect_at(group, index, slot) else { return };
-                        let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect { group, index: place, effect, mix });
+                        let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect { group, index: place, effect, mix, node });
                     }
                 }
             }

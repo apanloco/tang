@@ -261,7 +261,7 @@ mod tests {
     fn lanes(n: usize) -> Ordered<InstrumentLane> {
         let mut lanes = Ordered::new();
         for _ in 0..n {
-            lanes.push(InstrumentLane::new(2));
+            lanes.push(InstrumentLane::new(2, super::test_node()));
         }
         lanes
     }
@@ -269,7 +269,7 @@ mod tests {
     fn groups(n: usize) -> Ordered<Group> {
         let mut groups = Ordered::new();
         for _ in 0..n {
-            groups.push(Group::new(2));
+            groups.push(Group::new(2, super::test_node()));
         }
         groups
     }
@@ -366,11 +366,11 @@ mod tests {
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 2, "the same group");
         lanes.swap(0, 2);
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 3, "two lanes that change places");
-        lanes.push(InstrumentLane::new(2));
+        lanes.push(InstrumentLane::new(2, super::test_node()));
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 4, "a lane that comes");
         lanes.remove(3);
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 5, "a lane that goes");
-        groups.push(Group::new(2));
+        groups.push(Group::new(2, super::test_node()));
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 6, "a group that comes");
         groups.remove(1);
         assert_eq!(refresh(&mut schedule, &lanes, &groups, 2, 64), 7, "a group that goes");

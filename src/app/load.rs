@@ -214,7 +214,7 @@ pub fn load_session(
     for (g_idx, group_config) in config.groups.iter().enumerate() {
         let group_node = ids.alloc();
         place(&mut ui, group_node, group_config.ui);
-        send(cmd_tx, GraphCommand::AddGroup)?;
+        send(cmd_tx, GraphCommand::AddGroup { node: group_node })?;
         let meter = slots.meter();
         if let Some(slots) = meter {
             send(cmd_tx, GraphCommand::SetGroupMeter { group: g_idx, slots })?;
@@ -244,6 +244,7 @@ pub fn load_session(
             let presets = effect.presets();
             let mut params = Params::snapshot(effect.as_mut());
             let name = effect.name().to_string();
+            let effect_node = ids.alloc();
             send(
                 cmd_tx,
                 GraphCommand::InsertGroupEffect {
@@ -251,6 +252,7 @@ pub fn load_session(
                     index: fx_idx,
                     effect,
                     mix: effect_config.mix,
+                    node: effect_node,
                 },
             )?;
             apply_overrides(&mut params, &effect_config.params, |info, value| {
@@ -262,7 +264,6 @@ pub fn load_session(
                 });
                 Ok(())
             })?;
-            let effect_node = ids.alloc();
             place(&mut ui, effect_node, effect_config.ui);
             let mut slot = plugin_slot(
                 effect_node,
@@ -300,7 +301,7 @@ pub fn load_session(
     for (inst_idx, inst_config) in config.instruments.iter().enumerate() {
         let lane_node = ids.alloc();
         place(&mut ui, lane_node, inst_config.ui);
-        send(cmd_tx, GraphCommand::AddInstrument { range: inst_config.range })?;
+        send(cmd_tx, GraphCommand::AddInstrument { range: inst_config.range, node: lane_node })?;
         let lane_meter = slots.meter();
         if let Some(slots) = lane_meter {
             send(cmd_tx, GraphCommand::SetLaneMeter { inst: inst_idx, slots })?;
@@ -439,6 +440,7 @@ pub fn load_session(
             let mut params = Params::snapshot(effect.as_mut());
             let name = effect.name().to_string();
 
+            let effect_node = ids.alloc();
             send(
                 cmd_tx,
                 GraphCommand::InsertEffect {
@@ -446,6 +448,7 @@ pub fn load_session(
                     index: fx_idx,
                     effect,
                     mix: effect_config.mix,
+                    node: effect_node,
                 },
             )?;
 
@@ -474,7 +477,6 @@ pub fn load_session(
             }
 
             chain_params.push(params.for_targets());
-            let effect_node = ids.alloc();
             place(&mut ui, effect_node, effect_config.ui);
             let mut slot = plugin_slot(
                 effect_node,

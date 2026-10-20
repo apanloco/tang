@@ -401,7 +401,7 @@ impl Controller {
     pub fn add_lane(&mut self) -> usize {
         let inst = self.model.instruments.len();
         let node = self.model.alloc_node();
-        let _ = self.cmd_tx.send(GraphCommand::AddInstrument { range: None });
+        let _ = self.cmd_tx.send(GraphCommand::AddInstrument { range: None, node });
         let meter = self.model.slots.meter();
         if let Some(slots) = meter {
             let _ = self.cmd_tx.send(GraphCommand::SetLaneMeter { inst, slots });
@@ -430,7 +430,7 @@ impl Controller {
     pub fn add_group(&mut self) -> usize {
         let group = self.model.groups.len();
         let node = self.model.alloc_node();
-        let _ = self.cmd_tx.send(GraphCommand::AddGroup);
+        let _ = self.cmd_tx.send(GraphCommand::AddGroup { node });
         let meter = self.model.slots.meter();
         if let Some(slots) = meter {
             let _ = self.cmd_tx.send(GraphCommand::SetGroupMeter { group, slots });
@@ -608,11 +608,11 @@ impl Controller {
         let (node, mix) = (slot.node, f64::from(slot.mix));
         match at {
             ChainAt::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: loaded, mix });
+                let _ = self.cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: loaded, mix, node });
                 self.model.instruments[inst].effects.push(slot);
             }
             ChainAt::Bus(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: loaded, mix });
+                let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: loaded, mix, node });
                 self.model.groups[group].effects.push(slot);
             }
         }
@@ -1132,7 +1132,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::app::testutil::{self, DropProbe, StubEngine, load, recording};
+    use crate::app::testutil::{self, DropProbe, StubEngine, load, model_groups, model_lanes, recording};
     use crate::plugin::chain::{AudioGraph, GraphCommand, MidiBindSource, ModulatorLocation};
 
     fn controller() -> (StubEngine, Controller) {
@@ -1168,7 +1168,7 @@ mod tests {
             remapper: None,
             keep: None,
         };
-        ctl.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        ctl.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: crate::plugin::chain::test_node() }).unwrap();
         let osc = |n: usize| (0..n).map(|_| crate::plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap());
         for plugin in osc(3) {
             ctl.cmd_tx.send(swap(plugin)).unwrap();
@@ -2787,46 +2787,9 @@ rate = 2.0
         assert_eq!(driven(&ctl.model.groups[0].modulators), [vec![K::GroupMemberMod { member: 1, mod_index: 0, field: F::Depth(1) }]]);
     }
 
-    /// What each lane is as the model has it, in the terms `AudioGraph::lanes` uses.
-    fn model_lanes(model: &SessionModel) -> Vec<crate::plugin::chain::LaneFacts> {
-        model
-            .instruments
-            .iter()
-            .enumerate()
-            .map(|(i, lane)| crate::plugin::chain::LaneFacts {
-                group: lane.group,
-                range: lane.range,
-                transpose: lane.transpose,
-                volume: lane.volume,
-                muted: lane.muted,
-                solo: lane.solo,
-                has_instrument: lane.instrument.is_some(),
-                effects: lane.effects.len(),
-                modulators: lane.modulators.len(),
-                pattern_index: i,
-            })
-            .collect()
-    }
-
     /// The names of the effects of each lane as the model has them, in the terms `AudioGraph::effect_names` uses.
     fn model_effect_names(model: &SessionModel) -> Vec<Vec<String>> {
         model.instruments.iter().map(|lane| lane.effects.iter().map(|effect| effect.name.clone()).collect()).collect()
-    }
-
-    /// What each group is as the model has it, in the terms `AudioGraph::groups` uses.
-    fn model_groups(model: &SessionModel) -> Vec<crate::plugin::chain::GroupFacts> {
-        model
-            .groups
-            .iter()
-            .map(|group| crate::plugin::chain::GroupFacts {
-                effects: group.effects.iter().map(|effect| effect.name.clone()).collect(),
-                modulators: group.modulators.len(),
-                volume: group.volume,
-                pan: group.pan,
-                muted: group.muted,
-                solo: group.solo,
-            })
-            .collect()
     }
 
     /// The cables of the model that point at nothing: the plugin, the member, the modulator or the cable they
@@ -3385,6 +3348,31 @@ group = 1
             same(&mut graph, &ctl, "after taking them out again");
             assert_eq!(model_effect_names(&ctl.model), chains);
             assert_eq!(model_groups(&ctl.model), buses);
+        }
+    }
+
+    #[test]
+    fn groups_that_are_added_leave_the_model_and_the_audio_thread_the_same() {
+        use crate::plugin::chain::AudioGraph;
+        let same = |graph: &mut AudioGraph, ctl: &Controller, what: &str| {
+            graph.drain_commands();
+            assert_eq!(graph.lanes(), model_lanes(&ctl.model), "the lanes {what}");
+            assert_eq!(graph.groups(), model_groups(&ctl.model), "the groups {what}");
+            ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
+        };
+        for session in [testutil::CHAINS, testutil::LANES_IN_GROUPS, testutil::GROUPS] {
+            let (mut graph, mut ctl) = controller_on_a_real_graph(session);
+            same(&mut graph, &ctl, "as loaded");
+            let before = ctl.model.groups.len();
+            // One that the controller adds itself, empty ...
+            assert_eq!(ctl.add_group(), before);
+            same(&mut graph, &ctl, "after a group that is added");
+            // ... and one that an intent adds, with the first lane in it.
+            let lane = ctl.model.instruments[0].node;
+            ctl.apply(Intent::AddGroup { members: vec![lane] }).unwrap();
+            same(&mut graph, &ctl, "after a group that is added with a lane in it");
+            let ids: Vec<NodeId> = ctl.model.groups.iter().map(|group| group.node).collect();
+            assert_eq!(graph.groups().iter().map(|group| group.node).collect::<Vec<_>>(), ids, "the ids that the engine has are the model's, in the same order");
         }
     }
 

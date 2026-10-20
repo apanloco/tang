@@ -82,6 +82,10 @@ pub fn legacy(wiring: Wiring) -> Box<dyn Engine> {
         fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
             self.0.process_legacy(midi_events, out)
         }
+
+        fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+            Engine::facts(&self.0)
+        }
     }
 
     Box::new(Legacy(graph(wiring)))
@@ -333,6 +337,15 @@ impl Rig {
         self.ctl.poll();
     }
 
+    /// The engine has the lanes and the groups that the model has, and calls each, and each effect of each, by the id that the model gave it: what the edits that were made have
+    /// done to the one they have done to the other (an engine that says nothing of its lanes is not held to it).
+    fn assert_the_engine_has_the_nodes_of_the_model(&self, what: &str) {
+        if let Some((lanes, groups)) = self.renderer.engine().facts() {
+            assert_eq!(lanes, testutil::model_lanes(&self.ctl.model), "{what}: the lanes of the engine are not those of the model");
+            assert_eq!(groups, testutil::model_groups(&self.ctl.model), "{what}: the groups of the engine are not those of the model");
+        }
+    }
+
     /// A hash of every cell of the telemetry, as the engine left them.
     pub fn telemetry_hash(&self) -> u64 {
         let mut hash = Fnv::new();
@@ -359,6 +372,7 @@ pub fn render(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> 
         if rig.made.total() > before {
             edit_blocks.push(b);
         }
+        rig.assert_the_engine_has_the_nodes_of_the_model(&format!("{}, block {b}", scenario.id));
         slots.push(rig.telemetry_hash());
         rig.poll();
     }

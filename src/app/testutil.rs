@@ -13,7 +13,7 @@ use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
 use crate::piano_filter::{PianoFilter, PianoMode};
-use crate::plugin::chain::{GraphCommand, MidiLearnedNotification, PatternNotification};
+use crate::plugin::chain::{GraphCommand, GroupFacts, LaneFacts, MidiLearnedNotification, PatternNotification};
 use crate::scale::ScaleSetting;
 use crate::telemetry::Telemetry;
 use crate::{plugin, session};
@@ -26,7 +26,7 @@ use crate::{plugin, session};
 pub fn describe(cmd: &GraphCommand) -> String {
     use GraphCommand as C;
     match cmd {
-        C::AddGroup => "AddGroup".to_string(),
+        C::AddGroup { .. } => "AddGroup".to_string(),
         C::RemoveGroup { group, keep } => format!("RemoveGroup group={group}{}", if keep.is_some() { " keep" } else { "" }),
         C::InsertGroup { index, group, members } => format!("InsertGroup index={index} plugins={} members={members:?}", group.plugin_count()),
         C::SetGroupVolume { group, value } => format!("SetGroupVolume group={group} value={value:.3}"),
@@ -36,7 +36,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupMix { group, index, value } => {
             format!("SetGroupMix group={group} fx={index} value={value:.3}")
         }
-        C::InsertGroupEffect { group, index, effect, mix } => {
+        C::InsertGroupEffect { group, index, effect, mix, .. } => {
             format!("InsertGroupEffect group={group} index={index} plugin={} mix={mix:.3}", effect.name())
         }
         C::RemoveGroupEffect { group, index, keep } => format!("RemoveGroupEffect group={group} index={index}{}", if keep.is_some() { " keep" } else { "" }),
@@ -67,7 +67,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
             format!("RemoveGroupModTarget group={group} mod={mod_index} target={target_index}")
         }
 
-        C::AddInstrument { range } => format!("AddInstrument range={range:?}"),
+        C::AddInstrument { range, .. } => format!("AddInstrument range={range:?}"),
         C::RemoveInstrument { inst, keep } => format!("RemoveInstrument inst={inst}{}", if keep.is_some() { " keep" } else { "" }),
         C::InsertInstrument { index, lane } => format!("InsertInstrument index={index} plugins={}", lane.plugin_count()),
         C::ClearInstrument { inst } => format!("ClearInstrument inst={inst}"),
@@ -90,7 +90,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         }
         C::SetMix { inst, slot, value } => format!("SetMix inst={inst} slot={slot} value={value:.3}"),
         C::LoadPreset { inst, slot, preset_id } => format!("LoadPreset inst={inst} slot={slot} id={preset_id}"),
-        C::InsertEffect { inst, index, effect, mix } => {
+        C::InsertEffect { inst, index, effect, mix, .. } => {
             format!("InsertEffect inst={inst} index={index} plugin={} mix={mix:.3}", effect.name())
         }
         C::RemoveEffect { inst, index, keep } => format!("RemoveEffect inst={inst} index={index}{}", if keep.is_some() { " keep" } else { "" }),
@@ -1241,3 +1241,45 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
 pub fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
     serde_json::from_str(&serde_json::to_string(value).unwrap()).unwrap()
 }
+
+/// What each lane is as the model has it, in the terms `AudioGraph::lanes` uses.
+pub fn model_lanes(model: &SessionModel) -> Vec<LaneFacts> {
+    model
+        .instruments
+        .iter()
+        .enumerate()
+        .map(|(i, lane)| LaneFacts {
+            node: lane.node,
+            effect_nodes: lane.effects.iter().map(|effect| effect.node).collect(),
+            group: lane.group,
+            range: lane.range,
+            transpose: lane.transpose,
+            volume: lane.volume,
+            muted: lane.muted,
+            solo: lane.solo,
+            has_instrument: lane.instrument.is_some(),
+            effects: lane.effects.len(),
+            modulators: lane.modulators.len(),
+            pattern_index: i,
+        })
+        .collect()
+}
+
+/// What each group is as the model has it, in the terms `AudioGraph::groups` uses.
+pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {
+    model
+        .groups
+        .iter()
+        .map(|group| GroupFacts {
+            node: group.node,
+            effect_nodes: group.effects.iter().map(|effect| effect.node).collect(),
+            effects: group.effects.iter().map(|effect| effect.name.clone()).collect(),
+            modulators: group.modulators.len(),
+            volume: group.volume,
+            pan: group.pan,
+            muted: group.muted,
+            solo: group.solo,
+        })
+        .collect()
+}
+

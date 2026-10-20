@@ -22,6 +22,13 @@ pub trait Engine: Send {
     /// Render a block: `out` has a buffer for each channel, and its length is the length of the block. The events are the notes and controllers that arrived since the last block, each
     /// with its frame in this one. What the controller has sent since the last block (commands, plugins coming and going) is taken first.
     fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()>;
+
+    /// What the lanes and the groups are, for the oracle to hold to the model (the ids that the engine has for them are the model's): `None` for an engine that has no such
+    /// things to say.
+    #[cfg(test)]
+    fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+        None
+    }
 }
 
 impl Engine for AudioGraph {
@@ -32,11 +39,21 @@ impl Engine for AudioGraph {
     fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
         AudioGraph::process(self, midi_events, out)
     }
+
+    #[cfg(test)]
+    fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+        Some((self.lanes(), self.groups()))
+    }
 }
 
 impl<E: Engine + ?Sized> Engine for Box<E> {
     fn num_channels(&self) -> usize {
         (**self).num_channels()
+    }
+
+    #[cfg(test)]
+    fn facts(&self) -> Option<(Vec<crate::plugin::chain::LaneFacts>, Vec<crate::plugin::chain::GroupFacts>)> {
+        (**self).facts()
     }
 
     fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
@@ -260,6 +277,12 @@ impl Renderer {
             channel_bufs: (0..num_channels).map(|_| vec![0.0f32; buffer_size]).collect(),
             num_channels,
         }
+    }
+
+    /// The engine that renders, for a test to ask what it has.
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &dyn Engine {
+        &*self.graph
     }
 
     /// Fill `data`, interleaved (`frames * channels` samples), with the next block;
@@ -736,7 +759,7 @@ mod tests {
         let (return_tx, _return_rx) = crossbeam_channel::bounded(8);
         let (midi_tx, midi_rx) = crossbeam_channel::bounded(8);
         let mut renderer = Renderer::new(AudioGraph::new(2, cmd_rx, return_tx), midi_rx, 64);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: crate::plugin::chain::test_node() }).unwrap();
         cmd_tx
             .send(GraphCommand::SwapInstrument {
                 inst: 0,
@@ -1004,7 +1027,7 @@ mod tests {
         let blocks = Arc::new(AtomicUsize::new(0));
         let frames = Arc::new(AtomicUsize::new(0));
         let (dropped_on, dropped) = crossbeam_channel::unbounded();
-        rig.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        rig.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: crate::plugin::chain::test_node() }).unwrap();
         rig.cmd_tx
             .send(GraphCommand::SwapInstrument {
                 inst: 0,

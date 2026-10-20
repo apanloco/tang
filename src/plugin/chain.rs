@@ -7,6 +7,7 @@ use crossbeam_channel::{Receiver, Sender};
 use super::Plugin;
 use super::ordered::Ordered;
 use nodes::{BlockCx, Master, Schedule};
+use crate::ids::NodeId;
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget};
@@ -348,15 +349,24 @@ impl LfoWaveform {
     }
 }
 
+/// A node id for a test that has no model to take one from: a new one every time, from a range that the model does not reach (it counts up from 0).
+#[cfg(test)]
+pub(crate) fn test_node() -> NodeId {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1 << 30);
+    NodeId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Every modulator's cables, for tests: the rack, the modulator's place in it, and its cables' kinds and depths.
 #[cfg(test)]
 pub type RackCables = Vec<(ModulatorLocation, usize, Vec<(ModTargetKind, f32)>)>;
 
-/// What a lane is, for tests: the group it is in, its key range, transpose and volume, whether it is muted or
-/// soloed, whether it has an instrument, how many effects and modulators, and which lane its pattern player says it is.
+/// What a lane is, for tests: the node it is (the model's id, which also names its instrument), the group it is in, its key range, transpose and volume, whether it is muted or
+/// soloed, whether it has an instrument, how many effects and modulators, the node of each effect, and which lane its pattern player says it is.
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub struct LaneFacts {
+    pub node: NodeId,
+    pub effect_nodes: Vec<NodeId>,
     pub group: Option<usize>,
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
@@ -369,11 +379,13 @@ pub struct LaneFacts {
     pub pattern_index: usize,
 }
 
-/// What a group is, for a test to compare with the model's: the names of its bus effects, how many
+/// What a group is, for a test to compare with the model's: the node it is, the names and the nodes of its bus effects, how many
 /// modulators, its volume and its pan, and whether it is muted or soloed.
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub struct GroupFacts {
+    pub node: NodeId,
+    pub effect_nodes: Vec<NodeId>,
     pub effects: Vec<String>,
     pub modulators: usize,
     pub volume: f32,
@@ -1239,7 +1251,7 @@ impl KeptLane {
     /// that the controller loads them again. (It is not put into a graph.)
     #[cfg(test)]
     pub fn empty() -> KeptLane {
-        KeptLane(Box::new(InstrumentLane::new(2)))
+        KeptLane(Box::new(InstrumentLane::new(2, test_node())))
     }
 
     /// How many plugins the lane holds: its instrument and its effects.
@@ -1296,7 +1308,7 @@ impl KeptGroup {
     /// that the controller loads them again. (It is not put into a graph.)
     #[cfg(test)]
     pub fn empty() -> KeptGroup {
-        KeptGroup(Box::new(Group::new(2)))
+        KeptGroup(Box::new(Group::new(2, test_node())))
     }
 
     /// How many plugins the group holds: its bus effects.
@@ -2200,12 +2212,14 @@ pub enum GraphCommand {
         remapper: Option<NoteRemapper>,
         keep: Option<Sender<Box<dyn Plugin>>>,
     },
-    /// Insert an effect into a specific instrument lane's chain.
+    /// Insert an effect into a specific instrument lane's chain. `node` is the id that the model gave the effect: the lane keeps it beside the effect, so that the
+    /// plan can name the effect by it.
     InsertEffect {
         inst: usize,
         index: usize,
         effect: Box<dyn Plugin>,
         mix: f64,
+        node: NodeId,
     },
     /// Remove an effect from a specific instrument lane's chain. The plugin is handed to `keep` when there is one that has room and is listened to
     /// (the controller keeps it for the history, to put it back), and goes back by the return channel otherwise (`hand_back`).
@@ -2270,9 +2284,11 @@ pub enum GraphCommand {
         inst_a: usize,
         inst_b: usize,
     },
-    /// Add a new empty instrument lane.
+    /// Add a new empty instrument lane. `node` is the id that the model gave the lane (its instrument plugin is named by it too): the lane keeps it, so that the plan can name
+    /// the lane by it.
     AddInstrument {
         range: Option<(u8, u8)>,
+        node: NodeId,
     },
     /// Remove an instrument lane entirely. The lane is handed to `keep` when there is one that has room and is listened to (the controller keeps it for the history, to
     /// put it back, `InsertInstrument`), and its plugins go back by the return channel otherwise (`hand_back_lane`).
@@ -2303,8 +2319,11 @@ pub enum GraphCommand {
     /// Stop every probe: no ring is stored into any more (it keeps what it has). The controller sends this and then a `SetProbe` for each probe that stays, when the places in the graph
     /// have changed.
     ClearProbes,
-    /// Add a new empty submix group; the new group's index is `groups.len()`.
-    AddGroup,
+    /// Add a new empty submix group; the new group's index is `groups.len()`. `node` is the id that the model gave the group: the group keeps it, so that the plan can name
+    /// the group by it.
+    AddGroup {
+        node: NodeId,
+    },
     /// Publish a group's output (after its volume, effects and pan, before it
     /// joins the master) into a meter's slots each buffer (telemetry).
     SetGroupMeter {
@@ -2351,12 +2370,13 @@ pub enum GraphCommand {
         group: usize,
         solo: bool,
     },
-    /// Insert an effect into a group's bus chain.
+    /// Insert an effect into a group's bus chain. `node` is the id that the model gave the effect (see `InsertEffect`).
     InsertGroupEffect {
         group: usize,
         index: usize,
         effect: Box<dyn Plugin>,
         mix: f64,
+        node: NodeId,
     },
     /// Remove an effect from a group's bus chain. The plugin is handed to `keep` as `RemoveEffect` says.
     RemoveGroupEffect {
@@ -3241,12 +3261,17 @@ fn store_taps(taps: &[Tap], telemetry: Option<&Telemetry>, stage: TapStage, bufs
 // ---------------------------------------------------------------------------
 
 struct InstrumentLane {
+    /// The id that the model gave the lane, which its instrument plugin is named by too. It comes with `AddInstrument` and goes where the lane goes.
+    #[allow(dead_code)] // the plan names the lane by it from the next step; the tests read it now
+    node: NodeId,
     range: Option<(u8, u8)>,
     instrument: Option<Box<dyn Plugin>>,
     volume: f32,
     inst_buf: Vec<Vec<f32>>,
     effects: Vec<Box<dyn Plugin>>,
     mix_values: Vec<f64>,
+    /// The ids that the model gave the effects, one for each mix (not for each plugin: a lane that gave up its plugins, `KeptLane::take_plugins`, keeps the mixes and the ids).
+    effect_nodes: Vec<NodeId>,
     buf_a: Vec<Vec<f32>>,
     buf_b: Vec<Vec<f32>>,
     remapper: Option<NoteRemapper>,
@@ -3290,14 +3315,16 @@ struct InstrumentLane {
 }
 
 impl InstrumentLane {
-    fn new(num_channels: usize) -> Self {
+    fn new(num_channels: usize, node: NodeId) -> Self {
         InstrumentLane {
+            node,
             range: None,
             instrument: None,
             volume: 1.0,
             inst_buf: Vec::new(),
             effects: Vec::new(),
             mix_values: Vec::new(),
+            effect_nodes: Vec::new(),
             buf_a: (0..num_channels).map(|_| Vec::new()).collect(),
             buf_b: (0..num_channels).map(|_| Vec::new()).collect(),
             remapper: None,
@@ -3588,8 +3615,13 @@ impl InstrumentLane {
 /// A group also owns modulators that can drive its members and bus effects
 /// (see `collect_group_mod_writes`).
 struct Group {
+    /// The id that the model gave the group. It comes with `AddGroup` and goes where the group goes.
+    #[allow(dead_code)] // the plan names the group by it from the next step; the tests read it now
+    node: NodeId,
     effects: Vec<Box<dyn Plugin>>,
     mix_values: Vec<f64>,
+    /// The ids that the model gave the bus effects, one for each mix (see `InstrumentLane::effect_nodes`).
+    effect_nodes: Vec<NodeId>,
     /// Output gain applied to the member sum, before the group effects.
     volume: f32,
     /// Stereo balance pan for the group bus output: -1 = left, 0 = center,
@@ -3620,10 +3652,12 @@ struct Group {
 }
 
 impl Group {
-    fn new(num_channels: usize) -> Self {
+    fn new(num_channels: usize, node: NodeId) -> Self {
         Group {
+            node,
             effects: Vec::new(),
             mix_values: Vec::new(),
+            effect_nodes: Vec::new(),
             volume: 1.0,
             pan: 0.0,
             modulators: Vec::new(),
@@ -3916,6 +3950,8 @@ impl AudioGraph {
         self.instruments
             .iter()
             .map(|lane| LaneFacts {
+                node: lane.node,
+                effect_nodes: lane.effect_nodes.clone(),
                 group: lane.group,
                 range: lane.range,
                 transpose: lane.transpose,
@@ -3942,6 +3978,8 @@ impl AudioGraph {
         self.groups
             .iter()
             .map(|group| GroupFacts {
+                node: group.node,
+                effect_nodes: group.effect_nodes.clone(),
                 effects: group.effects.iter().map(|effect| effect.name().to_string()).collect(),
                 modulators: group.modulators.len(),
                 volume: group.volume,
@@ -4104,6 +4142,7 @@ impl AudioGraph {
                     index,
                     effect,
                     mix,
+                    node,
                 } => {
                     let num_channels = self.num_channels;
                     let mut inserted_at = None;
@@ -4120,6 +4159,7 @@ impl AudioGraph {
                             let idx = index.min(lane.effects.len());
                             lane.effects.insert(idx, effect);
                             lane.mix_values.insert(idx, mix);
+                            lane.effect_nodes.insert(idx, node);
                             // Bump modulator target slots that pointed at this
                             // or a later effect.
                             shift_slots_after_insert(&mut lane.modulators, idx);
@@ -4138,6 +4178,7 @@ impl AudioGraph {
                         if index < lane.effects.len() {
                             let old = lane.effects.remove(index);
                             lane.mix_values.remove(index);
+                            lane.effect_nodes.remove(index);
                             // Drop/shift modulator target slots for this effect.
                             fixup_slots_after_remove(&mut lane.modulators, index);
                             Some(old)
@@ -4163,8 +4204,10 @@ impl AudioGraph {
                         if from < lane.effects.len() && to < lane.effects.len() && from != to {
                             let effect = lane.effects.remove(from);
                             let mix = lane.mix_values.remove(from);
+                            let node = lane.effect_nodes.remove(from);
                             lane.effects.insert(to, effect);
                             lane.mix_values.insert(to, mix);
+                            lane.effect_nodes.insert(to, node);
                             // Remap modulator target slots through the move.
                             remap_slots_after_reorder(&mut lane.modulators, from, to);
                             moved = true;
@@ -4355,8 +4398,8 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::AddInstrument { range } => {
-                    let mut lane = InstrumentLane::new(self.num_channels);
+                GraphCommand::AddInstrument { range, node } => {
+                    let mut lane = InstrumentLane::new(self.num_channels, node);
                     lane.range = range;
                     lane.pattern.inst_index = self.instruments.len();
                     lane.pattern.pattern_tx = self.pattern_tx.clone();
@@ -4412,8 +4455,8 @@ impl AudioGraph {
                         }
                     }
                 }
-                GraphCommand::AddGroup => {
-                    self.groups.push(Group::new(self.num_channels));
+                GraphCommand::AddGroup { node } => {
+                    self.groups.push(Group::new(self.num_channels, node));
                 }
                 GraphCommand::SetLaneMeter { inst, slots } => {
                     if let Some(lane) = self.get_instrument_mut(inst) {
@@ -4539,7 +4582,7 @@ impl AudioGraph {
                         g.solo = solo;
                     }
                 }
-                GraphCommand::InsertGroupEffect { group, index, effect, mix } => {
+                GraphCommand::InsertGroupEffect { group, index, effect, mix, node } => {
                     let num_channels = self.num_channels;
                     if let Some(g) = self.groups.get_mut(group) {
                         if effect.audio_output_count() != num_channels {
@@ -4554,6 +4597,7 @@ impl AudioGraph {
                             let idx = index.min(g.effects.len());
                             g.effects.insert(idx, effect);
                             g.mix_values.insert(idx, mix);
+                            g.effect_nodes.insert(idx, node);
                             // Bump the group modulators' bus targets that pointed at this or a later effect.
                             shift_group_bus_after_insert(&mut g.modulators, idx);
                         }
@@ -4563,6 +4607,7 @@ impl AudioGraph {
                     let old = self.groups.get_mut(group).and_then(|g| {
                         if index < g.effects.len() {
                             g.mix_values.remove(index);
+                            g.effect_nodes.remove(index);
                             let removed = g.effects.remove(index);
                             // Drop/shift group-mod targets that pointed at it.
                             fixup_group_bus_after_remove(&mut g.modulators, index);
@@ -4580,8 +4625,10 @@ impl AudioGraph {
                         if from < g.effects.len() && to < g.effects.len() && from != to {
                             let effect = g.effects.remove(from);
                             let mix = g.mix_values.remove(from);
+                            let node = g.effect_nodes.remove(from);
                             g.effects.insert(to, effect);
                             g.mix_values.insert(to, mix);
+                            g.effect_nodes.insert(to, node);
                             // Remap group-mod bus targets through the move.
                             remap_group_bus_after_reorder(&mut g.modulators, from, to);
                         }
@@ -5659,8 +5706,23 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(num_channels, cmd_rx, return_tx);
         // Create one instrument lane (mimics old PluginChain behavior)
-        graph.instruments.push(InstrumentLane::new(num_channels));
+        graph.instruments.push(InstrumentLane::new(num_channels, lane_node(0)));
         (graph, cmd_tx, return_rx)
+    }
+
+    // The ids that a helper which builds the same graph twice gives its nodes, so that the facts of the two are equal: a lane's is its place, an effect's is its lane's place and its own,
+    // a group's and a bus effect's likewise (from ranges of their own, and none reaches `test_node`'s).
+    fn lane_node(inst: usize) -> NodeId {
+        NodeId(inst as u32)
+    }
+    fn effect_node(inst: usize, index: usize) -> NodeId {
+        NodeId(100 + (inst * 10 + index) as u32)
+    }
+    fn group_node(group: usize) -> NodeId {
+        NodeId(50 + group as u32)
+    }
+    fn bus_effect_node(group: usize, index: usize) -> NodeId {
+        NodeId(200 + (group * 10 + index) as u32)
     }
 
     fn make_output() -> Vec<Vec<f32>> {
@@ -5708,6 +5770,7 @@ mod tests {
                 index,
                 effect,
                 mix,
+                node: test_node(),
             })
             .unwrap();
     }
@@ -5902,7 +5965,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_effect_with_wrong_channel_count() {
+    fn reject_effect_with_wrong_channel_count_and_keep_no_id_for_it() {
         /// Mono effect (1 output) — incompatible with a stereo chain.
         struct MonoEffect;
 
@@ -5944,6 +6007,7 @@ mod tests {
 
         // Effect was rejected — instrument output passes through directly
         assert!(out[0].iter().all(|&s| s == 1.0));
+        assert!(graph.lanes()[0].effect_nodes.is_empty(), "the lane has an id for each effect and not for the one that was turned away");
 
         // Rejected effect was returned via the return channel
         let returned = return_rx.try_recv();
@@ -6165,8 +6229,8 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
         // Two instrument lanes: both full range
-        graph.instruments.push(InstrumentLane::new(2));
-        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
 
         // Swap instruments into both lanes
         let inst_a = ConstInstrument::new(0.3);
@@ -6209,13 +6273,13 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        graph.instruments.push(InstrumentLane::new(2));
-        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.25));
         swap_instrument_at(&cmd_tx, 1, ConstInstrument::new(0.25));
 
         // Group both lanes and halve the group bus volume: (0.25+0.25)*0.5.
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 1, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
@@ -6248,9 +6312,9 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
 
         // Hard right: left silent, right at full member level.
@@ -6277,9 +6341,9 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
         // Two instrument lanes with ranges: C0-B3 and C4-C8
-        let mut lane_low = InstrumentLane::new(2);
+        let mut lane_low = InstrumentLane::new(2, test_node());
         lane_low.range = Some((12, 59)); // C0-B3
-        let mut lane_high = InstrumentLane::new(2);
+        let mut lane_high = InstrumentLane::new(2, test_node());
         lane_high.range = Some((60, 96)); // C4-C8
 
         graph.instruments.push(lane_low);
@@ -6335,9 +6399,9 @@ mod tests {
         let (return_tx, return_rx) = crossbeam_channel::bounded(16);
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
 
-        let mut lane_low = InstrumentLane::new(2);
+        let mut lane_low = InstrumentLane::new(2, test_node());
         lane_low.range = Some((0, 59));
-        let mut lane_high = InstrumentLane::new(2);
+        let mut lane_high = InstrumentLane::new(2, test_node());
         lane_high.range = Some((60, 127));
 
         graph.instruments.push(lane_low);
@@ -7106,7 +7170,7 @@ mod tests {
     fn the_seeds_go_to_the_modulators_in_the_order_they_come_in_whether_they_are_a_lanes_or_a_groups() {
         let mut rig = Rig::new();
         let first = rig.lane_modulator(0, lfo(LfoWaveform::Random, 93.75));
-        rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        rig.cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         let group = rig.slot();
         rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Random, 93.75) }).unwrap();
@@ -7261,7 +7325,7 @@ mod tests {
             .send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None })
             .unwrap();
 
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
 
         cmd_tx
@@ -7307,7 +7371,7 @@ mod tests {
         let inst: Box<dyn Plugin> = Box::new(ParamTrackingInstrument { param_value: 0.5 });
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx.send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: ModSource::Macro { value: 0.5 } }).unwrap();
         cmd_tx
@@ -7342,7 +7406,7 @@ mod tests {
     fn group_modulator_drives_bus_effect() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         cmd_tx
             .send(GraphCommand::InsertGroupEffect {
@@ -7350,6 +7414,7 @@ mod tests {
                 index: 0,
                 effect: Box::new(ParamScaleEffect { gain: 1.0 }),
                 mix: 1.0,
+                node: test_node(),
             })
             .unwrap();
 
@@ -7517,16 +7582,16 @@ mod tests {
         crossbeam_channel::Receiver<Box<dyn Plugin>>,
     ) {
         let (mut graph, cmd_tx, rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         for inst in [1, 2] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
         }
         for (inst, effects) in [(0, 1), (1, 2), (2, 1)] {
             for index in 0..effects {
                 cmd_tx
-                    .send(GraphCommand::InsertEffect { inst, index, effect: Box::new(ParamScaleEffect { gain: 1.0 }), mix: 1.0 })
+                    .send(GraphCommand::InsertEffect { inst, index, effect: Box::new(ParamScaleEffect { gain: 1.0 }), mix: 1.0, node: test_node() })
                     .unwrap();
             }
         }
@@ -7592,12 +7657,12 @@ mod tests {
     #[test]
     fn inserting_an_effect_moves_the_group_modulators_targets_after_it() {
         let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
-        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 0, effect: scale_effect(), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 0, effect: scale_effect(), mix: 1.0, node: test_node() }).unwrap();
         graph.drain_commands();
         assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 2, 1), (0, 3, 2), (1, 1, 3)]);
 
         // An effect added at the end moves nothing.
-        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 3, effect: scale_effect(), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 3, effect: scale_effect(), mix: 1.0, node: test_node() }).unwrap();
         graph.drain_commands();
         assert_eq!(member_slots(&graph), [(0, 0, 0), (0, 2, 1), (0, 3, 2), (1, 1, 3)]);
     }
@@ -7605,7 +7670,7 @@ mod tests {
     #[test]
     fn effects_on_a_lane_outside_the_group_leave_the_group_modulators_alone() {
         let (mut graph, cmd_tx, _rr) = group_lfo_on_member_effects();
-        cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index: 0, effect: scale_effect(), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index: 0, effect: scale_effect(), mix: 1.0, node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::ReorderEffect { inst: 0, from: 0, to: 1 }).unwrap();
         cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
         graph.drain_commands();
@@ -7729,7 +7794,7 @@ mod tests {
     fn group_modulator_drives_member_modulator() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         // Member lane gets an LFO modulator at rate 10 Hz.
         cmd_tx
@@ -7785,7 +7850,7 @@ mod tests {
         let (learn_tx, learn_rx) = crossbeam_channel::bounded(8);
         graph.set_learn_tx(learn_tx);
         for _ in 0..3 {
-            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
         }
         for inst in [0, 2] {
             cmd_tx.send(GraphCommand::InsertModulator { inst, index: 0, source: ModSource::MidiLearn { source: None, value: 0.0, learning: true } }).unwrap();
@@ -7803,7 +7868,7 @@ mod tests {
         let (learn_tx, learn_rx) = crossbeam_channel::bounded(8);
         graph.set_learn_tx(learn_tx);
         for _ in 0..3 {
-            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
         }
         cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: ModSource::MidiLearn { source: None, value: 0.0, learning: true } }).unwrap();
         cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 0, inst_b: 2 }).unwrap();
@@ -8110,7 +8175,7 @@ mod tests {
     /// into another's modulators.
     #[test]
     fn mpe_expression_routes_by_active_channel() {
-        let mut lane = InstrumentLane::new(2);
+        let mut lane = InstrumentLane::new(2, test_node());
         lane.range = Some((60, 72));
 
         // Note on 64 on member channel index 1, plus expression on various channels.
@@ -8144,7 +8209,7 @@ mod tests {
     /// expression (its channels become active) and global channel-1 messages.
     #[test]
     fn full_range_lane_receives_its_own_expression() {
-        let mut lane = InstrumentLane::new(2); // range None → full range
+        let mut lane = InstrumentLane::new(2, test_node()); // range None → full range
         let events = [
             (0u64, [0x93, 60, 100]), // note on, ch idx 3
             (0u64, [0xd3, 77, 0]),   // pressure, ch idx 3 → own note → keep
@@ -8828,16 +8893,16 @@ mod tests {
         crossbeam_channel::Receiver<Box<dyn Plugin>>,
     ) {
         let (mut graph, cmd_tx, rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         for inst in [0, 1] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
             swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(0.1));
             cmd_tx
-                .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0 })
+                .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0, node: test_node() })
                 .unwrap();
         }
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 0.5 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 0.5, node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.8 }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: -0.3 }).unwrap();
         let lfo = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
@@ -8975,7 +9040,7 @@ mod tests {
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
         for (inst, &value) in values.iter().enumerate() {
-            graph.instruments.push(InstrumentLane::new(2));
+            graph.instruments.push(InstrumentLane::new(2, test_node()));
             swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(value));
         }
         graph.drain_commands();
@@ -9100,17 +9165,17 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
-        graph.instruments.push(InstrumentLane::new(2));
-        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.25));
         swap_instrument_at(&cmd_tx, 1, ConstInstrument::new(0.5));
         // Both lanes in a group: 0.75, at a volume of 0.5 (0.375), through an effect that halves (0.1875) and one that halves at half mix (0.140625), and all the way to the right.
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 1, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 1.0 }).unwrap();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 0.5 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 1.0, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 0.5, node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: 1.0 }).unwrap();
         listen(&cmd_tx, ProbeTarget::Group(0), 0);
         listen(&cmd_tx, ProbeTarget::GroupEffect { group: 0, index: 0 }, 1);
@@ -9156,9 +9221,9 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
-        graph.instruments.push(InstrumentLane::new(2));
+        graph.instruments.push(InstrumentLane::new(2, test_node()));
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 0.5 }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupPan { group: 0, value: -1.0 }).unwrap();
@@ -9245,9 +9310,9 @@ mod tests {
     #[test]
     fn listening_does_not_allocate() {
         let (mut graph, cmd_tx, _telemetry, _rr) = probed_lane();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.5 }), mix: 1.0, node: test_node() }).unwrap();
         for (ring, target) in [
             ProbeTarget::Instrument(0),
             ProbeTarget::Effect { inst: 0, index: 0 },
@@ -9657,7 +9722,7 @@ mod tests {
         let inst_buf = (0..inst.audio_output_count()).map(|_| Vec::new()).collect();
         cmd_tx.send(GraphCommand::SwapInstrument { inst: 0, instrument: inst, inst_buf, remapper: None, keep: None }).unwrap();
         cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((60, 71)) }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: velocity() }).unwrap();
         cmd_tx
@@ -10291,7 +10356,7 @@ mod tests {
         ] {
             let (mut graph, cmd_tx, _rr) = make_graph(2);
             swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
-            cmd_tx.send(GraphCommand::AddGroup).unwrap();
+            cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
             cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
             cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: member_source }).unwrap();
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) }).unwrap(); // always +1
@@ -10375,9 +10440,9 @@ mod tests {
     fn setting_the_depth_of_a_group_cable_that_another_cable_of_the_group_drives_moves_what_the_driver_works_from() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         swap_instrument_at(&cmd_tx, 0, ConstInstrument::new(0.5));
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 1.0 }), mix: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 1.0 }), mix: 1.0, node: test_node() }).unwrap();
         for (index, source) in [lfo(LfoWaveform::Square, 0.0), lfo(LfoWaveform::Sine, 1.0)].into_iter().enumerate() {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source }).unwrap();
         }
@@ -10407,7 +10472,7 @@ mod tests {
         let mut rig = Rig::new();
         rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
         rig.gain_target(0, 0.1); // the lane's: 0.5 + 0.1
-        rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        rig.cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) }).unwrap();
         let target = ModTarget { kind: ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }, depth: 0.2, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
@@ -10425,7 +10490,7 @@ mod tests {
         let mut rig = Rig::new();
         rig.lane_modulator(0, ModSource::MidiLearn { source: None, value: 0.0, learning: true });
         rig.gain_target(0, 0.1);
-        rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        rig.cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: lfo(LfoWaveform::Square, 0.0) }).unwrap();
         let target = ModTarget { kind: ModTargetKind::GroupMember { member: 0, slot: 1, param_index: 0 }, depth: 0.2, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
@@ -10593,17 +10658,17 @@ mod tests {
             let telemetry = Arc::new(Telemetry::new());
             let mut rig = Rig { graph, cmd_tx, telemetry: telemetry.clone(), slots: SlotAllocator::default(), _return_rx: return_rx };
             rig.graph.set_telemetry(telemetry);
-            rig.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-            rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+            rig.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+            rig.cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
             for inst in [0, 1] {
                 rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
                 swap_instrument_at(&rig.cmd_tx, inst, ConstInstrument::new(0.1));
                 rig.cmd_tx
-                    .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0 })
+                    .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0, node: test_node() })
                     .unwrap();
             }
             rig.cmd_tx
-                .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 1.0 })
+                .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 1.0, node: test_node() })
                 .unwrap();
             let output = rig.slot();
             rig.cmd_tx
@@ -10858,7 +10923,7 @@ mod tests {
         // The bus: the scale effect (0), then a two-parameter one (1).
         g.rig
             .cmd_tx
-            .send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: two_param_effect(), mix: 1.0 })
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: two_param_effect(), mix: 1.0, node: test_node() })
             .unwrap();
         let slot_2_a = g.target(0, ModTargetKind::GroupMember { member: 0, slot: 2, param_index: 0 }, 0.45);
         let slot_2_b = g.target(0, ModTargetKind::GroupMember { member: 0, slot: 2, param_index: 1 }, 0.35);
@@ -10909,14 +10974,14 @@ mod tests {
             };
             rig.graph.set_telemetry(rig.telemetry.clone());
             for _ in 0..group_count {
-                rig.cmd_tx.send(GraphCommand::AddGroup).unwrap();
+                rig.cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
                 let meter = rig.slots.meter().unwrap();
                 rig.cmd_tx.send(GraphCommand::SetGroupMeter { group: rig.groups.len(), slots: meter }).unwrap();
                 rig.groups.push(meter);
             }
             for (inst, &value) in values.iter().enumerate() {
                 if inst > 0 {
-                    rig.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+                    rig.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
                 }
                 swap_instrument_at(&rig.cmd_tx, inst, ConstInstrument::new(value));
                 rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: lane_groups[inst] }).unwrap();
@@ -10930,7 +10995,7 @@ mod tests {
         /// A lane with no instrument in it, and its meter.
         fn empty_lane(&mut self) -> MeterSlots {
             let inst = self.lanes.len();
-            self.cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            self.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
             let meter = self.slots.meter().unwrap();
             self.cmd_tx.send(GraphCommand::SetLaneMeter { inst, slots: meter }).unwrap();
             meter
@@ -11000,7 +11065,7 @@ mod tests {
         let mut rig = MeterRig::new(&[0.3, 0.3], &[Some(0), Some(0)], 1);
         rig.cmd_tx.send(GraphCommand::SetGroupVolume { group: 0, value: 2.0 }).unwrap();
         rig.cmd_tx
-            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(0.5)), mix: 1.0 })
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(0.5)), mix: 1.0, node: test_node() })
             .unwrap();
         rig.play();
         // 0.6, doubled, halved.
@@ -11058,7 +11123,7 @@ mod tests {
         swap_instrument(&cmd_tx, ConstInstrument::new(2.0));
         let meter = SlotAllocator::default().meter().unwrap();
         cmd_tx.send(GraphCommand::SetLaneMeter { inst: 0, slots: meter }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetGroupMeter { group: 0, slots: meter }).unwrap();
         let mut out = make_output();
         graph.process(&[note_on(60)], &mut out).unwrap();
@@ -11190,9 +11255,9 @@ mod tests {
     /// first and third cable, its rate, the same cables of member 1's, and a bus parameter.
     fn group_with_cables_that_drive_a_members_cables() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>) {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         for inst in [1, 2] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
         }
@@ -11294,7 +11359,7 @@ mod tests {
     #[test]
     fn removing_a_group_modulators_cable_moves_its_siblings_cables_to_the_depths_of_its_later_ones() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         let source = || ModSource::lfo(LfoWaveform::Sine, 1.0);
         for index in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source() }).unwrap();
@@ -11535,7 +11600,7 @@ mod tests {
     #[test]
     fn a_group_modulators_cable_that_goes_in_moves_its_siblings_cables_to_the_depths_of_its_later_ones_and_no_others() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         let source = || ModSource::lfo(LfoWaveform::Sine, 1.0);
         for index in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source() }).unwrap();
@@ -11669,7 +11734,7 @@ mod tests {
     #[test]
     fn a_groups_modulators_that_are_added_in_order_leave_the_cables_that_address_the_ones_that_come_later_as_they_are() {
         let (mut graph, cmd_tx, _rr) = make_graph(1);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source: source.clone() }).unwrap();
         add_group_cable(&cmd_tx, 0, 0, cable(ModTargetKind::ModulatorRate { mod_index: 1 }, 0.4));
@@ -11684,7 +11749,7 @@ mod tests {
     #[test]
     fn a_members_modulators_that_are_added_in_order_leave_the_groups_cables_to_the_ones_that_come_later_as_they_are() {
         let (mut graph, cmd_tx, _rr) = make_graph(1);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
         let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
@@ -11739,7 +11804,7 @@ mod tests {
     #[test]
     fn a_group_modulator_that_goes_in_tells_the_cables_of_its_siblings_and_not_a_lanes() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         let source = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
         for index in 0..2 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source(index as f32) }).unwrap();
@@ -11765,7 +11830,7 @@ mod tests {
     fn a_group_modulator_that_goes_in_at_the_end_or_past_it_is_the_last_and_moves_nothing() {
         for index in [2, 3, 99] {
             let (mut graph, cmd_tx, _rr) = make_graph(2);
-            cmd_tx.send(GraphCommand::AddGroup).unwrap();
+            cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
             let source = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
             for place in 0..2 {
                 cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: place, source: source(place as f32) }).unwrap();
@@ -11905,7 +11970,7 @@ mod tests {
     #[test]
     fn a_group_modulator_that_is_taken_out_and_put_back_leaves_its_siblings_cables_as_they_were() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         let source = |rate| ModSource::lfo(LfoWaveform::Sine, rate);
         for index in 0..3 {
             cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index, source: source(index as f32) }).unwrap();
@@ -11942,7 +12007,7 @@ mod tests {
     fn lane_with_three_effects() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
         let (mut graph, cmd_tx, return_rx) = make_graph(2);
         for (index, gain) in [0.25f32, 0.5, 0.75].into_iter().enumerate() {
-            cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) }).unwrap();
+            cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain), node: effect_node(0, index) }).unwrap();
         }
         graph.drain_commands();
         (graph, cmd_tx, return_rx)
@@ -11951,12 +12016,90 @@ mod tests {
     /// A group with a bus of three effects whose gains, and mixes, are 0.25, 0.5 and 0.75.
     fn group_with_three_bus_effects() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
         let (mut graph, cmd_tx, return_rx) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: group_node(0) }).unwrap();
         for (index, gain) in [0.25f32, 0.5, 0.75].into_iter().enumerate() {
-            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) }).unwrap();
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain), node: bus_effect_node(0, index) }).unwrap();
         }
         graph.drain_commands();
         (graph, cmd_tx, return_rx)
+    }
+
+    /// The gain of each effect of lane 0 with the id that goes with it: an effect and its id are one thing, whichever way the chain is changed.
+    fn lane_effects_with_ids(graph: &mut AudioGraph) -> Vec<(f32, NodeId)> {
+        let ids = graph.lanes()[0].effect_nodes.clone();
+        assert_eq!((ids.len(), graph.instruments[0].mix_values.len()), (graph.instruments[0].effects.len(), ids.len()), "an id and a mix for each effect");
+        gains_of(&mut graph.instruments[0].effects).into_iter().zip(ids).collect()
+    }
+
+    /// `lane_effects_with_ids`, for the bus of group 0.
+    fn bus_effects_with_ids(graph: &mut AudioGraph) -> Vec<(f32, NodeId)> {
+        let ids = graph.groups()[0].effect_nodes.clone();
+        assert_eq!((ids.len(), graph.groups[0].mix_values.len()), (graph.groups[0].effects.len(), ids.len()), "an id and a mix for each effect");
+        gains_of(&mut graph.groups[0].effects).into_iter().zip(ids).collect()
+    }
+
+    #[test]
+    fn the_id_of_an_effect_of_a_lane_goes_where_the_effect_goes_when_it_is_put_in_moved_and_taken_out() {
+        let (mut graph, cmd_tx, _rr) = lane_with_three_effects();
+        let [e0, e1, e2] = [effect_node(0, 0), effect_node(0, 1), effect_node(0, 2)];
+        assert_eq!(lane_effects_with_ids(&mut graph), [(0.25, e0), (0.5, e1), (0.75, e2)]);
+        let (x, y) = (test_node(), test_node());
+        let step = |graph: &mut AudioGraph, command: GraphCommand| {
+            cmd_tx.send(command).unwrap();
+            graph.drain_commands();
+            lane_effects_with_ids(graph)
+        };
+        let put = |index, gain: f32, node| GraphCommand::InsertEffect { inst: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: 0.5, node };
+        assert_eq!(step(&mut graph, put(1, 0.1, x)), [(0.25, e0), (0.1, x), (0.5, e1), (0.75, e2)], "in the middle");
+        assert_eq!(step(&mut graph, put(99, 0.9, y)), [(0.25, e0), (0.1, x), (0.5, e1), (0.75, e2), (0.9, y)], "past the end is the end");
+        assert_eq!(step(&mut graph, GraphCommand::ReorderEffect { inst: 0, from: 0, to: 3 }), [(0.1, x), (0.5, e1), (0.75, e2), (0.25, e0), (0.9, y)], "later");
+        assert_eq!(step(&mut graph, GraphCommand::ReorderEffect { inst: 0, from: 4, to: 1 }), [(0.1, x), (0.9, y), (0.5, e1), (0.75, e2), (0.25, e0)], "earlier");
+        let unchanged = lane_effects_with_ids(&mut graph);
+        for (from, to) in [(2, 2), (0, 5), (5, 0)] {
+            assert_eq!(step(&mut graph, GraphCommand::ReorderEffect { inst: 0, from, to }), unchanged, "{from} to {to} is no move");
+        }
+        let out = |index| GraphCommand::RemoveEffect { inst: 0, index, keep: None };
+        assert_eq!(step(&mut graph, out(2)), [(0.1, x), (0.9, y), (0.75, e2), (0.25, e0)]);
+        assert_eq!(step(&mut graph, out(9)), [(0.1, x), (0.9, y), (0.75, e2), (0.25, e0)], "a place that is not there is nothing to take out");
+        assert_eq!(step(&mut graph, out(0)), [(0.9, y), (0.75, e2), (0.25, e0)]);
+    }
+
+    #[test]
+    fn the_id_of_a_bus_effect_goes_where_the_effect_goes_when_it_is_put_in_moved_and_taken_out() {
+        let (mut graph, cmd_tx, _rr) = group_with_three_bus_effects();
+        let [e0, e1, e2] = [bus_effect_node(0, 0), bus_effect_node(0, 1), bus_effect_node(0, 2)];
+        assert_eq!(bus_effects_with_ids(&mut graph), [(0.25, e0), (0.5, e1), (0.75, e2)]);
+        let (x, y) = (test_node(), test_node());
+        let step = |graph: &mut AudioGraph, command: GraphCommand| {
+            cmd_tx.send(command).unwrap();
+            graph.drain_commands();
+            bus_effects_with_ids(graph)
+        };
+        let put = |index, gain: f32, node| GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain }), mix: 0.5, node };
+        assert_eq!(step(&mut graph, put(1, 0.1, x)), [(0.25, e0), (0.1, x), (0.5, e1), (0.75, e2)], "in the middle");
+        assert_eq!(step(&mut graph, put(99, 0.9, y)), [(0.25, e0), (0.1, x), (0.5, e1), (0.75, e2), (0.9, y)], "past the end is the end");
+        assert_eq!(step(&mut graph, GraphCommand::ReorderGroupEffect { group: 0, from: 0, to: 3 }), [(0.1, x), (0.5, e1), (0.75, e2), (0.25, e0), (0.9, y)], "later");
+        assert_eq!(step(&mut graph, GraphCommand::ReorderGroupEffect { group: 0, from: 4, to: 1 }), [(0.1, x), (0.9, y), (0.5, e1), (0.75, e2), (0.25, e0)], "earlier");
+        let unchanged = bus_effects_with_ids(&mut graph);
+        for (from, to) in [(2, 2), (0, 5), (5, 0)] {
+            assert_eq!(step(&mut graph, GraphCommand::ReorderGroupEffect { group: 0, from, to }), unchanged, "{from} to {to} is no move");
+        }
+        let out = |index| GraphCommand::RemoveGroupEffect { group: 0, index, keep: None };
+        assert_eq!(step(&mut graph, out(2)), [(0.1, x), (0.9, y), (0.75, e2), (0.25, e0)]);
+        assert_eq!(step(&mut graph, out(9)), [(0.1, x), (0.9, y), (0.75, e2), (0.25, e0)], "a place that is not there is nothing to take out");
+        assert_eq!(step(&mut graph, out(0)), [(0.9, y), (0.75, e2), (0.25, e0)]);
+    }
+
+    #[test]
+    fn a_lane_and_a_group_have_the_ids_they_were_added_with() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (lane, group, other_group) = (test_node(), test_node(), test_node());
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: lane }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: group }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: other_group }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.lanes().iter().map(|facts| facts.node).collect::<Vec<_>>(), [lane_node(0), lane]);
+        assert_eq!(graph.groups().iter().map(|facts| facts.node).collect::<Vec<_>>(), [group, other_group]);
     }
 
     #[test]
@@ -12157,7 +12300,7 @@ mod tests {
     #[test]
     fn a_bus_effect_that_goes_in_before_others_tells_the_cables_to_them_the_place_they_have_now() {
         let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1, node: test_node() }).unwrap();
         graph.drain_commands();
         // What drove the first is as it was, and what drove the second and the third drive the third and the fourth; what is not a bus cable is not moved.
         assert_eq!(bus_cables(&graph), [(0, 0), (2, 1), (3, 2)]);
@@ -12165,7 +12308,7 @@ mod tests {
         assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.1, 0.5, 0.75]);
         assert_eq!(graph.groups[0].mix_values, [0.25, 0.1, 0.5, 0.75]);
         // At the first place, they all move.
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.2 }), mix: 0.2 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.2 }), mix: 0.2, node: test_node() }).unwrap();
         graph.drain_commands();
         assert_eq!(bus_cables(&graph), [(1, 0), (3, 1), (4, 2)]);
     }
@@ -12174,7 +12317,7 @@ mod tests {
     fn a_bus_effect_that_goes_in_at_the_end_or_past_it_is_the_last_and_moves_no_cable() {
         for index in [3, 4, 99] {
             let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
-            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1 }).unwrap();
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1, node: test_node() }).unwrap();
             graph.drain_commands();
             assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)], "put at {index}");
             assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.5, 0.75, 0.1], "put at {index}");
@@ -12184,14 +12327,14 @@ mod tests {
     #[test]
     fn a_bus_effect_for_a_group_that_is_not_there_changes_nothing() {
         let (mut graph, cmd_tx, _rr) = group_with_cables_to_three_bus_effects();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 5, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 5, index: 0, effect: Box::new(ParamScaleEffect { gain: 0.1 }), mix: 0.1, node: test_node() }).unwrap();
         graph.drain_commands();
         assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)]);
         assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.5, 0.75]);
     }
 
     #[test]
-    fn a_bus_effect_with_the_wrong_channel_count_is_turned_away_and_handed_back_by_the_return_channel_and_moves_no_cable() {
+    fn a_bus_effect_with_the_wrong_channel_count_is_turned_away_and_handed_back_by_the_return_channel_and_moves_no_cable_and_keeps_no_id() {
         /// Mono effect (1 output): incompatible with a stereo chain.
         struct MonoEffect;
 
@@ -12220,11 +12363,12 @@ mod tests {
         }
 
         let (mut graph, cmd_tx, return_rx) = group_with_cables_to_three_bus_effects();
-        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(MonoEffect), mix: 0.1 }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(MonoEffect), mix: 0.1, node: test_node() }).unwrap();
         graph.drain_commands();
         assert_eq!(return_rx.try_recv().expect("it comes back").name(), "MonoEffect");
         assert_eq!(gains_of(&mut graph.groups[0].effects), [0.25, 0.5, 0.75], "it is not in the bus");
         assert_eq!(bus_cables(&graph), [(0, 0), (1, 1), (2, 2)], "and nothing was told that it went in");
+        assert_eq!(graph.groups()[0].effect_nodes, [bus_effect_node(0, 0), bus_effect_node(0, 1), bus_effect_node(0, 2)], "nor was an id kept for it");
     }
 
     /// What the controller asks of the audio thread to take an effect of a lane's chain out for the history and to put it back: the cables that drive it
@@ -12252,7 +12396,7 @@ mod tests {
         cmd_tx.send(GraphCommand::RemoveEffect { inst, index, keep: Some(keep) }).unwrap();
         graph.drain_commands();
         let effect = kept.try_recv().expect("the effect is handed back");
-        cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect, mix }).unwrap();
+        cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect, mix, node: test_node() }).unwrap();
         for (at, modulator, target, cable) in taken.into_iter().rev() {
             let target_cable = ModTarget { kind: cable.kind, depth: cable.depth, base_value: cable.base_value, param_min: cable.param_min, param_max: cable.param_max, effective: cable.effective };
             cmd_tx
@@ -12295,14 +12439,14 @@ mod tests {
     fn a_members_effect_that_is_taken_out_and_put_back_with_the_groups_cables_to_it_leaves_the_group_as_it_was() {
         // Lane 0 outside the group, lanes 1 and 2 in it; the group's LFO has a cable to each of member 0's (lane 1's) three effects.
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         for inst in [1, 2] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
         }
         for index in 0..3 {
-            cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index, effect: Box::new(ParamScaleEffect { gain: 0.25 * (index + 1) as f32 }), mix: 1.0 }).unwrap();
+            cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index, effect: Box::new(ParamScaleEffect { gain: 0.25 * (index + 1) as f32 }), mix: 1.0, node: test_node() }).unwrap();
         }
         let source = ModSource::lfo(LfoWaveform::Sine, 1.0);
         cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 0, source }).unwrap();
@@ -12335,7 +12479,7 @@ mod tests {
             graph.drain_commands();
             assert_eq!(bus_cables(&graph).len(), 2);
             let effect = kept.try_recv().expect("the effect is handed back");
-            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect, mix }).unwrap();
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect, mix, node: test_node() }).unwrap();
             let target = ModTarget { kind: slot.kind, depth: slot.depth, base_value: slot.base_value, param_min: slot.param_min, param_max: slot.param_max, effective: slot.effective };
             cmd_tx.send(GraphCommand::InsertGroupModTarget { group: 0, mod_index: 0, target_index: cable_place, target }).unwrap();
             graph.drain_commands();
@@ -12354,10 +12498,10 @@ mod tests {
     /// modulator drives the first parameter of each member's instrument (cables 0 to 2, by member) and the rate of the first member's first modulator (cable 3).
     fn five_lanes() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
         let (mut graph, cmd_tx, return_rx) = make_graph(2);
-        for _ in 0..4 {
-            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        for inst in 1..5 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None, node: lane_node(inst) }).unwrap();
         }
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: group_node(0) }).unwrap();
         for inst in [1, 2, 4] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
         }
@@ -12365,7 +12509,7 @@ mod tests {
             let n = (inst + 1) as f32;
             swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(0.1 * n));
             for (index, gain) in [0.5f32, 0.75].into_iter().enumerate() {
-                cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) * 0.5 + 0.1 * f64::from(n) }).unwrap();
+                cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) * 0.5 + 0.1 * f64::from(n), node: effect_node(inst, index) }).unwrap();
             }
             insert_lane_lfo_at(&cmd_tx, inst, 0, n);
             add_lane_cable(&cmd_tx, inst, 0, cable(ModTargetKind::PluginParam { slot: 1, param_index: 0 }, 0.1 * n));
@@ -12460,7 +12604,7 @@ mod tests {
                 }
                 _ => {
                     let (keep, kept) = crossbeam_channel::bounded(1);
-                    assert!(keep.send(KeptLane(Box::new(InstrumentLane::new(2)))).is_ok(), "it has room for one");
+                    assert!(keep.send(KeptLane(Box::new(InstrumentLane::new(2, test_node())))).is_ok(), "it has room for one");
                     holders.push(kept);
                     Some(keep)
                 }
@@ -12537,7 +12681,7 @@ mod tests {
         assert_eq!(graph.lanes()[4].volume, 0.7, "the lane that was put in is the last");
         let (keep, kept) = crossbeam_channel::bounded(1);
         cmd_tx.send(GraphCommand::RemoveInstrument { inst: 4, keep: Some(keep) }).unwrap();
-        cmd_tx.send(GraphCommand::InsertInstrument { index: 0, lane: kept.try_recv().unwrap_or_else(|_| KeptLane(Box::new(InstrumentLane::new(2)))) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertInstrument { index: 0, lane: kept.try_recv().unwrap_or_else(|_| KeptLane(Box::new(InstrumentLane::new(2, test_node())))) }).unwrap();
         graph.drain_commands();
         assert_eq!(places(&graph), [0, 1, 2, 3, 4]);
     }
@@ -12658,14 +12802,14 @@ mod tests {
     /// one to its second member's too).
     fn three_groups() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>, crossbeam_channel::Receiver<Box<dyn Plugin>>) {
         let (mut graph, cmd_tx, return_rx) = make_graph(2);
-        for _ in 0..4 {
-            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        for inst in 1..5 {
+            cmd_tx.send(GraphCommand::AddInstrument { range: None, node: lane_node(inst) }).unwrap();
         }
         for inst in 0..5 {
             swap_instrument_at(&cmd_tx, inst, ConstInstrument::new(0.1 * (inst + 1) as f32));
         }
-        for _ in 0..3 {
-            cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        for group in 0..3 {
+            cmd_tx.send(GraphCommand::AddGroup { node: group_node(group) }).unwrap();
         }
         for (inst, group) in [(0, 0), (1, 1), (2, 0), (4, 2)] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(group) }).unwrap();
@@ -12673,7 +12817,7 @@ mod tests {
         for group in 0..3 {
             let n = (group + 1) as f32;
             for (index, gain) in [0.5f32, 0.75].into_iter().enumerate() {
-                cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) * 0.5 + 0.1 * f64::from(n) }).unwrap();
+                cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: Box::new(ParamScaleEffect { gain }), mix: f64::from(gain) * 0.5 + 0.1 * f64::from(n), node: bus_effect_node(group, index) }).unwrap();
             }
             cmd_tx.send(GraphCommand::SetGroupVolume { group, value: 0.5 + 0.1 * n }).unwrap();
             cmd_tx.send(GraphCommand::SetGroupPan { group, value: 0.1 * n - 0.2 }).unwrap();
@@ -12748,7 +12892,7 @@ mod tests {
                 }
                 _ => {
                     let (keep, kept) = crossbeam_channel::bounded(1);
-                    assert!(keep.send(KeptGroup(Box::new(Group::new(2)))).is_ok(), "it has room for one");
+                    assert!(keep.send(KeptGroup(Box::new(Group::new(2, test_node())))).is_ok(), "it has room for one");
                     holders.push(kept);
                     Some(keep)
                 }
@@ -12897,7 +13041,7 @@ mod tests {
             swap_instrument_at(cmd_tx, inst, ConstInstrument::new(1.0));
         }
         for index in 0..effects {
-            cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: Box::new(PassthroughEffect), mix: 1.0 }).unwrap();
+            cmd_tx.send(GraphCommand::InsertEffect { inst, index, effect: Box::new(PassthroughEffect), mix: 1.0, node: test_node() }).unwrap();
         }
         for index in 0..modulators {
             insert_lane_lfo(cmd_tx, inst, index);
@@ -12910,8 +13054,8 @@ mod tests {
     #[test]
     fn swapping_two_lanes_moves_each_with_everything_it_has() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
         shape_lane(&cmd_tx, 0, true, 2, 1, 0.5, Some((36, 60)));
         shape_lane(&cmd_tx, 1, false, 0, 3, 1.5, None);
         shape_lane(&cmd_tx, 2, true, 1, 0, 2.5, Some((61, 72)));
@@ -12924,7 +13068,7 @@ mod tests {
         graph.drain_commands();
         let after = graph.lanes();
         // Each lane is the other one: everything but the place its pattern player knows it by.
-        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, muted: lane.muted, solo: lane.solo, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
+        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { node: lane.node, effect_nodes: lane.effect_nodes.clone(), group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, muted: lane.muted, solo: lane.solo, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
         assert_eq!(after[0], moved(&before[1], 0));
         assert_eq!(after[1], moved(&before[0], 1));
         assert_eq!((after[0].volume, after[0].modulators, after[0].has_instrument), (1.5, 3, false));
@@ -12936,7 +13080,7 @@ mod tests {
     #[test]
     fn swapping_lanes_that_are_not_there_or_a_lane_with_itself_changes_nothing() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
-        cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+        cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
         shape_lane(&cmd_tx, 0, true, 1, 1, 0.5, None);
         shape_lane(&cmd_tx, 1, false, 0, 2, 1.5, Some((1, 2)));
         graph.drain_commands();
@@ -12956,9 +13100,23 @@ mod tests {
         cmd_tx.send(GraphCommand::ClearInstrument { inst: 0 }).unwrap();
         graph.drain_commands();
         // What the model keeps (it only empties the instrument's slot): the effect, the modulators, the rest.
+        let lanes = graph.lanes();
         assert_eq!(
-            graph.lanes(),
-            [LaneFacts { group: None, range: Some((36, 60)), transpose: 1, volume: 0.5, muted: false, solo: false, has_instrument: false, effects: 1, modulators: 2, pattern_index: 0 }]
+            lanes,
+            [LaneFacts {
+                node: lanes[0].node,
+                effect_nodes: vec![lanes[0].effect_nodes[0]],
+                group: None,
+                range: Some((36, 60)),
+                transpose: 1,
+                volume: 0.5,
+                muted: false,
+                solo: false,
+                has_instrument: false,
+                effects: 1,
+                modulators: 2,
+                pattern_index: 0
+            }]
         );
         assert!(return_rx.try_recv().is_ok(), "and the plugin is handed back");
     }
@@ -12969,10 +13127,10 @@ mod tests {
     fn group_of_three_among_four() -> (AudioGraph, crossbeam_channel::Sender<GraphCommand>) {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         for _ in 0..3 {
-            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
         }
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         for inst in [0, 2, 3] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
         }
@@ -13032,10 +13190,10 @@ mod tests {
         // (members 0, 1 and 2). Each group's modulator drives each of its members' instruments, told apart by parameter.
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         for _ in 0..4 {
-            cmd_tx.send(GraphCommand::AddInstrument { range: None }).unwrap();
+            cmd_tx.send(GraphCommand::AddInstrument { range: None, node: test_node() }).unwrap();
         }
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
-        cmd_tx.send(GraphCommand::AddGroup).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: test_node() }).unwrap();
         for (inst, group) in [(0, 0), (1, 1), (2, 0), (3, 1), (4, 1)] {
             cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(group) }).unwrap();
         }
@@ -13229,7 +13387,7 @@ mod tests {
         // Each bus has an effect that puts out 0.1 whatever comes in, which stands for a tail that a bus keeps while its members are silent.
         let mut rig = MeterRig::new(&[0.2, 0.4], &[Some(0), Some(1)], 2);
         for group in 0..2 {
-            send(&rig, GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(0.1)), mix: 1.0 });
+            send(&rig, GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(0.1)), mix: 1.0, node: test_node() });
         }
         assert!(all_at(&heard_after(&mut rig, 2), 0.2 + 0.1 + 0.4 + 0.1));
         send(&rig, GraphCommand::SetSolo { inst: 1, solo: true });
@@ -13339,7 +13497,7 @@ mod tests {
         // (One graph for all of them: each case sets every flag, and two buffers settle what the last case left.)
         let mut rig = MeterRig::new(&[1.0, 2.0, 4.0, 8.0], &[Some(0), Some(0), Some(1), None], 2);
         for group in 0..2 {
-            send(&rig, GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(16.0 * (1 << group) as f32)), mix: 1.0 });
+            send(&rig, GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(16.0 * (1 << group) as f32)), mix: 1.0, node: test_node() });
         }
         let cases: Vec<serde_json::Value> = (0..4096u32)
             .map(|case| {
